@@ -1,0 +1,115 @@
+# Copyright 2023 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# This sentinel is a reminder to choose a real run name.
+run_name: ''
+
+metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
+# If true save metrics such as loss and TFLOPS to GCS in {base_output_directory}/{run_name}/metrics/
+gcs_metrics: True
+log_period: 100
+
+pretrained_model_name_or_path: 'stabilityai/stable-diffusion-xl-base-1.0'
+revision: 'refs/pr/95'
+dtype: 'bfloat16'
+# Set true to load weights from pytorch
+from_pt: False
+split_head_dim: True
+
+# Output directory
+# Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
+base_output_directory: ""
+
+# Parallelism
+mesh_axes: ['data', 'fsdp', 'tensor']
+
+# batch : batch dimension of data and activations
+# hidden : 
+# embed : attention qkv dense layer hidden dim named as embed
+# heads : attention head dim = num_heads * head_dim
+# length : attention sequence length
+# temb_in : dense.shape[0] of resnet dense before conv 
+# out_c : dense.shape[1] of resnet dense before conv 
+# out_channels : conv.shape[-1] activation
+# keep_1 : conv.shape[0] weight
+# keep_2 : conv.shape[1] weight
+# conv_in : conv.shape[2] weight
+# conv_out : conv.shape[-1] weight
+logical_axis_rules: [
+                      ['batch', 'data'],
+                      ['activation_batch', 'data'],
+                      ['activation_length', 'fsdp'],
+                      ['out_channels', 'fsdp'],
+                      ['conv_out', 'fsdp'],
+                      ['length', 'fsdp']
+                    ]
+data_sharding: [['data', 'fsdp', 'tensor']]
+
+# One axis for each parallelism type may hold a placeholder (-1)
+# value to auto-shard based on available slices and devices.
+# By default, product of the DCN axes should equal number of slices
+# and product of the ICI axes should equal number of devices per slice.
+dcn_data_parallelism: -1  # recommended DCN axis to be auto-sharded
+dcn_fsdp_parallelism: 1
+dcn_tensor_parallelism: 1
+ici_data_parallelism: -1
+ici_fsdp_parallelism: 1  # recommended ICI axis to be auto-sharded
+ici_tensor_parallelism: 1
+
+# Dataset
+# Replace with dataset path or train_data_dir. One has to be set.
+dataset_name: 'lambdalabs/pokemon-blip-captions'
+train_data_dir: ''
+dataset_config_name: ''
+cache_dir: ''
+image_column: 'image'
+caption_column: 'text'
+resolution: 1024
+center_crop: False
+random_flip: False
+
+# Training loop
+learning_rate: 4.e-7
+scale_lr: False
+max_train_samples: -1
+# max_train_steps takes priority over num_train_epochs.
+max_train_steps: 200
+num_train_epochs: 100
+seed: 0
+output_dir: 'sdxl-model-finetuned'
+per_device_batch_size: 2
+
+cosine_learning_rate_final_fraction: 0.1 
+warmup_steps_fraction: 0.1
+learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
+
+# However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before 
+# dropping fully down. Or you may choose a shorter schedule, where the unspecified steps will have a learning rate of 0.
+
+# AdamW optimizer parameters
+adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradients.
+adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradients.
+adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
+adam_weight_decay: 1.e-2 # AdamW Weight decay
+
+max_grad_norm: 1.0
+
+enable_profiler: True
+
+# Generation parameters
+prompt: "A magical castle in the middle of a forest, artistic drawing"
+negative_prompt: "purple, red"
+guidance_scale: 9
+num_inference_steps: 20
+seed: 47
