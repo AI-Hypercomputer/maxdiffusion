@@ -33,7 +33,7 @@ class InputPipelineInterface(unittest.TestCase):
     InputPipelineInterface.dummy_data = {}
 
   def test_make_pokemon_train_iterator(self):
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
       "revision=bf16","dtype=bfloat16","resolution=768",
       "cache_latents_text_encoder_outputs=False","transform_images_num_proc=4"])
@@ -66,7 +66,7 @@ class InputPipelineInterface(unittest.TestCase):
     assert data["pixel_values"].shape == (device_count, 3, config.resolution, config.resolution)
 
   def test_make_pokemon_train_iterator_w_latents_caching(self):
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
       "revision=bf16","dtype=bfloat16","resolution=768",
       "cache_latents_text_encoder_outputs=True","transform_images_num_proc=4"])

@@ -24,6 +24,7 @@ MaxDiffusion is a Latent Diffusion model written in pure Python/Jax and targetin
 We encourage users to start by experimenting with MaxDiffusion out of the box and then fork and modify MaxDiffusion to meet their needs.
 
 MaxDiffusion supports 
+* Stable Diffusion 2 base (training and inference)
 * Stable Diffusion 2.1 (training and inference) 
 * Stable Diffusion XL (inference).
 
@@ -50,7 +51,7 @@ pip3 install -e .
 ```
 4. After installation completes, run training with the command:
 ```bash
-python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base.yml run_name="my_run" base_output_directory="gs://your-bucket/"
+python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" base_output_directory="gs://your-bucket/"
 ```
 5. If you want to generate images, you can do it as follows.
 - Stable Diffusion 2.1
