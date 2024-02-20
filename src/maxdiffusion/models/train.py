@@ -147,7 +147,8 @@ def train(config):
     weight_dtype = max_utils.get_dtype(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
-        safety_checker=None, feature_extractor=None, from_pt=config.from_pt
+        safety_checker=None, feature_extractor=None, from_pt=config.from_pt,
+        split_head_dim=config.split_head_dim
     )
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
