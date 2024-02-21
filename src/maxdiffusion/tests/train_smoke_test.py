@@ -16,6 +16,7 @@
 
 """ Smoke test """
 import os
+import pathlib
 import shutil
 import unittest
 from maxdiffusion.models.train import main as train_main
@@ -27,6 +28,7 @@ from skimage.metrics import structural_similarity as ssim
 import numpy as np
 from PIL import Image
 
+HOME_DIR = pathlib.Path.home()
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def cleanup(output_dir):
@@ -64,6 +66,8 @@ class Train(unittest.TestCase):
     assert ssim_compare >=0.70
 
     cleanup(output_dir)
+    dataset_dir = str(HOME_DIR / ".cache" / "huggingface" / "datasets")
+    cleanup(dataset_dir)
 
   def test_sd_2_base_config(self):
     output_dir="train-smoke-test"
@@ -89,6 +93,8 @@ class Train(unittest.TestCase):
     assert ssim_compare >=0.70
 
     cleanup(output_dir)
+    dataset_dir = str(HOME_DIR / ".cache" / "huggingface" / "datasets")
+    cleanup(dataset_dir)
 
 if __name__ == '__main__':
   absltest.main()

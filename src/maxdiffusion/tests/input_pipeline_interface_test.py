@@ -14,6 +14,8 @@
  limitations under the License.
 """
 import os
+import pathlib 
+import shutil
 import unittest
 from absl.testing import absltest
 
@@ -25,7 +27,12 @@ from ..import max_utils
 from maxdiffusion.input_pipeline.input_pipeline_interface import make_pokemon_train_iterator
 from maxdiffusion import FlaxStableDiffusionPipeline
 
+HOME_DIR = pathlib.Path.home()
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+DATASET_DIR = str(HOME_DIR / ".cache" / "huggingface" / "datasets")
+
+def cleanup(output_dir):
+  shutil.rmtree(output_dir)
 
 class InputPipelineInterface(unittest.TestCase):
   """Test Unet sharding"""
@@ -65,6 +72,8 @@ class InputPipelineInterface(unittest.TestCase):
     assert data["input_ids"].shape == (device_count,77)
     assert data["pixel_values"].shape == (device_count, 3, config.resolution, config.resolution)
 
+    cleanup(DATASET_DIR)
+
   def test_make_pokemon_train_iterator_w_latents_caching(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
@@ -103,6 +112,8 @@ class InputPipelineInterface(unittest.TestCase):
                                           pipeline.unet.config.in_channels,
                                           config.resolution // vae_scale_factor,
                                           config.resolution // vae_scale_factor)
+
+    cleanup(DATASET_DIR)
 
 if __name__ == '__main__':
   absltest.main()
