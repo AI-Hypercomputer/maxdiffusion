@@ -14,7 +14,7 @@
  limitations under the License.
 """
 import os
-import pathlib 
+import pathlib
 import shutil
 import unittest
 from absl.testing import absltest
