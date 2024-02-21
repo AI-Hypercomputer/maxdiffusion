@@ -45,7 +45,7 @@ class UnetTest(unittest.TestCase):
     UnetTest.dummy_data = {}
 
   def test_unet21_sharding_test(self):
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
       "revision=bf16","dtype=bfloat16","resolution=768"])
     config = pyconfig.config
