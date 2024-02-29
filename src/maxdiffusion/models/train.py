@@ -48,9 +48,27 @@ from transformers import CLIPImageProcessor, set_seed
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import make_pokemon_train_iterator
 
-dataset_name_mapping = {
-    "lambdalabs/pokemon-blip-captions": ("image", "text"),
-}
+def calculate_training_tflops(pipeline, params, config):
+    vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
+    batch_size = config.per_device_batch_size
+
+    input_shape = (batch_size,
+                    pipeline.unet.config['in_channels'],
+                    config.resolution // vae_scale_factor,
+                    config.resolution // vae_scale_factor)
+
+    latents = jax.random.normal(jax.random.PRNGKey(0),
+                                shape=input_shape,
+                                dtype=max_utils.get_dtype(config)
+                                )
+    latents = jnp.concatenate([latents] * 2)
+    timesteps = jnp.ones((latents.shape[0],))
+    encoder_hidden_states_shape = (latents.shape[0],
+                                    pipeline.text_encoder.config.max_position_embeddings,
+                                    pipeline.text_encoder.config.hidden_size)
+    encoder_hidden_states = jnp.zeros(encoder_hidden_states_shape)
+    c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : params["unet"]}, latents, timesteps, encoder_hidden_states).compile()
+    return 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12)
 
 def get_first_step(state):
   with jax.spmd_mode('allow_all'):
@@ -75,10 +93,18 @@ def validate_train_config(config):
 
   assert config.max_train_steps > 0 or config.num_train_epochs > 0, "You must set steps or learning_rate_schedule_steps to a positive interger."
 
-def record_scalar_metrics(metrics, step_time_delta, lr):
+def record_scalar_metrics(metrics, step_time_delta, per_device_tflops, lr):
   """Records scalar metrics to be written to tensorboard"""
   metrics['scalar'].update({
       'perf/step_time_seconds': step_time_delta.total_seconds()
+  })
+  metrics['scalar'].update({
+      'perf/per_device_tflops' : per_device_tflops
+  })
+  metrics['scalar'].update({
+      'perf/per_device_tflops_per_sec':
+          per_device_tflops /
+          step_time_delta.total_seconds()
   })
   metrics['scalar'].update({'learning/current_learning_rate': lr })
 
@@ -94,6 +120,7 @@ def write_metrics(writer, metrics, step, config):
     full_log = step % config.log_period == 0
 
     max_logging.log(f"completed step: {step}, seconds: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
+          f"TFLOP/s/device: {metrics['scalar']['perf/per_device_tflops_per_sec']:.3f}, "
           f"loss: {metrics['scalar']['learning/loss']:.3f}")
 
     if full_log and jax.process_index() == 0:
@@ -150,6 +177,9 @@ def train(config):
         safety_checker=None, feature_extractor=None, from_pt=config.from_pt,
         split_head_dim=config.split_head_dim
     )
+
+    per_device_tflops = calculate_training_tflops(pipeline, params, config)
+    max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
@@ -310,6 +340,11 @@ def train(config):
     local_metrics_file = open(config.metrics_file, 'a', encoding="utf8") if config.metrics_file else None
     running_gcs_metrics = [] if config.gcs_metrics else None
     example_batch = None
+
+    first_profiling_step = global_step + config.skip_first_n_steps_for_profiler
+    if config.enable_profiler and first_profiling_step >= config.max_train_steps:
+       raise ValueError("Profiling requested but initial profiling step set past training final step")
+    last_profiling_step = np.clip(first_profiling_step + config.profiler_steps -1, first_profiling_step, config.steps - 1)
     # ======================== Training ================================
     # train
     for _ in np.arange(get_first_step(unet_state), config.max_train_steps):
@@ -320,7 +355,7 @@ def train(config):
                                                                 example_batch,
                                                                 train_rngs)
         new_time = datetime.datetime.now()
-        record_scalar_metrics(train_metric, new_time - last_step_completion, config.learning_rate)
+        record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, config.learning_rate)
         write_metrics(writer, train_metric, global_step, config)
         last_step_completion = new_time
 
@@ -332,9 +367,9 @@ def train(config):
 
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
-        if global_step == 0:
+        if global_step == first_profiling_step:
             max_utils.activate_profiler(config)
-        if global_step == 20:
+        if global_step == last_profiling_step:
             max_utils.deactivate_profiler(config)
 
         global_step += 1
@@ -379,7 +414,7 @@ def train(config):
     writer.close()
 
 def main(argv: Sequence[str]) -> None:
-    print(f"Found {jax.device_count()} devices.")
+    max_logging.log(f"Found {jax.device_count()} devices.")
     cc.initialize_cache(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
