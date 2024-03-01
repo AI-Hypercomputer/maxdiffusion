@@ -344,7 +344,7 @@ def train(config):
     first_profiling_step = global_step + config.skip_first_n_steps_for_profiler
     if config.enable_profiler and first_profiling_step >= config.max_train_steps:
        raise ValueError("Profiling requested but initial profiling step set past training final step")
-    last_profiling_step = np.clip(first_profiling_step + config.profiler_steps -1, first_profiling_step, config.steps - 1)
+    last_profiling_step = np.clip(first_profiling_step + config.profiler_steps -1, first_profiling_step, config.max_train_steps - 1)
     # ======================== Training ================================
     # train
     for _ in np.arange(get_first_step(unet_state), config.max_train_steps):
