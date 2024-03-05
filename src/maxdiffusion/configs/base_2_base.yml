@@ -26,7 +26,7 @@ dtype: 'bfloat16'
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash
+attention: 'dot_product' # Supported attention: dot_product, flash
 
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
