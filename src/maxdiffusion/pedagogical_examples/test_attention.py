@@ -19,34 +19,6 @@ def make_data():
 
   return query_states, key_states, value_states
 
-def run_test_accuracy():
-  query_states, key_states, value_states = make_data()
-
-  global regular_out_attention
-  if split_head_dim:
-    regular_out_attention = regular_attention_split(query_states, key_states, value_states, heads)
-  else:
-    regular_out_attention = regular_attention_unsplit(query_states, key_states, value_states, heads)
-  #print(f"Shape after attention out: {regular_out_attention.shape=}")
-
-  scale = 1.0 / jnp.sqrt(head_depth) # 1/ sqrt(head_dim)
-  query_states = reshape_data_for_flash(query_states, heads)
-  key_states = reshape_data_for_flash(key_states, heads)
-  value_states = reshape_data_for_flash(value_states, heads)
-
-  flash_attention_out = tpu_flash_attention_block(query_states, key_states * scale, value_states)
-  flash_attention_out = reshape_heads_to_head_dim(flash_attention_out)
-  #print(f"Shape of flash_attention_out after reshape to heads dim: {flash_attention_out.shape=}")
-
-  diff_norm = jnp.linalg.norm(regular_out_attention - flash_attention_out)
-  print(f"{diff_norm=}")
-
-  regular_norm = jnp.linalg.norm(regular_out_attention)
-  print(f"{regular_norm=}")
-
-  flash_norm = jnp.linalg.norm(flash_attention_out)
-  print(f"{flash_norm=}")
-
 def run_time_comparison():
   query_states, key_states, value_states = make_data()
 
@@ -72,7 +44,7 @@ def run_time_comparison():
   start_time = time.perf_counter()
   for _ in range(n_trials):
     dot_attention_out = p_apply({"params" : params}, x).block_until_ready()
-  
+
   end_time = time.perf_counter()
   total_time = end_time - start_time
   average_time = total_time / n_trials
@@ -98,7 +70,7 @@ def run_time_comparison():
   start_time = time.perf_counter()
   for _ in range(n_trials):
     flash_attention_out = p_apply({"params" : params}, x).block_until_ready()
-  
+
   end_time = time.perf_counter()
   total_time = end_time - start_time
   average_time = total_time / n_trials
@@ -151,7 +123,7 @@ def run_time_comparison():
 
 
 global batch; batch = 8
-global heads; heads = 10 
+global heads; heads = 10
 global length; length = 4096
 global head_depth; head_depth = 128
 global n_trials; n_trials = 10
