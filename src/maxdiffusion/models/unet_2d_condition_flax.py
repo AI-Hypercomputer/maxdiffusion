@@ -95,6 +95,10 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
+        attention (`str`, *optional*, defaults to `dot_product`)
+            Attention mechanism to be used.
+        mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
+            jax mesh is required if attention is set to flash.
     """
 
     sample_size: int = 32
@@ -120,6 +124,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     freq_shift: int = 0
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
+    attention: str = "dot_product"
+    mesh: jax.sharding.Mesh = None
     transformer_layers_per_block: Union[int, Tuple[int]] = 1
     addition_embed_type: Optional[str] = None
     addition_time_embed_dim: Optional[int] = None
@@ -128,10 +134,11 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     def init_weights(self, rng: jax.Array) -> FrozenDict:
         # init input tensors
-        sample_shape = (1, self.in_channels, self.sample_size, self.sample_size)
+        no_devices = jax.device_count()
+        sample_shape = (no_devices, self.in_channels, self.sample_size, self.sample_size)
         sample = jnp.zeros(sample_shape, dtype=jnp.float32)
-        timesteps = jnp.ones((1,), dtype=jnp.int32)
-        encoder_hidden_states = jnp.zeros((1, 1, self.cross_attention_dim), dtype=jnp.float32)
+        timesteps = jnp.ones((no_devices,), dtype=jnp.int32)
+        encoder_hidden_states = jnp.zeros((no_devices, 1, self.cross_attention_dim), dtype=jnp.float32)
 
         params_rng, dropout_rng = jax.random.split(rng)
         rngs = {"params": params_rng, "dropout": dropout_rng}
@@ -153,8 +160,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             time_ids_channels = self.projection_class_embeddings_input_dim - text_embeds_dim
             time_ids_dims = time_ids_channels // self.addition_time_embed_dim
             added_cond_kwargs = {
-                "text_embeds": jnp.zeros((1, text_embeds_dim), dtype=jnp.float32),
-                "time_ids": jnp.zeros((1, time_ids_dims), dtype=jnp.float32),
+                "text_embeds": jnp.zeros((no_devices, text_embeds_dim), dtype=jnp.float32),
+                "time_ids": jnp.zeros((no_devices, time_ids_dims), dtype=jnp.float32),
             }
         return self.init(rngs, sample, timesteps, encoder_hidden_states, added_cond_kwargs)["params"]
 
@@ -236,6 +243,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     only_cross_attention=only_cross_attention[i],
                     use_memory_efficient_attention=self.use_memory_efficient_attention,
                     split_head_dim=self.split_head_dim,
+                    attention=self.attention,
+                    mesh=self.mesh,
                     dtype=self.dtype,
                 )
             else:
@@ -260,6 +269,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             use_linear_projection=self.use_linear_projection,
             use_memory_efficient_attention=self.use_memory_efficient_attention,
             split_head_dim=self.split_head_dim,
+            attention=self.attention,
+            mesh=self.mesh,
             dtype=self.dtype,
         )
 
@@ -291,6 +302,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     only_cross_attention=only_cross_attention[i],
                     use_memory_efficient_attention=self.use_memory_efficient_attention,
                     split_head_dim=self.split_head_dim,
+                    attention=self.attention,
+                    mesh=self.mesh,
                     dtype=self.dtype,
                 )
             else:
