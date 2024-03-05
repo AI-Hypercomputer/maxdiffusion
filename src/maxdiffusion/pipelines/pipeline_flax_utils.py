@@ -323,6 +323,8 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         from_pt = kwargs.pop("from_pt", False)
         use_memory_efficient_attention = kwargs.pop("use_memory_efficient_attention", False)
         split_head_dim = kwargs.pop("split_head_dim", False)
+        attention = kwargs.pop("attention", "dot_product")
+        mesh = kwargs.pop("mesh", None)
         dtype = kwargs.pop("dtype", None)
 
         # 1. Download the checkpoints and configs
@@ -502,6 +504,8 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                         from_pt=from_pt,
                         use_memory_efficient_attention=use_memory_efficient_attention,
                         split_head_dim=split_head_dim,
+                        attention=attention,
+                        mesh=mesh,
                         dtype=dtype,
                     )
                     params[name] = loaded_params
