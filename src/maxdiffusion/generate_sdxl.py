@@ -120,7 +120,9 @@ def run(config):
     config.pretrained_model_name_or_path,
     revision=config.revision,
     dtype=weight_dtype,
-    split_head_dim=config.split_head_dim
+    split_head_dim=config.split_head_dim,
+    attention=config.attention,
+    mesh=mesh
   )
   scheduler_state = params.pop("scheduler")
   params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
