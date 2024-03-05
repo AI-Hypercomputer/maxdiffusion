@@ -20,7 +20,7 @@ from typing import Any, Dict, Union
 import jax
 import jax.numpy as jnp
 import msgpack.exceptions
-from flax.core.frozen_dict import FrozenDict, unfreeze
+from flax.core.frozen_dict import FrozenDict
 from flax.serialization import from_bytes, to_bytes
 from flax.traverse_util import flatten_dict, unflatten_dict
 from huggingface_hub import create_repo, hf_hub_download

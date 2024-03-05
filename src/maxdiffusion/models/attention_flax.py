@@ -131,7 +131,7 @@ class AttentionOp(nn.Module):
                 block_kv_dq=min(512, query.shape[2]),
             )
 
-            masks = [splash_attention_mask.CausalMask( shape=(query.shape[2],query.shape[2])) for i in range(query.shape[1])]
+            masks = [splash_attention_mask.FullMask(_shape=(query.shape[2],query.shape[2])) for i in range(query.shape[1])]
             multi_head_mask = splash_attention_mask.MultiHeadMask(masks=masks)
             splash_kernel = splash_attention_kernel.make_splash_mha(mask = multi_head_mask,
                                                               head_shards = 1,
@@ -146,10 +146,10 @@ class AttentionOp(nn.Module):
         x = wrap_flash_attention(query, key, value, decoder_segment_ids)
         x = x[:,:,:,:kv_size]
         x = self.reshape_heads_to_head_dim(x)
-        
+
         #x = jnp.transpose(x, axes=(0, 2, 1, 3))
         return x
-    
+
     def apply_attention_dot(
         self,
         query: Array,
@@ -165,11 +165,11 @@ class AttentionOp(nn.Module):
             query_states = self.reshape_heads_to_batch_dim(query)
             key_states = self.reshape_heads_to_batch_dim(key)
             value_states = self.reshape_heads_to_batch_dim(value)
-        
+
         if self.float32_qk_product:
             query_states = query_states.astype(jnp.float32)
             key_states = key_states.astype(jnp.float32)
-        
+
         if self.use_memory_efficient_attention:
             query_states = query_states.transpose(1, 0, 2)
             key_states = key_states.transpose(1, 0, 2)
@@ -212,9 +212,9 @@ class AttentionOp(nn.Module):
             else:
                 hidden_states = jnp.einsum("b i j, b j d -> b i d", attention_probs, value_states)
                 hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
-        
+
         return hidden_states
-    
+
     def reshape_heads_to_batch_dim(self, tensor):
         batch_size, seq_len, dim = tensor.shape
         head_size = self.heads
@@ -386,7 +386,7 @@ class FlaxAttention(nn.Module):
     out_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
 
     def setup(self):
-        
+
         if self.attention == "flash" and self.mesh == None:
             raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
 
