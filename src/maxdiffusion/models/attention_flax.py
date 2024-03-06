@@ -45,6 +45,7 @@ class AttentionOp(nn.Module):
     split_head_dim: bool = False
     float32_qk_product: bool = True
     flash_axis_names: AxisNames = (BATCH, HEAD, LENGTH, D_KV)
+    flash_min_seq_length: int = 4096
     dtype: DType = jnp.float32
 
     def check_attention_inputs(
@@ -72,7 +73,7 @@ class AttentionOp(nn.Module):
     ):
         self.check_attention_inputs(query, key, value)
 
-        can_use_flash_attention = query.shape[1] >= 4096 and key.shape[1] >=4096 and value.shape[1] >=4096
+        can_use_flash_attention = query.shape[1] >= self.flash_min_seq_length and key.shape[1] >= self.flash_min_seq_length and value.shape[1] >= self.flash_min_seq_length
 
         if self.attention_kernel == "dot_product" or self.use_memory_efficient_attention or not can_use_flash_attention:
             return self.apply_attention_dot(query, key, value)
@@ -363,8 +364,10 @@ class FlaxAttention(nn.Module):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
-        attention (`str`, *optional*, defaults to `dot_product`)
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
             Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
@@ -377,7 +380,8 @@ class FlaxAttention(nn.Module):
     dropout: float = 0.0
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
-    attention: str = "dot_product"
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
     query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
@@ -387,7 +391,7 @@ class FlaxAttention(nn.Module):
 
     def setup(self):
 
-        if self.attention == "flash" and self.mesh is None:
+        if self.attention_kernel == "flash" and self.mesh is None:
             raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
 
         inner_dim = self.dim_head * self.heads
@@ -395,10 +399,11 @@ class FlaxAttention(nn.Module):
 
         self.attention_op = AttentionOp(
             mesh=self.mesh,
-            attention_kernel=self.attention,
+            attention_kernel=self.attention_kernel,
             scale=scale,
             heads=self.heads,
             dim_head=self.dim_head,
+            flash_min_seq_length=self.flash_min_seq_length,
             use_memory_efficient_attention=self.use_memory_efficient_attention,
             split_head_dim=self.split_head_dim
         )
@@ -491,8 +496,10 @@ class FlaxBasicTransformerBlock(nn.Module):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
-        attention (`str`, *optional*, defaults to `dot_product`)
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
             Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
     """
@@ -504,7 +511,8 @@ class FlaxBasicTransformerBlock(nn.Module):
     dtype: jnp.dtype = jnp.float32
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
-    attention: str = "dot_product"
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
     mesh: jax.sharding.Mesh = None
 
     def setup(self):
@@ -516,7 +524,8 @@ class FlaxBasicTransformerBlock(nn.Module):
             self.dropout,
             self.use_memory_efficient_attention,
             self.split_head_dim,
-            attention=self.attention,
+            attention_kernel=self.attention_kernel,
+            flash_min_seq_length=self.flash_min_seq_length,
             mesh=self.mesh,
             dtype=self.dtype,
         )
@@ -528,7 +537,8 @@ class FlaxBasicTransformerBlock(nn.Module):
             self.dropout,
             self.use_memory_efficient_attention,
             self.split_head_dim,
-            attention=self.attention,
+            attention_kernel=self.attention_kernel,
+            flash_min_seq_length=self.flash_min_seq_length,
             mesh=self.mesh,
             dtype=self.dtype,
         )
@@ -586,8 +596,10 @@ class FlaxTransformer2DModel(nn.Module):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
-        attention (`str`, *optional*, defaults to `dot_product`)
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
             Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
     """
@@ -601,7 +613,8 @@ class FlaxTransformer2DModel(nn.Module):
     dtype: jnp.dtype = jnp.float32
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
-    attention: str = "dot_product"
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
     mesh: jax.sharding.Mesh = None
 
     def setup(self):
@@ -638,7 +651,8 @@ class FlaxTransformer2DModel(nn.Module):
                 dtype=self.dtype,
                 use_memory_efficient_attention=self.use_memory_efficient_attention,
                 split_head_dim=self.split_head_dim,
-                attention=self.attention,
+                attention_kernel=self.attention_kernel,
+                flash_min_seq_length=self.flash_min_seq_length,
                 mesh=self.mesh
             )
             for _ in range(self.depth)
