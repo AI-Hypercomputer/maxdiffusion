@@ -387,11 +387,8 @@ class FlaxAttention(nn.Module):
 
     def setup(self):
 
-        if self.attention == "flash" and self.mesh == None:
+        if self.attention == "flash" and self.mesh is None:
             raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
-
-        # if self.split_head_dim and self.use_memory_efficient_attention:
-        #     raise ValueError("Both split_head_dim and use_memory_efficient_attention cannot be set to True.")
 
         inner_dim = self.dim_head * self.heads
         scale = self.dim_head**-0.5

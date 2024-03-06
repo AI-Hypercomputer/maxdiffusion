@@ -132,7 +132,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     addition_embed_type_num_heads: int = 64
     projection_class_embeddings_input_dim: Optional[int] = None
 
-    def init_weights(self, rng: jax.Array) -> FrozenDict:
+    def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
         # init input tensors
         no_devices = jax.device_count()
         sample_shape = (no_devices, self.in_channels, self.sample_size, self.sample_size)
@@ -163,7 +163,10 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                 "text_embeds": jnp.zeros((no_devices, text_embeds_dim), dtype=jnp.float32),
                 "time_ids": jnp.zeros((no_devices, time_ids_dims), dtype=jnp.float32),
             }
-        return self.init(rngs, sample, timesteps, encoder_hidden_states, added_cond_kwargs)["params"]
+        if eval_only:
+            return jax.eval_shape(self.init, rngs, sample, timesteps, encoder_hidden_states, added_cond_kwargs)["params"]
+        else:
+            return self.init(rngs, sample, timesteps, encoder_hidden_states, added_cond_kwargs)["params"]
 
     def setup(self):
         block_out_channels = self.block_out_channels
