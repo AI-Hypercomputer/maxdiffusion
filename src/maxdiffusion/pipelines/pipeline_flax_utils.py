@@ -323,7 +323,8 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         from_pt = kwargs.pop("from_pt", False)
         use_memory_efficient_attention = kwargs.pop("use_memory_efficient_attention", False)
         split_head_dim = kwargs.pop("split_head_dim", False)
-        attention = kwargs.pop("attention", "dot_product")
+        attention_kernel = kwargs.pop("attention_kernel", "dot_product")
+        flash_min_seq_length = kwargs.pop("flash_min_seq_length", 4096)
         mesh = kwargs.pop("mesh", None)
         dtype = kwargs.pop("dtype", None)
 
@@ -504,7 +505,8 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                         from_pt=from_pt,
                         use_memory_efficient_attention=use_memory_efficient_attention,
                         split_head_dim=split_head_dim,
-                        attention=attention,
+                        attention_kernel=attention_kernel,
+                        flash_min_seq_length=flash_min_seq_length,
                         mesh=mesh,
                         dtype=dtype,
                     )
