@@ -95,8 +95,10 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
-        attention (`str`, *optional*, defaults to `dot_product`)
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
             Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
     """
@@ -124,7 +126,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     freq_shift: int = 0
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
-    attention: str = "dot_product"
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
     mesh: jax.sharding.Mesh = None
     transformer_layers_per_block: Union[int, Tuple[int]] = 1
     addition_embed_type: Optional[str] = None
@@ -246,7 +249,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     only_cross_attention=only_cross_attention[i],
                     use_memory_efficient_attention=self.use_memory_efficient_attention,
                     split_head_dim=self.split_head_dim,
-                    attention=self.attention,
+                    attention_kernel=self.attention_kernel,
+                    flash_min_seq_length=self.flash_min_seq_length,
                     mesh=self.mesh,
                     dtype=self.dtype,
                 )
@@ -272,7 +276,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             use_linear_projection=self.use_linear_projection,
             use_memory_efficient_attention=self.use_memory_efficient_attention,
             split_head_dim=self.split_head_dim,
-            attention=self.attention,
+            attention_kernel=self.attention_kernel,
+            flash_min_seq_length=self.flash_min_seq_length,
             mesh=self.mesh,
             dtype=self.dtype,
         )
@@ -305,7 +310,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     only_cross_attention=only_cross_attention[i],
                     use_memory_efficient_attention=self.use_memory_efficient_attention,
                     split_head_dim=self.split_head_dim,
-                    attention=self.attention,
+                    attention_kernel=self.attention_kernel,
+                    flash_min_seq_length=self.flash_min_seq_length,
                     mesh=self.mesh,
                     dtype=self.dtype,
                 )

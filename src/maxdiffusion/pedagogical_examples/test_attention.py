@@ -31,7 +31,7 @@ def run_time_comparison():
     heads,
     head_depth,
     split_head_dim = True,
-    attention="dot_product",
+    attention_kernel="dot_product",
     mesh=None,
     dtype=jnp.bfloat16
   )
@@ -58,7 +58,7 @@ def run_time_comparison():
     heads,
     head_depth,
     split_head_dim = False,
-    attention="flash",
+    attention_kernel="flash",
     mesh=mesh,
     dtype=jnp.bfloat16
   )

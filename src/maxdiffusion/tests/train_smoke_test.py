@@ -96,5 +96,33 @@ class Train(unittest.TestCase):
     dataset_dir = str(HOME_DIR / ".cache" / "huggingface" / "datasets")
     cleanup(dataset_dir)
 
+  def test_sd_2_base_flash(self):
+    output_dir="train-smoke-test"
+    train_main([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
+      "run_name=sd2_base_smoke_test","max_train_steps=21","dataset_name=lambdalabs/pokemon-blip-captions",
+      "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
+      "attention=flash"])
+
+    img_url = os.path.join(THIS_DIR,'images','test_2_base.png')
+    base_image = np.array(Image.open(img_url)).astype(np.uint8)
+
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base_inference.yml'),
+      f"pretrained_model_name_or_path={output_dir}",
+      "prompt=A magical castle in the middle of a forest, artistic drawing",
+      "negative_prompt=purple, red","guidance_scale=7.5",
+      "num_inference_steps=30","seed=47"])
+
+    images = generate_run(pyconfig.config)
+    test_image = np.array(images[0]).astype(np.uint8)
+    ssim_compare = ssim(base_image, test_image,
+      multichannel=True, channel_axis=-1, data_range=255
+    )
+    assert base_image.shape == test_image.shape
+    assert ssim_compare >=0.70
+
+    cleanup(output_dir)
+    dataset_dir = str(HOME_DIR / ".cache" / "huggingface" / "datasets")
+    cleanup(dataset_dir)
+
 if __name__ == '__main__':
   absltest.main()
