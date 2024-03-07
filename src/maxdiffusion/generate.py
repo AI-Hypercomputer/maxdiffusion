@@ -131,7 +131,7 @@ def run(config):
         config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
         safety_checker=None, feature_extractor=None,
         split_head_dim=config.split_head_dim, from_pt=config.from_pt,
-        attention=config.attention, mesh=mesh
+        attention_kernel=config.attention, mesh=mesh
     )
     scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
         config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
