@@ -121,7 +121,7 @@ def run(config):
     revision=config.revision,
     dtype=weight_dtype,
     split_head_dim=config.split_head_dim,
-    attention=config.attention,
+    attention_kernel=config.attention,
     mesh=mesh
   )
   scheduler_state = params.pop("scheduler")
