@@ -73,7 +73,8 @@ class Train(unittest.TestCase):
     output_dir="train-smoke-test"
     train_main([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
       "run_name=sd2_base_smoke_test","max_train_steps=21","dataset_name=lambdalabs/pokemon-blip-captions",
-      "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}"])
+      "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
+      "attention=dot_product"])
 
     img_url = os.path.join(THIS_DIR,'images','test_2_base.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
@@ -82,7 +83,7 @@ class Train(unittest.TestCase):
       f"pretrained_model_name_or_path={output_dir}",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=7.5",
-      "num_inference_steps=30","seed=47"])
+      "num_inference_steps=30","seed=47", "attention=dot_product"])
 
     images = generate_run(pyconfig.config)
     test_image = np.array(images[0]).astype(np.uint8)
@@ -110,7 +111,7 @@ class Train(unittest.TestCase):
       f"pretrained_model_name_or_path={output_dir}",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=7.5",
-      "num_inference_steps=30","seed=47"])
+      "num_inference_steps=30","seed=47", "attention=flash"])
 
     images = generate_run(pyconfig.config)
     test_image = np.array(images[0]).astype(np.uint8)
