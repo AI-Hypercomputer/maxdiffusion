@@ -148,7 +148,6 @@ class AttentionOp(nn.Module):
         x = x[:,:,:,:kv_size]
         x = self.reshape_heads_to_head_dim(x)
 
-        #x = jnp.transpose(x, axes=(0, 2, 1, 3))
         return x
 
     def apply_attention_dot(
