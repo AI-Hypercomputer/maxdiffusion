@@ -47,6 +47,7 @@ from tensorboardX import SummaryWriter
 from transformers import CLIPImageProcessor, set_seed
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import make_pokemon_train_iterator
+from maxdiffusion.models import quantizations
 
 def calculate_training_tflops(pipeline, params, config):
     vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
@@ -172,10 +173,12 @@ def train(config):
     total_train_batch_size = config.per_device_batch_size * jax.device_count()
 
     weight_dtype = max_utils.get_dtype(config)
+    quant = quantizations.configure_quantization(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
         safety_checker=None, feature_extractor=None, from_pt=config.from_pt,
-        split_head_dim=config.split_head_dim, attention_kernel=config.attention, mesh=mesh
+        split_head_dim=config.split_head_dim, attention_kernel=config.attention, mesh=mesh,
+        quant=quant
     )
 
     per_device_tflops = calculate_training_tflops(pipeline, params, config)
@@ -282,9 +285,16 @@ def train(config):
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
 
             # Predict the noise residual and compute loss
-            model_pred = pipeline.unet.apply(
-                {"params": unet_params}, noisy_latents, timesteps, encoder_hidden_states, train=True
-            ).sample
+            model_pred, intermediate_outputs = pipeline.unet.apply(
+                {"params": unet_params},
+                noisy_latents,
+                timesteps,
+                encoder_hidden_states,
+                train=True,
+                rngs={"params" : new_train_rng, "dropout" : new_train_rng},
+                mutable='intermediates'
+            )
+            model_pred = model_pred.sample
 
             # Get the target for loss depending on the prediction type
             if noise_scheduler.config.prediction_type == "epsilon":

@@ -18,7 +18,9 @@ import jax.numpy as jnp
 
 from .attention_flax import FlaxTransformer2DModel
 from .resnet_flax import FlaxDownsample2D, FlaxResnetBlock2D, FlaxUpsample2D
+from . import quantizations
 
+Quant = quantizations.AqtQuantization
 
 class FlaxCrossAttnDownBlock2D(nn.Module):
     r"""
@@ -49,6 +51,8 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
             Minimum seq length required to apply flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
     """
@@ -65,6 +69,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
     attention_kernel: str = "dot_product"
     flash_min_seq_length: int = 4096
     mesh: jax.sharding.Mesh = None
+    quant: Quant = None
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
 
@@ -95,6 +100,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 attention_kernel=self.attention_kernel,
                 flash_min_seq_length=self.flash_min_seq_length,
                 mesh=self.mesh,
+                quant=self.quant,
                 dtype=self.dtype,
             )
             attentions.append(attn_block)
@@ -206,6 +212,8 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
             Minimum seq length required to apply flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
     """
@@ -223,6 +231,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
     attention_kernel: str = "dot_product"
     flash_min_seq_length: int = 4096
     mesh: jax.sharding.Mesh = None
+    quant: Quant = None
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
 
@@ -254,6 +263,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 attention_kernel=self.attention_kernel,
                 flash_min_seq_length=self.flash_min_seq_length,
                 mesh=self.mesh,
+                quant=self.quant,
                 dtype=self.dtype,
             )
             attentions.append(attn_block)
@@ -365,6 +375,8 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
             Attention mechanism to be used.
         flash_min_seq_length (`int`, *optional*, defaults to 4096)
             Minimum seq length required to apply flash attention.
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
@@ -380,6 +392,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
     attention_kernel: str = "dot_product"
     flash_min_seq_length: int = 4096
     mesh: jax.sharding.Mesh = None
+    quant: Quant = None
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
 
@@ -408,6 +421,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 attention_kernel=self.attention_kernel,
                 flash_min_seq_length=self.flash_min_seq_length,
                 mesh=self.mesh,
+                quant=self.quant,
                 dtype=self.dtype,
             )
             attentions.append(attn_block)

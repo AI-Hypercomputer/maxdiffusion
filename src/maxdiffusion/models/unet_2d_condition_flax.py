@@ -30,6 +30,9 @@ from .unet_2d_blocks_flax import (
     FlaxUNetMidBlock2DCrossAttn,
     FlaxUpBlock2D,
 )
+from . import quantizations
+
+Quant = quantizations.AqtQuantization
 
 
 @flax.struct.dataclass
@@ -101,6 +104,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             Minimum seq length required to apply flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
     """
 
     sample_size: int = 32
@@ -129,13 +134,14 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     attention_kernel: str = "dot_product"
     flash_min_seq_length: int = 4096
     mesh: jax.sharding.Mesh = None
+    quant: Quant = None
     transformer_layers_per_block: Union[int, Tuple[int]] = 1
     addition_embed_type: Optional[str] = None
     addition_time_embed_dim: Optional[int] = None
     addition_embed_type_num_heads: int = 64
     projection_class_embeddings_input_dim: Optional[int] = None
 
-    def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
+    def init_weights(self, rng: jax.Array, eval_only: bool = False, quantization_enabled: bool = False) -> FrozenDict:
         # init input tensors
         no_devices = jax.device_count()
         sample_shape = (no_devices, self.in_channels, self.sample_size, self.sample_size)
@@ -145,7 +151,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
         params_rng, dropout_rng = jax.random.split(rng)
         rngs = {"params": params_rng, "dropout": dropout_rng}
-
+        if quantization_enabled:
+            rngs["aqt"] = params_rng
         added_cond_kwargs = None
         if self.addition_embed_type == "text_time":
             # we retrieve the expected `text_embeds_dim` by first checking if the architecture is a refiner
@@ -252,6 +259,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     attention_kernel=self.attention_kernel,
                     flash_min_seq_length=self.flash_min_seq_length,
                     mesh=self.mesh,
+                    quant=self.quant,
                     dtype=self.dtype,
                 )
             else:
@@ -279,6 +287,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             attention_kernel=self.attention_kernel,
             flash_min_seq_length=self.flash_min_seq_length,
             mesh=self.mesh,
+            quant=self.quant,
             dtype=self.dtype,
         )
 
@@ -313,6 +322,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     attention_kernel=self.attention_kernel,
                     flash_min_seq_length=self.flash_min_seq_length,
                     mesh=self.mesh,
+                    quant=self.quant,
                     dtype=self.dtype,
                 )
             else:
