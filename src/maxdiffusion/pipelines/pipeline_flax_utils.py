@@ -326,6 +326,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         attention_kernel = kwargs.pop("attention_kernel", "dot_product")
         flash_min_seq_length = kwargs.pop("flash_min_seq_length", 4096)
         mesh = kwargs.pop("mesh", None)
+        quant = kwargs.pop("quant", None)
         dtype = kwargs.pop("dtype", None)
 
         # 1. Download the checkpoints and configs
@@ -508,6 +509,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                         attention_kernel=attention_kernel,
                         flash_min_seq_length=flash_min_seq_length,
                         mesh=mesh,
+                        quant=quant,
                         dtype=dtype,
                     )
                     params[name] = loaded_params

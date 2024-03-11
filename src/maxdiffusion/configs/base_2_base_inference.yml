@@ -23,6 +23,10 @@ log_period: 100
 pretrained_model_name_or_path: 'sd-model-finetuned'
 revision: 'main'
 dtype: 'bfloat16'
+# leave empty for no quantization or int8 for quantization.
+quantization: 'int8'
+# Shard the range finding operation for quantization. By default this is set to number of slices.
+quantization_local_shard_count: -1
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
@@ -105,9 +109,10 @@ per_device_batch_size: 1
 cosine_learning_rate_final_fraction: 0.1 
 warmup_steps_fraction: 0.1
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
-
 # However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before 
 # dropping fully down. Or you may choose a shorter schedule, where the unspecified steps will have a learning rate of 0.
+
+compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
 
 # AdamW optimizer parameters
 adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradients.

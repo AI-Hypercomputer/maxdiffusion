@@ -255,7 +255,8 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
   return state, state_mesh_shardings
 
 def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, training=True):
-  unet_variables = jax.jit(pipeline.unet.init_weights)(rng)
+  quant_enabled = config.quantization is not None
+  unet_variables = jax.jit(pipeline.unet.init_weights, static_argnames=["quantization_enabled"])(rng, quantization_enabled=quant_enabled)
   unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, tx, config, mesh, unet_variables, training=training)
   del unet_variables
   unet_state, unet_state_mesh_shardings = setup_initial_state(
