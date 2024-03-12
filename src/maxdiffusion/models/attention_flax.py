@@ -22,7 +22,10 @@ from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
-from maxdiffusion import common_types
+from maxdiffusion import (
+  common_types,
+  max_logging
+)
 from . import quantizations
 
 Array = common_types.Array
@@ -78,8 +81,9 @@ class AttentionOp(nn.Module):
         decoder_segment_ids: Array | None = None
     ):
         self.check_attention_inputs(query, key, value)
-
-        can_use_flash_attention = query.shape[1] >= self.flash_min_seq_length and key.shape[1] >= self.flash_min_seq_length and value.shape[1] >= self.flash_min_seq_length
+        can_use_flash_attention = (query.shape[1] >= self.flash_min_seq_length 
+                                   and key.shape[1] >= self.flash_min_seq_length 
+                                   and value.shape[1] >= self.flash_min_seq_length)
 
         if self.attention_kernel == "dot_product" or self.use_memory_efficient_attention or not can_use_flash_attention:
             return self.apply_attention_dot(query, key, value)
@@ -146,10 +150,12 @@ class AttentionOp(nn.Module):
                                                               block_sizes = block_sizes)
             return jax.vmap(splash_kernel)(query,key,value, segment_ids = decoder_segment_ids)
         devices_in_data_fsdp = self.mesh.shape['data'] * self.mesh.shape['fsdp']
-        assert (query.shape[0] / devices_in_data_fsdp).is_integer(), (
-            'Batch dimension should be shardable among the devices in data and fsdp'
-            ' axis'
-        )
+        if not (query.shape[0] / devices_in_data_fsdp).is_integer():
+            max_logging.log(f"Warning, batch dimension should be shardable among the devices in data and fsdp"
+                            " axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}")
+            jax.debug.print("Warning, batch dimension should be shardable among the devices in data and fsdp"
+                            " axis, batch dimension: {x}, devices_in_data_fsdp: {y}",
+                            x=query.shape[0], y=devices_in_data_fsdp)
         x = wrap_flash_attention(query, key, value, decoder_segment_ids)
         x = x[:,:,:,:kv_size]
         x = self.reshape_heads_to_head_dim(x)

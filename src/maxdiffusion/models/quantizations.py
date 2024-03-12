@@ -37,6 +37,12 @@ class AqtQuantization:
       )
     return aqt_dg_cls
   
+  # def conv_general_cls(self):
+  #   """Return conv_general configured with aqt params. """
+  #   aqt_conv_cls = functools.partial(
+  #     aqt_flax.
+  #   )
+  
   def einsum(self):
     """ Returns einsum configured with aqt params """
     aqt_einsum = functools.partial(aqt_flax.AqtEinsum(
@@ -58,7 +64,7 @@ def _get_quant_config(config):
       drhs_bits = 8
       drhs_accumulator_dtype = jnp.int32
       drhs_local_aqt = aqt_config.LocalAqt(config.quantization_local_shard_count)
-    return aqt_config.config_v3(
+    return aqt_config.config_v4(
       fwd_bits=8,
       dlhs_bits=8,
       drhs_bits=drhs_bits,

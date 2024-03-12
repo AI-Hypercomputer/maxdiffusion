@@ -29,11 +29,13 @@ from maxdiffusion.max_utils import (
   get_states,
   device_put_replicated
 )
-from maxdiffusion import pyconfig
+from maxdiffusion import pyconfig, max_logging
+from maxdiffusion.models import quantizations
 from absl import app
 from maxdiffusion import (
   FlaxStableDiffusionPipeline,
-  FlaxDDIMScheduler
+  FlaxDDIMScheduler,
+  FlaxUNet2DConditionModel
 )
 from flax.linen import partitioning as nn_partitioning
 from jax.experimental.compilation_cache import compilation_cache as cc
@@ -41,6 +43,32 @@ from jax.sharding import Mesh, PositionalSharding
 from maxdiffusion.image_processor import VaeImageProcessor
 
 cc.initialize_cache(os.path.expanduser("~/jax_cache"))
+
+def aqt_serving_conversion(rng, config, batch_size, weight_dtype, pipeline, params):
+    (latents,
+     context,
+     _,
+     scheduler_state
+     ) = get_unet_inputs(rng, config, batch_size, pipeline, params)
+    
+    latents_input = jnp.concatenate([latents] * 2)
+    t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[0]
+    timestep = jnp.broadcast_to(t, latents_input.shape[0])
+
+    pipeline.unet.quant.quant_mode = quantizations.get_quant_mode("convert")
+
+    _, unet_params = pipeline.unet.apply(
+        {"params" : params["unet"]},
+        latents,
+        timestep.astype(jnp.int32),
+        encoder_hidden_states=context,
+        mutable=True,
+        rngs={"params" : jax.random.PRNGKey(0), "dropout" : jax.random.PRNGKey(0)}
+    )
+
+    params["unet"]["aqt"] = unet_params
+    pipeline.unet.quant.quant_mode = quantizations.get_quant_mode("serve")
+    return pipeline, params
 
 def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale):
     latents, scheduler_state, state = args
@@ -127,11 +155,13 @@ def run(config):
 
     weight_dtype=get_dtype(config)
 
+    quant = quantizations.configure_quantization(config)
+    
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
         safety_checker=None, feature_extractor=None,
         split_head_dim=config.split_head_dim, from_pt=config.from_pt,
-        attention_kernel=config.attention, mesh=mesh
+        attention_kernel=config.attention, mesh=mesh, quant=quant
     )
     scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
         config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
@@ -150,8 +180,11 @@ def run(config):
      vae_state,
      vae_state_mesh_shardings) = get_states(mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False)
     del params["vae"]
-    del params["unet"]
+    params["unet"] = unet_state.params
 
+    if config.quantization:
+        pipeline, params = aqt_serving_conversion(rng, config, batch_size, weight_dtype, pipeline, params)
+    breakpoint()
     def run_inference(unet_state, vae_state, params, rng, config, batch_size, pipeline):
 
         (latents,

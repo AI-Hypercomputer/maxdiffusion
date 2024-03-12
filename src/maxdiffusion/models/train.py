@@ -49,8 +49,9 @@ from transformers import CLIPImageProcessor, set_seed
 from maxdiffusion.input_pipeline.input_pipeline_interface import make_pokemon_train_iterator
 from maxdiffusion.models import quantizations
 
-def calculate_training_tflops(pipeline, params, config):
+def calculate_training_tflops(pipeline, unet_params, config):
     vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
+    
     batch_size = config.per_device_batch_size
 
     input_shape = (batch_size,
@@ -68,7 +69,17 @@ def calculate_training_tflops(pipeline, params, config):
                                     pipeline.text_encoder.config.max_position_embeddings,
                                     pipeline.text_encoder.config.hidden_size)
     encoder_hidden_states = jnp.zeros(encoder_hidden_states_shape)
-    c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : params["unet"]}, latents, timesteps, encoder_hidden_states).compile()
+    c_unet_apply = jax.jit(
+       pipeline.unet.apply,
+       static_argnames=["mutable"]
+       ).lower(
+          {"params" : unet_params},
+          latents,
+          timesteps,
+          encoder_hidden_states,
+          rngs={"params" : jax.random.PRNGKey(0)},
+          mutable='intermediates'
+          ).compile()
     return 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12)
 
 def get_first_step(state):
@@ -181,9 +192,6 @@ def train(config):
         quant=quant
     )
 
-    per_device_tflops = calculate_training_tflops(pipeline, params, config)
-    max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
-
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
 
@@ -219,6 +227,10 @@ def train(config):
                                                                 tx, rng, config,
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
+
+    per_device_tflops = calculate_training_tflops(pipeline, unet_state.params, config)
+    max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
+
 
     if config.dataset_name == "lambdalabs/pokemon-blip-captions":
         data_iterator = make_pokemon_train_iterator(
