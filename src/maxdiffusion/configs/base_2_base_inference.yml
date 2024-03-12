@@ -27,6 +27,7 @@ dtype: 'bfloat16'
 from_pt: False
 split_head_dim: True
 attention: 'dot_product' # Supported attention: dot_product, flash
+flash_block_sizes: {}
 
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"

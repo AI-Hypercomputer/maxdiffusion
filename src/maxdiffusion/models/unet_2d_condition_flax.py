@@ -31,6 +31,8 @@ from .unet_2d_blocks_flax import (
     FlaxUpBlock2D,
 )
 
+from ..common_types import BlockSizes
+
 
 @flax.struct.dataclass
 class FlaxUNet2DConditionOutput(BaseOutput):
@@ -99,6 +101,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             Attention mechanism to be used.
         flash_min_seq_length (`int`, *optional*, defaults to 4096)
             Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
     """
@@ -128,6 +132,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     split_head_dim: bool = False
     attention_kernel: str = "dot_product"
     flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     transformer_layers_per_block: Union[int, Tuple[int]] = 1
     addition_embed_type: Optional[str] = None
@@ -251,6 +256,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     split_head_dim=self.split_head_dim,
                     attention_kernel=self.attention_kernel,
                     flash_min_seq_length=self.flash_min_seq_length,
+                    flash_block_sizes=self.flash_block_sizes,
                     mesh=self.mesh,
                     dtype=self.dtype,
                 )
@@ -278,6 +284,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             split_head_dim=self.split_head_dim,
             attention_kernel=self.attention_kernel,
             flash_min_seq_length=self.flash_min_seq_length,
+            flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
         )
@@ -312,6 +319,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     split_head_dim=self.split_head_dim,
                     attention_kernel=self.attention_kernel,
                     flash_min_seq_length=self.flash_min_seq_length,
+                    flash_block_sizes=self.flash_block_sizes,
                     mesh=self.mesh,
                     dtype=self.dtype,
                 )

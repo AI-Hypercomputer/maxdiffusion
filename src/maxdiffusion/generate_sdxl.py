@@ -42,7 +42,8 @@ from maxdiffusion.max_utils import (
   get_states,
   activate_profiler,
   deactivate_profiler,
-  device_put_replicated
+  device_put_replicated,
+  get_flash_block_sizes
 )
 
 cc.initialize_cache(os.path.expanduser("~/jax_cache"))
@@ -114,14 +115,15 @@ def run(config):
 
   batch_size = config.per_device_batch_size * jax.device_count()
 
-  weight_dtype= get_dtype(config)
-
+  weight_dtype = get_dtype(config)
+  flash_block_sizes = get_flash_block_sizes(config)
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision,
     dtype=weight_dtype,
     split_head_dim=config.split_head_dim,
     attention_kernel=config.attention,
+    flash_block_sizes=flash_block_sizes,
     mesh=mesh
   )
   scheduler_state = params.pop("scheduler")

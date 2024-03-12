@@ -22,11 +22,12 @@ from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
-from maxdiffusion import common_types
+from ..import common_types, max_logging
 
 Array = common_types.Array
 Mesh = common_types.Mesh
 DType = common_types.DType
+BlockSizes = common_types.BlockSizes
 
 
 AxisNames = common_types.AxisNames
@@ -46,6 +47,7 @@ class AttentionOp(nn.Module):
     float32_qk_product: bool = True
     flash_axis_names: AxisNames = (BATCH, HEAD, LENGTH, D_KV)
     flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
     dtype: DType = jnp.float32
 
     def check_attention_inputs(
@@ -54,7 +56,6 @@ class AttentionOp(nn.Module):
         key: Array,
         value: Array
     ) -> None:
-
         """Check attention inputs."""
 
         assert key.ndim == value.ndim, 'k, v must have same rank.'
@@ -71,9 +72,12 @@ class AttentionOp(nn.Module):
         value: Array,
         decoder_segment_ids: Array | None = None
     ):
+        """Routes to different attention kernels."""
         self.check_attention_inputs(query, key, value)
 
-        can_use_flash_attention = query.shape[1] >= self.flash_min_seq_length and key.shape[1] >= self.flash_min_seq_length and value.shape[1] >= self.flash_min_seq_length
+        can_use_flash_attention = (query.shape[1] >= self.flash_min_seq_length
+                                   and key.shape[1] >= self.flash_min_seq_length
+                                   and value.shape[1] >= self.flash_min_seq_length)
 
         if self.attention_kernel == "dot_product" or self.use_memory_efficient_attention or not can_use_flash_attention:
             return self.apply_attention_dot(query, key, value)
@@ -121,16 +125,19 @@ class AttentionOp(nn.Module):
                     query.shape[2]
                     == decoder_segment_ids.q.shape[1]
                 ), 'Sharding along sequence dimension not allowed in tpu kernel attention'
-            block_sizes = splash_attention_kernel.BlockSizes(
-                block_q=min(512, query.shape[2]),
-                block_kv_compute=min(512, key.shape[2]),
-                block_kv=min(512, key.shape[2]),
-                block_q_dkv=min(512, query.shape[2]),
-                block_kv_dkv=min(512, key.shape[2]),
-                block_kv_dkv_compute=min(512, query.shape[2]),
-                block_q_dq=min(512, query.shape[2]),
-                block_kv_dq=min(512, query.shape[2]),
-            )
+            if self.flash_block_sizes:
+                block_sizes = self.flash_block_sizes
+            else:
+                block_sizes = splash_attention_kernel.BlockSizes(
+                    block_q=min(512, query.shape[2]),
+                    block_kv_compute=min(512, key.shape[2]),
+                    block_kv=min(512, key.shape[2]),
+                    block_q_dkv=min(512, query.shape[2]),
+                    block_kv_dkv=min(512, key.shape[2]),
+                    block_kv_dkv_compute=min(512, query.shape[2]),
+                    block_q_dq=min(512, query.shape[2]),
+                    block_kv_dq=min(512, query.shape[2]),
+                )
 
             masks = [splash_attention_mask.FullMask(_shape=(query.shape[2],query.shape[2])) for i in range(query.shape[1])]
             multi_head_mask = splash_attention_mask.MultiHeadMask(masks=masks)
@@ -140,10 +147,14 @@ class AttentionOp(nn.Module):
                                                               block_sizes = block_sizes)
             return jax.vmap(splash_kernel)(query,key,value, segment_ids = decoder_segment_ids)
         devices_in_data_fsdp = self.mesh.shape['data'] * self.mesh.shape['fsdp']
-        assert (query.shape[0] / devices_in_data_fsdp).is_integer(), (
-            'Batch dimension should be shardable among the devices in data and fsdp'
-            ' axis'
-        )
+        # This warning might show up when doing model eval for example, when calculating model flops
+        # and that is expected.
+        if not (query.shape[0] / devices_in_data_fsdp).is_integer():
+            max_logging.log("Warning, batch dimension should be shardable among the devices in data and fsdp"
+                            " axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}")
+            jax.debug.print("Warning, batch dimension should be shardable among the devices in data and fsdp"
+                            " axis, batch dimension: {x}, devices_in_data_fsdp: {y}",
+                            x=query.shape[0], y=devices_in_data_fsdp)
         x = wrap_flash_attention(query, key, value, decoder_segment_ids)
         x = x[:,:,:,:kv_size]
         x = self.reshape_heads_to_head_dim(x)
@@ -156,6 +167,7 @@ class AttentionOp(nn.Module):
         key: Array,
         value: Array
     ):
+        """Apply Attention."""
         if self.split_head_dim:
             b = key.shape[0]
             query_states = jnp.reshape(query, (b, -1, self.heads, self.dim_head))
@@ -367,6 +379,8 @@ class FlaxAttention(nn.Module):
             Attention mechanism to be used.
         flash_min_seq_length (`int`, *optional*, defaults to 4096)
             Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
@@ -381,6 +395,7 @@ class FlaxAttention(nn.Module):
     split_head_dim: bool = False
     attention_kernel: str = "dot_product"
     flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
     query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
@@ -404,7 +419,9 @@ class FlaxAttention(nn.Module):
             dim_head=self.dim_head,
             flash_min_seq_length=self.flash_min_seq_length,
             use_memory_efficient_attention=self.use_memory_efficient_attention,
-            split_head_dim=self.split_head_dim
+            split_head_dim=self.split_head_dim,
+            flash_block_sizes=self.flash_block_sizes,
+            dtype=self.dtype
         )
 
         qkv_init_kernel = nn.with_logical_partitioning(
@@ -499,6 +516,8 @@ class FlaxBasicTransformerBlock(nn.Module):
             Attention mechanism to be used.
         flash_min_seq_length (`int`, *optional*, defaults to 4096)
             Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
     """
@@ -512,6 +531,7 @@ class FlaxBasicTransformerBlock(nn.Module):
     split_head_dim: bool = False
     attention_kernel: str = "dot_product"
     flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
 
     def setup(self):
@@ -525,6 +545,7 @@ class FlaxBasicTransformerBlock(nn.Module):
             self.split_head_dim,
             attention_kernel=self.attention_kernel,
             flash_min_seq_length=self.flash_min_seq_length,
+            flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
         )
@@ -538,6 +559,7 @@ class FlaxBasicTransformerBlock(nn.Module):
             self.split_head_dim,
             attention_kernel=self.attention_kernel,
             flash_min_seq_length=self.flash_min_seq_length,
+            flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
         )
@@ -599,6 +621,8 @@ class FlaxTransformer2DModel(nn.Module):
             Attention mechanism to be used.
         flash_min_seq_length (`int`, *optional*, defaults to 4096)
             Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
     """
@@ -614,6 +638,7 @@ class FlaxTransformer2DModel(nn.Module):
     split_head_dim: bool = False
     attention_kernel: str = "dot_product"
     flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
 
     def setup(self):
@@ -652,6 +677,7 @@ class FlaxTransformer2DModel(nn.Module):
                 split_head_dim=self.split_head_dim,
                 attention_kernel=self.attention_kernel,
                 flash_min_seq_length=self.flash_min_seq_length,
+                flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh
             )
             for _ in range(self.depth)
