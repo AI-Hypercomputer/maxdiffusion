@@ -26,6 +26,18 @@ dtype: 'bfloat16'
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
+attention: 'flash' # Supported attention: dot_product, flash
+flash_block_sizes: {}
+# to override default block sizes for flash attention
+# flash_block_sizes:
+#   block_q: 64
+#   block_kv_compute: 64
+#   block_kv: 64
+#   block_q_dkv: 64
+#   block_kv_dkv: 64
+#   block_kv_dkv_compute: 64
+#   block_q_dq: 64
+#   block_kv_dq: 64
 
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"

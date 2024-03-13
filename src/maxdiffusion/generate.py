@@ -27,7 +27,8 @@ from maxdiffusion.max_utils import (
   create_device_mesh,
   get_dtype,
   get_states,
-  device_put_replicated
+  device_put_replicated,
+  get_flash_block_sizes
 )
 from maxdiffusion import pyconfig
 from absl import app
@@ -118,19 +119,20 @@ def vae_decode(latents, state, pipeline):
 
 def run(config):
     rng = jax.random.PRNGKey(config.seed)
-
     # Setup Mesh
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
 
     batch_size = jax.device_count() * config.per_device_batch_size
 
-    weight_dtype=get_dtype(config)
-
+    weight_dtype = get_dtype(config)
+    flash_block_sizes = get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
         safety_checker=None, feature_extractor=None,
-        split_head_dim=config.split_head_dim, from_pt=config.from_pt
+        split_head_dim=config.split_head_dim, from_pt=config.from_pt,
+        attention_kernel=config.attention, flash_block_sizes=flash_block_sizes,
+        mesh=mesh
     )
     scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
         config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32

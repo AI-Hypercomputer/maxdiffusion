@@ -49,6 +49,8 @@ from transformers import CLIPImageProcessor, set_seed
 from maxdiffusion.input_pipeline.input_pipeline_interface import make_pokemon_train_iterator
 
 def calculate_training_tflops(pipeline, params, config):
+    """Calculate per device training tflops (back and fwd pass)."""
+
     vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
     batch_size = config.per_device_batch_size
 
@@ -172,10 +174,17 @@ def train(config):
     total_train_batch_size = config.per_device_batch_size * jax.device_count()
 
     weight_dtype = max_utils.get_dtype(config)
+    flash_block_sizes = max_utils.get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
-        safety_checker=None, feature_extractor=None, from_pt=config.from_pt,
-        split_head_dim=config.split_head_dim
+        config.pretrained_model_name_or_path,revision=config.revision,
+        dtype=weight_dtype,
+        safety_checker=None,
+        feature_extractor=None,
+        from_pt=config.from_pt,
+        split_head_dim=config.split_head_dim,
+        attention_kernel=config.attention,
+        flash_block_sizes=flash_block_sizes,
+        mesh=mesh,
     )
 
     per_device_tflops = calculate_training_tflops(pipeline, params, config)

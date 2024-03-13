@@ -37,6 +37,7 @@ from jax.sharding import PositionalSharding
 from flax import struct
 from typing import Callable, Any
 from flax import core
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
 FrozenDict = core.frozen_dict.FrozenDict
 
@@ -332,6 +333,7 @@ def create_learning_rate_schedule(config):
   return optax.join_schedules(pieces, boundaries)
 
 def get_dtype(config):
+  """Get dtype from config."""
   dtype_str = config.dtype
   retval = jnp.bfloat16
   if dtype_str == "float32":
@@ -339,3 +341,19 @@ def get_dtype(config):
   if dtype_str == "float16":
     retval = jnp.float16
   return retval
+
+def get_flash_block_sizes(config):
+  """Create custom flash attention BlockSizes."""
+  flash_block_sizes = None
+  if len(config.flash_block_sizes.keys()) > 0:
+    flash_block_sizes = splash_attention_kernel.BlockSizes(
+      block_q=config.flash_block_sizes["block_q"],
+      block_kv_compute=config.flash_block_sizes["block_kv_compute"],
+      block_kv=config.flash_block_sizes["block_kv"],
+      block_q_dkv=config.flash_block_sizes["block_q_dkv"],
+      block_kv_dkv=config.flash_block_sizes["block_kv_dkv"],
+      block_kv_dkv_compute=config.flash_block_sizes["block_kv_dkv_compute"],
+      block_q_dq=config.flash_block_sizes["block_q_dq"],
+      block_kv_dq=config.flash_block_sizes["block_kv_dq"],
+    )
+  return flash_block_sizes

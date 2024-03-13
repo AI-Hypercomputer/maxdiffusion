@@ -19,6 +19,7 @@ from typing import Any, Sequence
 from flax.linen import partitioning
 import jax
 import jax.numpy as jnp
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
 Config = Any
 
@@ -29,6 +30,7 @@ Shape = Sequence[int]
 
 Mesh = jax.sharding.Mesh
 ScanIn = partitioning.ScanIn
+BlockSizes = splash_attention_kernel.BlockSizes
 
 AxisNames = tuple[str, ...]
 

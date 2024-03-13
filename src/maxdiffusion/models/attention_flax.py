@@ -18,13 +18,249 @@ import math
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+from jax.experimental import shard_map
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
-from maxdiffusion import common_types
+from ..import common_types, max_logging
+
+Array = common_types.Array
+Mesh = common_types.Mesh
+DType = common_types.DType
+BlockSizes = common_types.BlockSizes
+
 
 AxisNames = common_types.AxisNames
 BATCH = common_types.BATCH
 LENGTH = common_types.LENGTH
 HEAD = common_types.HEAD
+D_KV = common_types.D_KV
+
+class AttentionOp(nn.Module):
+    mesh: Mesh
+    attention_kernel: str
+    scale: int
+    heads: int
+    dim_head: int
+    use_memory_efficient_attention: bool = False
+    split_head_dim: bool = False
+    float32_qk_product: bool = True
+    flash_axis_names: AxisNames = (BATCH, HEAD, LENGTH, D_KV)
+    flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
+    dtype: DType = jnp.float32
+
+    def check_attention_inputs(
+        self,
+        query: Array,
+        key: Array,
+        value: Array
+    ) -> None:
+        """Check attention inputs."""
+
+        assert key.ndim == value.ndim, 'k, v must have same rank.'
+        assert query.shape[:-3] == key.shape[:-3] == value.shape[:-3], (
+            'q, k, v batch dims must match.')
+        assert key.shape[-2] == value.shape[-2], ('k, v num_kv_heads must match.')
+        assert key.shape[-3] == value.shape[-3], 'k, v lengths must match.'
+        assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
+
+    def apply_attention(
+        self,
+        query: Array,
+        key: Array,
+        value: Array,
+        decoder_segment_ids: Array | None = None
+    ):
+        """Routes to different attention kernels."""
+        self.check_attention_inputs(query, key, value)
+
+        can_use_flash_attention = (query.shape[1] >= self.flash_min_seq_length
+                                   and key.shape[1] >= self.flash_min_seq_length
+                                   and value.shape[1] >= self.flash_min_seq_length)
+
+        if self.attention_kernel == "dot_product" or self.use_memory_efficient_attention or not can_use_flash_attention:
+            return self.apply_attention_dot(query, key, value)
+        elif self.attention_kernel == "flash":
+            return self.tpu_flash_attention(query, key * self.scale, value, decoder_segment_ids)
+        else:
+            raise ValueError(f'Unexpected attention kernel {self.attention_kernel=}.')
+
+    def tpu_flash_attention(
+        self,
+        query: jax.Array,
+        key: jax.Array,
+        value: jax.Array,
+        decoder_segment_ids: Array | None) -> jax.Array:
+        """TPU Flash Attention"""
+
+        query, kv_size = self.reshape_data_for_flash(query)
+        key, _ = self.reshape_data_for_flash(key)
+        value, _ = self.reshape_data_for_flash(value)
+
+        if decoder_segment_ids is not None:
+            decoder_segment_ids = splash_attention_kernel.SegmentIds(
+            decoder_segment_ids, decoder_segment_ids
+            )
+        axis_names = nn.logical_to_mesh_axes(self.flash_axis_names)
+        segment_axis_names = nn.logical_to_mesh_axes(
+            (BATCH, 'activation_length_no_heads')
+        )
+
+        @functools.partial(
+            shard_map.shard_map,
+            mesh=self.mesh,
+            in_specs=(
+                axis_names,
+                axis_names,
+                axis_names,
+                segment_axis_names
+            ),
+            out_specs=axis_names,
+            check_rep=False
+        )
+        def wrap_flash_attention(query, key, value, decoder_segment_ids):
+            if decoder_segment_ids is not None:
+               assert (
+                    query.shape[2]
+                    == decoder_segment_ids.q.shape[1]
+                ), 'Sharding along sequence dimension not allowed in tpu kernel attention'
+            if self.flash_block_sizes:
+                block_sizes = self.flash_block_sizes
+            else:
+                block_sizes = splash_attention_kernel.BlockSizes(
+                    block_q=min(512, query.shape[2]),
+                    block_kv_compute=min(512, key.shape[2]),
+                    block_kv=min(512, key.shape[2]),
+                    block_q_dkv=min(512, query.shape[2]),
+                    block_kv_dkv=min(512, key.shape[2]),
+                    block_kv_dkv_compute=min(512, query.shape[2]),
+                    block_q_dq=min(512, query.shape[2]),
+                    block_kv_dq=min(512, query.shape[2]),
+                )
+
+            masks = [splash_attention_mask.FullMask(_shape=(query.shape[2],query.shape[2])) for i in range(query.shape[1])]
+            multi_head_mask = splash_attention_mask.MultiHeadMask(masks=masks)
+            splash_kernel = splash_attention_kernel.make_splash_mha(mask = multi_head_mask,
+                                                              head_shards = 1,
+                                                              q_seq_shards = 1,
+                                                              block_sizes = block_sizes)
+            return jax.vmap(splash_kernel)(query,key,value, segment_ids = decoder_segment_ids)
+        devices_in_data_fsdp = self.mesh.shape['data'] * self.mesh.shape['fsdp']
+        # This warning might show up when doing model eval for example, when calculating model flops
+        # and that is expected.
+        if not (query.shape[0] / devices_in_data_fsdp).is_integer():
+            max_logging.log("Warning, batch dimension should be shardable among the devices in data and fsdp"
+                            " axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}")
+            jax.debug.print("Warning, batch dimension should be shardable among the devices in data and fsdp"
+                            " axis, batch dimension: {x}, devices_in_data_fsdp: {y}",
+                            x=query.shape[0], y=devices_in_data_fsdp)
+        x = wrap_flash_attention(query, key, value, decoder_segment_ids)
+        x = x[:,:,:,:kv_size]
+        x = self.reshape_heads_to_head_dim(x)
+
+        return x
+
+    def apply_attention_dot(
+        self,
+        query: Array,
+        key: Array,
+        value: Array
+    ):
+        """Apply Attention."""
+        if self.split_head_dim:
+            b = key.shape[0]
+            query_states = jnp.reshape(query, (b, -1, self.heads, self.dim_head))
+            key_states = jnp.reshape(key, (b, -1, self.heads, self.dim_head))
+            value_states = jnp.reshape(value, (b, -1, self.heads, self.dim_head))
+        else:
+            query_states = self.reshape_heads_to_batch_dim(query)
+            key_states = self.reshape_heads_to_batch_dim(key)
+            value_states = self.reshape_heads_to_batch_dim(value)
+
+        if self.float32_qk_product:
+            query_states = query_states.astype(jnp.float32)
+            key_states = key_states.astype(jnp.float32)
+
+        if self.use_memory_efficient_attention:
+            query_states = query_states.transpose(1, 0, 2)
+            key_states = key_states.transpose(1, 0, 2)
+            value_states = value_states.transpose(1, 0, 2)
+
+            # this if statement create a chunk size for each layer of the unet
+            # the chunk size is equal to the query_length dimension of the deepest layer of the unet
+
+            flatten_latent_dim = query_states.shape[-3]
+            if flatten_latent_dim % 64 == 0:
+                query_chunk_size = int(flatten_latent_dim / 64)
+            elif flatten_latent_dim % 16 == 0:
+                query_chunk_size = int(flatten_latent_dim / 16)
+            elif flatten_latent_dim % 4 == 0:
+                query_chunk_size = int(flatten_latent_dim / 4)
+            else:
+                query_chunk_size = int(flatten_latent_dim)
+
+            hidden_states = jax_memory_efficient_attention(
+                query_states, key_states, value_states, query_chunk_size=query_chunk_size, key_chunk_size=4096 * 4
+            )
+
+            hidden_states = hidden_states.transpose(1, 0, 2)
+        else:
+            if self.split_head_dim:
+                attention_scores = jnp.einsum("b t n h, b f n h -> b n f t", key_states, query_states)
+            else:
+                attention_scores = jnp.einsum("b i d, b j d->b i j", query_states, key_states)
+
+            attention_scores = attention_scores * self.scale
+            attention_probs = nn.softmax(attention_scores, axis=-1 if self.split_head_dim else 2)
+
+            attention_probs = attention_probs.astype(self.dtype)
+
+            # attend to values
+            if self.split_head_dim:
+                hidden_states = jnp.einsum("b n f t, b t n h -> b f n h", attention_probs, value_states)
+                b = hidden_states.shape[0]
+                hidden_states = jnp.reshape(hidden_states, (b, -1, self.heads * self.dim_head))
+            else:
+                hidden_states = jnp.einsum("b i j, b j d -> b i d", attention_probs, value_states)
+                hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
+
+        return hidden_states
+
+    def reshape_heads_to_batch_dim(self, tensor):
+        batch_size, seq_len, dim = tensor.shape
+        head_size = self.heads
+        tensor = tensor.reshape(batch_size, seq_len, head_size, dim // head_size)
+        tensor = jnp.transpose(tensor, (0, 2, 1, 3))
+        tensor = tensor.reshape(batch_size * head_size, seq_len, dim // head_size)
+        return tensor
+
+    def reshape_batch_dim_to_heads(self, tensor):
+        batch_size, seq_len, dim = tensor.shape
+        head_size = self.heads
+        tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
+        tensor = jnp.transpose(tensor, (0, 2, 1, 3))
+        tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
+        return tensor
+
+    def reshape_data_for_flash(self, tensor):
+        # reshapes from [b, s, h * d] to [b, h, s, d] (input format to flash format)
+        batch, seq, heads_and_dim_head = tensor.shape
+        tensor = tensor.reshape(batch, seq, self.heads , heads_and_dim_head // self.heads)
+        # Transpose to ('batch', 'heads', 'length', 'kv')
+        tensor = jnp.transpose(tensor, (0, 2, 1, 3))
+        kv_size = tensor.shape[-1]
+        if kv_size < 128:
+            npad = ((0,0),(0,0),(0,0),(0,128 - kv_size))
+            tensor = jnp.pad(tensor, npad)
+        return tensor, kv_size
+
+    def reshape_heads_to_head_dim(self, tensor):
+        # takes a tensor of shape [b, h, s, d] and reshapes to [b, s, h * d]
+        # This is used to transform the output of flash attention back into the format of other attention outputs
+        b, h, s, d = tensor.shape
+        tensor = jnp.transpose(tensor, axes=[0,2,1,3])
+        return jnp.reshape(tensor, (b, -1, h * d))
 
 def _query_chunk_attention(query, key, value, precision, key_chunk_size: int = 4096):
     """Multi-head dot product attention with a limited number of queries."""
@@ -121,7 +357,6 @@ def jax_memory_efficient_attention(
 
     return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
 
-
 class FlaxAttention(nn.Module):
     r"""
     A Flax multi-head attention module as described in: https://arxiv.org/abs/1706.03762
@@ -140,6 +375,14 @@ class FlaxAttention(nn.Module):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
+            Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
+        mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
+            jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
 
@@ -150,6 +393,10 @@ class FlaxAttention(nn.Module):
     dropout: float = 0.0
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
+    mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
     query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
     key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
@@ -157,8 +404,25 @@ class FlaxAttention(nn.Module):
     out_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
 
     def setup(self):
+
+        if self.attention_kernel == "flash" and self.mesh is None:
+            raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
+
         inner_dim = self.dim_head * self.heads
-        self.scale = self.dim_head**-0.5
+        scale = self.dim_head**-0.5
+
+        self.attention_op = AttentionOp(
+            mesh=self.mesh,
+            attention_kernel=self.attention_kernel,
+            scale=scale,
+            heads=self.heads,
+            dim_head=self.dim_head,
+            flash_min_seq_length=self.flash_min_seq_length,
+            use_memory_efficient_attention=self.use_memory_efficient_attention,
+            split_head_dim=self.split_head_dim,
+            flash_block_sizes=self.flash_block_sizes,
+            dtype=self.dtype
+        )
 
         qkv_init_kernel = nn.with_logical_partitioning(
             nn.initializers.lecun_normal(),
@@ -198,22 +462,6 @@ class FlaxAttention(nn.Module):
             name="to_out_0")
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
-    def reshape_heads_to_batch_dim(self, tensor):
-        batch_size, seq_len, dim = tensor.shape
-        head_size = self.heads
-        tensor = tensor.reshape(batch_size, seq_len, head_size, dim // head_size)
-        tensor = jnp.transpose(tensor, (0, 2, 1, 3))
-        tensor = tensor.reshape(batch_size * head_size, seq_len, dim // head_size)
-        return tensor
-
-    def reshape_batch_dim_to_heads(self, tensor):
-        batch_size, seq_len, dim = tensor.shape
-        head_size = self.heads
-        tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
-        tensor = jnp.transpose(tensor, (0, 2, 1, 3))
-        tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
-        return tensor
-
     def __call__(self, hidden_states, context=None, deterministic=True):
         context = hidden_states if context is None else context
         query_proj = self.query(hidden_states)
@@ -233,63 +481,7 @@ class FlaxAttention(nn.Module):
             self.value_axis_names
         )
 
-        if self.split_head_dim:
-            b = hidden_states.shape[0]
-            query_states = jnp.reshape(query_proj, (b, -1, self.heads, self.dim_head))
-            key_states = jnp.reshape(key_proj, (b, -1, self.heads, self.dim_head))
-            value_states = jnp.reshape(value_proj, (b, -1, self.heads, self.dim_head))
-        else:
-            query_states = self.reshape_heads_to_batch_dim(query_proj)
-            key_states = self.reshape_heads_to_batch_dim(key_proj)
-            value_states = self.reshape_heads_to_batch_dim(value_proj)
-
-        # Attn stability
-        query_states = jnp.float32(query_states)
-        key_states = jnp.float32(key_states)
-
-        if self.use_memory_efficient_attention:
-            query_states = query_states.transpose(1, 0, 2)
-            key_states = key_states.transpose(1, 0, 2)
-            value_states = value_states.transpose(1, 0, 2)
-
-            # this if statement create a chunk size for each layer of the unet
-            # the chunk size is equal to the query_length dimension of the deepest layer of the unet
-
-            flatten_latent_dim = query_states.shape[-3]
-            if flatten_latent_dim % 64 == 0:
-                query_chunk_size = int(flatten_latent_dim / 64)
-            elif flatten_latent_dim % 16 == 0:
-                query_chunk_size = int(flatten_latent_dim / 16)
-            elif flatten_latent_dim % 4 == 0:
-                query_chunk_size = int(flatten_latent_dim / 4)
-            else:
-                query_chunk_size = int(flatten_latent_dim)
-
-            hidden_states = jax_memory_efficient_attention(
-                query_states, key_states, value_states, query_chunk_size=query_chunk_size, key_chunk_size=4096 * 4
-            )
-
-            hidden_states = hidden_states.transpose(1, 0, 2)
-        else:
-            # compute attentions
-            if self.split_head_dim:
-                attention_scores = jnp.einsum("b t n h, b f n h -> b n f t", key_states, query_states)
-            else:
-                attention_scores = jnp.einsum("b i d, b j d->b i j", query_states, key_states)
-
-            attention_scores = attention_scores * self.scale
-            attention_probs = nn.softmax(attention_scores, axis=-1 if self.split_head_dim else 2)
-
-            attention_probs = jnp.asarray(attention_probs, dtype=self.dtype)
-
-            # attend to values
-            if self.split_head_dim:
-                hidden_states = jnp.einsum("b n f t, b t n h -> b f n h", attention_probs, value_states)
-                b = hidden_states.shape[0]
-                hidden_states = jnp.reshape(hidden_states, (b, -1, self.heads * self.dim_head))
-            else:
-                hidden_states = jnp.einsum("b i j, b j d -> b i d", attention_probs, value_states)
-                hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
+        hidden_states = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
         hidden_states = self.proj_attn(hidden_states)
         hidden_states = nn.with_logical_constraint(hidden_states,(BATCH, LENGTH, HEAD))
@@ -320,6 +512,14 @@ class FlaxBasicTransformerBlock(nn.Module):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
+            Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
+        mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
+            jax mesh is required if attention is set to flash.
     """
     dim: int
     n_heads: int
@@ -329,6 +529,10 @@ class FlaxBasicTransformerBlock(nn.Module):
     dtype: jnp.dtype = jnp.float32
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
+    mesh: jax.sharding.Mesh = None
 
     def setup(self):
         # self attention (or cross_attention if only_cross_attention is True)
@@ -339,6 +543,10 @@ class FlaxBasicTransformerBlock(nn.Module):
             self.dropout,
             self.use_memory_efficient_attention,
             self.split_head_dim,
+            attention_kernel=self.attention_kernel,
+            flash_min_seq_length=self.flash_min_seq_length,
+            flash_block_sizes=self.flash_block_sizes,
+            mesh=self.mesh,
             dtype=self.dtype,
         )
         # cross attention
@@ -349,6 +557,10 @@ class FlaxBasicTransformerBlock(nn.Module):
             self.dropout,
             self.use_memory_efficient_attention,
             self.split_head_dim,
+            attention_kernel=self.attention_kernel,
+            flash_min_seq_length=self.flash_min_seq_length,
+            flash_block_sizes=self.flash_block_sizes,
+            mesh=self.mesh,
             dtype=self.dtype,
         )
         self.ff = FlaxFeedForward(dim=self.dim, dropout=self.dropout, dtype=self.dtype)
@@ -405,6 +617,14 @@ class FlaxTransformer2DModel(nn.Module):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
+            Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
+        mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
+            jax mesh is required if attention is set to flash.
     """
     in_channels: int
     n_heads: int
@@ -416,6 +636,10 @@ class FlaxTransformer2DModel(nn.Module):
     dtype: jnp.dtype = jnp.float32
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
+    mesh: jax.sharding.Mesh = None
 
     def setup(self):
         self.norm = nn.GroupNorm(num_groups=32, epsilon=1e-5)
@@ -451,6 +675,10 @@ class FlaxTransformer2DModel(nn.Module):
                 dtype=self.dtype,
                 use_memory_efficient_attention=self.use_memory_efficient_attention,
                 split_head_dim=self.split_head_dim,
+                attention_kernel=self.attention_kernel,
+                flash_min_seq_length=self.flash_min_seq_length,
+                flash_block_sizes=self.flash_block_sizes,
+                mesh=self.mesh
             )
             for _ in range(self.depth)
         ]

@@ -16,6 +16,7 @@
 
 # pylint: disable=missing-module-docstring
 import os
+import json
 import sys
 from collections import OrderedDict
 from typing import Any, Union
@@ -54,6 +55,10 @@ class _HyperParameters():
 
     raw_keys = OrderedDict()
     for k in raw_data_from_yaml:
+      # support command line json to dict
+      if k in raw_data_from_cmd_line and type(raw_data_from_yaml[k]) is dict and not isinstance(raw_data_from_cmd_line[k], type(raw_data_from_yaml[k])):
+        raw_data_from_cmd_line[k] = json.loads(raw_data_from_cmd_line[k])
+
       if k in raw_data_from_cmd_line and not isinstance(raw_data_from_cmd_line[k], type(raw_data_from_yaml[k])) and \
                                          type(raw_data_from_yaml[k]) not in _yaml_types_to_parser:
         raise ValueError(
