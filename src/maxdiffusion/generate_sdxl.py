@@ -43,10 +43,14 @@ from maxdiffusion.max_utils import (
   activate_profiler,
   deactivate_profiler,
   device_put_replicated,
-  get_flash_block_sizes
+  get_flash_block_sizes,
+  delete_pytree,
+)
+from maxdiffusion.maxdiffusion_utils import (
+  load_sdxllightning_unet
 )
 
-cc.initialize_cache(os.path.expanduser("~/jax_cache"))
+cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
 def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale):
   latents, scheduler_state, state = args
@@ -126,9 +130,15 @@ def run(config):
     flash_block_sizes=flash_block_sizes,
     mesh=mesh
   )
+
+  if config.lightning_repo:
+    pipeline, params = load_sdxllightning_unet(config, pipeline, params)
+
   scheduler_state = params.pop("scheduler")
-  params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
+  old_params = params
+  params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), old_params)
   params["scheduler"] = scheduler_state
+  delete_pytree(old_params)
 
   data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
 
