@@ -21,7 +21,7 @@ from .models.modeling_flax_pytorch_utils import convert_pytorch_state_dict_to_fl
 def load_sdxllightning_unet(config, pipeline, params):
   """Load lightning """
   if not config.lightning_from_pt:
-    raise ValueError(f"Only loading lightning models from Pytorch is currently supported.")
+    raise ValueError("Only loading lightning models from Pytorch is currently supported.")
   unet_lightning_state_dict = load_file(hf_hub_download(config.lightning_repo, config.lightning_ckpt), device="cpu")
   flax_unet_dict = convert_pytorch_state_dict_to_flax(unet_lightning_state_dict, pipeline.unet)
   params["unet"] = flax_unet_dict
