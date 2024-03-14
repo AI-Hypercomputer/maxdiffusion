@@ -119,3 +119,8 @@ negative_prompt: "purple, red"
 guidance_scale: 9
 num_inference_steps: 20
 seed: 47
+
+# SDXL Lightning parameters
+lightning_from_pt: True
+lightning_repo: ""
+lightning_ckpt: ""
