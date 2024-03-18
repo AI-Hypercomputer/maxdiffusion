@@ -26,7 +26,7 @@ dtype: 'bfloat16'
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
-attention: 'dot_product' # Supported attention: dot_product, flash
+attention: 'flash' # Supported attention: dot_product, flash
 flash_block_sizes: {}
 
 # Output directory
@@ -114,13 +114,13 @@ skip_first_n_steps_for_profiler: 1
 profiler_steps: 5
 
 # Generation parameters
-prompt: "A magical castle in the middle of a forest, artistic drawing"
+prompt: "portrait photo of muscular bearded guy in a worn mech suit, light bokeh, intricate, steel metal, elegant, sharp focus, soft lighting, vibrant colors"
 negative_prompt: "purple, red"
-guidance_scale: 9
-num_inference_steps: 20
+guidance_scale: 2
+num_inference_steps: 4
 seed: 47
 
 # SDXL Lightning parameters
 lightning_from_pt: True
-lightning_repo: ""
-lightning_ckpt: ""
+lightning_repo: "ByteDance/SDXL-Lightning"
+lightning_ckpt: "sdxl_lightning_4step_unet.safetensors"

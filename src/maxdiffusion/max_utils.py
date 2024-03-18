@@ -256,7 +256,7 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
   return state, state_mesh_shardings
 
 def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, training=True):
-  unet_variables = jax.jit(pipeline.unet.init_weights)(rng)
+  unet_variables = pipeline.unet.init_weights(rng, eval_only=True)
   unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, tx, config, mesh, unet_variables, training=training)
   del unet_variables
   unet_state, unet_state_mesh_shardings = setup_initial_state(
@@ -268,7 +268,6 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
   unboxed_abstract_state,
   state_mesh_annotations,
   training=training)
-
   vae_variables = jax.jit(pipeline.vae.init_weights)(rng)
   unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.vae, tx, config, mesh, vae_variables, training=training)
   del vae_variables
@@ -357,3 +356,14 @@ def get_flash_block_sizes(config):
       block_kv_dq=config.flash_block_sizes["block_kv_dq"],
     )
   return flash_block_sizes
+
+def delete_pytree(to_delete):
+  jax.tree_util.tree_map(lambda x: x.delete(), to_delete)
+
+def get_memory_allocations():
+  devices = jax.local_devices()
+  gb = 10**9
+  for device in devices:
+    m_stats = device.memory_stats()
+    max_logging.log(f'device : {device.process_index},'
+                    f'bytes in use: {m_stats["bytes_in_use"] / gb} / {m_stats["bytes_limit"] / gb} GB')
