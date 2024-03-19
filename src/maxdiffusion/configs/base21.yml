@@ -71,7 +71,7 @@ ici_tensor_parallelism: 1
 
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
-dataset_name: 'lambdalabs/pokemon-blip-captions'
+dataset_name: ''
 train_data_dir: ''
 dataset_config_name: ''
 cache_dir: ''

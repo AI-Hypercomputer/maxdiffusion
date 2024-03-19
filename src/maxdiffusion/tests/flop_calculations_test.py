@@ -30,7 +30,7 @@ class FlopCalculation(unittest.TestCase):
     vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) - 1)
     embedding_dim = config.resolution // vae_scale_factor
     calculated_tflops = scale_factor * embedding_dim**2 * config.per_device_batch_size * unet_param_count / 10**12
-    training_tflops = calculate_training_tflops(pipeline, params, config)
+    training_tflops = calculate_training_tflops(pipeline, params["unet"], config)
 
     # 5 percent error tolerance
     assert abs(1 -(training_tflops/calculated_tflops)) * 100 < 5
@@ -39,7 +39,7 @@ class FlopCalculation(unittest.TestCase):
                          "per_device_batch_size=2"])
 
     calculated_tflops = scale_factor * embedding_dim**2 * config.per_device_batch_size * unet_param_count / 10**12
-    training_tflops = calculate_training_tflops(pipeline, params, config)
+    training_tflops = calculate_training_tflops(pipeline, params["unet"], config)
 
     assert abs(1 -(training_tflops/calculated_tflops)) * 100 < 5
 
@@ -47,7 +47,7 @@ class FlopCalculation(unittest.TestCase):
                          "per_device_batch_size=4"])
 
     calculated_tflops = scale_factor * embedding_dim**2 * config.per_device_batch_size * unet_param_count / 10**12
-    training_tflops = calculate_training_tflops(pipeline, params, config)
+    training_tflops = calculate_training_tflops(pipeline, params["unet"], config)
 
     assert abs(1 -(training_tflops/calculated_tflops)) * 100 < 5
 
@@ -55,7 +55,7 @@ class FlopCalculation(unittest.TestCase):
                          "per_device_batch_size=8"])
 
     calculated_tflops = scale_factor * embedding_dim**2 * config.per_device_batch_size * unet_param_count / 10**12
-    training_tflops = calculate_training_tflops(pipeline, params, config)
+    training_tflops = calculate_training_tflops(pipeline, params["unet"], config)
 
     assert abs(1 -(training_tflops/calculated_tflops)) * 100 < 5
 

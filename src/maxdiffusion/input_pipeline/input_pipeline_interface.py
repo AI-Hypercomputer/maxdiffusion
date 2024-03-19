@@ -19,6 +19,7 @@ import functools
 import math
 import numpy as np
 import tensorflow as tf
+import tensorflow.experimental.numpy as tnp
 from datasets import load_dataset
 import jax
 import jax.numpy as jnp
@@ -45,13 +46,16 @@ def encode(input_ids, text_encoder, text_encoder_params):
     train=False
   )[0]
 
-
+# TODO - https://github.com/google/array_record/blob/main/beam/examples/example_gcs_conversion.py
 def make_laion400m_train_iterator(
     config,
     mesh,
     global_batch_size,
 ):
-
+  """Iterator for Laion dataset.
+  To see how to prepare this dataset, look at
+  maxdiffusion/pedagogical_examples/to_tfrecords.py
+  """
   feature_description = {
     "latents" : tf.io.FixedLenFeature([], tf.string),
     "hidden_states" : tf.io.FixedLenFeature([], tf.string)
@@ -59,11 +63,10 @@ def make_laion400m_train_iterator(
 
   def _parse_tfrecord_fn(example):
     return tf.io.parse_single_example(example, feature_description)
-  
+
   def prepare_sample(features):
-    breakpoint()
-    latents = tf.io.parse_tensor(features["latents"].numpy(), out_type=tf.float32)
-    hidden_states = tf.io.parse_tensor(features["hidden_states"].numpy(), out_type=tf.float32)
+    latents = tf.io.parse_tensor(tnp.asarray(features["latents"]), out_type=tf.float32)
+    hidden_states = tf.io.parse_tensor(tnp.asarray(features["hidden_states"]), out_type=tf.float32)
     return {"pixel_values" : latents, "input_ids" : hidden_states}
 
   filenames = tf.io.gfile.glob(os.path.join(config.train_data_dir,"*"))

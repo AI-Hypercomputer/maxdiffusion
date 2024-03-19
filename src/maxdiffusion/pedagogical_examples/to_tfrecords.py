@@ -97,9 +97,9 @@ def create_example(latent, hidden_states):
     return example.SerializeToString()
 
 def generate_dataset(config, pipeline, p_encode):
-  
+
   tfrecords_dir=config.tfrecords_dir
-  
+
   if not os.path.exists(tfrecords_dir):
     os.makedirs(tfrecords_dir)  # creating TFRecords output folder
 
@@ -133,7 +133,7 @@ def encode(input_ids, text_encoder, text_encoder_params):
   )[0]
 
 def run(config):
-   
+
   weight_dtype = max_utils.get_dtype(config)
   pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
     config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
