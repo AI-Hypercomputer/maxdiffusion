@@ -46,7 +46,10 @@ from jax.sharding import PartitionSpec as P, PositionalSharding
 from tensorboardX import SummaryWriter
 from transformers import CLIPImageProcessor, set_seed
 
-from maxdiffusion.input_pipeline.input_pipeline_interface import make_pokemon_train_iterator
+from maxdiffusion.input_pipeline.input_pipeline_interface import (
+  make_pokemon_train_iterator,
+  make_laion400m_train_iterator
+)
 
 def calculate_training_tflops(pipeline, params, config):
     """Calculate per device training tflops (back and fwd pass)."""
@@ -236,7 +239,9 @@ def train(config):
            rng
         )
     else:
-        raise Exception(f"dataset {config.dataset_name} is not currently supported.")
+        data_iterator = make_laion400m_train_iterator(
+           config, mesh, total_train_batch_size
+        )
 
     if config.cache_latents_text_encoder_outputs:
        vae_state = None
