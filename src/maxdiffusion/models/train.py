@@ -46,9 +46,12 @@ from jax.sharding import PartitionSpec as P, PositionalSharding
 from tensorboardX import SummaryWriter
 from transformers import CLIPImageProcessor, set_seed
 
-from maxdiffusion.input_pipeline.input_pipeline_interface import make_pokemon_train_iterator
+from maxdiffusion.input_pipeline.input_pipeline_interface import (
+  make_pokemon_train_iterator,
+  make_laion400m_train_iterator
+)
 
-def calculate_training_tflops(pipeline, params, config):
+def calculate_training_tflops(pipeline, unet_params, config):
     """Calculate per device training tflops (back and fwd pass)."""
 
     vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
@@ -69,7 +72,7 @@ def calculate_training_tflops(pipeline, params, config):
                                     pipeline.text_encoder.config.max_position_embeddings,
                                     pipeline.text_encoder.config.hidden_size)
     encoder_hidden_states = jnp.zeros(encoder_hidden_states_shape)
-    c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : params["unet"]}, latents, timesteps, encoder_hidden_states).compile()
+    c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : unet_params}, latents, timesteps, encoder_hidden_states).compile()
     return 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12)
 
 def get_first_step(state):
@@ -187,9 +190,6 @@ def train(config):
         mesh=mesh,
     )
 
-    per_device_tflops = calculate_training_tflops(pipeline, params, config)
-    max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
-
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
 
@@ -226,6 +226,10 @@ def train(config):
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
 
+    per_device_tflops = calculate_training_tflops(pipeline, unet_state.params, config)
+    max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
+
+
     if config.dataset_name == "lambdalabs/pokemon-blip-captions":
         data_iterator = make_pokemon_train_iterator(
            config,
@@ -236,7 +240,9 @@ def train(config):
            rng
         )
     else:
-        raise Exception(f"dataset {config.dataset_name} is not currently supported.")
+        data_iterator = make_laion400m_train_iterator(
+           config, mesh, total_train_batch_size
+        )
 
     if config.cache_latents_text_encoder_outputs:
        vae_state = None
@@ -290,6 +296,10 @@ def train(config):
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
 
+            # TODO - laion dataset was prepared with an extra dim.
+            # need to preprocess the dataset with dim removed.
+            if len(encoder_hidden_states.shape) == 4:
+                encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
                 {"params": unet_params}, noisy_latents, timesteps, encoder_hidden_states, train=True
