@@ -1,3 +1,6 @@
+jax>=0.4.23
+jaxlib>=0.4.23
+google-cloud-storage
 absl-py
 transformers>=4.25.1
 datasets
@@ -7,7 +10,8 @@ torch
 torchvision
 ftfy
 tensorboard
-tensorboardX
+tensorboardx
+tensorboard-plugin-profile
 Jinja2
 scikit-image
 parameterized
@@ -16,3 +20,4 @@ pytest
 tensorflow==2.15.0
 tensorflow-datasets
 ruff>=0.1.5<=0.2
+git+https://github.com/mlperf/logging.git

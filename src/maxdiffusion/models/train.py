@@ -33,7 +33,8 @@ from maxdiffusion import (
     FlaxAutoencoderKL,
     max_logging,
     max_utils,
-    pyconfig
+    pyconfig,
+    mllog_utils,
 )
 
 from transformers import FlaxCLIPTextModel
@@ -43,7 +44,6 @@ from flax.linen import partitioning as nn_partitioning
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
-from tensorboardX import SummaryWriter
 from transformers import CLIPImageProcessor, set_seed
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
@@ -73,6 +73,7 @@ def calculate_training_tflops(pipeline, unet_params, config):
                                     pipeline.text_encoder.config.hidden_size)
     encoder_hidden_states = jnp.zeros(encoder_hidden_states_shape)
     c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : unet_params}, latents, timesteps, encoder_hidden_states).compile()
+
     return 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12)
 
 def get_first_step(state):
@@ -113,7 +114,34 @@ def record_scalar_metrics(metrics, step_time_delta, per_device_tflops, lr):
   })
   metrics['scalar'].update({'learning/current_learning_rate': lr })
 
-def write_metrics(writer, metrics, step, config):
+_buffered_step = None
+_buffered_metrics = None
+def write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, step, config):
+  """Entry point for all metrics writing in Train's Main.
+     TODO: would be better as a Class in the future (that initialized all state!)
+
+     To avoid introducing an unnecessary dependency, we "double buffer" -- we hold
+     onto the last metrics and step and only publish when we receive a new metrics and step.
+     The logic is that this ensures that Jax is able to queues train_steps and we
+     don't block when turning "lazy" Jax arrays into real Python numbers.
+  """
+  global _buffered_step, _buffered_metrics
+
+  if _buffered_metrics is not None:
+    if _buffered_step is None:
+      raise ValueError(f"When writing metrics, {_buffered_step=} was none")
+    write_metrics_to_tensorboard(writer, _buffered_metrics, _buffered_step, config)
+
+    if config.metrics_file:
+      max_utils.write_metrics_locally(_buffered_metrics, _buffered_step, config, local_metrics_file)
+
+    if config.gcs_metrics and jax.process_index() == 0:
+      running_gcs_metrics = max_utils.write_metrics_for_gcs(_buffered_metrics, _buffered_step, config, running_gcs_metrics)
+
+  _buffered_step = step
+  _buffered_metrics = metrics
+
+def write_metrics_to_tensorboard(writer, metrics, step, config):
   """Writes metrics to tensorboard"""
   with jax.spmd_mode('allow_all'):
     if jax.process_index() == 0:
@@ -123,10 +151,10 @@ def write_metrics(writer, metrics, step, config):
         writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
 
     full_log = step % config.log_period == 0
-
-    max_logging.log(f"completed step: {step}, seconds: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
-          f"TFLOP/s/device: {metrics['scalar']['perf/per_device_tflops_per_sec']:.3f}, "
-          f"loss: {metrics['scalar']['learning/loss']:.3f}")
+    if jax.process_index() == 0:
+        max_logging.log(f"completed step: {step}, seconds: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
+            f"TFLOP/s/device: {metrics['scalar']['perf/per_device_tflops_per_sec']:.3f}, "
+            f"loss: {metrics['scalar']['learning/loss']:.3f}")
 
     if full_log and jax.process_index() == 0:
       max_logging.log(
@@ -145,7 +173,7 @@ def get_params_to_save(params):
 def train(config):
     rng = jax.random.PRNGKey(config.seed)
 
-    writer = SummaryWriter(config.tensorboard_dir)
+    writer = max_utils.initialize_summary_writer(config)
     if config.dataset_name is None and config.train_data_dir is None:
         raise ValueError("Need either a dataset name or a training folder.")
 
@@ -189,6 +217,7 @@ def train(config):
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
     )
+    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
@@ -204,19 +233,14 @@ def train(config):
     if config.scale_lr:
         config.learning_rate = config.learning_rate * total_train_batch_size
 
-    constant_scheduler = optax.constant_schedule(config.learning_rate)
+    learning_rate_scheduler = max_utils.create_learning_rate_schedule(config)
 
-    adamw = optax.adamw(
-        learning_rate=constant_scheduler,
+    tx = optax.adamw(
+        learning_rate=learning_rate_scheduler,
         b1=config.adam_b1,
         b2=config.adam_b2,
         eps=config.adam_eps,
         weight_decay=config.adam_weight_decay,
-    )
-
-    tx = optax.chain(
-        optax.clip_by_global_norm(config.max_grad_norm),
-       adamw,
     )
 
     (unet_state,
@@ -228,7 +252,6 @@ def train(config):
 
     per_device_tflops = calculate_training_tflops(pipeline, unet_state.params, config)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
-
 
     if config.dataset_name == "lambdalabs/pokemon-blip-captions":
         data_iterator = make_pokemon_train_iterator(
@@ -300,6 +323,7 @@ def train(config):
             # need to preprocess the dataset with dim removed.
             if len(encoder_hidden_states.shape) == 4:
                 encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
+
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
                 {"params": unet_params}, noisy_latents, timesteps, encoder_hidden_states, train=True
@@ -345,6 +369,9 @@ def train(config):
             donate_argnums=(0,)
         )
     # Train!
+    max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
+    max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
+    max_utils.add_config_to_summary_writer(config, writer)
 
     if jax.process_index() == 0:
         max_logging.log("***** Running training *****")
@@ -352,21 +379,25 @@ def train(config):
         max_logging.log(f"  Total train batch size (w. parallel & distributed) = {total_train_batch_size}")
         max_logging.log(f"  Total optimization steps = {config.max_train_steps}")
 
-    global_step = 0
-
     last_step_completion = datetime.datetime.now()
 
     local_metrics_file = open(config.metrics_file, 'a', encoding="utf8") if config.metrics_file else None
     running_gcs_metrics = [] if config.gcs_metrics else None
     example_batch = None
 
-    first_profiling_step = global_step + config.skip_first_n_steps_for_profiler
+    first_profiling_step = config.skip_first_n_steps_for_profiler
     if config.enable_profiler and first_profiling_step >= config.max_train_steps:
        raise ValueError("Profiling requested but initial profiling step set past training final step")
     last_profiling_step = np.clip(first_profiling_step + config.profiler_steps -1, first_profiling_step, config.max_train_steps - 1)
     # ======================== Training ================================
     # train
-    for _ in np.arange(get_first_step(unet_state), config.max_train_steps):
+
+    start_step = get_first_step(unet_state)
+    mllog_utils.train_init_print(config)
+    mllog_utils.train_init_stop()
+    mllog_utils.train_run_start()
+    mllog_utils.train_step_start(start_step)
+    for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             unet_state, train_metric, train_rngs = p_train_step(unet_state,
@@ -374,24 +405,17 @@ def train(config):
                                                                 example_batch,
                                                                 train_rngs)
         new_time = datetime.datetime.now()
-        record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, config.learning_rate)
-        write_metrics(writer, train_metric, global_step, config)
+        record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
+        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
-
-        if config.metrics_file:
-            max_utils.write_metrics_locally(train_metric, global_step, config, local_metrics_file)
-
-        if config.gcs_metrics and jax.process_index() == 0:
-            running_gcs_metrics = max_utils.write_metrics_for_gcs(train_metric, global_step, config, running_gcs_metrics)
-
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
-        if global_step == first_profiling_step:
+        if step == first_profiling_step:
             max_utils.activate_profiler(config)
-        if global_step == last_profiling_step:
+        if step == last_profiling_step:
             max_utils.deactivate_profiler(config)
 
-        global_step += 1
+        mllog_utils.maybe_train_step_log(config, start_step, step, train_metric)
 
     # Create the pipeline using using the trained modules and save it.
     if jax.process_index() == 0:
@@ -430,9 +454,10 @@ def train(config):
                 "safety_checker": safety_checker.params,
             },
         )
-    writer.close()
+    max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
+    mllog_utils.train_init_start()
     max_logging.log(f"Found {jax.device_count()} devices.")
     cc.initialize_cache(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
