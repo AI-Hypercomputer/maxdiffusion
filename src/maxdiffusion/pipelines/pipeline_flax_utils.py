@@ -328,6 +328,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         flash_block_sizes = kwargs.pop("flash_block_sizes", None)
         mesh = kwargs.pop("mesh", None)
         dtype = kwargs.pop("dtype", None)
+        norm_num_groups = kwargs.pop("norm_num_groups", 32)
 
         # 1. Download the checkpoints and configs
         # use snapshot download here to get it working from from_pretrained
@@ -510,6 +511,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                         flash_min_seq_length=flash_min_seq_length,
                         flash_block_sizes=flash_block_sizes,
                         mesh=mesh,
+                        norm_num_groups=norm_num_groups,
                         dtype=dtype,
                     )
                     params[name] = loaded_params

@@ -41,6 +41,9 @@ flash_block_sizes: {}
 #   block_q_dq: 64
 #   block_kv_dq: 64
 
+# GroupNorm groups
+norm_num_groups: 32
+
 # If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False

@@ -213,6 +213,7 @@ def train(config):
         feature_extractor=None,
         from_pt=config.from_pt,
         split_head_dim=config.split_head_dim,
+        norm_num_groups=config.norm_num_groups,
         attention_kernel=config.attention,
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,

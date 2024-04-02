@@ -129,9 +129,13 @@ def run(config):
     flash_block_sizes = get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
-        safety_checker=None, feature_extractor=None,
-        split_head_dim=config.split_head_dim, from_pt=config.from_pt,
-        attention_kernel=config.attention, flash_block_sizes=flash_block_sizes,
+        safety_checker=None,
+        feature_extractor=None,
+        split_head_dim=config.split_head_dim,
+        norm_num_groups=config.norm_num_groups,
+        from_pt=config.from_pt,
+        attention_kernel=config.attention,
+        flash_block_sizes=flash_block_sizes,
         mesh=mesh
     )
     scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
