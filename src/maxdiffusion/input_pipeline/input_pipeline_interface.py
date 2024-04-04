@@ -84,6 +84,13 @@ def make_laion400m_train_iterator(
   train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
   return train_iter
 
+#def make_coco_eval_iterator(
+#    config,
+#    mesh,
+#    global_batch_size,
+#  ):
+#  blah blah.
+
 def make_pokemon_train_iterator(
     config,
     mesh,

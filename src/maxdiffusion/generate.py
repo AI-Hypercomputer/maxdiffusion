@@ -40,6 +40,7 @@ from flax.linen import partitioning as nn_partitioning
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh, PositionalSharding
 from maxdiffusion.image_processor import VaeImageProcessor
+from PIL import Image
 
 cc.initialize_cache(os.path.expanduser("~/jax_cache"))
 
@@ -77,7 +78,10 @@ def tokenize(prompt, tokenizer):
 
 def get_unet_inputs(rng, config, batch_size, pipeline, params):
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-    prompt_ids = [config.prompt] * batch_size
+    prompts = []
+    with open(config.prompts, "r") as captions_file:
+        prompts = captions_file.readlines()
+    prompt_ids = prompts[:batch_size]
     prompt_ids = tokenize(prompt_ids, pipeline.tokenizer)
     negative_prompt_ids = [config.negative_prompt] * batch_size
     negative_prompt_ids = tokenize(negative_prompt_ids, pipeline.tokenizer)
@@ -188,8 +192,10 @@ def run(config):
     print("inference time: ",(time.time() - s))
     numpy_images = np.array(images)
     images = VaeImageProcessor.numpy_to_pil(numpy_images)
+    with open(config.image_ids, "r") as ids_file:
+        image_ids = ids_file.readlines()
     for i, image in enumerate(images):
-        image.save(f"image_{i}.png")
+        image.save(f"image_{image_ids[i]}.png")
 
     return images
 

@@ -449,6 +449,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
     else:
         from .models import train
         import generate
+        from .models import eval
         import max_utils
         import pyconfig
         import input_pipeline

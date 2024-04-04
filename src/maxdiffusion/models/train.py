@@ -35,6 +35,7 @@ from maxdiffusion import (
     max_utils,
     pyconfig,
     mllog_utils,
+    eval
 )
 
 from transformers import FlaxCLIPTextModel
@@ -373,6 +374,7 @@ def train(config):
                                                                 vae_state,
                                                                 example_batch,
                                                                 train_rngs)
+        
         new_time = datetime.datetime.now()
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
         write_metrics(writer, train_metric, step, config)
@@ -392,6 +394,8 @@ def train(config):
             max_utils.deactivate_profiler(config)
 
         mllog_utils.maybe_train_step_log(config, start_step, step, train_metric)
+        if (step%100 == 0): # and step != 0):
+            eval.eval(config)
 
     # Create the pipeline using using the trained modules and save it.
     if jax.process_index() == 0:

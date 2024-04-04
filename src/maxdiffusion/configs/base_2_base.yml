@@ -82,12 +82,12 @@ ici_tensor_parallelism: 1
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
 dataset_name: ''
-train_data_dir: ''
+train_data_dir: 'gs://jfacevedo-maxdiffusion/laion400m/tf_records'
 dataset_config_name: ''
 cache_dir: ''
 image_column: 'image'
 caption_column: 'text'
-resolution: 512
+resolution: 768
 center_crop: False
 random_flip: False
 # If cache_latents_text_encoder_outputs is True
@@ -101,6 +101,10 @@ enable_data_shuffling: True
 # during dataset creation to reduce memory consumption.
 cache_latents_text_encoder_outputs: True
 
+# Evaluation dataset
+dataset_name: ''
+eval_data_dir_captions: ''
+eval_data_dir_stats: ''
 
 # Training loop
 learning_rate: 1.e-7
@@ -111,7 +115,7 @@ max_train_steps: 800
 seed: 0
 output_dir: 'sd-model-finetuned'
 tensorboard_dir: 'gs://shahrokhi-maxdiffusion-v5'
-per_device_batch_size: 1
+per_device_batch_size: 8
 
 warmup_steps_fraction: 0.0
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
@@ -132,7 +136,8 @@ skip_first_n_steps_for_profiler: 1
 profiler_steps: 5
 
 # Generation parameters
-prompt: "A magical castle in the middle of a forest, artistic drawing"
+prompts: "/home/shahrokhi/maxdiffusion/prompts.txt"
+image_ids: "/home/shahrokhi/maxdiffusion/ids.txt"
 negative_prompt: "purple, red"
 guidance_scale: 7.5
 num_inference_steps: 30

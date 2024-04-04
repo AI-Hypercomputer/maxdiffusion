@@ -1,4 +1,4 @@
-# Copyright 2023 Google LLC
+# Copyright 2024 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,14 +20,24 @@ metrics_file: "" # for testing, local file that stores scalar metrics. If empty,
 gcs_metrics: True
 log_period: 100
 
-pretrained_model_name_or_path: 'sd-model-finetuned'
+pretrained_model_name_or_path: 'stabilityai/stable-diffusion-2-base'
 revision: 'main'
 dtype: 'bfloat16'
 # Set true to load weights from pytorch
-from_pt: False
+from_pt: True
 split_head_dim: True
-attention: 'dot_product' # Supported attention: dot_product, flash
+attention: 'flash' # Supported attention: dot_product, flash
 flash_block_sizes: {}
+# to override default block sizes for flash attention
+# flash_block_sizes:
+#   block_q: 64
+#   block_kv_compute: 64
+#   block_kv: 64
+#   block_q_dkv: 64
+#   block_kv_dkv: 64
+#   block_kv_dkv_compute: 64
+#   block_q_dq: 64
+#   block_kv_dq: 64
 
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
@@ -91,6 +101,10 @@ enable_data_shuffling: True
 # during dataset creation to reduce memory consumption.
 cache_latents_text_encoder_outputs: True
 
+# Evaluation dataset
+dataset_name: ''
+eval_data_dir_captions: ''
+eval_data_dir_stats: ''
 
 # Training loop
 learning_rate: 1.e-7
@@ -122,7 +136,7 @@ skip_first_n_steps_for_profiler: 1
 profiler_steps: 5
 
 # Generation parameters
-prompt: "A magical castle in the middle of a forest, artistic drawing"
+prompts: "/home/shahrokhi/maxdiffusion/prompts.txt"
 negative_prompt: "purple, red"
 guidance_scale: 7.5
 num_inference_steps: 30
