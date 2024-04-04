@@ -87,7 +87,7 @@ dataset_config_name: ''
 cache_dir: ''
 image_column: 'image'
 caption_column: 'text'
-resolution: 768
+resolution: 512
 center_crop: False
 random_flip: False
 # If cache_latents_text_encoder_outputs is True
@@ -138,6 +138,11 @@ profiler_steps: 5
 # Generation parameters
 prompts: "/home/shahrokhi/maxdiffusion/prompts.txt"
 image_ids: "/home/shahrokhi/maxdiffusion/ids.txt"
+images_directory: "/home/shahrokhi/maxdiffusion/generated_images/"
+stat_output_directory: "/home/shahrokhi/maxdiffusion/output"
+stat_output_file: "/home/shahrokhi/maxdiffusion/output/stats.npz"
+stat_coco_file: "/home/shahrokhi/coco2014/val2014_30k_stats.npz"
+caption_coco_file: "/home/shahrokhi/coco2014/val2014_30k.tsv"
 negative_prompt: "purple, red"
 guidance_scale: 7.5
 num_inference_steps: 30

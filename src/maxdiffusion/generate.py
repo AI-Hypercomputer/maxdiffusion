@@ -194,8 +194,9 @@ def run(config):
     images = VaeImageProcessor.numpy_to_pil(numpy_images)
     with open(config.image_ids, "r") as ids_file:
         image_ids = ids_file.readlines()
+    image_directory = config.images_directory
     for i, image in enumerate(images):
-        image.save(f"image_{image_ids[i]}.png")
+        image.save(f"{image_directory}image_{image_ids[i]}.png")
 
     return images
 
