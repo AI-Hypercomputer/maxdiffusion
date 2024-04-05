@@ -38,20 +38,20 @@ from maxdiffusion import (
     eval
 )
 
-from transformers import FlaxCLIPTextModel
-
-from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax.linen import partitioning as nn_partitioning
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
 from tensorboardX import SummaryWriter
-from transformers import CLIPImageProcessor, set_seed
+from transformers import set_seed
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
   make_laion400m_train_iterator
 )
+
+TOTAL_TRAIN_SAMPLES = 6513144
+TOTAL_EVAL_SAMPLES = 30000
 
 def calculate_training_tflops(pipeline, unet_params, config):
     """Calculate per device training tflops (back and fwd pass)."""
@@ -177,6 +177,10 @@ def train(config):
     data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
 
     total_train_batch_size = config.per_device_batch_size * jax.device_count()
+    if config.checkpoint_every % total_train_batch_size != 0:
+        max_logging.log(f"Total train steps of {TOTAL_TRAIN_SAMPLES} is not evenly divisible by"
+                        f" global batch size of {total_train_batch_size}. Checkpointing might not"
+                        " work correctly.")
 
     weight_dtype = max_utils.get_dtype(config)
     flash_block_sizes = max_utils.get_flash_block_sizes(config)
@@ -367,6 +371,7 @@ def train(config):
     mllog_utils.train_init_stop()
     mllog_utils.train_run_start()
     mllog_utils.train_step_start(start_step)
+    # for checkpointing
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
@@ -374,17 +379,20 @@ def train(config):
                                                                 vae_state,
                                                                 example_batch,
                                                                 train_rngs)
-        
         new_time = datetime.datetime.now()
+
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
         write_metrics(writer, train_metric, step, config)
         last_step_completion = new_time
 
-        if config.metrics_file:
+        if config.record_metrics and config.metrics_file:
             max_utils.write_metrics_locally(train_metric, step, config, local_metrics_file)
 
-        if config.gcs_metrics and jax.process_index() == 0:
+        if config.record_metrics and config.gcs_metrics and jax.process_index() == 0:
             running_gcs_metrics = max_utils.write_metrics_for_gcs(train_metric, step, config, running_gcs_metrics)
+
+        if step != 0 and (total_train_batch_size * step) % config.checkpoint_every == 0:
+           max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.output_dir+f"/{str(step * total_train_batch_size)}/")
 
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
@@ -394,46 +402,11 @@ def train(config):
             max_utils.deactivate_profiler(config)
 
         mllog_utils.maybe_train_step_log(config, start_step, step, train_metric)
-        if (step%100 == 0): # and step != 0):
-            eval.eval(config)
+        # if (step%100 == 0): # and step != 0):
+        #     eval.eval(config)
 
     # Create the pipeline using using the trained modules and save it.
-    if jax.process_index() == 0:
-        safety_checker = FlaxStableDiffusionSafetyChecker.from_pretrained(
-            "CompVis/stable-diffusion-safety-checker", from_pt=True
-        )
-        # Restore vae and text encoder if we cached latents and encoder outputs.
-        if config.cache_latents_text_encoder_outputs:
-            text_encoder = FlaxCLIPTextModel.from_pretrained(
-                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=weight_dtype, from_pt=config.from_pt
-            )
-            vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-                config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
-            )
-            pipeline.vae = vae
-            pipeline.text_encoder = text_encoder
-            params["text_encoder"] = text_encoder.params
-            params["vae"] = vae_params
-
-        pipeline = FlaxStableDiffusionPipeline(
-            text_encoder=pipeline.text_encoder,
-            vae=pipeline.vae,
-            unet=pipeline.unet,
-            tokenizer=pipeline.tokenizer,
-            scheduler=noise_scheduler,
-            safety_checker=safety_checker,
-            feature_extractor=CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32"),
-        )
-
-        pipeline.save_pretrained(
-            config.output_dir,
-            params={
-                "text_encoder": get_params_to_save(params["text_encoder"]),
-                "vae": get_params_to_save(params["vae"]),
-                "unet": get_params_to_save(unet_state.params),
-                "safety_checker": safety_checker.params,
-            },
-        )
+    max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.output_dir+f"/{str(step * total_train_batch_size)}/")
     writer.close()
 
 def main(argv: Sequence[str]) -> None:

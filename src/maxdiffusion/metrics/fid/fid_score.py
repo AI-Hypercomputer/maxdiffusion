@@ -10,6 +10,46 @@ from keras.preprocessing.image import ImageDataGenerator
 IMAGE_EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'pgm', 'png', 'ppm',
                     'tif', 'tiff', 'webp'}
 
+def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_size=1, img_size=None):
+    if path.endswith(".npz"):
+        stats = np.load(path)
+        mu, sigma = stats["mu"], stats["sigma"]
+        return mu, sigma
+    
+    preprocessing_fn = lambda x: x.astype(float) / 255
+    image_data_generator = ImageDataGenerator(preprocessing_function=preprocessing_fn)
+    directory_iterator = image_data_generator.flow_from_directory(
+        path, batch_size=batch_size, target_size=img_size, shuffle=False
+    )
+    assert directory_iterator.samples > 0, "No images found. Make sure your images are within a subdirectory."
+
+    get_batch_fn = lambda: directory_iterator.next()[0]
+    num_activations = directory_iterator.samples
+    num_batches = len(directory_iterator)
+    dtype = 'float32'
+    activation_dim = 2048
+
+    mm = np.memmap(mmap_filname, dtype=dtype, mode='w+', shape=(num_activations, activation_dim))
+
+    activation_sum = np.zeros((activation_dim))
+    for i in tqdm(range(num_batches)):
+        x = get_batch_fn()
+        x = np.asarray(x)
+        x = 2 * x - 1
+        activation_batch = apply_fn(params, jax.lax.stop_gradient(x))
+        activation_batch = activation_batch.squeeze(axis=1).squeeze(axis=1)
+
+        current_batch_size = activation_batch.shape[0]
+        start_index = i * batch_size
+        end_index = start_index + current_batch_size
+        mm[start_index : end_index] = activation_batch
+
+        activation_sum += activation_batch.sum(axis=0)
+
+    mu = activation_sum / num_activations
+    sigma = np.cov(mm, rowvar=False)
+
+    return mu, sigma
 
 def compute_statistics(path, params, apply_fn, batch_size=1, img_size=None):
     if path.endswith(".npz"):

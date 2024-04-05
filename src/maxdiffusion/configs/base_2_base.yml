@@ -14,11 +14,11 @@
 
 # This sentinel is a reminder to choose a real run name.
 run_name: ''
-
+record_metrics: False
 metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
 # If true save metrics such as loss and TFLOPS to GCS in {base_output_directory}/{run_name}/metrics/
-gcs_metrics: True
-log_period: 100
+gcs_metrics: False
+log_period: 10000000000
 
 pretrained_model_name_or_path: 'stabilityai/stable-diffusion-2-base'
 revision: 'main'
@@ -96,6 +96,8 @@ tokenize_captions_num_proc: 4
 transform_images_num_proc: 4
 reuse_example_batch: False
 enable_data_shuffling: True
+# checkpoint every number of samples
+checkpoint_every: 512000
 
 # Prepare image latents and text encoder outputs
 # during dataset creation to reduce memory consumption.
@@ -107,17 +109,17 @@ eval_data_dir_captions: ''
 eval_data_dir_stats: ''
 
 # Training loop
-learning_rate: 1.e-7
+learning_rate: 1.25e-7
 scale_lr: False
 max_train_samples: -1
 # max_train_steps takes priority over num_train_epochs.
-max_train_steps: 800
+max_train_steps: 24000
 seed: 0
 output_dir: 'sd-model-finetuned'
 tensorboard_dir: 'gs://shahrokhi-maxdiffusion-v5'
-per_device_batch_size: 8
+per_device_batch_size: 16
 
-warmup_steps_fraction: 0.0
+warmup_steps_fraction: 0.33
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
 
 # However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before 
@@ -129,20 +131,21 @@ adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradi
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 1.e-2 # AdamW Weight decay
 
-enable_profiler: True
+enable_profiler: False
 # Skip first n steps for profiling, to omit things like compilation and to give
 # the iteration time a chance to stabilize.
 skip_first_n_steps_for_profiler: 1
 profiler_steps: 5
 
 # Generation parameters
-prompts: "/home/shahrokhi/maxdiffusion/prompts.txt"
-image_ids: "/home/shahrokhi/maxdiffusion/ids.txt"
-images_directory: "/home/shahrokhi/maxdiffusion/generated_images/"
-stat_output_directory: "/home/shahrokhi/maxdiffusion/output"
-stat_output_file: "/home/shahrokhi/maxdiffusion/output/stats.npz"
-stat_coco_file: "/home/shahrokhi/coco2014/val2014_30k_stats.npz"
-caption_coco_file: "/home/shahrokhi/coco2014/val2014_30k.tsv"
-negative_prompt: "purple, red"
-guidance_scale: 7.5
-num_inference_steps: 30
+prompts: "/home/jfacevedo/prompts.txt"
+image_ids: "/home/jfacevedo/ids.txt"
+images_directory: "/home/jfacevedo/maxdiffusion/generated_images/"
+stat_output_directory: "/home/jfacevedo/maxdiffusion/output/"
+stat_output_file: "/home/jfacevedo/maxdiffusion/output/stats.npz"
+stat_coco_file: "/mnt/disks/laion400-disk/coco2014/val2014_30k_stats.npz"
+caption_coco_file: "/mnt/disks/laion400-disk/coco2014/val2014_30k.tsv"
+negative_prompt: ""
+# https://github.com/mlcommons/training/blob/master/stable_diffusion/configs/train_01x08x08.yaml#L26
+guidance_scale: 8
+num_inference_steps: 50

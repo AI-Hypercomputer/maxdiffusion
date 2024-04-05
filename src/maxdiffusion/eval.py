@@ -43,21 +43,10 @@ def load_stats(file_path):
     return sigma, mu
 
 def eval(config):
-    captions_df = load_captions(config.caption_coco_file)
     batch_size = config.per_device_batch_size * jax.device_count()
 
     #inference happenning here: 
-
-    # while(not captions_df.empty):
-    #     if (captions_df.size > batch_size):
-    #         captions_df['caption'][:batch_size].to_csv('prompts.txt', header=False, index=False)
-    #         captions_df['id'][:batch_size].to_csv('ids.txt', header=False,index=False)
-    #         captions_df = captions_df.iloc[batch_size:]
-    #     else:
-    #         captions_df['caption'].to_csv('prompts.txt', header=False, index=False)
-    #         captions_df['id'].to_csv('ids.txt', header=False,index=False)
-    #         captions_df = pd.DataFrame()
-    #     generate.run(config)
+    generate.run(config)
 
     rng = jax.random.PRNGKey(0)
     
@@ -65,22 +54,15 @@ def eval(config):
     params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
-    mu, sigma = fid_score.compute_statistics(config.images_directory, params, apply_fn, batch_size)
+    mu, sigma = fid_score.compute_statistics_with_mmap(config.images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (config.resolution, config.resolution))
     os.makedirs(config.stat_output_directory, exist_ok=True)
     np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
 
-    #     with open(config.image_ids, "r") as ids_file:
-    #         image_ids = ids_file.readlines()
-    #         for image_id in image_ids:
-    #             pathlib.Path(f"image_{image_id}.png").unlink()
-
-    mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size)
-    mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size)
+    mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
+    mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
 
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
-    print("fid is : " + str(fidscore))
-
-
+    print("fid is : " + str(fid))
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)

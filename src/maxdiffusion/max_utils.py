@@ -28,7 +28,14 @@ import flax
 import jax
 import jax.numpy as jnp
 import optax
-from maxdiffusion import checkpointing, max_logging
+from maxdiffusion import (
+  checkpointing,
+  max_logging,
+  FlaxAutoencoderKL,
+  FlaxStableDiffusionPipeline
+)
+from transformers import FlaxCLIPTextModel, CLIPImageProcessor
+from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax import linen as nn
 from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
@@ -343,6 +350,47 @@ def get_flash_block_sizes(config):
 
 def delete_pytree(to_delete):
   jax.tree_util.tree_map(lambda x: x.delete(), to_delete)
+
+def get_params_to_save(params):
+  return jax.device_get(jax.tree_util.tree_map(lambda x: x, params))
+
+def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, output_dir):
+  safety_checker = FlaxStableDiffusionSafetyChecker.from_pretrained(
+    "CompVis/stable-diffusion-safety-checker", from_pt=True
+  )
+  weight_dtype = get_dtype(config)
+  # Restore vae and text encoder if we cached latents and encoder outputs.
+  if config.cache_latents_text_encoder_outputs:
+      text_encoder = FlaxCLIPTextModel.from_pretrained(
+          config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=weight_dtype, from_pt=config.from_pt
+      )
+      vae, vae_params = FlaxAutoencoderKL.from_pretrained(
+          config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
+      )
+      pipeline.vae = vae
+      pipeline.text_encoder = text_encoder
+      params["text_encoder"] = text_encoder.params
+      params["vae"] = vae_params
+  
+  pipeline = FlaxStableDiffusionPipeline(
+    text_encoder=pipeline.text_encoder,
+    vae=pipeline.vae,
+    unet=pipeline.unet,
+    tokenizer=pipeline.tokenizer,
+    scheduler=noise_scheduler,
+    safety_checker=safety_checker,
+    feature_extractor=CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32"),
+  )
+
+  pipeline.save_pretrained(
+    output_dir,
+    params={
+        "text_encoder": get_params_to_save(params["text_encoder"]),
+        "vae": get_params_to_save(params["vae"]),
+        "unet": get_params_to_save(unet_state.params),
+        "safety_checker": safety_checker.params,
+    },
+  )
 
 def get_memory_allocations():
   devices = jax.local_devices()

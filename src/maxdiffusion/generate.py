@@ -18,8 +18,9 @@ import functools
 import os
 import time
 from typing import Sequence
-
+import csv
 import numpy as np
+from tqdm import tqdm
 
 import jax
 import jax.numpy as jnp
@@ -41,6 +42,8 @@ from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh, PositionalSharding
 from maxdiffusion.image_processor import VaeImageProcessor
 from PIL import Image
+
+from multiprocessing import Process
 
 cc.initialize_cache(os.path.expanduser("~/jax_cache"))
 
@@ -76,15 +79,8 @@ def tokenize(prompt, tokenizer):
         return_tensors="np"
     ).input_ids
 
-def get_unet_inputs(rng, config, batch_size, pipeline, params):
+def get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negative_prompt_ids):
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-    prompts = []
-    with open(config.prompts, "r") as captions_file:
-        prompts = captions_file.readlines()
-    prompt_ids = prompts[:batch_size]
-    prompt_ids = tokenize(prompt_ids, pipeline.tokenizer)
-    negative_prompt_ids = [config.negative_prompt] * batch_size
-    negative_prompt_ids = tokenize(negative_prompt_ids, pipeline.tokenizer)
     guidance_scale = config.guidance_scale
     num_inference_steps = config.num_inference_steps
 
@@ -121,6 +117,12 @@ def vae_decode(latents, state, pipeline):
     image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
     return image
 
+def save_process(images, config, img_ids):
+    images = VaeImageProcessor.numpy_to_pil(images)
+    image_directory = config.images_directory
+    for i, image in enumerate(images):
+        image.save(f"{image_directory}image_{img_ids[i]}.png")
+
 def run(config):
     rng = jax.random.PRNGKey(config.seed)
     # Setup Mesh
@@ -128,7 +130,7 @@ def run(config):
     mesh = Mesh(devices_array, config.mesh_axes)
 
     batch_size = jax.device_count() * config.per_device_batch_size
-
+    assert 30_000 % batch_size == 0, f"Coco dataset must be evenly divisible by batch size : {batch_size}"
     weight_dtype = get_dtype(config)
     flash_block_sizes = get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
@@ -157,49 +159,60 @@ def run(config):
     del params["vae"]
     del params["unet"]
 
-    def run_inference(unet_state, vae_state, params, rng, config, batch_size, pipeline):
-
+    def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids, rng, config, batch_size, pipeline):                
         (latents,
         context,
         guidance_scale,
-        scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
-
-        loop_body_p = functools.partial(loop_body, model=pipeline.unet,
-                                        pipeline=pipeline,
-                                        prompt_embeds=context,
-                                        guidance_scale=guidance_scale)
-
-        vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
-
+        scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negative_prompt_ids)
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+            loop_body_p = functools.partial(loop_body, model=pipeline.unet,
+                                            pipeline=pipeline,
+                                            prompt_embeds=context,
+                                            guidance_scale=guidance_scale)
+
+            vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
             latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps,
                                             loop_body_p, (latents, scheduler_state, unet_state))
-            image = vae_decode_p(latents, vae_state)
-            return image
+            images = vae_decode_p(latents, vae_state)
+            return images
+                
 
     p_run_inference = jax.jit(
         functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline),
-        in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None),
-        out_shardings=None
+        in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None, None),
+        out_shardings=None,
     )
 
-    s = time.time()
-    p_run_inference(unet_state, vae_state, params).block_until_ready()
-    print("compile time: ", (time.time() - s))
+    # s = time.time()
+    prompts = []
+    threads = []
+    clear_threads_count_at = 100
+    k = 0
+    with open(config.caption_coco_file, "r") as fd:
+        rd = csv.reader(fd, delimiter="\t", quotechar='"')
+        rows = list(rd)[1:]
+        negative_prompt_ids = tokenize([""] * batch_size, pipeline.tokenizer)
+        for i in tqdm(range(0, len(rows),  batch_size)):
+            img_ids = [row[0] for row in rows[i:i+batch_size]]
+            ids = [row[1] for row in rows[i:i+batch_size]]
+            prompts = [row[2] for row in rows[i:i+batch_size]]
+            prompt_ids = tokenize(prompts, pipeline.tokenizer)
+    
+            images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
+            images = jax.experimental.multihost_utils.process_allgather(images)
+            numpy_images = np.array(images)
+            p = Process(target=save_process, args=(numpy_images, config, img_ids))
+            p.start()
+            threads.append(p)
+            k+=1
+            if k >= clear_threads_count_at:
+                for thread in threads:
+                    thread.join()
+                    threads = []
+                    k = 0
 
-    s = time.time()
-    images = p_run_inference(unet_state, vae_state, params).block_until_ready()
-    print("inference time: ",(time.time() - s))
-    numpy_images = np.array(images)
-    images = VaeImageProcessor.numpy_to_pil(numpy_images)
-    with open(config.image_ids, "r") as ids_file:
-        image_ids = ids_file.readlines()
-    image_directory = config.images_directory
-    for i, image in enumerate(images):
-        image.save(f"{image_directory}image_{image_ids[i]}.png")
-
-    return images
-
+        for thread in threads:
+            thread.join()
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     run(pyconfig.config)
