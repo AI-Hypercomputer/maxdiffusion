@@ -178,7 +178,7 @@ def train(config):
 
     total_train_batch_size = config.per_device_batch_size * jax.device_count()
     if config.checkpoint_every % total_train_batch_size != 0:
-        max_logging.log(f"Total train steps of {TOTAL_TRAIN_SAMPLES} is not evenly divisible by"
+        max_logging.log(f"Checkpoint at {config.checkpoint_every} samples is not evenly divisible by"
                         f" global batch size of {total_train_batch_size}. Checkpointing might not"
                         " work correctly.")
 
@@ -402,11 +402,6 @@ def train(config):
             max_utils.deactivate_profiler(config)
 
         mllog_utils.maybe_train_step_log(config, start_step, step, train_metric)
-        # if (step%100 == 0): # and step != 0):
-        #     eval.eval(config)
-
-    # Create the pipeline using using the trained modules and save it.
-    max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.output_dir+f"/{str(step * total_train_batch_size)}/")
     writer.close()
 
 def main(argv: Sequence[str]) -> None:
