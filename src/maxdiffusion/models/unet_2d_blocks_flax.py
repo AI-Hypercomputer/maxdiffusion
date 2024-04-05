@@ -70,6 +70,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
+    norm_num_groups: int = 32
 
     def setup(self):
         resnets = []
@@ -83,6 +84,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
 
@@ -100,6 +102,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             attentions.append(attn_block)
 
@@ -148,6 +151,7 @@ class FlaxDownBlock2D(nn.Module):
     num_layers: int = 1
     add_downsample: bool = True
     dtype: jnp.dtype = jnp.float32
+    norm_num_groups: int = 32
 
     def setup(self):
         resnets = []
@@ -160,6 +164,7 @@ class FlaxDownBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
         self.resnets = resnets
@@ -232,6 +237,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
+    norm_num_groups: int = 32
 
     def setup(self):
         resnets = []
@@ -246,6 +252,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
 
@@ -263,6 +270,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             attentions.append(attn_block)
 
@@ -315,6 +323,7 @@ class FlaxUpBlock2D(nn.Module):
     num_layers: int = 1
     add_upsample: bool = True
     dtype: jnp.dtype = jnp.float32
+    norm_num_groups: int = 32
 
     def setup(self):
         resnets = []
@@ -328,6 +337,7 @@ class FlaxUpBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
 
@@ -393,6 +403,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
+    norm_num_groups: int = 32
 
     def setup(self):
         # there is always at least one resnet
@@ -402,6 +413,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 out_channels=self.in_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
         ]
 
@@ -421,6 +433,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             attentions.append(attn_block)
 
@@ -429,6 +442,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 out_channels=self.in_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
 

@@ -44,6 +44,22 @@ class UnetTest(unittest.TestCase):
   def setUp(self):
     UnetTest.dummy_data = {}
 
+  def test_unet_config_params(self):
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
+      "norm_num_groups=16"])
+
+    config = pyconfig.config
+    unet, _ = FlaxUNet2DConditionModel.from_pretrained(
+      config.pretrained_model_name_or_path,
+      revision=config.revision,
+      subfolder="unet",
+      dtype=jnp.bfloat16,
+      from_pt=config.from_pt,
+      norm_num_groups=config.norm_num_groups
+    )
+
+    assert unet.config.norm_num_groups == config.norm_num_groups
+
   def test_unet21_sharding_test(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",

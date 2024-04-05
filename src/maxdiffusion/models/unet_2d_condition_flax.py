@@ -139,6 +139,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     addition_time_embed_dim: Optional[int] = None
     addition_embed_type_num_heads: int = 64
     projection_class_embeddings_input_dim: Optional[int] = None
+    norm_num_groups: int = 32
 
     def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
         # init input tensors
@@ -339,7 +340,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         self.up_blocks = up_blocks
 
         # out
-        self.conv_norm_out = nn.GroupNorm(num_groups=32, epsilon=1e-5)
+        self.conv_norm_out = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
         self.conv_out = nn.Conv(
             self.out_channels,
             kernel_size=(3, 3),

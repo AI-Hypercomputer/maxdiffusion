@@ -640,9 +640,10 @@ class FlaxTransformer2DModel(nn.Module):
     flash_min_seq_length: int = 4096
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
+    norm_num_groups: int = 32
 
     def setup(self):
-        self.norm = nn.GroupNorm(num_groups=32, epsilon=1e-5)
+        self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
 
         conv_kernel_init = nn.with_logical_partitioning(
             nn.initializers.lecun_normal(),
