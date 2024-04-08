@@ -50,50 +50,58 @@ def load_stats(file_path):
 
 def calculate_clip(images, prompts, config):
     clip_encoder = CLIPEncoder(cache_dir=config.clip_cache_dir)
-    assert len(images) == len(prompts)
+    
     clip_scores = []
-    for i in range(0,len(images)):
+    for i in tqdm(range(0, len(images))):
         score = clip_encoder.get_clip_score(prompts[i], images[i])
         clip_scores.append(score)
+        
     clip_scores = torch.cat(clip_scores, 0)
     clip_score = np.mean(clip_scores.detach().cpu().numpy())
     print("clip score is" + str(clip_score))
     return clip_score
 
-def load_images(path):
+def load_images(path, captions_df):
     images = []
+    prompts = []
     for f in tqdm(os.listdir(path)):
         img = Image.open(os.path.join(path, f))
+        img_id = f[6:len(f)-4]
+        pmt = captions_df.query(f'image_id== {img_id}')['caption'].to_string(index=False)
         images.append(img)
-    return images
+        prompts.append(pmt)
+     
+    return images, prompts
 
 def eval(config):
-    batch_size = config.per_device_batch_size * jax.device_count()
+    #batch_size = config.per_device_batch_size * jax.device_count()
 
     #inference happenning here: first generate the images
-    generate.run(config)
+    #generate.run(config)
 
     # calculating CLIP:
-    images = load_images(config.images_directory)
-    prompts = load_captions(config.caption_coco_file)['caption']
+    captions_df = load_captions(config.caption_coco_file)
+    images, prompts = load_images(config.images_directory, captions_df )
+    
+
     calculate_clip(images, prompts, config)
 
     # calculating FID:
-    rng = jax.random.PRNGKey(0)
+    # rng = jax.random.PRNGKey(0)
     
-    model = inception.InceptionV3(pretrained=True)
-    params = model.init(rng, jnp.ones((1, 256, 256, 3)))
+    # model = inception.InceptionV3(pretrained=True)
+    # params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
-    apply_fn = jax.jit(functools.partial(model.apply, train=False))
-    mu, sigma = fid_score.compute_statistics_with_mmap(config.images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (config.resolution, config.resolution))
-    os.makedirs(config.stat_output_directory, exist_ok=True)
-    np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
+    # apply_fn = jax.jit(functools.partial(model.apply, train=False))
+    # mu, sigma = fid_score.compute_statistics_with_mmap(config.images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (config.resolution, config.resolution))
+    # os.makedirs(config.stat_output_directory, exist_ok=True)
+    # np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
 
-    mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
-    mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
+    # mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
+    # mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
 
-    fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
-    print("fid score is : " + str(fid))
+    # fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
+    # print("fid score is : " + str(fid))
 
 
 def main(argv: Sequence[str]) -> None:

@@ -1,4 +1,6 @@
 import torch
+import torch_xla
+import torch_xla.core.xla_model as xm
 import torch.nn as nn
 
 import open_clip
@@ -22,7 +24,7 @@ class CLIPEncoder(nn.Module):
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(self.clip_version,
                                                                                pretrained=self.pretrained,
                                                                                cache_dir=cache_dir)
-
+        breakpoint()
         self.model.eval()
         self.model.to(device)
         self.device = device
