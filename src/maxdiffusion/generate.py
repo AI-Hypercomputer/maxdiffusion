@@ -123,11 +123,15 @@ def save_process(images, config, img_ids):
     for i, image in enumerate(images):
         image.save(f"{image_directory}image_{img_ids[i]}.png")
 
+ 
+
 def run(config):
     rng = jax.random.PRNGKey(config.seed)
     # Setup Mesh
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
+
+
 
     batch_size = jax.device_count() * config.per_device_batch_size
     assert 30_000 % batch_size == 0, f"Coco dataset must be evenly divisible by batch size : {batch_size}"
@@ -205,6 +209,8 @@ def run(config):
             images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
             images = jax.experimental.multihost_utils.process_allgather(images)
             numpy_images = np.array(images)
+            
+            
             p = Process(target=save_process, args=(numpy_images, config, img_ids))
             p.start()
             threads.append(p)

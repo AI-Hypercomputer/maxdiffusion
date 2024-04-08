@@ -19,6 +19,7 @@ import jax
 import numpy as np
 from maxdiffusion.metrics.fid import inception
 from maxdiffusion.metrics.fid import fid_score
+from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoder
 from typing import Sequence
 from absl import app
 from maxdiffusion import pyconfig
@@ -32,6 +33,21 @@ import jax.numpy as jnp
 import flax
 import functools
 
+from transformers import CLIPProcessor, CLIPModel
+from keras.preprocessing.image import ImageDataGenerator
+from tqdm import tqdm
+from PIL import Image
+
+# if self.validation_run_clip:
+#             if self.clip_encoder is None:
+#                 self.clip_encoder = CLIPEncoder(clip_version=self.clip_version, cache_dir=self.clip_cache_dir)
+#             for prompt, x_sampler in zip(prompts, x_samples):
+#                 # TODO(ahmadki): this is not efficient but clip model expects a PIL image,
+#                 # modify the clip encoder so we can use raw tensors instead
+#                 img = self.to_pil_image(x_sampler)
+#                 score = self.clip_encoder.get_clip_score(prompt, img)
+#                 self.validation_clip_scores.append(score)
+
 def load_captions(file_path):
     captions_df = pd.read_csv(file_path, delimiter='\t', header=0, names=['image_id','id', 'caption'])
     return captions_df
@@ -42,12 +58,37 @@ def load_stats(file_path):
     mu = images_data['mu']
     return sigma, mu
 
+def calculate_clip(images, prompts, config):
+    clip_encoder = CLIPEncoder(cache_dir=config.clip_cache_dir)
+    assert len(images) == len(prompts)
+    clip_scores = []
+    for i in range(0,len(images)):
+        score = clip_encoder.get_clip_score(prompts[i], images[i])
+        clip_scores.append(score)
+    clip_scores = torch.cat(clip_scores, 0)
+    clip_score = np.mean(clip_scores.detach().cpu().numpy())
+    print("clip score is" + str(clip_score))
+    return clip_score
+
+def load_images(path):
+    images = []
+    for f in tqdm(os.listdir(path)):
+        img = Image.open(os.path.join(path, f))
+        images.append(img)
+    return images
+
 def eval(config):
     batch_size = config.per_device_batch_size * jax.device_count()
 
-    #inference happenning here: 
+    #inference happenning here: first generate the images
     generate.run(config)
 
+    # calculating CLIP:
+    images = load_images(config.images_directory)
+    prompts = load_captions(config.caption_coco_file)['caption']
+    calculate_clip(images, prompts, config)
+
+    # calculating FID:
     rng = jax.random.PRNGKey(0)
     
     model = inception.InceptionV3(pretrained=True)
@@ -62,7 +103,8 @@ def eval(config):
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
 
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
-    print("fid is : " + str(fid))
+    print("fid score is : " + str(fid))
+
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
