@@ -39,6 +39,8 @@ WARNING: The training code is purely experimental and is under development.
 
 We recommend starting with a single TPU host and then moving to multihost.
 
+Minimum requirements: Ubuntu Version 22.04, Python 3.10 and Tensorflow >= 2.12.0.
+
 ## Getting Started: Local Development for single host
 Local development is a convenient way to run MaxDiffusion on a single host. 
 
