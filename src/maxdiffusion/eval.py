@@ -33,20 +33,10 @@ import jax.numpy as jnp
 import flax
 import functools
 
-from transformers import CLIPProcessor, CLIPModel
 from keras.preprocessing.image import ImageDataGenerator
 from tqdm import tqdm
 from PIL import Image
 
-# if self.validation_run_clip:
-#             if self.clip_encoder is None:
-#                 self.clip_encoder = CLIPEncoder(clip_version=self.clip_version, cache_dir=self.clip_cache_dir)
-#             for prompt, x_sampler in zip(prompts, x_samples):
-#                 # TODO(ahmadki): this is not efficient but clip model expects a PIL image,
-#                 # modify the clip encoder so we can use raw tensors instead
-#                 img = self.to_pil_image(x_sampler)
-#                 score = self.clip_encoder.get_clip_score(prompt, img)
-#                 self.validation_clip_scores.append(score)
 
 def load_captions(file_path):
     captions_df = pd.read_csv(file_path, delimiter='\t', header=0, names=['image_id','id', 'caption'])
