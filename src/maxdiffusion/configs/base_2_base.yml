@@ -22,7 +22,7 @@ gcs_metrics: False
 save_config_to_gcs: False
 log_period: 10000000000
 
-pretrained_model_name_or_path: 'stabilityai/stable-diffusion-2-base'
+pretrained_model_name_or_path: "gs://jfacevedo-maxdiffusion-v5p/checkpoints/v5p-32-groupnorm-16/512000/" #'stabilityai/stable-diffusion-2-base'
 revision: 'main'
 dtype: 'bfloat16'
 # Set true to load weights from pytorch
@@ -125,7 +125,7 @@ max_train_steps: 25442
 seed: 0
 output_dir: 'sd-model-finetuned'
 tensorboard_dir: 'gs://shahrokhi-maxdiffusion-v5'
-per_device_batch_size: 16
+per_device_batch_size: 4
 
 warmup_steps_fraction: 0.33
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
@@ -146,13 +146,14 @@ skip_first_n_steps_for_profiler: 1
 profiler_steps: 5
 
 # Generation parameters
-prompts: "/home/jfacevedo/prompts.txt"
-image_ids: "/home/jfacevedo/ids.txt"
-images_directory: "/home/jfacevedo/maxdiffusion/generated_images/"
-stat_output_directory: "/home/jfacevedo/maxdiffusion/output/"
-stat_output_file: "/home/jfacevedo/maxdiffusion/output/stats.npz"
-stat_coco_file: "/mnt/disks/laion400-disk/coco2014/val2014_30k_stats.npz"
-caption_coco_file: "/mnt/disks/laion400-disk/coco2014/val2014_30k.tsv"
+prompts: "/home/shahrokhi/prompts.txt"
+image_ids: "/home/shahrokhi/ids.txt"
+images_directory: "/home/shahrokhi/maxdiffusion/generated_images/"
+stat_output_directory: "/home/shahrokhi/maxdiffusion/output/"
+stat_output_file: "/home/shahrokhi/maxdiffusion/output/stats.npz"
+stat_coco_file: "/home/shahrokhi/coco2014/val2014_30k_stats.npz"
+caption_coco_file: "/home/shahrokhi/coco2014/val2014_30k.tsv"
+clip_cache_dir: "/home/shahrokhi/maxdiffusion/clip_cache_dir"
 negative_prompt: ""
 # https://github.com/mlcommons/training/blob/master/stable_diffusion/configs/train_01x08x08.yaml#L26
 guidance_scale: 8
