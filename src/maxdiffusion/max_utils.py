@@ -18,6 +18,7 @@
 # pylint: disable=bare-except, consider-using-generator
 """ Common Max Utils needed by multiple modules"""
 import functools
+from pathlib import Path
 import json
 import yaml
 import os
@@ -171,6 +172,22 @@ def parse_gcs_bucket_and_prefix(destination_gcs_name):
   bucket = path_parts.pop(0)
   key = "/".join(path_parts)
   return bucket, key
+
+def download_blobs(source_gcs_folder, local_destination):
+  """Downloads a folder to a local location"""
+  bucket_name, prefix_name = parse_gcs_bucket_and_prefix(source_gcs_folder)
+  storage_client = storage.Client()
+  bucket = storage_client.get_bucket(bucket_name)
+  blobs = bucket.list_blobs(prefix=prefix_name)
+  for blob in blobs:
+    file_split = blob.name.split("/")
+    directory = os.path.join(local_destination, "/".join(file_split[0:-1]))
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    download_to_filename = os.path.join(directory, file_split[-1])
+    if not os.path.isfile(download_to_filename):
+      blob.download_to_filename(download_to_filename)
+  
+  return "/".join(directory.split("/")[:-1])
 
 def upload_blob(destination_gcs_name, source_file_name):
   """Uploads a file to a GCS location"""
@@ -437,9 +454,6 @@ def get_params_to_save(params):
   return jax.device_get(jax.tree_util.tree_map(lambda x: x, params))
 
 def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, output_dir):
-  safety_checker = FlaxStableDiffusionSafetyChecker.from_pretrained(
-    "CompVis/stable-diffusion-safety-checker", from_pt=True
-  )
   weight_dtype = get_dtype(config)
   # Restore vae and text encoder if we cached latents and encoder outputs.
   if config.cache_latents_text_encoder_outputs:
@@ -460,8 +474,8 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
     unet=pipeline.unet,
     tokenizer=pipeline.tokenizer,
     scheduler=noise_scheduler,
-    safety_checker=safety_checker,
-    feature_extractor=CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32"),
+    safety_checker=None,
+    feature_extractor=None,
   )
   output_dir = output_dir.replace("gs://","")
   pipeline.save_pretrained(
@@ -470,7 +484,6 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
         "text_encoder": get_params_to_save(params["text_encoder"]),
         "vae": get_params_to_save(params["vae"]),
         "unet": get_params_to_save(unet_state.params),
-        "safety_checker": safety_checker.params,
     },
   )
 

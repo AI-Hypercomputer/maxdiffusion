@@ -114,6 +114,9 @@ class _HyperParameters():
 
     if raw_keys["learning_rate_schedule_steps"]==-1:
       raw_keys["learning_rate_schedule_steps"] = raw_keys["max_train_steps"]
+    
+    if "gs://" in raw_keys["pretrained_model_name_or_path"]:
+      raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
 
 def get_num_target_devices(raw_keys):
   return len(jax.devices())

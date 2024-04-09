@@ -22,11 +22,11 @@ gcs_metrics: False
 save_config_to_gcs: False
 log_period: 10000000000
 
-pretrained_model_name_or_path: 'stabilityai/stable-diffusion-2-base'
+pretrained_model_name_or_path: 'gs://jfacevedo-maxdiffusion-v5p/stable_diffusion_checkpoints/models--stabilityai--stable-diffusion-2-base'
 revision: 'main'
 dtype: 'bfloat16'
 # Set true to load weights from pytorch
-from_pt: True
+from_pt: False
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash
 flash_block_sizes: {}
