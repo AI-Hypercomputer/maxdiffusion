@@ -417,7 +417,7 @@ def train(config):
         write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
         if step != 0 and (total_train_batch_size * step) % config.checkpoint_every == 0:
-           max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.output_dir+f"/{str(step * total_train_batch_size)}/")
+           max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.checkpoint_dir+f"/{str(step * total_train_batch_size)}/")
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
         if step == first_profiling_step:

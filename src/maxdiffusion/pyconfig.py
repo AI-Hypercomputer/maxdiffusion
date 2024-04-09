@@ -101,7 +101,7 @@ class _HyperParameters():
     if raw_keys["run_name"] == "":
       raw_keys["run_name"] = os.environ.get("JOBSET_NAME") #using XPK default
     run_name = raw_keys["run_name"]
-    base_output_directory = raw_keys["output_dir"]
+    base_output_directory = raw_keys["base_output_directory"]
     if run_name:
       raw_keys["tensorboard_dir"] = os.path.join(base_output_directory, run_name, "tensorboard", "")
       raw_keys["checkpoint_dir"] = os.path.join(base_output_directory, run_name, "checkpoints", "")

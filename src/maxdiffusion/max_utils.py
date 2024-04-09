@@ -463,7 +463,7 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
     safety_checker=safety_checker,
     feature_extractor=CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32"),
   )
-
+  output_dir = output_dir.replace("gs://","")
   pipeline.save_pretrained(
     output_dir,
     params={
@@ -473,6 +473,17 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
         "safety_checker": safety_checker.params,
     },
   )
+
+  user_dir = os.path.expanduser('~')
+
+  for root, _, files in os.walk(os.path.abspath(output_dir)):
+    for file in files:
+      file_to_upload = os.path.join(root, file)
+      max_logging.log(f"Moving file {file_to_upload} to GCS...")
+      gcs_file_name = os.path.join(config.base_output_directory, config.run_name, 
+                                   file_to_upload.replace(user_dir,"").strip("/"))
+      upload_blob(gcs_file_name, file_to_upload)
+      max_logging.log(f"File {file_to_upload} moved successfully!")
 
 def get_memory_allocations():
   devices = jax.local_devices()
