@@ -69,11 +69,11 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
-                      ['out_channels', 'fsdp'],
-                      ['conv_out', 'fsdp'],
-                      ['length', 'fsdp']
+                      # ['activation_batch', 'data'],
+                      # ['activation_length', 'fsdp'],
+                      # ['out_channels', 'fsdp'],
+                      # ['conv_out', 'fsdp'],
+                      # ['length', 'fsdp']
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
