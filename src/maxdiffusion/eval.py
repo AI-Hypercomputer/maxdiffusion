@@ -87,21 +87,24 @@ def eval(config):
     calculate_clip(images, prompts, config)
 
     # calculating FID:
-    # rng = jax.random.PRNGKey(0)
+    rng = jax.random.PRNGKey(0)
     
-    # model = inception.InceptionV3(pretrained=True, transform_input=True)
-    # params = model.init(rng, jnp.ones((1, 256, 256, 3)))
+    model = inception.InceptionV3(pretrained=True, transform_input=True)
+    params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
-    # apply_fn = jax.jit(functools.partial(model.apply, train=False))
-    # mu, sigma = fid_score.compute_statistics_with_mmap(config.images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
-    # os.makedirs(config.stat_output_directory, exist_ok=True)
-    # np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
+    apply_fn = jax.jit(functools.partial(model.apply, train=False))
 
-    # mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
-    # mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
+    dataloader_images_directory="/".join(config.images_directory.split("/")[:-2])
+    mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
 
-    # fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
-    # print("fid score is : " + str(fid))
+    os.makedirs(config.stat_output_directory, exist_ok=True)
+    np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
+
+    mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
+    mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
+
+    fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
+    print("fid score is : " + str(fid))
 
 
 def main(argv: Sequence[str]) -> None:
