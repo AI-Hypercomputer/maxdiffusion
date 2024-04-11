@@ -69,9 +69,10 @@ def make_laion400m_train_iterator(
     hidden_states = tf.io.parse_tensor(tnp.asarray(features["hidden_states"]), out_type=tf.float32)
     return {"pixel_values" : latents, "input_ids" : hidden_states}
 
-  filenames = tf.io.gfile.glob(os.path.join(config.train_data_dir,"*"))
   train_ds = (
-    tf.data.TFRecordDataset(filenames, num_parallel_reads=AUTOTUNE)
+    tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True)
+      .shard(num_shards = jax.process_count(), index = jax.process_index())
+      .interleave(tf.data.TFRecordDataset, num_parallel_calls=AUTOTUNE)
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
       .shuffle(global_batch_size * 10)
@@ -79,8 +80,6 @@ def make_laion400m_train_iterator(
       .repeat(-1)
       .prefetch(AUTOTUNE)
   )
-
-  train_ds = train_ds.shard(num_shards = jax.process_count(), index = jax.process_index())
 
   train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
   return train_iter
