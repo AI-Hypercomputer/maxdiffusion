@@ -108,9 +108,7 @@ enable_data_shuffling: True
 # checkpoint every number of samples
 checkpoint_every: 512000
 
-# Prepare image latents and text encoder outputs
-# during dataset creation to reduce memory consumption.
-cache_latents_text_encoder_outputs: True
+cache_latents_text_encoder_outputs: False
 
 # Evaluation dataset
 dataset_name: ''

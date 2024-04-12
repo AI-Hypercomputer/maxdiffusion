@@ -23,6 +23,7 @@ import tensorflow.experimental.numpy as tnp
 from datasets import load_dataset
 import jax
 import jax.numpy as jnp
+from transformers import CLIPTokenizer
 
 from maxdiffusion import multihost_dataloading
 
@@ -57,17 +58,37 @@ def make_laion400m_train_iterator(
   maxdiffusion/pedagogical_examples/to_tfrecords.py
   """
   feature_description = {
-    "latents" : tf.io.FixedLenFeature([], tf.string),
-    "hidden_states" : tf.io.FixedLenFeature([], tf.string)
+    "moments" : tf.io.FixedLenFeature([], tf.string),
+    "caption" : tf.io.FixedLenFeature([], tf.string)
   }
 
   def _parse_tfrecord_fn(example):
     return tf.io.parse_single_example(example, feature_description)
 
   def prepare_sample(features):
-    latents = tf.io.parse_tensor(tnp.asarray(features["latents"]), out_type=tf.float32)
-    hidden_states = tf.io.parse_tensor(tnp.asarray(features["hidden_states"]), out_type=tf.float32)
-    return {"pixel_values" : latents, "input_ids" : hidden_states}
+    moments = tf.io.parse_tensor(tnp.asarray(features["moments"]), out_type=tf.float32)
+    captions = tf.io.parse_tensor(tnp.asarray(features["caption"]), out_type=tf.string)
+    return (moments, captions)
+  
+  def tokenize(moments, captions, tokenizer):
+    captions = captions.numpy().decode("utf-8")
+    input_ids = tokenizer(captions,
+      max_length=tokenizer.model_max_length,
+      padding="max_length",
+      truncation=True
+    )["input_ids"]
+    return (moments, input_ids)
+
+  def create_dict(moments, input_ids):
+    return {"moments" : moments, "input_ids" : input_ids}
+
+  tokenizer = CLIPTokenizer.from_pretrained(
+    config.pretrained_model_name_or_path,
+    subfolder="tokenizer"
+  )
+
+  partial_tokenize = functools.partial(tokenize, tokenizer=tokenizer)
+
 
   train_ds = (
     tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True)
@@ -75,8 +96,10 @@ def make_laion400m_train_iterator(
       .interleave(tf.data.TFRecordDataset, num_parallel_calls=AUTOTUNE)
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
+      .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.float32, tf.float32)), num_parallel_calls=AUTOTUNE)
+      .map(create_dict, num_parallel_calls=AUTOTUNE)
       .shuffle(global_batch_size * 10)
-      .batch(global_batch_size, drop_remainder=True)
+      .batch(global_batch_size, drop_remainder=False)
       .repeat(-1)
       .prefetch(AUTOTUNE)
   )

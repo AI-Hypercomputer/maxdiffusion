@@ -48,6 +48,7 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
   make_laion400m_train_iterator
 )
+from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 
 TOTAL_TRAIN_SAMPLES = 6513144
 TOTAL_EVAL_SAMPLES = 30000
@@ -233,7 +234,7 @@ def train(config):
 
     sharding = PositionalSharding(devices_array).replicate()
     partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=sharding)
-    params["text_encoder"] = jax.tree_map(partial_device_put_replicated, params["text_encoder"])
+    params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
 
     # Optimization
     if config.scale_lr:
@@ -273,13 +274,9 @@ def train(config):
            config, mesh, total_train_batch_size
         )
 
-    if config.cache_latents_text_encoder_outputs:
-       vae_state = None
-       vae_state_mesh_shardings = None
-       pipeline.vae = None
-       params["vae"] = None
-       pipeline.text_encoder = None
-       params["text_encoder"] = None
+    vae_state = None
+    vae_state_mesh_shardings = None
+    params["vae"] = None
 
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
@@ -287,21 +284,17 @@ def train(config):
     def train_step(unet_state, vae_state, batch, train_rng, cache_latents_text_encoder_outputs):
         _, gen_dummy_rng = jax.random.split(train_rng)
         sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
-        def compute_loss(unet_params):
 
+        def compute_loss(unet_params):
+            
             if cache_latents_text_encoder_outputs:
-               latents = batch["pixel_values"]
-               encoder_hidden_states = batch["input_ids"]
+               raise Exception(f"caching latents and text encoder outputs is not supported")
             else:
-                # Convert images to latent space
-                vae_outputs = pipeline.vae.apply(
-                {"params": vae_state.params}, batch["pixel_values"], deterministic=True, method=pipeline.vae.encode
-                )
-                latents = vae_outputs.latent_dist.sample(sample_rng)
+                # Convert moments to latent space
+                latents = FlaxDiagonalGaussianDistribution(batch["moments"]).sample(sample_rng)
                 # (NHWC) -> (NCHW)
                 latents = jnp.transpose(latents, (0, 3, 1, 2))
                 latents = latents * pipeline.vae.config.scaling_factor
-
                 # Get the text embedding for conditioning
                 encoder_hidden_states = pipeline.text_encoder(
                     batch["input_ids"],
@@ -358,7 +351,7 @@ def train(config):
     num_model_parameters = calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
-    my_data_sharding = {'input_ids': data_sharding, 'pixel_values': data_sharding}
+    my_data_sharding = {'input_ids': data_sharding, 'moments': data_sharding}
     if (not config.enable_profiler):
         with jax.transfer_guard("disallow"):
             p_train_step = jax.jit(
