@@ -89,11 +89,11 @@ def eval(config):
     # calculating FID:
     # rng = jax.random.PRNGKey(0)
     
-    # model = inception.InceptionV3(pretrained=True)
+    # model = inception.InceptionV3(pretrained=True, transform_input=True)
     # params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     # apply_fn = jax.jit(functools.partial(model.apply, train=False))
-    # mu, sigma = fid_score.compute_statistics_with_mmap(config.images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (config.resolution, config.resolution))
+    # mu, sigma = fid_score.compute_statistics_with_mmap(config.images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
     # os.makedirs(config.stat_output_directory, exist_ok=True)
     # np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
 
