@@ -35,7 +35,6 @@ from maxdiffusion import (
     max_utils,
     pyconfig,
     mllog_utils,
-    eval
 )
 
 from flax.linen import partitioning as nn_partitioning
