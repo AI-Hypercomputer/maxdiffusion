@@ -241,12 +241,17 @@ def train(config):
 
     learning_rate_scheduler = max_utils.create_learning_rate_schedule(config)
 
-    tx = optax.adamw(
+    adamw = optax.adamw(
         learning_rate=learning_rate_scheduler,
         b1=config.adam_b1,
         b2=config.adam_b2,
         eps=config.adam_eps,
         weight_decay=config.adam_weight_decay,
+    )
+
+    tx = optax.chain(
+        optax.clip_by_global_norm(1),
+        adamw,
     )
 
     (unet_state,
