@@ -183,6 +183,8 @@ def download_blobs(source_gcs_folder, local_destination):
     file_split = blob.name.split("/")
     directory = os.path.join(local_destination, "/".join(file_split[0:-1]))
     Path(directory).mkdir(parents=True, exist_ok=True)
+    if len(file_split[-1]) <=0:
+      continue
     download_to_filename = os.path.join(directory, file_split[-1])
     if not os.path.isfile(download_to_filename):
       blob.download_to_filename(download_to_filename)
