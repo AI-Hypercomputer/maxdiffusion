@@ -62,7 +62,7 @@ export LIBTPU_INIT_ARGS='--xla_tpu_enable_async_collective_fusion_fuse_all_gathe
 
 
 #cd /maxdiffusion
-git clone -b  mlperf_4_fix_pad  https://github.com/suexu1025/maxdiffusion.git maxdiffusion 
+git clone -b  qinwen/eval  https://github.com/google/maxdiffusion maxdiffusion 
 cd maxdiffusion
 
 pip install .
