@@ -62,13 +62,21 @@ export LIBTPU_INIT_ARGS='--xla_tpu_enable_async_collective_fusion_fuse_all_gathe
 
 
 #cd /maxdiffusion
-git clone -b  mlperf_4  https://github.com/suexu1025/maxdiffusion.git maxdiffusion
+git clone -b  mlperf_4_fix_pad  https://github.com/suexu1025/maxdiffusion.git maxdiffusion 
 cd maxdiffusion
 
 pip install .
 mkdir generated_images
 mkdir output
 
-TPU_STDERR_LOG_LEVEL=0 TPU_MIN_LOG_LEVEL=0 TF_CPP_MIN_LOG_LEVEL=0 python -m src.maxdiffusion.eval src/maxdiffusion/configs/base_2_base.yml run_name=v5p-128-eval per_device_batch_size=16 base_output_directory=${OUT_DIR}
+TPU_STDERR_LOG_LEVEL=0 TPU_MIN_LOG_LEVEL=0 TF_CPP_MIN_LOG_LEVEL=0 python -m src.maxdiffusion.eval src/maxdiffusion/configs/base_2_base.yml run_name=v5p-128-eval per_device_batch_size=16 \
+pretrained_model_name_or_path="gs://jfacevedo-maxdiffusion-v5p/training_results/v5p-32-xpk-moments-wsf-0.1-512-clipping-lr-4e-4/app/maxdiffusion/jfacevedo-maxdiffusion-v5p/training_results/v5p-32-xpk-moments-wsf-0.1-512-clipping-lr-4e-4/checkpoints/1024000/" \
+caption_coco_file="/app/datasets/coco2014/val2014_30k_padded.tsv" \
+images_directory="/app/maxdiffusion/generated_images/" \
+stat_output_directory="output/" \
+stat_output_file="output/stats.npz" \
+stat_coco_file="/app/datasets/coco2014/val2014_30k_stats.npz" \
+clip_cache_dir="clip_cache_dir" \
+base_output_directory=${OUT_DIR}
 
 #gsutil cp -r generated_images ${OUT_DIR}/output/
