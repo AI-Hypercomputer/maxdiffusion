@@ -237,6 +237,8 @@ def run(config):
     negative_prompt_ids = tokenize([""] * PerHostBatchSize, pipeline.tokenizer)
     print(len(shards))
 
+    os.makedirs(config.images_directory, exist_ok=True)
+
     for i, shard_i in enumerate(shards):
         df = pd.DataFrame(shard_i[:], columns=["image_id", "id", "prompt"])
         batches = [df[i:i + PerHostBatchSize] for i in range(0, len(df), PerHostBatchSize)]
@@ -274,7 +276,7 @@ def run(config):
         #deactivate_profiler(config)
         print("inference time: ",(time.time() - s))
         
-        save_process(numpy_images, config, img_ids)
+        save_process(numpy_images, config.images_directory, img_ids)
         # p.start()
         # threads.append(p)
         # k+=1
