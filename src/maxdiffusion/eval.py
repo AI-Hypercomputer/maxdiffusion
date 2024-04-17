@@ -77,7 +77,7 @@ def eval(config):
     batch_size = config.per_device_batch_size * jax.device_count() * 10
 
     #inference happenning here: first generate the images
-    #generate.run(config)
+    generate.run(config)
 
     # calculating CLIP:
     # captions_df = load_captions(config.caption_coco_file)
