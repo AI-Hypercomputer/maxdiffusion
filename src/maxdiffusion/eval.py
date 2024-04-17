@@ -34,11 +34,11 @@ import jax.numpy as jnp
 import flax
 import functools
 
-#from keras.preprocessing.image import ImageDataGenerator
+from keras.preprocessing.image import ImageDataGenerator
 from tqdm import tqdm
 from PIL import Image
-from open_clip_jax import CLIPInference
-from open_clip_jax import create_image_transforms, create_model_with_params, tokenize
+# from open_clip_jax import CLIPInference
+# from open_clip_jax import create_image_transforms, create_model_with_params, tokenize
 
 
 def load_captions(file_path):
@@ -111,33 +111,38 @@ def eval(config):
     #generate.run(config)
 
     # calculating CLIP:
-    captions_df = load_captions(config.caption_coco_file)
-    images, prompts = load_images(config.images_directory, captions_df )
+    # captions_df = load_captions(config.caption_coco_file)
+    # images, prompts = load_images(config.images_directory, captions_df )
     
 
-    calculate_clip(images, prompts, config)
+    # calculate_clip(images, prompts, config)
 
     # calculating FID:
-    # rng = jax.random.PRNGKey(0)
+    print("we passed here")
+    rng = jax.random.PRNGKey(0)
     
-    # model = inception.InceptionV3(pretrained=True)
-    # params = model.init(rng, jnp.ones((1, 256, 256, 3)))
+    model = inception.InceptionV3(pretrained=True, transform_input=True)
+    params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
-    # apply_fn = jax.jit(functools.partial(model.apply, train=False))
-    # mu, sigma = fid_score.compute_statistics(config.images_directory, params, apply_fn, batch_size, (config.resolution, config.resolution))
-    # os.makedirs(config.stat_output_directory, exist_ok=True)
-    # np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
+    apply_fn = jax.jit(functools.partial(model.apply, train=False))
 
-    # mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
-    # mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
+    dataloader_images_directory="/".join(config.images_directory.split("/")[:-2])
 
-    # fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
-    # print("fid score is : " + str(fid))
+    mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
 
-    # device = torch.device('cpu')
-    # paths = ["/home/shahrokhi/maxdiffusion/generated_images/", "/home/shahrokhi/coco2014/val2014_30k_stats.npz"]
-    # fid = pytorch_fid_score.calculate_fid_given_paths(paths, batch_size, device, 2048 )
-    # print("fid is : " + str(fid))
+    os.makedirs(config.stat_output_directory, exist_ok=True)
+    np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
+
+    mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
+    mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
+
+    fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
+    print("fid score is : " + str(fid))
+
+    device = torch.device('cpu')
+    paths = ["/home/shahrokhi/maxdiffusion/generated_images/", "/home/shahrokhi/coco2014/val2014_30k_stats.npz"]
+    fid = pytorch_fid_score.calculate_fid_given_paths(paths, batch_size, device, 2048 )
+    print("fid is : " + str(fid))
 
 
 def main(argv: Sequence[str]) -> None:
