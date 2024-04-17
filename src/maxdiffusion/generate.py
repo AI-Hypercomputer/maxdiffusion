@@ -213,8 +213,8 @@ def run(config):
       # Create a dataset using tf.data
       dataset = tf.data.TextLineDataset(file_path)
       dataset = dataset.map(parse_tsv_line, num_parallel_calls=tf.data.AUTOTUNE)
-      dataset = dataset.map(lambda x: x.to_tensor())  
-      dataset = dataset.padded_batch(batch_size_per_process)
+      #dataset = dataset.map(lambda x: x.to_tensor())  
+      dataset = dataset.batch(batch_size_per_process)
       dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())
       # Create an iterator to iterate through the batches
       iterator = iter(dataset)
@@ -268,7 +268,7 @@ def run(config):
         images = jax.experimental.multihost_utils.process_allgather(images)
         
         images = images[:current_batch_size]
-        print(images.shape)
+
         numpy_images = np.array(images)
         
         #deactivate_profiler(config)
