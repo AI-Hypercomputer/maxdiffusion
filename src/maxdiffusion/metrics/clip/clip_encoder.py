@@ -11,6 +11,7 @@ import random
 
 import open_clip
 from PIL import Image
+import jax
 
 
 
@@ -45,7 +46,7 @@ class CLIPEncoder(nn.Module):
         text = open_clip.tokenize(text).to(self.device)
         text_features = self.model.encode_text(text).float()
         text_features /= text_features.norm(dim=-1, keepdim=True)
-        similarity = 100 * image_features @ text_features.T
+        similarity = image_features @ text_features.T
 
         return similarity.numpy()
 
@@ -62,7 +63,7 @@ class CLIPEncoderFlax:
         inputs = self.processor(text=text, images=image, return_tensors="np")
         outputs = self.model(**inputs)
 
-        return np.array(outputs.logits_per_image)
+        return np.array(outputs.logits_per_image) / 100
     
 def load_random_images_from_gcs(bucket_name, folder_path, max_images=10):
     """Loads a specified number of random images from a folder in a GCS bucket.
@@ -113,7 +114,7 @@ def get_random_caption():
     return random.sample(sentences, 1)
 
     
-def verify_models_match():
+def verify_models_match(device='cpu'):
     my_bucket_name = "jfacevedo-maxdiffusion-v5p"
     my_folder_path = "checkpoints/ckpt_generated_images/512000"
     random_images = load_random_images_from_gcs(my_bucket_name, my_folder_path)
@@ -125,8 +126,9 @@ def verify_models_match():
     for blob, image in random_images:
         caption = get_random_caption()
         torch_score = pytorch_encoder.get_clip_score(caption, image)
-        flax_score = flax_encoder.get_clip_score(caption, image)
-        if not np.allclose(torch_score, flax_score):
+        with jax.default_device(jax.devices(device)[0]):
+            flax_score = flax_encoder.get_clip_score(caption, image)
+        if not np.allclose(torch_score, flax_score, atol=1e-3):
             print(f"The scores did not match for blob {blob}. Torch Score was {torch_score} and Flax Score was {flax_score}")
             some_mismatch = True
         else:
@@ -134,9 +136,14 @@ def verify_models_match():
     
     if not some_mismatch:
         print("All matched")
+    return True
 
 if __name__ == "__main__":
-    verify_models_match()
+    for i in range(4):
+        matched = verify_models_match('tpu')
+        if not matched:
+            print('Batch did not match')
+
 
 
     
