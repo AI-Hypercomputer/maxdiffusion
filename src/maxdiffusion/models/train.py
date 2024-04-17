@@ -403,7 +403,7 @@ def train(config):
         loss, grad = grad_fn(unet_state.params)
 
         new_state = unet_state.apply_gradients(grads=grad)
-        metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
+        metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
 
         return new_state, metrics, new_train_rng
 
