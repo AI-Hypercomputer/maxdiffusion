@@ -70,4 +70,4 @@ git checkout mlperf_4
 pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 pip install -r requirements.txt
 pip install .
-python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=v5p-128-xpk base_output_directory=gs://jfacevedo-maxdiffusion/training_results train_data_dir=gs://jfacevedo-maxdiffusion-v5p/laion400m/processed/laion400m_tfrec per_device_batch_size=8 split_head_dim=True attention=flash train_new_unet=True norm_num_groups=16 enable_profiler=True skip_first_n_steps_for_profiler=1000 reuse_example_batch=False
+python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=v5p-128-xpk base_output_directory=gs://jfacevedo-maxdiffusion/training_results  train_data_dir=gs://jfacevedo-maxdiffusion-v5p/laion400m/processed/laion400m_tfrec per_device_batch_size=8 split_head_dim=True  attention=flash  train_new_unet=True norm_num_groups=16 enable_profiler=True skip_first_n_steps_for_profiler=1000 reuse_example_batch=False
