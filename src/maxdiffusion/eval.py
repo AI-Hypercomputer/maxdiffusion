@@ -108,7 +108,7 @@ def eval(config):
     batch_size = config.per_device_batch_size * jax.device_count()
 
     #inference happenning here: first generate the images
-    #generate.run(config)
+    generate.run(config)
 
     # calculating CLIP:
     # captions_df = load_captions(config.caption_coco_file)
@@ -118,11 +118,11 @@ def eval(config):
     # calculate_clip(images, prompts, config)
 
     # calculating FID:
-    print("we passed here")
+    # print("we passed here")
     rng = jax.random.PRNGKey(0)
     
     model = inception.InceptionV3(pretrained=True, transform_input=True)
-    params = model.init(rng, jnp.ones((1, 256, 256, 3)))
+    params = model.init(rng, jnp.ones((1, 2048, 2048, 3)))
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
 
@@ -135,14 +135,13 @@ def eval(config):
 
     mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
-
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
     print("fid score is : " + str(fid))
 
-    device = torch.device('cpu')
-    paths = ["/home/shahrokhi/maxdiffusion/generated_images/", "/home/shahrokhi/coco2014/val2014_30k_stats.npz"]
-    fid = pytorch_fid_score.calculate_fid_given_paths(paths, batch_size, device, 2048 )
-    print("fid is : " + str(fid))
+    # device = torch.device('cpu')
+    # paths = [config.images_directory, "/home/shahrokhi/coco2014/val2014_30k_stats.npz"]
+    # fid = pytorch_fid_score.calculate_fid_given_paths(paths, batch_size, device, 2048 )
+    # print("fid is : " + str(fid))
 
 
 def main(argv: Sequence[str]) -> None:

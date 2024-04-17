@@ -5,7 +5,7 @@ from PIL import Image
 import os
 import scipy
 from tqdm import tqdm
-from keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 IMAGE_EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'pgm', 'png', 'ppm',
                     'tif', 'tiff', 'webp'}
@@ -35,7 +35,6 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
     for i in tqdm(range(num_batches)):
         x = get_batch_fn()
         x = np.asarray(x)
-        x = 2 * x - 1
         activation_batch = apply_fn(params, jax.lax.stop_gradient(x))
         activation_batch = activation_batch.squeeze(axis=1).squeeze(axis=1)
 
@@ -67,7 +66,7 @@ def compute_statistics(path, params, apply_fn, batch_size=1, img_size=None):
         if img_size is not None and img.size[:2] != img_size:
             img = img.resize(
                 size=(img_size[0], img_size[1]),
-                resample=Image.Resampling.BICUBIC,
+                #resample=Image.Resampling.BICUBIC,
             )
         img = np.array(img) / 255.0
         images.append(img)
@@ -79,7 +78,7 @@ def compute_statistics(path, params, apply_fn, batch_size=1, img_size=None):
         x = np.asarray(x)
         x = 2 * x - 1
         pred = apply_fn(params, jax.lax.stop_gradient(x))
-        act.append(pred.squeeze(axis=1).squeeze(axis=1))
+        act.append(pred.squeeze(1).squeeze(1))
     act = jnp.concatenate(act, axis=0)
 
     mu = np.mean(act, axis=0)
