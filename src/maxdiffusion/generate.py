@@ -153,7 +153,8 @@ def run(config):
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
 
-    batch_size = jax.device_count() * config.per_device_batch_size
+
+    batch_size = jax.local_device_count() * config.per_device_batch_size
     #assert 30_000 % batch_size == 0, f"Coco dataset must be evenly divisible by batch size : {batch_size}"
     weight_dtype = get_dtype(config)
     flash_block_sizes = get_flash_block_sizes(config)
@@ -214,7 +215,6 @@ def run(config):
       dataset = dataset.map(parse_tsv_line, num_parallel_calls=tf.data.AUTOTUNE)
       dataset = dataset.map(lambda x: x.to_tensor())  
       dataset = dataset.padded_batch(batch_size_per_process)
-      
       dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())
       # Create an iterator to iterate through the batches
       iterator = iter(dataset)
@@ -247,6 +247,12 @@ def run(config):
         batch = batches[0]
         prompt_tensors = batch["prompt"].tolist()
         prompt = [t.numpy().decode('utf-8') for t in prompt_tensors]
+        #pad last batch
+        current_batch_size = len(prompt)
+
+        if current_batch_size != PerHostBatchSize:
+            prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
+
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
         #prompt_ids=shard(prompt_ids)
         print(prompt_ids.shape)
@@ -260,8 +266,11 @@ def run(config):
         #activate_profiler(config)
         images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
         images = jax.experimental.multihost_utils.process_allgather(images)
-
+        
+        images = images[:current_batch_size]
+        print(images.shape)
         numpy_images = np.array(images)
+        
         #deactivate_profiler(config)
         print("inference time: ",(time.time() - s))
         
