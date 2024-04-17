@@ -95,9 +95,25 @@ def load_random_images_from_gcs(bucket_name, folder_path, max_images=10):
         images.append((blob.name, Image.open(BytesIO(image_bytes))))
 
     return images
-    
-if __name__ == "__main__":
 
+def get_random_caption():
+    sentences = [
+        "The early bird might get the worm, but the second mouse gets the cheese.",
+        "Don't count your chickens before they hatch... or your omelet will be disappointing.",
+        "If at first you don't succeed, try hiding all evidence that you ever tried.",
+        "Experience is a great teacher, but she gives really tough exams.",
+        "My imaginary friends think I'm the best listener.",
+        "A clear conscience is often a sign of a bad memory.",
+        "Today was a total waste of makeup.",
+        "My level of sarcasm has gotten to the point where I don't even know if I'm kidding or not.",
+        "If you think nobody cares if you're alive, try missing a couple of payments.",
+        "Apparently, rock bottom has a basement." 
+    ]
+
+    return random.sample(sentences, 1)
+
+    
+def verify_models_match():
     my_bucket_name = "jfacevedo-maxdiffusion-v5p"
     my_folder_path = "checkpoints/ckpt_generated_images/512000"
     random_images = load_random_images_from_gcs(my_bucket_name, my_folder_path)
@@ -107,7 +123,7 @@ if __name__ == "__main__":
 
     some_mismatch = False
     for blob, image in random_images:
-        caption = "The struggle is real, but so is the coffee."
+        caption = get_random_caption()
         torch_score = pytorch_encoder.get_clip_score(caption, image)
         flax_score = flax_encoder.get_clip_score(caption, image)
         if not np.allclose(torch_score, flax_score):
@@ -118,6 +134,9 @@ if __name__ == "__main__":
     
     if not some_mismatch:
         print("All matched")
+
+if __name__ == "__main__":
+    verify_models_match()
 
 
     
