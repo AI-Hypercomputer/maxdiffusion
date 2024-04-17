@@ -19,6 +19,7 @@ import jax
 import numpy as np
 from maxdiffusion.metrics.fid import inception
 from maxdiffusion.metrics.fid import fid_score
+from maxdiffusion.metrics.fid import pytorch_fid_score
 from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoder
 from typing import Sequence
 from absl import app
@@ -33,9 +34,11 @@ import jax.numpy as jnp
 import flax
 import functools
 
-from keras.preprocessing.image import ImageDataGenerator
+#from keras.preprocessing.image import ImageDataGenerator
 from tqdm import tqdm
 from PIL import Image
+from open_clip_jax import CLIPInference
+from open_clip_jax import create_image_transforms, create_model_with_params, tokenize
 
 
 def load_captions(file_path):
@@ -49,17 +52,45 @@ def load_stats(file_path):
     return sigma, mu
 
 def calculate_clip(images, prompts, config):
-    clip_encoder = CLIPEncoder(cache_dir=config.clip_cache_dir)
+    breakpoint()
+    model, vars = create_model_with_params(
+        'vit-base-patch32',
+        pretrained='laion2b-s34b-b79k',
+        )
+    image_transforms = create_image_transforms(
+        train=False,
+        input_format='image',
+        do_batch_transforms=False,
+        )
+    breakpoint()
+    image = image_transforms(Image.open(images[0]).convert('RGB'))._numpy()
+    image = np.expand_dims(image, axis=0)
+    text = tokenize([prompts[0]])._numpy()
+
+    def calculate_similarity(vars, image, text):
+        # CLIP returns L2-normalized image and text features.
+        image_proj, text_proj = model.apply(vars, image, text)
+        return nn.softmax(100 * image_proj @ text_proj.T)
+
+    probs = jax.jit(calculate_similarity)(vars, image, text)
+    print(probs)
+
+    # clip = CLIPInference(
+    # 'vit-base-patch32',
+    # softmax_temp=100.,
+    # pretrained='laion2b-s34b-b79k',
+    # )
+    #clip_encoder = CLIPEncoder(cache_dir=config.clip_cache_dir)
     
-    clip_scores = []
-    for i in tqdm(range(0, len(images))):
-        score = clip_encoder.get_clip_score(prompts[i], images[i])
-        clip_scores.append(score)
+    # clip_scores = np.zeros(len(images))
+    # for i in tqdm(range(len(images))):
+    #     #clip_scores[i] = clip_encoder.get_clip_score(prompts[i], images[i])
+    #     clip_scores[i], _ = clip(images[i], prompts[i])
         
-    clip_scores = torch.cat(clip_scores, 0)
-    clip_score = np.mean(clip_scores.detach().cpu().numpy())
-    print("clip score is" + str(clip_score))
-    return clip_score
+    # #clip_score = np.mean(clip_scores.detach().cpu().numpy())
+    # clip_score = np.mean(clip_scores)
+    # print("clip score is" + str(clip_score))
+    # return clip_score
 
 def load_images(path, captions_df):
     images = []
@@ -74,7 +105,7 @@ def load_images(path, captions_df):
     return images, prompts
 
 def eval(config):
-    #batch_size = config.per_device_batch_size * jax.device_count()
+    batch_size = config.per_device_batch_size * jax.device_count()
 
     #inference happenning here: first generate the images
     #generate.run(config)
@@ -93,7 +124,7 @@ def eval(config):
     # params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     # apply_fn = jax.jit(functools.partial(model.apply, train=False))
-    # mu, sigma = fid_score.compute_statistics_with_mmap(config.images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (config.resolution, config.resolution))
+    # mu, sigma = fid_score.compute_statistics(config.images_directory, params, apply_fn, batch_size, (config.resolution, config.resolution))
     # os.makedirs(config.stat_output_directory, exist_ok=True)
     # np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
 
@@ -102,6 +133,11 @@ def eval(config):
 
     # fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
     # print("fid score is : " + str(fid))
+
+    # device = torch.device('cpu')
+    # paths = ["/home/shahrokhi/maxdiffusion/generated_images/", "/home/shahrokhi/coco2014/val2014_30k_stats.npz"]
+    # fid = pytorch_fid_score.calculate_fid_given_paths(paths, batch_size, device, 2048 )
+    # print("fid is : " + str(fid))
 
 
 def main(argv: Sequence[str]) -> None:
