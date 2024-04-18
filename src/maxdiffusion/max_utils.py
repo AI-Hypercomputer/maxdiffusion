@@ -497,7 +497,8 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
         "unet": get_params_to_save(unet_state.params),
     },
   )
-  walk_and_upload_blobs(config, output_dir)
+  if jax.process_index() == 0:
+    walk_and_upload_blobs(config, output_dir)
 
   # Clean up uneeded references
   params["vae"] = None
