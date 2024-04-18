@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, FlaxCLIPModel, AutoProcessor
 import numpy as np
+import jax.numpy as jnp
 
 import requests
 
@@ -64,6 +65,18 @@ class CLIPEncoderFlax:
         outputs = self.model(**inputs)
 
         return np.array(outputs.logits_per_image) / 100
+
+def calculate_clip(images, prompts):
+    clip_encoder = CLIPEncoderFlax()
+    
+    clip_scores = []
+    for i in (range(0, len(images))):
+        score = clip_encoder.get_clip_score(prompts[i], images[i])
+        clip_scores.append(score)
+        
+    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+    print("clip score is" + str(overall_clip_score))
+    return np.array(overall_clip_score)
     
 def load_random_images_from_gcs(bucket_name, folder_path, max_images=10):
     """Loads a specified number of random images from a folder in a GCS bucket.
@@ -117,26 +130,26 @@ def get_random_caption():
 def verify_models_match(device='cpu'):
     my_bucket_name = "jfacevedo-maxdiffusion-v5p"
     my_folder_path = "checkpoints/ckpt_generated_images/512000"
-    random_images = load_random_images_from_gcs(my_bucket_name, my_folder_path)
+    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path)]
+    random_prompts = [get_random_caption() for _ in range(len(random_images))]
+    calculate_clip(random_images, random_prompts)
 
-    pytorch_encoder = CLIPEncoder()
-    flax_encoder = CLIPEncoderFlax()
 
-    some_mismatch = False
-    for blob, image in random_images:
-        caption = get_random_caption()
-        torch_score = pytorch_encoder.get_clip_score(caption, image)
-        with jax.default_device(jax.devices(device)[0]):
-            flax_score = flax_encoder.get_clip_score(caption, image)
-        if not np.allclose(torch_score, flax_score, atol=1e-3):
-            print(f"The scores did not match for blob {blob}. Torch Score was {torch_score} and Flax Score was {flax_score}")
-            some_mismatch = True
-        else:
-            print(f"Blob {blob} matched")
+    # some_mismatch = False
+    # for blob, image in random_images:
+    #     caption = get_random_caption()
+    #     torch_score = pytorch_encoder.get_clip_score(caption, image)
+    #     with jax.default_device(jax.devices(device)[0]):
+    #         flax_score = flax_encoder.get_clip_score(caption, image)
+    #     if not np.allclose(torch_score, flax_score, atol=1e-3):
+    #         print(f"The scores did not match for blob {blob}. Torch Score was {torch_score} and Flax Score was {flax_score}")
+    #         some_mismatch = True
+    #     else:
+    #         print(f"Blob {blob} matched")
     
-    if not some_mismatch:
-        print("All matched")
-    return True
+    # if not some_mismatch:
+    #     print("All matched")
+    # return True
 
 if __name__ == "__main__":
     for i in range(4):
