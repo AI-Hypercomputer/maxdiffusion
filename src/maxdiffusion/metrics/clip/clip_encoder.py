@@ -1,3 +1,5 @@
+from functools import partial
+import timeit
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, FlaxCLIPModel, AutoProcessor
@@ -13,6 +15,7 @@ import random
 import open_clip
 from PIL import Image
 import jax
+import time
 
 
 
@@ -50,33 +53,53 @@ class CLIPEncoder(nn.Module):
         similarity = image_features @ text_features.T
 
         return similarity.numpy()
+    
+    def time_get_clip_score(self, text, image):
+        # Create a partial function to simplify timeit usage
+        get_score_partial = partial(self.get_clip_score, text, image)
+
+        # Measure execution time
+        time_taken = timeit.timeit(get_score_partial, number=1)  # Adjust 'number' for repetitions
+        print(f"Time taken to calculate CLIP score: {time_taken:.4f} seconds")
 
 class CLIPEncoderFlax:
 
     def __init__(self, pretrained="laion/CLIP-ViT-H-14-laion2B-s32B-b79K"):
         assert pretrained is not None
 
-        self.model = FlaxCLIPModel.from_pretrained(pretrained)
-        self.processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        self.model = jax.jit(FlaxCLIPModel.from_pretrained(pretrained))
+        self.processor = AutoProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
     
     def get_clip_score(self, text, image):
 
-        inputs = self.processor(text=text, images=image, return_tensors="np")
+        inputs = self.processor(text=text, images=image, return_tensors="jax", padding='max_length')
         outputs = self.model(**inputs)
 
-        return np.array(outputs.logits_per_image) / 100
-
-def calculate_clip(images, prompts):
-    clip_encoder = CLIPEncoderFlax()
+        return outputs.logits_per_image / 100
     
+    def time_get_clip_score(self, text, image):
+        # Create a partial function to simplify timeit usage
+        get_score_partial = partial(self.get_clip_score, text, image)
+
+        # Measure execution time
+        time_taken = timeit.timeit(get_score_partial, number=1)  # Adjust 'number' for repetitions
+        print(f"Time taken to calculate CLIP score: {time_taken:.4f} seconds")
+    
+    
+
+def calculate_clip(images, prompts, clip_encoder):    
     clip_scores = []
-    for i in (range(0, len(images))):
-        score = clip_encoder.get_clip_score(prompts[i], images[i])
-        clip_scores.append(score)
-        
-    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
-    print("clip score is" + str(overall_clip_score))
-    return np.array(overall_clip_score)
+    if isinstance(clip_encoder, CLIPEncoderFlax):
+        with jax.default_device(jax.devices('tpu')[0]):
+              for i in (range(0, len(images))):
+                score = clip_encoder.get_clip_score(prompts[i], images[i])
+                clip_scores.append(np.array(score))
+    else:
+        for i in (range(0, len(images))):
+            score = clip_encoder.get_clip_score(prompts[i], images[i])
+            clip_scores.append(score)
+    
+    return np.mean(np.stack(clip_scores))
     
 def load_random_images_from_gcs(bucket_name, folder_path, max_images=10):
     """Loads a specified number of random images from a folder in a GCS bucket.
@@ -130,9 +153,19 @@ def get_random_caption():
 def verify_models_match(device='cpu'):
     my_bucket_name = "jfacevedo-maxdiffusion-v5p"
     my_folder_path = "checkpoints/ckpt_generated_images/512000"
-    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path)]
+    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path, max_images=20)]
     random_prompts = [get_random_caption() for _ in range(len(random_images))]
-    calculate_clip(random_images, random_prompts)
+    print('\nFlax Time')
+    flax_score = calculate_clip(random_images, random_prompts, CLIPEncoderFlax())
+    print('\nPyTorch Time')
+    torch_score =  calculate_clip(random_images, random_prompts, CLIPEncoder())
+
+    if not np.allclose(flax_score, torch_score, atol=1e-3):
+        print('Did not match')
+    else:
+        print('Matched')
+
+
 
 
     # some_mismatch = False
