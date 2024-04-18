@@ -71,7 +71,7 @@ mkdir output
 
 TPU_STDERR_LOG_LEVEL=0 TPU_MIN_LOG_LEVEL=0 TF_CPP_MIN_LOG_LEVEL=0 python -m src.maxdiffusion.eval src/maxdiffusion/configs/base_2_base.yml run_name=v5p-128-eval per_device_batch_size=16 \
 pretrained_model_name_or_path="gs://jfacevedo-maxdiffusion-v5p/training_results/v5p-32-xpk-moments-wsf-0.1-512-clipping-lr-4e-4/app/maxdiffusion/jfacevedo-maxdiffusion-v5p/training_results/v5p-32-xpk-moments-wsf-0.1-512-clipping-lr-4e-4/checkpoints/1024000/" \
-caption_coco_file="/app/datasets/coco2014/val2014_30k_padded.tsv" \
+caption_coco_file="/app/datasets/coco2014/val2014_30k.tsv" \
 images_directory="/app/maxdiffusion/generated_images/" \
 stat_output_directory="output/" \
 stat_output_file="output/stats.npz" \
