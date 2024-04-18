@@ -124,12 +124,17 @@ def vae_decode(latents, state, pipeline):
     image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
     return image
 
-def save_process(images, images_directory, img_ids, mask):
+def save_process(images, images_directory, img_ids, mask=None):
     images = VaeImageProcessor.numpy_to_pil(images)
-    for i, (image, valid) in enumerate(zip(images, mask)):
-        if valid:
-            img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
-            image.save(img_save_path)
+    if mask is not None:
+        for i, (image, valid) in enumerate(zip(images, mask)):
+            if valid:
+                img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
+                image.save(img_save_path)
+    else:
+         for i, image, in enumerate(images):
+                img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
+                image.save(img_save_path)       
 
 def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids, rng, config, batch_size, pipeline, mesh):                
     (latents,
