@@ -124,20 +124,34 @@ def vae_decode(latents, state, pipeline):
     image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
     return image
 
-def save_process(images, config, img_ids):
+def save_process(images, images_directory, img_ids):
     images = VaeImageProcessor.numpy_to_pil(images)
-    image_directory = config.images_directory
     for i, image in enumerate(images):
-        image.save(f"{image_directory}image_{img_ids[i]}.png")
+        img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
+        image.save(img_save_path)
 
- 
+def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids, rng, config, batch_size, pipeline, mesh):                
+    (latents,
+    context,
+    guidance_scale,
+    scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negative_prompt_ids)
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+        loop_body_p = functools.partial(loop_body, model=pipeline.unet,
+                                        pipeline=pipeline,
+                                        prompt_embeds=context,
+                                        guidance_scale=guidance_scale)
+
+        vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
+        latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps,
+                                        loop_body_p, (latents, scheduler_state, unet_state))
+        images = vae_decode_p(latents, vae_state)
+        return images
 
 def run(config):
     rng = jax.random.PRNGKey(config.seed)
     # Setup Mesh
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-
 
     batch_size = jax.local_device_count() * config.per_device_batch_size
     #assert 30_000 % batch_size == 0, f"Coco dataset must be evenly divisible by batch size : {batch_size}"
@@ -173,26 +187,8 @@ def run(config):
     del params["vae"]
     del params["unet"]
 
-    def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids, rng, config, batch_size, pipeline):                
-        (latents,
-        context,
-        guidance_scale,
-        scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negative_prompt_ids)
-        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-            loop_body_p = functools.partial(loop_body, model=pipeline.unet,
-                                            pipeline=pipeline,
-                                            prompt_embeds=context,
-                                            guidance_scale=guidance_scale)
-
-            vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
-            latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps,
-                                            loop_body_p, (latents, scheduler_state, unet_state))
-            images = vae_decode_p(latents, vae_state)
-            return images
-                
-
     p_run_inference = jax.jit(
-        functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline),
+        functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline, mesh=mesh),
         in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None, None),
         out_shardings=None,
     )
@@ -273,7 +269,7 @@ def run(config):
         #deactivate_profiler(config)
         print("inference time: ",(time.time() - s))
         
-        save_process(numpy_images, config, img_ids)
+        save_process(numpy_images, config.images_directory, img_ids)
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)

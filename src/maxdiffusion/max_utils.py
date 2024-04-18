@@ -455,20 +455,29 @@ def delete_pytree(to_delete):
 def get_params_to_save(params):
   return jax.device_get(jax.tree_util.tree_map(lambda x: x, params))
 
+def walk_and_upload_blobs(config, output_dir):
+  user_dir = os.path.expanduser('~')
+  uploaded_files = set()
+  for root, _, files in os.walk(os.path.abspath(output_dir)):
+    for file in files:
+      file_to_upload = os.path.join(root, file)
+      if file_to_upload in uploaded_files:
+        continue
+      max_logging.log(f"Moving file {file_to_upload} to GCS...")
+      gcs_file_name = os.path.join(config.base_output_directory, config.run_name, 
+                                   file_to_upload.replace(user_dir,"").strip("/"))
+      upload_blob(gcs_file_name, file_to_upload)
+      uploaded_files.add(file_to_upload)
+      max_logging.log(f"File {file_to_upload} moved successfully!")
+
 def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, output_dir):
   weight_dtype = get_dtype(config)
-  # Restore vae and text encoder if we cached latents and encoder outputs.
-  if config.cache_latents_text_encoder_outputs:
-      text_encoder = FlaxCLIPTextModel.from_pretrained(
-          config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=weight_dtype, from_pt=config.from_pt
-      )
-      vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-          config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
-      )
-      pipeline.vae = vae
-      pipeline.text_encoder = text_encoder
-      params["text_encoder"] = text_encoder.params
-      params["vae"] = vae_params
+  # reload vae to save with checkpoint
+  vae, vae_params = FlaxAutoencoderKL.from_pretrained(
+      config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
+  )
+  pipeline.vae = vae
+  params["vae"] = vae_params
   
   pipeline = FlaxStableDiffusionPipeline(
     text_encoder=pipeline.text_encoder,
@@ -488,17 +497,10 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
         "unet": get_params_to_save(unet_state.params),
     },
   )
+  walk_and_upload_blobs(config, output_dir)
 
-  user_dir = os.path.expanduser('~')
-
-  for root, _, files in os.walk(os.path.abspath(output_dir)):
-    for file in files:
-      file_to_upload = os.path.join(root, file)
-      max_logging.log(f"Moving file {file_to_upload} to GCS...")
-      gcs_file_name = os.path.join(config.base_output_directory, config.run_name, 
-                                   file_to_upload.replace(user_dir,"").strip("/"))
-      upload_blob(gcs_file_name, file_to_upload)
-      max_logging.log(f"File {file_to_upload} moved successfully!")
+  # Clean up uneeded references
+  params["vae"] = None
 
 def get_memory_allocations():
   devices = jax.local_devices()
