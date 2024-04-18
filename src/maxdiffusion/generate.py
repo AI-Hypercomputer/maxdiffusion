@@ -163,7 +163,6 @@ def run(config):
 
     # Text encoder params
     sharding = PositionalSharding(mesh.devices).replicate()
-    print("QW debug ", sharding)
     partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
     params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
 
@@ -198,13 +197,10 @@ def run(config):
         out_shardings=None,
     )
 
-    # s = time.time()
     prompts = []
     threads = []
     clear_threads_count_at = 100
     k = 0
-
-    steps = int((30000 + batch_size - 1) / batch_size)
 
     def parse_tsv_line(line):
     # Customize this function to parse your TSV file based on your specific format
@@ -219,6 +215,7 @@ def run(config):
       #dataset = dataset.map(lambda x: x.to_tensor())  
       dataset = dataset.batch(batch_size_per_process)
       dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())
+
       # Create an iterator to iterate through the batches
       iterator = iter(dataset)
       batch_number = 1
@@ -245,10 +242,7 @@ def run(config):
     for i, shard_i in enumerate(shards):
         df = pd.DataFrame(shard_i[:], columns=["image_id", "id", "prompt"])
         batches = [df[i:i + PerHostBatchSize] for i in range(0, len(df), PerHostBatchSize)]
-        #eval_iter = get_batch_sharded_data_pipeline(batches, mesh)
 
-        #data = eval_iter()
-        #prompt_id, img_id = data
         batch = batches[0]
         prompt_tensors = batch["prompt"].tolist()
         prompt = [t.numpy().decode('utf-8') for t in prompt_tensors]
@@ -280,17 +274,7 @@ def run(config):
         print("inference time: ",(time.time() - s))
         
         save_process(numpy_images, config.images_directory, img_ids)
-        # p.start()
-        # threads.append(p)
-        # k+=1
-        # if k >= clear_threads_count_at:
-        #     for thread in threads:
-        #         thread.join()
-        #         threads = []
-        #         k = 0
 
-    # for thread in threads:
-    #     thread.join()
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     run(pyconfig.config)
