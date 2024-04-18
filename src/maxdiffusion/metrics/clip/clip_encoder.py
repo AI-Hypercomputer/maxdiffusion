@@ -4,7 +4,7 @@ import torch.nn as nn
 from transformers import FlaxCLIPModel, AutoProcessor
 
 import open_clip
-import numpy as np
+import jax
 
 class CLIPEncoderTorch(nn.Module):
     """
@@ -53,12 +53,12 @@ class CLIPEncoderFlax:
     def __init__(self, pretrained="laion/CLIP-ViT-H-14-laion2B-s32B-b79K"):
         assert pretrained is not None
 
-        self.model = FlaxCLIPModel.from_pretrained(pretrained)
+        self.model = jax.jit(FlaxCLIPModel.from_pretrained(pretrained))
         self.processor = AutoProcessor.from_pretrained(pretrained)
     
     def get_clip_score(self, text, image):
 
-        inputs = self.processor(text=text, images=image, return_tensors="np")
+        inputs = self.processor(text=text, images=image, return_tensors="jax", padding="max_length", truncation=True)
         outputs = self.model(**inputs)
 
         return outputs.logits_per_image / 100
