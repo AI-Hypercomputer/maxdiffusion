@@ -19,7 +19,7 @@ import jax
 import numpy as np
 from maxdiffusion.metrics.fid import inception
 from maxdiffusion.metrics.fid import fid_score
-from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoder
+from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoderFlax
 from typing import Sequence
 from absl import app
 from maxdiffusion import pyconfig
@@ -48,18 +48,17 @@ def load_stats(file_path):
     mu = images_data['mu']
     return sigma, mu
 
-def calculate_clip(images, prompts, config):
-    clip_encoder = CLIPEncoder(cache_dir=config.clip_cache_dir)
+def calculate_clip(images, prompts):
+    clip_encoder = CLIPEncoderFlax()
     
     clip_scores = []
     for i in tqdm(range(0, len(images))):
         score = clip_encoder.get_clip_score(prompts[i], images[i])
         clip_scores.append(score)
         
-    clip_scores = torch.cat(clip_scores, 0)
-    clip_score = np.mean(clip_scores.detach().cpu().numpy())
-    print("clip score is" + str(clip_score))
-    return clip_score
+    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+    print("clip score is" + str(overall_clip_score))
+    return np.array(overall_clip_score)
 
 def load_images(path, captions_df):
     images = []
