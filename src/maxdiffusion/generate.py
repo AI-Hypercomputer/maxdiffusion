@@ -124,11 +124,12 @@ def vae_decode(latents, state, pipeline):
     image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
     return image
 
-def save_process(images, images_directory, img_ids):
+def save_process(images, images_directory, img_ids, mask):
     images = VaeImageProcessor.numpy_to_pil(images)
-    for i, image in enumerate(images):
-        img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
-        image.save(img_save_path)
+    for i, (image, valid) in enumerate(zip(images, mask)):
+        if valid:
+            img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
+            image.save(img_save_path)
 
 def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids, rng, config, batch_size, pipeline, mesh):                
     (latents,
@@ -193,10 +194,6 @@ def run(config):
         out_shardings=None,
     )
 
-    prompts = []
-    threads = []
-    clear_threads_count_at = 100
-    k = 0
 
     def parse_tsv_line(line):
     # Customize this function to parse your TSV file based on your specific format
@@ -250,18 +247,19 @@ def run(config):
 
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
         #prompt_ids=shard(prompt_ids)
-        print(prompt_ids.shape)
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
         #negative_prompt_ids = shard(negative_prompt_ids)
-        print(negative_prompt_ids.shape)
         
         s = time.time()
         #activate_profiler(config)
         images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
         images = jax.experimental.multihost_utils.process_allgather(images)
         
+        ids = batch["id"].tolist()
+        msk = [ id_item!='0' for id_item in ids]
+
         images = images[:current_batch_size]
 
         numpy_images = np.array(images)
@@ -269,7 +267,7 @@ def run(config):
         #deactivate_profiler(config)
         print("inference time: ",(time.time() - s))
         
-        save_process(numpy_images, config.images_directory, img_ids)
+        save_process(numpy_images, config.images_directory, img_ids, msk)
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
