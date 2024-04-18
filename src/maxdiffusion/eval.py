@@ -94,7 +94,6 @@ def eval(config):
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
 
-    dataloader_images_directory="/".join(config.images_directory.split("/")[:-2])
     mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
 
     os.makedirs(config.stat_output_directory, exist_ok=True)
