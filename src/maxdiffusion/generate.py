@@ -273,7 +273,7 @@ def run(config):
         #deactivate_profiler(config)
         print("inference time: ",(time.time() - s))
         
-        save_process(numpy_images, config.images_directory, img_ids)
+        save_process(numpy_images, config, img_ids)
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
