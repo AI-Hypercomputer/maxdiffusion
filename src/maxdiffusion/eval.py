@@ -83,6 +83,7 @@ def eval(config):
     #captions_df = load_captions(config.caption_coco_file)
     #images, prompts = load_images(config.images_directory, captions_df )
     
+    
     #calculate_clip(images, prompts, config)
 
     # calculating FID:
