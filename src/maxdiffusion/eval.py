@@ -74,17 +74,16 @@ def load_images(path, captions_df):
     return images, prompts
 
 def eval(config):
-    #batch_size = config.per_device_batch_size * jax.device_count()
+    batch_size = config.per_device_batch_size * jax.device_count()
 
     #inference happenning here: first generate the images
-    #generate.run(config)
+    generate.run(config)
 
     # calculating CLIP:
-    captions_df = load_captions(config.caption_coco_file)
-    images, prompts = load_images(config.images_directory, captions_df )
+    #captions_df = load_captions(config.caption_coco_file)
+    #images, prompts = load_images(config.images_directory, captions_df)
     
-
-    calculate_clip(images, prompts, config)
+    #calculate_clip(images, prompts, config)
 
     # calculating FID:
     rng = jax.random.PRNGKey(0)
@@ -93,9 +92,7 @@ def eval(config):
     params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
-
     mu, sigma = fid_score.compute_statistics_with_mmap(config.images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
-
     os.makedirs(config.stat_output_directory, exist_ok=True)
     np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
 
