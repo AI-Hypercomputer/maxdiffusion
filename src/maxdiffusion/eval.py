@@ -94,7 +94,7 @@ def eval(config):
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
 
-    mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
+    mu, sigma = fid_score.compute_statistics_with_mmap(config.images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
 
     os.makedirs(config.stat_output_directory, exist_ok=True)
     np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
