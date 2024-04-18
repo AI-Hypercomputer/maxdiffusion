@@ -72,7 +72,7 @@ class CLIPEncoderFlax:
     
     def get_clip_score(self, text, image):
 
-        inputs = self.processor(text=text, images=image, return_tensors="jax", padding='max_length')
+        inputs = self.processor(text=text, images=image, return_tensors="jax", padding="max_length", truncation=True)
         outputs = self.model(**inputs)
 
         return outputs.logits_per_image / 100
@@ -162,8 +162,10 @@ def verify_models_match(device='cpu'):
 
     if not np.allclose(flax_score, torch_score, atol=1e-3):
         print('Did not match')
+        return False
     else:
         print('Matched')
+        return True
 
 
 
