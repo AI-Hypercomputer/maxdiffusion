@@ -52,7 +52,7 @@ def calculate_clip(images, prompts):
     clip_encoder = CLIPEncoderFlax()
     
     clip_scores = []
-    for i in tqdm((range(0, len(images)))):
+    for i in tqdm(range(0, len(images))):
         score = clip_encoder.get_clip_score(prompts[i], images[i])
         clip_scores.append(score)
         
