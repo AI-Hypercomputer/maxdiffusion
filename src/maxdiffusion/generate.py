@@ -214,7 +214,6 @@ def run(config):
       batch_number = 1
       row_shards = []
       for batch in iterator:
-        print(f"Batch {batch_number}:")
         rows_batch = []
         for row in batch:
             row_tensor = row[0]
