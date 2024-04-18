@@ -104,7 +104,8 @@ def eval(config,
             numpy_images = np.array(images)
             save_process(numpy_images, images_directory, img_ids)
             break
-    max_utils.walk_and_upload_blobs(config, images_directory)
+    if jax.process_index() == 0:
+        max_utils.walk_and_upload_blobs(config, images_directory)
     pipeline.scheduler = training_scheduler
     params["scheduler"] = training_scheduler_state
 
