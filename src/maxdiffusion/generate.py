@@ -38,12 +38,16 @@ from maxdiffusion import (
   FlaxDDIMScheduler
 )
 from flax.linen import partitioning as nn_partitioning
+from flax.training.common_utils import shard
+from flax.jax_utils import replicate
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh, PositionalSharding
 from maxdiffusion.image_processor import VaeImageProcessor
 from PIL import Image
 
-from multiprocessing import Process
+from multiprocessing import Process 
+import tensorflow as tf
+import pandas as pd
 
 cc.initialize_cache(os.path.expanduser("~/jax_cache"))
 
@@ -83,7 +87,6 @@ def get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negat
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
     guidance_scale = config.guidance_scale
     num_inference_steps = config.num_inference_steps
-
     prompt_embeds = pipeline.text_encoder(prompt_ids, params=params["text_encoder"])[0]
     negative_prompt_embeds = pipeline.text_encoder(negative_prompt_ids, params=params["text_encoder"])[0]
     context = jnp.concatenate([negative_prompt_embeds, prompt_embeds])
@@ -117,11 +120,17 @@ def vae_decode(latents, state, pipeline):
     image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
     return image
 
-def save_process(images, images_directory, img_ids):
+def save_process(images, images_directory, img_ids, mask=None):
     images = VaeImageProcessor.numpy_to_pil(images)
-    for i, image in enumerate(images):
-        img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
-        image.save(img_save_path)
+    if mask is not None:
+        for i, (image, valid) in enumerate(zip(images, mask)):
+            if valid:
+                img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
+                image.save(img_save_path)
+    else:
+         for i, image, in enumerate(images):
+                img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
+                image.save(img_save_path)       
 
 def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids, rng, config, batch_size, pipeline, mesh):                
     (latents,
@@ -146,8 +155,7 @@ def run(config):
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
 
-    batch_size = jax.device_count() * config.per_device_batch_size
-    assert 30_000 % batch_size == 0, f"Coco dataset must be evenly divisible by batch size : {batch_size}"
+    batch_size = jax.local_device_count() * config.per_device_batch_size
     weight_dtype = get_dtype(config)
     flash_block_sizes = get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
@@ -186,39 +194,69 @@ def run(config):
         out_shardings=None,
     )
 
-    # s = time.time()
-    prompts = []
-    threads = []
-    clear_threads_count_at = 100
-    k = 0
-    with open(config.caption_coco_file, "r") as fd:
-        rd = csv.reader(fd, delimiter="\t", quotechar='"')
-        rows = list(rd)[1:]
-        negative_prompt_ids = tokenize([""] * batch_size, pipeline.tokenizer)
-        os.makedirs(config.images_directory, exist_ok=True)
-        for i in tqdm(range(0, len(rows),  batch_size)):
-            img_ids = [row[0] for row in rows[i:i+batch_size]]
-            ids = [row[1] for row in rows[i:i+batch_size]]
-            prompts = [row[2] for row in rows[i:i+batch_size]]
-            prompt_ids = tokenize(prompts, pipeline.tokenizer)
-    
-            images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
-            images = jax.experimental.multihost_utils.process_allgather(images)
-            numpy_images = np.array(images)
-            
-            
-            p = Process(target=save_process, args=(numpy_images, config.images_directory, img_ids))
-            p.start()
-            threads.append(p)
-            k+=1
-            if k >= clear_threads_count_at:
-                for thread in threads:
-                    thread.join()
-                    threads = []
-                    k = 0
 
-        for thread in threads:
-            thread.join()
+    def parse_tsv_line(line):
+    # Customize this function to parse your TSV file based on your specific format
+    # For example, you can use tf.strings.split to split the line into columns
+        columns = tf.strings.split([line], sep='\t')
+        return columns
+
+    def get_list_prompt_shards_from_file(file_path, batch_size_per_process):
+      # Create a dataset using tf.data
+      dataset = tf.data.TextLineDataset(file_path)
+      dataset = dataset.map(parse_tsv_line, num_parallel_calls=tf.data.AUTOTUNE)
+      dataset = dataset.batch(batch_size_per_process)
+      dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())
+
+      # Create an iterator to iterate through the batches
+      iterator = iter(dataset)
+      batch_number = 1
+      row_shards = []
+      for batch in iterator:
+        rows_batch = []
+        for row in batch:
+            row_tensor = row[0]
+            rows_batch.append([row_tensor[0], row_tensor[1], row_tensor[2]])
+        row_shards.append(rows_batch)
+          
+        batch_number += 1
+      return row_shards
+
+    PerHostBatchSize = jax.local_device_count() * config.per_device_batch_size
+    shards = get_list_prompt_shards_from_file(config.caption_coco_file, PerHostBatchSize)
+
+    negative_prompt_ids = tokenize([""] * PerHostBatchSize, pipeline.tokenizer)
+
+    os.makedirs(config.images_directory, exist_ok=True)
+
+    for i, shard_i in enumerate(shards):
+        df = pd.DataFrame(shard_i[:], columns=["image_id", "id", "prompt"])
+        batches = [df[i:i + PerHostBatchSize] for i in range(0, len(df), PerHostBatchSize)]
+
+        batch = batches[0]
+        prompt_tensors = batch["prompt"].tolist()
+        prompt = [t.numpy().decode('utf-8') for t in prompt_tensors]
+        #pad last batch
+        current_batch_size = len(prompt)
+
+        if current_batch_size != PerHostBatchSize:
+            prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
+
+        prompt_ids = tokenize(prompt, pipeline.tokenizer)
+
+        image_ids_tensor = batch["image_id"]
+        img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
+        
+        images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
+        images = jax.experimental.multihost_utils.process_allgather(images)
+        
+        ids = batch["id"].tolist()
+        msk = [ id_item!='0' for id_item in ids]
+
+        images = images[:current_batch_size]
+        numpy_images = np.array(images)
+        save_process(numpy_images, config.images_directory, img_ids, msk)
+
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     run(pyconfig.config)
