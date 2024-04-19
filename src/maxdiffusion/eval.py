@@ -57,7 +57,6 @@ def calculate_clip(images, prompts):
         clip_scores.append(score)
         
     overall_clip_score = jnp.mean(jnp.stack(clip_scores))
-    print("clip score is" + str(overall_clip_score))
     return np.array(overall_clip_score)
 
 def load_images(path, captions_df):
@@ -72,17 +71,19 @@ def load_images(path, captions_df):
      
     return images, prompts
 
-def eval(config):
+def eval_scores(config, images_directory=None):
     batch_size = config.per_device_batch_size * jax.device_count() * 10
 
     #inference happenning here: first generate the images
-    generate.run(config)
+    if images_directory is None:
+        generate.run(config)
+        images_directory = config.images_directory
 
     # calculating CLIP:
     captions_df = load_captions(config.caption_coco_file)
-    images, prompts = load_images(config.images_directory, captions_df)
+    images, prompts = load_images(images_directory, captions_df)
     
-    calculate_clip(images, prompts)
+    clip_score = calculate_clip(images, prompts)
 
     # calculating FID:
     rng = jax.random.PRNGKey(0)
@@ -91,20 +92,22 @@ def eval(config):
     params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
-    dataloader_images_directory="/".join(config.images_directory.split("/")[:-2])
-    mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
+    #dataloader_images_directory="/".join(images_directory.split("/")[:-2])
+    mu, sigma = fid_score.compute_statistics_with_mmap(images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
     os.makedirs(config.stat_output_directory, exist_ok=True)
     np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
     mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
 
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
-    print("fid score is : " + str(fid))
-
+    return clip_score, fid
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     config = pyconfig.config
-    eval(config)
+    clip, fid = eval_scores(config)
+    print("clip score is " + str(clip))
+    print("fid score is : " + str(fid))
+
 if __name__ == "__main__":
     app.run(main)
