@@ -38,9 +38,6 @@ import functools
 from keras.preprocessing.image import ImageDataGenerator
 from tqdm import tqdm
 from PIL import Image
-# from open_clip_jax import CLIPInference
-# from open_clip_jax import create_image_transforms, create_model_with_params, tokenize
-
 
 def load_captions(file_path):
     captions_df = pd.read_csv(file_path, delimiter='\t', header=0, names=['image_id','id', 'caption'])
