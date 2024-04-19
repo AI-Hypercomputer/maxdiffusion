@@ -247,7 +247,6 @@ def run(config):
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
         
-        s = time.time()
         images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
         images = jax.experimental.multihost_utils.process_allgather(images)
         
@@ -255,11 +254,7 @@ def run(config):
         msk = [ id_item!='0' for id_item in ids]
 
         images = images[:current_batch_size]
-
         numpy_images = np.array(images)
-        
-        print("inference time: ",(time.time() - s))
-        
         save_process(numpy_images, config.images_directory, img_ids, msk)
 
 def main(argv: Sequence[str]) -> None:
