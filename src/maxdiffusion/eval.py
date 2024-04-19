@@ -56,10 +56,10 @@ def load_stats(file_path):
 def calculate_clip(images, prompts):
     clip_encoder = CLIPEncoderFlax()
     
-    # clip_scores = np.zeros(len(images))
-    # for i in tqdm(range(len(images))):
-    #     #clip_scores[i] = clip_encoder.get_clip_score(prompts[i], images[i])
-    #     clip_scores[i], _ = clip(images[i], prompts[i])
+    clip_scores = []
+    for i in tqdm(range(0, len(images))):
+        score = clip_encoder.get_clip_score(prompts[i], images[i])
+        clip_scores.append(score)
         
 
     overall_clip_score = jnp.mean(jnp.stack(clip_scores))
