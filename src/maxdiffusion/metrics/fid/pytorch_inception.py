@@ -147,7 +147,7 @@ class InceptionV3(nn.Module):
             x = F.interpolate(x,
                               size=(299, 299),
                               mode='bilinear',
-                              align_corners=False
+                              #align_corners=False
                               )
 
         if self.normalize_input:

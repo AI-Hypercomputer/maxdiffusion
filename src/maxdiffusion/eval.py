@@ -128,8 +128,8 @@ def eval(config):
 
     dataloader_images_directory="/".join(config.images_directory.split("/")[:-2])
 
-    mu, sigma = fid_score.compute_statistics(config.images_directory, params, apply_fn, batch_size, (299, 299))
-    #mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
+    #mu, sigma = fid_score.compute_statistics(config.images_directory, params, apply_fn, batch_size,)# (299, 299))
+    mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
 
     os.makedirs(config.stat_output_directory, exist_ok=True)
     np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)

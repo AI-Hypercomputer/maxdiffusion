@@ -10,17 +10,16 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 IMAGE_EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'pgm', 'png', 'ppm',
                     'tif', 'tiff', 'webp'}
 
-
-
 def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_size=1, img_size=None):
     if path.endswith(".npz"):
         stats = np.load(path)
         mu, sigma = stats["mu"], stats["sigma"]
         return mu, sigma
+    
     preprocessing_fn = lambda x: x.astype(float) / 255
     image_data_generator = ImageDataGenerator(preprocessing_function=preprocessing_fn)
     directory_iterator = image_data_generator.flow_from_directory(
-        path, batch_size=batch_size, target_size=img_size, shuffle=False
+        path, batch_size=batch_size, target_size=img_size, shuffle=False, interpolation="bilinear"
     )
     assert directory_iterator.samples > 0, "No images found. Make sure your images are within a subdirectory."
 
