@@ -17,10 +17,15 @@
 from maxdiffusion import generate
 import jax
 import numpy as np
+from jax.experimental.compilation_cache import compilation_cache as cc
 from maxdiffusion.metrics.fid import inception
 from maxdiffusion.metrics.fid import fid_score
+<<<<<<< HEAD
 from maxdiffusion.metrics.fid import pytorch_fid_score
 from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoder
+=======
+from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoderFlax
+>>>>>>> 340b9c23f285fe23a9856ae4295e709577f4a91a
 from typing import Sequence
 from absl import app
 from maxdiffusion import pyconfig
@@ -51,6 +56,7 @@ def load_stats(file_path):
     mu = images_data['mu']
     return sigma, mu
 
+<<<<<<< HEAD
 def calculate_clip(images, prompts, config):
     breakpoint()
     model, vars = create_model_with_params(
@@ -81,16 +87,26 @@ def calculate_clip(images, prompts, config):
     # pretrained='laion2b-s34b-b79k',
     # )
     #clip_encoder = CLIPEncoder(cache_dir=config.clip_cache_dir)
+=======
+def calculate_clip(images, prompts):
+    clip_encoder = CLIPEncoderFlax()
+>>>>>>> 340b9c23f285fe23a9856ae4295e709577f4a91a
     
     # clip_scores = np.zeros(len(images))
     # for i in tqdm(range(len(images))):
     #     #clip_scores[i] = clip_encoder.get_clip_score(prompts[i], images[i])
     #     clip_scores[i], _ = clip(images[i], prompts[i])
         
+<<<<<<< HEAD
     # #clip_score = np.mean(clip_scores.detach().cpu().numpy())
     # clip_score = np.mean(clip_scores)
     # print("clip score is" + str(clip_score))
     # return clip_score
+=======
+    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+    print("clip score is" + str(overall_clip_score))
+    return np.array(overall_clip_score)
+>>>>>>> 340b9c23f285fe23a9856ae4295e709577f4a91a
 
 def load_images(path, captions_df):
     images = []
@@ -105,20 +121,19 @@ def load_images(path, captions_df):
     return images, prompts
 
 def eval(config):
-    batch_size = config.per_device_batch_size * jax.device_count()
+    batch_size = config.per_device_batch_size * jax.device_count() * 10
 
     #inference happenning here: first generate the images
-    #generate.run(config)
+    generate.run(config)
 
     # calculating CLIP:
-    # captions_df = load_captions(config.caption_coco_file)
-    # images, prompts = load_images(config.images_directory, captions_df )
-    
 
-    # calculate_clip(images, prompts, config)
+    captions_df = load_captions(config.caption_coco_file)
+    images, prompts = load_images(config.images_directory, captions_df)
+    
+    calculate_clip(images, prompts)
 
     # calculating FID:
-    # print("we passed here")
     rng = jax.random.PRNGKey(0)
     
     model = inception.InceptionV3(pretrained=True, transform_input=False)
@@ -128,7 +143,6 @@ def eval(config):
 
     dataloader_images_directory="/".join(config.images_directory.split("/")[:-2])
 
-    #mu, sigma = fid_score.compute_statistics(config.images_directory, params, apply_fn, batch_size,)# (299, 299))
     mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
 
     os.makedirs(config.stat_output_directory, exist_ok=True)
@@ -139,16 +153,12 @@ def eval(config):
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
     print("fid score is : " + str(fid))
 
-    device = torch.device('cpu')
-    #paths = [config.stat_output_file, config.stat_coco_file]
-    paths = [config.images_directory, "/home/shahrokhi/coco2014/val2014_30k_stats.npz"]
-    fid = pytorch_fid_score.calculate_fid_given_paths(paths, batch_size, device, 2048 )
-    print("fid is : " + str(fid))
 
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     config = pyconfig.config
+    cc.initialize_cache(os.path.expanduser("~/jax_cache"))
     eval(config)
 if __name__ == "__main__":
     app.run(main)

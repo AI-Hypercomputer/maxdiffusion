@@ -1,12 +1,15 @@
 import torch
 import torch.nn as nn
 
+from transformers import FlaxCLIPModel, AutoProcessor
+
 import open_clip
-from PIL import Image
+import jax
 
-
-
-class CLIPEncoder(nn.Module):
+class CLIPEncoderTorch(nn.Module):
+    """
+        PyTorch implementation. See Flax version below    
+    """
     def __init__(self, clip_version='ViT-H-14', pretrained='', cache_dir=None, device='cpu'):
         super().__init__()
 
@@ -40,3 +43,21 @@ class CLIPEncoder(nn.Module):
         similarity = image_features @ text_features.T
 
         return similarity
+
+class CLIPEncoderFlax:
+    """
+        Flax implementation. See PyTorch version above    
+    """
+
+    def __init__(self, pretrained="laion/CLIP-ViT-H-14-laion2B-s32B-b79K"):
+        assert pretrained is not None
+
+        self.model = jax.jit(FlaxCLIPModel.from_pretrained(pretrained))
+        self.processor = AutoProcessor.from_pretrained(pretrained)
+    
+    def get_clip_score(self, text, image):
+
+        inputs = self.processor(text=text, images=image, return_tensors="jax", padding="max_length", truncation=True)
+        outputs = self.model(**inputs)
+
+        return outputs.logits_per_image / 100

@@ -21,6 +21,8 @@ from typing import Sequence
 from functools import partial
 
 import numpy as np
+from tqdm import tqdm
+import csv
 
 import jax
 import jax.numpy as jnp
@@ -30,7 +32,6 @@ from absl import app
 from maxdiffusion import (
     FlaxDDPMScheduler,
     FlaxStableDiffusionPipeline,
-    FlaxAutoencoderKL,
     max_logging,
     max_utils,
     pyconfig,
@@ -49,8 +50,64 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
 )
 from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 
+from maxdiffusion import FlaxDDIMScheduler
+from maxdiffusion.generate import run_inference, tokenize, save_process
+
 TOTAL_TRAIN_SAMPLES = 6513144
 TOTAL_EVAL_SAMPLES = 30000
+
+def eval(config,
+         checkpoint_number,
+         unet_state,
+         unet_state_mesh_shardings,
+         vae_state,
+         vae_state_mesh_shardings,
+         pipeline,
+         params,
+         mesh,
+         rng):
+    batch_size = jax.device_count() * config.per_device_batch_size
+    scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
+        config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
+    )
+
+    training_scheduler = pipeline.scheduler
+    training_scheduler_state = params["scheduler"]
+    pipeline.scheduler = scheduler
+    params["scheduler"] = scheduler_state
+
+    p_run_inference = jax.jit(
+       partial(run_inference,
+                         rng=rng,
+                         config=config,
+                         batch_size=batch_size,
+                         pipeline=pipeline,
+                         mesh=mesh),
+                         in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None, None),
+                         out_shardings=None
+    )
+
+    negative_prompt_ids = tokenize([""] * batch_size, pipeline.tokenizer)
+    with open(config.caption_coco_file, "r") as fd:
+        rd = csv.reader(fd, delimiter="\t", quotechar='"')
+        rows = list(rd)[1:]
+        negative_prompt_ids = tokenize([""] * batch_size, pipeline.tokenizer)
+        images_directory = os.path.join(config.images_directory, checkpoint_number)
+        os.makedirs(images_directory, exist_ok=True)
+        for i in tqdm(range(0, len(rows), batch_size)):
+            img_ids = [row[0] for row in rows[i:i+batch_size]]
+            ids = [row[1] for row in rows[i:i+batch_size]]
+            prompts = [row[2] for row in rows[i:i+batch_size]]
+            prompt_ids = tokenize(prompts, pipeline.tokenizer)
+            images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
+            images = jax.experimental.multihost_utils.process_allgather(images)
+            numpy_images = np.array(images)
+            save_process(numpy_images, images_directory, img_ids)
+            break
+    if jax.process_index() == 0:
+        max_utils.walk_and_upload_blobs(config, images_directory)
+    pipeline.scheduler = training_scheduler
+    params["scheduler"] = training_scheduler_state
 
 def calculate_training_tflops(pipeline, unet_params, config):
     """Calculate per device training tflops (back and fwd pass)."""
@@ -241,12 +298,17 @@ def train(config):
 
     learning_rate_scheduler = max_utils.create_learning_rate_schedule(config)
 
-    tx = optax.adamw(
+    adamw = optax.adamw(
         learning_rate=learning_rate_scheduler,
         b1=config.adam_b1,
         b2=config.adam_b2,
         eps=config.adam_eps,
         weight_decay=config.adam_weight_decay,
+    )
+
+    tx = optax.chain(
+        optax.clip_by_global_norm(1),
+        adamw,
     )
 
     (unet_state,
@@ -255,6 +317,9 @@ def train(config):
                                                                 tx, rng, config,
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
+
+    params["unet"] = None
+    params["vae"] = None
 
     per_device_tflops = calculate_training_tflops(pipeline, unet_state.params, config)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
@@ -273,14 +338,15 @@ def train(config):
            config, mesh, total_train_batch_size
         )
 
-    vae_state = None
-    vae_state_mesh_shardings = None
-    params["vae"] = None
+    if not config.eval_at_checkpoint:
+        vae_state = None
+        vae_state_mesh_shardings = None
+        params["vae"] = None
 
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
-    def train_step(unet_state, vae_state, batch, train_rng, cache_latents_text_encoder_outputs):
+    def train_step(unet_state, batch, train_rng, cache_latents_text_encoder_outputs):
         _, gen_dummy_rng = jax.random.split(train_rng)
         sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
 
@@ -317,11 +383,6 @@ def train(config):
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
 
-            # TODO - laion dataset was prepared with an extra dim.
-            # need to preprocess the dataset with dim removed.
-            if len(encoder_hidden_states.shape) == 4:
-                encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
-
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
                 {"params": unet_params}, noisy_latents, timesteps, encoder_hidden_states, train=True
@@ -343,7 +404,7 @@ def train(config):
         loss, grad = grad_fn(unet_state.params)
 
         new_state = unet_state.apply_gradients(grads=grad)
-        metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
+        metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
 
         return new_state, metrics, new_train_rng
 
@@ -355,14 +416,14 @@ def train(config):
         with jax.transfer_guard("disallow"):
             p_train_step = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-                in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, my_data_sharding, None),
+                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
                 out_shardings=(unet_state_mesh_shardings, None, None),
                 donate_argnums=(0,)
             )
     else:
         p_train_step = jax.jit(
             partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-            in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, my_data_sharding, None),
+            in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
             out_shardings=(unet_state_mesh_shardings, None, None),
             donate_argnums=(0,)
         )
@@ -400,7 +461,6 @@ def train(config):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             unet_state, train_metric, train_rngs = p_train_step(unet_state,
-                                                                vae_state,
                                                                 example_batch,
                                                                 train_rngs)
         new_time = datetime.datetime.now()
@@ -409,6 +469,13 @@ def train(config):
         write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
         if step != 0 and (total_train_batch_size * step) % config.checkpoint_every == 0:
+           if config.eval_at_checkpoint:
+              eval(config,
+                   f"{str(step * total_train_batch_size)}",
+                   unet_state, unet_state_mesh_shardings,
+                   vae_state,
+                   vae_state_mesh_shardings,
+                   pipeline, params, mesh, rng)
            max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.checkpoint_dir+f"/{str(step * total_train_batch_size)}/")
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
