@@ -1,13 +1,13 @@
-import torch
-import torch.nn as nn
-
-import open_clip
+import jax
 from PIL import Image
+import open_clip_jax
 
-
+from flax import linen as nn
+from flax.linen.dtypes import Array, Dtype
+from jax import numpy as jnp
 
 class CLIPEncoder(nn.Module):
-    def __init__(self, clip_version='ViT-H-14', pretrained='', cache_dir=None, device='cpu'):
+    def __init__(self, clip_version='ViT-H-14', pretrained='', cache_dir=None):
         super().__init__()
 
         self.clip_version = clip_version

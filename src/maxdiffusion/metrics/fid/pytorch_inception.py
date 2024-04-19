@@ -70,7 +70,7 @@ class InceptionV3(nn.Module):
 
         self.resize_input = resize_input
         self.normalize_input = normalize_input
-        self.output_blocks = sorted(output_blocks)
+        self.output_blocks = output_blocks#sorted(output_blocks)
         self.last_needed_block = max(output_blocks)
 
         assert self.last_needed_block <= 3, \
@@ -147,7 +147,8 @@ class InceptionV3(nn.Module):
             x = F.interpolate(x,
                               size=(299, 299),
                               mode='bilinear',
-                              align_corners=False)
+                              align_corners=False
+                              )
 
         if self.normalize_input:
             x = 2 * x - 1  # Scale from range (0, 1) to range (-1, 1)

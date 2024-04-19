@@ -108,7 +108,7 @@ def eval(config):
     batch_size = config.per_device_batch_size * jax.device_count()
 
     #inference happenning here: first generate the images
-    generate.run(config)
+    #generate.run(config)
 
     # calculating CLIP:
     # captions_df = load_captions(config.caption_coco_file)
@@ -121,14 +121,15 @@ def eval(config):
     # print("we passed here")
     rng = jax.random.PRNGKey(0)
     
-    model = inception.InceptionV3(pretrained=True, transform_input=True)
-    params = model.init(rng, jnp.ones((1, 2048, 2048, 3)))
+    model = inception.InceptionV3(pretrained=True, transform_input=False)
+    params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
 
     dataloader_images_directory="/".join(config.images_directory.split("/")[:-2])
 
-    mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
+    mu, sigma = fid_score.compute_statistics(config.images_directory, params, apply_fn, batch_size, (299, 299))
+    #mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
 
     os.makedirs(config.stat_output_directory, exist_ok=True)
     np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
@@ -138,10 +139,11 @@ def eval(config):
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
     print("fid score is : " + str(fid))
 
-    # device = torch.device('cpu')
-    # paths = [config.images_directory, "/home/shahrokhi/coco2014/val2014_30k_stats.npz"]
-    # fid = pytorch_fid_score.calculate_fid_given_paths(paths, batch_size, device, 2048 )
-    # print("fid is : " + str(fid))
+    device = torch.device('cpu')
+    #paths = [config.stat_output_file, config.stat_coco_file]
+    paths = [config.images_directory, "/home/shahrokhi/coco2014/val2014_30k_stats.npz"]
+    fid = pytorch_fid_score.calculate_fid_given_paths(paths, batch_size, device, 2048 )
+    print("fid is : " + str(fid))
 
 
 def main(argv: Sequence[str]) -> None:
