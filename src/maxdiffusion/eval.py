@@ -56,57 +56,19 @@ def load_stats(file_path):
     mu = images_data['mu']
     return sigma, mu
 
-<<<<<<< HEAD
-def calculate_clip(images, prompts, config):
-    breakpoint()
-    model, vars = create_model_with_params(
-        'vit-base-patch32',
-        pretrained='laion2b-s34b-b79k',
-        )
-    image_transforms = create_image_transforms(
-        train=False,
-        input_format='image',
-        do_batch_transforms=False,
-        )
-    breakpoint()
-    image = image_transforms(Image.open(images[0]).convert('RGB'))._numpy()
-    image = np.expand_dims(image, axis=0)
-    text = tokenize([prompts[0]])._numpy()
 
-    def calculate_similarity(vars, image, text):
-        # CLIP returns L2-normalized image and text features.
-        image_proj, text_proj = model.apply(vars, image, text)
-        return nn.softmax(100 * image_proj @ text_proj.T)
-
-    probs = jax.jit(calculate_similarity)(vars, image, text)
-    print(probs)
-
-    # clip = CLIPInference(
-    # 'vit-base-patch32',
-    # softmax_temp=100.,
-    # pretrained='laion2b-s34b-b79k',
-    # )
-    #clip_encoder = CLIPEncoder(cache_dir=config.clip_cache_dir)
-=======
 def calculate_clip(images, prompts):
     clip_encoder = CLIPEncoderFlax()
->>>>>>> 340b9c23f285fe23a9856ae4295e709577f4a91a
     
     # clip_scores = np.zeros(len(images))
     # for i in tqdm(range(len(images))):
     #     #clip_scores[i] = clip_encoder.get_clip_score(prompts[i], images[i])
     #     clip_scores[i], _ = clip(images[i], prompts[i])
         
-<<<<<<< HEAD
-    # #clip_score = np.mean(clip_scores.detach().cpu().numpy())
-    # clip_score = np.mean(clip_scores)
-    # print("clip score is" + str(clip_score))
-    # return clip_score
-=======
+
     overall_clip_score = jnp.mean(jnp.stack(clip_scores))
     print("clip score is" + str(overall_clip_score))
     return np.array(overall_clip_score)
->>>>>>> 340b9c23f285fe23a9856ae4295e709577f4a91a
 
 def load_images(path, captions_df):
     images = []
