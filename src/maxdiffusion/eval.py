@@ -20,12 +20,8 @@ import numpy as np
 from jax.experimental.compilation_cache import compilation_cache as cc
 from maxdiffusion.metrics.fid import inception
 from maxdiffusion.metrics.fid import fid_score
-<<<<<<< HEAD
-from maxdiffusion.metrics.fid import pytorch_fid_score
-from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoder
-=======
+
 from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoderFlax
->>>>>>> 340b9c23f285fe23a9856ae4295e709577f4a91a
 from typing import Sequence
 from absl import app
 from maxdiffusion import pyconfig
