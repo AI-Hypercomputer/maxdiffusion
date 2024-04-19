@@ -28,8 +28,6 @@ from maxdiffusion.max_utils import (
   create_device_mesh,
   get_dtype,
   get_states,
-  activate_profiler,
-  deactivate_profiler,
   device_put_replicated,
   get_flash_block_sizes
 )
@@ -89,9 +87,7 @@ def get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negat
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
     guidance_scale = config.guidance_scale
     num_inference_steps = config.num_inference_steps
-    print(prompt_ids.shape)
     prompt_embeds = pipeline.text_encoder(prompt_ids, params=params["text_encoder"])[0]
-    print(prompt_embeds.shape)
     negative_prompt_embeds = pipeline.text_encoder(negative_prompt_ids, params=params["text_encoder"])[0]
     context = jnp.concatenate([negative_prompt_embeds, prompt_embeds])
     guidance_scale = jnp.array([guidance_scale], dtype=jnp.float32)
@@ -160,7 +156,6 @@ def run(config):
     mesh = Mesh(devices_array, config.mesh_axes)
 
     batch_size = jax.local_device_count() * config.per_device_batch_size
-    #assert 30_000 % batch_size == 0, f"Coco dataset must be evenly divisible by batch size : {batch_size}"
     weight_dtype = get_dtype(config)
     flash_block_sizes = get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
@@ -210,7 +205,6 @@ def run(config):
       # Create a dataset using tf.data
       dataset = tf.data.TextLineDataset(file_path)
       dataset = dataset.map(parse_tsv_line, num_parallel_calls=tf.data.AUTOTUNE)
-      #dataset = dataset.map(lambda x: x.to_tensor())  
       dataset = dataset.batch(batch_size_per_process)
       dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())
 
@@ -232,7 +226,6 @@ def run(config):
     shards = get_list_prompt_shards_from_file(config.caption_coco_file, PerHostBatchSize)
 
     negative_prompt_ids = tokenize([""] * PerHostBatchSize, pipeline.tokenizer)
-    print(len(shards))
 
     os.makedirs(config.images_directory, exist_ok=True)
 
@@ -250,14 +243,11 @@ def run(config):
             prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
 
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
-        #prompt_ids=shard(prompt_ids)
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
-        #negative_prompt_ids = shard(negative_prompt_ids)
         
         s = time.time()
-        #activate_profiler(config)
         images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
         images = jax.experimental.multihost_utils.process_allgather(images)
         
@@ -268,7 +258,6 @@ def run(config):
 
         numpy_images = np.array(images)
         
-        #deactivate_profiler(config)
         print("inference time: ",(time.time() - s))
         
         save_process(numpy_images, config.images_directory, img_ids, msk)

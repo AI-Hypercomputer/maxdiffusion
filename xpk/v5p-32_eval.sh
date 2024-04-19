@@ -82,4 +82,4 @@ stat_coco_file="/app/datasets/coco2014/val2014_30k_stats.npz" \
 clip_cache_dir="clip_cache_dir" \
 base_output_directory=${OUT_DIR}
 
-#gsutil cp -r generated_images ${OUT_DIR}/output/
+gsutil cp -r generated_images ${OUT_DIR}/output/
