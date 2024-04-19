@@ -17,6 +17,7 @@
 from maxdiffusion import generate
 import jax
 import numpy as np
+from jax.experimental.compilation_cache import compilation_cache as cc
 from maxdiffusion.metrics.fid import inception
 from maxdiffusion.metrics.fid import fid_score
 from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoderFlax
@@ -105,6 +106,7 @@ def eval(config):
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     config = pyconfig.config
+    cc.initialize_cache(os.path.expanduser("~/jax_cache"))
     eval(config)
 if __name__ == "__main__":
     app.run(main)

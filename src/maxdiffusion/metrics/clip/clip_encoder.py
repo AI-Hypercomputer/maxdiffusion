@@ -25,7 +25,6 @@ class CLIPEncoderTorch(nn.Module):
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(self.clip_version,
                                                                                pretrained=self.pretrained,
                                                                                cache_dir=cache_dir)
-        breakpoint()
         self.model.eval()
         self.model.to(device)
         self.device = device
