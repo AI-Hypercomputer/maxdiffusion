@@ -1,7 +1,9 @@
 from functools import partial
 import timeit
+import tensorflow as tf
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 from transformers import AutoTokenizer, FlaxCLIPModel, AutoProcessor
 import numpy as np
 import jax.numpy as jnp
@@ -16,6 +18,8 @@ import open_clip
 from PIL import Image
 import jax
 import time
+
+import datasets
 
 
 
@@ -153,7 +157,7 @@ def get_random_caption():
 def verify_models_match(device='cpu'):
     my_bucket_name = "jfacevedo-maxdiffusion-v5p"
     my_folder_path = "checkpoints/ckpt_generated_images/512000"
-    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path, max_images=20)]
+    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path, max_images=30)]
     random_prompts = [get_random_caption() for _ in range(len(random_images))]
     print('\nFlax Time')
     flax_score = calculate_clip(random_images, random_prompts, CLIPEncoderFlax())
@@ -166,6 +170,36 @@ def verify_models_match(device='cpu'):
     else:
         print('Matched')
         return True
+
+def calculate_clip(images, prompts):
+    clip_encoder = CLIPEncoderFlax()
+
+    dataset = datasets.Dataset.from_dict({"image": images, "text": prompts})
+    for batch_images, batch_text in dataset.iter(batch_size=4):
+        print(batch_images)
+        print(batch_text)
+
+
+    
+    clip_scores = []
+    for i in tqdm(range(0, len(images))):
+        score = clip_encoder.get_clip_score(prompts[i], images[i])
+        clip_scores.append(score)
+        
+    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+    print("clip score is" + str(overall_clip_score))
+    return np.array(overall_clip_score)
+
+def batch_playgroud(device='tpu'):
+    my_bucket_name = "jfacevedo-maxdiffusion-v5p"
+    my_folder_path = "checkpoints/ckpt_generated_images/512000"
+    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path, max_images=30)]
+    random_prompts = [get_random_caption() for _ in range(len(random_images))]
+
+    calculate_clip(random_images, random_prompts)
+    
+
+
 
 
 
@@ -187,10 +221,11 @@ def verify_models_match(device='cpu'):
     # return True
 
 if __name__ == "__main__":
-    for i in range(4):
-        matched = verify_models_match('tpu')
-        if not matched:
-            print('Batch did not match')
+    batch_playgroud()
+    # for i in range(4):
+    #     matched = verify_models_match('tpu')
+    #     if not matched:
+    #         print('Batch did not match')
 
 
 
