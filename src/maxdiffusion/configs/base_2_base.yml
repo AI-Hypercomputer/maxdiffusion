@@ -70,7 +70,7 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 logical_axis_rules: [
                       ['batch', 'data'],
                       ['activation_batch', 'data'],
-                      ['embed', 'data'],
+                      # ['embed', 'data'],
                       ['activation_length', 'fsdp'],
                       ['out_channels', 'fsdp'],
                       ['conv_out', 'fsdp'],
