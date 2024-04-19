@@ -79,11 +79,10 @@ def eval(config):
     generate.run(config)
 
     # calculating CLIP:
-    # captions_df = load_captions(config.caption_coco_file)
-    # images, prompts = load_images(config.images_directory, captions_df )
+    captions_df = load_captions(config.caption_coco_file)
+    images, prompts = load_images(config.images_directory, captions_df)
     
-
-    # calculate_clip(images, prompts, config)
+    calculate_clip(images, prompts)
 
     # calculating FID:
     rng = jax.random.PRNGKey(0)
