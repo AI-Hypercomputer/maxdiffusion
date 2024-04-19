@@ -72,7 +72,7 @@ def eval_at_checkpoint(config,
     images_directory = os.path.join(config.images_directory, checkpoint_number)
     images_directory = os.path.join(images_directory, "output")
     os.makedirs(images_directory, exist_ok=True)
-    print(images_directory)
+
     generate.run(config,  
          images_directory,        
          unet_state,
@@ -85,7 +85,8 @@ def eval_at_checkpoint(config,
     clip, fid = eval.eval_scores(config, images_directory)
     print("clip score is :" + str(clip))
     print("fid score is : " + str(fid))
-    #   max_utils.walk_and_upload_blobs(config, images_directory)
+    if config.upload_images:
+        max_utils.walk_and_upload_blobs(config, images_directory)
     pipeline.scheduler = training_scheduler
     params["scheduler"] = training_scheduler_state
 
