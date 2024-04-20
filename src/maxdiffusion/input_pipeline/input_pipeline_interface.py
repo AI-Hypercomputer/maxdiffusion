@@ -99,7 +99,7 @@ def make_laion400m_train_iterator(
       .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.float32, tf.float32)), num_parallel_calls=AUTOTUNE)
       .map(create_dict, num_parallel_calls=AUTOTUNE)
       .shuffle(global_batch_size * 10)
-      .batch(global_batch_size, drop_remainder=False)
+      .batch(global_batch_size // jax.process_count(), drop_remainder=False)
       .repeat(-1)
       .prefetch(AUTOTUNE)
   )

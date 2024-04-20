@@ -219,6 +219,7 @@ class AttentionOp(nn.Module):
             # attend to values
             if self.split_head_dim:
                 hidden_states = jnp.einsum("b n f t, b t n h -> b f n h", attention_probs, value_states)
+                attention_scores = nn.with_logical_constraint(attention_scores, (BATCH, HEAD, LENGTH, D_KV))
                 b = hidden_states.shape[0]
                 hidden_states = jnp.reshape(hidden_states, (b, -1, self.heads * self.dim_head))
             else:
@@ -319,7 +320,7 @@ def jax_memory_efficient_attention(
     r"""
     Flax Memory-efficient multi-head dot product attention. https://arxiv.org/abs/2112.05682v2
     https://github.com/AminRezaei0x443/memory-efficient-attention
-
+`
     Args:
         query (`jnp.ndarray`): (batch..., query_length, head, query_key_depth_per_head)
         key (`jnp.ndarray`): (batch..., key_value_length, head, query_key_depth_per_head)
