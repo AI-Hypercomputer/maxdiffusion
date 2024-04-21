@@ -56,6 +56,25 @@ from maxdiffusion.generate import run_inference, tokenize, save_process
 TOTAL_TRAIN_SAMPLES = 6513144
 TOTAL_EVAL_SAMPLES = 30000
 
+def compute_snr(scheduler_state, timesteps):
+    alphas_cumprod = scheduler_state.alphas_cumprod
+    sqrt_alphas_cumprod = alphas_cumprod**0.5
+    sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
+
+    while len(sqrt_alphas_cumprod.shape) < len(timesteps.shape):
+        sqrt_alphas_cumprod = sqrt_alphas_cumprod[..., None]
+    
+    alpha = sqrt_alphas_cumprod.expand(timesteps.shape)
+   
+    while len(sqrt_one_minus_alphas_cumprod.shape) < len(timesteps.shape):
+        sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[..., None]
+    sigma = sqrt_one_minus_alphas_cumprod.expand(timesteps.shape)
+
+    # compute SNR.
+    snr = (alpha / sigma) ** 2
+    return snr
+      
+
 def eval(config,
          checkpoint_number,
          unet_state,
@@ -209,10 +228,10 @@ def write_metrics_to_tensorboard(writer, metrics, step, config):
         writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
 
     full_log = step % config.log_period == 0
-    if jax.process_index() == 0:
-        max_logging.log(f"completed step: {step}, seconds: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
-            f"TFLOP/s/device: {metrics['scalar']['perf/per_device_tflops_per_sec']:.3f}, "
-            f"loss: {metrics['scalar']['learning/loss']:.3f}")
+    # if jax.process_index() == 0:
+    max_logging.log(f"completed step: {step}, seconds: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
+        f"TFLOP/s/device: {metrics['scalar']['perf/per_device_tflops_per_sec']:.3f}, "
+        f"loss: {metrics['scalar']['learning/loss']:.3f}")
 
     if full_log and jax.process_index() == 0:
       max_logging.log(
@@ -369,7 +388,15 @@ def train(config):
 
             # Sample noise that we'll add to the latents
             noise_rng, timestep_rng = jax.random.split(sample_rng)
+            noise_rng, offset_rng, peturbation_rng = jax.random.split(noise_rng, num=3)
             noise = jax.random.normal(noise_rng, latents.shape)
+
+            # noise offset
+            noise += 0.05 * jax.random.normal(offset_rng, (latents.shape[0], latents.shape[1], 1, 1))
+
+            # input perturbation
+            noise += 0.1 * jax.random.normal(peturbation_rng, noise.shape)
+
             # Sample a random timestep for each image
             bsz = latents.shape[0]
             timesteps = jax.random.randint(
