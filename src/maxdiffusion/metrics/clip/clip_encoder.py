@@ -1,3 +1,4 @@
+import random
 import torch
 import torch.nn as nn
 
@@ -5,6 +6,12 @@ from transformers import FlaxCLIPModel, AutoProcessor
 
 import open_clip
 import jax
+import datasets
+import numpy as np
+import jax.numpy as jnp
+from tqdm import tqdm
+
+from google.cloud import storage
 
 class CLIPEncoderTorch(nn.Module):
     """
@@ -52,7 +59,8 @@ class CLIPEncoderFlax:
     def __init__(self, pretrained="laion/CLIP-ViT-H-14-laion2B-s32B-b79K"):
         assert pretrained is not None
 
-        self.model = jax.jit(FlaxCLIPModel.from_pretrained(pretrained))
+        # TODO: jit this again
+        self.model = FlaxCLIPModel.from_pretrained(pretrained)
         self.processor = AutoProcessor.from_pretrained(pretrained)
     
     def get_clip_score(self, text, image):
@@ -61,3 +69,129 @@ class CLIPEncoderFlax:
         outputs = self.model(**inputs)
 
         return outputs.logits_per_image / 100
+    
+    def get_clip_score_manual(self, text, image):
+        # See https://github.com/huggingface/transformers/blob/8c12690cecbb97e187861e386f7a0ac790e4236c/src/transformers/models/clip/modeling_flax_clip.py#L1214
+        inputs = self.processor(images=image, return_tensors="jax")
+        image_embeddings = self.model.get_image_features(**inputs)
+        inputs = self.processor(text=text, return_tensors="jax", padding="max_length", truncation=True)
+        text_embeddings = self.model.get_text_features(**inputs)
+
+        image_embeddings /= jnp.linalg.norm(image_embeddings, axis=-1, keepdims=True)
+        text_embeddings /= jnp.linalg.norm(text_embeddings, axis=-1, keepdims=True)
+
+        return jnp.tensordot(image_embeddings, text_embeddings)
+
+
+    def get_clip_score_batched(self, prompts, images, batch_size = 4):
+        dataset = datasets.Dataset.from_dict({"images": images, "texts": prompts})
+
+        clip_scores = []
+
+        for batch in tqdm(dataset.iter(batch_size=batch_size)):
+            batch_texts, batch_images = batch["texts"], batch["images"]
+            batch_inputs = self.processor(text=batch_texts, images=batch_images, return_tensors="jax", padding="max_length", truncation=True)
+            batch_outputs = self.model(**batch_inputs)
+            batch_clip_scores = batch_outputs.logits_per_image / 100
+            clip_scores.append(batch_clip_scores)
+            
+        overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+        print("clip score is" + str(overall_clip_score))
+        return np.array(overall_clip_score)
+        
+            
+
+
+        
+
+
+
+# TODO: delete all this stuff when i merge
+def load_random_images_from_gcs(bucket_name, folder_path, max_images=10):
+    """Loads a specified number of random images from a folder in a GCS bucket.
+
+    Args:
+        bucket_name (str): Name of the GCS bucket.
+        folder_path (str): The path to the folder within the bucket.
+        max_images (int): The maximum number of images to load. Defaults to 10.
+
+    Returns:
+        list: A list of PIL.Image objects.
+    """
+
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+
+    # Get a list of image blobs in the specified folder
+    blobs = bucket.list_blobs(prefix=folder_path)
+    image_blobs = [blob for blob in blobs if blob.name.lower().endswith(('.jpg', '.png', '.jpeg'))]
+
+    # Select random images (up to max_images)
+    num_images_to_load = min(max_images, len(image_blobs))
+    random_blobs = random.sample(image_blobs, num_images_to_load)
+
+    images = []
+    for blob in random_blobs:
+        image_bytes = blob.download_as_bytes()
+        from PIL import Image
+        from io import BytesIO
+        images.append((blob.name, Image.open(BytesIO(image_bytes))))
+
+    return images
+
+def get_random_caption():
+    sentences = [
+        "The early bird might get the worm, but the second mouse gets the cheese.",
+        "Don't count your chickens before they hatch... or your omelet will be disappointing.",
+        "If at first you don't succeed, try hiding all evidence that you ever tried.",
+        "Experience is a great teacher, but she gives really tough exams.",
+        "My imaginary friends think I'm the best listener.",
+        "A clear conscience is often a sign of a bad memory.",
+        "Today was a total waste of makeup.",
+        "My level of sarcasm has gotten to the point where I don't even know if I'm kidding or not.",
+        "If you think nobody cares if you're alive, try missing a couple of payments.",
+        "Apparently, rock bottom has a basement." 
+    ]
+
+    return random.sample(sentences, 1)
+
+def calculate_clip(images, prompts):
+    clip_encoder = CLIPEncoderFlax()
+    clip_encoder_legacy = CLIPEncoderTorch()
+    for image, prompt in tqdm(zip(images, prompts)):
+        manual_score = np.array(clip_encoder.get_clip_score_manual(prompt, image))
+        
+        standard_score = np.array(clip_encoder.get_clip_score(prompt, image))
+
+        legacy_score = clip_encoder_legacy.get_clip_score(prompt, image)
+        
+        assert np.allclose(manual_score, standard_score) and np.allclose(manual_score, legacy_score, atol=1e-3)
+
+        
+
+    #print(clip_encoder.get_clip_score_batched(prompts, images))
+
+    # dataset = datasets.Dataset.from_dict({"image": images, "text": prompts})
+    # for batch_images, batch_text in dataset.iter(batch_size=4):
+    #     print(batch_images)
+    #     print(batch_text)
+    
+    # clip_scores = []
+    # for i in tqdm(range(0, len(images))):
+    #     score = clip_encoder.get_clip_score(prompts[i], images[i])
+    #     clip_scores.append(score)
+        
+    # overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+    # print("clip score is" + str(overall_clip_score))
+    # return np.array(overall_clip_score)
+
+def batch_playgroud(device='tpu'):
+    my_bucket_name = "jfacevedo-maxdiffusion-v5p"
+    my_folder_path = "checkpoints/ckpt_generated_images/512000"
+    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path, max_images=100)]
+    random_prompts = [get_random_caption()[0] for _ in range(len(random_images))]
+
+    calculate_clip(random_images, random_prompts)
+
+if __name__ == "__main__":
+    batch_playgroud()
