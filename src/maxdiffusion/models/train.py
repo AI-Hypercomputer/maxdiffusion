@@ -435,7 +435,7 @@ def train(config):
     mllog_utils.train_init_print(config)
     mllog_utils.train_init_stop()
     mllog_utils.train_run_start()
-    mllog_utils.train_step_start(start_step)
+    mllog_utils.train_step_start(start_step, samples_count=0)
     # for checkpointing
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
@@ -448,7 +448,9 @@ def train(config):
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
         write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
-        if step != 0 and (total_train_batch_size * step) % config.checkpoint_every == 0:
+        step_num = step + 1
+        samples_count = total_train_batch_size * step_num
+        if step != 0 and samples_count % config.checkpoint_every == 0:
            if config.eval_at_checkpoint:
               eval_at_checkpoint(config,
                    f"{str(step * total_train_batch_size)}",
@@ -456,7 +458,9 @@ def train(config):
                    vae_state,
                    vae_state_mesh_shardings,
                    pipeline, params, mesh, rng)
-           max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.checkpoint_dir+f"/{str(step * total_train_batch_size)}/")
+           checkpoint_name = f"{step_num=}-{samples_count=}"
+           max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, os.path.join(config.checkpoint_dir, checkpoint_name))
+           mllog_utils.train_checkpoint_step_log(step_num)
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
         if step == first_profiling_step:
@@ -464,7 +468,7 @@ def train(config):
         if step == last_profiling_step:
             max_utils.deactivate_profiler(config)
 
-        mllog_utils.maybe_train_step_log(config, start_step, step, train_metric)
+        mllog_utils.maybe_train_step_log(config, start_step, step, samples_count, train_metric)
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:

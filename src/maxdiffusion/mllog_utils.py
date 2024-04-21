@@ -12,9 +12,11 @@
  """
 
 """Utils that relevant to mllog for mlperf submission compliance."""
+from typing import Optional
 import jax
 from mlperf_logging import mllog
 import numpy as np
+import os
 
 mllogger = mllog.get_mllogger()
 
@@ -64,35 +66,155 @@ def train_init_print(config, device: str = 'tpu-v5p'):
 
     mllogger.event(mllog.constants.SEED, config.seed)
 
-def train_step_start(step):
+def train_step_start(step_num, samples_count):
   if jax.process_index() == 0:
     mllogger.start(
       mllog.constants.BLOCK_START,
       value="training_step",
       metadata={
-        'step_num': step,
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
       },
     )
 
-def train_step_end(step, loss, lr):
+def train_step_end(step_num, samples_count, loss, lr):
   if jax.process_index() == 0:
     mllogger.end(
       mllog.constants.BLOCK_STOP,
       value="training_step",
       metadata={
-        'step_num': step,
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
         'loss': loss,
         'lr': lr,
       },
     )
 
-def maybe_train_step_log(config, start_step, step, metric, train_log_interval: int = 100):
-  if step > start_step and step % train_log_interval == 0 or step == config.max_train_steps - 1:
+def maybe_train_step_log(config, start_step, step_num, samples_count, metric, train_log_interval: int = 100, ):
+  if step_num > start_step and step_num % train_log_interval == 0 or step_num == config.max_train_steps:
     # convert the jax array to a numpy array for mllog JSON encoding
     loss = np.asarray(metric['scalar']['learning/loss'])
     lr = np.asarray(metric['scalar']['learning/current_learning_rate'])
 
-    train_step_end(step, loss, lr)
+    train_step_end(step_num, samples_count, loss, lr)
     # start new tracking except the last step
-    if step < config.max_train_steps - 1:
-      train_step_start(step)
+    if step_num < config.max_train_steps:
+      train_step_start(step_num, samples_count)
+
+def train_checkpoint_step_log(step_num: int):
+  if jax.process_index() == 0:
+    mllogger.event(
+      "checkpoint",
+      value=step_num,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+      },
+    )
+
+def extract_info_from_ckpt_name(model_ckpt_name: str, key: str) -> int:
+  # model_ckpt_name format:
+  #  f"{step_num=}-{samples_count=}"
+  assert key in ("step_num", "samples_count")
+  info_dict = {}
+  for key_value_str in os.path.basename(model_ckpt_name.rstrip('/')).split('-'):
+    key, value = key_value_str.split("=")
+    info_dict[key] = value
+  result = int(info_dict[key])
+  return result
+
+def eval_start(config):
+  if jax.process_index() == 0:
+    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
+    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+    mllogger.start(
+      mllog.constants.EVAL_START,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
+      },
+    )
+
+def eval_end(config):
+  if jax.process_index() == 0:
+    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
+    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+    mllogger.end(
+      mllog.constants.EVAL_STOP,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
+      },
+    )
+
+def eval_fid(config, fid: float):
+  if jax.process_index() == 0:
+    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
+    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+    mllogger.event(
+      mllog.constants.EVAL_ACCURACY,
+      value=fid,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
+        "metric": "FID",
+        "ckpt_name": config.pretrained_model_name_or_path,
+      },
+    )
+
+def eval_clip(config, clip_score: float):
+  if jax.process_index() == 0:
+    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
+    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+    mllogger.event(
+      mllog.constants.EVAL_ACCURACY,
+      value=clip_score,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
+        "metric": "CLIP",
+        "ckpt_name": config.pretrained_model_name_or_path,
+      },
+    )
+
+def timestamp_fid(fid: float, timestamp: int, step_num: int, samples_count: int):
+  mllogger.event(
+    mllog.constants.EVAL_ACCURACY,
+    value=fid,
+    metadata={
+      mllog.constants.STEP_NUM: step_num,
+      mllog.constants.SAMPLES_COUNT: samples_count,
+      "metric": "FID",
+    },
+    time_ms=timestamp,
+  )
+
+def timestamp_clip(clip: float, timestamp: int, step_num: int, samples_count: int):
+  mllogger.event(
+    mllog.constants.EVAL_ACCURACY,
+    value=clip,
+    metadata={
+      mllog.constants.STEP_NUM: step_num,
+      mllog.constants.SAMPLES_COUNT: samples_count,
+      "metric": "CLIP",
+    },
+    time_ms=timestamp,
+  )
+
+def timestamp_run_stop_success(timestamp: int, step_num: int, samples_count: int):
+  mllogger.end(
+    mllog.constants.RUN_STOP,
+    metadata={
+      mllog.constants.STATUS: mllog.constants.SUCCESS,
+      mllog.constants.STEP_NUM: step_num,
+      mllog.constants.SAMPLES_COUNT: samples_count,
+    },
+    time_ms=timestamp,
+  )
+
+def timestamp_run_stop_abort():
+  mllogger.end(
+    mllog.constants.RUN_STOP,
+    metadata={
+      mllog.constants.STATUS: mllog.constants.ABORTED,
+    },
+  )
