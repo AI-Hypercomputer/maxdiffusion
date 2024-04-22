@@ -38,6 +38,7 @@ import functools
 from keras.preprocessing.image import ImageDataGenerator
 from tqdm import tqdm
 from PIL import Image
+cc.initialize_cache(os.path.expanduser("~/jax_cache"))
 
 def load_captions(file_path):
     captions_df = pd.read_csv(file_path, delimiter='\t', header=0, names=['image_id','id', 'caption'])
