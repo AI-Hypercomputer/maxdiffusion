@@ -455,7 +455,7 @@ def delete_pytree(to_delete):
 def get_params_to_save(params):
   return jax.device_get(jax.tree_util.tree_map(lambda x: x, params))
 
-def walk_and_upload_blobs(config, output_dir):
+def walk_and_upload_blobs(config, output_dir, checkpoint_number="0"):
   user_dir = os.path.expanduser('~')
   uploaded_files = set()
   for root, _, files in os.walk(os.path.abspath(output_dir)):
@@ -465,7 +465,7 @@ def walk_and_upload_blobs(config, output_dir):
         continue
       max_logging.log(f"Moving file {file_to_upload} to GCS...")
       gcs_file_name = os.path.join(config.base_output_directory, config.run_name, 
-                                   file_to_upload.replace(user_dir,"").strip("/"))
+                                   file_to_upload.replace(user_dir,"").strip("/"), checkpoint_number)
       upload_blob(gcs_file_name, file_to_upload)
       uploaded_files.add(file_to_upload)
       max_logging.log(f"File {file_to_upload} moved successfully!")
