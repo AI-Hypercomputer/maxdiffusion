@@ -84,7 +84,7 @@ class CLIPEncoderFlax:
         text_embeddings = jnp.expand_dims(text_embeddings, 2)
 
         logit_scale = jnp.exp(self.model.params['logit_scale'])
-        return jax.lax.squeeze(jax.lax.batch_matmul(image_embeddings, text_embeddings), (2,)) * logit_scale / 100
+        return jnp.squeeze(jnp.batch_matmul(image_embeddings, text_embeddings), (2,)) * logit_scale / 100
 
         #return jnp.sum(image_embeddings * text_embeddings, axis=1, keepdims=True) * logit_scale / 100
 
