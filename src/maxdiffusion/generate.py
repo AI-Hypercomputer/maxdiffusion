@@ -104,7 +104,8 @@ def get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negat
     scheduler_state = pipeline.scheduler.set_timesteps(
         params["scheduler"],
         num_inference_steps=num_inference_steps,
-        shape=latents.shape
+        shape=latents.shape,
+        timestep_spacing="trailing"
     )
     latents = latents * params["scheduler"].init_noise_sigma
 
@@ -169,8 +170,12 @@ def run(config):
         flash_block_sizes=flash_block_sizes,
         mesh=mesh
     )
-    scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
-        config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
+    scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained( 
+        config.pretrained_model_name_or_path,
+        revision=config.revision,
+        subfolder="scheduler",
+        dtype=jnp.float32,
+        rescale_zero_terminal_snr=True
     )
     pipeline.scheduler = scheduler
     params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)

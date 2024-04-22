@@ -427,7 +427,7 @@ def train(config):
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
             
             # snr
-            if config.snr_gamma:
+            if config.snr_gamma > 0:
                 snr = compute_snr(noise_scheduler_state, timesteps)
                 mse_loss_weights = jnp.stack([snr, config.snr_gamma * jnp.ones_like(timesteps)], axis=1).min(axis=1)[0]
                 
