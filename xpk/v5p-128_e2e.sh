@@ -65,7 +65,8 @@ pip install .
 
 python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=v5p-128-xpk base_output_directory=${OUT_DIR}  train_data_dir=gs://jfacevedo-maxdiffusion-v5p/laion400m/processed/laion400m_moments-tfrec per_device_batch_size=8 split_head_dim=True  attention=flash  train_new_unet=True norm_num_groups=16 \
 enable_profiler=False skip_first_n_steps_for_profiler=1998 reuse_example_batch=False max_train_steps=50 \
-eval_at_checkpoint=True checkpoint_every=4096 \
+eval_at_checkpoint=True upload_images=True \
+checkpoint_every=4096 \
 caption_coco_file="/app/datasets/coco2014/val2014_30k_padded.tsv" \
 images_directory="/app/maxdiffusion/generated_images/" \
 stat_output_directory="output/" \
