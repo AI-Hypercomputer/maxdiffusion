@@ -87,14 +87,10 @@ def eval(config,
          mesh,
          rng):
     batch_size = jax.device_count() * config.per_device_batch_size
-    
-    scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained( 
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        subfolder="scheduler",
-        dtype=jnp.float32,
-        rescale_zero_terminal_snr=config.rescale_zero_terminal_snr
-    )
+
+    scheduler_config = max_utils.override_scheduler_config(pipeline.scheduler.config, config)
+    scheduler = FlaxDDIMScheduler.from_config(scheduler_config)
+    scheduler_state = pipeline.scheduler.create_state()
 
     training_scheduler = pipeline.scheduler
     training_scheduler_state = params["scheduler"]
@@ -311,7 +307,6 @@ def train(config):
     scheduler_config = max_utils.override_scheduler_config(pipeline.scheduler.config, config)
     pipeline.scheduler = FlaxDDPMScheduler.from_config(scheduler_config)
     params["scheduler"] = pipeline.scheduler.create_state()
-    breakpoint()
 
     sharding = PositionalSharding(devices_array).replicate()
     partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=sharding)
