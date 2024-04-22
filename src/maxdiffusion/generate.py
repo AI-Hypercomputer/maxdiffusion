@@ -105,7 +105,7 @@ def get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negat
         params["scheduler"],
         num_inference_steps=num_inference_steps,
         shape=latents.shape,
-        timestep_spacing="trailing"
+        timestep_spacing=config.timestep_spacing
     )
     latents = latents * params["scheduler"].init_noise_sigma
 
