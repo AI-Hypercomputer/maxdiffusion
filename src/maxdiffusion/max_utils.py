@@ -464,7 +464,7 @@ def walk_and_upload_blobs(config, output_dir):
       if file_to_upload in uploaded_files:
         continue
       max_logging.log(f"Moving file {file_to_upload} to GCS...")
-    gcs_file_name = os.path.join(config.base_output_directory, config.run_name,
+      gcs_file_name = os.path.join(config.base_output_directory, config.run_name,
                                 file_to_upload.replace(user_dir,"").strip("/"))
       upload_blob(gcs_file_name, file_to_upload)
       uploaded_files.add(file_to_upload)
