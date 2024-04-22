@@ -36,6 +36,8 @@ from maxdiffusion import (
     max_utils,
     pyconfig,
     mllog_utils,
+    generate,
+    eval,
 )
 
 from flax.linen import partitioning as nn_partitioning
@@ -43,7 +45,6 @@ from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
 from transformers import set_seed
-
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
   make_laion400m_train_iterator
@@ -56,7 +57,7 @@ from maxdiffusion.generate import run_inference, tokenize, save_process
 TOTAL_TRAIN_SAMPLES = 6513144
 TOTAL_EVAL_SAMPLES = 30000
 
-def eval(config,
+def eval_at_checkpoint(config,
          checkpoint_number,
          unet_state,
          unet_state_mesh_shardings,
@@ -66,46 +67,25 @@ def eval(config,
          params,
          mesh,
          rng):
-    batch_size = jax.device_count() * config.per_device_batch_size
-    scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
-        config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
-    )
-
     training_scheduler = pipeline.scheduler
     training_scheduler_state = params["scheduler"]
-    pipeline.scheduler = scheduler
-    params["scheduler"] = scheduler_state
+    images_directory = os.path.join(config.images_directory, "output")
+    os.makedirs(images_directory, exist_ok=True)
 
-    p_run_inference = jax.jit(
-       partial(run_inference,
-                         rng=rng,
-                         config=config,
-                         batch_size=batch_size,
-                         pipeline=pipeline,
-                         mesh=mesh),
-                         in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None, None),
-                         out_shardings=None
-    )
+    generate.run(config,  
+         images_directory,        
+         unet_state,
+         unet_state_mesh_shardings,
+         vae_state,
+         vae_state_mesh_shardings,
+         pipeline,
+         params)
 
-    negative_prompt_ids = tokenize([""] * batch_size, pipeline.tokenizer)
-    with open(config.caption_coco_file, "r") as fd:
-        rd = csv.reader(fd, delimiter="\t", quotechar='"')
-        rows = list(rd)[1:]
-        negative_prompt_ids = tokenize([""] * batch_size, pipeline.tokenizer)
-        images_directory = os.path.join(config.images_directory, checkpoint_number)
-        os.makedirs(images_directory, exist_ok=True)
-        for i in tqdm(range(0, len(rows), batch_size)):
-            img_ids = [row[0] for row in rows[i:i+batch_size]]
-            ids = [row[1] for row in rows[i:i+batch_size]]
-            prompts = [row[2] for row in rows[i:i+batch_size]]
-            prompt_ids = tokenize(prompts, pipeline.tokenizer)
-            images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
-            images = jax.experimental.multihost_utils.process_allgather(images)
-            numpy_images = np.array(images)
-            save_process(numpy_images, images_directory, img_ids)
-            break
-    if jax.process_index() == 0:
-        max_utils.walk_and_upload_blobs(config, images_directory)
+    clip, fid = eval.eval_scores(config, images_directory)
+    print("clip score is :" + str(clip))
+    print("fid score is : " + str(fid))
+    if config.upload_images:
+        max_utils.walk_and_upload_gen_images(config, images_directory, checkpoint_number)
     pipeline.scheduler = training_scheduler
     params["scheduler"] = training_scheduler_state
 
@@ -470,7 +450,7 @@ def train(config):
         last_step_completion = new_time
         if step != 0 and (total_train_batch_size * step) % config.checkpoint_every == 0:
            if config.eval_at_checkpoint:
-              eval(config,
+              eval_at_checkpoint(config,
                    f"{str(step * total_train_batch_size)}",
                    unet_state, unet_state_mesh_shardings,
                    vae_state,
