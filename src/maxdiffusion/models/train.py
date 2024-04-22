@@ -85,7 +85,7 @@ def eval_at_checkpoint(config,
     print("clip score is :" + str(clip))
     print("fid score is : " + str(fid))
     if config.upload_images:
-        max_utils.walk_and_upload_blobs(config, images_directory, checkpoint_number)
+        max_utils.walk_and_upload_gen_images(config, images_directory, checkpoint_number)
     pipeline.scheduler = training_scheduler
     params["scheduler"] = training_scheduler_state
 

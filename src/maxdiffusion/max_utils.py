@@ -455,8 +455,8 @@ def delete_pytree(to_delete):
 def get_params_to_save(params):
   return jax.device_get(jax.tree_util.tree_map(lambda x: x, params))
 
-def walk_and_upload_blobs(config, output_dir, checkpoint_number="0"):
-  user_dir = output_dir
+def walk_and_upload_blobs(config, output_dir):
+  user_dir = os.path.expanduser('~')
   uploaded_files = set()
   for root, _, files in os.walk(os.path.abspath(output_dir)):
     for file in files:
@@ -464,11 +464,22 @@ def walk_and_upload_blobs(config, output_dir, checkpoint_number="0"):
       if file_to_upload in uploaded_files:
         continue
       max_logging.log(f"Moving file {file_to_upload} to GCS...")
-      gcs_file_name = os.path.join(config.base_output_directory, config.run_name, checkpoint_number
-                                   file_to_upload.replace(user_dir,"").strip("/"))
+    gcs_file_name = os.path.join(config.base_output_directory, config.run_name,
+                                file_to_upload.replace(user_dir,"").strip("/"))
       upload_blob(gcs_file_name, file_to_upload)
       uploaded_files.add(file_to_upload)
       max_logging.log(f"File {file_to_upload} moved successfully!")
+
+  def walk_and_upload_gen_images(config, output_dir, checkpoint_number="0"):
+    user_dir = output_dir
+    for root, _, files in os.walk(os.path.abspath(output_dir)):
+      for file in files:
+        file_to_upload = os.path.join(root, file)
+        max_logging.log(f"Moving file {file_to_upload} to GCS...")
+        gcs_file_name = os.path.join(config.base_output_directory, "generate_image", checkpoint_number,
+                                    file_to_upload.replace(user_dir,"/").strip("/"))
+        upload_blob(gcs_file_name, file_to_upload)
+        max_logging.log(f"File {file_to_upload} moved successfully!")
 
 def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, output_dir):
   weight_dtype = get_dtype(config)
