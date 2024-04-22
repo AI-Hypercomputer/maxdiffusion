@@ -29,7 +29,8 @@ from maxdiffusion.max_utils import (
   get_dtype,
   get_states,
   device_put_replicated,
-  get_flash_block_sizes
+  get_flash_block_sizes,
+  override_scheduler_config
 )
 from maxdiffusion import pyconfig
 from absl import app
@@ -38,14 +39,9 @@ from maxdiffusion import (
   FlaxDDIMScheduler
 )
 from flax.linen import partitioning as nn_partitioning
-from flax.training.common_utils import shard
-from flax.jax_utils import replicate
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh, PositionalSharding
-from maxdiffusion.image_processor import VaeImageProcessor
-from PIL import Image
-
-from multiprocessing import Process 
+from maxdiffusion.image_processor import VaeImageProcessor 
 import tensorflow as tf
 import pandas as pd
 
@@ -150,7 +146,17 @@ def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids
         images = vae_decode_p(latents, vae_state)
         return images
 
-def run(config):
+def run(config,
+         images_directory = None,
+         unet_state = None,
+         unet_state_mesh_shardings = None,
+         vae_state = None,
+         vae_state_mesh_shardings = None,
+         pipeline = None, params = None):
+    
+    if images_directory is None:
+        images_directory = config.images_directory
+    
     rng = jax.random.PRNGKey(config.seed)
     # Setup Mesh
     devices_array = create_device_mesh(config)
@@ -159,46 +165,40 @@ def run(config):
     batch_size = jax.local_device_count() * config.per_device_batch_size
     weight_dtype = get_dtype(config)
     flash_block_sizes = get_flash_block_sizes(config)
-    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        split_head_dim=config.split_head_dim,
-        norm_num_groups=config.norm_num_groups,
-        from_pt=config.from_pt,
-        attention_kernel=config.attention,
-        flash_block_sizes=flash_block_sizes,
-        mesh=mesh
-    )
-    scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained( 
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        subfolder="scheduler",
-        dtype=jnp.float32,
-        rescale_zero_terminal_snr=config.rescale_zero_terminal_snr
-    )
+    if pipeline is None or params is None:
+        pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+            config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+            safety_checker=None,
+            feature_extractor=None,
+            split_head_dim=config.split_head_dim,
+            norm_num_groups=config.norm_num_groups,
+            from_pt=config.from_pt,
+            attention_kernel=config.attention,
+            flash_block_sizes=flash_block_sizes,
+            mesh=mesh
+        )
+        params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
+         # Text encoder params
+        sharding = PositionalSharding(mesh.devices).replicate()
+        partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
+        params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
+        (unet_state,
+        unet_state_mesh_shardings,
+        vae_state,
+        vae_state_mesh_shardings) = get_states(mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False)
+        del params["vae"]
+        del params["unet"]
+    scheduler_config = override_scheduler_config(pipeline.scheduler.config, config)
+    scheduler = FlaxDDIMScheduler.from_config(scheduler_config)
+    scheduler_state = scheduler.create_state()
     pipeline.scheduler = scheduler
-    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
     params["scheduler"] = scheduler_state
-
-    # Text encoder params
-    sharding = PositionalSharding(mesh.devices).replicate()
-    partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
-    params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
-
-    (unet_state,
-     unet_state_mesh_shardings,
-     vae_state,
-     vae_state_mesh_shardings) = get_states(mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False)
-    del params["vae"]
-    del params["unet"]
 
     p_run_inference = jax.jit(
         functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline, mesh=mesh),
         in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None, None),
         out_shardings=None,
     )
-
 
     def parse_tsv_line(line):
     # Customize this function to parse your TSV file based on your specific format
@@ -260,7 +260,7 @@ def run(config):
 
         images = images[:current_batch_size]
         numpy_images = np.array(images)
-        save_process(numpy_images, config.images_directory, img_ids, msk)
+        save_process(numpy_images, images_directory, img_ids, msk)
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
