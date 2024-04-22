@@ -18,8 +18,9 @@
 
 # Overview 
 
-MaxDiffusion is a Latent Diffusion model written in pure Python/Jax and targeting Google Cloud TPUs. MaxDiffusion aims to be a launching off point for ambitious Diffusion projects both in research and production. 
-We encourage users to start by experimenting with MaxDiffusion out of the box and then fork and modify MaxDiffusion to meet their needs.
+MaxDiffusion is a collection of reference implementations of various latent diffusion models written in pure Python/Jax that run on XLA devices including Cloud TPUs and GPUs. MaxDiffusion aims to be a launching off point for ambitious Diffusion projects both in research and production. We encourage you to start by experimenting with MaxDiffusion out of the box and then fork and modify MaxDiffusion to meet your needs.
+
+The goal of this project is to provide reference implementations for latent diffusion models that help developers get started with training, tuning, and serving solutions on XLA devices including Cloud TPUs and GPUs. We started with Stable Diffusion inference on TPUs, but welcome code contributions to grow.
 
 MaxDiffusion supports 
 * Stable Diffusion 2 base (training and inference)
@@ -36,51 +37,56 @@ WARNING: The training code is purely experimental and is under development.
 
 # Getting Started
 
-We recommend starting with single host first and then moving to multihost.
+We recommend starting with a single TPU host and then moving to multihost.
+
+Minimum requirements: Ubuntu Version 22.04, Python 3.10 and Tensorflow >= 2.12.0.
 
 ## Getting Started: Local Development for single host
 Local development is a convenient way to run MaxDiffusion on a single host. 
 
-1. [Create and SSH to the single-host TPU of your choice.](https://cloud.google.com/tpu/docs/users-guide-tpu-vm#creating_a_cloud_tpu_vm_with_gcloud) We recommend a `v4-8`.
-2. Clone MaxDiffusion onto that TPUVM.
-3. Within the root directory of that `git` repo, install dependencies by running:
+1. [Create and SSH to a single-host TPU (v4-8). ](https://cloud.google.com/tpu/docs/users-guide-tpu-vm#creating_a_cloud_tpu_vm_with_gcloud)
+2. Clone MaxDiffusion in your TPU VM.
+3. Within the root directory of the MaxDiffusion `git` repo, install dependencies by running:
 ```bash
 pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 pip3 install -r requirements.txt
-pip3 install -e .
+pip3 install .
 ```
-4. After installation completes, run training with the command:
+4. After installation completes, run the training script:
 ```bash
+export LIBTPU_INIT_ARGS=""
 python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" base_output_directory="gs://your-bucket/" train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/tf_records
 ```
-5. If you want to generate images, you can do it as follows.
+5. To generate images, run the following command:
+ 
 - Stable Diffusion 2.1
   ```bash
-  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base.yml run_name="my_run"
+  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
   ```
 
 - Stable Diffusion XL Lightning
 
-  Multi host supported with sharding annotations:
+  Multi host inference is supported with sharding annotations:
 
   ```bash
   python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl_lightning.yml run_name="my_run"
   ```
 - Stable Diffusion XL
 
-  Multi host supported with sharding annotations:
+  Multi host inference is supported with sharding annotations:
 
   ```bash
   python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_run"
   ```
 
   Single host pmap version:
+  
   ```bash
   python -m src.maxdiffusion.generate_sdxl_replicated
   ```
 
 ## Getting Started: Multihost development
-Multihost training can be ran as follows.
+Multihost training for Stable Diffusion 2 base can be run using the following command:
 ```bash
 TPU_NAME=<your-tpu-name>
 ZONE=<your-zone>
@@ -90,16 +96,16 @@ git clone https://github.com/google/maxdiffusion
 pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 pip3 install -r requirements.txt
 pip3 install .
-python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base.yml run_name=my_run base_output_directory=gs://your-bucket/"
+python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=my_run base_output_directory=gs://your-bucket/"
 ```
 
 # Comparison to Alternatives
 
-MaxDiffusion started as a fork of [Diffusers](https://github.com/huggingface/diffusers), a Hugging Face diffusion library written in Python, Pytorch and Jax. MaxDiffusion is compatible with Hugging Face Jax models. MaxDiffusion is more complex with the aim to run distributed across TPU Pods. 
+MaxDiffusion started as a fork of [Diffusers](https://github.com/huggingface/diffusers), a Hugging Face diffusion library written in Python, Pytorch and Jax. MaxDiffusion is compatible with Hugging Face Jax models. MaxDiffusion is more complex and was designed to run distributed across TPU Pods. 
 
 # Development
 
-Whether you are forking MaxDiffusion for your own needs or intending to contribute back to the community, we offer simple testing recipes.
+Whether you are forking MaxDiffusion for your own needs or intending to contribute back to the community, a full suite of tests can be found in `tests` and `src/maxdiffusion/tests`.
 
 To run unit tests and lint, simply run:
 ```
