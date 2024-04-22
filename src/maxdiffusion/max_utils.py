@@ -510,3 +510,7 @@ def get_memory_allocations():
     m_stats = device.memory_stats()
     max_logging.log(f'device : {device.process_index},'
                     f'bytes in use: {m_stats["bytes_in_use"] / gb} / {m_stats["bytes_limit"] / gb} GB')
+
+def override_scheduler_config(scheduler_config, config):
+  scheduler_config["prediction_type"] = config.prediction_type
+  return scheduler_config

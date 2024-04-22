@@ -104,8 +104,8 @@ class FlaxDDPMScheduler(FlaxSchedulerMixin, ConfigMixin):
         clip_sample: bool = True,
         prediction_type: str = "epsilon",
         dtype: jnp.dtype = jnp.float32,
-        rescale_zero_terminal_snr: bool =False
-    ):
+        rescale_zero_terminal_snr: bool = False 
+    ): 
         self.dtype = dtype
 
     def create_state(self, common: Optional[CommonSchedulerState] = None) -> DDPMSchedulerState:

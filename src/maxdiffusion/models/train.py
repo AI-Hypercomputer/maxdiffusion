@@ -307,11 +307,11 @@ def train(config):
     )
     params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
-    noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
-        revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
-
-    pipeline.scheduler = noise_scheduler
-    params["scheduler"] = noise_scheduler_state
+    # TODO - add unit test to verify scheduler changes.
+    scheduler_config = max_utils.override_scheduler_config(pipeline.scheduler.config, config)
+    pipeline.scheduler = FlaxDDPMScheduler.from_config(scheduler_config)
+    params["scheduler"] = pipeline.scheduler.create_state()
+    breakpoint()
 
     sharding = PositionalSharding(devices_array).replicate()
     partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=sharding)
