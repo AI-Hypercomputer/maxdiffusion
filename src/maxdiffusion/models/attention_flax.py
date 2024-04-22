@@ -422,7 +422,8 @@ class FlaxAttention(nn.Module):
             use_memory_efficient_attention=self.use_memory_efficient_attention,
             split_head_dim=self.split_head_dim,
             flash_block_sizes=self.flash_block_sizes,
-            dtype=self.dtype
+            dtype=self.dtype,
+            float32_qk_product=False,
         )
 
         qkv_init_kernel = nn.with_logical_partitioning(
