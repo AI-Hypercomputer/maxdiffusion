@@ -108,7 +108,7 @@ enable_data_shuffling: True
 # checkpoint every number of samples
 checkpoint_every: 512000
 eval_at_checkpoint: False
-
+upload_images: False
 cache_latents_text_encoder_outputs: False
 
 # Evaluation dataset
