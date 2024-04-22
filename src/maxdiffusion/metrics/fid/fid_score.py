@@ -5,7 +5,7 @@ from PIL import Image
 import os
 import scipy
 from tqdm import tqdm
-from keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 IMAGE_EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'pgm', 'png', 'ppm',
                     'tif', 'tiff', 'webp'}
@@ -19,7 +19,7 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
     preprocessing_fn = lambda x: x.astype(float) / 255
     image_data_generator = ImageDataGenerator(preprocessing_function=preprocessing_fn)
     directory_iterator = image_data_generator.flow_from_directory(
-        path, batch_size=batch_size, target_size=img_size, shuffle=False
+        path, batch_size=batch_size, target_size=img_size, shuffle=False, interpolation="bilinear"
     )
     assert directory_iterator.samples > 0, "No images found. Make sure your images are within a subdirectory."
 
@@ -67,7 +67,7 @@ def compute_statistics(path, params, apply_fn, batch_size=1, img_size=None):
         if img_size is not None and img.size[:2] != img_size:
             img = img.resize(
                 size=(img_size[0], img_size[1]),
-                resample=Image.Resampling.BICUBIC,
+                resample=Image.Resampling.BILINEAR,
             )
         img = np.array(img) / 255.0
         images.append(img)
@@ -79,9 +79,8 @@ def compute_statistics(path, params, apply_fn, batch_size=1, img_size=None):
         x = np.asarray(x)
         x = 2 * x - 1
         pred = apply_fn(params, jax.lax.stop_gradient(x))
-        act.append(pred.squeeze(axis=1).squeeze(axis=1))
+        act.append(pred.squeeze(1).squeeze(1))
     act = jnp.concatenate(act, axis=0)
-
     mu = np.mean(act, axis=0)
     sigma = np.cov(act, rowvar=False)
     return mu, sigma
@@ -98,6 +97,7 @@ def compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6):
     assert sigma1.shape == sigma2.shape
 
     diff = mu1 - mu2
+    
 
     covmean, _ = scipy.linalg.sqrtm(sigma1.dot(sigma2), disp=False)
     if not np.isfinite(covmean).all():
@@ -106,15 +106,15 @@ def compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6):
             "adding %s to diagonal of cov estimates"
         ) % eps
         print(msg)
-        offset = np.eye(sigma1.shape[0]) * eps
-        covmean = scipy.linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
+    offset = np.eye(sigma1.shape[0]) * eps
+    covmean = scipy.linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
 
     # Numerical error might give slight imaginary component
     if np.iscomplexobj(covmean):
         if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
             m = np.max(np.abs(covmean.imag))
             raise ValueError("Imaginary component {}".format(m))
-        covmean = covmean.real
+    covmean = covmean.real
 
     tr_covmean = np.trace(covmean)
     return diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean

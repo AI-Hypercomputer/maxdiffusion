@@ -20,6 +20,7 @@ import numpy as np
 from jax.experimental.compilation_cache import compilation_cache as cc
 from maxdiffusion.metrics.fid import inception
 from maxdiffusion.metrics.fid import fid_score
+
 from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoderFlax
 from typing import Sequence
 from absl import app
@@ -37,7 +38,6 @@ import functools
 from keras.preprocessing.image import ImageDataGenerator
 from tqdm import tqdm
 from PIL import Image
-
 
 def load_captions(file_path):
     captions_df = pd.read_csv(file_path, delimiter='\t', header=0, names=['image_id','id', 'caption'])
@@ -70,6 +70,7 @@ def eval_scores(config, images_directory=None):
         images_directory = config.images_directory
 
     # calculating CLIP:
+
     captions_df = load_captions(config.caption_coco_file)
     images, prompts = load_images(images_directory, captions_df)
     
@@ -83,15 +84,18 @@ def eval_scores(config, images_directory=None):
     params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
+
     dataloader_images_directory="/".join(images_directory.split("/")[:-1])
     mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
+
     os.makedirs(config.stat_output_directory, exist_ok=True)
     np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
+
     mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
-
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
     return clip_score, fid
+
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
