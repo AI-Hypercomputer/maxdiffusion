@@ -176,3 +176,9 @@ tags
 .ruff_cache
 
 wandb
+
+# checkpoints
+checkpoints/
+output/
+clip_cache_dir/
+clip_weights/
