@@ -87,8 +87,13 @@ def eval(config,
          mesh,
          rng):
     batch_size = jax.device_count() * config.per_device_batch_size
-    scheduler, scheduler_state = FlaxDDPMScheduler.from_pretrained(
-        config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
+    
+    scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained( 
+        config.pretrained_model_name_or_path,
+        revision=config.revision,
+        subfolder="scheduler",
+        dtype=jnp.float32,
+        rescale_zero_terminal_snr=config.rescale_zero_terminal_snr
     )
 
     training_scheduler = pipeline.scheduler
