@@ -48,6 +48,15 @@ norm_num_groups: 32
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
 
+# https://www.crosslabs.org/blog/diffusion-with-offset-noise
+noise_offset: 0.05
+# https://arxiv.org/pdf/2301.11706.pdf
+input_peturbation: 0.1
+# https://arxiv.org/pdf/2305.08891.pdf
+snr_gamma: 5.0
+# values are v_prediction or leave empty to use scheduler's default.
+prediction_type: 'v_prediction'
+
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
 base_output_directory: ""

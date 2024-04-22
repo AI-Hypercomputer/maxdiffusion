@@ -57,19 +57,20 @@ TOTAL_TRAIN_SAMPLES = 6513144
 TOTAL_EVAL_SAMPLES = 30000
 
 def compute_snr(scheduler_state, timesteps):
-    alphas_cumprod = scheduler_state.alphas_cumprod
+    alphas_cumprod = scheduler_state.common.alphas_cumprod
     sqrt_alphas_cumprod = alphas_cumprod**0.5
     sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
-
+    sqrt_alphas_cumprod = sqrt_alphas_cumprod[timesteps]
     while len(sqrt_alphas_cumprod.shape) < len(timesteps.shape):
         sqrt_alphas_cumprod = sqrt_alphas_cumprod[..., None]
-    
-    alpha = sqrt_alphas_cumprod.expand(timesteps.shape)
+
+    alpha = jnp.broadcast_to(sqrt_alphas_cumprod, timesteps.shape)
    
+    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[timesteps]
     while len(sqrt_one_minus_alphas_cumprod.shape) < len(timesteps.shape):
         sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[..., None]
-    sigma = sqrt_one_minus_alphas_cumprod.expand(timesteps.shape)
 
+    sigma = jnp.broadcast_to(sqrt_one_minus_alphas_cumprod, timesteps.shape)
     # compute SNR.
     snr = (alpha / sigma) ** 2
     return snr
@@ -392,10 +393,12 @@ def train(config):
             noise = jax.random.normal(noise_rng, latents.shape)
 
             # noise offset
-            noise += 0.05 * jax.random.normal(offset_rng, (latents.shape[0], latents.shape[1], 1, 1))
+            if config.noise_offset > 0:
+                noise += config.noise_offset * jax.random.normal(offset_rng, (latents.shape[0], latents.shape[1], 1, 1))
 
             # input perturbation
-            noise += 0.1 * jax.random.normal(peturbation_rng, noise.shape)
+            if config.input_peturbation > 0:
+                noise += config.input_peturbation * jax.random.normal(peturbation_rng, noise.shape)
 
             # Sample a random timestep for each image
             bsz = latents.shape[0]
@@ -416,14 +419,31 @@ def train(config):
             ).sample
 
             # Get the target for loss depending on the prediction type
-            if noise_scheduler.config.prediction_type == "epsilon":
-                target = noise
-            elif noise_scheduler.config.prediction_type == "v_prediction":
+            if noise_scheduler.config.prediction_type == "v_prediction" or config.prediction_type == "v_prediction":
                 target = noise_scheduler.get_velocity(noise_scheduler_state, latents, noise, timesteps)
+            elif noise_scheduler.config.prediction_type == "epsilon":
+                target = noise
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-            loss = (target - model_pred) ** 2
-            loss = loss.mean()
+            
+            # snr
+            if config.snr_gamma:
+                snr = compute_snr(noise_scheduler_state, timesteps)
+                mse_loss_weights = jnp.stack([snr, config.snr_gamma * jnp.ones_like(timesteps)], axis=1).min(axis=1)[0]
+                
+                if noise_scheduler.config.prediction_type == "v_prediction" or config.prediction_type == "v_prediction":
+                    mse_loss_weights = mse_loss_weights / (snr + 1)
+                elif noise_scheduler.config.prediction_type == "epsilon":
+                    mse_loss_weights = mse_loss_weights / snr
+                else:
+                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+            
+                loss = (target - model_pred) ** 2
+                loss = jnp.mean(loss, axis=list(range(1, len(loss.shape)))) * mse_loss_weights
+                loss = loss.mean()
+            else:
+                loss = (target - model_pred) ** 2
+                loss = loss.mean()
 
             return loss
 
