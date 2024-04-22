@@ -61,6 +61,10 @@ class CLIPEncoderFlax:
 
         # TODO: jit this again
         self.model = FlaxCLIPModel.from_pretrained(pretrained)
+        self.logit_scale = jnp.exp(self.model.params['logit_scale'])
+        self.get_image_features = jax.jit(self.model.get_image_features)
+        self.get_text_features = jax.jit(self.model.get_text_features)
+        self.model = jax.jit(self.model)
         self.processor = AutoProcessor.from_pretrained(pretrained)
     
     def get_clip_score(self, text, image):
@@ -73,9 +77,9 @@ class CLIPEncoderFlax:
     def get_clip_score_manual(self, text, image):
         # See https://github.com/huggingface/transformers/blob/8c12690cecbb97e187861e386f7a0ac790e4236c/src/transformers/models/clip/modeling_flax_clip.py#L1214
         inputs = self.processor(images=image, return_tensors="jax")
-        image_embeddings = self.model.get_image_features(**inputs)
+        image_embeddings = self.get_image_features(**inputs)
         inputs = self.processor(text=text, return_tensors="jax", padding="max_length", truncation=True)
-        text_embeddings = self.model.get_text_features(**inputs)
+        text_embeddings = self.get_text_features(**inputs)
 
         image_embeddings /= jnp.linalg.norm(image_embeddings, axis=-1, keepdims=True)
         text_embeddings /= jnp.linalg.norm(text_embeddings, axis=-1, keepdims=True)
@@ -83,8 +87,7 @@ class CLIPEncoderFlax:
         image_embeddings = jnp.expand_dims(image_embeddings, 1)
         text_embeddings = jnp.expand_dims(text_embeddings, 2)
 
-        logit_scale = jnp.exp(self.model.params['logit_scale'])
-        return jnp.squeeze(jnp.batch_matmul(image_embeddings, text_embeddings), (2,)) * logit_scale / 100
+        return jnp.squeeze(jax.lax.batch_matmul(image_embeddings, text_embeddings), (2,)) * self.logit_scale / 100
 
         #return jnp.sum(image_embeddings * text_embeddings, axis=1, keepdims=True) * logit_scale / 100
 
@@ -101,7 +104,7 @@ class CLIPEncoderFlax:
             
         overall_clip_score = jnp.mean(jnp.concatenate(clip_scores, axis=0))
         print("clip score is" + str(overall_clip_score))
-        return np.array(overall_clip_score), jnp.concatenate(clip_scores, axis=0)
+        return np.array(overall_clip_score)
         
             
 
@@ -159,19 +162,20 @@ def get_random_caption():
 
     return random.sample(sentences, 1)
 
-def calculate_clip(images, prompts):
-    clip_encoder = CLIPEncoderFlax()
+def verify_batched_scores(images, prompts):
+    clip_encoder_flax = CLIPEncoderFlax()
+    clip_encoder = CLIPEncoderTorch()
 
-    score_batched, all_scores_batched = clip_encoder.get_clip_score_batched(prompts, images)
+    score_batched = clip_encoder_flax.get_clip_score_batched(prompts, images, batch_size=16)
     
     clip_scores = []
     for i in tqdm(range(0, len(images))):
         score = clip_encoder.get_clip_score(prompts[i], images[i])
         clip_scores.append(score)
         
-    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+    overall_clip_score = torch.mean(torch.stack(clip_scores))
     print("clip score is" + str(overall_clip_score))
-    assert np.allclose(np.array(overall_clip_score), score_batched)
+    assert np.allclose(np.array(overall_clip_score), score_batched, atol=1e-3)
     print("They matched")
 
 def verify_correctness_single_image(images, prompts):
@@ -192,15 +196,14 @@ def verify_correctness_single_image(images, prompts):
 def batch_playgroud(device='tpu'):
     my_bucket_name = "jfacevedo-maxdiffusion-v5p"
     my_folder_path = "checkpoints/ckpt_generated_images/512000"
-    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path, max_images=40)]
+    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path, max_images=256)]
     random_prompts = [get_random_caption()[0] for _ in range(len(random_images))]
 
     #calculate_clip(random_images, random_prompts)
-    verify_correctness_single_image(random_images, random_prompts)
+    verify_batched_scores(random_images, random_prompts)
 
 
 
-    # TODO: verify correctness of batched impl
     # TODO: get the jit implementation working
     # TODO: time batched impl vs manual impl 
     # TODO: 
