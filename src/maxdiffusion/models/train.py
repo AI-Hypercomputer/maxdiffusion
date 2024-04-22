@@ -90,7 +90,7 @@ def eval(config,
 
     scheduler_config = max_utils.override_scheduler_config(pipeline.scheduler.config, config)
     scheduler = FlaxDDIMScheduler.from_config(scheduler_config)
-    scheduler_state = pipeline.scheduler.create_state()
+    scheduler_state = scheduler.create_state()
 
     training_scheduler = pipeline.scheduler
     training_scheduler_state = params["scheduler"]
@@ -305,8 +305,10 @@ def train(config):
 
     # TODO - add unit test to verify scheduler changes.
     scheduler_config = max_utils.override_scheduler_config(pipeline.scheduler.config, config)
-    pipeline.scheduler = FlaxDDPMScheduler.from_config(scheduler_config)
-    params["scheduler"] = pipeline.scheduler.create_state()
+    noise_scheduler = FlaxDDPMScheduler.from_config(scheduler_config)
+    noise_scheduler_state = pipeline.scheduler.create_state()
+    pipeline.scheduler = noise_scheduler
+    params["scheduler"] = noise_scheduler_state
 
     sharding = PositionalSharding(devices_array).replicate()
     partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=sharding)
@@ -484,7 +486,13 @@ def train(config):
         max_logging.log(f"  Instantaneous batch size per device = {config.per_device_batch_size}")
         max_logging.log(f"  Total train batch size (w. parallel & distributed) = {total_train_batch_size}")
         max_logging.log(f"  Total optimization steps = {config.max_train_steps}")
-
+        max_logging.log(f"  Scheduler config = {pipeline.scheduler.config}")
+        if config.noise_offset > 0:
+            max_logging.log(f"  Noise offset = {config.noise_offset}")
+        if config.input_peturbation > 0:
+            max_logging.log(f"  Input Peturbation = {config.input_peturbation}")
+        if config.snr_gamma > 0:
+            max_logging.log(f"  SNR Gamma = {config.snr_gamma}")
     last_step_completion = datetime.datetime.now()
 
     local_metrics_file = open(config.metrics_file, 'a', encoding="utf8") if config.metrics_file else None

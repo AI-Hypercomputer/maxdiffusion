@@ -49,9 +49,9 @@ norm_num_groups: 32
 train_new_unet: False
 
 # https://www.crosslabs.org/blog/diffusion-with-offset-noise
-noise_offset: 0.05
+noise_offset: -1 #0.05
 # https://arxiv.org/pdf/2301.11706.pdf
-input_peturbation: 0.1
+input_peturbation: -1 #0.1
 # https://arxiv.org/pdf/2305.08891.pdf
 snr_gamma: -1
 # values are v_prediction or leave empty to use scheduler's default.
