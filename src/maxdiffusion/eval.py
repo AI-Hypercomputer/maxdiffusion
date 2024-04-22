@@ -83,7 +83,10 @@ def eval(config):
     captions_df = load_captions(config.caption_coco_file)
     images, prompts = load_images(config.images_directory, captions_df)
     
-    calculate_clip(images, prompts)
+    clip_encoder = CLIPEncoderFlax()
+    clip_score = clip_encoder.get_clip_score_batched(prompts, images, batch_size)
+    print("clip score is" + str(clip_score))
+    
 
     # calculating FID:
     rng = jax.random.PRNGKey(0)

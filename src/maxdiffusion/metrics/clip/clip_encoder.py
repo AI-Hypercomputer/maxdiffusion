@@ -99,5 +99,4 @@ class CLIPEncoderFlax:
             clip_scores.append(batch_clip_scores)
             
         overall_clip_score = jnp.mean(jnp.concatenate(clip_scores, axis=0))
-        print("clip score is" + str(overall_clip_score))
         return np.array(overall_clip_score)
