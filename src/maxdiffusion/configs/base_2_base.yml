@@ -165,8 +165,10 @@ negative_prompt: ""
 # https://github.com/mlcommons/training/blob/master/stable_diffusion/configs/train_01x08x08.yaml#L26
 guidance_scale: 8
 num_inference_steps: 50
+rescale_zero_terminal_snr: False
 # For preprocessing data to tfrecords
 data_files_pattern: ""
 extracted_files_dir: ""
 tfrecords_dir: ""
 no_records_per_shard: 1000
+

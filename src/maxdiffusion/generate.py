@@ -175,7 +175,7 @@ def run(config):
         revision=config.revision,
         subfolder="scheduler",
         dtype=jnp.float32,
-        rescale_zero_terminal_snr=True
+        rescale_zero_terminal_snr=config.rescale_zero_terminal_snr
     )
     pipeline.scheduler = scheduler
     params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
