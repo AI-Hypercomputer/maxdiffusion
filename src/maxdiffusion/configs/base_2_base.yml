@@ -53,7 +53,7 @@ noise_offset: 0.05
 # https://arxiv.org/pdf/2301.11706.pdf
 input_peturbation: 0.1
 # https://arxiv.org/pdf/2305.08891.pdf
-snr_gamma: 5.0
+snr_gamma: -1
 # values are v_prediction or leave empty to use scheduler's default.
 prediction_type: 'v_prediction'
 
