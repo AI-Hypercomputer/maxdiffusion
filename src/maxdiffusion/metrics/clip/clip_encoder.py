@@ -80,7 +80,13 @@ class CLIPEncoderFlax:
         image_embeddings /= jnp.linalg.norm(image_embeddings, axis=-1, keepdims=True)
         text_embeddings /= jnp.linalg.norm(text_embeddings, axis=-1, keepdims=True)
 
-        return jnp.tensordot(image_embeddings, text_embeddings)
+        image_embeddings = jnp.expand_dims(image_embeddings, 1)
+        text_embeddings = jnp.expand_dims(text_embeddings, 2)
+
+        logit_scale = jnp.exp(self.model.params['logit_scale'])
+        return jax.lax.squeeze(jax.lax.batch_matmul(image_embeddings, text_embeddings), (2,)) * logit_scale / 100
+
+        #return jnp.sum(image_embeddings * text_embeddings, axis=1, keepdims=True) * logit_scale / 100
 
 
     def get_clip_score_batched(self, prompts, images, batch_size = 4):
@@ -90,14 +96,12 @@ class CLIPEncoderFlax:
 
         for batch in tqdm(dataset.iter(batch_size=batch_size)):
             batch_texts, batch_images = batch["texts"], batch["images"]
-            batch_inputs = self.processor(text=batch_texts, images=batch_images, return_tensors="jax", padding="max_length", truncation=True)
-            batch_outputs = self.model(**batch_inputs)
-            batch_clip_scores = batch_outputs.logits_per_image / 100
+            batch_clip_scores = self.get_clip_score_manual(batch_texts, batch_images)
             clip_scores.append(batch_clip_scores)
             
-        overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+        overall_clip_score = jnp.mean(jnp.concatenate(clip_scores, axis=0))
         print("clip score is" + str(overall_clip_score))
-        return np.array(overall_clip_score)
+        return np.array(overall_clip_score), jnp.concatenate(clip_scores, axis=0)
         
             
 
@@ -157,41 +161,49 @@ def get_random_caption():
 
 def calculate_clip(images, prompts):
     clip_encoder = CLIPEncoderFlax()
-    clip_encoder_legacy = CLIPEncoderTorch()
-    for image, prompt in tqdm(zip(images, prompts)):
-        manual_score = np.array(clip_encoder.get_clip_score_manual(prompt, image))
-        
-        standard_score = np.array(clip_encoder.get_clip_score(prompt, image))
 
-        legacy_score = clip_encoder_legacy.get_clip_score(prompt, image)
-        
-        assert np.allclose(manual_score, standard_score) and np.allclose(manual_score, legacy_score, atol=1e-3)
-
-        
-
-    #print(clip_encoder.get_clip_score_batched(prompts, images))
-
-    # dataset = datasets.Dataset.from_dict({"image": images, "text": prompts})
-    # for batch_images, batch_text in dataset.iter(batch_size=4):
-    #     print(batch_images)
-    #     print(batch_text)
+    score_batched, all_scores_batched = clip_encoder.get_clip_score_batched(prompts, images)
     
-    # clip_scores = []
-    # for i in tqdm(range(0, len(images))):
-    #     score = clip_encoder.get_clip_score(prompts[i], images[i])
-    #     clip_scores.append(score)
+    clip_scores = []
+    for i in tqdm(range(0, len(images))):
+        score = clip_encoder.get_clip_score(prompts[i], images[i])
+        clip_scores.append(score)
         
-    # overall_clip_score = jnp.mean(jnp.stack(clip_scores))
-    # print("clip score is" + str(overall_clip_score))
-    # return np.array(overall_clip_score)
+    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+    print("clip score is" + str(overall_clip_score))
+    assert np.allclose(np.array(overall_clip_score), score_batched)
+    print("They matched")
+
+def verify_correctness_single_image(images, prompts):
+    # should be exactly the same
+    clip_encoder_flax = CLIPEncoderFlax()
+    clip_encoder = CLIPEncoderTorch()
+
+    for image, prompt in zip(images, prompts):
+        score = clip_encoder.get_clip_score(prompt, image)
+
+        manual_score = clip_encoder_flax.get_clip_score_manual(prompt, image)
+
+        assert np.allclose(score, manual_score, atol=1e-3)
+
+        print('Matched')
+
 
 def batch_playgroud(device='tpu'):
     my_bucket_name = "jfacevedo-maxdiffusion-v5p"
     my_folder_path = "checkpoints/ckpt_generated_images/512000"
-    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path, max_images=100)]
+    random_images = [image for blob, image in load_random_images_from_gcs(my_bucket_name, my_folder_path, max_images=40)]
     random_prompts = [get_random_caption()[0] for _ in range(len(random_images))]
 
-    calculate_clip(random_images, random_prompts)
+    #calculate_clip(random_images, random_prompts)
+    verify_correctness_single_image(random_images, random_prompts)
+
+
+
+    # TODO: verify correctness of batched impl
+    # TODO: get the jit implementation working
+    # TODO: time batched impl vs manual impl 
+    # TODO: 
 
 if __name__ == "__main__":
     batch_playgroud()
