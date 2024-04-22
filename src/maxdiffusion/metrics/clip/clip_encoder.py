@@ -1,5 +1,3 @@
-import random
-import time
 import torch
 import torch.nn as nn
 
@@ -11,8 +9,6 @@ import datasets
 import numpy as np
 import jax.numpy as jnp
 from tqdm import tqdm
-
-from google.cloud import storage
 
 class CLIPEncoderTorch(nn.Module):
     """
