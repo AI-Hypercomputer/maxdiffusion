@@ -49,18 +49,6 @@ def load_stats(file_path):
     mu = images_data['mu']
     return sigma, mu
 
-def calculate_clip(images, prompts):
-    clip_encoder = CLIPEncoderFlax()
-    
-    clip_scores = []
-    for i in tqdm(range(0, len(images))):
-        score = clip_encoder.get_clip_score(prompts[i], images[i])
-        clip_scores.append(score)
-        
-    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
-    print("clip score is" + str(overall_clip_score))
-    return np.array(overall_clip_score)
-
 def load_images(path, captions_df):
     images = []
     prompts = []
@@ -73,20 +61,20 @@ def load_images(path, captions_df):
      
     return images, prompts
 
-def eval(config):
+def eval_scores(config, images_directory=None):
     batch_size = config.per_device_batch_size * jax.device_count() * 10
 
     #inference happenning here: first generate the images
-    generate.run(config)
+    if images_directory is None:
+        generate.run(config)
+        images_directory = config.images_directory
 
     # calculating CLIP:
     captions_df = load_captions(config.caption_coco_file)
-    images, prompts = load_images(config.images_directory, captions_df)
+    images, prompts = load_images(images_directory, captions_df)
     
     clip_encoder = CLIPEncoderFlax()
     clip_score = clip_encoder.get_clip_score_batched(prompts, images, batch_size)
-    print("clip score is" + str(clip_score))
-    
 
     # calculating FID:
     rng = jax.random.PRNGKey(0)
@@ -95,7 +83,7 @@ def eval(config):
     params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
-    dataloader_images_directory="/".join(config.images_directory.split("/")[:-2])
+    dataloader_images_directory="/".join(images_directory.split("/")[:-1])
     mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
     os.makedirs(config.stat_output_directory, exist_ok=True)
     np.savez(os.path.join(config.stat_output_directory, 'stats'), mu=mu, sigma=sigma)
@@ -103,13 +91,14 @@ def eval(config):
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
 
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
-    print("fid score is : " + str(fid))
-
+    return clip_score, fid
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     config = pyconfig.config
-    cc.initialize_cache(os.path.expanduser("~/jax_cache"))
-    eval(config)
+    clip, fid = eval_scores(config)
+    print("clip score is " + str(clip))
+    print("fid score is : " + str(fid))
+
 if __name__ == "__main__":
     app.run(main)
