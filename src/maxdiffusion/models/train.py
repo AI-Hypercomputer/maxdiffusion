@@ -83,7 +83,8 @@ def eval_at_checkpoint(
     vae_state,
     vae_state_mesh_shardings,
     pipeline,
-    params):
+    params,
+    metrics):
     training_scheduler = pipeline.scheduler
     training_scheduler_state = params["scheduler"]
     images_directory = os.path.join(config.images_directory, "output")
@@ -101,6 +102,8 @@ def eval_at_checkpoint(
     clip, fid = eval.eval_scores(config, images_directory)
     print("clip score is :" + str(clip))
     print("fid score is : " + str(fid))
+    metrics['scalar'].update({'FID': fid})
+    metrics['scalar'].update({'CLIP' : clip})
     if config.upload_images:
         max_utils.walk_and_upload_gen_images(config, images_directory, checkpoint_number)
     pipeline.scheduler = training_scheduler
@@ -495,9 +498,6 @@ def train(config):
                                                                 train_rngs)
         new_time = datetime.datetime.now()
 
-        record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
-        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
-        last_step_completion = new_time
         if step != 0 and (total_train_batch_size * step) % config.checkpoint_every == 0:
            if config.eval_at_checkpoint:
               eval_at_checkpoint(config,
@@ -505,8 +505,14 @@ def train(config):
                    unet_state, unet_state_mesh_shardings,
                    vae_state,
                    vae_state_mesh_shardings,
-                   pipeline, params)
+                   pipeline, params, train_metric)
+           
            max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.checkpoint_dir+f"/{str(step * total_train_batch_size)}/")
+           
+        record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
+        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+        last_step_completion = new_time
+        
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
         if step == first_profiling_step:
