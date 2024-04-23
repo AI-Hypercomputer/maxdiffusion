@@ -97,7 +97,7 @@ def eval_scores(config, images_directory=None):
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
 
-    dataloader_images_directory="/".join(images_directory.split("/")[:-1])
+    dataloader_images_directory = os.path.dirname(images_directory.rstrip("/"))
     mu, sigma = fid_score.compute_statistics_with_mmap(dataloader_images_directory, "/tmp/temp.dat", params, apply_fn, batch_size, (299, 299))
 
     os.makedirs(config.stat_output_directory, exist_ok=True)
