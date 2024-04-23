@@ -353,6 +353,7 @@ def train(config):
             else:
                 # Convert moments to latent space
                 latents = FlaxDiagonalGaussianDistribution(batch["moments"]).sample(sample_rng)
+                jax.debug.print("Latents mean: {x}", x=jnp.mean(latents))
                 # (NHWC) -> (NCHW)
                 latents = jnp.transpose(latents, (0, 3, 1, 2))
                 latents = latents * pipeline.vae.config.scaling_factor
@@ -488,7 +489,6 @@ def train(config):
     # for checkpointing
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
-        jax.debug.print("Moments mean: {x}", x=jnp.mean(example_batch['moments']))
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             unet_state, train_metric, train_rngs = p_train_step(unet_state,
                                                                 example_batch,
