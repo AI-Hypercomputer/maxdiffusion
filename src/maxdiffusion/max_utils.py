@@ -530,7 +530,8 @@ def override_scheduler_config(scheduler_config, config):
   return scheduler_config
 
 def create_scheduler(scheduler_type, scheduler_config, config):
-  scheduler_config["prediction_type"] = config.prediction_type 
+  if len(config.prediction_type) > 0:
+    scheduler_config["prediction_type"] = config.prediction_type 
   if scheduler_type == "ddim":
     cls = FlaxDDIMScheduler
   elif scheduler_type == "ddpm":
