@@ -136,6 +136,8 @@ per_device_batch_size: 4
 
 warmup_steps_fraction: 0.33
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
+# schedulers: ddim, ddpm
+training_scheduler: "ddpm"
 
 # However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before 
 # dropping fully down. Or you may choose a shorter schedule, where the unspecified steps will have a learning rate of 0.
@@ -168,6 +170,8 @@ num_inference_steps: 50
 rescale_zero_terminal_snr: False
 # trailing or leading - set trailing if using rescale_zero_terminal_snr
 timestep_spacing: "leading"
+# schedulers : ddpm, ddim
+inference_scheduler: "ddim"
 # For preprocessing data to tfrecords
 data_files_pattern: ""
 extracted_files_dir: ""

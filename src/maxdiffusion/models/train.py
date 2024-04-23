@@ -280,9 +280,7 @@ def train(config):
     params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
     # TODO - add unit test to verify scheduler changes.
-    scheduler_config = max_utils.override_scheduler_config(pipeline.scheduler.config, config)
-    noise_scheduler = FlaxDDPMScheduler.from_config(scheduler_config)
-    noise_scheduler_state = pipeline.scheduler.create_state()
+    noise_scheduler, noise_scheduler_state = max_utils.create_scheduler(config.training_scheduler, pipeline.scheduler.config, config)
     pipeline.scheduler = noise_scheduler
     params["scheduler"] = noise_scheduler_state
 
@@ -490,6 +488,7 @@ def train(config):
     # for checkpointing
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
+        jax.debug.print("Moments mean: {x}", x=jnp.mean(example_batch['moments']))
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             unet_state, train_metric, train_rngs = p_train_step(unet_state,
                                                                 example_batch,

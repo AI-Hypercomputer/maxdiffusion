@@ -30,13 +30,13 @@ from maxdiffusion.max_utils import (
   get_states,
   device_put_replicated,
   get_flash_block_sizes,
-  override_scheduler_config
+  override_scheduler_config,
+  create_scheduler
 )
 from maxdiffusion import pyconfig
 from absl import app
 from maxdiffusion import (
   FlaxStableDiffusionPipeline,
-  FlaxDDIMScheduler
 )
 from flax.linen import partitioning as nn_partitioning
 from jax.experimental.compilation_cache import compilation_cache as cc
@@ -188,9 +188,8 @@ def run(config,
         vae_state_mesh_shardings) = get_states(mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False)
         del params["vae"]
         del params["unet"]
-    scheduler_config = override_scheduler_config(pipeline.scheduler.config, config)
-    scheduler = FlaxDDIMScheduler.from_config(scheduler_config)
-    scheduler_state = scheduler.create_state()
+    
+    scheduler, scheduler_state = create_scheduler(config.inference_scheduler, pipeline.scheduler.config, config)
     pipeline.scheduler = scheduler
     params["scheduler"] = scheduler_state
 

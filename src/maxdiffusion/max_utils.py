@@ -17,6 +17,7 @@
 
 # pylint: disable=bare-except, consider-using-generator
 """ Common Max Utils needed by multiple modules"""
+import sys
 import functools
 from pathlib import Path
 import json
@@ -34,7 +35,9 @@ from maxdiffusion import (
   checkpointing,
   max_logging,
   FlaxAutoencoderKL,
-  FlaxStableDiffusionPipeline
+  FlaxStableDiffusionPipeline,
+  FlaxDDIMScheduler,
+  FlaxDDPMScheduler
 )
 from transformers import FlaxCLIPTextModel, CLIPImageProcessor
 from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
@@ -525,3 +528,19 @@ def get_memory_allocations():
 def override_scheduler_config(scheduler_config, config):
   scheduler_config["prediction_type"] = config.prediction_type
   return scheduler_config
+
+def create_scheduler(scheduler_type, scheduler_config, config):
+  scheduler_config["prediction_type"] = config.prediction_type 
+  if scheduler_type == "ddim":
+    cls = FlaxDDIMScheduler
+  elif scheduler_type == "ddpm":
+    cls = FlaxDDPMScheduler
+  elif scheduler_type == "":
+    # get the checkpoint's scheduler
+    cls = getattr(sys.modules[__name__], scheduler_config._class_name)
+  else:
+    raise Exception(f"Sampler type {scheduler_type} not supported")
+  
+  scheduler = cls.from_config(scheduler_config)
+  scheduler_state = scheduler.create_state()
+  return scheduler, scheduler_state
