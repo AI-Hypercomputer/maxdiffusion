@@ -5,6 +5,10 @@ from transformers import FlaxCLIPModel, AutoProcessor
 
 import open_clip
 import jax
+import datasets
+import numpy as np
+import jax.numpy as jnp
+from tqdm import tqdm
 
 class CLIPEncoderTorch(nn.Module):
     """
@@ -52,12 +56,43 @@ class CLIPEncoderFlax:
     def __init__(self, pretrained="laion/CLIP-ViT-H-14-laion2B-s32B-b79K"):
         assert pretrained is not None
 
-        self.model = jax.jit(FlaxCLIPModel.from_pretrained(pretrained))
+        self.model = FlaxCLIPModel.from_pretrained(pretrained)
+        self.logit_scale = jnp.exp(self.model.params['logit_scale'])
+        self.get_image_features = jax.jit(self.model.get_image_features)
+        self.get_text_features = jax.jit(self.model.get_text_features)
+        self.model = jax.jit(self.model)
         self.processor = AutoProcessor.from_pretrained(pretrained)
-    
+        
     def get_clip_score(self, text, image):
+        # See https://github.com/huggingface/transformers/blob/8c12690cecbb97e187861e386f7a0ac790e4236c/src/transformers/models/clip/modeling_flax_clip.py#L1214
+        inputs = self.processor(images=image, return_tensors="jax")
+        image_embeddings = self.get_image_features(**inputs)
+        inputs = self.processor(text=text, return_tensors="jax", padding="max_length", truncation=True)
+        text_embeddings = self.get_text_features(**inputs)
 
-        inputs = self.processor(text=text, images=image, return_tensors="jax", padding="max_length", truncation=True)
-        outputs = self.model(**inputs)
+        return CLIPEncoderFlax._calculate_clip_score(text_embeddings, image_embeddings, self.logit_scale)
 
-        return outputs.logits_per_image / 100
+    @staticmethod
+    @jax.jit
+    def _calculate_clip_score(text_embeddings, image_embeddings, logit_scale):
+        image_embeddings /= jnp.linalg.norm(image_embeddings, axis=-1, keepdims=True)
+        text_embeddings /= jnp.linalg.norm(text_embeddings, axis=-1, keepdims=True)
+
+        image_embeddings = jnp.expand_dims(image_embeddings, 1)
+        text_embeddings = jnp.expand_dims(text_embeddings, 2)
+
+        return jnp.squeeze(jax.lax.batch_matmul(image_embeddings, text_embeddings), (2,)) * logit_scale / 100
+
+
+    def get_clip_score_batched(self, prompts, images, batch_size):
+        dataset = datasets.Dataset.from_dict({"images": images, "texts": prompts})
+
+        clip_scores = []
+
+        for batch in tqdm(dataset.iter(batch_size=batch_size)):
+            batch_texts, batch_images = batch["texts"], batch["images"]
+            batch_clip_scores = self.get_clip_score(batch_texts, batch_images)
+            clip_scores.append(batch_clip_scores)
+            
+        overall_clip_score = jnp.mean(jnp.concatenate(clip_scores, axis=0))
+        return np.array(overall_clip_score)
