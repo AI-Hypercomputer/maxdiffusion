@@ -209,10 +209,10 @@ def write_metrics_to_tensorboard(writer, metrics, step, config):
         writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
 
     full_log = step % config.log_period == 0
-    # if jax.process_index() == 0:
-    max_logging.log(f"completed step: {step}, seconds: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
-        f"TFLOP/s/device: {metrics['scalar']['perf/per_device_tflops_per_sec']:.3f}, "
-        f"loss: {metrics['scalar']['learning/loss']:.3f}")
+    if jax.process_index() == 0:
+        max_logging.log(f"completed step: {step}, seconds: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
+            f"TFLOP/s/device: {metrics['scalar']['perf/per_device_tflops_per_sec']:.3f}, "
+            f"loss: {metrics['scalar']['learning/loss']:.3f}")
 
     if full_log and jax.process_index() == 0:
       max_logging.log(
@@ -356,7 +356,6 @@ def train(config):
             else:
                 # Convert moments to latent space
                 latents = FlaxDiagonalGaussianDistribution(batch["moments"]).sample(sample_rng)
-                jax.debug.print("Latents mean: {x}", x=jnp.mean(latents))
                 # (NHWC) -> (NCHW)
                 latents = jnp.transpose(latents, (0, 3, 1, 2))
                 latents = latents * pipeline.vae.config.scaling_factor

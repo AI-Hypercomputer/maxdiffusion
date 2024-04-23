@@ -479,7 +479,7 @@ def walk_and_upload_gen_images(config, output_dir, checkpoint_number="0"):
     for file in files:
       file_to_upload = os.path.join(root, file)
       max_logging.log(f"Moving file {file_to_upload} to GCS...")
-      gcs_file_name = os.path.join(config.base_output_directory, "generate_image", checkpoint_number,
+      gcs_file_name = os.path.join(config.base_output_directory, config.run_name, "generate_image", checkpoint_number,
                                   file_to_upload.replace(user_dir,"/").strip("/"))
       upload_blob(gcs_file_name, file_to_upload)
       max_logging.log(f"File {file_to_upload} moved successfully!")

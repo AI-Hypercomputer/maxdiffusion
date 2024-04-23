@@ -24,17 +24,12 @@ from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoderFlax
 from typing import Sequence
 from absl import app
 from maxdiffusion import pyconfig
-import torch
 import pandas as pd
-from tempfile import TemporaryFile
-import pathlib
 import os
 
 import jax.numpy as jnp
-import flax
 import functools
 
-from keras.preprocessing.image import ImageDataGenerator
 from tqdm import tqdm
 from PIL import Image
 
