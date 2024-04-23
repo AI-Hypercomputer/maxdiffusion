@@ -49,6 +49,19 @@ def load_stats(file_path):
     mu = images_data['mu']
     return sigma, mu
 
+
+def calculate_clip(images, prompts):
+    clip_encoder = CLIPEncoderFlax()
+    
+    clip_scores = []
+    for i in tqdm(range(0, len(images))):
+        score = clip_encoder.get_clip_score(prompts[i], images[i])
+        clip_scores.append(score)
+        
+
+    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
+    return np.array(overall_clip_score)
+
 def load_images(path, captions_df):
     images = []
     prompts = []
@@ -74,8 +87,7 @@ def eval_scores(config, images_directory=None):
     captions_df = load_captions(config.caption_coco_file)
     images, prompts = load_images(images_directory, captions_df)
     
-    clip_encoder = CLIPEncoderFlax()
-    clip_score = clip_encoder.get_clip_score_batched(prompts, images, batch_size)
+    clip_score = calculate_clip(images, prompts)
 
     # calculating FID:
     rng = jax.random.PRNGKey(0)
