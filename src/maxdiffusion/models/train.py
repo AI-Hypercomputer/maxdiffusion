@@ -398,7 +398,7 @@ def train(config):
             ).sample
 
             # Get the target for loss depending on the prediction type
-            if noise_scheduler.config.prediction_type == "v_prediction" or config.prediction_type == "v_prediction":
+            if noise_scheduler.config.prediction_type == "v_prediction":
                 target = noise_scheduler.get_velocity(noise_scheduler_state, latents, noise, timesteps)
             elif noise_scheduler.config.prediction_type == "epsilon":
                 target = noise
@@ -409,8 +409,7 @@ def train(config):
             if config.snr_gamma > 0:
                 snr = compute_snr(noise_scheduler_state, timesteps)
                 mse_loss_weights = jnp.stack([snr, config.snr_gamma * jnp.ones_like(timesteps)], axis=1).min(axis=1)[0]
-                
-                if noise_scheduler.config.prediction_type == "v_prediction" or config.prediction_type == "v_prediction":
+                if noise_scheduler.config.prediction_type == "v_prediction":
                     mse_loss_weights = mse_loss_weights / (snr + 1)
                 elif noise_scheduler.config.prediction_type == "epsilon":
                     mse_loss_weights = mse_loss_weights / snr
