@@ -231,16 +231,16 @@ def run(config,
         batch_number += 1
       return row_shards
 
-    PerHostBatchSize = jax.local_device_count() * config.per_device_batch_size
-    shards = get_list_prompt_shards_from_file(config.caption_coco_file, PerHostBatchSize)
+    GlobalBatchSize = jax.device_count() * config.per_device_batch_size
+    shards = get_list_prompt_shards_from_file(config.caption_coco_file, GlobalBatchSize)
 
-    negative_prompt_ids = tokenize([""] * PerHostBatchSize, pipeline.tokenizer)
+    negative_prompt_ids = tokenize([""] * GlobalBatchSize, pipeline.tokenizer)
 
     os.makedirs(config.images_directory, exist_ok=True)
 
     for i, shard_i in enumerate(shards):
         df = pd.DataFrame(shard_i[:], columns=["image_id", "id", "prompt"])
-        batches = [df[i:i + PerHostBatchSize] for i in range(0, len(df), PerHostBatchSize)]
+        batches = [df[i:i + GlobalBatchSize] for i in range(0, len(df), GlobalBatchSize)]
 
         batch = batches[0]
         prompt_tensors = batch["prompt"].tolist()
@@ -248,8 +248,8 @@ def run(config,
         #pad last batch
         current_batch_size = len(prompt)
 
-        if current_batch_size != PerHostBatchSize:
-            prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
+        if current_batch_size != PerHostBatGlobalBatchSizehSize:
+            prompt.extend([prompt[0]] * (GlobalBatchSize - current_batch_size))
 
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
 
