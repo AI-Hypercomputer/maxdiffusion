@@ -152,8 +152,9 @@ def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids
 
 def create_localdevice_mesh(num_model_replicas_total):
     mesh_devices = np.array([jax.local_devices(process_idx)
-                         for process_idx in range(jax.process_count())])
+                         for process_idx in range(num_model_replicas_total)])
     mesh_devices = mesh_devices.reshape(num_model_replicas_total, 1, -1)
+    print(mesh_devices)
     return mesh_devices
 
 def run(config,
