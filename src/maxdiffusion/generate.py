@@ -150,6 +150,12 @@ def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids
         images = vae_decode_p(latents, vae_state)
         return images
 
+def create_localdevice_mesh(num_model_replicas_total):
+    mesh_devices = np.array([jax.local_devices(process_idx)
+                         for process_idx in range(jax.process_count())])
+    mesh_devices = mesh_devices.reshape(num_model_replicas_total, 1, -1)
+    return mesh_devices
+
 def run(config,
          images_directory = None,
          unet_state = None,
@@ -163,9 +169,12 @@ def run(config,
     
     rng = jax.random.PRNGKey(config.seed)
     # Setup Mesh
-    devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
+    num_model_replicas_per_process = 4 # set according to your parallelism strategy
+    num_model_replicas_total = num_model_replicas_per_process * jax.process_count()
+    devices_array = create_localdevice_mesh(num_model_replicas_total)
 
+    mesh = Mesh(devices_array, config.mesh_axes)
+ 
     batch_size = jax.local_device_count() * config.per_device_batch_size
     weight_dtype = get_dtype(config)
     flash_block_sizes = get_flash_block_sizes(config)
@@ -255,7 +264,7 @@ def run(config,
             prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
 
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
-        prompt_ids = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
+        #prompt_ids = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
