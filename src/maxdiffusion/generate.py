@@ -47,6 +47,19 @@ import pandas as pd
 
 cc.initialize_cache(os.path.expanduser("~/jax_cache"))
 
+def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
+    """
+    Rescale `noise_cfg` according to `guidance_rescale`. Based on findings of [Common Diffusion Noise Schedules and
+    Sample Steps are Flawed](https://arxiv.org/pdf/2305.08891.pdf). See Section 3.4
+    """
+    std_text = jnp.std(noise_pred_text, axis=list(range(1, jnp.ndim(noise_pred_text))), keepdims=True)
+    std_cfg = jnp.std(noise_cfg, axis=list(range(1, jnp.ndim(noise_cfg))), keepdims=True)
+    # rescale the results from guidance (fixes overexposure)
+    noise_pred_rescaled = noise_cfg * (std_text / std_cfg)
+    # mix with the original results from guidance by factor guidance_rescale to avoid "plain looking" images
+    noise_cfg = guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
+    return noise_cfg
+
 def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale):
     latents, scheduler_state, state = args
     latents_input = jnp.concatenate([latents] * 2)
@@ -65,6 +78,10 @@ def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale):
 
     noise_pred_uncond, noise_prediction_text = jnp.split(noise_pred, 2, axis=0)
     noise_pred = noise_pred_uncond + guidance_scale * (noise_prediction_text - noise_pred_uncond)
+
+    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+    noise_pred = rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale=0.7)
+
     latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
     return latents, scheduler_state, state

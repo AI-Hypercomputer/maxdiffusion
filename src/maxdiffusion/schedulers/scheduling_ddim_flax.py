@@ -120,7 +120,7 @@ class FlaxDDIMScheduler(FlaxSchedulerMixin, ConfigMixin):
         set_alpha_to_one: bool = True,
         steps_offset: int = 0,
         prediction_type: str = "epsilon",
-        rescale_zero_terminal_snr: bool = False,
+        rescale_zero_terminal_snr: bool = True,
         dtype: jnp.dtype = jnp.float32,
     ):
         self.dtype = dtype
@@ -163,7 +163,7 @@ class FlaxDDIMScheduler(FlaxSchedulerMixin, ConfigMixin):
         return sample
 
     def set_timesteps(
-        self, state: DDIMSchedulerState, num_inference_steps: int, shape: Tuple = (), timestep_spacing="leading"
+        self, state: DDIMSchedulerState, num_inference_steps: int, shape: Tuple = (), timestep_spacing="trailing"
     ) -> DDIMSchedulerState:
         """
         Sets the discrete timesteps used for the diffusion chain. Supporting function to be run before inference.
@@ -182,6 +182,7 @@ class FlaxDDIMScheduler(FlaxSchedulerMixin, ConfigMixin):
         elif timestep_spacing == "trailing":
             step_ratio = self.config.num_train_timesteps / num_inference_steps
             timesteps = (jnp.arange(self.config.num_train_timesteps, 0, -step_ratio)).round()
+            timesteps -=1
         return state.replace(
             num_inference_steps=num_inference_steps,
             timesteps=timesteps,

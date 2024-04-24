@@ -104,7 +104,7 @@ class FlaxDDPMScheduler(FlaxSchedulerMixin, ConfigMixin):
         clip_sample: bool = True,
         prediction_type: str = "epsilon",
         dtype: jnp.dtype = jnp.float32,
-        rescale_zero_terminal_snr: bool = False 
+        rescale_zero_terminal_snr: bool = True
     ): 
         self.dtype = dtype
 

@@ -169,7 +169,7 @@ guidance_scale: 8
 num_inference_steps: 50
 rescale_zero_terminal_snr: False
 # trailing or leading - set trailing if using rescale_zero_terminal_snr
-timestep_spacing: "leading"
+timestep_spacing: "trailing"
 # schedulers : ddpm, ddim
 inference_scheduler: "ddim"
 # For preprocessing data to tfrecords

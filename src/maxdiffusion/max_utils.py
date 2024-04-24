@@ -20,6 +20,7 @@
 import sys
 import functools
 from pathlib import Path
+import shutil
 import json
 import yaml
 import os
@@ -513,6 +514,9 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
   )
   if jax.process_index() == 0:
     walk_and_upload_blobs(config, output_dir)
+  
+  # delete files in output_dir to save space
+  shutil.rmtree(output_dir)
 
   # Clean up uneeded references
   params["vae"] = None
