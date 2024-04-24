@@ -192,6 +192,8 @@ def run(config,
         vae_state_mesh_shardings) = get_states(mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False)
         del params["vae"]
         del params["unet"]
+        print(unet_state_mesh_shardings)
+        
     scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
         config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
     )
