@@ -167,7 +167,7 @@ negative_prompt: ""
 # https://github.com/mlcommons/training/blob/master/stable_diffusion/configs/train_01x08x08.yaml#L26
 guidance_scale: 8
 num_inference_steps: 50
-rescale_zero_terminal_snr: False
+rescale_zero_terminal_snr: True
 # trailing or leading - set trailing if using rescale_zero_terminal_snr
 timestep_spacing: "trailing"
 # schedulers : ddpm, ddim
@@ -178,3 +178,5 @@ extracted_files_dir: ""
 tfrecords_dir: ""
 no_records_per_shard: 1000
 
+inception_weights_path: 'gs://jfacevedo-maxdiffusion-v5p/inception_checkpoints/inception_v3/inception_v3_weights_fid.pickle'
+clip_model_name_or_path: 'gs://jfacevedo-maxdiffusion-v5p/CLIP_checkpoints/models--laion--CLIP-ViT-H-14-laion2B-s32B-b79K'

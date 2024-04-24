@@ -45,8 +45,8 @@ def load_stats(file_path):
     return sigma, mu
 
 
-def calculate_clip(images, prompts):
-    clip_encoder = CLIPEncoderFlax()
+def calculate_clip(images, prompts, config):
+    clip_encoder = CLIPEncoderFlax(pretrained=config.clip_model_name_or_path)
     
     clip_scores = []
     for i in tqdm(range(0, len(images))):
@@ -82,12 +82,12 @@ def eval_scores(config, images_directory=None):
     captions_df = load_captions(config.caption_coco_file)
     images, prompts = load_images(images_directory, captions_df)
     
-    clip_score = calculate_clip(images, prompts)
+    clip_score = calculate_clip(images, prompts, config)
 
     # calculating FID:
     rng = jax.random.PRNGKey(0)
     
-    model = inception.InceptionV3(pretrained=True, transform_input=False)
+    model = inception.InceptionV3(pretrained=True, transform_input=False, ckpt_file=config.inception_weights_path)
     params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
@@ -102,14 +102,3 @@ def eval_scores(config, images_directory=None):
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
     return clip_score, fid
-
-
-def main(argv: Sequence[str]) -> None:
-    pyconfig.initialize(argv)
-    config = pyconfig.config
-    clip, fid = eval_scores(config)
-    print("clip score is " + str(clip))
-    print("fid score is : " + str(fid))
-
-if __name__ == "__main__":
-    app.run(main)

@@ -51,8 +51,6 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
 )
 from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 
-from maxdiffusion import FlaxDDIMScheduler
-
 TOTAL_TRAIN_SAMPLES = 6513144
 TOTAL_EVAL_SAMPLES = 30000
 
@@ -60,18 +58,10 @@ def compute_snr(scheduler_state, timesteps):
     alphas_cumprod = scheduler_state.common.alphas_cumprod
     sqrt_alphas_cumprod = alphas_cumprod**0.5
     sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
-    sqrt_alphas_cumprod = sqrt_alphas_cumprod[timesteps]
-    while len(sqrt_alphas_cumprod.shape) < len(timesteps.shape):
-        sqrt_alphas_cumprod = sqrt_alphas_cumprod[..., None]
 
-    alpha = jnp.broadcast_to(sqrt_alphas_cumprod, timesteps.shape)
-   
-    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[timesteps]
-    while len(sqrt_one_minus_alphas_cumprod.shape) < len(timesteps.shape):
-        sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[..., None]
-
-    sigma = jnp.broadcast_to(sqrt_one_minus_alphas_cumprod, timesteps.shape)
-    # compute SNR.
+    alpha = sqrt_alphas_cumprod[timesteps]
+    sigma = sqrt_one_minus_alphas_cumprod[timesteps]
+    # Compute SNR.
     snr = (alpha / sigma) ** 2
     return snr
 
@@ -405,23 +395,20 @@ def train(config):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
             
+            loss = (target - model_pred) ** 2
+
             # snr
             if config.snr_gamma > 0:
-                snr = compute_snr(noise_scheduler_state, timesteps)
-                mse_loss_weights = jnp.stack([snr, config.snr_gamma * jnp.ones_like(timesteps)], axis=1).min(axis=1)[0]
+                snr = jnp.array(compute_snr(noise_scheduler_state, timesteps))
+                snr_loss_weights = jnp.where(snr < config.snr_gamma, snr, jnp.ones_like(snr) * config.snr_gamma)
                 if noise_scheduler.config.prediction_type == "v_prediction":
-                    mse_loss_weights = mse_loss_weights / (snr + 1)
+                    snr_loss_weights = snr_loss_weights / (snr + 1)
                 elif noise_scheduler.config.prediction_type == "epsilon":
-                    mse_loss_weights = mse_loss_weights / snr
-                else:
-                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-            
-                loss = (target - model_pred) ** 2
-                loss = jnp.mean(loss, axis=list(range(1, len(loss.shape)))) * mse_loss_weights
-                loss = loss.mean()
-            else:
-                loss = (target - model_pred) ** 2
-                loss = loss.mean()
+                    snr_loss_weights = snr_loss_weights / snr
+                
+                loss = loss * snr_loss_weights
+                
+            loss = loss.mean()
 
             return loss
 

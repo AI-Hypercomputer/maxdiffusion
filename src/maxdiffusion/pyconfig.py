@@ -117,6 +117,16 @@ class _HyperParameters():
     
     if "gs://" in raw_keys["pretrained_model_name_or_path"]:
       raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
+    
+    if "gs://" in raw_keys["inception_weights_path"]:
+      inception_full_path = raw_keys["inception_weights_path"]
+      inception_file_name = inception_full_path.split("/")[-1]
+      inception_full_path = inception_full_path.replace(inception_file_name, "")
+      inception_full_path = max_utils.download_blobs(inception_full_path, "/tmp")
+      raw_keys["inception_weights_path"] = os.path.join(inception_full_path,inception_file_name)
+    
+    if "gs://" in raw_keys["clip_model_name_or_path"]:
+      raw_keys["clip_model_name_or_path"] = max_utils.download_blobs(raw_keys["clip_model_name_or_path"], "/tmp")
 
 def get_num_target_devices(raw_keys):
   return len(jax.devices())
