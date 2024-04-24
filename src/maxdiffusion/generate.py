@@ -153,7 +153,7 @@ def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids
 def create_localdevice_mesh(num_model_replicas_total):
     mesh_devices = np.array([jax.local_devices(process_idx)
                          for process_idx in range(num_model_replicas_total)])
-    mesh_devices = mesh_devices.reshape(num_model_replicas_total, 1, -1)
+    mesh_devices = mesh_devices.reshape(4, -1, 1)
     print(mesh_devices)
     return mesh_devices
 
@@ -171,7 +171,7 @@ def run(config,
     rng = jax.random.PRNGKey(config.seed)
     # Setup Mesh
     num_model_replicas_per_process = 4 # set according to your parallelism strategy
-    #num_model_replicas_total = num_model_replicas_per_process * jax.local_process_count()
+    num_model_replicas_total = num_model_replicas_per_process * jax.local_process_count()
     devices_array = create_localdevice_mesh(num_model_replicas_per_process)
 
     mesh = Mesh(devices_array, config.mesh_axes)
