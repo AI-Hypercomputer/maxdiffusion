@@ -248,7 +248,7 @@ def run(config,
         #pad last batch
         current_batch_size = len(prompt)
 
-        if current_batch_size != PerHostBatGlobalBatchSizehSize:
+        if current_batch_size != GlobalBatchSize:
             prompt.extend([prompt[0]] * (GlobalBatchSize - current_batch_size))
 
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
