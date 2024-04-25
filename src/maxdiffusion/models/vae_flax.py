@@ -89,6 +89,7 @@ class FlaxUpsample2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -131,6 +132,7 @@ class FlaxDownsample2D(nn.Module):
             strides=(2, 2),
             padding="VALID",
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -184,6 +186,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -198,6 +201,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -214,6 +218,7 @@ class FlaxResnetBlock2D(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                param_dtype=self.dtype,
             )
 
     def __call__(self, hidden_states, deterministic=True):
@@ -578,6 +583,7 @@ class FlaxEncoder(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -620,6 +626,7 @@ class FlaxEncoder(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
         )
 
     def __call__(self, sample, deterministic: bool = True):
@@ -694,6 +701,7 @@ class FlaxDecoder(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
         )
 
         # middle
@@ -735,6 +743,7 @@ class FlaxDecoder(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
         )
 
     def __call__(self, sample, deterministic: bool = True):
@@ -883,6 +892,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
             strides=(1, 1),
             padding="VALID",
             dtype=self.dtype,
+            param_dtype=self.dtype,
         )
         self.post_quant_conv = nn.Conv(
             self.config.latent_channels,
@@ -890,6 +900,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
             strides=(1, 1),
             padding="VALID",
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -899,7 +910,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
     def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
         # init input tensors
         sample_shape = (1, self.in_channels, self.sample_size, self.sample_size)
-        sample = jnp.zeros(sample_shape, dtype=jnp.float32)
+        sample = jnp.zeros(sample_shape, dtype=jnp.bfloat16)
 
         params_rng, dropout_rng, gaussian_rng = jax.random.split(rng, 3)
         rngs = {"params": params_rng, "dropout": dropout_rng, "gaussian": gaussian_rng}

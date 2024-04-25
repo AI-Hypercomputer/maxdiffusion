@@ -422,7 +422,8 @@ class FlaxAttention(nn.Module):
             use_memory_efficient_attention=self.use_memory_efficient_attention,
             split_head_dim=self.split_head_dim,
             flash_block_sizes=self.flash_block_sizes,
-            dtype=self.dtype
+            dtype=self.dtype,
+            float32_qk_product=False,
         )
 
         qkv_init_kernel = nn.with_logical_partitioning(
@@ -435,7 +436,8 @@ class FlaxAttention(nn.Module):
             kernel_init=qkv_init_kernel,
             use_bias=False,
             dtype=self.dtype,
-            name="to_q"
+            name="to_q",
+            param_dtype=self.dtype,
         )
 
         self.key = nn.Dense(
@@ -443,7 +445,8 @@ class FlaxAttention(nn.Module):
             kernel_init=qkv_init_kernel,
             use_bias=False,
             dtype=self.dtype,
-            name="to_k"
+            name="to_k",
+            param_dtype=self.dtype,
         )
 
         self.value = nn.Dense(
@@ -451,7 +454,9 @@ class FlaxAttention(nn.Module):
             kernel_init=qkv_init_kernel,
             use_bias=False,
             dtype=self.dtype,
-            name="to_v")
+            param_dtype=self.dtype,
+            name="to_v",
+            )
 
         self.proj_attn = nn.Dense(
             self.query_dim,
@@ -460,6 +465,7 @@ class FlaxAttention(nn.Module):
                 ("heads","embed")
             ),
             dtype=self.dtype,
+            param_dtype=self.dtype,
             name="to_out_0")
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
@@ -655,7 +661,8 @@ class FlaxTransformer2DModel(nn.Module):
         if self.use_linear_projection:
             self.proj_in = nn.Dense(
                 inner_dim,
-                dtype=self.dtype
+                dtype=self.dtype,
+                param_dtype=self.dtype,
             )
         else:
             self.proj_in = nn.Conv(
@@ -665,6 +672,7 @@ class FlaxTransformer2DModel(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                param_dtype=self.dtype,
             )
 
         self.transformer_blocks = [
@@ -686,7 +694,7 @@ class FlaxTransformer2DModel(nn.Module):
         ]
 
         if self.use_linear_projection:
-            self.proj_out = nn.Dense(inner_dim, dtype=self.dtype)
+            self.proj_out = nn.Dense(inner_dim, dtype=self.dtype, param_dtype=self.dtype)
         else:
             self.proj_out = nn.Conv(
                 inner_dim,
@@ -695,6 +703,7 @@ class FlaxTransformer2DModel(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                param_dtype=self.dtype,
             )
 
         self.dropout_layer = nn.Dropout(rate=self.dropout)
@@ -749,7 +758,7 @@ class FlaxFeedForward(nn.Module):
         # The second linear layer needs to be called
         # net_2 for now to match the index of the Sequential layer
         self.net_0 = FlaxGEGLU(self.dim, self.dropout, self.dtype)
-        self.net_2 = nn.Dense(self.dim, dtype=self.dtype)
+        self.net_2 = nn.Dense(self.dim, dtype=self.dtype, param_dtype=self.dtype)
 
     def __call__(self, hidden_states, deterministic=True):
         hidden_states = self.net_0(hidden_states, deterministic=deterministic)
@@ -776,7 +785,7 @@ class FlaxGEGLU(nn.Module):
 
     def setup(self):
         inner_dim = self.dim * 4
-        self.proj = nn.Dense(inner_dim * 2, dtype=self.dtype)
+        self.proj = nn.Dense(inner_dim * 2, dtype=self.dtype, param_dtype=self.dtype)
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
     def __call__(self, hidden_states, deterministic=True):
