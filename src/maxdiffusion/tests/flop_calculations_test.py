@@ -1,11 +1,13 @@
 import os
 import unittest
+
 import jax
 from ..import pyconfig
 from ..import max_utils
 from ..models.train import calculate_training_tflops
 from absl.testing import absltest
 from maxdiffusion import FlaxStableDiffusionPipeline
+
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -61,3 +63,4 @@ class FlopCalculation(unittest.TestCase):
 
 if __name__ == '__main__':
   absltest.main()
+
