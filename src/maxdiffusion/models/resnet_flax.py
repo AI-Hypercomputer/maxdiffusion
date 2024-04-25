@@ -98,13 +98,14 @@ class FlaxResnetBlock2D(nn.Module):
     dropout_prob: float = 0.0
     use_nin_shortcut: bool = None
     dtype: jnp.dtype = jnp.float32
+    norm_num_groups: int = 32
 
     def setup(self):
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
 
-        self.norm1 = nn.GroupNorm(num_groups=32, epsilon=1e-5)
+        self.norm1 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
 
-        self.norm2 = nn.GroupNorm(num_groups=32, epsilon=1e-5)
+        self.norm2 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
         self.dropout = nn.Dropout(self.dropout_prob)
 
         use_nin_shortcut = self.in_channels != out_channels if self.use_nin_shortcut is None else self.use_nin_shortcut

@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import jax
 import flax.linen as nn
 import jax.numpy as jnp
 
 from .attention_flax import FlaxTransformer2DModel
 from .resnet_flax import FlaxDownsample2D, FlaxResnetBlock2D, FlaxUpsample2D
-
+from ..common_types import BlockSizes
 
 class FlaxCrossAttnDownBlock2D(nn.Module):
     r"""
@@ -42,6 +43,14 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
+            Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
+        mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
+            jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
     """
@@ -55,8 +64,13 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
     only_cross_attention: bool = False
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
+    mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
+    norm_num_groups: int = 32
 
     def setup(self):
         resnets = []
@@ -70,6 +84,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
 
@@ -82,7 +97,12 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 only_cross_attention=self.only_cross_attention,
                 use_memory_efficient_attention=self.use_memory_efficient_attention,
                 split_head_dim=self.split_head_dim,
+                attention_kernel=self.attention_kernel,
+                flash_min_seq_length=self.flash_min_seq_length,
+                flash_block_sizes=self.flash_block_sizes,
+                mesh=self.mesh,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             attentions.append(attn_block)
 
@@ -131,6 +151,7 @@ class FlaxDownBlock2D(nn.Module):
     num_layers: int = 1
     add_downsample: bool = True
     dtype: jnp.dtype = jnp.float32
+    norm_num_groups: int = 32
 
     def setup(self):
         resnets = []
@@ -143,6 +164,7 @@ class FlaxDownBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
         self.resnets = resnets
@@ -187,6 +209,14 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
+            Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
+        mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
+            jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
     """
@@ -201,8 +231,13 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
     only_cross_attention: bool = False
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
+    mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
+    norm_num_groups: int = 32
 
     def setup(self):
         resnets = []
@@ -217,6 +252,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
 
@@ -229,7 +265,12 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 only_cross_attention=self.only_cross_attention,
                 use_memory_efficient_attention=self.use_memory_efficient_attention,
                 split_head_dim=self.split_head_dim,
+                attention_kernel=self.attention_kernel,
+                flash_min_seq_length=self.flash_min_seq_length,
+                flash_block_sizes=self.flash_block_sizes,
+                mesh=self.mesh,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             attentions.append(attn_block)
 
@@ -282,6 +323,7 @@ class FlaxUpBlock2D(nn.Module):
     num_layers: int = 1
     add_upsample: bool = True
     dtype: jnp.dtype = jnp.float32
+    norm_num_groups: int = 32
 
     def setup(self):
         resnets = []
@@ -295,6 +337,7 @@ class FlaxUpBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
 
@@ -336,6 +379,14 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
         split_head_dim (`bool`, *optional*, defaults to `False`):
             Whether to split the head dimension into a new axis for the self-attention computation. In most cases,
             enabling this flag should speed up the computation for Stable Diffusion 2.x and Stable Diffusion XL.
+        attention_kernel (`str`, *optional*, defaults to `dot_product`)
+            Attention mechanism to be used.
+        flash_min_seq_length (`int`, *optional*, defaults to 4096)
+            Minimum seq length required to apply flash attention.
+        flash_block_sizes (`BlockSizes`, *optional*, defaults to None)
+            Overrides default block sizes for flash attention.
+        mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
+            jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
     """
@@ -346,8 +397,13 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
     use_linear_projection: bool = False
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
+    mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
+    norm_num_groups: int = 32
 
     def setup(self):
         # there is always at least one resnet
@@ -357,6 +413,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 out_channels=self.in_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
         ]
 
@@ -371,7 +428,12 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 use_linear_projection=self.use_linear_projection,
                 use_memory_efficient_attention=self.use_memory_efficient_attention,
                 split_head_dim=self.split_head_dim,
+                attention_kernel=self.attention_kernel,
+                flash_min_seq_length=self.flash_min_seq_length,
+                flash_block_sizes=self.flash_block_sizes,
+                mesh=self.mesh,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             attentions.append(attn_block)
 
@@ -380,6 +442,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 out_channels=self.in_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                norm_num_groups=self.norm_num_groups
             )
             resnets.append(res_block)
 

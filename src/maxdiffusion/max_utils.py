@@ -19,6 +19,7 @@
 """ Common Max Utils needed by multiple modules"""
 import functools
 import json
+import yaml
 import os
 import subprocess
 
@@ -37,6 +38,11 @@ from jax.sharding import PositionalSharding
 from flax import struct
 from typing import Callable, Any
 from flax import core
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
+
+from tensorboardX import writer
+
+from google.cloud import storage
 
 FrozenDict = core.frozen_dict.FrozenDict
 
@@ -58,6 +64,13 @@ def activate_profiler(config):
 def deactivate_profiler(config):
   if jax.process_index() == 0 and config.enable_profiler:
     jax.profiler.stop_trace()
+
+def initialize_summary_writer(config):
+  return writer.SummaryWriter(config.tensorboard_dir) if jax.process_index() == 0 else None
+
+def close_summary_writer(summary_writer):
+  if jax.process_index() == 0:
+    summary_writer.close()
 
 def _prepare_metrics_for_json(metrics, step, run_name):
   """Converts metric dictionary into json supported types (e.g. float)"""
@@ -83,6 +96,36 @@ def write_metrics_for_gcs(metrics, step, config, running_metrics):
   """Writes metrics to gcs"""
   metrics_dict_step = _prepare_metrics_for_json(metrics, step, config.run_name)
   running_metrics.append(metrics_dict_step)
+  if (step + 1) % config.log_period == 0 or step == config.steps - 1:
+    start_step = (step // config.log_period) * config.log_period
+    metrics_filename = f"metrics_step_{start_step:06}_to_step_{step:06}.txt"
+    with open(metrics_filename, 'w', encoding="utf8") as metrics_for_gcs:
+      for metrics_step in running_metrics:
+        metrics_for_gcs.write(str(json.dumps(metrics_step))+'\n')
+
+    metrics_for_gcs.close()
+    gcs_filename=os.path.join(config.metrics_dir, metrics_filename)
+    max_logging.log(f"Moving file {metrics_filename} to GCS...")
+    upload_blob(gcs_filename, metrics_filename)
+    max_logging.log(f"File {metrics_filename} moved successfully!")
+    running_metrics = [] # reset running_metrics to empty list
+  return running_metrics
+
+def add_config_to_summary_writer(config, summary_writer):
+  """Writes config params to tensorboard"""
+  if jax.process_index() == 0:
+    for key, value in config.get_keys().items():
+      add_text_to_summary_writer(key, str(value), summary_writer)
+
+def add_text_to_summary_writer(key, value, summary_writer):
+  """Writes given key-value pair to tensorboard as text/summary"""
+  if jax.process_index() == 0:
+    summary_writer.add_text(key, value)
+
+def write_metrics_for_gcs(metrics, step, config, running_metrics):
+  """Writes metrics to gcs"""
+  metrics_dict_step = _prepare_metrics_for_json(metrics, step, config.run_name)
+  running_metrics.append(metrics_dict_step)
   if (step + 1) % config.log_period == 0 or step == config.max_train_steps - 1:
     start_step = (step // config.log_period) * config.log_period
     metrics_filename = f"metrics_step_{start_step:06}_to_step_{step:06}.txt"
@@ -98,6 +141,37 @@ def write_metrics_for_gcs(metrics, step, config, running_metrics):
     max_logging.log(f"File {metrics_filename} moved successfully!")
     running_metrics = [] # reset running_metrics to empty list
   return running_metrics
+
+def write_config_raw_keys_for_gcs(raw_keys):
+  """Writes config raw keys to GCS"""
+  if not raw_keys["save_config_to_gcs"] or jax.process_index() != 0:
+    return
+  max_logging.log("Writing config to GCS...")
+
+  raw_keys_dict = dict(raw_keys)
+  filename = "config.yml"
+  with open(filename, 'w', encoding="utf8") as config_for_gcs:
+    yaml.dump(raw_keys_dict, config_for_gcs)
+  config_for_gcs.close()
+
+  gcs_filename=os.path.join(raw_keys["base_output_directory"], raw_keys["run_name"], filename)
+  max_logging.log(f"Moving file {filename} to GCS...")
+  upload_blob(gcs_filename, filename)
+  max_logging.log(f"File {filename} moved successfully!")
+
+def parse_gcs_bucket_and_prefix(destination_gcs_name):
+  path_parts = destination_gcs_name.replace("gs://", "").split("/")
+  bucket = path_parts.pop(0)
+  key = "/".join(path_parts)
+  return bucket, key
+
+def upload_blob(destination_gcs_name, source_file_name):
+  """Uploads a file to a GCS location"""
+  bucket_name, prefix_name = parse_gcs_bucket_and_prefix(destination_gcs_name)
+  storage_client = storage.Client()
+  bucket = storage_client.get_bucket(bucket_name)
+  blob = bucket.blob(prefix_name)
+  blob.upload_from_filename(source_file_name)
 
 def initialize_jax_distributed_system():
   """ The best recipe to initialize the Jax Distributed System has varied over time. We keep a layer of
@@ -255,9 +329,18 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
   return state, state_mesh_shardings
 
 def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, training=True):
-  unet_variables = jax.jit(pipeline.unet.init_weights)(rng)
+  
+  # Needed to initialize weights on multi-host with addressable devices.
+  if config.train_new_unet:
+    unet_variables = jax.jit(pipeline.unet.init_weights, static_argnames=["eval_only"])(rng, eval_only=False)
+  else:
+    unet_variables = pipeline.unet.init_weights(rng, eval_only=True)
+
   unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, tx, config, mesh, unet_variables, training=training)
-  del unet_variables
+  if config.train_new_unet:
+    unet_params = unet_variables
+  else:
+    del unet_variables
   unet_state, unet_state_mesh_shardings = setup_initial_state(
   pipeline.unet,
   tx,
@@ -267,7 +350,6 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
   unboxed_abstract_state,
   state_mesh_annotations,
   training=training)
-
   vae_variables = jax.jit(pipeline.vae.init_weights)(rng)
   unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.vae, tx, config, mesh, vae_variables, training=training)
   del vae_variables
@@ -288,50 +370,35 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
 # -----------------------------------------------------------------------------
 
 def create_learning_rate_schedule(config):
-  """Creates a warmup and cosine decay learning rate schedule:
-  We take inspiration from Llama2's learning rate (LR) schedule, see https://arxiv.org/pdf/2307.09288.pdf section 2.2
-  Learning rate schedule has either two or three parts:
+  """Creates a warmup to constant learning rate schedule:
+  We take inspiration from WarmupHoldPolicy used in stable diffusion
+    see https://github.com/NVIDIA/NeMo/blob/dbc8a6ee490355bfa0cb1e10b8d199dcc47482e0/nemo/core/optim/lr_scheduler.py#L142
+  Learning rate schedule has either two parts:
   1) Linear warmup from 0 to [learning_rate] over steps 0 to [learning_rate_schedule_steps * warmup_steps_fraction]
-  2) Cosine from [learning_rate] to [learning_rate * cosine_learning_rate_final_fraction] until learning_rate_schedule_steps
-  3) Constant learning rate of 0 from learning_rate_schedule_steps to steps.
-  The zero learning rate section can be used to more accurately measure the fully trained model's performance.
+  2) Constant learning rate of 0 afterwards.
   """
-  def make_cos_schedule(init_lr, final_lr, len_steps):
-    def schedule(step):
-      pct = (step) / len_steps
-      a = 0.5 * (jnp.cos(jnp.pi*pct) + 1)
-      lr = init_lr * a + final_lr * (1 - a)
-      return lr
-    return schedule
-
   lr = config.learning_rate
-  cos_final_lr = lr * config.cosine_learning_rate_final_fraction
 
   warmup_steps = int(config.learning_rate_schedule_steps * config.warmup_steps_fraction)
-  cos_steps = config.learning_rate_schedule_steps - warmup_steps
-  constant_zero_steps = config.max_train_steps - config.learning_rate_schedule_steps
+  constant_zero_steps = config.max_train_steps - warmup_steps
 
   warmup_schedule = optax.linear_schedule(
       init_value=0.0,
       end_value=lr,
       transition_steps=warmup_steps
   )
-  cos_schedule = make_cos_schedule(lr, cos_final_lr, cos_steps)
-  constant_schedule = optax.constant_schedule(0.0)
+  constant_schedule = optax.constant_schedule(lr)
 
-  pieces = [warmup_schedule, cos_schedule]
+  pieces = [warmup_schedule, constant_schedule]
   boundaries=[
    warmup_steps,
-   warmup_steps + cos_steps,
+   warmup_steps + constant_zero_steps,
    ]
-
-  if constant_zero_steps > 0:
-    pieces.append(constant_schedule)
-    boundaries.append(warmup_steps + cos_steps + constant_zero_steps)
 
   return optax.join_schedules(pieces, boundaries)
 
 def get_dtype(config):
+  """Get dtype from config."""
   dtype_str = config.dtype
   retval = jnp.bfloat16
   if dtype_str == "float32":
@@ -339,3 +406,30 @@ def get_dtype(config):
   if dtype_str == "float16":
     retval = jnp.float16
   return retval
+
+def get_flash_block_sizes(config):
+  """Create custom flash attention BlockSizes."""
+  flash_block_sizes = None
+  if len(config.flash_block_sizes.keys()) > 0:
+    flash_block_sizes = splash_attention_kernel.BlockSizes(
+      block_q=config.flash_block_sizes["block_q"],
+      block_kv_compute=config.flash_block_sizes["block_kv_compute"],
+      block_kv=config.flash_block_sizes["block_kv"],
+      block_q_dkv=config.flash_block_sizes["block_q_dkv"],
+      block_kv_dkv=config.flash_block_sizes["block_kv_dkv"],
+      block_kv_dkv_compute=config.flash_block_sizes["block_kv_dkv_compute"],
+      block_q_dq=config.flash_block_sizes["block_q_dq"],
+      block_kv_dq=config.flash_block_sizes["block_kv_dq"],
+    )
+  return flash_block_sizes
+
+def delete_pytree(to_delete):
+  jax.tree_util.tree_map(lambda x: x.delete(), to_delete)
+
+def get_memory_allocations():
+  devices = jax.local_devices()
+  gb = 10**9
+  for device in devices:
+    m_stats = device.memory_stats()
+    max_logging.log(f'device : {device.process_index},'
+                    f'bytes in use: {m_stats["bytes_in_use"] / gb} / {m_stats["bytes_limit"] / gb} GB')

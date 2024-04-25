@@ -107,8 +107,8 @@ def convert_pytorch_state_dict_to_flax(pt_state_dict, flax_model, init_key=42):
     # Step 1: Convert pytorch tensor to numpy
     pt_state_dict = {k: v.numpy() for k, v in pt_state_dict.items()}
 
-    # Step 2: Since the model is stateless, get random Flax params
-    random_flax_params = flax_model.init_weights(PRNGKey(init_key))
+    # Step 2: Since the model is stateless, run eval_shape to get the pytree structure
+    random_flax_params = flax_model.init_weights(PRNGKey(init_key), eval_only=True)
 
     random_flax_state_dict = flatten_dict(random_flax_params)
     flax_state_dict = {}

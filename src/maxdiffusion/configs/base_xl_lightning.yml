@@ -22,25 +22,14 @@ gcs_metrics: True
 save_config_to_gcs: False
 log_period: 100
 
-pretrained_model_name_or_path: 'stabilityai/stable-diffusion-2-base'
-revision: 'main'
+pretrained_model_name_or_path: 'stabilityai/stable-diffusion-xl-base-1.0'
+revision: 'refs/pr/95'
 dtype: 'bfloat16'
 # Set true to load weights from pytorch
-from_pt: True
+from_pt: False
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash
 flash_block_sizes: {}
-# to override default block sizes for flash attention
-# flash_block_sizes:
-#   block_q: 64
-#   block_kv_compute: 64
-#   block_kv: 64
-#   block_q_dkv: 64
-#   block_kv_dkv: 64
-#   block_kv_dkv_compute: 64
-#   block_q_dq: 64
-#   block_kv_dq: 64
-
 # GroupNorm groups
 norm_num_groups: 32
 
@@ -84,42 +73,32 @@ data_sharding: [['data', 'fsdp', 'tensor']]
 dcn_data_parallelism: -1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: 1
 dcn_tensor_parallelism: 1
-ici_data_parallelism: -1 # recommended ICI axis to be auto-sharded for TPUv5e 
+ici_data_parallelism: -1
 ici_fsdp_parallelism: 1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
-dataset_name: ''
+dataset_name: 'lambdalabs/pokemon-blip-captions'
 train_data_dir: ''
 dataset_config_name: ''
 cache_dir: ''
 image_column: 'image'
 caption_column: 'text'
-resolution: 512
+resolution: 1024
 center_crop: False
 random_flip: False
-# If cache_latents_text_encoder_outputs is True
-# the num_proc is set to 1
-tokenize_captions_num_proc: 4
-transform_images_num_proc: 4
-reuse_example_batch: False
-enable_data_shuffling: True
-
-# Prepare image latents and text encoder outputs
-# during dataset creation to reduce memory consumption.
-cache_latents_text_encoder_outputs: True
-
 
 # Training loop
-learning_rate: 1.e-7
+learning_rate: 4.e-7
 scale_lr: False
 max_train_samples: -1
-max_train_steps: 20
+# max_train_steps takes priority over num_train_epochs.
+max_train_steps: 200
+num_train_epochs: 100
 seed: 0
-output_dir: 'sd-model-finetuned'
-tensorboard_dir: ''
-per_device_batch_size: 1
+output_dir: 'sdxl-model-finetuned'
+per_device_batch_size: 2
 
 warmup_steps_fraction: 0.0
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
@@ -140,13 +119,12 @@ skip_first_n_steps_for_profiler: 1
 profiler_steps: 5
 
 # Generation parameters
-prompt: "A magical castle in the middle of a forest, artistic drawing"
+prompt: "portrait photo of muscular bearded guy in a worn mech suit, light bokeh, intricate, steel metal, elegant, sharp focus, soft lighting, vibrant colors"
 negative_prompt: "purple, red"
-guidance_scale: 7.5
-num_inference_steps: 30
+guidance_scale: 2
+num_inference_steps: 4
 
-# For preprocessing data to tfrecords
-data_files_pattern: ""
-extracted_files_dir: ""
-tfrecords_dir: ""
-no_records_per_shard: 1000
+# SDXL Lightning parameters
+lightning_from_pt: True
+lightning_repo: "ByteDance/SDXL-Lightning"
+lightning_ckpt: "sdxl_lightning_4step_unet.safetensors"

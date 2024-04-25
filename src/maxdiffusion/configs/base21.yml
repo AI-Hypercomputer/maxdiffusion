@@ -18,6 +18,8 @@ run_name: ''
 metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
 # If true save metrics such as loss and TFLOPS to GCS in {base_output_directory}/{run_name}/metrics/
 gcs_metrics: True
+# If true save config to GCS in {base_output_directory}/{run_name}/
+save_config_to_gcs: False
 log_period: 100
 
 pretrained_model_name_or_path: 'stabilityai/stable-diffusion-2-1'
@@ -26,6 +28,14 @@ dtype: 'bfloat16'
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
+attention: 'dot_product' # Supported attention: dot_product, flash
+flash_block_sizes: {}
+# GroupNorm groups
+norm_num_groups: 32
+
+# If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
+# else they will be loaded from pretrained_model_name_or_path
+train_new_unet: False
 
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
@@ -69,7 +79,7 @@ ici_tensor_parallelism: 1
 
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
-dataset_name: 'lambdalabs/pokemon-blip-captions'
+dataset_name: ''
 train_data_dir: ''
 dataset_config_name: ''
 cache_dir: ''
@@ -101,8 +111,7 @@ output_dir: 'sd-model-finetuned'
 tensorboard_dir: 'gs://shahrokhi-maxdiffusion-v5'
 per_device_batch_size: 1
 
-cosine_learning_rate_final_fraction: 0.1 
-warmup_steps_fraction: 0.1
+warmup_steps_fraction: 0.0
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
 
 # However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before 
@@ -114,13 +123,16 @@ adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradi
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 1.e-2 # AdamW Weight decay
 
-max_grad_norm: 1.0
-
 enable_profiler: True
+# Skip first n steps for profiling, to omit things like compilation and to give
+# the iteration time a chance to stabilize.
+skip_first_n_steps_for_profiler: 1
+profiler_steps: 5
+
+
 
 # Generation parameters
 prompt: "A magical castle in the middle of a forest, artistic drawing"
 negative_prompt: "purple, red"
 guidance_scale: 7.5
 num_inference_steps: 30
-seed: 47

@@ -323,7 +323,12 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         from_pt = kwargs.pop("from_pt", False)
         use_memory_efficient_attention = kwargs.pop("use_memory_efficient_attention", False)
         split_head_dim = kwargs.pop("split_head_dim", False)
+        attention_kernel = kwargs.pop("attention_kernel", "dot_product")
+        flash_min_seq_length = kwargs.pop("flash_min_seq_length", 4096)
+        flash_block_sizes = kwargs.pop("flash_block_sizes", None)
+        mesh = kwargs.pop("mesh", None)
         dtype = kwargs.pop("dtype", None)
+        norm_num_groups = kwargs.pop("norm_num_groups", 32)
 
         # 1. Download the checkpoints and configs
         # use snapshot download here to get it working from from_pretrained
@@ -502,6 +507,11 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                         from_pt=from_pt,
                         use_memory_efficient_attention=use_memory_efficient_attention,
                         split_head_dim=split_head_dim,
+                        attention_kernel=attention_kernel,
+                        flash_min_seq_length=flash_min_seq_length,
+                        flash_block_sizes=flash_block_sizes,
+                        mesh=mesh,
+                        norm_num_groups=norm_num_groups,
                         dtype=dtype,
                     )
                     params[name] = loaded_params

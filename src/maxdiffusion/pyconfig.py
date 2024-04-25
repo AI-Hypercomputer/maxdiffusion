@@ -16,12 +16,15 @@
 
 # pylint: disable=missing-module-docstring
 import os
+import json
 import sys
 from collections import OrderedDict
 from typing import Any, Union
 
 import jax
 import yaml
+from . import max_logging
+from . import max_utils
 
 
 def string_to_bool(s: str) -> bool:
@@ -35,6 +38,12 @@ _yaml_types_to_parser = {str : str, int : int, float : float, bool : string_to_b
 
 _config = None
 config = None
+
+def print_system_information():
+  max_logging.log(f"System Information: Jax Version: {jax.__version__}")
+  max_logging.log(f"System Information: Jaxlib Version: {jax.lib.__version__}")
+  max_logging.log(f"System Information: Jax Backend: {jax.lib.xla_bridge.get_backend().platform_version}")
+
 
 def _lists_to_tuples(l: list[Any]) -> Union[tuple[Any],list[Any]]:
   return tuple(_lists_to_tuples(x) for x in l) if isinstance(l, list) else l
@@ -54,6 +63,10 @@ class _HyperParameters():
 
     raw_keys = OrderedDict()
     for k in raw_data_from_yaml:
+      # support command line json to dict
+      if k in raw_data_from_cmd_line and type(raw_data_from_yaml[k]) is dict and not isinstance(raw_data_from_cmd_line[k], type(raw_data_from_yaml[k])):
+        raw_data_from_cmd_line[k] = json.loads(raw_data_from_cmd_line[k])
+
       if k in raw_data_from_cmd_line and not isinstance(raw_data_from_cmd_line[k], type(raw_data_from_yaml[k])) and \
                                          type(raw_data_from_yaml[k]) not in _yaml_types_to_parser:
         raise ValueError(
@@ -94,8 +107,13 @@ class _HyperParameters():
       raw_keys["checkpoint_dir"] = os.path.join(base_output_directory, run_name, "checkpoints", "")
       raw_keys["metrics_dir"] = os.path.join(base_output_directory, run_name, "metrics", "")
 
+    max_utils.write_config_raw_keys_for_gcs(raw_keys)
+
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
     raw_keys["data_sharding"] = _lists_to_tuples(raw_keys["data_sharding"])
+
+    if raw_keys["learning_rate_schedule_steps"]==-1:
+      raw_keys["learning_rate_schedule_steps"] = raw_keys["max_train_steps"]
 
 def get_num_target_devices(raw_keys):
   return len(jax.devices())
@@ -112,6 +130,8 @@ class HyperParameters(): # pylint: disable=missing-class-docstring
   def __setattr__(self, attr, value):
     raise ValueError
 
+  def get_keys(self):
+    return _config.keys
 
 def initialize(argv, **kwargs):
   global _config, config
