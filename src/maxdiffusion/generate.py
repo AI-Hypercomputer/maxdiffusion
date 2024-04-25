@@ -172,7 +172,7 @@ def run(config,
     # Setup Mesh
     num_model_replicas_per_process = 4 # set according to your parallelism strategy
     num_model_replicas_total = num_model_replicas_per_process * jax.process_count()
-    devices_array = create_localdevice_mesh(num_model_replicas_per_process)
+    devices_array = create_localdevice_mesh(num_model_replicas_total)
 
     mesh = Mesh(devices_array, config.mesh_axes)
  
