@@ -90,7 +90,7 @@ class _HyperParameters():
     self.keys = raw_keys
 
   def _load_kwargs(self, argv: list[str], **kwargs):
-    args_dict = dict(a.split("=") for a in argv[2:])
+    args_dict = dict(a.split("=", 1) for a in argv[2:])
     args_dict.update(kwargs)
     return args_dict
 

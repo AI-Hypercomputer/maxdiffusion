@@ -6,13 +6,16 @@ import os
 import scipy
 from tqdm import tqdm
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import tensorflow as tf
 
 IMAGE_EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'pgm', 'png', 'ppm',
                     'tif', 'tiff', 'webp'}
 
 def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_size=1, img_size=None):
+    # need to read as byte for np.load
     if path.endswith(".npz"):
-        stats = np.load(path)
+        with tf.io.gfile.GFile(path, 'rb') as f:
+            stats = np.load(f)
         mu, sigma = stats["mu"], stats["sigma"]
         return mu, sigma
     
@@ -53,7 +56,9 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
 
 def compute_statistics(path, params, apply_fn, batch_size=1, img_size=None):
     if path.endswith(".npz"):
-        stats = np.load(path)
+        # need to read as byte for np.load
+        with tf.io.gfile.GFile(path, 'rb') as f:
+            stats = np.load(f)
         mu, sigma = stats["mu"], stats["sigma"]
         return mu, sigma
 

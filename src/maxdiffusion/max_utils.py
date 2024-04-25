@@ -113,7 +113,7 @@ def write_metrics_for_gcs(metrics, step, config, running_metrics):
 
     metrics_for_gcs.close()
     gcs_filename=os.path.join(config.metrics_dir, metrics_filename)
-    max_logging.log(f"Moving file {metrics_filename} to GCS...")
+    max_logging.log(f"Moving file {metrics_filename} to {gcs_filename}...")
     upload_blob(gcs_filename, metrics_filename)
     max_logging.log(f"File {metrics_filename} moved successfully!")
     running_metrics = [] # reset running_metrics to empty list
@@ -144,7 +144,7 @@ def write_metrics_for_gcs(metrics, step, config, running_metrics):
     metrics_for_gcs.close()
     gcs_filename=os.path.join(config.metrics_dir, metrics_filename)
     command = ["gsutil", "mv", metrics_filename, gcs_filename]
-    max_logging.log(f"Moving file {metrics_filename} to GCS...")
+    max_logging.log(f"Moving file {metrics_filename} to {gcs_filename}...")
     subprocess.run(command, check=True, capture_output=True)
     max_logging.log(f"File {metrics_filename} moved successfully!")
     running_metrics = [] # reset running_metrics to empty list
@@ -163,7 +163,7 @@ def write_config_raw_keys_for_gcs(raw_keys):
   config_for_gcs.close()
 
   gcs_filename=os.path.join(raw_keys["base_output_directory"], raw_keys["run_name"], filename)
-  max_logging.log(f"Moving file {filename} to GCS...")
+  max_logging.log(f"Moving file {filename} to {gcs_filename}...")
   upload_blob(gcs_filename, filename)
   max_logging.log(f"File {filename} moved successfully!")
 
@@ -463,9 +463,9 @@ def walk_and_upload_blobs(config, output_dir):
       file_to_upload = os.path.join(root, file)
       if file_to_upload in uploaded_files:
         continue
-      max_logging.log(f"Moving file {file_to_upload} to GCS...")
       gcs_file_name = os.path.join(config.base_output_directory, config.run_name,
                                 file_to_upload.replace(user_dir,"").strip("/"))
+      max_logging.log(f"Moving file {file_to_upload} to {gcs_file_name}")
       upload_blob(gcs_file_name, file_to_upload)
       uploaded_files.add(file_to_upload)
       max_logging.log(f"File {file_to_upload} moved successfully!")
@@ -475,9 +475,9 @@ def walk_and_upload_gen_images(config, output_dir, checkpoint_number="0"):
   for root, _, files in os.walk(os.path.abspath(output_dir)):
     for file in files:
       file_to_upload = os.path.join(root, file)
-      max_logging.log(f"Moving file {file_to_upload} to GCS...")
       gcs_file_name = os.path.join(config.base_output_directory, config.run_name, "generate_image", checkpoint_number,
                                   file_to_upload.replace(user_dir,"/").strip("/"))
+      max_logging.log(f"Moving file {file_to_upload} to {gcs_file_name}")
       upload_blob(gcs_file_name, file_to_upload)
       max_logging.log(f"File {file_to_upload} moved successfully!")
 
@@ -499,9 +499,10 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
     safety_checker=None,
     feature_extractor=None,
   )
-  output_dir = output_dir.replace("gs://","")
+  user_dir = os.path.expanduser('~')
+  local_output_dir = output_dir.replace(os.path.join(config.base_output_directory, config.run_name), user_dir)
   pipeline.save_pretrained(
-    output_dir,
+    local_output_dir,
     params={
         "text_encoder": get_params_to_save(params["text_encoder"]),
         "vae": get_params_to_save(params["vae"]),
@@ -509,7 +510,7 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
     },
   )
   if jax.process_index() == 0:
-    walk_and_upload_blobs(config, output_dir)
+    walk_and_upload_blobs(config, local_output_dir)
 
   # Clean up uneeded references
   params["vae"] = None
