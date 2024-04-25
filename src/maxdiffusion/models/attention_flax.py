@@ -571,9 +571,9 @@ class FlaxBasicTransformerBlock(nn.Module):
             dtype=self.dtype,
         )
         self.ff = FlaxFeedForward(dim=self.dim, dropout=self.dropout, dtype=self.dtype)
-        self.norm1 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
-        self.norm2 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
-        self.norm3 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
+        self.norm1 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.dtype)
+        self.norm2 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.dtype)
+        self.norm3 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.dtype)
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
     def __call__(self, hidden_states, context, deterministic=True):
