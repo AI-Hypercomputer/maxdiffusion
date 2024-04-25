@@ -44,6 +44,7 @@ class FlaxUpsample2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -77,6 +78,7 @@ class FlaxDownsample2D(nn.Module):
             strides=(2, 2),
             padding=((1, 1), (1, 1)),  # padding="VALID",
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -118,6 +120,7 @@ class FlaxResnetBlock2D(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                param_dtype=self.dtype,
                 kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -130,6 +133,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -139,6 +143,7 @@ class FlaxResnetBlock2D(nn.Module):
         self.time_emb_proj = nn.Dense(
            out_channels,
            dtype=self.dtype,
+           param_dtype=self.dtype,
            )
         self.conv2 = nn.Conv(
             out_channels,
@@ -146,6 +151,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
