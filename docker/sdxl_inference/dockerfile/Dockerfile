@@ -25,7 +25,7 @@ WORKDIR maxdiffusion
 
 
 # Copy model artifacts.
-COPY docker/sdxl_inference/model_loader.py .
+RUN cp docker/sdxl_inference/model_loader.py .
 
 RUN JAX_PLATFORMS='' python3 model_loader.py
 
