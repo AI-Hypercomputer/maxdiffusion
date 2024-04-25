@@ -18,7 +18,6 @@ RUN apt-get update && apt-get install wget
 RUN git clone https://github.com/Bslabe123/maxdiffusion && \
 cd maxdiffusion && \
 pip install -r requirements.txt && \
-git checkout inf_mlperf && \
 pip3 install -e .
 
 WORKDIR maxdiffusion
