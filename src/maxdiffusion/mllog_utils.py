@@ -90,7 +90,7 @@ def train_step_end(config, step_num, samples_count, loss, lr):
       },
     )
 
-def maybe_train_step_log(config, start_step, step_num, samples_count, metric, train_log_interval: int = 100, ):
+def maybe_train_step_log(config, start_step, step_num, samples_count, metric, train_log_interval: int = 100):
   if step_num > start_step and step_num % train_log_interval == 0 or step_num == config.max_train_steps:
     # convert the jax array to a numpy array for mllog JSON encoding
     loss = np.asarray(metric['scalar']['learning/loss'])
