@@ -294,11 +294,13 @@ def train(config):
         eps=config.adam_eps,
         weight_decay=config.adam_weight_decay,
     )
-
-    tx = optax.chain(
-        optax.clip_by_global_norm(1),
-        adamw,
-    )
+    if config.max_grad_norm == 0:
+       tx = adamw
+    else:
+        tx = optax.chain(
+            optax.clip_by_global_norm(config.max_grad_norm),
+            adamw,
+        )
 
     (unet_state,
     unet_state_mesh_shardings,
@@ -476,9 +478,9 @@ def train(config):
 
     start_step = get_first_step(unet_state)
     mllog_utils.train_init_print(config)
-    mllog_utils.train_init_stop()
-    mllog_utils.train_run_start()
-    mllog_utils.train_step_start(start_step)
+    mllog_utils.train_init_stop(config)
+    mllog_utils.train_run_start(config)
+    mllog_utils.train_step_start(config, start_step, samples_count=0)
     # for checkpointing
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
@@ -488,21 +490,19 @@ def train(config):
                                                                 train_rngs)
         new_time = datetime.datetime.now()
 
-        if step != 0 and (total_train_batch_size * step) % config.checkpoint_every == 0:
-           if config.eval_at_checkpoint:
-              eval_at_checkpoint(config,
-                   f"{str(step * total_train_batch_size)}",
-                   unet_state, unet_state_mesh_shardings,
-                   vae_state,
-                   vae_state_mesh_shardings,
-                   pipeline, params, train_metric)
-           
-           max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.checkpoint_dir+f"/{str(step * total_train_batch_size)}/")
-           
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
         write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
-        
+        samples_count = total_train_batch_size * (step + 1)
+        if step != 0 and samples_count % config.checkpoint_every == 0:
+            if config.eval_at_checkpoint:
+                eval_at_checkpoint(config,
+                    f"{str(step * total_train_batch_size)}",
+                    unet_state, unet_state_mesh_shardings,
+                    vae_state,
+                    vae_state_mesh_shardings,
+                    pipeline, params, train_metric)
+            max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.checkpoint_dir+f"/{str(step * total_train_batch_size)}/")
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
         if step == first_profiling_step:
@@ -510,15 +510,15 @@ def train(config):
         if step == last_profiling_step:
             max_utils.deactivate_profiler(config)
 
-        mllog_utils.maybe_train_step_log(config, start_step, step, train_metric)
+        mllog_utils.maybe_train_step_log(config, start_step, step, samples_count, train_metric)
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
-    mllog_utils.train_init_start()
-    max_logging.log(f"Found {jax.device_count()} devices.")
-    cc.initialize_cache(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
+    mllog_utils.train_init_start(config)
+    max_logging.log(f"Found {jax.device_count()} devices.")
+    cc.initialize_cache(os.path.expanduser("~/jax_cache"))
     validate_train_config(config)
     train(config)
 if __name__ == "__main__":

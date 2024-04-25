@@ -147,6 +147,7 @@ adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradient
 adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradients.
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 1.e-2 # AdamW Weight decay
+max_grad_norm: 1.0
 
 enable_profiler: False
 # Skip first n steps for profiling, to omit things like compilation and to give
@@ -180,3 +181,5 @@ no_records_per_shard: 1000
 
 inception_weights_path: 'gs://jfacevedo-maxdiffusion-v5p/inception_checkpoints/inception_v3/inception_v3_weights_fid.pickle'
 clip_model_name_or_path: 'gs://jfacevedo-maxdiffusion-v5p/CLIP_checkpoints/models--laion--CLIP-ViT-H-14-laion2B-s32B-b79K'
+
+enable_mllog: False
