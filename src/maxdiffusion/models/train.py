@@ -468,7 +468,7 @@ def train(config):
         if step == last_profiling_step:
             max_utils.deactivate_profiler(config)
 
-        mllog_utils.maybe_train_step_log(config, start_step, step, samples_count, train_metric)
+        mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
