@@ -29,9 +29,9 @@ COPY docker/sdxl_inference/model_loader.py .
 
 RUN JAX_PLATFORMS='' python3 model_loader.py
 
-COPY docker/sdxl_inference/entrypoint.sh .
-COPY docker/sdxl_inference/handler.py .
-COPY docker/sdxl_inference/latents.npy .
+RUN cp docker/sdxl_inference/entrypoint.sh .
+RUN cp docker/sdxl_inference/handler.py .
+RUN cp docker/sdxl_inference/latents.npy .
 
 EXPOSE ${infer_port}
 
