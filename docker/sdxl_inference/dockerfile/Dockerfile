@@ -15,7 +15,7 @@ RUN pip install uvicorn
 RUN apt-get update && apt-get install wget
 
 # Install diffusers from main branch source code with a pinned commit.
-RUN git clone https://github.com/Bslabe123/maxdiffusion && \
+RUN git clone https://github.com/google/maxdiffusion && \
 cd maxdiffusion && \
 pip install -r requirements.txt && \
 pip3 install -e .
