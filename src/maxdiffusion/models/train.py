@@ -493,7 +493,8 @@ def train(config):
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
         write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
-        samples_count = total_train_batch_size * (step + 1)
+        step_num = step + 1
+        samples_count = total_train_batch_size * step_num
         if step != 0 and samples_count % config.checkpoint_every == 0:
             if config.eval_at_checkpoint:
                 eval_at_checkpoint(config,
