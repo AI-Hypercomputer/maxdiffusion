@@ -367,7 +367,7 @@ def train(config):
 
             # input perturbation
             if config.input_peturbation > 0:
-                noise += config.input_peturbation * jax.random.normal(peturbation_rng, noise.shape)
+                new_noise += config.input_peturbation * jax.random.normal(peturbation_rng, noise.shape)
 
             # Sample a random timestep for each image
             bsz = latents.shape[0]
@@ -380,7 +380,10 @@ def train(config):
 
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
-            noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
+            if config.input_peturbation > 0:
+                noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, new_noise, timesteps)
+            else:
+               noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
 
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
@@ -395,6 +398,8 @@ def train(config):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
             
+            # TODO  (Optional): L = lambda * (target - model_pred) ** 2 from
+            # https://arxiv.org/pdf/2305.08891 3.2 (12)
             loss = (target - model_pred) ** 2
 
             # snr
