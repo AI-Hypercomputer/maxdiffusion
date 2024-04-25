@@ -367,7 +367,7 @@ def train(config):
 
             # input perturbation
             if config.input_peturbation > 0:
-                new_noise += config.input_peturbation * jax.random.normal(peturbation_rng, noise.shape)
+                new_noise = noise + config.input_peturbation * jax.random.normal(peturbation_rng, noise.shape)
 
             # Sample a random timestep for each image
             bsz = latents.shape[0]
