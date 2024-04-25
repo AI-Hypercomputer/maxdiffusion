@@ -91,14 +91,14 @@ def make_laion400m_train_iterator(
 
 
   train_ds = (
-    tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True)
+    tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True, seed=config.seed)
       .shard(num_shards = jax.process_count(), index = jax.process_index())
       .interleave(tf.data.TFRecordDataset, num_parallel_calls=AUTOTUNE)
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
       .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.float32, tf.float32)), num_parallel_calls=AUTOTUNE)
       .map(create_dict, num_parallel_calls=AUTOTUNE)
-      .shuffle(global_batch_size * 10)
+      .shuffle(global_batch_size * 10, seed=config.seed)
       .batch(global_batch_size // jax.process_count(), drop_remainder=False)
       .repeat(-1)
       .prefetch(AUTOTUNE)
@@ -208,7 +208,7 @@ def make_pokemon_train_iterator(
     tf_dataset = tf.data.Dataset.from_tensor_slices(dataset)
 
     if shuffle:
-      tf_dataset = tf_dataset.shuffle(len(tf_dataset))
+      tf_dataset = tf_dataset.shuffle(len(tf_dataset), seed=config.seed)
     tf_dataset = tf_dataset.batch(batch_size, drop_remainder=True)
     tf_dataset = tf_dataset.prefetch(tf.data.experimental.AUTOTUNE)
     repeats = math.ceil((config.max_train_steps * batch_size) / len(tf_dataset))
