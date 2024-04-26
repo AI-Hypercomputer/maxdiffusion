@@ -16,7 +16,6 @@
 
 import os
 import functools
-from absl import app
 import io
 import base64
 from PIL import Image

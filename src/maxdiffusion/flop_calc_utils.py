@@ -43,7 +43,7 @@ def calculate_unet_flops(config,
                                    block_out_channels[0])
   conv_in_flops = conv_in_flops * per_device_batch_size * multiplier
   total_flops+=conv_in_flops
-  
+
   timestep_embedding_flops, t_emb_shape = get_timestep_embedding_flops(block_out_channels[0],
                                                             block_out_channels[0]*4)
   timestep_embedding_flops = timestep_embedding_flops * per_device_batch_size * multiplier
