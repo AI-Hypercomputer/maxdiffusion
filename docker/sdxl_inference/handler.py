@@ -233,7 +233,7 @@ def run_inference(unet_state, vae_state, params, prompt_ids, rng, config, batch_
                                       loop_body_p, (latents, scheduler_state, unet_state))
     images = vae_decode_p(latents, vae_state)
     return images
-  
+
 p_run_inference = jax.jit(
   functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline),
   in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None),
@@ -259,10 +259,10 @@ async def predict(request: Request):
     prompt_ids = get_prompt_ids(prompt, batch_size)
     images = p_run_inference(unet_state, vae_state, params, prompt_ids)
     images = VaeImageProcessor.numpy_to_pil(np.array(images))
-  
+
     retval_images = []
     for image in images:
       retval_images.append(image_to_base64(image))
-  
+
     retval.append({"instance" : instance, "images" : retval_images})
   return {"predictions" : retval}

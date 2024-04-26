@@ -51,7 +51,7 @@ def calculate_unet_flops(config,
 
   # TODO (@jfacevedo) : add addition_embed_type calculations for SDXL
 
-  total_down_blocks_flops = 0       
+  total_down_blocks_flops = 0
   for down_block in down_block_types:
     if down_block == "CrossAttnDownBlock2D":
       down_blocks_flops = get_crossattn_downblocks_flops(sample_shape,
@@ -65,16 +65,16 @@ def calculate_unet_flops(config,
       total_down_blocks_flops += down_blocks_flops
     else:
       raise ValueError(f"{down_block} cannot be found.")
-    
+
     # TODO - midblock
 
-    for up_block in up_block_types:
-      if up_block == "CrossAttnUpBlock2D":
-        up_block_flops = get_crossattn_upblocks_flops()
-      elif up_block == "UpBlock2D":
-        up_blocks_flops = get_upblocks_flops()
-      else:
-        raise ValueError(f"{up_block} cannot be found")
+    # for up_block in up_block_types:
+    #   if up_block == "CrossAttnUpBlock2D":
+    #     up_block_flops = get_crossattn_upblocks_flops()
+    #   elif up_block == "UpBlock2D":
+    #     up_blocks_flops = get_upblocks_flops()
+    #   else:
+    #     raise ValueError(f"{up_block} cannot be found")
 
   breakpoint()
   return conv_in_flops
