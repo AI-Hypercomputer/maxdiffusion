@@ -9,20 +9,8 @@ USER root
 ENV infer_port=8080
 
 # Check if environment variables are set
-RUN if [ -z "$MODEL_ID" ]; then \
-    echo "Error: Environment variables MODEL_ID must be set." \
-    && exit 1; \
-fi
-RUN if [ -z "$REVISION" ]; then \
-    echo "Error: Environment variables REVISION must be set." \
-    && exit 1; \
-fi
-RUN if [ -z "$D_TYPE" ]; then \
-    echo "Error: Environment variables D_TYPE must be set." \
-    && exit 1; \
-fi
-RUN if [ -z "$IMG_RES" ]; then \
-    echo "Error: Environment variables IMG_RES must be set." \
+RUN if [ -z "$MODEL_ID" ] || [ -z "$REVISION" ] || [ -z "$D_TYPE" ]; then \
+    echo "Error: Environment variables MODEL_ID, REVISION, and D_TYPE must be set." \
     && exit 1; \
 fi
 
