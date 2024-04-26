@@ -122,10 +122,17 @@ def extract_info_from_ckpt_name(model_ckpt_name: str, key: str) -> int:
   result = int(info_dict[key])
   return result
 
-def eval_start(config):
+def get_checkpoint_name(config, checkpoint_name=None):
+  if checkpoint_name is None:
+      checkpoint_name = config.pretrained_model_name_or_path
+  return checkpoint_name
+
+def eval_start(config, checkpoint_name=None):
   if jax.process_index() == 0 and config.enable_mllog:
-    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
-    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
     mllogger.start(
       mllog.constants.EVAL_START,
       metadata={
@@ -134,10 +141,11 @@ def eval_start(config):
       },
     )
 
-def eval_end(config):
+def eval_end(config, checkpoint_name=None):
   if jax.process_index() == 0 and config.enable_mllog:
-    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
-    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
     mllogger.end(
       mllog.constants.EVAL_STOP,
       metadata={
@@ -146,10 +154,11 @@ def eval_end(config):
       },
     )
 
-def eval_fid(config, fid: float):
+def eval_fid(config, fid: float, checkpoint_name=None):
   if jax.process_index() == 0 and config.enable_mllog:
-    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
-    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
     mllogger.event(
       mllog.constants.EVAL_ACCURACY,
       value=fid,
@@ -161,10 +170,11 @@ def eval_fid(config, fid: float):
       },
     )
 
-def eval_clip(config, clip_score: float):
+def eval_clip(config, clip_score: float, checkpoint_name=None):
   if jax.process_index() == 0 and config.enable_mllog:
-    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
-    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
     mllogger.event(
       mllog.constants.EVAL_ACCURACY,
       value=clip_score,

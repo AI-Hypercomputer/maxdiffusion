@@ -76,12 +76,13 @@ def load_images(path, captions_df):
      
     return images, prompts
 
-def write_eval_metrics(config, clip_score: float, fid: float):
+def write_eval_metrics(config, clip_score: float, fid: float, checkpoint_name=None):
     if jax.process_index() == 0 and config.enable_mllog:
+        checkpoint_name = mllog_utils.get_checkpoint_name(config, checkpoint_name)
         eval_metrics_path = os.path.join(config.base_output_directory, "eval_metrics.csv")
         metrics = {
-            "step_num": mllog_utils.extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num"),
-            "samples_count": mllog_utils.extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count"),
+            "step_num": mllog_utils.extract_info_from_ckpt_name(checkpoint_name, "step_num"),
+            "samples_count": mllog_utils.extract_info_from_ckpt_name(checkpoint_name, "samples_count"),
             "clip": clip_score,
             "fid": fid,
         }
@@ -93,15 +94,15 @@ def write_eval_metrics(config, clip_score: float, fid: float):
             with tf.io.gfile.GFile(eval_metrics_path, 'a') as f:
                 df.to_csv(f, index=False, header=False)
 
-def eval_scores(config, images_directory=None):
+def eval_scores(config, images_directory=None, checkpoint_name=None):
     batch_size = config.per_device_batch_size * jax.device_count() * 10
 
-    mllog_utils.eval_start(config)
+    mllog_utils.eval_start(config, checkpoint_name)
     #inference happenning here: first generate the images
     if images_directory is None:
         generate.run(config)
         images_directory = config.images_directory
-    mllog_utils.eval_end(config)
+    mllog_utils.eval_end(config, checkpoint_name)
 
     # calculating CLIP:
 
@@ -109,7 +110,7 @@ def eval_scores(config, images_directory=None):
     images, prompts = load_images(images_directory, captions_df)
     
     clip_score = calculate_clip(images, prompts, config)
-    mllog_utils.eval_clip(config, clip_score)
+    mllog_utils.eval_clip(config, clip_score, checkpoint_name)
 
     # calculating FID:
     rng = jax.random.PRNGKey(0)
@@ -128,8 +129,8 @@ def eval_scores(config, images_directory=None):
     mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
-    mllog_utils.eval_fid(config, fid)
-    write_eval_metrics(config, clip_score, fid)
+    mllog_utils.eval_fid(config, fid, checkpoint_name)
+    write_eval_metrics(config, clip_score, fid, checkpoint_name)
     return clip_score, fid
 
 

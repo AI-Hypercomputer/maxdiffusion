@@ -74,7 +74,8 @@ def eval_at_checkpoint(
     vae_state_mesh_shardings,
     pipeline,
     params,
-    metrics):
+    metrics,
+    checkpoint_name):
     training_scheduler = pipeline.scheduler
     training_scheduler_state = params["scheduler"]
     images_directory = os.path.join(config.images_directory, "output")
@@ -89,7 +90,7 @@ def eval_at_checkpoint(
          pipeline,
          params)
 
-    clip, fid = eval.eval_scores(config, images_directory)
+    clip, fid = eval.eval_scores(config, images_directory, checkpoint_name)
     print("clip score is :" + str(clip))
     print("fid score is : " + str(fid))
     metrics['scalar'].update({'FID': fid})
@@ -412,8 +413,7 @@ def train(config):
                     snr_loss_weights = snr_loss_weights / (snr + 1)
                 elif noise_scheduler.config.prediction_type == "epsilon":
                     snr_loss_weights = snr_loss_weights / snr
-                
-                loss = loss * snr_loss_weights
+                loss = loss * snr_loss_weights[:, None, None, None]
                 
             loss = loss.mean()
 
@@ -496,14 +496,22 @@ def train(config):
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
         if step != 0 and samples_count % config.checkpoint_every == 0:
+            checkpoint_name = f"{step_num=}-{samples_count=}"
             if config.eval_at_checkpoint:
                 eval_at_checkpoint(config,
                     f"{str(step * total_train_batch_size)}",
                     unet_state, unet_state_mesh_shardings,
                     vae_state,
                     vae_state_mesh_shardings,
-                    pipeline, params, train_metric)
-            max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, config.checkpoint_dir+f"/{str(step * total_train_batch_size)}/")
+                    pipeline, params, train_metric,
+                    checkpoint_name)
+            max_utils.save_checkpoint(pipeline,
+                                      params,
+                                      unet_state,
+                                      noise_scheduler,
+                                      config,
+                                      os.path.join(config.checkpoint_dir, checkpoint_name))
+            mllog_utils.train_checkpoint_step_log(step_num)
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
         if step == first_profiling_step:
