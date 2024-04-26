@@ -49,8 +49,8 @@ cc.initialize_cache(os.path.expanduser("~/jax_cache"))
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 pyconfig.initialize([None,os.path.join(THIS_DIR,'src/maxdiffusion','configs','base_xl.yml'),
-      "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
-      "revision=refs/pr/95","dtype=bfloat16","resolution=1024",
+      f"pretrained_model_name_or_path={os.environ['MODEL_ID']}",
+      f"revision={os.environ['REVISION']}",f"dtype={os.environ['MODEL_ID']}",f"resolution={os.environ['RESOLUTION']}",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=9",
       "num_inference_steps=20","seed=47","per_device_batch_size=1",

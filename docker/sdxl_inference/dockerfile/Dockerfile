@@ -1,8 +1,35 @@
 FROM python:3.10
 
+ARG MODEL_ID
+ARG REVISION
+ARG D_TYPE
+
 USER root
 
 ENV infer_port=8080
+
+# Check if environment variables are set
+RUN if [ -z "$MODEL_ID" ]; then \
+    echo "Error: Environment variables MODEL_ID must be set." \
+    && exit 1; \
+fi
+RUN if [ -z "$REVISION" ]; then \
+    echo "Error: Environment variables REVISION must be set." \
+    && exit 1; \
+fi
+RUN if [ -z "$D_TYPE" ]; then \
+    echo "Error: Environment variables D_TYPE must be set." \
+    && exit 1; \
+fi
+RUN if [ -z "$IMG_RES" ]; then \
+    echo "Error: Environment variables IMG_RES must be set." \
+    && exit 1; \
+fi
+
+ENV MODEL_ID = ${MODEL_ID}
+ENV REVISION = ${REVISION}
+ENV D_TYPE = ${D_TYPE}
+ENV IMAGE_RES = ${IMAGE_RES}
 
 # Install libraries
 ENV PIP_ROOT_USER_ACTION=ignore
@@ -21,7 +48,6 @@ pip install -r requirements.txt && \
 pip3 install -e .
 
 WORKDIR maxdiffusion
-
 
 # Copy model artifacts.
 RUN cp docker/sdxl_inference/model_loader.py .
