@@ -145,9 +145,9 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         # init input tensors
         no_devices = jax.device_count()
         sample_shape = (no_devices, self.in_channels, self.sample_size, self.sample_size)
-        sample = jnp.zeros(sample_shape, dtype=jnp.bfloat16)
+        sample = jnp.zeros(sample_shape, dtype=jnp.float32)
         timesteps = jnp.ones((no_devices,), dtype=jnp.int32)
-        encoder_hidden_states = jnp.zeros((no_devices, 1, self.cross_attention_dim), dtype=jnp.bfloat16)
+        encoder_hidden_states = jnp.zeros((no_devices, 1, self.cross_attention_dim), dtype=jnp.float32)
 
         params_rng, dropout_rng = jax.random.split(rng)
         rngs = {"params": params_rng, "dropout": dropout_rng}
