@@ -10,14 +10,13 @@ ENV infer_port=8080
 
 # Check if environment variables are set
 RUN if [ -z "$MODEL_ID" ] || [ -z "$REVISION" ] || [ -z "$D_TYPE" ]; then \
-    echo "Error: Environment variables MODEL_ID, REVISION, and D_TYPE must be set." \
+    echo "Error: Environment variables MODEL_ID, and REVISION must be set." \
     && exit 1; \
 fi
 
 ENV MODEL_ID = ${MODEL_ID}
 ENV REVISION = ${REVISION}
 ENV D_TYPE = ${D_TYPE}
-ENV IMAGE_RES = ${IMAGE_RES}
 
 # Install libraries
 ENV PIP_ROOT_USER_ACTION=ignore
