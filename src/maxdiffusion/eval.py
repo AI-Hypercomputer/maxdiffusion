@@ -20,7 +20,7 @@ from jax.experimental.compilation_cache import compilation_cache as cc
 from maxdiffusion.metrics.fid import inception
 from maxdiffusion.metrics.fid import fid_score
 
-from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoderFlax
+from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoderFlax, CLIPEncoderTorch
 from typing import Sequence
 from absl import app
 from maxdiffusion import (
@@ -58,27 +58,46 @@ def load_stats(file_path):
 
 def calculate_clip(images, prompts):
     clip_encoder = CLIPEncoderFlax()
+    clip_encoder_torch = CLIPEncoderTorch()
     
     clip_scores = []
+    torch_scores = []
+    not_matched = 0
     for i in tqdm(range(0, len(images))):
-        score = clip_encoder.get_clip_score(prompts[i], images[i])
-        clip_scores.append(score)
-        
+        with jax.default_device(jax.devices('tpu')[0]):
+            score = clip_encoder.get_clip_score(prompts[i], images[i])
+            clip_scores.append(score)
 
-    overall_clip_score = jnp.mean(jnp.stack(clip_scores))
-    return np.array(overall_clip_score)
+        torch_score = clip_encoder_torch.get_clip_score(prompts[i], images[i])
+        torch_scores.append(torch_score)
+
+        if not np.allclose(np.array(score), torch_score.numpy(), atol=1e-3):
+            not_matched += 1
+            print(f"Scores did not match. Jax {score}. Torch {torch_score}. Diff {np.abs(np.array(score) - torch_score.numpy())}")
+    
+    print(f'{not_matched} scores did not match')
+    overall_clip_score = np.array(jnp.mean(jnp.stack(clip_scores)))
+    overall_torch_score = torch.mean(torch.stack(torch_scores)).numpy()
+
+    if not np.allclose(overall_clip_score, overall_torch_score, atol=1e-3):
+        print(f"Overall scores did not match. Jax {overall_clip_score}. Torch {overall_torch_score}. Diff {np.abs(overall_clip_score - overall_torch_score)}")
+
+    return overall_clip_score
+
 
 def load_images(path, captions_df):
     images = []
     prompts = []
-    for f in tqdm(os.listdir(path)):
-        img = Image.open(os.path.join(path, f))
+    captions_df = captions_df
+    for f in tqdm(tf.io.gfile.listdir(path)):
+        img = Image.open(tf.io.gfile.GFile(os.path.join(path, f), 'rb'))
         img_id = f[6:len(f)-4]
         pmt = captions_df.query(f'image_id== {img_id}')['caption'].to_string(index=False)
         images.append(img)
         prompts.append(pmt)
-     
+    print(f'Evaluation on {len(images)} images')
     return images, prompts
+
 
 def write_eval_metrics(config, clip_score: float, fid: float):
     if jax.process_index() == 0:
@@ -100,19 +119,21 @@ def write_eval_metrics(config, clip_score: float, fid: float):
 def eval_scores(config, images_directory=None):
     batch_size = config.per_device_batch_size * jax.device_count() * 10
 
-    mllog_utils.eval_start(config)
-    #inference happenning here: first generate the images
-    if images_directory is None:
-        generate.run(config)
-        images_directory = config.images_directory
-    mllog_utils.eval_end(config)
+    # mllog_utils.eval_start(config)
+    # #inference happenning here: first generate the images
+    # if images_directory is None:
+    #     generate.run(config)
+    #     images_directory = config.images_directory
+    # mllog_utils.eval_end(config)
 
     # calculating CLIP:
 
     captions_df = load_captions(config.caption_coco_file)
-    images, prompts = load_images(images_directory, captions_df)
+    images, prompts = load_images(config.images_directory, captions_df)
     
     clip_score = calculate_clip(images, prompts)
+    print('All matched')
+    return clip_score, None
     mllog_utils.eval_clip(config, clip_score)
 
     # calculating FID:
