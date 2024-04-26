@@ -2,7 +2,7 @@
 
 export PLATFORM=GKE
 
-set -e
+set -ex
 
 echo "Adjust Network settings and apply non cache copy"
 
@@ -55,31 +55,52 @@ ethtool -K "${dev_name}" tx-nocache-copy on
 
 echo "rto_setup.sh finished"
 
-OUT_DIR=$1
-
 export JAX_TRACEBACK_FILTERING=off
 export LIBTPU_INIT_ARGS='--xla_tpu_enable_async_collective_fusion_fuse_all_gather=true --xla_tpu_megacore_fusion_allow_ags=false --xla_enable_async_collective_permute=true --xla_tpu_enable_ag_backward_pipelining=true --xla_tpu_enable_data_parallel_all_reduce_opt=true --xla_tpu_data_parallel_opt_different_sized_ops=true --xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_gather=true'
+export TPU_STDERR_LOG_LEVEL=0
+export TPU_MIN_LOG_LEVEL=0
+export TF_CPP_MIN_LOG_LEVEL=0
 
-
-#cd /maxdiffusion
-git clone -b  mlperf_4  https://github.com/google/maxdiffusion maxdiffusion 
+git clone -b mlperf_4 https://github.com/google/maxdiffusion maxdiffusion
 cd maxdiffusion
 
 pip install .
-mkdir generated_images
-mkdir output
- 
-checkpoint_dir=$2
-step=$3
+pip install git+https://github.com/mlperf/logging.git
 
-TPU_STDERR_LOG_LEVEL=0 TPU_MIN_LOG_LEVEL=0 TF_CPP_MIN_LOG_LEVEL=0 python -m src.maxdiffusion.eval src/maxdiffusion/configs/base_2_base.yml run_name=v5p-128-eval per_device_batch_size=16 \
-pretrained_model_name_or_path="${checkpoint_dir}/${step}/" \
-caption_coco_file="/app/datasets/coco2014/val2014_30k_padded.tsv" \
-images_directory="/app/maxdiffusion/generated_images/${step}" \
+# checkpoint interval for num of pics consumed
+CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-512000}
+
+PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-4}
+NUM_CHECKPOINTS=${NUM_CHECKPOINTS:-10}
+NUM_DEVICES=${NUM_DEVICES:-64}
+MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-$(( $CHECKPOINT_EVERY * $NUM_CHECKPOINTS / $PER_DEVICE_BATCH_SIZE / $NUM_DEVICES ))}
+
+# training
+RUN_NAME=${RUN_NAME:-"mlperf_e2e"}
+OUTPUT_DIRECTORY=${OUTPUT_DIRECTORY:-gs://mlperf-exp/$USER/sd}
+python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=$RUN_NAME base_output_directory=$OUTPUT_DIRECTORY train_data_dir=gs://jfacevedo-maxdiffusion-v5p/laion400m/processed/laion400m_moments-tfrec checkpoint_every=${CHECKPOINT_EVERY} max_train_steps=$MAX_TRAIN_STEPS 2>&1 | tee /tmp/log
+sleep 30
+
+# inferencing and evaluation
+EVAL_OUT_DIR=/tmp/outputs
+mkdir -p $EVAL_OUT_DIR
+for checkpoint_dir in $(gsutil ls $OUTPUT_DIRECTORY/$RUN_NAME/checkpoints/); do
+  checkpoint_name=$(basename $checkpoint_dir)
+  mkdir -p $EVAL_OUT_DIR/$checkpoint_name
+  python -m src.maxdiffusion.eval src/maxdiffusion/configs/base_2_base.yml run_name=$RUN_NAME per_device_batch_size=16 \
+pretrained_model_name_or_path="${checkpoint_dir}" \
+caption_coco_file="gs://mlperf-exp/sd-copy/cocodata/val2014_30k_padded.tsv" \
+images_directory="$EVAL_OUT_DIR/$checkpoint_name" \
 stat_output_directory="output/" \
 stat_output_file="output/stats.npz" \
-stat_coco_file="/app/datasets/coco2014/val2014_30k_stats.npz" \
+stat_coco_file="gs://mlperf-exp/sd-copy/cocodata/val2014_30k_stats.npz" \
 clip_cache_dir="clip_cache_dir" \
-base_output_directory=${OUT_DIR}
+base_output_directory=$OUTPUT_DIRECTORY 2>&1 | tee -a /tmp/log
+  sleep 30
+done
 
-gsutil cp -r generated_images ${OUT_DIR}/output/
+if [[ $(grep "MLLOG" /tmp/log | wc -l) -gt 0 ]];then
+  # TODO: remove --target-fid=500 --target-clip=0 once solving convergence issue
+  python src/maxdiffusion/report_end.py --metrics-path=${OUTPUT_DIRECTORY}/eval_metrics.csv --mllog-path=/tmp/log --target-fid=500 --target-clip=0 2>&1 | tee -a /tmp/log
+  gsutil cp /tmp/log ${OUTPUT_DIRECTORY}/log_${MEGASCALE_SLICE_ID}_${TPU_WORKER_ID}
+fi
