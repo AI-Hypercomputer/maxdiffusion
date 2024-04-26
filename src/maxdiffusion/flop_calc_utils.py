@@ -33,7 +33,7 @@ def calculate_unet_flops(config,
   print("WARNING: SDXL not currently supported!")
   per_device_batch_size = config.per_device_batch_size
   down_block_types = unet_config["down_block_types"]
-  up_block_types = unet_config["up_block_types"]
+  # up_block_types = unet_config["up_block_types"]
   block_out_channels = unet_config["block_out_channels"]
 
   total_flops = 0
