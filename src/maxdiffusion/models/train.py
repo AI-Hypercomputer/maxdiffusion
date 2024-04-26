@@ -362,7 +362,8 @@ def train(config):
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
-
+            noisy_latents = noisy_latents.astype(jnp.bfloat16)
+            encoder_hidden_states = encoder_hidden_states.astype(jnp.bfloat16)
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
                 {"params": unet_params}, noisy_latents, timesteps, encoder_hidden_states, train=True
