@@ -14,9 +14,9 @@ RUN if [ -z "$MODEL_ID" ] || [ -z "$REVISION" ] || [ -z "$D_TYPE" ]; then \
     && exit 1; \
 fi
 
-ENV MODEL_ID = ${MODEL_ID}
-ENV REVISION = ${REVISION}
-ENV D_TYPE = ${D_TYPE}
+ENV MODEL_ID=${MODEL_ID}
+ENV REVISION=${REVISION}
+ENV D_TYPE=${D_TYPE}
 
 # Install libraries
 ENV PIP_ROOT_USER_ACTION=ignore
