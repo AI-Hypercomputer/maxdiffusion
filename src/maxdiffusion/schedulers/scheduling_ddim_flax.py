@@ -120,14 +120,14 @@ class FlaxDDIMScheduler(FlaxSchedulerMixin, ConfigMixin):
         set_alpha_to_one: bool = True,
         steps_offset: int = 0,
         prediction_type: str = "epsilon",
+        rescale_zero_terminal_snr: bool = True,
         dtype: jnp.dtype = jnp.float32,
     ):
         self.dtype = dtype
 
     def create_state(self, common: Optional[CommonSchedulerState] = None) -> DDIMSchedulerState:
         if common is None:
-            common = CommonSchedulerState.create(self)
-
+            common = CommonSchedulerState.create(self, self.rescale_zero_terminal_snr)
         # At every step in ddim, we are looking into the previous alphas_cumprod
         # For the final step, there is no previous alphas_cumprod because we are already at 0
         # `set_alpha_to_one` decides whether we set this parameter simply to one or
@@ -163,7 +163,7 @@ class FlaxDDIMScheduler(FlaxSchedulerMixin, ConfigMixin):
         return sample
 
     def set_timesteps(
-        self, state: DDIMSchedulerState, num_inference_steps: int, shape: Tuple = ()
+        self, state: DDIMSchedulerState, num_inference_steps: int, shape: Tuple = (), timestep_spacing="trailing"
     ) -> DDIMSchedulerState:
         """
         Sets the discrete timesteps used for the diffusion chain. Supporting function to be run before inference.
@@ -174,11 +174,15 @@ class FlaxDDIMScheduler(FlaxSchedulerMixin, ConfigMixin):
             num_inference_steps (`int`):
                 the number of diffusion steps used when generating samples with a pre-trained model.
         """
-        step_ratio = self.config.num_train_timesteps // num_inference_steps
-        # creates integer timesteps by multiplying by ratio
-        # rounding to avoid issues when num_inference_step is power of 3
-        timesteps = (jnp.arange(0, num_inference_steps) * step_ratio).round()[::-1] + self.config.steps_offset
-
+        if timestep_spacing == "leading":
+            step_ratio = self.config.num_train_timesteps // num_inference_steps
+            # creates integer timesteps by multiplying by ratio
+            # rounding to avoid issues when num_inference_step is power of 3
+            timesteps = (jnp.arange(0, num_inference_steps) * step_ratio).round()[::-1] + self.config.steps_offset
+        elif timestep_spacing == "trailing":
+            step_ratio = self.config.num_train_timesteps / num_inference_steps
+            timesteps = (jnp.arange(self.config.num_train_timesteps, 0, -step_ratio)).round()
+            timesteps -=1
         return state.replace(
             num_inference_steps=num_inference_steps,
             timesteps=timesteps,

@@ -29,27 +29,36 @@ from maxdiffusion.max_utils import (
   get_dtype,
   get_states,
   device_put_replicated,
-  get_flash_block_sizes
+  get_flash_block_sizes,
+  override_scheduler_config,
+  create_scheduler
 )
 from maxdiffusion import pyconfig
 from absl import app
 from maxdiffusion import (
   FlaxStableDiffusionPipeline,
-  FlaxDDIMScheduler
 )
 from flax.linen import partitioning as nn_partitioning
-from flax.training.common_utils import shard
-from flax.jax_utils import replicate
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh, PositionalSharding
-from maxdiffusion.image_processor import VaeImageProcessor
-from PIL import Image
-
-from multiprocessing import Process 
+from maxdiffusion.image_processor import VaeImageProcessor 
 import tensorflow as tf
 import pandas as pd
 
 cc.initialize_cache(os.path.expanduser("~/jax_cache"))
+
+def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
+    """
+    Rescale `noise_cfg` according to `guidance_rescale`. Based on findings of [Common Diffusion Noise Schedules and
+    Sample Steps are Flawed](https://arxiv.org/pdf/2305.08891.pdf). See Section 3.4
+    """
+    std_text = jnp.std(noise_pred_text, axis=list(range(1, jnp.ndim(noise_pred_text))), keepdims=True)
+    std_cfg = jnp.std(noise_cfg, axis=list(range(1, jnp.ndim(noise_cfg))), keepdims=True)
+    # rescale the results from guidance (fixes overexposure)
+    noise_pred_rescaled = noise_cfg * (std_text / std_cfg)
+    # mix with the original results from guidance by factor guidance_rescale to avoid "plain looking" images
+    noise_cfg = guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
+    return noise_cfg
 
 def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale):
     latents, scheduler_state, state = args
@@ -69,6 +78,10 @@ def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale):
 
     noise_pred_uncond, noise_prediction_text = jnp.split(noise_pred, 2, axis=0)
     noise_pred = noise_pred_uncond + guidance_scale * (noise_prediction_text - noise_pred_uncond)
+
+    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+    noise_pred = rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale=0.7)
+
     latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
     return latents, scheduler_state, state
@@ -104,7 +117,8 @@ def get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negat
     scheduler_state = pipeline.scheduler.set_timesteps(
         params["scheduler"],
         num_inference_steps=num_inference_steps,
-        shape=latents.shape
+        shape=latents.shape,
+        timestep_spacing=config.timestep_spacing
     )
     latents = latents * params["scheduler"].init_noise_sigma
 
@@ -191,9 +205,8 @@ def run(config,
         vae_state_mesh_shardings) = get_states(mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False)
         del params["vae"]
         del params["unet"]
-    scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
-        config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
-    )
+    
+    scheduler, scheduler_state = create_scheduler(config.inference_scheduler, pipeline.scheduler.config, config)
     pipeline.scheduler = scheduler
     params["scheduler"] = scheduler_state
 
@@ -202,7 +215,6 @@ def run(config,
         in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None, None),
         out_shardings=None,
     )
-
 
     def parse_tsv_line(line):
     # Customize this function to parse your TSV file based on your specific format

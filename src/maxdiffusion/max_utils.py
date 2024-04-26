@@ -17,8 +17,10 @@
 
 # pylint: disable=bare-except, consider-using-generator
 """ Common Max Utils needed by multiple modules"""
+import sys
 import functools
 from pathlib import Path
+import shutil
 import json
 import yaml
 import os
@@ -34,9 +36,10 @@ from maxdiffusion import (
   checkpointing,
   max_logging,
   FlaxAutoencoderKL,
-  FlaxStableDiffusionPipeline
+  FlaxStableDiffusionPipeline,
+  FlaxDDIMScheduler,
+  FlaxDDPMScheduler
 )
-from transformers import FlaxCLIPTextModel, CLIPImageProcessor
 from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax import linen as nn
 from flax.linen import partitioning as nn_partitioning
@@ -188,8 +191,9 @@ def download_blobs(source_gcs_folder, local_destination):
     download_to_filename = os.path.join(directory, file_split[-1])
     if not os.path.isfile(download_to_filename):
       blob.download_to_filename(download_to_filename)
-  
-  return "/".join(directory.split("/")[:-1])
+  return_filepath = [local_destination]
+  return_filepath.extend(file_split[0:2])
+  return "/".join(return_filepath)
 
 def upload_blob(destination_gcs_name, source_file_name):
   """Uploads a file to a GCS location"""
@@ -511,6 +515,9 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
   )
   if jax.process_index() == 0:
     walk_and_upload_blobs(config, local_output_dir)
+  
+  # delete files in output_dir to save space
+  shutil.rmtree(local_output_dir)
 
   # Clean up uneeded references
   params["vae"] = None
@@ -522,3 +529,24 @@ def get_memory_allocations():
     m_stats = device.memory_stats()
     max_logging.log(f'device : {device.process_index},'
                     f'bytes in use: {m_stats["bytes_in_use"] / gb} / {m_stats["bytes_limit"] / gb} GB')
+
+def override_scheduler_config(scheduler_config, config):
+  scheduler_config["prediction_type"] = config.prediction_type
+  return scheduler_config
+
+def create_scheduler(scheduler_type, scheduler_config, config):
+  if len(config.prediction_type) > 0:
+    scheduler_config["prediction_type"] = config.prediction_type 
+  if scheduler_type == "ddim":
+    cls = FlaxDDIMScheduler
+  elif scheduler_type == "ddpm":
+    cls = FlaxDDPMScheduler
+  elif scheduler_type == "":
+    # get the checkpoint's scheduler
+    cls = getattr(sys.modules[__name__], scheduler_config._class_name)
+  else:
+    raise Exception(f"Sampler type {scheduler_type} not supported")
+  
+  scheduler = cls.from_config(scheduler_config)
+  scheduler_state = scheduler.create_state()
+  return scheduler, scheduler_state

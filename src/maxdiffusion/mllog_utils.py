@@ -20,26 +20,26 @@ import os
 
 mllogger = mllog.get_mllogger()
 
-def train_init_start():
-  if jax.process_index() == 0:
+def train_init_start(config):
+  if jax.process_index() == 0 and config.enable_mllog:
     mllogger.event(mllog.constants.CACHE_CLEAR)
     mllogger.start(mllog.constants.INIT_START)
 
-def train_init_stop():
-  if jax.process_index() == 0:
+def train_init_stop(config):
+  if jax.process_index() == 0 and config.enable_mllog:
     mllogger.end(mllog.constants.INIT_STOP)
 
-def train_run_start():
-  if jax.process_index() == 0:
+def train_run_start(config):
+  if jax.process_index() == 0 and config.enable_mllog:
     mllogger.start(mllog.constants.RUN_START)
 
-def train_run_end():
-  if jax.process_index() == 0:
+def train_run_end(config):
+  if jax.process_index() == 0 and config.enable_mllog:
     mllogger.end(mllog.constants.RUN_STOP, metadata={'status': 'success'})
 
 def train_init_print(config, device: str = 'tpu-v5p'):
   """an initial mllog for mlperf sumbission compliance check."""
-  if jax.process_index() == 0:
+  if jax.process_index() == 0 and config.enable_mllog:
     mllogger.event(mllog.constants.SUBMISSION_ORG, 'Google')
     mllogger.event(mllog.constants.SUBMISSION_PLATFORM, device)
     mllogger.event(mllog.constants.SUBMISSION_STATUS, mllog.constants.CLOUD)
@@ -66,8 +66,8 @@ def train_init_print(config, device: str = 'tpu-v5p'):
 
     mllogger.event(mllog.constants.SEED, config.seed)
 
-def train_step_start(step_num, samples_count):
-  if jax.process_index() == 0:
+def train_step_start(config, step_num, samples_count):
+  if jax.process_index() == 0 and config.enable_mllog:
     mllogger.start(
       mllog.constants.BLOCK_START,
       value="training_step",
@@ -77,8 +77,8 @@ def train_step_start(step_num, samples_count):
       },
     )
 
-def train_step_end(step_num, samples_count, loss, lr):
-  if jax.process_index() == 0:
+def train_step_end(config, step_num, samples_count, loss, lr):
+  if jax.process_index() == 0 and config.enable_mllog:
     mllogger.end(
       mllog.constants.BLOCK_STOP,
       value="training_step",
@@ -96,10 +96,10 @@ def maybe_train_step_log(config, start_step, step_num, samples_count, metric, tr
     loss = np.asarray(metric['scalar']['learning/loss'])
     lr = np.asarray(metric['scalar']['learning/current_learning_rate'])
 
-    train_step_end(step_num, samples_count, loss, lr)
+    train_step_end(config, step_num, samples_count, loss, lr)
     # start new tracking except the last step
     if step_num < config.max_train_steps:
-      train_step_start(step_num, samples_count)
+      train_step_start(config, step_num, samples_count)
 
 def train_checkpoint_step_log(step_num: int):
   if jax.process_index() == 0:
@@ -122,10 +122,17 @@ def extract_info_from_ckpt_name(model_ckpt_name: str, key: str) -> int:
   result = int(info_dict[key])
   return result
 
-def eval_start(config):
-  if jax.process_index() == 0:
-    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
-    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+def get_checkpoint_name(config, checkpoint_name=None):
+  if checkpoint_name is None:
+      checkpoint_name = config.pretrained_model_name_or_path
+  return checkpoint_name
+
+def eval_start(config, checkpoint_name=None):
+  if jax.process_index() == 0 and config.enable_mllog:
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
     mllogger.start(
       mllog.constants.EVAL_START,
       metadata={
@@ -134,10 +141,11 @@ def eval_start(config):
       },
     )
 
-def eval_end(config):
-  if jax.process_index() == 0:
-    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
-    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+def eval_end(config, checkpoint_name=None):
+  if jax.process_index() == 0 and config.enable_mllog:
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
     mllogger.end(
       mllog.constants.EVAL_STOP,
       metadata={
@@ -146,10 +154,11 @@ def eval_end(config):
       },
     )
 
-def eval_fid(config, fid: float):
-  if jax.process_index() == 0:
-    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
-    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+def eval_fid(config, fid: float, checkpoint_name=None):
+  if jax.process_index() == 0 and config.enable_mllog:
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
     mllogger.event(
       mllog.constants.EVAL_ACCURACY,
       value=fid,
@@ -161,10 +170,11 @@ def eval_fid(config, fid: float):
       },
     )
 
-def eval_clip(config, clip_score: float):
-  if jax.process_index() == 0:
-    step_num = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "step_num")
-    samples_count = extract_info_from_ckpt_name(config.pretrained_model_name_or_path, "samples_count")
+def eval_clip(config, clip_score: float, checkpoint_name=None):
+  if jax.process_index() == 0 and config.enable_mllog:
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
     mllogger.event(
       mllog.constants.EVAL_ACCURACY,
       value=clip_score,

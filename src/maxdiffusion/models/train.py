@@ -51,22 +51,31 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
 )
 from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 
-from maxdiffusion import FlaxDDIMScheduler
-from maxdiffusion.generate import run_inference, tokenize, save_process
-
 TOTAL_TRAIN_SAMPLES = 6513144
 TOTAL_EVAL_SAMPLES = 30000
 
-def eval_at_checkpoint(config,
-         checkpoint_number,
-         unet_state,
-         unet_state_mesh_shardings,
-         vae_state,
-         vae_state_mesh_shardings,
-         pipeline,
-         params,
-         mesh,
-         rng):
+def compute_snr(scheduler_state, timesteps):
+    alphas_cumprod = scheduler_state.common.alphas_cumprod
+    sqrt_alphas_cumprod = alphas_cumprod**0.5
+    sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
+
+    alpha = sqrt_alphas_cumprod[timesteps]
+    sigma = sqrt_one_minus_alphas_cumprod[timesteps]
+    # Compute SNR.
+    snr = (alpha / sigma) ** 2
+    return snr
+
+def eval_at_checkpoint(
+    config,
+    checkpoint_number,
+    unet_state,
+    unet_state_mesh_shardings,
+    vae_state,
+    vae_state_mesh_shardings,
+    pipeline,
+    params,
+    metrics,
+    checkpoint_name):
     training_scheduler = pipeline.scheduler
     training_scheduler_state = params["scheduler"]
     images_directory = os.path.join(config.images_directory, "output")
@@ -81,9 +90,11 @@ def eval_at_checkpoint(config,
          pipeline,
          params)
 
-    clip, fid = eval.eval_scores(config, images_directory)
+    clip, fid = eval.eval_scores(config, images_directory, checkpoint_name)
     print("clip score is :" + str(clip))
     print("fid score is : " + str(fid))
+    metrics['scalar'].update({'FID': fid})
+    metrics['scalar'].update({'CLIP' : clip})
     if config.upload_images:
         max_utils.walk_and_upload_gen_images(config, images_directory, checkpoint_number)
     pipeline.scheduler = training_scheduler
@@ -262,9 +273,8 @@ def train(config):
     )
     params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
-    noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
-        revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
-
+    # TODO - add unit test to verify scheduler changes.
+    noise_scheduler, noise_scheduler_state = max_utils.create_scheduler(config.training_scheduler, pipeline.scheduler.config, config)
     pipeline.scheduler = noise_scheduler
     params["scheduler"] = noise_scheduler_state
 
@@ -285,11 +295,13 @@ def train(config):
         eps=config.adam_eps,
         weight_decay=config.adam_weight_decay,
     )
-
-    tx = optax.chain(
-        optax.clip_by_global_norm(1),
-        adamw,
-    )
+    if config.max_grad_norm == 0:
+       tx = adamw
+    else:
+        tx = optax.chain(
+            optax.clip_by_global_norm(config.max_grad_norm),
+            adamw,
+        )
 
     (unet_state,
     unet_state_mesh_shardings,
@@ -349,7 +361,17 @@ def train(config):
 
             # Sample noise that we'll add to the latents
             noise_rng, timestep_rng = jax.random.split(sample_rng)
+            noise_rng, offset_rng, peturbation_rng = jax.random.split(noise_rng, num=3)
             noise = jax.random.normal(noise_rng, latents.shape)
+
+            # noise offset
+            if config.noise_offset > 0:
+                noise += config.noise_offset * jax.random.normal(offset_rng, (latents.shape[0], latents.shape[1], 1, 1))
+
+            # input perturbation
+            if config.input_peturbation > 0:
+                new_noise = noise + config.input_peturbation * jax.random.normal(peturbation_rng, noise.shape)
+
             # Sample a random timestep for each image
             bsz = latents.shape[0]
             timesteps = jax.random.randint(
@@ -361,7 +383,10 @@ def train(config):
 
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
-            noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
+            if config.input_peturbation > 0:
+                noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, new_noise, timesteps)
+            else:
+               noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
 
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
@@ -369,13 +394,27 @@ def train(config):
             ).sample
 
             # Get the target for loss depending on the prediction type
-            if noise_scheduler.config.prediction_type == "epsilon":
-                target = noise
-            elif noise_scheduler.config.prediction_type == "v_prediction":
+            if noise_scheduler.config.prediction_type == "v_prediction":
                 target = noise_scheduler.get_velocity(noise_scheduler_state, latents, noise, timesteps)
+            elif noise_scheduler.config.prediction_type == "epsilon":
+                target = noise
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+            
+            # TODO  (Optional): L = lambda * (target - model_pred) ** 2 from
+            # https://arxiv.org/pdf/2305.08891 3.2 (12)
             loss = (target - model_pred) ** 2
+
+            # snr
+            if config.snr_gamma > 0:
+                snr = jnp.array(compute_snr(noise_scheduler_state, timesteps))
+                snr_loss_weights = jnp.where(snr < config.snr_gamma, snr, jnp.ones_like(snr) * config.snr_gamma)
+                if noise_scheduler.config.prediction_type == "v_prediction":
+                    snr_loss_weights = snr_loss_weights / (snr + 1)
+                elif noise_scheduler.config.prediction_type == "epsilon":
+                    snr_loss_weights = snr_loss_weights / snr
+                loss = loss * snr_loss_weights[:, None, None, None]
+                
             loss = loss.mean()
 
             return loss
@@ -417,7 +456,13 @@ def train(config):
         max_logging.log(f"  Instantaneous batch size per device = {config.per_device_batch_size}")
         max_logging.log(f"  Total train batch size (w. parallel & distributed) = {total_train_batch_size}")
         max_logging.log(f"  Total optimization steps = {config.max_train_steps}")
-
+        max_logging.log(f"  Scheduler config = {pipeline.scheduler.config}")
+        if config.noise_offset > 0:
+            max_logging.log(f"  Noise offset = {config.noise_offset}")
+        if config.input_peturbation > 0:
+            max_logging.log(f"  Input Peturbation = {config.input_peturbation}")
+        if config.snr_gamma > 0:
+            max_logging.log(f"  SNR Gamma = {config.snr_gamma}")
     last_step_completion = datetime.datetime.now()
 
     local_metrics_file = open(config.metrics_file, 'a', encoding="utf8") if config.metrics_file else None
@@ -433,9 +478,9 @@ def train(config):
 
     start_step = get_first_step(unet_state)
     mllog_utils.train_init_print(config)
-    mllog_utils.train_init_stop()
-    mllog_utils.train_run_start()
-    mllog_utils.train_step_start(start_step, samples_count=0)
+    mllog_utils.train_init_stop(config)
+    mllog_utils.train_run_start(config)
+    mllog_utils.train_step_start(config, start_step, samples_count=0)
     # for checkpointing
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
@@ -451,16 +496,22 @@ def train(config):
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
         if step != 0 and samples_count % config.checkpoint_every == 0:
-           if config.eval_at_checkpoint:
-              eval_at_checkpoint(config,
-                   f"{str(step * total_train_batch_size)}",
-                   unet_state, unet_state_mesh_shardings,
-                   vae_state,
-                   vae_state_mesh_shardings,
-                   pipeline, params, mesh, rng)
-           checkpoint_name = f"{step_num=}-{samples_count=}"
-           max_utils.save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, os.path.join(config.checkpoint_dir, checkpoint_name))
-           mllog_utils.train_checkpoint_step_log(step_num)
+            checkpoint_name = f"{step_num=}-{samples_count=}"
+            if config.eval_at_checkpoint:
+                eval_at_checkpoint(config,
+                    f"{str(step * total_train_batch_size)}",
+                    unet_state, unet_state_mesh_shardings,
+                    vae_state,
+                    vae_state_mesh_shardings,
+                    pipeline, params, train_metric,
+                    checkpoint_name)
+            max_utils.save_checkpoint(pipeline,
+                                      params,
+                                      unet_state,
+                                      noise_scheduler,
+                                      config,
+                                      os.path.join(config.checkpoint_dir, checkpoint_name))
+            mllog_utils.train_checkpoint_step_log(step_num)
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
         if step == first_profiling_step:
@@ -472,11 +523,11 @@ def train(config):
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
-    mllog_utils.train_init_start()
-    max_logging.log(f"Found {jax.device_count()} devices.")
-    cc.initialize_cache(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
+    mllog_utils.train_init_start(config)
+    max_logging.log(f"Found {jax.device_count()} devices.")
+    cc.initialize_cache(os.path.expanduser("~/jax_cache"))
     validate_train_config(config)
     train(config)
 if __name__ == "__main__":
