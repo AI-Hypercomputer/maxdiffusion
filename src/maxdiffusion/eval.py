@@ -52,12 +52,12 @@ def load_stats(file_path):
     return sigma, mu
 
 
-def calculate_clip(images, prompts, config):
+def calculate_clip(images_prompts, config):
     clip_encoder = CLIPEncoderFlax(pretrained=config.clip_model_name_or_path)
     
     clip_scores = []
-    for i in tqdm(range(0, len(images))):
-        score = clip_encoder.get_clip_score(prompts[i], images[i])
+    for i in tqdm(range(0, len(images_prompts))):
+        score = clip_encoder.get_clip_score(images_prompts[i][0], images_prompts[i][1])
         clip_scores.append(score)
         
 
@@ -65,16 +65,14 @@ def calculate_clip(images, prompts, config):
     return np.array(overall_clip_score)
 
 def load_images(path, captions_df):
-    images = []
-    prompts = []
+    images_prompts = []
     for f in tqdm(os.listdir(path)):
         img = Image.open(os.path.join(path, f))
         img_id = f[6:len(f)-4]
         pmt = captions_df.query(f'image_id== {img_id}')['caption'].to_string(index=False)
-        images.append(img)
-        prompts.append(pmt)
+        images_prompts.append((pmt, img))
      
-    return images, prompts
+    return images_prompts
 
 def write_eval_metrics(config, clip_score: float, fid: float, checkpoint_name=None):
     if jax.process_index() == 0 and config.enable_mllog:
@@ -107,9 +105,10 @@ def eval_scores(config, images_directory=None, checkpoint_name=None):
     # calculating CLIP:
 
     captions_df = load_captions(config.caption_coco_file)
-    images, prompts = load_images(images_directory, captions_df)
+    images_prompts = load_images(images_directory, captions_df)
     
-    clip_score = calculate_clip(images, prompts, config)
+    clip_score = calculate_clip(images_prompts, config)
+    print(f"clip score is {clip_score}")
     mllog_utils.eval_clip(config, clip_score, checkpoint_name)
 
     # calculating FID:
