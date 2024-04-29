@@ -28,8 +28,10 @@ from maxdiffusion.max_utils import (
   create_device_mesh,
   get_dtype,
   get_states,
+  activate_profiler,
+  deactivate_profiler,
   device_put_replicated,
-  get_flash_block_sizes
+  get_flash_block_sizes,
 )
 from maxdiffusion import pyconfig
 from maxdiffusion import multihost_dataloading
@@ -150,15 +152,8 @@ def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids
         images = vae_decode_p(latents, vae_state)
         return images
 
-def create_localdevice_mesh(num_model_replicas_total):
-    mesh_devices = np.array([jax.local_devices(process_idx)
-                         for process_idx in range(jax.process_count())])
-    mesh_devices = mesh_devices.reshape(4, -1, 1)
-    print(mesh_devices)
-    return mesh_devices
-
 def run(config,
-         images_directory = None,
+        images_directory = None,
          unet_state = None,
          unet_state_mesh_shardings = None,
          vae_state = None,
@@ -167,15 +162,8 @@ def run(config,
     
     if images_directory is None:
         images_directory = config.images_directory
-    
-    rng = jax.random.PRNGKey(config.seed)
-    # Setup Mesh
-    # num_model_replicas_per_process = 4 # set according to your parallelism strategy
-    # num_model_replicas_total = num_model_replicas_per_process * jax.process_count()
-    # devices_array = create_localdevice_mesh(num_model_replicas_total)
 
-    # mesh = Mesh(devices_array, config.mesh_axes)
- 
+    rng = jax.random.PRNGKey(config.seed)
     # Setup Mesh
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
@@ -207,7 +195,7 @@ def run(config,
         del params["vae"]
         del params["unet"]
         print(unet_state_mesh_shardings)
-        
+
     scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
         config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
     )
@@ -231,9 +219,9 @@ def run(config,
       # Create a dataset using tf.data
       dataset = tf.data.TextLineDataset(file_path)
       dataset = dataset.map(parse_tsv_line, num_parallel_calls=tf.data.AUTOTUNE)
+      #dataset = dataset.map(lambda x: x.to_tensor())  
       dataset = dataset.batch(batch_size_per_process)
       dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())
-
       # Create an iterator to iterate through the batches
       iterator = iter(dataset)
       batch_number = 1
@@ -267,21 +255,27 @@ def run(config,
 
         if current_batch_size != PerHostBatchSize:
             prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
-
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
-        #prompt_ids = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
-        
+        #negative_prompt_ids = shard(negative_prompt_ids)
+        s = time.time()
+        #activate_profiler(config)
+        prompt_ids = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
+        negative_prompt_ids = multihost_dataloading.get_data_sharded(negative_prompt_ids, mesh)
+        print(negative_prompt_ids.shape)
+
         images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
         images = jax.experimental.multihost_utils.process_allgather(images)
-        
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
 
         images = images[:current_batch_size]
         numpy_images = np.array(images)
+        #deactivate_profiler(config)
+        print("inference time: ",(time.time() - s))
+        
         save_process(numpy_images, images_directory, img_ids, msk)
 
 def main(argv: Sequence[str]) -> None:
