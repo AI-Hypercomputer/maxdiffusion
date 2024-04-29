@@ -262,11 +262,11 @@ def run(config,
         #negative_prompt_ids = shard(negative_prompt_ids)
         s = time.time()
         #activate_profiler(config)
-        prompt_ids = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
-        negative_prompt_ids = multihost_dataloading.get_data_sharded(negative_prompt_ids, mesh)
-        print(negative_prompt_ids.shape)
+        prompt_ids_sharded = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
+        negative_prompt_ids_sharded = multihost_dataloading.get_data_sharded(negative_prompt_ids, mesh)
+        print(prompt_ids_sharded.shape)
 
-        images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
+        images = p_run_inference(unet_state, vae_state, params, prompt_ids_sharded, negative_prompt_ids_sharded)
         images = jax.experimental.multihost_utils.process_allgather(images)
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
