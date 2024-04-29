@@ -48,6 +48,9 @@ def _form_global_array(path, array: np.ndarray, global_mesh: Mesh) -> jax.Array:
   """ Put local sharded array into local devices
   """
   global_shape, sharding = _build_global_shape_and_sharding(np.shape(array), global_mesh)
+  print(global_shape)
+  print(np.shape(array))
+  print(len(global_mesh.local_devices))
   try:
     local_device_arrays = np.split(array, len(global_mesh.local_devices), axis=0)
   except ValueError as array_split_error:
