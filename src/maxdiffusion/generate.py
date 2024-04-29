@@ -253,8 +253,8 @@ def run(config,
         #pad last batch
         current_batch_size = len(prompt)
 
-        if current_batch_size != PerHostBatchSize:
-            prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
+        # if current_batch_size != PerHostBatchSize:
+        #     prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
 
         image_ids_tensor = batch["image_id"]
@@ -271,10 +271,10 @@ def run(config,
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
 
-        images = images[:current_batch_size]
+        #images = images[:current_batch_size]
         numpy_images = np.array(images)
         #deactivate_profiler(config)
-        print("inference time: ",(time.time() - s))
+        print("inference time: ",i, (time.time() - s))
         
         save_process(numpy_images, images_directory, img_ids, msk)
 
