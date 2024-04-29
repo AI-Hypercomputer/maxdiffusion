@@ -105,7 +105,6 @@ def eval_scores(config, images_directory=None, checkpoint_name=None):
     # calculating CLIP:
 
     captions_df = load_captions(config.caption_coco_file)
-    images_directory = config.images_directory
     images_prompts = load_images(images_directory, captions_df)
     
     clip_score = calculate_clip(images_prompts, config)
