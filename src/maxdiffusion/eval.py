@@ -26,7 +26,7 @@ from absl import app
 from maxdiffusion import (
     generate,
     pyconfig,
-    #mllog_utils,
+    mllog_utils,
 )
 import torch
 import pandas as pd
@@ -112,7 +112,7 @@ def eval_scores(config, images_directory=None, checkpoint_name=None):
     print(f"clip score is {clip_score}")
     mllog_utils.eval_clip(config, clip_score, checkpoint_name)
 
-    # # calculating FID:
+    # calculating FID:
     rng = jax.random.PRNGKey(0)
     
     model = inception.InceptionV3(pretrained=True, transform_input=False, ckpt_file=config.inception_weights_path)
