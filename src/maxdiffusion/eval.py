@@ -71,8 +71,12 @@ def load_images(path, captions_df):
         img = Image.open(os.path.join(path, f))
         img_id = f[6:len(f)-4]
         pmt = captions_df.query(f'image_id== {img_id}')['caption'].to_string(index=False)
+        if len(pmt) > 1:
+            prompts.append(pmt[0])
+        else:
+            prompts.append(pmt)  
+
         images.append(img)
-        prompts.append(pmt)
      
     return images, prompts
 
