@@ -28,8 +28,6 @@ from maxdiffusion.max_utils import (
   create_device_mesh,
   get_dtype,
   get_states,
-  activate_profiler,
-  deactivate_profiler,
   device_put_replicated,
   get_flash_block_sizes,
   override_scheduler_config,
@@ -230,6 +228,7 @@ def run(config,
       dataset = dataset.map(parse_tsv_line, num_parallel_calls=tf.data.AUTOTUNE)
       dataset = dataset.batch(batch_size_per_process)
       dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())
+
       # Create an iterator to iterate through the batches
       iterator = iter(dataset)
       batch_number = 1
@@ -273,7 +272,6 @@ def run(config,
         msk = [ id_item!='0' for id_item in ids]
 
         numpy_images = np.array(images)
-        
         save_process(numpy_images, images_directory, img_ids, msk)
 
 def main(argv: Sequence[str]) -> None:
