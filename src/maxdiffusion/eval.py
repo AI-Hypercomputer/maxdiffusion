@@ -40,6 +40,7 @@ import tensorflow as tf
 from PIL import Image
 
 def load_captions(file_path):
+    pd.options.display.max_colwidth = 500
     with tf.io.gfile.GFile(file_path, 'r') as f:
         captions_df = pd.read_csv(f, delimiter='\t', header=0, names=['image_id','id', 'caption'])
     return captions_df
