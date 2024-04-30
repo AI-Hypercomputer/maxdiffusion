@@ -34,6 +34,7 @@ from maxdiffusion.max_utils import (
   create_scheduler
 )
 from maxdiffusion import pyconfig
+from maxdiffusion import multihost_dataloading
 from absl import app
 from maxdiffusion import (
   FlaxStableDiffusionPipeline,
@@ -164,7 +165,7 @@ def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids
         return images
 
 def run(config,
-         images_directory = None,
+        images_directory = None,
          unet_state = None,
          unet_state_mesh_shardings = None,
          vae_state = None,
@@ -173,7 +174,6 @@ def run(config,
     
     if images_directory is None:
         images_directory = config.images_directory
-    
     rng = jax.random.PRNGKey(config.seed)
     # Setup Mesh
     devices_array = create_device_mesh(config)
@@ -257,24 +257,20 @@ def run(config,
         batch = batches[0]
         prompt_tensors = batch["prompt"].tolist()
         prompt = [t.numpy().decode('utf-8') for t in prompt_tensors]
-        #pad last batch
-        current_batch_size = len(prompt)
-
-        if current_batch_size != PerHostBatchSize:
-            prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
 
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
-        
-        images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
+        prompt_ids_sharded = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
+        negative_prompt_ids_sharded = multihost_dataloading.get_data_sharded(negative_prompt_ids, mesh)
+
+        images = p_run_inference(unet_state, vae_state, params, prompt_ids_sharded, negative_prompt_ids_sharded)
         images = jax.experimental.multihost_utils.process_allgather(images)
-        
+
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
 
-        images = images[:current_batch_size]
         numpy_images = np.array(images)
         save_process(numpy_images, images_directory, img_ids, msk)
 
