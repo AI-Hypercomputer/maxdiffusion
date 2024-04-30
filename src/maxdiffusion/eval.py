@@ -42,7 +42,7 @@ from PIL import Image
 def load_captions(file_path):
     pd.options.display.max_colwidth = 500
     with tf.io.gfile.GFile(file_path, 'r') as f:
-        captions_df = pd.read_csv(f, delimiter='\t', header=0, names=['image_id','id', 'caption'])
+        captions_df = pd.read_csv(f, delimiter='\t', header=None, names=['image_id','id', 'caption'])
     return captions_df
 
 def load_stats(file_path):
@@ -68,13 +68,16 @@ def calculate_clip(images, prompts, config):
 def load_images(path, captions_df):
     images = []
     prompts = []
+    image_ids = {}
     for f in tqdm(os.listdir(path)):
         img = Image.open(os.path.join(path, f))
         img_id = f[6:len(f)-4]
         pmt = captions_df.query(f'image_id== {img_id}')['caption'].to_string(index=False)
-        pmt =  pmt.split('\n')[0]
-        images.append(img)
-        prompts.append(pmt) 
+        if not img_id in image_ids:
+            pmt = pmt.split('\n')[0]
+            images.append(img)
+            prompts.append(pmt)
+            image_ids[img_id] = pmt
     return images, prompts
 
 def write_eval_metrics(config, clip_score: float, fid: float, checkpoint_name=None):
