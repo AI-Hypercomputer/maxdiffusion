@@ -252,7 +252,7 @@ class CommonSchedulerState:
     alphas_cumprod: jnp.ndarray
 
     @classmethod
-    def create(cls, scheduler, rescale_zero_terminal_snr):
+    def create(cls, scheduler):
         config = scheduler.config
 
         if config.trained_betas is not None:
@@ -274,7 +274,7 @@ class CommonSchedulerState:
             raise NotImplementedError(
                 f"beta_schedule {config.beta_schedule} is not implemented for scheduler {scheduler.__class__.__name__}"
             )
-        if rescale_zero_terminal_snr:
+        if config.get("rescale_zero_terminal_snr", False):
             betas = rescale_betas_zero_snr(betas)
 
         alphas = 1.0 - betas

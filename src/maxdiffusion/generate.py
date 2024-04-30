@@ -30,7 +30,6 @@ from maxdiffusion.max_utils import (
   get_states,
   device_put_replicated,
   get_flash_block_sizes,
-  override_scheduler_config,
   create_scheduler
 )
 from maxdiffusion import pyconfig

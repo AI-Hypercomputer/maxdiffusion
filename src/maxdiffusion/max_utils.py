@@ -40,7 +40,6 @@ from maxdiffusion import (
   FlaxDDIMScheduler,
   FlaxDDPMScheduler
 )
-from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax import linen as nn
 from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
@@ -531,12 +530,15 @@ def get_memory_allocations():
                     f'bytes in use: {m_stats["bytes_in_use"] / gb} / {m_stats["bytes_limit"] / gb} GB')
 
 def override_scheduler_config(scheduler_config, config):
-  scheduler_config["prediction_type"] = config.prediction_type
+  if len(config.prediction_type) > 0:
+    scheduler_config["prediction_type"] = config.prediction_type 
+
+  scheduler_config["rescale_zero_terminal_snr"] = config.rescale_zero_terminal_snr
+  
   return scheduler_config
 
 def create_scheduler(scheduler_type, scheduler_config, config):
-  if len(config.prediction_type) > 0:
-    scheduler_config["prediction_type"] = config.prediction_type 
+  scheduler_config = override_scheduler_config(scheduler_config, config)
   if scheduler_type == "ddim":
     cls = FlaxDDIMScheduler
   elif scheduler_type == "ddpm":
