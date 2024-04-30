@@ -71,14 +71,9 @@ def load_images(path, captions_df):
         img = Image.open(os.path.join(path, f))
         img_id = f[6:len(f)-4]
         pmt = captions_df.query(f'image_id== {img_id}')['caption'].to_string(index=False)
-        if len(pmt) > 1:
-            prompts.append(pmt[0])
-        else:
-            prompts.append(pmt)  
-
+        pmt =  pmt.split('\n')[0]
         images.append(img)
-     
-    return images, prompts
+        prompts.append(pmt) 
 
 def write_eval_metrics(config, clip_score: float, fid: float, checkpoint_name=None):
     if jax.process_index() == 0 and config.enable_mllog:
