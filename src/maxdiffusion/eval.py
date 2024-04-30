@@ -74,6 +74,7 @@ def load_images(path, captions_df):
         pmt =  pmt.split('\n')[0]
         images.append(img)
         prompts.append(pmt) 
+    return images, prompts
 
 def write_eval_metrics(config, clip_score: float, fid: float, checkpoint_name=None):
     if jax.process_index() == 0 and config.enable_mllog:
