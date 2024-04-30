@@ -267,9 +267,7 @@ def run(config,
         print(prompt_ids_sharded.shape)
 
         images = p_run_inference(unet_state, vae_state, params, prompt_ids_sharded, negative_prompt_ids_sharded)
-        #images = jax.device_get(images)
-        images = jax.experimental.multihost_utils.global_array_to_host_local_array(images, mesh, jax.sharding.PartitionSpec())
-        #images = jax.experimental.multihost_utils.process_allgather(images)
+        images = jax.experimental.multihost_utils.process_allgather(images)
         print(images.shape)
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
