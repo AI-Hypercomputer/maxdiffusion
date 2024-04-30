@@ -176,7 +176,6 @@ def run(config,
     
     if images_directory is None:
         images_directory = config.images_directory
-
     rng = jax.random.PRNGKey(config.seed)
     # Setup Mesh
     devices_array = create_device_mesh(config)
@@ -229,7 +228,6 @@ def run(config,
       # Create a dataset using tf.data
       dataset = tf.data.TextLineDataset(file_path)
       dataset = dataset.map(parse_tsv_line, num_parallel_calls=tf.data.AUTOTUNE)
-      #dataset = dataset.map(lambda x: x.to_tensor())  
       dataset = dataset.batch(batch_size_per_process)
       dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())
       # Create an iterator to iterate through the batches
@@ -260,32 +258,21 @@ def run(config,
         batch = batches[0]
         prompt_tensors = batch["prompt"].tolist()
         prompt = [t.numpy().decode('utf-8') for t in prompt_tensors]
-        #pad last batch
-        current_batch_size = len(prompt)
 
-        # if current_batch_size != PerHostBatchSize:
-        #     prompt.extend([prompt[0]] * (PerHostBatchSize - current_batch_size))
         prompt_ids = tokenize(prompt, pipeline.tokenizer)
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
-        #negative_prompt_ids = shard(negative_prompt_ids)
-        s = time.time()
-        #activate_profiler(config)
         prompt_ids_sharded = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
         negative_prompt_ids_sharded = multihost_dataloading.get_data_sharded(negative_prompt_ids, mesh)
-        print(prompt_ids_sharded.shape)
 
         images = p_run_inference(unet_state, vae_state, params, prompt_ids_sharded, negative_prompt_ids_sharded)
         images = jax.experimental.multihost_utils.process_allgather(images)
-        print(images.shape)
+
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
 
-        #images = images[:current_batch_size]
         numpy_images = np.array(images)
-        #deactivate_profiler(config)
-        print("inference time: ",i, (time.time() - s))
         
         save_process(numpy_images, images_directory, img_ids, msk)
 
