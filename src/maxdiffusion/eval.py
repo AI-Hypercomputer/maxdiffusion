@@ -14,7 +14,6 @@
  limitations under the License.
  """
 
-from maxdiffusion import generate
 import jax
 import numpy as np
 from jax.experimental.compilation_cache import compilation_cache as cc
@@ -24,34 +23,37 @@ from maxdiffusion.metrics.fid import fid_score
 from maxdiffusion.metrics.clip.clip_encoder import CLIPEncoderFlax
 from typing import Sequence
 from absl import app
-from maxdiffusion import pyconfig
+from maxdiffusion import (
+    generate,
+    pyconfig,
+    mllog_utils,
+)
 import torch
 import pandas as pd
-from tempfile import TemporaryFile
-import pathlib
 import os
 
 import jax.numpy as jnp
-import flax
 import functools
 
-from keras.preprocessing.image import ImageDataGenerator
 from tqdm import tqdm
+import tensorflow as tf
 from PIL import Image
 
 def load_captions(file_path):
-    captions_df = pd.read_csv(file_path, delimiter='\t', header=0, names=['image_id','id', 'caption'])
+    with tf.io.gfile.GFile(file_path, 'r') as f:
+        captions_df = pd.read_csv(f, delimiter='\t', header=0, names=['image_id','id', 'caption'])
     return captions_df
 
 def load_stats(file_path):
-    images_data = np.load(file_path)
+    with tf.io.gfile.GFile(file_path, 'rb') as f:
+        images_data = np.load(f)
     sigma = images_data['sigma']
     mu = images_data['mu']
     return sigma, mu
 
 
-def calculate_clip(images, prompts):
-    clip_encoder = CLIPEncoderFlax()
+def calculate_clip(images, prompts, config):
+    clip_encoder = CLIPEncoderFlax(pretrained=config.clip_model_name_or_path)
     
     clip_scores = []
     for i in tqdm(range(0, len(images))):
@@ -74,25 +76,46 @@ def load_images(path, captions_df):
      
     return images, prompts
 
-def eval_scores(config, images_directory=None):
+def write_eval_metrics(config, clip_score: float, fid: float, checkpoint_name=None):
+    if jax.process_index() == 0 and config.enable_mllog:
+        checkpoint_name = mllog_utils.get_checkpoint_name(config, checkpoint_name)
+        eval_metrics_path = os.path.join(config.base_output_directory, "eval_metrics.csv")
+        metrics = {
+            "step_num": mllog_utils.extract_info_from_ckpt_name(checkpoint_name, "step_num"),
+            "samples_count": mllog_utils.extract_info_from_ckpt_name(checkpoint_name, "samples_count"),
+            "clip": clip_score,
+            "fid": fid,
+        }
+        df = pd.DataFrame.from_dict([metrics])
+        if not tf.io.gfile.exists(eval_metrics_path):
+            with tf.io.gfile.GFile(eval_metrics_path, 'w') as f:
+                df.to_csv(f, index=False)
+        else:
+            with tf.io.gfile.GFile(eval_metrics_path, 'a') as f:
+                df.to_csv(f, index=False, header=False)
+
+def eval_scores(config, images_directory=None, checkpoint_name=None):
     batch_size = config.per_device_batch_size * jax.device_count() * 10
 
+    mllog_utils.eval_start(config, checkpoint_name)
     #inference happenning here: first generate the images
     if images_directory is None:
         generate.run(config)
         images_directory = config.images_directory
+    mllog_utils.eval_end(config, checkpoint_name)
 
     # calculating CLIP:
 
     captions_df = load_captions(config.caption_coco_file)
     images, prompts = load_images(images_directory, captions_df)
     
-    clip_score = calculate_clip(images, prompts)
+    clip_score = calculate_clip(images, prompts, config)
+    mllog_utils.eval_clip(config, clip_score, checkpoint_name)
 
     # calculating FID:
     rng = jax.random.PRNGKey(0)
     
-    model = inception.InceptionV3(pretrained=True, transform_input=False)
+    model = inception.InceptionV3(pretrained=True, transform_input=False, ckpt_file=config.inception_weights_path)
     params = model.init(rng, jnp.ones((1, 256, 256, 3)))
 
     apply_fn = jax.jit(functools.partial(model.apply, train=False))
@@ -106,6 +129,8 @@ def eval_scores(config, images_directory=None):
     mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
+    mllog_utils.eval_fid(config, fid, checkpoint_name)
+    write_eval_metrics(config, clip_score, fid, checkpoint_name)
     return clip_score, fid
 
 
@@ -113,8 +138,8 @@ def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     config = pyconfig.config
     clip, fid = eval_scores(config)
-    print("clip score is " + str(clip))
-    print("fid score is : " + str(fid))
+    print(f"clip score is {clip}")
+    print(f"fid score is : {fid}")
 
 if __name__ == "__main__":
     app.run(main)
