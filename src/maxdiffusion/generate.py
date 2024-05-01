@@ -255,10 +255,18 @@ def run(config,
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
-        
+        print("before", images.shape)
         images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
-        images = jax.experimental.multihost_utils.process_allgather(images)
+        images = [s.data for s in images.addressable_shards]
         
+        ids = batch["id"].tolist()
+        msk = [ id_item!='0' for id_item in ids]
+
+        images = images[:current_batch_size]
+        numpy_images = np.array(images)
+        numpy_images = np.reshape(numpy_images, (numpy_images.shape[0] * numpy_images.shape[1], numpy_images.shape[2],numpy_images.shape[3], numpy_images.shape[4]))
+        
+        print(numpy_images.shape)
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
 
