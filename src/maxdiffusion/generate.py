@@ -268,15 +268,11 @@ def run(config,
         images = p_run_inference(unet_state, vae_state, params, prompt_ids_sharded, negative_prompt_ids_sharded)
         images = [s.data for s in images.addressable_shards]
         
-        ids = batch["id"].tolist()
-        msk = [ id_item!='0' for id_item in ids]
-
         numpy_images = np.array(images)
         numpy_images = np.reshape(numpy_images, (numpy_images.shape[0] * numpy_images.shape[1], numpy_images.shape[2],numpy_images.shape[3], numpy_images.shape[4]))
         
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
-
         save_process(numpy_images, images_directory, img_ids, msk)
 
 def main(argv: Sequence[str]) -> None:
