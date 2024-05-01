@@ -104,13 +104,12 @@ class FlaxDDPMScheduler(FlaxSchedulerMixin, ConfigMixin):
         clip_sample: bool = True,
         prediction_type: str = "epsilon",
         dtype: jnp.dtype = jnp.float32,
-        rescale_zero_terminal_snr: bool = True
     ): 
         self.dtype = dtype
 
     def create_state(self, common: Optional[CommonSchedulerState] = None) -> DDPMSchedulerState:
         if common is None:
-            common = CommonSchedulerState.create(self, self.rescale_zero_terminal_snr)
+            common = CommonSchedulerState.create(self)
 
         # standard deviation of the initial noise distribution
         init_noise_sigma = jnp.array(1.0, dtype=self.dtype)

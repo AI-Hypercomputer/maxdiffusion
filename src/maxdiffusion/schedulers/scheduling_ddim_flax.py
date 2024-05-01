@@ -120,14 +120,13 @@ class FlaxDDIMScheduler(FlaxSchedulerMixin, ConfigMixin):
         set_alpha_to_one: bool = True,
         steps_offset: int = 0,
         prediction_type: str = "epsilon",
-        rescale_zero_terminal_snr: bool = True,
         dtype: jnp.dtype = jnp.float32,
     ):
         self.dtype = dtype
 
     def create_state(self, common: Optional[CommonSchedulerState] = None) -> DDIMSchedulerState:
         if common is None:
-            common = CommonSchedulerState.create(self, self.rescale_zero_terminal_snr)
+            common = CommonSchedulerState.create(self)
         # At every step in ddim, we are looking into the previous alphas_cumprod
         # For the final step, there is no previous alphas_cumprod because we are already at 0
         # `set_alpha_to_one` decides whether we set this parameter simply to one or

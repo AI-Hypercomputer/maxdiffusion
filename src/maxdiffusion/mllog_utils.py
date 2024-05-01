@@ -114,12 +114,18 @@ def train_checkpoint_step_log(step_num: int):
 def extract_info_from_ckpt_name(model_ckpt_name: str, key: str) -> int:
   # model_ckpt_name format:
   #  f"{step_num=}-{samples_count=}"
+  result = -1
   assert key in ("step_num", "samples_count")
-  info_dict = {}
-  for key_value_str in os.path.basename(model_ckpt_name.rstrip('/')).split('-'):
-    key, value = key_value_str.split("=")
-    info_dict[key] = value
-  result = int(info_dict[key])
+  try:
+    info_dict = {}
+    for key_value_str in os.path.basename(model_ckpt_name.rstrip('/')).split('-'):
+      str_key, value = key_value_str.split("=")
+      info_dict[str_key] = value
+    result = int(info_dict[key])
+  except ValueError:
+    print(f"Checkpoint {model_ckpt_name} is not splittable. Is this a mllog checkpoint?")
+    pass
+
   return result
 
 def get_checkpoint_name(config, checkpoint_name=None):
