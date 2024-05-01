@@ -275,8 +275,6 @@ def run(config,
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
 
-        images = images[:current_batch_size]
-        numpy_images = np.array(images)
         save_process(numpy_images, images_directory, img_ids, msk)
 
 def main(argv: Sequence[str]) -> None:
