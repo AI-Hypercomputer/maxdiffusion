@@ -190,9 +190,7 @@ def download_blobs(source_gcs_folder, local_destination):
     download_to_filename = os.path.join(directory, file_split[-1])
     if not os.path.isfile(download_to_filename):
       blob.download_to_filename(download_to_filename)
-  return_filepath = [local_destination]
-  return_filepath.extend(file_split[0:2])
-  return "/".join(return_filepath)
+  return os.path.join(local_destination, prefix_name)
 
 def upload_blob(destination_gcs_name, source_file_name):
   """Uploads a file to a GCS location"""
