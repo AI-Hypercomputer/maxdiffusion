@@ -255,7 +255,8 @@ def run(config,
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
-        print("before", images.shape)
+        print("before", prompt_ids.shape)
+
         images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
         images = [s.data for s in images.addressable_shards]
         
