@@ -35,7 +35,8 @@ from maxdiffusion import pyconfig
 from absl import app
 from maxdiffusion import (
   FlaxStableDiffusionPipeline,
-  FlaxDDIMScheduler
+  FlaxDDIMScheduler,
+  multihost_dataloading
 )
 from flax.linen import partitioning as nn_partitioning
 from flax.training.common_utils import shard
