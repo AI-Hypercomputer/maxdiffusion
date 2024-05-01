@@ -261,16 +261,18 @@ def run(config,
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
+
         prompt_ids_sharded = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
         negative_prompt_ids_sharded = multihost_dataloading.get_data_sharded(negative_prompt_ids, mesh)
 
         images = p_run_inference(unet_state, vae_state, params, prompt_ids_sharded, negative_prompt_ids_sharded)
-        images = jax.experimental.multihost_utils.process_allgather(images)
-
+        images = [s.data for s in images.addressable_shards]
+        
+        numpy_images = np.array(images)
+        numpy_images = np.reshape(numpy_images, (numpy_images.shape[0] * numpy_images.shape[1], numpy_images.shape[2],numpy_images.shape[3], numpy_images.shape[4]))
+        
         ids = batch["id"].tolist()
         msk = [ id_item!='0' for id_item in ids]
-
-        numpy_images = np.array(images)
         save_process(numpy_images, images_directory, img_ids, msk)
 
 def main(argv: Sequence[str]) -> None:
