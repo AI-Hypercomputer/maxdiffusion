@@ -36,13 +36,12 @@ class InceptionV3(nn.Module):
     pretrained: bool=False
     transform_input: bool=False
     aux_logits: bool=False
-    ckpt_path: str='https://www.dropbox.com/s/xt6zvlvt22dcwck/inception_v3_weights_fid.pickle?dl=1'
+    ckpt_file: str = None
     dtype: str='float32'
 
     def setup(self):
         if self.pretrained:
-            ckpt_file = utils.download(self.ckpt_path)
-            self.params_dict = pickle.load(open(ckpt_file, 'rb'))
+            self.params_dict = pickle.load(open(self.ckpt_file, 'rb'))
             self.num_classes_ = 1000
         else:
             self.params_dict = None
