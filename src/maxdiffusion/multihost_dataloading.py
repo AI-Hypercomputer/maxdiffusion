@@ -21,7 +21,7 @@ Adapted from Sholto's:
 https://github.com/sholtodouglas/multihost_dataloading
 """
 from functools import partial  # pylint: disable=g-importing-member
-from typing import Callable
+from typing import Callable, Any, Union
 import tensorflow as tf  # pylint: disable=g-import-not-at-top
 import time
 import numpy as np
@@ -100,6 +100,33 @@ def get_next_batch_sharded(
   # Try one last time, if this fails we will see the full stack trace.
   if not loaded_data_success:
     local_data = local_dataset.next()
+
+  input_gdas = jtu.tree_map_with_path(partial(_form_global_array, global_mesh = global_mesh), local_data)
+
+  return input_gdas
+
+def get_data_sharded(
+   array: np.ndarray, global_mesh: Mesh
+) -> jax.Array:
+  """Splits the host loaded data equally over all devices."""
+
+  SLEEP_TIME = 10
+  MAX_DATA_LOAD_ATTEMPTS = 30
+
+  data_load_attempts = 0
+  loaded_data_success = False
+  while not loaded_data_success and data_load_attempts < MAX_DATA_LOAD_ATTEMPTS:
+    data_load_attempts += 1
+    try:
+      local_data = array
+      loaded_data_success = True
+    except tf.errors.FailedPreconditionError:
+      max_logging.log("Failed to get next data batch, retrying")
+      time.sleep(SLEEP_TIME)
+
+  # Try one last time, if this fails we will see the full stack trace.
+  if not loaded_data_success:
+    local_data = array
 
   input_gdas = jtu.tree_map_with_path(partial(_form_global_array, global_mesh = global_mesh), local_data)
 

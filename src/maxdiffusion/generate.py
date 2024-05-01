@@ -255,9 +255,12 @@ def run(config,
 
         image_ids_tensor = batch["image_id"]
         img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
-        print("before", prompt_ids.shape)
 
-        images = p_run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids)
+        prompt_ids_sharded = multihost_dataloading.get_data_sharded(prompt_ids, mesh)
+        negative_prompt_ids_sharded = multihost_dataloading.get_data_sharded(negative_prompt_ids, mesh)
+
+        print("before", prompt_ids_sharded.shape)
+        images = p_run_inference(unet_state, vae_state, params, prompt_ids_sharded, negative_prompt_ids_sharded)
         images = [s.data for s in images.addressable_shards]
         
         ids = batch["id"].tolist()
