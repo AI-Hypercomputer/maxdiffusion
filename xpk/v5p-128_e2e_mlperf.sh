@@ -70,15 +70,22 @@ pip install git+https://github.com/mlperf/logging.git
 # checkpoint interval for num of pics consumed
 CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-512000}
 
-PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-4}
-NUM_CHECKPOINTS=${NUM_CHECKPOINTS:-10}
+PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-16}
+NUM_CHECKPOINTS=${NUM_CHECKPOINTS:-15}
 NUM_DEVICES=${NUM_DEVICES:-64}
 MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-$(( $CHECKPOINT_EVERY * $NUM_CHECKPOINTS / $PER_DEVICE_BATCH_SIZE / $NUM_DEVICES ))}
 
 # training
 RUN_NAME=${RUN_NAME:-"mlperf_e2e"}
 OUTPUT_DIRECTORY=${OUTPUT_DIRECTORY:-gs://mlperf-exp/$USER/sd}
-python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=$RUN_NAME base_output_directory=$OUTPUT_DIRECTORY train_data_dir=gs://jfacevedo-maxdiffusion-v5p/laion400m/processed/laion400m_moments-tfrec checkpoint_every=${CHECKPOINT_EVERY} max_train_steps=$MAX_TRAIN_STEPS 2>&1 | tee /tmp/log
+python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=$RUN_NAME base_output_directory=$OUTPUT_DIRECTORY train_data_dir=gs://jfacevedo-maxdiffusion-v5p/laion400m/processed/laion400m_moments-tfrec \
+per_device_batch_size=16 split_head_dim=True  attention=flash  norm_num_groups=16 \
+eval_at_checkpoint=False \
+train_new_unet=True \
+warmup_steps_fraction=0.1 learning_rate=1.75e-4 \
+noise_offset=-1.0 input_peturbation=-1.0 prediction_type='v_prediction' snr_gamma=-1.0 \
+upload_images=False \
+checkpoint_every=${CHECKPOINT_EVERY} max_train_steps=$MAX_TRAIN_STEPS 2>&1 | tee /tmp/log
 sleep 30
 
 # inferencing and evaluation
@@ -97,6 +104,7 @@ stat_coco_file="gs://mlperf-exp/sd-copy/cocodata/val2014_30k_stats.npz" \
 clip_cache_dir="clip_cache_dir" \
 base_output_directory=$OUTPUT_DIRECTORY 2>&1 | tee -a /tmp/log
   sleep 30
+  rm -r $EVAL_OUT_DIR/$checkpoint_name
 done
 
 if [[ $(grep "MLLOG" /tmp/log | wc -l) -gt 0 ]];then
