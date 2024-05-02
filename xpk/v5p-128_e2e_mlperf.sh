@@ -71,7 +71,7 @@ pip install git+https://github.com/mlperf/logging.git
 CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-512000}
 
 PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-16}
-NUM_CHECKPOINTS=${NUM_CHECKPOINTS:-15}
+NUM_CHECKPOINTS=${NUM_CHECKPOINTS:-10}
 NUM_DEVICES=${NUM_DEVICES:-64}
 MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-$(( $CHECKPOINT_EVERY * $NUM_CHECKPOINTS / $PER_DEVICE_BATCH_SIZE / $NUM_DEVICES ))}
 
@@ -94,7 +94,7 @@ mkdir -p $EVAL_OUT_DIR
 eval_sample_end=$(($MAX_TRAIN_STEPS*$PER_DEVICE_BATCH_SIZE * $NUM_DEVICES))
 echo $eval_sample_end
 eval_freq=512000
-eval_sample_start=$(($eval_sample_end-$(($(($EVAL_CKPT-1))*$eval_freq))))
+eval_sample_start=$(($eval_sample_end-$(($(($NUM_CHECKPOINTS-1))*$eval_freq))))
 
 for checkpoint_dir in $(gsutil ls $OUTPUT_DIRECTORY/$RUN_NAME/checkpoints/); do
   steptime=(${checkpoint_dir//samples_count=/ })
