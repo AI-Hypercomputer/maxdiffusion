@@ -13,10 +13,22 @@ cd maxdiffusion
 pip install .
 pip install git+https://github.com/mlperf/logging.git
 
-for checkpoint_dir in $(gsutil ls $ckpt_dir/checkpoints/); do
-  checkpoint_name=$(basename $checkpoint_dir)
-  mkdir -p $EVAL_OUT_DIR/$checkpoint_name
-  python -m src.maxdiffusion.eval src/maxdiffusion/configs/base_2_base.yml run_name=$RUN_NAME per_device_batch_size=16 \
+eval_sample_end=$(($MAX_TRAIN_STEPS*$PER_DEVICE_BATCH_SIZE * $NUM_DEVICES))
+echo $eval_sample_end
+eval_freq=512000
+eval_sample_start=$(($eval_sample_end-$(($(($EVAL_CKPT-1))*$eval_freq))))
+
+for checkpoint_dir in $(gsutil ls $OUTPUT_DIRECTORY/$RUN_NAME/checkpoints/); do
+  steptime=(${checkpoint_dir//samples_count=/ })
+  steptime=${steptime[1]}
+  steptime=(${steptime//// })
+  steptime=${steptime[0]}
+
+  if [ "$steptime" -ge "$eval_sample_start" ] && [ "$steptime" -le "$eval_sample_end" ]; then
+    echo "MLPerf Eval Checkpoint at"${steptime}
+    checkpoint_name=$(basename $checkpoint_dir)
+    mkdir -p $EVAL_OUT_DIR/$checkpoint_name
+    python -m src.maxdiffusion.eval src/maxdiffusion/configs/base_2_base.yml run_name=$RUN_NAME per_device_batch_size=16 \
 pretrained_model_name_or_path="${checkpoint_dir}" \
 caption_coco_file="gs://mlperf-exp/sd-copy/cocodata/val2014_30k_padded.tsv" \
 images_directory="$EVAL_OUT_DIR/$checkpoint_name" \
@@ -25,8 +37,9 @@ stat_output_file="output/stats.npz" \
 stat_coco_file="gs://mlperf-exp/sd-copy/cocodata/val2014_30k_stats.npz" \
 clip_cache_dir="clip_cache_dir" \
 base_output_directory=$OUTPUT_DIRECTORY 2>&1 | tee -a /tmp/log
-  sleep 30
-  rm -r $EVAL_OUT_DIR/$checkpoint_name
+    sleep 30
+    rm -r $EVAL_OUT_DIR/$checkpoint_name
+  fi
 done
 
 if [[ $(grep "MLLOG" /tmp/log | wc -l) -gt 0 ]];then
