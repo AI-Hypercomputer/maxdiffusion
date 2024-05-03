@@ -75,6 +75,7 @@ NUM_CHECKPOINTS=${NUM_CHECKPOINTS:-10}
 NUM_DEVICES=${NUM_DEVICES:-64}
 MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-$(( $CHECKPOINT_EVERY * $NUM_CHECKPOINTS / $PER_DEVICE_BATCH_SIZE / $NUM_DEVICES ))}
 LR=${LR:-1.75e-4}
+WARM_UP=${WARM_UP:-0.1}
 
 # different random seed for each run
 SEED=${SEED:-0}
@@ -86,7 +87,7 @@ python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml
 per_device_batch_size=${PER_DEVICE_BATCH_SIZE} split_head_dim=True  attention=flash  norm_num_groups=16 \
 eval_at_checkpoint=False \
 train_new_unet=True \
-warmup_steps_fraction=0.1 learning_rate=${LR} \
+warmup_steps_fraction=${WARM_UP} learning_rate=${LR} \
 noise_offset=-1.0 input_peturbation=-1.0 prediction_type='v_prediction' snr_gamma=-1.0 \
 upload_images=False \
 seed=$SEED \
