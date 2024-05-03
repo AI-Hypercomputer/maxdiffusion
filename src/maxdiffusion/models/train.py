@@ -47,7 +47,8 @@ from jax.sharding import PartitionSpec as P, PositionalSharding
 from transformers import set_seed
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
-  make_laion400m_train_iterator
+  make_laion400m_train_iterator,
+  get_shaped_batch
 )
 from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 
@@ -431,21 +432,25 @@ def train(config):
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
     my_data_sharding = {'input_ids': data_sharding, 'moments': data_sharding}
+    dummy_batch = get_shaped_batch(config, pipeline)
     if (not config.enable_profiler):
-        with jax.transfer_guard("disallow"):
+        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+            p_train_step_lower = jax.jit(
+                partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
+                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
+                out_shardings=(unet_state_mesh_shardings, None, None),
+                donate_argnums=(0,)
+            ).lower(unet_state, dummy_batch, train_rngs)
+        p_train_step = p_train_step_lower.compile()
+    else:
+        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
                 in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
                 out_shardings=(unet_state_mesh_shardings, None, None),
                 donate_argnums=(0,)
-            )
-    else:
-        p_train_step = jax.jit(
-            partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-            in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
-            out_shardings=(unet_state_mesh_shardings, None, None),
-            donate_argnums=(0,)
-        )
+            ).lower(unet_state, dummy_batch, train_rngs)
+        p_train_step = p_train_step_lower.compile()
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
@@ -484,10 +489,9 @@ def train(config):
     # for checkpointing
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
-        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-            unet_state, train_metric, train_rngs = p_train_step(unet_state,
-                                                                example_batch,
-                                                                train_rngs)
+        unet_state, train_metric, train_rngs = p_train_step(unet_state,
+                                                            example_batch,
+                                                            train_rngs)
         new_time = datetime.datetime.now()
 
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
