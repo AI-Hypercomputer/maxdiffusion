@@ -99,7 +99,11 @@ mkdir -p $EVAL_OUT_DIR
 eval_sample_end=$(($MAX_TRAIN_STEPS*$PER_DEVICE_BATCH_SIZE * $NUM_DEVICES))
 echo $eval_sample_end
 eval_freq=512000
-eval_sample_start=$(($eval_sample_end-$(($(($NUM_CHECKPOINTS-1))*$eval_freq))))
+
+eval_sample_start=0
+if ! [ $NUM_CHECKPOINTS -eq 0 ]; then
+  eval_sample_start=$(($eval_sample_end-$(($(($NUM_CHECKPOINTS-1))*$eval_freq))))
+fi
 
 for checkpoint_dir in $(gsutil ls $OUTPUT_DIRECTORY/$RUN_NAME/checkpoints/); do
   steptime=(${checkpoint_dir//samples_count=/ })
