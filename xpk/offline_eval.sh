@@ -10,7 +10,7 @@ NUM_CHECKPOINTS=${NUM_CHECKPOINTS:-10}
 NUM_DEVICES=${NUM_DEVICES:-64}
 MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-$(( $CHECKPOINT_EVERY * $NUM_CHECKPOINTS / $PER_DEVICE_BATCH_SIZE / $NUM_DEVICES ))}
 
-git clone -b fix_image_folder_unify_parameter https://github.com/google/maxdiffusion maxdiffusion
+git clone -b mlperf_4 https://github.com/google/maxdiffusion maxdiffusion
 cd maxdiffusion
 
 pip install .

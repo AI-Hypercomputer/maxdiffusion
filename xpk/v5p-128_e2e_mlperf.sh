@@ -61,7 +61,7 @@ export TPU_STDERR_LOG_LEVEL=0
 export TPU_MIN_LOG_LEVEL=0
 export TF_CPP_MIN_LOG_LEVEL=0
 
-git clone -b eval_last_n_ckpt https://github.com/google/maxdiffusion maxdiffusion
+git clone -b mlperf_4 https://github.com/google/maxdiffusion maxdiffusion
 cd maxdiffusion
 
 pip install .
