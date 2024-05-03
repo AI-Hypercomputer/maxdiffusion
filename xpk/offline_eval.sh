@@ -45,7 +45,6 @@ base_output_directory=$OUTPUT_DIRECTORY 2>&1 | tee -a /tmp/log
 done
 
 if [[ $(grep "MLLOG" /tmp/log | wc -l) -gt 0 ]];then
-  # TODO: remove --target-fid=500 --target-clip=0 once solving convergence issue
-  python src/maxdiffusion/report_end.py --metrics-path=${OUTPUT_DIRECTORY}/eval_metrics.csv --mllog-path=/tmp/log --target-fid=500 --target-clip=0 2>&1 | tee -a /tmp/log
+  python src/maxdiffusion/report_end.py --metrics-path=${OUTPUT_DIRECTORY}/eval_metrics.csv --mllog-path=/tmp/log 2>&1 | tee -a /tmp/log
   gsutil cp /tmp/log ${ckpt_dir}/log_${MEGASCALE_SLICE_ID}_${TPU_WORKER_ID}_eval_log
 fi

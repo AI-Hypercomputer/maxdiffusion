@@ -75,6 +75,10 @@ NUM_CHECKPOINTS=${NUM_CHECKPOINTS:-10}
 NUM_DEVICES=${NUM_DEVICES:-64}
 MAX_TRAIN_STEPS=${MAX_TRAIN_STEPS:-$(( $CHECKPOINT_EVERY * $NUM_CHECKPOINTS / $PER_DEVICE_BATCH_SIZE / $NUM_DEVICES ))}
 LR=${LR:-1.75e-4}
+
+# different random seed for each run
+SEED=${SEED:-0}
+
 # training
 RUN_NAME=${RUN_NAME:-"mlperf_e2e"}
 OUTPUT_DIRECTORY=${OUTPUT_DIRECTORY:-gs://mlperf-exp/$USER/sd/$RUN_NAME}
@@ -85,7 +89,8 @@ train_new_unet=True \
 warmup_steps_fraction=0.1 learning_rate=${LR} \
 noise_offset=-1.0 input_peturbation=-1.0 prediction_type='v_prediction' snr_gamma=-1.0 \
 upload_images=False \
-checkpoint_every=${CHECKPOINT_EVERY} max_train_steps=$MAX_TRAIN_STEPS 2>&1 | tee /tmp/log
+seed=$SEED \
+checkpoint_every=$CHECKPOINT_EVERY max_train_steps=$MAX_TRAIN_STEPS 2>&1 | tee /tmp/log
 sleep 30
 
 # inferencing and evaluation
@@ -122,6 +127,6 @@ base_output_directory=$OUTPUT_DIRECTORY 2>&1 | tee -a /tmp/log
 done
 
 if [[ $(grep "MLLOG" /tmp/log | wc -l) -gt 0 ]];then
-  python src/maxdiffusion/report_end.py --metrics-path=${OUTPUT_DIRECTORY}/eval_metrics.csv --mllog-path=/tmp/log --target-fid=90 --target-clip=0.15 2>&1 | tee -a /tmp/log
+  python src/maxdiffusion/report_end.py --metrics-path=${OUTPUT_DIRECTORY}/eval_metrics.csv --mllog-path=/tmp/log 2>&1 | tee -a /tmp/log
   gsutil cp /tmp/log ${OUTPUT_DIRECTORY}/log_${MEGASCALE_SLICE_ID}_${TPU_WORKER_ID}
 fi

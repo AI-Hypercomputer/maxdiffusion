@@ -48,10 +48,11 @@ def create_step_num_to_timestamp(mllog_path: str):
   step_num_to_timestamp = {}
   with tf.io.gfile.GFile(mllog_path, 'r') as f:
     for line in f:
-      if line.startswith(":::MLLOG") and "checkpoint" in line:
+      if line.startswith(":::MLLOG"):
         log_dict = json.loads(line[len(":::MLLOG"):])
-        step_num, timestamp = log_dict["metadata"]["step_num"], log_dict['time_ms']
-        step_num_to_timestamp[step_num] = timestamp
+        if log_dict["key"] == "checkpoint":
+          step_num, timestamp = log_dict["metadata"]["step_num"], log_dict['time_ms']
+          step_num_to_timestamp[step_num] = timestamp
 
   return step_num_to_timestamp
 
