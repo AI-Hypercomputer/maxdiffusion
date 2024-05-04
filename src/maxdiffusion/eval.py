@@ -110,6 +110,7 @@ def eval_scores(config, images_directory=None, checkpoint_name=None):
     clip_score = calculate_clip(images_prompts, config)
     print(f"clip score is {clip_score}")
     clip_score = jax.experimental.multihost_utils.process_allgather(clip_score)
+    clip_score = sum(clip_score)/len(clip_score)
     mllog_utils.eval_clip(config, clip_score, checkpoint_name)
 
     # calculating FID:
@@ -130,6 +131,7 @@ def eval_scores(config, images_directory=None, checkpoint_name=None):
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
     fid = jax.experimental.multihost_utils.process_allgather(fid)
+    fid = sum(fid)/len(fid)
     mllog_utils.eval_fid(config, fid, checkpoint_name)
     write_eval_metrics(config, clip_score, fid, checkpoint_name)
     return clip_score, fid
