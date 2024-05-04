@@ -59,17 +59,24 @@ OUT_DIR=$1
 export JAX_TRACEBACK_FILTERING=off
 export LIBTPU_INIT_ARGS='--xla_tpu_enable_async_collective_fusion_fuse_all_gather=true --xla_tpu_megacore_fusion_allow_ags=false --xla_enable_async_collective_permute=true --xla_tpu_enable_ag_backward_pipelining=true --xla_tpu_enable_data_parallel_all_reduce_opt=true --xla_tpu_data_parallel_opt_different_sized_ops=true --xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_gather=true'
 
-git clone -b  qinwen/e2e  https://github.com/google/maxdiffusion maxdiffusion 
+git clone -b  mlperf_4  https://github.com/google/maxdiffusion maxdiffusion 
 cd maxdiffusion
 pip install .
 
-python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=v5p-128-xpk base_output_directory=${OUT_DIR}  train_data_dir=gs://jfacevedo-maxdiffusion-v5p/laion400m/processed/laion400m_moments-tfrec per_device_batch_size=8 split_head_dim=True  attention=flash  train_new_unet=True norm_num_groups=16 \
-enable_profiler=False skip_first_n_steps_for_profiler=1998 reuse_example_batch=False \
-eval_at_checkpoint=True \
+python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml \
+max_train_steps=5000 \
+base_output_directory=${OUT_DIR}  train_data_dir=gs://jfacevedo-maxdiffusion-v5p/laion400m/processed/laion400m_moments-tfrec per_device_batch_size=16 split_head_dim=True  attention=flash  norm_num_groups=16 \
+eval_at_checkpoint=False \
+train_new_unet=True \
+warmup_steps_fraction=0.1 learning_rate=1.75e-4 \
+noise_offset=-1.0 input_peturbation=-1.0 prediction_type='v_prediction' snr_gamma=-1.0 \
+upload_images=False \
 caption_coco_file="/app/datasets/coco2014/val2014_30k_padded.tsv" \
 images_directory="/app/maxdiffusion/generated_images/" \
 stat_output_directory="output/" \
 stat_output_file="output/stats.npz" \
 stat_coco_file="/app/datasets/coco2014/val2014_30k_stats.npz" \
-clip_cache_dir="clip_cache_dir" 
+clip_cache_dir="clip_cache_dir" 2>&1 | tee /tmp/SD_test_log
+
+gsutil -m cp /tmp/SD_test_log "${OUT_DIR}/SD_test_log"
 
