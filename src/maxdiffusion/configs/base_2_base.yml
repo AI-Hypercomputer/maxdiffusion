@@ -136,6 +136,8 @@ per_device_batch_size: 4
 
 warmup_steps_fraction: 0.33
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
+learning_rate_init_value: 1.e-6 # initial value for learning rate schedule
+learning_rate_scheduler: "cosine" # schedulers: cosine or linear
 # schedulers: ddim, ddpm
 training_scheduler: "ddpm"
 
