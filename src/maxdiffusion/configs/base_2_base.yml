@@ -127,6 +127,7 @@ eval_data_dir_stats: ''
 
 # Training loop
 learning_rate: 1.25e-7
+start_learning_rate: 1.00E-06
 scale_lr: False
 max_train_samples: -1
 max_train_steps: 25442

@@ -410,7 +410,7 @@ def create_learning_rate_schedule(config):
   constant_zero_steps = config.max_train_steps - warmup_steps
 
   warmup_schedule = optax.linear_schedule(
-      init_value=0.0,
+      init_value=config.start_learning_rate,
       end_value=lr,
       transition_steps=warmup_steps
   )
