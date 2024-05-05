@@ -396,7 +396,22 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
 # Learning Rate Schedule
 # -----------------------------------------------------------------------------
 
-def create_learning_rate_schedule(config):
+def create_cosine_schedule(config):
+  lr = config.learning_rate
+  init_value = config.learning_rate_init_value
+  warmup_steps = int(config.learning_rate_schedule_steps * config.warmup_steps_fraction)
+  
+  warmup_cosine_decay_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=init_value,
+    peak_value=lr,
+    warmup_steps=warmup_steps,
+    decay_steps=config.learning_rate_schedule_steps,
+    end_value=init_value
+  )
+
+  return warmup_cosine_decay_schedule
+
+def create_linear_schedule(config):
   """Creates a warmup to constant learning rate schedule:
   We take inspiration from WarmupHoldPolicy used in stable diffusion
     see https://github.com/NVIDIA/NeMo/blob/dbc8a6ee490355bfa0cb1e10b8d199dcc47482e0/nemo/core/optim/lr_scheduler.py#L142
@@ -410,7 +425,7 @@ def create_learning_rate_schedule(config):
   constant_zero_steps = config.max_train_steps - warmup_steps
 
   warmup_schedule = optax.linear_schedule(
-      init_value=config.start_learning_rate,
+      init_value=config.learning_rate_init_value,
       end_value=lr,
       transition_steps=warmup_steps
   )
@@ -423,6 +438,14 @@ def create_learning_rate_schedule(config):
    ]
 
   return optax.join_schedules(pieces, boundaries)
+
+def create_learning_rate_schedule(config):
+  if config.learning_rate_scheduler == "cosine":
+    return create_cosine_schedule(config)
+  elif config.learning_rate_scheduler == "linear":
+    return create_linear_schedule(config)
+  else:
+    raise ValueError(f"{config.learning_rate_scheduler} is not supported")
 
 def get_dtype(config):
   """Get dtype from config."""
