@@ -93,7 +93,7 @@ def write_eval_metrics(config, clip_score: float, fid: float, checkpoint_name=No
                 df.to_csv(f, index=False, header=False)
 
 def eval_scores(config, images_directory=None, checkpoint_name=None):
-    batch_size = config.per_device_batch_size * jax.device_count() * 10
+    batch_size = config.per_device_batch_size * jax.device_count()
 
     mllog_utils.eval_start(config, checkpoint_name)
     #inference happenning here: first generate the images
@@ -109,6 +109,8 @@ def eval_scores(config, images_directory=None, checkpoint_name=None):
     
     clip_score = calculate_clip(images_prompts, config)
     print(f"clip score is {clip_score}")
+    clip_score = jax.experimental.multihost_utils.process_allgather(clip_score)
+    clip_score = sum(clip_score)/len(clip_score)
     mllog_utils.eval_clip(config, clip_score, checkpoint_name)
 
     # calculating FID:
@@ -127,6 +129,7 @@ def eval_scores(config, images_directory=None, checkpoint_name=None):
 
     mu1, sigma1 = fid_score.compute_statistics(config.stat_output_file, params, apply_fn, batch_size,)
     mu2, sigma2 = fid_score.compute_statistics(config.stat_coco_file, params, apply_fn, batch_size,)
+
     fid = fid_score.compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6)
     mllog_utils.eval_fid(config, fid, checkpoint_name)
     write_eval_metrics(config, clip_score, fid, checkpoint_name)
