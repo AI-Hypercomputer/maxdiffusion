@@ -93,7 +93,7 @@ def write_eval_metrics(config, clip_score: float, fid: float, checkpoint_name=No
                 df.to_csv(f, index=False, header=False)
 
 def eval_scores(config, images_directory=None, checkpoint_name=None):
-    batch_size = config.per_device_batch_size * jax.device_count() * 10
+    batch_size = config.per_device_batch_size * jax.device_count()
 
     mllog_utils.eval_start(config, checkpoint_name)
     #inference happenning here: first generate the images

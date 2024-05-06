@@ -29,6 +29,7 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
     get_batch_fn = lambda: directory_iterator.next()[0]
     num_activations = directory_iterator.samples
     num_batches = len(directory_iterator)
+    print(num_batches)
     dtype = 'float32'
     activation_dim = 2048
 
