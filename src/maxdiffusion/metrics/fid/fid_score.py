@@ -58,7 +58,11 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
         mm[start_index : end_index] = activation_batch
 
         activation_sum += activation_batch.sum(axis=0)
-    activations_with_len = [mm, num_activations]
+
+    sigma = np.cov(mm, rowvar=False)
+    sigma = sigma * num_activations
+    sigma = jax.experimental.multihost_utils.process_allgather(sigma)
+    sigma = jnp.sum(sigma)
 
     num_activations = jax.experimental.multihost_utils.process_allgather(num_activations)
     num_activations = jnp.sum(num_activations)
@@ -66,15 +70,10 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
     activation_sum = jax.experimental.multihost_utils.process_allgather(activation_sum)
     activation_sum = jnp.sum(activation_sum, axis=0)
 
-    activations_with_len = jax.experimental.multihost_utils.process_allgather(activations_with_len)
-    print("all_gather act", activations_with_len)
-    mm = concat_all_arrays(activations_with_len)
-    print(mm.shape)
-
     print(num_activations)
+    
     mu = activation_sum / num_activations
-    sigma = np.cov(mm, rowvar=False)
-
+    sigma = sigma / num_activations
     return mu, sigma
 
 def compute_statistics(path, params, apply_fn, batch_size=1, img_size=None):
