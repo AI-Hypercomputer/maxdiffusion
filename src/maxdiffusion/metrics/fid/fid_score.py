@@ -51,7 +51,8 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
 
     activation_sum = jax.experimental.multihost_utils.process_allgather(activation_sum)
     mm = jax.experimental.multihost_utils.process_allgather(mm)
-
+    print(activation_sum.shape)
+    print(mm.shape)
     activation_sum = jnp.mean(activation_sum)
     mm = jnp.mean(mm)
 
