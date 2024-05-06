@@ -15,7 +15,7 @@ def concat_all_arrays(arrays: list[list[np.memmap, int]]):
     non_padded_array=[]
     for array in arrays:
         if type(array) !='list':
-            return arrays
+            return array
         padded_array = array[0]
         len = array[1]
         non_padded_array.append(padded_array[:len, :])
