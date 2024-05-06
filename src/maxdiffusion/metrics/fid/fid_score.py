@@ -62,7 +62,7 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
     sigma = np.cov(mm, rowvar=False)
     sigma = sigma * num_activations
     sigma = jax.experimental.multihost_utils.process_allgather(sigma)
-    sigma = jnp.sum(sigma)
+    sigma = jnp.sum(sigma, axis=0)
 
     num_activations = jax.experimental.multihost_utils.process_allgather(num_activations)
     num_activations = jnp.sum(num_activations)
