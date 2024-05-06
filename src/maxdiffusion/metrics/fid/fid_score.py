@@ -11,6 +11,16 @@ import tensorflow as tf
 IMAGE_EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'pgm', 'png', 'ppm',
                     'tif', 'tiff', 'webp'}
 
+def concat_all_arrays(arrays: list[list[np.memmap, int]]):
+    non_padded_array=[]
+    for array in arrays:
+        if type(array) !='list':
+            return arrays
+        padded_array = array[0]
+        len = array[1]
+        non_padded_array.append(padded_array[:len, :])
+    return jnp.concat(non_padded_array, axis=0)
+
 def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_size=1, img_size=None):
     # need to read as byte for np.load
     if path.endswith(".npz"):
@@ -48,14 +58,20 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
         mm[start_index : end_index] = activation_batch
 
         activation_sum += activation_batch.sum(axis=0)
+    activations_with_len = [mm, num_activations]
+
+    num_activations = jax.experimental.multihost_utils.process_allgather(num_activations)
+    num_activations = jnp.sum(num_activations)
 
     activation_sum = jax.experimental.multihost_utils.process_allgather(activation_sum)
-    mm = jax.experimental.multihost_utils.process_allgather(mm)
-    print(activation_sum.shape)
-    print(mm.shape)
-    activation_sum = jnp.mean(activation_sum, axis=0)
-    mm = jnp.mean(mm,axis=0)
+    activation_sum = jnp.sum(activation_sum, axis=0)
 
+    activations_with_len = jax.experimental.multihost_utils.process_allgather(activations_with_len)
+    print("all_gather act", activations_with_len)
+    mm = concat_all_arrays(activations_with_len)
+    print(mm.shape)
+
+    print(num_activations)
     mu = activation_sum / num_activations
     sigma = np.cov(mm, rowvar=False)
 
