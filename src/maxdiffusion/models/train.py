@@ -482,6 +482,7 @@ def train(config):
     mllog_utils.train_run_start(config)
     mllog_utils.train_step_start(config, start_step, samples_count=0)
     # for checkpointing
+    eval_checkpoints = []
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
@@ -505,12 +506,12 @@ def train(config):
                     vae_state_mesh_shardings,
                     pipeline, params, train_metric,
                     checkpoint_name)
-            max_utils.save_checkpoint(pipeline,
+            eval_checkpoints.append(max_utils.save_checkpoint(pipeline,
                                       params,
                                       unet_state,
                                       noise_scheduler,
                                       config,
-                                      os.path.join(config.checkpoint_dir, checkpoint_name))
+                                      os.path.join(config.checkpoint_dir, checkpoint_name)))
             mllog_utils.train_checkpoint_step_log(step_num)
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
@@ -521,6 +522,16 @@ def train(config):
 
         mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
     max_utils.close_summary_writer(writer)
+
+    del pipeline
+    del params
+    del unet_state
+    del vae_state
+
+    for checkpoint in eval_checkpoints:
+        config.pretrained_model_name_or_path = checkpoint
+        checkpoint_name = checkpoint.split("/")[-1]
+        eval.eval_scores(config, images_directory=None, checkpoint_name=checkpoint_name)
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)

@@ -533,14 +533,15 @@ def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, outpu
         "unet": get_params_to_save(unet_state.params),
     },
   )
-  if jax.process_index() == 0:
+  if jax.process_index() == 0 and config.upload_ckpts_to_gcs:
     walk_and_upload_blobs(config, local_output_dir)
-  
-  # delete files in output_dir to save space
-  shutil.rmtree(local_output_dir)
+    # delete files in output_dir to save space
+    shutil.rmtree(local_output_dir)
 
   # Clean up uneeded references
   params["vae"] = None
+
+  return local_output_dir
 
 def get_memory_allocations():
   devices = jax.local_devices()
