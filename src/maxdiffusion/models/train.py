@@ -433,7 +433,7 @@ def train(config):
 
     my_data_sharding = {'input_ids': data_sharding, 'moments': data_sharding}
     dummy_batch = get_shaped_batch(config, pipeline)
-    if (not config.enable_profiler):
+    if config.pre_compile:
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step_lower = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
@@ -449,8 +449,7 @@ def train(config):
                 in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
                 out_shardings=(unet_state_mesh_shardings, None, None),
                 donate_argnums=(0,)
-            ).lower(unet_state, dummy_batch, train_rngs)
-        p_train_step = p_train_step_lower.compile()
+            )
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
