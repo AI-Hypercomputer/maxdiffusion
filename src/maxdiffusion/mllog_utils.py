@@ -177,7 +177,6 @@ def eval_fid(config, fid: float, checkpoint_name=None):
     )
 
 def eval_clip(config, clip_score: float, checkpoint_name=None):
-  breakpoint()
   if jax.process_index() == 0 and config.enable_mllog:
     checkpoint_name = get_checkpoint_name(config, checkpoint_name)
     step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
