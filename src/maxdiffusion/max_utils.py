@@ -505,41 +505,18 @@ def walk_and_upload_gen_images(config, output_dir, checkpoint_number="0"):
       upload_blob(gcs_file_name, file_to_upload)
       max_logging.log(f"File {file_to_upload} moved successfully!")
 
-def save_checkpoint(pipeline, params, unet_state, noise_scheduler, config, output_dir):
-  weight_dtype = get_dtype(config)
-  # reload vae to save with checkpoint
-  vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-      config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
-  )
-  pipeline.vae = vae
-  params["vae"] = vae_params
-  
-  pipeline = FlaxStableDiffusionPipeline(
-    text_encoder=pipeline.text_encoder,
-    vae=pipeline.vae,
-    unet=pipeline.unet,
-    tokenizer=pipeline.tokenizer,
-    scheduler=noise_scheduler,
-    safety_checker=None,
-    feature_extractor=None,
-  )
+def save_checkpoint(pipeline, unet_state, config, output_dir):
+
   user_dir = os.path.expanduser('~')
   local_output_dir = output_dir.replace(os.path.join(config.base_output_directory, config.run_name), user_dir)
-  pipeline.save_pretrained(
+  pipeline.unet.save_pretrained(
     local_output_dir,
-    params={
-        "text_encoder": get_params_to_save(params["text_encoder"]),
-        "vae": get_params_to_save(params["vae"]),
-        "unet": get_params_to_save(unet_state.params),
-    },
+    params=get_params_to_save(unet_state.params)
   )
   if jax.process_index() == 0 and config.upload_ckpts_to_gcs:
     walk_and_upload_blobs(config, local_output_dir)
     # delete files in output_dir to save space
     shutil.rmtree(local_output_dir)
-
-  # Clean up uneeded references
-  params["vae"] = None
 
   return local_output_dir
 
