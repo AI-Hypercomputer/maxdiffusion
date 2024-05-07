@@ -223,3 +223,18 @@ def make_pokemon_train_iterator(
 
   train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
   return train_iter
+
+def get_shaped_batch(config, pipeline):
+  """Return the shape of the batch - this is what eval_shape would return for the
+  output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078."""
+  vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+  total_train_batch_size = config.per_device_batch_size * jax.device_count()
+  batch_image_shape = (total_train_batch_size, 
+        config.resolution // vae_scale_factor,
+        config.resolution // vae_scale_factor, 8)
+  #bs, encoder_input, seq_length
+  batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
+  shaped_batch = {}
+  shaped_batch["moments"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
+  shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+  return shaped_batch
