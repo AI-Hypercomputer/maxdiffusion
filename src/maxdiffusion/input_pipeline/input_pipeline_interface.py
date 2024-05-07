@@ -233,10 +233,8 @@ def get_shaped_batch(config, pipeline):
         config.resolution // vae_scale_factor,
         config.resolution // vae_scale_factor, 8)
   #bs, encoder_input, seq_length
-  batch_ids_shape = (total_train_batch_size, 77)
+  batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
   shaped_batch = {}
-  print(batch_image_shape)
-  print(batch_ids_shape)
   shaped_batch["moments"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
   shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
   return shaped_batch
