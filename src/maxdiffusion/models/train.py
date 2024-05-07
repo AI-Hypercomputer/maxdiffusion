@@ -431,21 +431,38 @@ def train(config):
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
     my_data_sharding = {'input_ids': data_sharding, 'moments': data_sharding}
-    if (not config.enable_profiler):
-        with jax.transfer_guard("disallow"):
+
+    if config.pre_compile:
+       # unet_state, batch, train_rng,
+       shaped_rng = jax.ShapeDtypeStruct(rng.shape, rng.dtype)
+       abstract_state, _ = max_utils.get_abstract_state(pipeline.unet,tx, config, mesh, unet_state.params)
+       func_input_args = (abstract_state, load_next_batch(data_iterator, None, config), shaped_rng)
+       func_input_kwargs = {}
+       with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+          p_train_step_lower = jax.jit(
+            partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
+            in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
+            out_shardings=(unet_state_mesh_shardings, None, None),
+            donate_argnums=(0,)
+          ).lower(*func_input_args, **func_input_kwargs)
+
+       p_train_step = p_train_step_lower.compile()
+    else:
+        if (not config.enable_profiler):
+            with jax.transfer_guard("disallow"):
+                p_train_step = jax.jit(
+                    partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
+                    in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
+                    out_shardings=(unet_state_mesh_shardings, None, None),
+                    donate_argnums=(0,)
+                )
+        else:
             p_train_step = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
                 in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
                 out_shardings=(unet_state_mesh_shardings, None, None),
                 donate_argnums=(0,)
             )
-    else:
-        p_train_step = jax.jit(
-            partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-            in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
-            out_shardings=(unet_state_mesh_shardings, None, None),
-            donate_argnums=(0,)
-        )
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
