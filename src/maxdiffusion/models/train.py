@@ -424,8 +424,8 @@ def train(config):
         loss, grad = grad_fn(unet_state.params)
 
         new_state = unet_state.apply_gradients(grads=grad)
-        metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
-
+        #metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
+        metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
         return new_state, metrics, new_train_rng
 
     num_model_parameters = calculate_num_params_from_pytree(unet_state.params)
@@ -495,7 +495,13 @@ def train(config):
         new_time = datetime.datetime.now()
 
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
-        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+
+        step_time_delta = new_time - last_step_completion
+        max_logging.log(f"completed step: {step}, seconds: {step_time_delta.total_seconds()}, "
+          f"TFLOP/s/device: {per_device_tflops / step_time_delta.total_seconds()}, "
+          f"loss: {train_metric['scalar']['learning/loss']:.3f}")
+
+        #write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
