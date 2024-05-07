@@ -21,8 +21,7 @@ from typing import Sequence
 from functools import partial
 
 import numpy as np
-from tqdm import tqdm
-import csv
+import shutil
 
 import jax
 import jax.numpy as jnp
@@ -506,6 +505,7 @@ def train(config):
                     vae_state_mesh_shardings,
                     pipeline, params, train_metric,
                     checkpoint_name)
+            
             eval_checkpoints.append(max_utils.save_checkpoint(pipeline,
                                       params,
                                       unet_state,
@@ -531,7 +531,13 @@ def train(config):
     for checkpoint in eval_checkpoints:
         config.pretrained_model_name_or_path = checkpoint
         checkpoint_name = checkpoint.split("/")[-1]
-        eval.eval_scores(config, images_directory=None, checkpoint_name=checkpoint_name)
+        images_directory = os.path.join(config.images_directory, "output")
+        os.makedirs(images_directory, exist_ok=True)
+
+        generate.run(config, images_directory)
+
+        eval.eval_scores(config, images_directory, checkpoint_name)
+        shutil.rmtree(images_directory)
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
