@@ -46,7 +46,8 @@ from jax.sharding import PartitionSpec as P, PositionalSharding
 from transformers import set_seed
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
-  make_laion400m_train_iterator
+  make_laion400m_train_iterator,
+  get_shaped_batch
 )
 from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 
@@ -422,29 +423,32 @@ def train(config):
         loss, grad = grad_fn(unet_state.params)
 
         new_state = unet_state.apply_gradients(grads=grad)
-        metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
-
+        #metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
+        metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
         return new_state, metrics, new_train_rng
 
     num_model_parameters = calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
     my_data_sharding = {'input_ids': data_sharding, 'moments': data_sharding}
-    if (not config.enable_profiler):
-        with jax.transfer_guard("disallow"):
+    dummy_batch = get_shaped_batch(config, pipeline)
+    if config.pre_compile:
+        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+            p_train_step_lower = jax.jit(
+                partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
+                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
+                out_shardings=(unet_state_mesh_shardings, None, None),
+                donate_argnums=(0,)
+            ).lower(unet_state, dummy_batch, train_rngs)
+        p_train_step = p_train_step_lower.compile()
+    else:
+        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
                 in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
                 out_shardings=(unet_state_mesh_shardings, None, None),
                 donate_argnums=(0,)
             )
-    else:
-        p_train_step = jax.jit(
-            partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-            in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
-            out_shardings=(unet_state_mesh_shardings, None, None),
-            donate_argnums=(0,)
-        )
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
@@ -484,14 +488,19 @@ def train(config):
     eval_checkpoints = []
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
-        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-            unet_state, train_metric, train_rngs = p_train_step(unet_state,
-                                                                example_batch,
-                                                                train_rngs)
+        unet_state, train_metric, train_rngs = p_train_step(unet_state,
+                                                            example_batch,
+                                                            train_rngs)
         new_time = datetime.datetime.now()
 
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
-        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+
+        step_time_delta = new_time - last_step_completion
+        max_logging.log(f"completed step: {step}, seconds: {step_time_delta.total_seconds()}, "
+          f"TFLOP/s/device: {per_device_tflops / step_time_delta.total_seconds()}, "
+          f"loss: {train_metric['scalar']['learning/loss']:.3f}")
+
+        #write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
