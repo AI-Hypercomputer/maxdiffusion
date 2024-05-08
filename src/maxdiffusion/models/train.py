@@ -526,6 +526,7 @@ def train(config):
     del unet_state
     del vae_state
 
+    config.train_new_unet = False
     for checkpoint in eval_checkpoints:
         config.unet_checkpoint = checkpoint
         checkpoint_name = checkpoint.split("/")[-1]
