@@ -108,5 +108,5 @@ sleep 60
 
 if [[ $(grep "MLLOG" /tmp/log | wc -l) -gt 0 ]];then
   python src/maxdiffusion/report_end.py --metrics-path=${OUTPUT_DIRECTORY}/${RUN_NAME}/eval_metrics.csv --mllog-path=/tmp/log 2>&1 | tee -a /tmp/log
-  gsutil cp /tmp/log ${OUTPUT_DIRECTORY}/log_${MEGASCALE_SLICE_ID}_${TPU_WORKER_ID}
+  gsutil cp /tmp/log ${OUTPUT_DIRECTORY}/${RUN_NAME}/log_${MEGASCALE_SLICE_ID}_${TPU_WORKER_ID}
 fi
