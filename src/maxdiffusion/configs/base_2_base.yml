@@ -23,6 +23,7 @@ save_config_to_gcs: False
 log_period: 10000000000
 
 pretrained_model_name_or_path: 'gs://jfacevedo-maxdiffusion-v5p/stable_diffusion_checkpoints/models--stabilityai--stable-diffusion-2-base'
+unet_checkpoint: ''
 revision: 'main'
 dtype: 'bfloat16'
 # Set true to load weights from pytorch
@@ -116,7 +117,9 @@ reuse_example_batch: False
 enable_data_shuffling: True
 # checkpoint every number of samples
 checkpoint_every: 512000
+start_step_to_checkpoint: 512000
 eval_at_checkpoint: False
+upload_ckpts_to_gcs: False
 upload_images: False
 cache_latents_text_encoder_outputs: False
 
@@ -133,6 +136,7 @@ max_train_steps: 25442
 seed: 0
 output_dir: 'sd-model-finetuned'
 per_device_batch_size: 4
+pre_compile: true
 
 warmup_steps_fraction: 0.33
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.

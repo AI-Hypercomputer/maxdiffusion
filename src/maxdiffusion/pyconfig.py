@@ -141,7 +141,7 @@ class HyperParameters(): # pylint: disable=missing-class-docstring
     return _config.keys[attr]
 
   def __setattr__(self, attr, value):
-    raise ValueError
+    _config.keys[attr] = value
 
   def get_keys(self):
     return _config.keys
