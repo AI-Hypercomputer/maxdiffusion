@@ -505,14 +505,14 @@ def train(config):
                     vae_state_mesh_shardings,
                     pipeline, params, train_metric,
                     checkpoint_name)
-            
-            eval_checkpoints.append(max_utils.save_checkpoint(pipeline,
-                                      params,
-                                      unet_state,
-                                      noise_scheduler,
-                                      config,
-                                      os.path.join(config.checkpoint_dir, checkpoint_name)))
-            mllog_utils.train_checkpoint_step_log(step_num)
+            if samples_count >= config.start_step_to_checkpoint:
+                eval_checkpoints.append(max_utils.save_checkpoint(pipeline,
+                                        params,
+                                        unet_state,
+                                        noise_scheduler,
+                                        config,
+                                        os.path.join(config.checkpoint_dir, checkpoint_name)))
+                mllog_utils.train_checkpoint_step_log(step_num)
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
         if step == first_profiling_step:
@@ -528,6 +528,7 @@ def train(config):
     del unet_state
     del vae_state
 
+    config.train_new_unet = False
     for checkpoint in eval_checkpoints:
         config.pretrained_model_name_or_path = checkpoint
         checkpoint_name = checkpoint.split("/")[-1]
@@ -535,7 +536,6 @@ def train(config):
         os.makedirs(images_directory, exist_ok=True)
 
         generate.run(config, images_directory)
-
         eval.eval_scores(config, images_directory, checkpoint_name)
         shutil.rmtree(images_directory)
 

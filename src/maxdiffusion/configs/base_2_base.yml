@@ -116,6 +116,7 @@ reuse_example_batch: False
 enable_data_shuffling: True
 # checkpoint every number of samples
 checkpoint_every: 512000
+start_step_to_checkpoint: 512000
 eval_at_checkpoint: False
 upload_ckpts_to_gcs: False
 upload_images: False
