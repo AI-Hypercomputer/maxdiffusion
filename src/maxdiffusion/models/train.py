@@ -497,8 +497,9 @@ def train(config):
         max_logging.log(f"completed step: {step}, seconds: {step_time_delta.total_seconds()}, "
           f"TFLOP/s/device: {per_device_tflops / step_time_delta.total_seconds()}, "
           f"loss: {train_metric['scalar']['learning/loss']:.3f}")
-
-        #write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+          
+        if config.write_metrics:
+            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
