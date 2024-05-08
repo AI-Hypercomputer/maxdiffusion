@@ -439,6 +439,8 @@ def train(config):
                 donate_argnums=(0,)
             ).lower(unet_state, dummy_batch, train_rngs)
         p_train_step = p_train_step_lower.compile()
+        host_id = jax.process_index()
+        all_host_ids = jax.experimental.multihost_utils.process_allgather(host_id)
     else:
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step = jax.jit(
