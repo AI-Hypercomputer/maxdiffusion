@@ -296,18 +296,11 @@ def train(config):
         eps=config.adam_eps,
         weight_decay=config.adam_weight_decay,
     )
-    if config.max_grad_norm == 0:
-       tx = adamw
-    else:
-        tx = optax.chain(
-            optax.clip_by_global_norm(config.max_grad_norm),
-            adamw,
-        )
 
     (unet_state,
     unet_state_mesh_shardings,
     vae_state, vae_state_mesh_shardings) = max_utils.get_states(mesh,
-                                                                tx, rng, config,
+                                                                adamw, rng, config,
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
 
@@ -421,7 +414,12 @@ def train(config):
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
-        loss, grad = grad_fn(unet_state.params)
+        loss, raw_grad = grad_fn(unet_state.params)
+
+        if config.max_grad_norm > 0:
+            grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(raw_grad, unet_state, None)
+        else:
+            grad = raw_grad
 
         new_state = unet_state.apply_gradients(grads=grad)
         #metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
