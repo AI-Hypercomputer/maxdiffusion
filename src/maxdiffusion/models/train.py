@@ -295,18 +295,11 @@ def train(config):
         eps=config.adam_eps,
         weight_decay=config.adam_weight_decay,
     )
-    if config.max_grad_norm == 0:
-       tx = adamw
-    else:
-        tx = optax.chain(
-            optax.clip_by_global_norm(config.max_grad_norm),
-            adamw,
-        )
 
     (unet_state,
     unet_state_mesh_shardings,
     vae_state, vae_state_mesh_shardings) = max_utils.get_states(mesh,
-                                                                tx, rng, config,
+                                                                adamw, rng, config,
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
 
@@ -420,7 +413,12 @@ def train(config):
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
-        loss, grad = grad_fn(unet_state.params)
+        loss, raw_grad = grad_fn(unet_state.params)
+
+        if config.max_grad_norm > 0:
+            grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(raw_grad, unet_state, None)
+        else:
+            grad = raw_grad
 
         new_state = unet_state.apply_gradients(grads=grad)
         #metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
@@ -499,8 +497,9 @@ def train(config):
         max_logging.log(f"completed step: {step}, seconds: {step_time_delta.total_seconds()}, "
           f"TFLOP/s/device: {per_device_tflops / step_time_delta.total_seconds()}, "
           f"loss: {train_metric['scalar']['learning/loss']:.3f}")
-
-        #write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+          
+        if config.write_metrics:
+            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
