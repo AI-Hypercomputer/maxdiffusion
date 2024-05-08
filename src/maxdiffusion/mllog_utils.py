@@ -172,7 +172,7 @@ def eval_fid(config, fid: float, checkpoint_name=None):
         mllog.constants.STEP_NUM: step_num,
         mllog.constants.SAMPLES_COUNT: samples_count,
         "metric": "FID",
-        "ckpt_name": config.pretrained_model_name_or_path,
+        "ckpt_name": checkpoint_name,
       },
     )
 
@@ -188,7 +188,7 @@ def eval_clip(config, clip_score: float, checkpoint_name=None):
         mllog.constants.STEP_NUM: step_num,
         mllog.constants.SAMPLES_COUNT: samples_count,
         "metric": "CLIP",
-        "ckpt_name": config.pretrained_model_name_or_path,
+        "ckpt_name": checkpoint_name,
       },
     )
 

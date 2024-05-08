@@ -21,8 +21,7 @@ from typing import Sequence
 from functools import partial
 
 import numpy as np
-from tqdm import tqdm
-import csv
+import shutil
 
 import jax
 import jax.numpy as jnp
@@ -486,6 +485,7 @@ def train(config):
     mllog_utils.train_run_start(config)
     mllog_utils.train_step_start(config, start_step, samples_count=0)
     # for checkpointing
+    eval_checkpoints = []
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         unet_state, train_metric, train_rngs = p_train_step(unet_state,
@@ -514,13 +514,12 @@ def train(config):
                     vae_state_mesh_shardings,
                     pipeline, params, train_metric,
                     checkpoint_name)
-            max_utils.save_checkpoint(pipeline,
-                                      params,
-                                      unet_state,
-                                      noise_scheduler,
-                                      config,
-                                      os.path.join(config.checkpoint_dir, checkpoint_name))
-            mllog_utils.train_checkpoint_step_log(step_num)
+            if samples_count >= config.start_step_to_checkpoint:
+                eval_checkpoints.append(max_utils.save_checkpoint(pipeline,
+                                        unet_state,
+                                        config,
+                                        os.path.join(config.checkpoint_dir, checkpoint_name)))
+                mllog_utils.train_checkpoint_step_log(step_num)
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
         if step == first_profiling_step:
@@ -530,6 +529,23 @@ def train(config):
 
         mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
     max_utils.close_summary_writer(writer)
+
+    del pipeline
+    del params
+    del unet_state
+    del vae_state
+
+    config.train_new_unet = False
+    for checkpoint in eval_checkpoints:
+        config.unet_checkpoint = checkpoint
+        checkpoint_name = checkpoint.split("/")[-1]
+        images_directory = os.path.join(config.images_directory, "output")
+        os.makedirs(images_directory, exist_ok=True)
+
+        generate.run(config, images_directory)
+
+        eval.eval_scores(config, images_directory, checkpoint_name)
+        shutil.rmtree(images_directory)
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)

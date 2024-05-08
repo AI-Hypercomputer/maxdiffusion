@@ -77,7 +77,7 @@ def load_images(path, captions_df):
 def write_eval_metrics(config, clip_score: float, fid: float, checkpoint_name=None):
     if jax.process_index() == 0 and config.enable_mllog:
         checkpoint_name = mllog_utils.get_checkpoint_name(config, checkpoint_name)
-        eval_metrics_path = os.path.join(config.base_output_directory, "eval_metrics.csv")
+        eval_metrics_path = os.path.join(config.base_output_directory,config.run_name, "eval_metrics.csv")
         metrics = {
             "step_num": mllog_utils.extract_info_from_ckpt_name(checkpoint_name, "step_num"),
             "samples_count": mllog_utils.extract_info_from_ckpt_name(checkpoint_name, "samples_count"),

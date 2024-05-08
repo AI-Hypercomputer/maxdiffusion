@@ -37,6 +37,7 @@ from maxdiffusion import multihost_dataloading
 from absl import app
 from maxdiffusion import (
   FlaxStableDiffusionPipeline,
+  FlaxUNet2DConditionModel
 )
 from flax.linen import partitioning as nn_partitioning
 from jax.experimental.compilation_cache import compilation_cache as cc
@@ -193,6 +194,19 @@ def run(config,
             flash_block_sizes=flash_block_sizes,
             mesh=mesh
         )
+        if config.unet_checkpoint is not None:
+            unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
+                config.unet_checkpoint,
+                split_head_dim=config.split_head_dim,
+                norm_num_groups=config.norm_num_groups,
+                from_pt=config.from_pt,
+                attention_kernel=config.attention,
+                flash_block_sizes=flash_block_sizes,
+                mesh=mesh
+            )
+            params["unet"] = unet_params
+            pipeline.unet = unet
+
         params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
          # Text encoder params
         sharding = PositionalSharding(mesh.devices).replicate()
