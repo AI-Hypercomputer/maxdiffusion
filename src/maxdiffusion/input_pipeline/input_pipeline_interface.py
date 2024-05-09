@@ -89,17 +89,17 @@ def make_laion400m_train_iterator(
 
   partial_tokenize = functools.partial(tokenize, tokenizer=tokenizer)
 
+  paralism = 3841 / jax.device_count()
 
   train_ds = (
-    tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True, seed=config.seed)
+    tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=False, seed=config.seed)
       .shard(num_shards = jax.process_count(), index = jax.process_index())
-      .interleave(tf.data.TFRecordDataset, num_parallel_calls=AUTOTUNE)
-      .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
-      .map(prepare_sample, num_parallel_calls=AUTOTUNE)
-      .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.float32, tf.float32)), num_parallel_calls=AUTOTUNE)
-      .map(create_dict, num_parallel_calls=AUTOTUNE)
+      .map(_parse_tfrecord_fn, num_parallel_calls=paralism)
+      .map(prepare_sample, num_parallel_calls=paralism)
+      .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.float32, tf.float32)), num_parallel_calls=paralism)
+      .map(create_dict, num_parallel_calls=paralism)
       .shuffle(global_batch_size * 10 // jax.process_count(), seed=config.seed)
-      .batch(global_batch_size // jax.process_count(), drop_remainder=False)
+      .batch(global_batch_size // jax.process_count(), drop_remainder=True)
       .repeat(-1)
       .prefetch(AUTOTUNE)
   )
