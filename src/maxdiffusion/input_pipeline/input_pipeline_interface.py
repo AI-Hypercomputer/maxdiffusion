@@ -66,7 +66,7 @@ def make_laion400m_train_iterator(
     return tf.io.parse_single_example(example, feature_description)
 
   def prepare_sample(features):
-    moments = tf.io.parse_tensor(tnp.asarray(features["moments"]), out_type=tf.float32)
+    moments = tf.io.parse_tensor(tnp.asarray(features["moments"]), out_type=tf.bfloat16)
     captions = tf.io.parse_tensor(tnp.asarray(features["caption"]), out_type=tf.string)
     return (moments, captions)
   
@@ -235,6 +235,6 @@ def get_shaped_batch(config, pipeline):
   #bs, encoder_input, seq_length
   batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
   shaped_batch = {}
-  shaped_batch["moments"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
-  shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+  shaped_batch["moments"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.bfloat16)
+  shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.bfloat16)
   return shaped_batch
