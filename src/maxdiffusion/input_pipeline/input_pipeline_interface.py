@@ -96,7 +96,7 @@ def make_laion400m_train_iterator(
       .interleave(tf.data.TFRecordDataset, num_parallel_calls=AUTOTUNE)
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
-      .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.float32, tf.float32)), num_parallel_calls=AUTOTUNE)
+      .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.bfloat16, tf.bfloat16)), num_parallel_calls=AUTOTUNE)
       .map(create_dict, num_parallel_calls=AUTOTUNE)
       .shuffle(global_batch_size * 10, seed=config.seed)
       .batch(global_batch_size // jax.process_count(), drop_remainder=False)
