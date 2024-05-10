@@ -91,7 +91,7 @@ def make_laion400m_train_iterator(
   paralism = 8 #3841 / jax.device_count()
 
   train_ds = (
-    tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=False, seed=config.seed)
+    tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True, seed=config.seed)
       .shard(num_shards = jax.process_count(), index = jax.process_index())
       .interleave(tf.data.TFRecordDataset, num_parallel_calls=paralism)
       .map(_parse_tfrecord_fn, num_parallel_calls=paralism)
