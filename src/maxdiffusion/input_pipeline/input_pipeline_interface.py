@@ -99,7 +99,9 @@ def make_laion400m_train_iterator(
       .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.float32, tf.float32)), num_parallel_calls=paralism)
       .map(create_dict, num_parallel_calls=paralism)
       .shuffle(global_batch_size * 10, seed=config.seed)
-      .batch(global_batch_size // jax.process_count(), drop_remainder=False)
+      .batch(global_batch_size // jax.process_count(), drop_remainder=True)
+      .repeat(-1)
+      .prefetch(30)
   )
 
   train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
