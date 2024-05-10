@@ -70,14 +70,13 @@ def make_laion400m_train_iterator(
     captions = tf.io.parse_tensor(tnp.asarray(features["caption"]), out_type=tf.string)
     return (moments, captions)
   
-  def tokenize(moments, captions, tokenizer):
-    captions = captions.numpy().decode("utf-8")
+  def tokenize(captions, tokenizer):
     input_ids = tokenizer(captions,
       max_length=tokenizer.model_max_length,
       padding="max_length",
       truncation=True
     )["input_ids"]
-    return (moments, input_ids)
+    return input_ids
 
   def create_dict(moments, input_ids):
     return {"moments" : moments, "input_ids" : input_ids}
@@ -96,7 +95,7 @@ def make_laion400m_train_iterator(
       .interleave(tf.data.TFRecordDataset, num_parallel_calls=AUTOTUNE)
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
-      .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.float32, tf.float32)), num_parallel_calls=AUTOTUNE)
+      .map(lambda x, y: (x, tf.cast(partial_tokenize(tf.compat.as_str_any(y)), tf.float32)), num_parallel_calls=AUTOTUNE)
       .map(create_dict, num_parallel_calls=AUTOTUNE)
       .shuffle(global_batch_size * 10 // jax.process_count(), seed=config.seed)
       .batch(global_batch_size // jax.process_count(), drop_remainder=False)
