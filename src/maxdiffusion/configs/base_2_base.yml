@@ -138,6 +138,7 @@ seed: 0
 output_dir: 'sd-model-finetuned'
 per_device_batch_size: 4
 pre_compile: true
+tfds_paralism: 8
 
 warmup_steps_fraction: 0.33
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
