@@ -89,7 +89,7 @@ def make_laion400m_train_iterator(
 
   partial_tokenize = functools.partial(tokenize, tokenizer=tokenizer)
 
-  paralism = 96#config.tfds_paralism #3841 / jax.device_count()
+  paralism = 4 #config.tfds_paralism #3841 / jax.device_count()
 
   train_ds = (
     tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True, seed=config.seed)
