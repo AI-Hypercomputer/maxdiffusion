@@ -426,7 +426,7 @@ class FlaxAttention(nn.Module):
         )
 
         qkv_init_kernel = nn.with_logical_partitioning(
-            nn.initializers.lecun_normal(),
+            nn.initializers.he_normal(),
             ("embed","heads")
         )
 
@@ -456,7 +456,7 @@ class FlaxAttention(nn.Module):
         self.proj_attn = nn.Dense(
             self.query_dim,
             kernel_init=nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                nn.initializers.he_normal(),
                 ("heads","embed")
             ),
             dtype=self.dtype,
@@ -647,7 +647,7 @@ class FlaxTransformer2DModel(nn.Module):
         self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
 
         conv_kernel_init = nn.with_logical_partitioning(
-            nn.initializers.lecun_normal(),
+            nn.initializers.he_normal(),
             ('keep_1', 'keep_2', 'conv_in','conv_out')
         )
 

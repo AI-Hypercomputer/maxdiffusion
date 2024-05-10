@@ -45,7 +45,7 @@ class FlaxUpsample2D(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                nn.initializers.he_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
         )
@@ -78,7 +78,7 @@ class FlaxDownsample2D(nn.Module):
             padding=((1, 1), (1, 1)),  # padding="VALID",
             dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                nn.initializers.he_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
         )
@@ -119,7 +119,7 @@ class FlaxResnetBlock2D(nn.Module):
                 padding="VALID",
                 dtype=self.dtype,
                 kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                nn.initializers.he_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
             )
@@ -131,7 +131,7 @@ class FlaxResnetBlock2D(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                nn.initializers.he_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
         )
@@ -147,7 +147,7 @@ class FlaxResnetBlock2D(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                nn.initializers.he_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
         )
