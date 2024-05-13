@@ -41,7 +41,7 @@ from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh, PositionalSharding
 from maxdiffusion.image_processor import VaeImageProcessor
 
-cc.initialize_cache(os.path.expanduser("~/jax_cache"))
+cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
 def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale):
     latents, scheduler_state, state = args

@@ -228,7 +228,7 @@ def train(config):
 
     sharding = PositionalSharding(devices_array).replicate()
     partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=sharding)
-    params["text_encoder"] = jax.tree_map(partial_device_put_replicated, params["text_encoder"])
+    params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
 
     # Optimization
     if config.scale_lr:
@@ -460,7 +460,7 @@ def train(config):
 def main(argv: Sequence[str]) -> None:
     mllog_utils.train_init_start()
     max_logging.log(f"Found {jax.device_count()} devices.")
-    cc.initialize_cache(os.path.expanduser("~/jax_cache"))
+    cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
     validate_train_config(config)

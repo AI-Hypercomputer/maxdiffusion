@@ -120,7 +120,7 @@ class UnetTest(unittest.TestCase):
 
     # Validate weights are sharded and distributed across devices.
     flat_params = traverse_util.flatten_dict(state.params, sep='/')
-    sized_params = jax.tree_util.tree_map(lambda x: x.device_buffers[0].size/x.size, flat_params)
+    sized_params = jax.tree_util.tree_map(lambda x: x.addressable_shards[0].data.size/x.size, flat_params)
     assert sized_params['down_blocks_0/resnets_0/time_emb_proj/kernel'] == 1.
     assert sized_params['down_blocks_0/downsamplers_0/conv/kernel'] == 1.
     assert sized_params['down_blocks_0/resnets_0/conv1/kernel'] == 1.

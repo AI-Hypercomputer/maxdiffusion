@@ -192,7 +192,7 @@ def fill_unspecified_mesh_axes(parallelism_vals, target_product, parallelism_typ
     assert parallelism_vals.count(-1) == 1, f"Found unspecified values (-1) for more than one {parallelism_type}\
       parallelism axis. At most one axis can be unspecified."
 
-    determined_val = target_product/np.product(parallelism_vals)*-1
+    determined_val = target_product/np.prod(parallelism_vals)*-1
 
     assert determined_val >= 1 and determined_val.is_integer, f"Unspecified value unable to be determined with the given\
       {parallelism_type} parallelism values"
@@ -306,7 +306,7 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
                                                   mesh,
                                                   state_mesh_annotations)
 
-    state_mesh_shardings = jax.tree_map(
+    state_mesh_shardings = jax.tree_util.tree_map(
         lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
   if not state:
     init_train_state_partial = functools.partial(init_train_state, model=model, tx=tx, training=training)
@@ -324,7 +324,7 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
 
   state = unbox_logicallypartioned_trainstate(state)
 
-  state_mesh_shardings = jax.tree_map(
+  state_mesh_shardings = jax.tree_util.tree_map(
     lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
   return state, state_mesh_shardings
 
