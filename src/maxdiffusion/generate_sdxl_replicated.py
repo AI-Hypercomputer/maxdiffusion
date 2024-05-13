@@ -26,7 +26,7 @@ from jax.experimental.compilation_cache import compilation_cache as cc
 
 from maxdiffusion import FlaxStableDiffusionXLPipeline
 
-cc.initialize_cache("~/jax_cache")
+cc.set_cache_dir("~/jax_cache")
 
 NUM_DEVICES = jax.device_count()
 

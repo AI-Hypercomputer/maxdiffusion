@@ -37,7 +37,7 @@ from maxdiffusion.max_utils import (
 
 from flax import traverse_util
 
-cc.initialize_cache(os.path.expanduser("~/jax_cache"))
+cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
 def run(config):
   rng = jax.random.PRNGKey(config.seed)
