@@ -92,7 +92,7 @@ def make_pokemon_train_iterator(
     pipeline,
     params,
     init_rng):
-  train_ds = load_dataset("lambdalabs/pokemon-blip-captions",split="train")
+  train_ds = load_dataset(config.dataset_name,split="train")
 
   captions_column = config.caption_column
   image_column = config.image_column
@@ -180,7 +180,7 @@ def make_pokemon_train_iterator(
 
     if shuffle:
       tf_dataset = tf_dataset.shuffle(len(tf_dataset))
-    tf_dataset = tf_dataset.batch(batch_size, drop_remainder=True)
+    tf_dataset = tf_dataset.batch(batch_size // jax.process_count(), drop_remainder=True)
     tf_dataset = tf_dataset.prefetch(tf.data.experimental.AUTOTUNE)
     repeats = math.ceil((config.max_train_steps * batch_size) / len(tf_dataset))
     tf_dataset = tf_dataset.repeat(repeats)
