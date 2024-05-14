@@ -43,7 +43,7 @@ class Train(unittest.TestCase):
     train_main([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
       "revision=bf16","dtype=bfloat16","run_name=sd2.1_smoke_test",
-      "max_train_steps=21","train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/tf_records",
+      "max_train_steps=21","dataset_name=diffusers/pokemon-gpt4-captions",
       "resolution=768","per_device_batch_size=1",
       "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}"])
 

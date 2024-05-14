@@ -254,7 +254,7 @@ def train(config):
     per_device_tflops = calculate_training_tflops(pipeline, unet_state.params, config)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
 
-    if config.dataset_name == "lambdalabs/pokemon-blip-captions":
+    if config.dataset_name == "diffusers/pokemon-gpt4-captions":
         data_iterator = make_pokemon_train_iterator(
            config,
            mesh,
@@ -395,9 +395,9 @@ def train(config):
 
     start_step = get_first_step(unet_state)
     mllog_utils.train_init_print(config)
-    mllog_utils.train_init_stop()
-    mllog_utils.train_run_start()
-    mllog_utils.train_step_start(start_step)
+    mllog_utils.train_init_stop(config)
+    mllog_utils.train_run_start(config)
+    mllog_utils.train_step_start(config, start_step)
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
@@ -458,11 +458,11 @@ def train(config):
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
-    mllog_utils.train_init_start()
     max_logging.log(f"Found {jax.device_count()} devices.")
     cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
+    mllog_utils.train_init_start(config)
     validate_train_config(config)
     train(config)
 if __name__ == "__main__":

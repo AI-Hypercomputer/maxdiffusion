@@ -79,7 +79,7 @@ ici_tensor_parallelism: 1
 
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
-dataset_name: 'lambdalabs/pokemon-blip-captions'
+dataset_name: ''
 train_data_dir: ''
 dataset_config_name: ''
 cache_dir: ''
@@ -128,3 +128,5 @@ num_inference_steps: 4
 lightning_from_pt: True
 lightning_repo: "ByteDance/SDXL-Lightning"
 lightning_ckpt: "sdxl_lightning_4step_unet.safetensors"
+
+enable_mllog: False
