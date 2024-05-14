@@ -223,27 +223,48 @@ def run(config):
     out_shardings=None
   )
 
+  import json
+  metrics_dict = {}
   s = time.time()
   p_run_inference(unet_state, vae_state, params).block_until_ready()
-  print("compile time: ", (time.time() - s))
+  compile_time = time.time() - s
+  print("compile time: ", compile_time)
+  metrics_dict['compile_time'] = compile_time
+  
   s = time.time()
   images = p_run_inference(unet_state, vae_state, params).block_until_ready()
   images.block_until_ready()
-  print("inference time: ",(time.time() - s))
+  inference_time = time.time() - s
+  metrics_dict['inference_time1'] = inference_time
+  print("inference time: ",inference_time)
+  
+
   s = time.time()
   images = p_run_inference(unet_state, vae_state, params).block_until_ready() #run_inference(unet_state, vae_state, latents, scheduler_state)
   images.block_until_ready()
-  print("inference time: ",(time.time() - s))
+  inference_time = time.time() - s
+  print("inference time: ",inference_time)
+  metrics_dict['inference_time2'] = inference_time
+
   s = time.time()
   images = p_run_inference(unet_state, vae_state, params).block_until_ready() # run_inference(unet_state, vae_state, latents, scheduler_state)
   images.block_until_ready()
-  print("inference time: ",(time.time() - s))
+  inference_time = time.time() - s
+  print("inference time: ",inference_time)
+  metrics_dict['inference_time3'] = inference_time
+
+
   s = time.time()
   activate_profiler(config)
   images = p_run_inference(unet_state, vae_state, params).block_until_ready()
   deactivate_profiler(config)
   images.block_until_ready()
-  print("inference time: ",(time.time() - s))
+  inference_time = time.time() - s
+  print("inference time: ",inference_time)
+  metrics_dict['inference_time4'] = inference_time
+  with open("metrics.json", 'w') as f:
+      f.write(json.dumps(metrics_dict))
+  
   images = jax.experimental.multihost_utils.process_allgather(images)
   numpy_images = np.array(images)
   images = VaeImageProcessor.numpy_to_pil(numpy_images)
