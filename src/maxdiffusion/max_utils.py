@@ -433,3 +433,35 @@ def get_memory_allocations():
     m_stats = device.memory_stats()
     max_logging.log(f'device : {device.process_index},'
                     f'bytes in use: {m_stats["bytes_in_use"] / gb} / {m_stats["bytes_limit"] / gb} GB')
+
+def calculate_training_tflops(pipeline, unet_params, config):
+    """Calculate per device training tflops (back and fwd pass)."""
+
+    vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
+    batch_size = config.per_device_batch_size
+
+    input_shape = (batch_size,
+                    pipeline.unet.config['in_channels'],
+                    config.resolution // vae_scale_factor,
+                    config.resolution // vae_scale_factor)
+
+    latents = jax.random.normal(jax.random.PRNGKey(0),
+                                shape=input_shape,
+                                dtype=get_dtype(config)
+                                )
+    latents = jnp.concatenate([latents] * 2)
+    timesteps = jnp.ones((latents.shape[0],))
+    encoder_hidden_states_shape = (latents.shape[0],
+                                    pipeline.text_encoder.config.max_position_embeddings,
+                                    pipeline.text_encoder.config.hidden_size)
+    encoder_hidden_states = jnp.zeros(encoder_hidden_states_shape)
+    c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : unet_params}, latents, timesteps, encoder_hidden_states).compile()
+
+    model_flops = 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12) 
+
+    # Cost analysis over estimates flops when splash pallas kernel is enabled
+    # dividing by 3.2 provides a better estimate.
+    if 'flash' in config.attention:
+      model_flops = model_flops / 3.2
+    
+    return model_flops

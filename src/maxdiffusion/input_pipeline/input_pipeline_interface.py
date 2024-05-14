@@ -89,36 +89,16 @@ def make_pokemon_train_iterator(
     config,
     mesh,
     global_batch_size,
-    pipeline,
-    params,
-    init_rng):
+    tokenize_fn,
+    image_transforms_fn):
   train_ds = load_dataset(config.dataset_name,split="train")
 
   captions_column = config.caption_column
   image_column = config.image_column
-  image_resolution = config.resolution
   cache_latents_text_encoder_outputs = config.cache_latents_text_encoder_outputs
-
-  def tokenize_captions(examples):
-    captions = list(examples[captions_column])
-    text_inputs = pipeline.tokenizer(captions,
-                                     max_length=pipeline.tokenizer.model_max_length,
-                                     padding="max_length",
-                                     truncation=True
-                                    )
-
-    if cache_latents_text_encoder_outputs:
-      p_encode = jax.jit(functools.partial(encode,
-                                           text_encoder=pipeline.text_encoder,
-                                           text_encoder_params=params["text_encoder"]))
-      encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
-      examples["input_ids"] = encoder_hidden_states
-    else:
-      examples["input_ids"] = text_inputs.input_ids
-    return examples
-
+  
   train_ds = train_ds.map(
-    function=tokenize_captions,
+    function=tokenize_fn,
     batched=True,
     remove_columns=[captions_column],
     num_proc=1 if cache_latents_text_encoder_outputs else 4,
@@ -127,46 +107,8 @@ def make_pokemon_train_iterator(
   # need to do it before load_as_tf_dataset
   # since raw images are different sizes
   # will break from_tensor_slices
-  def transform_images(examples, rng, global_batch_size):
-    images = list(examples[image_column])
-    images = [np.asarray(image) for image in images]
-    tensor_list = []
-    for image in images:
-      image = tf.image.resize(image, [image_resolution, image_resolution], method="bilinear", antialias=True)
-      image = image / 255.0
-      image = (image - 0.5) / 0.5
-      image = tf.transpose(image, perm=[2,0,1])
-      tensor_list.append(image)
-    if cache_latents_text_encoder_outputs:
-      tensor_list = np.stack(tensor_list)
-      p_vae_apply = jax.jit(functools.partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
-      ds_length = tensor_list.shape[0]
-      iters = ds_length // global_batch_size
-      latents_list = []
-      for i in range(0, iters * global_batch_size, global_batch_size):
-        sample_rng, rng = jax.random.split(rng)
-        latents = p_vae_apply(tensor_list[i:i+global_batch_size], sample_rng)
-        latents_list.append(latents)
-
-      latents_list = np.stack(latents_list)
-      b1, b2, c, l1, l2 = latents_list.shape
-      latents_list = np.reshape(latents_list, (b1*b2,c, l1, l2))
-
-      # TODO (Juan Acevedo): do last iteration, its required for the Pyarrow dataset
-      # to not break due to items being fewer than expected. Is there a better way?
-      sample_rng, rng = jax.random.split(rng)
-      latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
-
-      examples["pixel_values"] = np.append(latents_list, latents, axis=0)
-    else:
-      examples["pixel_values"] = tf.stack(tensor_list)
-
-    return examples
-
-  p_transform_images = functools.partial(transform_images, rng=init_rng, global_batch_size=global_batch_size)
-
   train_ds = train_ds.map(
-    function=p_transform_images,
+    function=image_transforms_fn,
     batched=True,
     remove_columns=[image_column],
     num_proc=1 if cache_latents_text_encoder_outputs else config.transform_images_num_proc,

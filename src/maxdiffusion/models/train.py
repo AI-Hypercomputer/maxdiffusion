@@ -22,6 +22,7 @@ from functools import partial
 
 import numpy as np
 
+import tensorflow as tf
 import jax
 import jax.numpy as jnp
 import optax
@@ -51,30 +52,74 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_laion400m_train_iterator
 )
 
-def calculate_training_tflops(pipeline, unet_params, config):
-    """Calculate per device training tflops (back and fwd pass)."""
+def vae_apply(images, sample_rng, vae, vae_params):
+  vae_outputs = vae.apply(
+    {"params" : vae_params}, images,
+      deterministic=True, method=vae.encode
+  )
+  latents = vae_outputs.latent_dist.sample(sample_rng)
+  latents = jnp.transpose(latents, (0, 3, 1, 2))
+  latents = latents * vae.config.scaling_factor
 
-    vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
-    batch_size = config.per_device_batch_size
+  return latents
 
-    input_shape = (batch_size,
-                    pipeline.unet.config['in_channels'],
-                    config.resolution // vae_scale_factor,
-                    config.resolution // vae_scale_factor)
+def transform_images(examples, image_column, image_resolution, rng, global_batch_size, p_vae_apply = None):
+    images = list(examples[image_column])
+    images = [np.asarray(image) for image in images]
+    tensor_list = []
+    for image in images:
+        image = tf.image.resize(image, [image_resolution, image_resolution], method="bilinear", antialias=True)
+        image = image / 255.0
+        image = (image - 0.5) / 0.5
+        image = tf.transpose(image, perm=[2,0,1])
+        tensor_list.append(image)
+    if p_vae_apply:
+        tensor_list = np.stack(tensor_list)
+        ds_length = tensor_list.shape[0]
+        iters = ds_length // global_batch_size
+        latents_list = []
+        for i in range(0, iters * global_batch_size, global_batch_size):
+            sample_rng, rng = jax.random.split(rng)
+            latents = p_vae_apply(tensor_list[i:i+global_batch_size], sample_rng)
+            latents_list.append(latents)
 
-    latents = jax.random.normal(jax.random.PRNGKey(0),
-                                shape=input_shape,
-                                dtype=max_utils.get_dtype(config)
-                                )
-    latents = jnp.concatenate([latents] * 2)
-    timesteps = jnp.ones((latents.shape[0],))
-    encoder_hidden_states_shape = (latents.shape[0],
-                                    pipeline.text_encoder.config.max_position_embeddings,
-                                    pipeline.text_encoder.config.hidden_size)
-    encoder_hidden_states = jnp.zeros(encoder_hidden_states_shape)
-    c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : unet_params}, latents, timesteps, encoder_hidden_states).compile()
+        latents_list = np.stack(latents_list)
+        b1, b2, c, l1, l2 = latents_list.shape
+        latents_list = np.reshape(latents_list, (b1*b2,c, l1, l2))
 
-    return 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12)
+        # TODO (Juan Acevedo): do last iteration, its required for the Pyarrow dataset
+        # to not break due to items being fewer than expected. Is there a better way?
+        sample_rng, rng = jax.random.split(rng)
+        latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
+
+        examples["pixel_values"] = np.append(latents_list, latents, axis=0)
+    else:
+        examples["pixel_values"] = tf.stack(tensor_list)
+
+    return examples
+
+def encode(input_ids, text_encoder, text_encoder_params):
+  return text_encoder(
+    input_ids,
+    params=text_encoder_params,
+    train=False
+  )[0]
+
+def tokenize_captions(examples, caption_column, tokenizer, p_encode=None):
+    captions = list(examples[caption_column])
+    text_inputs = tokenizer(
+        captions,
+        max_length=tokenizer.model_max_length,
+        padding="max_length",
+        truncation=True
+    )
+
+    if p_encode:
+        encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
+        examples["input_ids"] = encoder_hidden_states
+    else:
+        examples["input_ids"] = text_inputs.input_ids
+    return examples
 
 def get_first_step(state):
   with jax.spmd_mode('allow_all'):
@@ -251,17 +296,29 @@ def train(config):
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
 
-    per_device_tflops = calculate_training_tflops(pipeline, unet_state.params, config)
+    per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
-
+    
     if config.dataset_name == "diffusers/pokemon-gpt4-captions":
+        p_encode = None
+        p_vae_apply = None
+        if config.cache_latents_text_encoder_outputs:
+            p_encode = jax.jit(partial(encode,text_encoder=pipeline.text_encoder,text_encoder_params=params["text_encoder"]))
+            p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+        tokenize_fn = partial(tokenize_captions,caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode)
+        image_transforms_fn = partial(transform_images,
+                                      image_column=config.image_column,
+                                      image_resolution=config.resolution,
+                                      rng=rng,
+                                      global_batch_size=total_train_batch_size,
+                                      p_vae_apply=p_vae_apply)
+        
         data_iterator = make_pokemon_train_iterator(
            config,
            mesh,
            total_train_batch_size,
-           pipeline,
-           params,
-           rng
+           tokenize_fn,
+           image_transforms_fn
         )
     else:
         data_iterator = make_laion400m_train_iterator(
@@ -298,11 +355,7 @@ def train(config):
                 latents = latents * pipeline.vae.config.scaling_factor
 
                 # Get the text embedding for conditioning
-                encoder_hidden_states = pipeline.text_encoder(
-                    batch["input_ids"],
-                    params=params["text_encoder"],
-                train=False,
-                )[0]
+                encoder_hidden_states = encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])
 
             # Sample noise that we'll add to the latents
             noise_rng, timestep_rng = jax.random.split(sample_rng)
