@@ -22,7 +22,6 @@ from functools import partial
 
 import numpy as np
 
-import tensorflow as tf
 import jax
 import jax.numpy as jnp
 import optax
@@ -30,14 +29,13 @@ import transformers
 from absl import app
 from maxdiffusion import (
     FlaxDDPMScheduler,
-    FlaxStableDiffusionPipeline,
+    FlaxStableDiffusionXLPipeline,
     FlaxAutoencoderKL,
     max_logging,
     max_utils,
     pyconfig,
     mllog_utils,
 )
-from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images
 
 from transformers import FlaxCLIPTextModel
 
@@ -53,28 +51,49 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_laion400m_train_iterator
 )
 
-def encode(input_ids, text_encoder, text_encoder_params):
-  return text_encoder(
-    input_ids,
-    params=text_encoder_params,
-    train=False
-  )[0]
+from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images
 
-def tokenize_captions(examples, caption_column, tokenizer, p_encode=None):
-    captions = list(examples[caption_column])
-    text_inputs = tokenizer(
+def encode_xl(input_ids, text_encoders, text_encoder_params):
+  te_1_inputs = input_ids[:, 0, :]
+  te_2_inputs = input_ids[:, 1, :]
+
+  prompt_embeds = text_encoders[0](
+    te_1_inputs, params=text_encoder_params[0], output_hidden_states=True
+  )
+  prompt_embeds = prompt_embeds["hidden_states"][-2]
+
+  prompt_embeds_2_out = text_encoders[1](
+    te_2_inputs, params=text_encoder_params[1], output_hidden_states=True   
+  )
+  prompt_embeds_2 = prompt_embeds_2_out["hidden_states"][-2]
+  text_embeds = prompt_embeds_2_out["text_embeds"]
+  prompt_embeds = jnp.concatenate([prompt_embeds, prompt_embeds_2], axis=-1)
+
+  return prompt_embeds, text_embeds
+
+
+def tokenize_captions_xl(examples, caption_column, tokenizers, p_encode=None):
+  inputs = []
+  captions = list(examples[caption_column])
+  for _tokenizer in tokenizers:
+     text_inputs = _tokenizer(
         captions,
-        max_length=tokenizer.model_max_length,
         padding="max_length",
-        truncation=True
-    )
+        max_length=_tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="np"
+     )
+     inputs.append(text_inputs.input_ids)
+  inputs = np.stack(inputs,axis=1)
 
-    if p_encode:
-        encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
-        examples["input_ids"] = encoder_hidden_states
-    else:
-        examples["input_ids"] = text_inputs.input_ids
-    return examples
+  if p_encode:
+    prompt_embeds, text_embeds = p_encode(inputs)
+    examples["prompt_embeds"] = prompt_embeds
+    examples["text_embeds"] = text_embeds
+  else:
+    examples["input_ids"] = inputs
+
+  return examples
 
 def get_first_step(state):
   with jax.spmd_mode('allow_all'):
@@ -206,7 +225,7 @@ def train(config):
 
     weight_dtype = max_utils.get_dtype(config)
     flash_block_sizes = max_utils.get_flash_block_sizes(config)
-    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+    pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision,
         dtype=weight_dtype,
         safety_checker=None,
@@ -229,7 +248,7 @@ def train(config):
     sharding = PositionalSharding(devices_array).replicate()
     partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=sharding)
     params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
-
+    params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
     # Optimization
     if config.scale_lr:
         config.learning_rate = config.learning_rate * total_train_batch_size
@@ -253,20 +272,26 @@ def train(config):
 
     per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
-    
-    if config.dataset_name == "diffusers/pokemon-gpt4-captions":
+
+    if config.dataset_name == "lambdalabs/pokemon-blip-captions":
         p_encode = None
         p_vae_apply = None
         if config.cache_latents_text_encoder_outputs:
-            p_encode = jax.jit(partial(encode,text_encoder=pipeline.text_encoder,text_encoder_params=params["text_encoder"]))
-            p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
-        tokenize_fn = partial(tokenize_captions,caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode)
+          p_encode = jax.jit(partial(encode_xl),
+                              text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
+                              text_encoder_params=[params["text_encoder"], params["text_encoder_2"]])
+          p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+        
+        tokenize_fn = partial(tokenize_captions_xl,
+                          caption_column=config.caption_column,
+                          tokenizers=[pipeline.tokenizer, pipeline.tokenizer_2],
+                          p_encode=p_encode)
         image_transforms_fn = partial(transform_images,
-                                      image_column=config.image_column,
-                                      image_resolution=config.resolution,
-                                      rng=rng,
-                                      global_batch_size=total_train_batch_size,
-                                      p_vae_apply=p_vae_apply)
+                                  image_column=config.image_column,
+                                  image_resolution=config.resolution,
+                                  rng=rng,
+                                  global_batch_size=total_train_batch_size,
+                                  p_vae_apply=p_vae_apply)
         
         data_iterator = make_pokemon_train_iterator(
            config,
@@ -310,7 +335,11 @@ def train(config):
                 latents = latents * pipeline.vae.config.scaling_factor
 
                 # Get the text embedding for conditioning
-                encoder_hidden_states = encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])
+                encoder_hidden_states = pipeline.text_encoder(
+                    batch["input_ids"],
+                    params=params["text_encoder"],
+                train=False,
+                )[0]
 
             # Sample noise that we'll add to the latents
             noise_rng, timestep_rng = jax.random.split(sample_rng)
@@ -403,9 +432,9 @@ def train(config):
 
     start_step = get_first_step(unet_state)
     mllog_utils.train_init_print(config)
-    mllog_utils.train_init_stop(config)
-    mllog_utils.train_run_start(config)
-    mllog_utils.train_step_start(config, start_step)
+    mllog_utils.train_init_stop()
+    mllog_utils.train_run_start()
+    mllog_utils.train_step_start(start_step)
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
@@ -444,7 +473,7 @@ def train(config):
             params["text_encoder"] = text_encoder.params
             params["vae"] = vae_params
 
-        pipeline = FlaxStableDiffusionPipeline(
+        pipeline = FlaxStableDiffusionXLPipeline(
             text_encoder=pipeline.text_encoder,
             vae=pipeline.vae,
             unet=pipeline.unet,
@@ -466,11 +495,11 @@ def train(config):
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
+    mllog_utils.train_init_start()
     max_logging.log(f"Found {jax.device_count()} devices.")
     cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
-    mllog_utils.train_init_start(config)
     validate_train_config(config)
     train(config)
 if __name__ == "__main__":

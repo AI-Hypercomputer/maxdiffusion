@@ -37,14 +37,20 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
 from skimage.metrics import structural_similarity as ssim
 from PIL import Image
 
-from maxdiffusion import FlaxStableDiffusionPipeline
+from maxdiffusion import (
+  FlaxStableDiffusionPipeline,
+  FlaxStableDiffusionXLPipeline
+)
 from maxdiffusion.models import FlaxAutoencoderKL
 from maxdiffusion.models.train import (
   encode,
-  vae_apply,
-  tokenize_captions,
-  transform_images
+  tokenize_captions
 )
+from maxdiffusion.train_sdxl import (
+   encode_xl,
+   tokenize_captions_xl
+)
+from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images
 
 HOME_DIR = pathlib.Path.home()
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -141,13 +147,65 @@ class InputPipelineInterface(unittest.TestCase):
     data = train_iterator()
     device_count = jax.device_count()
 
-    # vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-    # encoder_hidden_states = data["input_ids"]
-    # assert encoder_hidden_states.shape == (device_count,77, 1024)
-    # assert data["pixel_values"].shape == (device_count,
-    #                                       pipeline.unet.config.in_channels,
-    #                                       config.resolution // vae_scale_factor,
-    #                                       config.resolution // vae_scale_factor)
+    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+    encoder_hidden_states = data["input_ids"]
+    assert encoder_hidden_states.shape == (device_count,77, 1024)
+    assert data["pixel_values"].shape == (device_count,
+                                          pipeline.unet.config.in_channels,
+                                          config.resolution // vae_scale_factor,
+                                          config.resolution // vae_scale_factor)
+
+  def test_make_pokemon_iterator_sdxl_cache(self):
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
+        "cache_latents_text_encoder_outputs=True",
+        "dataset_name=diffusers/pokemon-gpt4-captions"])
+    config = pyconfig.config
+    global_batch_size = config.per_device_batch_size * jax.device_count()
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+    weight_dtype = max_utils.get_dtype(config)
+    pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+        safety_checker=None, feature_extractor=None, from_pt=config.from_pt
+    )
+    rng = jax.random.PRNGKey(config.seed)
+    p_encode = None
+    p_vae_apply = None
+    if config.cache_latents_text_encoder_outputs:
+        p_encode = jax.jit(partial(encode_xl,
+                                   text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
+                                   text_encoder_params=[params["text_encoder"], params["text_encoder_2"]]))
+        p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+    tokenize_fn = partial(tokenize_captions_xl,
+                          caption_column=config.caption_column,
+                          tokenizers=[pipeline.tokenizer, pipeline.tokenizer_2],
+                          p_encode=p_encode)
+    image_transforms_fn = partial(transform_images,
+                                  image_column=config.image_column,
+                                  image_resolution=config.resolution,
+                                  rng=rng,
+                                  global_batch_size=global_batch_size,
+                                  p_vae_apply=p_vae_apply)
+
+    train_iterator = make_pokemon_train_iterator(
+      config,
+      mesh,
+      global_batch_size,
+      tokenize_fn,
+      image_transforms_fn
+    )
+    data = train_iterator()
+    device_count = jax.device_count()
+
+    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+    prompt_embeds = data["prompt_embeds"]
+    text_embeds = data["text_embeds"]
+    assert prompt_embeds.shape == (device_count,77, 2048)
+    assert text_embeds.shape == (device_count, 1280)
+    assert data["pixel_values"].shape == (device_count,
+                                          pipeline.unet.config.in_channels,
+                                          config.resolution // vae_scale_factor,
+                                          config.resolution // vae_scale_factor)
 
   def test_make_laion_iterator(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
