@@ -108,7 +108,6 @@ max_train_samples: -1
 max_train_steps: 800
 seed: 0
 output_dir: 'sd-model-finetuned'
-tensorboard_dir: 'gs://shahrokhi-maxdiffusion-v5'
 per_device_batch_size: 1
 
 warmup_steps_fraction: 0.0
