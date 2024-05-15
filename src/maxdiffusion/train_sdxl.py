@@ -51,7 +51,11 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_laion400m_train_iterator
 )
 
-from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images
+from maxdiffusion.maxdiffusion_utils import (
+  vae_apply,
+  transform_images,
+  get_add_time_ids
+)
 
 def encode_xl(input_ids, text_encoders, text_encoder_params):
   te_1_inputs = input_ids[:, 0, :]
@@ -87,11 +91,10 @@ def tokenize_captions_xl(examples, caption_column, tokenizers, p_encode=None):
   inputs = np.stack(inputs,axis=1)
 
   if p_encode:
-    prompt_embeds, text_embeds = p_encode(inputs)
+    prompt_embeds, text_embeds = p_encode(inputs) 
     examples["prompt_embeds"] = prompt_embeds
     examples["text_embeds"] = text_embeds
-  else:
-    examples["input_ids"] = inputs
+  examples["input_ids"] = inputs
 
   return examples
 
@@ -273,13 +276,13 @@ def train(config):
     per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
 
-    if config.dataset_name == "lambdalabs/pokemon-blip-captions":
+    if config.dataset_name == "diffusers/pokemon-gpt4-captions":
         p_encode = None
         p_vae_apply = None
         if config.cache_latents_text_encoder_outputs:
-          p_encode = jax.jit(partial(encode_xl),
+          p_encode = jax.jit(partial(encode_xl,
                               text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
-                              text_encoder_params=[params["text_encoder"], params["text_encoder_2"]])
+                              text_encoder_params=[params["text_encoder"], params["text_encoder_2"]]))
           p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
         
         tokenize_fn = partial(tokenize_captions_xl,
@@ -356,6 +359,19 @@ def train(config):
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
+            
+            prompt_embeds = batch["prompt_embeds"]
+            text_embeds = batch["text_embeds"]
+            
+            # TODO : @jfacevedo - support cropping.
+            add_time_ids = get_add_time_ids(
+              (config.resolution, config.resolution),
+              (0, 0),
+              (config.resolution, config.resolution),
+              prompt_embeds.shape[0],
+              dtype=prompt_embeds.dtype
+            )
+            unet_added_conditions = {"time_ids" : add_time_ids, "text_embeds" : text_embeds}
 
             # TODO - laion dataset was prepared with an extra dim.
             # need to preprocess the dataset with dim removed.
@@ -364,7 +380,12 @@ def train(config):
 
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
-                {"params": unet_params}, noisy_latents, timesteps, encoder_hidden_states, train=True
+                {"params": unet_params},
+                noisy_latents,
+                timesteps,
+                encoder_hidden_states,
+                added_cond_kwargs=unet_added_conditions,
+                train=True
             ).sample
 
             # Get the target for loss depending on the prediction type
@@ -432,9 +453,9 @@ def train(config):
 
     start_step = get_first_step(unet_state)
     mllog_utils.train_init_print(config)
-    mllog_utils.train_init_stop()
-    mllog_utils.train_run_start()
-    mllog_utils.train_step_start(start_step)
+    mllog_utils.train_init_stop(config)
+    mllog_utils.train_run_start(config)
+    mllog_utils.train_step_start(config, start_step)
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
@@ -495,11 +516,12 @@ def train(config):
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
-    mllog_utils.train_init_start()
+    
     max_logging.log(f"Found {jax.device_count()} devices.")
     cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
+    mllog_utils.train_init_start(config)
     validate_train_config(config)
     train(config)
 if __name__ == "__main__":

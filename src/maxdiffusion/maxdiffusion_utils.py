@@ -81,3 +81,8 @@ def transform_images(examples, image_column, image_resolution, rng, global_batch
         examples["pixel_values"] = tf.stack(tensor_list)
 
     return examples
+
+def get_add_time_ids(original_size, crops_coords_top_left, target_size, bs, dtype):
+  add_time_ids = list(original_size + crops_coords_top_left + target_size)
+  add_time_ids = jnp.array([add_time_ids] * bs, dtype=dtype)
+  return add_time_ids

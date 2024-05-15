@@ -96,13 +96,14 @@ def make_pokemon_train_iterator(
   captions_column = config.caption_column
   image_column = config.image_column
   cache_latents_text_encoder_outputs = config.cache_latents_text_encoder_outputs
-  
+
   train_ds = train_ds.map(
     function=tokenize_fn,
     batched=True,
     remove_columns=[captions_column],
     num_proc=1 if cache_latents_text_encoder_outputs else 4,
-    desc="Running tokenizer on train dataset"
+    desc="Running tokenizer on train dataset",
+    new_fingerprint="maxdiffusion"
   )
   # need to do it before load_as_tf_dataset
   # since raw images are different sizes
@@ -112,7 +113,8 @@ def make_pokemon_train_iterator(
     batched=True,
     remove_columns=[image_column],
     num_proc=1 if cache_latents_text_encoder_outputs else config.transform_images_num_proc,
-    desc="Transforming images"
+    desc="Transforming images",
+    new_fingerprint="maxdiffusion"
   )
 
   # taken from https://github.com/huggingface/transformers/blob/abbffc4525566a48a9733639797c812301218b83/examples/tensorflow/contrastive-image-text/run_clip.py#L225
