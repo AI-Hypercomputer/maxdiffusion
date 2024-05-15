@@ -15,9 +15,7 @@
  """
 
 import os
-import functools
 import math
-import numpy as np
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
 from datasets import load_dataset

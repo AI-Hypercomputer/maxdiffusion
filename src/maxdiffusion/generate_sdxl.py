@@ -46,7 +46,6 @@ from maxdiffusion.max_utils import (
   deactivate_profiler,
   device_put_replicated,
   get_flash_block_sizes,
-  delete_pytree,
 )
 from maxdiffusion.maxdiffusion_utils import (
   load_sdxllightning_unet,
@@ -148,6 +147,7 @@ def run(config):
   old_params = params
   params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), old_params)
   params["scheduler"] = scheduler_state
+
   # TODO @jfacevedo - There is a memory leak somewhere that holds weights
   # twice if loaded from HF, but not if loaded after saving them locally.
   # delete_pytree(old_params)

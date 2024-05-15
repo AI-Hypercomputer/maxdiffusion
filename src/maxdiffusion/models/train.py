@@ -22,7 +22,6 @@ from functools import partial
 
 import numpy as np
 
-import tensorflow as tf
 import jax
 import jax.numpy as jnp
 import optax
@@ -253,7 +252,7 @@ def train(config):
 
     per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
-    
+
     if config.dataset_name == "diffusers/pokemon-gpt4-captions":
         p_encode = None
         p_vae_apply = None
@@ -267,7 +266,7 @@ def train(config):
                                       rng=rng,
                                       global_batch_size=total_train_batch_size,
                                       p_vae_apply=p_vae_apply)
-        
+
         data_iterator = make_pokemon_train_iterator(
            config,
            mesh,

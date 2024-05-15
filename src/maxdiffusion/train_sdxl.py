@@ -39,12 +39,11 @@ from maxdiffusion import (
 
 from transformers import FlaxCLIPTextModel, FlaxCLIPTextModelWithProjection
 
-from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax.linen import partitioning as nn_partitioning
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
-from transformers import CLIPImageProcessor, set_seed
+from transformers import set_seed
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
@@ -67,7 +66,7 @@ def encode_xl(input_ids, text_encoders, text_encoder_params):
   prompt_embeds = prompt_embeds["hidden_states"][-2]
 
   prompt_embeds_2_out = text_encoders[1](
-    te_2_inputs, params=text_encoder_params[1], output_hidden_states=True   
+    te_2_inputs, params=text_encoder_params[1], output_hidden_states=True
   )
   prompt_embeds_2 = prompt_embeds_2_out["hidden_states"][-2]
   text_embeds = prompt_embeds_2_out["text_embeds"]
@@ -91,7 +90,7 @@ def tokenize_captions_xl(examples, caption_column, tokenizers, p_encode=None):
   inputs = np.stack(inputs,axis=1)
 
   if p_encode:
-    prompt_embeds, text_embeds = p_encode(inputs) 
+    prompt_embeds, text_embeds = p_encode(inputs)
     examples["prompt_embeds"] = prompt_embeds
     examples["text_embeds"] = text_embeds
   examples["input_ids"] = inputs
@@ -284,7 +283,7 @@ def train(config):
                               text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
                               text_encoder_params=[params["text_encoder"], params["text_encoder_2"]]))
           p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
-        
+
         tokenize_fn = partial(tokenize_captions_xl,
                           caption_column=config.caption_column,
                           tokenizers=[pipeline.tokenizer, pipeline.tokenizer_2],
@@ -295,7 +294,7 @@ def train(config):
                                   rng=rng,
                                   global_batch_size=total_train_batch_size,
                                   p_vae_apply=p_vae_apply)
-        
+
         data_iterator = make_pokemon_train_iterator(
            config,
            mesh,
@@ -331,7 +330,7 @@ def train(config):
                 prompt_embeds = batch["prompt_embeds"]
                 text_embeds = batch["text_embeds"]
             else:
-                raise ValueError(f"cache_latents_text_encoder_outputs = False currently not supported!")
+                raise ValueError("cache_latents_text_encoder_outputs = False currently not supported!")
 
             # Sample noise that we'll add to the latents
             noise_rng, timestep_rng = jax.random.split(sample_rng)
@@ -348,7 +347,7 @@ def train(config):
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
-            
+
             # TODO : @jfacevedo - support cropping.
             add_time_ids = get_add_time_ids(
               (config.resolution, config.resolution),
@@ -502,7 +501,7 @@ def train(config):
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
-    
+
     max_logging.log(f"Found {jax.device_count()} devices.")
     cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
