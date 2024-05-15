@@ -30,7 +30,9 @@ from flax.linen import partitioning as nn_partitioning
 from jax.sharding import PositionalSharding
 
 from maxdiffusion import (
-    FlaxStableDiffusionXLPipeline
+    FlaxStableDiffusionXLPipeline,
+    FlaxEulerDiscreteScheduler,
+    FlaxDDPMScheduler
 )
 
 
@@ -127,6 +129,17 @@ def run(config):
     flash_block_sizes=flash_block_sizes,
     mesh=mesh
   )
+
+  # if this checkpoint was trained with maxdiffusion
+  # the training scheduler was saved with it, switch it
+  # to a Euler scheduler
+  if isinstance(pipeline.scheduler, FlaxDDPMScheduler):
+    noise_scheduler, noise_scheduler_state = FlaxEulerDiscreteScheduler.from_pretrained(
+      config.pretrained_model_name_or_path,
+      revision=config.revision, subfolder="scheduler", dtype=jnp.float32
+    )
+    pipeline.scheduler = noise_scheduler
+    params["scheduler"] = noise_scheduler_state
 
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
