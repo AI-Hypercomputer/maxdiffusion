@@ -105,7 +105,7 @@ scale_lr: False
 max_train_samples: -1
 # max_train_steps takes priority over num_train_epochs.
 max_train_steps: 200
-num_train_epochs: 100
+num_train_epochs: 1
 seed: 0
 output_dir: 'sdxl-model-finetuned'
 per_device_batch_size: 2

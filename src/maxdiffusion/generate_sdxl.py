@@ -135,7 +135,9 @@ def run(config):
   old_params = params
   params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), old_params)
   params["scheduler"] = scheduler_state
-  delete_pytree(old_params)
+  # TODO @jfacevedo - There is a memory leak somewhere that holds weights
+  # twice if loaded from HF, but not if loaded after saving them locally.
+  # delete_pytree(old_params)
 
   data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
 

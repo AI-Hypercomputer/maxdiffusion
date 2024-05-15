@@ -37,7 +37,7 @@ from maxdiffusion import (
     mllog_utils,
 )
 
-from transformers import FlaxCLIPTextModel
+from transformers import FlaxCLIPTextModel, FlaxCLIPTextModelWithProjection
 
 from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax.linen import partitioning as nn_partitioning
@@ -315,6 +315,8 @@ def train(config):
        params["vae"] = None
        pipeline.text_encoder = None
        params["text_encoder"] = None
+       pipeline.text_encoder_2 = None
+       params["text_encoder_2"] = None
 
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
@@ -325,24 +327,11 @@ def train(config):
         def compute_loss(unet_params):
 
             if cache_latents_text_encoder_outputs:
-               latents = batch["pixel_values"]
-               encoder_hidden_states = batch["input_ids"]
+                latents = batch["pixel_values"]
+                prompt_embeds = batch["prompt_embeds"]
+                text_embeds = batch["text_embeds"]
             else:
-                # Convert images to latent space
-                vae_outputs = pipeline.vae.apply(
-                {"params": vae_state.params}, batch["pixel_values"], deterministic=True, method=pipeline.vae.encode
-                )
-                latents = vae_outputs.latent_dist.sample(sample_rng)
-                # (NHWC) -> (NCHW)
-                latents = jnp.transpose(latents, (0, 3, 1, 2))
-                latents = latents * pipeline.vae.config.scaling_factor
-
-                # Get the text embedding for conditioning
-                encoder_hidden_states = pipeline.text_encoder(
-                    batch["input_ids"],
-                    params=params["text_encoder"],
-                train=False,
-                )[0]
+                raise ValueError(f"cache_latents_text_encoder_outputs = False currently not supported!")
 
             # Sample noise that we'll add to the latents
             noise_rng, timestep_rng = jax.random.split(sample_rng)
@@ -360,9 +349,6 @@ def train(config):
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
             
-            prompt_embeds = batch["prompt_embeds"]
-            text_embeds = batch["text_embeds"]
-            
             # TODO : @jfacevedo - support cropping.
             add_time_ids = get_add_time_ids(
               (config.resolution, config.resolution),
@@ -373,17 +359,12 @@ def train(config):
             )
             unet_added_conditions = {"time_ids" : add_time_ids, "text_embeds" : text_embeds}
 
-            # TODO - laion dataset was prepared with an extra dim.
-            # need to preprocess the dataset with dim removed.
-            if len(encoder_hidden_states.shape) == 4:
-                encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
-
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
                 {"params": unet_params},
                 noisy_latents,
                 timesteps,
-                encoder_hidden_states,
+                prompt_embeds,
                 added_cond_kwargs=unet_added_conditions,
                 train=True
             ).sample
@@ -481,39 +462,41 @@ def train(config):
 
     # Create the pipeline using using the trained modules and save it.
     if jax.process_index() == 0:
-        safety_checker = FlaxStableDiffusionSafetyChecker.from_pretrained(
-            "CompVis/stable-diffusion-safety-checker", from_pt=True
-        )
         # Restore vae and text encoder if we cached latents and encoder outputs.
         if config.cache_latents_text_encoder_outputs:
             text_encoder = FlaxCLIPTextModel.from_pretrained(
                 config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=weight_dtype, from_pt=config.from_pt
+            )
+            text_encoder_2 = FlaxCLIPTextModelWithProjection.from_pretrained(
+                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder_2", dtype=weight_dtype, from_pt=config.from_pt
             )
             vae, vae_params = FlaxAutoencoderKL.from_pretrained(
                 config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
             )
             pipeline.vae = vae
             pipeline.text_encoder = text_encoder
+            pipeline.text_encoder_2 = text_encoder_2
             params["text_encoder"] = text_encoder.params
+            params["text_encoder_2"] = text_encoder_2.params
             params["vae"] = vae_params
 
         pipeline = FlaxStableDiffusionXLPipeline(
             text_encoder=pipeline.text_encoder,
+            text_encoder_2=pipeline.text_encoder_2,
             vae=pipeline.vae,
             unet=pipeline.unet,
             tokenizer=pipeline.tokenizer,
+            tokenizer_2=pipeline.tokenizer_2,
             scheduler=noise_scheduler,
-            safety_checker=safety_checker,
-            feature_extractor=CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32"),
         )
 
         pipeline.save_pretrained(
             config.output_dir,
             params={
                 "text_encoder": get_params_to_save(params["text_encoder"]),
+                "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
                 "vae": get_params_to_save(params["vae"]),
                 "unet": get_params_to_save(unet_state.params),
-                "safety_checker": safety_checker.params,
             },
         )
     max_utils.close_summary_writer(writer)
