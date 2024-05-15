@@ -411,7 +411,10 @@ def train(config):
     num_model_parameters = calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
-    my_data_sharding = {'input_ids': data_sharding, 'pixel_values': data_sharding}
+    my_data_sharding = {'input_ids': data_sharding,
+                        'pixel_values': data_sharding,
+                        'prompt_embeds' : data_sharding,
+                        'text_embeds' : data_sharding}
     if (not config.enable_profiler):
         with jax.transfer_guard("disallow"):
             p_train_step = jax.jit(
