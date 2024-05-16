@@ -15,6 +15,7 @@
 """ PyTorch - Flax general utilities."""
 import re
 
+import jax
 import jax.numpy as jnp
 from flax.traverse_util import flatten_dict, unflatten_dict
 from jax.random import PRNGKey
@@ -112,7 +113,8 @@ def convert_pytorch_state_dict_to_flax(pt_state_dict, flax_model, init_key=42):
 
     random_flax_state_dict = flatten_dict(random_flax_params)
     flax_state_dict = {}
-
+    # Keep in cpu. Will get moved to host later.
+    cpu = jax.local_devices(backend='cpu')[0]
     # Need to change some parameters name to match Flax names
     for pt_key, pt_tensor in pt_state_dict.items():
         renamed_pt_key = rename_key(pt_key)
@@ -122,6 +124,6 @@ def convert_pytorch_state_dict_to_flax(pt_state_dict, flax_model, init_key=42):
         flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dict)
 
         # also add unexpected weight so that warning is thrown
-        flax_state_dict[flax_key] = jnp.asarray(flax_tensor)
+        flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 
     return unflatten_dict(flax_state_dict)
