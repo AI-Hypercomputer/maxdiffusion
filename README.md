@@ -25,9 +25,9 @@ The goal of this project is to provide reference implementations for latent diff
 MaxDiffusion supports 
 * Stable Diffusion 2 base (training and inference)
 * Stable Diffusion 2.1 (training and inference) 
-* Stable Diffusion XL (inference).
+* Stable Diffusion XL (training and inference).
 
-WARNING: The training code is purely experimental and is under development.
+**WARNING: The training code is purely experimental and is under development.**
 
 # Table of Contents
 
@@ -52,11 +52,23 @@ pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_rele
 pip3 install -r requirements.txt
 pip3 install .
 ```
-4. After installation completes, run the training script:
-```bash
-export LIBTPU_INIT_ARGS=""
-python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" base_output_directory="gs://your-bucket/"
-```
+4. After installation completes, run the training script.
+
+- Stable Diffusion 2 base
+
+  ```bash
+  export LIBTPU_INIT_ARGS=""
+  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" base_output_directory="gs://your-bucket/"
+  ```
+- Stable Diffusion XL
+
+  ```bash
+  export LIBTPU_INIT_ARGS=""
+  python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_xl_run" base_output_directory="gs://your-bucket/" per_device_batch_size=1
+  ```
+
+  To generate images with a trained checkpoint, add `pretrained_model_name_or_path=<your_saved_checkpoint_path>` to the commands below.
+
 5. To generate images, run the following command:
  
 - Stable Diffusion 2.1

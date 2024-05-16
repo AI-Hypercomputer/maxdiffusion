@@ -483,3 +483,9 @@ def calculate_training_tflops(pipeline, unet_params, config):
       model_flops = model_flops / 3.2
     
     return model_flops
+
+def calculate_num_params_from_pytree(params):
+  """Calculates number of parameters from a pytree"""
+  params_sizes = jax.tree_util.tree_map(jax.numpy.size, params)
+  total_parameters = jax.tree_util.tree_reduce(lambda x, y: x + y, params_sizes)
+  return total_parameters
