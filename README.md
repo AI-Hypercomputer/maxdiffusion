@@ -55,7 +55,7 @@ pip3 install .
 4. After installation completes, run the training script:
 ```bash
 export LIBTPU_INIT_ARGS=""
-python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" base_output_directory="gs://your-bucket/" train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/tf_records
+python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" base_output_directory="gs://your-bucket/"
 ```
 5. To generate images, run the following command:
  
