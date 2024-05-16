@@ -147,17 +147,16 @@ class InputPipelineInterface(unittest.TestCase):
     data = train_iterator()
     device_count = jax.device_count()
 
-    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
     encoder_hidden_states = data["input_ids"]
-    assert encoder_hidden_states.shape == (device_count,77, 1024)
+    assert encoder_hidden_states.shape == (device_count,77)
     assert data["pixel_values"].shape == (device_count,
-                                          pipeline.unet.config.in_channels,
-                                          config.resolution // vae_scale_factor,
-                                          config.resolution // vae_scale_factor)
+                                          3,
+                                          config.resolution,
+                                          config.resolution)
 
   def test_make_pokemon_iterator_sdxl_cache(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
-        "cache_latents_text_encoder_outputs=True",
+        "cache_latents_text_encoder_outputs=True","per_device_batch_size=1",
         "dataset_name=diffusers/pokemon-gpt4-captions"])
     config = pyconfig.config
     global_batch_size = config.per_device_batch_size * jax.device_count()
