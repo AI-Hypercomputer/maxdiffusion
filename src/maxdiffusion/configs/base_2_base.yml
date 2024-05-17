@@ -90,7 +90,9 @@ ici_tensor_parallelism: 1
 
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
-dataset_name: 'diffusers/pokemon-gpt4-captions' 
+dataset_name: 'diffusers/pokemon-gpt4-captions'
+# saves transformed dataset of dataset_name.
+dataset_save_location: '/tmp/pokemon-gpt4-captions'
 train_data_dir: ''
 dataset_config_name: ''
 cache_dir: ''
