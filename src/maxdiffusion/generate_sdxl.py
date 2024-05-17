@@ -30,7 +30,9 @@ from flax.linen import partitioning as nn_partitioning
 from jax.sharding import PositionalSharding
 
 from maxdiffusion import (
-    FlaxStableDiffusionXLPipeline
+    FlaxStableDiffusionXLPipeline,
+    FlaxEulerDiscreteScheduler,
+    FlaxDDPMScheduler
 )
 
 
@@ -44,10 +46,10 @@ from maxdiffusion.max_utils import (
   deactivate_profiler,
   device_put_replicated,
   get_flash_block_sizes,
-  delete_pytree,
 )
 from maxdiffusion.maxdiffusion_utils import (
-  load_sdxllightning_unet
+  load_sdxllightning_unet,
+  get_add_time_ids
 )
 
 cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
@@ -74,11 +76,6 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
   latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
   return latents, scheduler_state, state
-
-def get_add_time_ids(original_size, crops_coords_top_left, target_size, bs, dtype):
-  add_time_ids = list(original_size + crops_coords_top_left + target_size)
-  add_time_ids = jnp.array([add_time_ids] * bs, dtype=dtype)
-  return add_time_ids
 
 def get_embeddings(prompt_ids, pipeline, params):
   te_1_inputs = prompt_ids[:, 0, :]
@@ -132,6 +129,17 @@ def run(config):
     mesh=mesh
   )
 
+  # if this checkpoint was trained with maxdiffusion
+  # the training scheduler was saved with it, switch it
+  # to a Euler scheduler
+  if isinstance(pipeline.scheduler, FlaxDDPMScheduler):
+    noise_scheduler, noise_scheduler_state = FlaxEulerDiscreteScheduler.from_pretrained(
+      config.pretrained_model_name_or_path,
+      revision=config.revision, subfolder="scheduler", dtype=jnp.float32
+    )
+    pipeline.scheduler = noise_scheduler
+    params["scheduler"] = noise_scheduler_state
+
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
 
@@ -139,7 +147,6 @@ def run(config):
   old_params = params
   params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), old_params)
   params["scheduler"] = scheduler_state
-  delete_pytree(old_params)
 
   data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
 

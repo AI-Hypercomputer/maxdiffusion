@@ -433,3 +433,59 @@ def get_memory_allocations():
     m_stats = device.memory_stats()
     max_logging.log(f'device : {device.process_index},'
                     f'bytes in use: {m_stats["bytes_in_use"] / gb} / {m_stats["bytes_limit"] / gb} GB')
+
+def calculate_training_tflops(pipeline, unet_params, config):
+    """Calculate per device training tflops (back and fwd pass)."""
+
+    vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
+    batch_size = config.per_device_batch_size
+    dtype=get_dtype(config)
+    input_shape = (batch_size,
+                    pipeline.unet.config['in_channels'],
+                    config.resolution // vae_scale_factor,
+                    config.resolution // vae_scale_factor)
+
+    latents = jax.random.normal(jax.random.PRNGKey(0),
+                                shape=input_shape,
+                                dtype=dtype
+                                )
+    latents = jnp.concatenate([latents] * 2)
+    timesteps = jnp.ones((latents.shape[0],))
+    encoder_hidden_states_shape = (latents.shape[0],
+                                    pipeline.text_encoder.config.max_position_embeddings,
+                                    pipeline.unet.cross_attention_dim)
+    encoder_hidden_states = jnp.zeros(encoder_hidden_states_shape)
+    added_cond_kwargs = None
+    if pipeline.unet.addition_embed_type == "text_time":
+      unet_config = pipeline.unet.config
+      is_refiner = (
+        5 * unet_config.addition_time_embed_dim + unet_config.cross_attention_dim
+        == unet_config.projection_class_embeddings_input_dim
+      )
+      num_micro_conditions = 5 if is_refiner else 6
+      
+      text_embeds_dim = unet_config.projection_class_embeddings_input_dim - (
+        num_micro_conditions * unet_config.addition_time_embed_dim
+      )
+      time_ids_channels = pipeline.unet.projection_class_embeddings_input_dim - text_embeds_dim
+      time_ids_dims = time_ids_channels // pipeline.unet.addition_time_embed_dim
+      added_cond_kwargs = {
+        "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=dtype),
+        "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=dtype),
+      }
+    c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : unet_params}, latents, timesteps, encoder_hidden_states, added_cond_kwargs).compile()
+
+    model_flops = 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12) 
+
+    # Cost analysis over estimates flops when splash pallas kernel is enabled
+    # dividing by 3.2 provides a better estimate.
+    if 'flash' in config.attention:
+      model_flops = model_flops / 3.2
+    
+    return model_flops
+
+def calculate_num_params_from_pytree(params):
+  """Calculates number of parameters from a pytree"""
+  params_sizes = jax.tree_util.tree_map(jax.numpy.size, params)
+  total_parameters = jax.tree_util.tree_reduce(lambda x, y: x + y, params_sizes)
+  return total_parameters

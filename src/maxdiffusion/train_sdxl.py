@@ -29,14 +29,13 @@ import transformers
 from absl import app
 from maxdiffusion import (
     FlaxDDPMScheduler,
-    FlaxStableDiffusionPipeline,
+    FlaxStableDiffusionXLPipeline,
     FlaxAutoencoderKL,
     max_logging,
     max_utils,
     pyconfig,
     mllog_utils,
 )
-from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images
 
 from maxdiffusion.train_utils import (
     get_first_step,
@@ -47,42 +46,65 @@ from maxdiffusion.train_utils import (
     get_params_to_save
 )
 
-from transformers import FlaxCLIPTextModel
+from transformers import FlaxCLIPTextModel, FlaxCLIPTextModelWithProjection
 
-from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax.linen import partitioning as nn_partitioning
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
-from transformers import CLIPImageProcessor, set_seed
+from transformers import set_seed
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
   make_laion400m_train_iterator
 )
 
-def encode(input_ids, text_encoder, text_encoder_params):
-  return text_encoder(
-    input_ids,
-    params=text_encoder_params,
-    train=False
-  )[0]
+from maxdiffusion.maxdiffusion_utils import (
+  vae_apply,
+  transform_images,
+  get_add_time_ids
+)
 
-def tokenize_captions(examples, caption_column, tokenizer, p_encode=None):
-    captions = list(examples[caption_column])
-    text_inputs = tokenizer(
+def encode_xl(input_ids, text_encoders, text_encoder_params):
+  te_1_inputs = input_ids[:, 0, :]
+  te_2_inputs = input_ids[:, 1, :]
+
+  prompt_embeds = text_encoders[0](
+    te_1_inputs, params=text_encoder_params[0], output_hidden_states=True
+  )
+  prompt_embeds = prompt_embeds["hidden_states"][-2]
+
+  prompt_embeds_2_out = text_encoders[1](
+    te_2_inputs, params=text_encoder_params[1], output_hidden_states=True
+  )
+  prompt_embeds_2 = prompt_embeds_2_out["hidden_states"][-2]
+  text_embeds = prompt_embeds_2_out["text_embeds"]
+  prompt_embeds = jnp.concatenate([prompt_embeds, prompt_embeds_2], axis=-1)
+
+  return prompt_embeds, text_embeds
+
+
+def tokenize_captions_xl(examples, caption_column, tokenizers, p_encode=None):
+  inputs = []
+  captions = list(examples[caption_column])
+  for _tokenizer in tokenizers:
+     text_inputs = _tokenizer(
         captions,
-        max_length=tokenizer.model_max_length,
         padding="max_length",
-        truncation=True
-    )
+        max_length=_tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="np"
+     )
+     inputs.append(text_inputs.input_ids)
+  inputs = np.stack(inputs,axis=1)
 
-    if p_encode:
-        encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
-        examples["input_ids"] = encoder_hidden_states
-    else:
-        examples["input_ids"] = text_inputs.input_ids
-    return examples
+  if p_encode:
+    prompt_embeds, text_embeds = p_encode(inputs)
+    examples["prompt_embeds"] = prompt_embeds
+    examples["text_embeds"] = text_embeds
+  examples["input_ids"] = inputs
+
+  return examples
 
 def train(config):
     rng = jax.random.PRNGKey(config.seed)
@@ -120,7 +142,7 @@ def train(config):
 
     weight_dtype = max_utils.get_dtype(config)
     flash_block_sizes = max_utils.get_flash_block_sizes(config)
-    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+    pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision,
         dtype=weight_dtype,
         safety_checker=None,
@@ -143,7 +165,7 @@ def train(config):
     sharding = PositionalSharding(devices_array).replicate()
     partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=sharding)
     params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
-
+    params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
     # Optimization
     if config.scale_lr:
         config.learning_rate = config.learning_rate * total_train_batch_size
@@ -172,15 +194,21 @@ def train(config):
         p_encode = None
         p_vae_apply = None
         if config.cache_latents_text_encoder_outputs:
-            p_encode = jax.jit(partial(encode,text_encoder=pipeline.text_encoder,text_encoder_params=params["text_encoder"]))
-            p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
-        tokenize_fn = partial(tokenize_captions,caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode)
+          p_encode = jax.jit(partial(encode_xl,
+                              text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
+                              text_encoder_params=[params["text_encoder"], params["text_encoder_2"]]))
+          p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+
+        tokenize_fn = partial(tokenize_captions_xl,
+                          caption_column=config.caption_column,
+                          tokenizers=[pipeline.tokenizer, pipeline.tokenizer_2],
+                          p_encode=p_encode)
         image_transforms_fn = partial(transform_images,
-                                      image_column=config.image_column,
-                                      image_resolution=config.resolution,
-                                      rng=rng,
-                                      global_batch_size=total_train_batch_size,
-                                      p_vae_apply=p_vae_apply)
+                                  image_column=config.image_column,
+                                  image_resolution=config.resolution,
+                                  rng=rng,
+                                  global_batch_size=total_train_batch_size,
+                                  p_vae_apply=p_vae_apply)
 
         data_iterator = make_pokemon_train_iterator(
            config,
@@ -201,6 +229,8 @@ def train(config):
        params["vae"] = None
        pipeline.text_encoder = None
        params["text_encoder"] = None
+       pipeline.text_encoder_2 = None
+       params["text_encoder_2"] = None
 
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
@@ -211,20 +241,11 @@ def train(config):
         def compute_loss(unet_params):
 
             if cache_latents_text_encoder_outputs:
-               latents = batch["pixel_values"]
-               encoder_hidden_states = batch["input_ids"]
+                latents = batch["pixel_values"]
+                prompt_embeds = batch["prompt_embeds"]
+                text_embeds = batch["text_embeds"]
             else:
-                # Convert images to latent space
-                vae_outputs = pipeline.vae.apply(
-                {"params": vae_state.params}, batch["pixel_values"], deterministic=True, method=pipeline.vae.encode
-                )
-                latents = vae_outputs.latent_dist.sample(sample_rng)
-                # (NHWC) -> (NCHW)
-                latents = jnp.transpose(latents, (0, 3, 1, 2))
-                latents = latents * pipeline.vae.config.scaling_factor
-
-                # Get the text embedding for conditioning
-                encoder_hidden_states = encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])
+                raise ValueError("cache_latents_text_encoder_outputs = False currently not supported!")
 
             # Sample noise that we'll add to the latents
             noise_rng, timestep_rng = jax.random.split(sample_rng)
@@ -242,14 +263,24 @@ def train(config):
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
 
-            # TODO - laion dataset was prepared with an extra dim.
-            # need to preprocess the dataset with dim removed.
-            if len(encoder_hidden_states.shape) == 4:
-                encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
+            # TODO : @jfacevedo - support cropping.
+            add_time_ids = get_add_time_ids(
+              (config.resolution, config.resolution),
+              (0, 0),
+              (config.resolution, config.resolution),
+              prompt_embeds.shape[0],
+              dtype=prompt_embeds.dtype
+            )
+            unet_added_conditions = {"time_ids" : add_time_ids, "text_embeds" : text_embeds}
 
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
-                {"params": unet_params}, noisy_latents, timesteps, encoder_hidden_states, train=True
+                {"params": unet_params},
+                noisy_latents,
+                timesteps,
+                prompt_embeds,
+                added_cond_kwargs=unet_added_conditions,
+                train=True
             ).sample
 
             # Get the target for loss depending on the prediction type
@@ -275,7 +306,10 @@ def train(config):
     num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
-    my_data_sharding = {'input_ids': data_sharding, 'pixel_values': data_sharding}
+    my_data_sharding = {'input_ids': data_sharding,
+                        'pixel_values': data_sharding,
+                        'prompt_embeds' : data_sharding,
+                        'text_embeds' : data_sharding}
     if (not config.enable_profiler):
         with jax.transfer_guard("disallow"):
             p_train_step = jax.jit(
@@ -342,44 +376,47 @@ def train(config):
 
     # Create the pipeline using using the trained modules and save it.
     if jax.process_index() == 0:
-        safety_checker = FlaxStableDiffusionSafetyChecker.from_pretrained(
-            "CompVis/stable-diffusion-safety-checker", from_pt=True
-        )
         # Restore vae and text encoder if we cached latents and encoder outputs.
         if config.cache_latents_text_encoder_outputs:
             text_encoder = FlaxCLIPTextModel.from_pretrained(
                 config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=weight_dtype, from_pt=config.from_pt
+            )
+            text_encoder_2 = FlaxCLIPTextModelWithProjection.from_pretrained(
+                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder_2", dtype=weight_dtype, from_pt=config.from_pt
             )
             vae, vae_params = FlaxAutoencoderKL.from_pretrained(
                 config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
             )
             pipeline.vae = vae
             pipeline.text_encoder = text_encoder
+            pipeline.text_encoder_2 = text_encoder_2
             params["text_encoder"] = text_encoder.params
+            params["text_encoder_2"] = text_encoder_2.params
             params["vae"] = vae_params
 
-        pipeline = FlaxStableDiffusionPipeline(
+        pipeline = FlaxStableDiffusionXLPipeline(
             text_encoder=pipeline.text_encoder,
+            text_encoder_2=pipeline.text_encoder_2,
             vae=pipeline.vae,
             unet=pipeline.unet,
             tokenizer=pipeline.tokenizer,
+            tokenizer_2=pipeline.tokenizer_2,
             scheduler=noise_scheduler,
-            safety_checker=safety_checker,
-            feature_extractor=CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32"),
         )
 
         pipeline.save_pretrained(
             config.output_dir,
             params={
                 "text_encoder": get_params_to_save(params["text_encoder"]),
+                "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
                 "vae": get_params_to_save(params["vae"]),
                 "unet": get_params_to_save(unet_state.params),
-                "safety_checker": safety_checker.params,
             },
         )
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
+
     max_logging.log(f"Found {jax.device_count()} devices.")
     cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)

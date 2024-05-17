@@ -79,7 +79,7 @@ ici_tensor_parallelism: 1
 
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
-dataset_name: ''
+dataset_name: 'diffusers/pokemon-gpt4-captions' 
 train_data_dir: ''
 dataset_config_name: ''
 cache_dir: ''
@@ -88,6 +88,16 @@ caption_column: 'text'
 resolution: 1024
 center_crop: False
 random_flip: False
+# If cache_latents_text_encoder_outputs is True
+# the num_proc is set to 1
+tokenize_captions_num_proc: 4
+transform_images_num_proc: 4
+reuse_example_batch: False
+enable_data_shuffling: True
+
+# Prepare image latents and text encoder outputs
+# during dataset creation to reduce memory consumption.
+cache_latents_text_encoder_outputs: True
 
 # Training loop
 learning_rate: 4.e-7
@@ -95,7 +105,7 @@ scale_lr: False
 max_train_samples: -1
 # max_train_steps takes priority over num_train_epochs.
 max_train_steps: 200
-num_train_epochs: 100
+num_train_epochs: 1
 seed: 0
 output_dir: 'sdxl-model-finetuned'
 per_device_batch_size: 2
