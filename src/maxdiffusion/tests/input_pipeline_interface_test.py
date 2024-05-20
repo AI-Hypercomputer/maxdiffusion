@@ -57,7 +57,8 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = str(HOME_DIR / ".cache" / "huggingface" / "datasets")
 
 def cleanup(output_dir):
-  shutil.rmtree(output_dir)
+  if os.path.isdir(output_dir):
+    shutil.rmtree(output_dir)
 
 class InputPipelineInterface(unittest.TestCase):
   """Test Unet sharding"""
