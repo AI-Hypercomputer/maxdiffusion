@@ -21,6 +21,7 @@ import functools
 import json
 import yaml
 import os
+from pathlib import Path
 import subprocess
 
 import numpy as np
@@ -164,6 +165,23 @@ def parse_gcs_bucket_and_prefix(destination_gcs_name):
   bucket = path_parts.pop(0)
   key = "/".join(path_parts)
   return bucket, key
+
+def download_blobs(source_gcs_folder, local_destination):
+  """Downloads a folder to a local location"""
+  bucket_name, prefix_name = parse_gcs_bucket_and_prefix(source_gcs_folder)
+  storage_client = storage.Client()
+  bucket = storage_client.get_bucket(bucket_name)
+  blobs = bucket.list_blobs(prefix=prefix_name)
+  for blob in blobs:
+    file_split = blob.name.split("/")
+    directory = os.path.join(local_destination, "/".join(file_split[0:-1]))
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    if len(file_split[-1]) <=0:
+      continue
+    download_to_filename = os.path.join(directory, file_split[-1])
+    if not os.path.isfile(download_to_filename):
+      blob.download_to_filename(download_to_filename)
+  return os.path.join(local_destination, prefix_name)
 
 def upload_blob(destination_gcs_name, source_file_name):
   """Uploads a file to a GCS location"""
