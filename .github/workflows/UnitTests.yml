@@ -23,8 +23,8 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
   schedule:
-    # Run the job every 2 hours
-    - cron:  '0 */2 * * *'
+    # Run the job every 5 hours
+    - cron:  '0 */5 * * *'
 
 jobs:
   build:

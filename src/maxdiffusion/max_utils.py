@@ -219,8 +219,8 @@ def fill_unspecified_mesh_axes(parallelism_vals, target_product, parallelism_typ
 
   target_type = "slices" if parallelism_type == 'DCN' else "devices per slice"
 
-  assert np.product(parallelism_vals) == target_product, f"Number of {target_type} {target_product} does not match\
-    the product of the {parallelism_type} parallelism {np.product(parallelism_vals)}"
+  assert np.prod(parallelism_vals) == target_product, f"Number of {target_type} {target_product} does not match\
+    the product of the {parallelism_type} parallelism {np.prod(parallelism_vals)}"
 
   return parallelism_vals
 

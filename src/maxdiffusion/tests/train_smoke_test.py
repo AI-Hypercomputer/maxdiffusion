@@ -104,7 +104,9 @@ class Train(unittest.TestCase):
   def test_sd_2_base_config(self):
     output_dir="train-smoke-test"
     train_main([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
-      "run_name=sd2_base_smoke_test","max_train_steps=21","train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/tf_records",
+      "run_name=sd2_base_smoke_test","max_train_steps=21",
+      "dataset_name=",
+      "train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/tf_records",
       "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
       "attention=dot_product"])
 
@@ -130,7 +132,9 @@ class Train(unittest.TestCase):
   def test_sd_2_base_new_unet(self):
     output_dir="train-smoke-test"
     train_main([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
-      "run_name=sd2_base_smoke_test","max_train_steps=21","train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/tf_records",
+      "run_name=sd2_base_smoke_test","max_train_steps=21",
+      "dataset_name=",
+      "train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/tf_records",
       "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
       "attention=dot_product","train_new_unet=True"])
 

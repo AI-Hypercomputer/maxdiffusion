@@ -173,10 +173,10 @@ class FlaxDDPMScheduler(FlaxSchedulerMixin, ConfigMixin):
 
         # hacks - were probably added for training stability
         if variance_type == "fixed_small":
-            variance = jnp.clip(variance, a_min=1e-20)
+            variance = jnp.clip(variance, min=1e-20)
         # for rl-diffuser https://arxiv.org/abs/2205.09991
         elif variance_type == "fixed_small_log":
-            variance = jnp.log(jnp.clip(variance, a_min=1e-20))
+            variance = jnp.log(jnp.clip(variance, min=1e-20))
         elif variance_type == "fixed_large":
             variance = state.common.betas[t]
         elif variance_type == "fixed_large_log":
