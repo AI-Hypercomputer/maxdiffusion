@@ -18,7 +18,7 @@ import os
 import math
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 import jax
 import jax.numpy as jnp
 
@@ -94,24 +94,29 @@ def make_pokemon_train_iterator(
   captions_column = config.caption_column
   image_column = config.image_column
   cache_latents_text_encoder_outputs = config.cache_latents_text_encoder_outputs
-
-  train_ds = train_ds.map(
-    function=tokenize_fn,
-    batched=True,
-    remove_columns=[captions_column],
-    num_proc=1 if cache_latents_text_encoder_outputs else 4,
-    desc="Running tokenizer on train dataset",
-  )
-  # need to do it before load_as_tf_dataset
-  # since raw images are different sizes
-  # will break from_tensor_slices
-  train_ds = train_ds.map(
-    function=image_transforms_fn,
-    batched=True,
-    remove_columns=[image_column],
-    num_proc=1 if cache_latents_text_encoder_outputs else config.transform_images_num_proc,
-    desc="Transforming images",
-  )
+  dataset_save_location = config.dataset_save_location
+  if os.path.isdir(dataset_save_location):
+    train_ds = load_from_disk(dataset_save_location)
+  else:
+    train_ds = train_ds.map(
+      function=tokenize_fn,
+      batched=True,
+      remove_columns=[captions_column],
+      num_proc=1 if cache_latents_text_encoder_outputs else 4,
+      desc="Running tokenizer on train dataset",
+    )
+    # need to do it before load_as_tf_dataset
+    # since raw images are different sizes
+    # will break from_tensor_slices
+    train_ds = train_ds.map(
+      function=image_transforms_fn,
+      batched=True,
+      remove_columns=[image_column],
+      num_proc=1 if cache_latents_text_encoder_outputs else config.transform_images_num_proc,
+      desc="Transforming images",
+    )
+    train_ds.save_to_disk(dataset_save_location)
+    train_ds.cleanup_cache_files()
 
   # taken from https://github.com/huggingface/transformers/blob/abbffc4525566a48a9733639797c812301218b83/examples/tensorflow/contrastive-image-text/run_clip.py#L225
   def load_as_tf_dataset(dataset, batch_size, shuffle):

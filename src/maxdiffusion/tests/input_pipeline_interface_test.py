@@ -57,7 +57,8 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = str(HOME_DIR / ".cache" / "huggingface" / "datasets")
 
 def cleanup(output_dir):
-  shutil.rmtree(output_dir)
+  if os.path.isdir(output_dir):
+    shutil.rmtree(output_dir)
 
 class InputPipelineInterface(unittest.TestCase):
   """Test Unet sharding"""
@@ -69,6 +70,9 @@ class InputPipelineInterface(unittest.TestCase):
       "cache_latents_text_encoder_outputs=True",
       "dataset_name=diffusers/pokemon-gpt4-captions"])
     config = pyconfig.config
+
+    cleanup(config.dataset_save_location)
+
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
@@ -110,11 +114,15 @@ class InputPipelineInterface(unittest.TestCase):
                                           config.resolution // vae_scale_factor,
                                           config.resolution // vae_scale_factor)
 
+
   def test_make_pokemon_iterator_no_cache(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
       "cache_latents_text_encoder_outputs=False","tokenize_captions_num_proc=1","transform_images_num_proc=1",
       "dataset_name=diffusers/pokemon-gpt4-captions"])
     config = pyconfig.config
+
+    cleanup(config.dataset_save_location)
+
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
@@ -154,11 +162,15 @@ class InputPipelineInterface(unittest.TestCase):
                                           config.resolution,
                                           config.resolution)
 
+
   def test_make_pokemon_iterator_sdxl_cache(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
         "cache_latents_text_encoder_outputs=True","per_device_batch_size=1",
         "dataset_name=diffusers/pokemon-gpt4-captions"])
     config = pyconfig.config
+
+    cleanup(config.dataset_save_location)
+
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
@@ -197,6 +209,7 @@ class InputPipelineInterface(unittest.TestCase):
     device_count = jax.device_count()
 
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+
     prompt_embeds = data["prompt_embeds"]
     text_embeds = data["text_embeds"]
     assert prompt_embeds.shape == (device_count,77, 2048)
@@ -205,6 +218,7 @@ class InputPipelineInterface(unittest.TestCase):
                                           pipeline.unet.config.in_channels,
                                           config.resolution // vae_scale_factor,
                                           config.resolution // vae_scale_factor)
+
 
   def test_make_laion_iterator(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
