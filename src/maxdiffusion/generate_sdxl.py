@@ -262,8 +262,17 @@ def run(config):
   inference_time = time.time() - s
   print("inference time: ",inference_time)
   metrics_dict['inference_time4'] = inference_time
+
+  dimensions_dict = {}
+  dimensions_dict["model"] = "SDXL Base 1.0"
+  
+  final_dict = {}
+  final_dict["metrics"] = metrics_dict
+  final_dict["dimensions"] = dimensions_dict
+
+
   with open("metrics.json", 'w') as f:
-      f.write(json.dumps(metrics_dict))
+      f.write(json.dumps(final_dict))
   
   images = jax.experimental.multihost_utils.process_allgather(images)
   numpy_images = np.array(images)

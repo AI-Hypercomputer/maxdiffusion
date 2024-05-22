@@ -18,6 +18,8 @@ run_name: ''
 metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
 # If true save metrics such as loss and TFLOPS to GCS in {base_output_directory}/{run_name}/metrics/
 gcs_metrics: True
+# If true save config to GCS in {base_output_directory}/{run_name}/
+save_config_to_gcs: False
 log_period: 100
 
 pretrained_model_name_or_path: 'stabilityai/stable-diffusion-xl-base-1.0'
@@ -26,6 +28,14 @@ dtype: 'bfloat16'
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
+attention: 'dot_product' # Supported attention: dot_product, flash
+flash_block_sizes: {}
+# GroupNorm groups
+norm_num_groups: 32
+
+# If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
+# else they will be loaded from pretrained_model_name_or_path
+train_new_unet: False
 
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
@@ -69,7 +79,9 @@ ici_tensor_parallelism: 1
 
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
-dataset_name: 'lambdalabs/pokemon-blip-captions'
+dataset_name: 'diffusers/pokemon-gpt4-captions'
+# saves transformed dataset of dataset_name.
+dataset_save_location: '/tmp/pokemon-gpt4-captions_xl'
 train_data_dir: ''
 dataset_config_name: ''
 cache_dir: ''
@@ -78,6 +90,16 @@ caption_column: 'text'
 resolution: 1024
 center_crop: False
 random_flip: False
+# If cache_latents_text_encoder_outputs is True
+# the num_proc is set to 1
+tokenize_captions_num_proc: 4
+transform_images_num_proc: 4
+reuse_example_batch: False
+enable_data_shuffling: True
+
+# Prepare image latents and text encoder outputs
+# during dataset creation to reduce memory consumption.
+cache_latents_text_encoder_outputs: True
 
 # Training loop
 learning_rate: 4.e-7
@@ -85,13 +107,12 @@ scale_lr: False
 max_train_samples: -1
 # max_train_steps takes priority over num_train_epochs.
 max_train_steps: 200
-num_train_epochs: 100
+num_train_epochs: 1
 seed: 0
 output_dir: 'sdxl-model-finetuned'
 per_device_batch_size: 2
 
-cosine_learning_rate_final_fraction: 0.1 
-warmup_steps_fraction: 0.1
+warmup_steps_fraction: 0.0
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
 
 # However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before 
@@ -103,13 +124,21 @@ adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradi
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 1.e-2 # AdamW Weight decay
 
-max_grad_norm: 1.0
-
 enable_profiler: True
+# Skip first n steps for profiling, to omit things like compilation and to give
+# the iteration time a chance to stabilize.
+skip_first_n_steps_for_profiler: 1
+profiler_steps: 5
 
 # Generation parameters
 prompt: "A magical castle in the middle of a forest, artistic drawing"
 negative_prompt: "purple, red"
 guidance_scale: 9
 num_inference_steps: 20
-seed: 47
+
+# SDXL Lightning parameters
+lightning_from_pt: True
+lightning_repo: ""
+lightning_ckpt: ""
+
+enable_mllog: False
