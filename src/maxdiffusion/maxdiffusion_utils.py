@@ -14,6 +14,7 @@
  limitations under the License.
  """
 
+import importlib
 import numpy as np
 import tensorflow as tf
 import jax
@@ -23,7 +24,6 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 
 from .models.modeling_flax_pytorch_utils import convert_pytorch_state_dict_to_flax
-
 
 def load_sdxllightning_unet(config, pipeline, params):
   """Load lightning """
@@ -86,3 +86,44 @@ def get_add_time_ids(original_size, crops_coords_top_left, target_size, bs, dtyp
   add_time_ids = list(original_size + crops_coords_top_left + target_size)
   add_time_ids = jnp.array([add_time_ids] * bs, dtype=dtype)
   return add_time_ids
+
+def override_scheduler_config(scheduler_config, config):
+  """Overrides diffusion scheduler params from checkpoint."""
+
+  maxdiffusion_scheduler_config = config.diffusion_scheduler_config
+
+  scheduler_config['_class_name'] = maxdiffusion_scheduler_config.get('_class_name',scheduler_config['_class_name'])
+  scheduler_config['prediction_type'] = maxdiffusion_scheduler_config.get('prediction_type',scheduler_config["prediction_type"])
+  scheduler_config['timestep_spacing'] = maxdiffusion_scheduler_config.get('timestep_spacing',scheduler_config["timestep_spacing"])
+  scheduler_config["rescale_zero_terminal_snr"] = maxdiffusion_scheduler_config.get('rescale_zero_terminal_snr',False)
+
+  return scheduler_config
+
+def create_scheduler(scheduler_config, config):
+  """Creates scheduler from config."""
+  scheduler_config = override_scheduler_config(scheduler_config, config)
+
+  maxdiffusion_module = importlib.import_module(scheduler_config.__module__.split(".")[0])
+  class_name = (
+     scheduler_config["_class_name"]
+     if scheduler_config["_class_name"].startswith("Flax")
+     else "Flax" + scheduler_config["_class_name"]
+  )
+  cls = getattr(maxdiffusion_module, class_name)
+  scheduler = cls.from_config(scheduler_config)
+
+  scheduler_state = scheduler.create_state()
+  return scheduler, scheduler_state
+
+def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
+  """
+  Rescale `noise_cfg` according to `guidance_rescale`. Based on findings of [Common Diffusion Noise Schedules and
+  Sample Steps are Flawed](https://arxiv.org/pdf/2305.08891.pdf). See Section 3.4
+  """
+  std_text = jnp.std(noise_pred_text, axis=list(range(1, jnp.ndim(noise_pred_text))), keepdims=True)
+  std_cfg = jnp.std(noise_cfg, axis=list(range(1, jnp.ndim(noise_cfg))), keepdims=True)
+  # rescale the results from guidance (fixes overexposure)
+  noise_pred_rescaled = noise_cfg * (std_text / std_cfg)
+  # mix with the original results from guidance by factor guidance_rescale to avoid "plain looking" images
+  noise_cfg = guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
+  return noise_cfg

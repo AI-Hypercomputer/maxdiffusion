@@ -60,6 +60,13 @@ pip3 install .
   export LIBTPU_INIT_ARGS=""
   python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" base_output_directory="gs://your-bucket/"
   ```
+
+  To generate images with a trained checkpoint, run:
+
+  ```bash
+  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_2_base.yml run_name="my_run" pretrained_model_name_or_path=<your_saved_checkpoint_path> from_pt=False attention=dot_product
+  ```
+
 - Stable Diffusion XL
 
   ```bash
@@ -71,6 +78,10 @@ pip3 install .
 
 5. To generate images, run the following command:
  
+- Stable Diffusion 2 base
+  ```bash
+  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_2_base.yml run_name="my_run"
+
 - Stable Diffusion 2.1
   ```bash
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
@@ -81,7 +92,7 @@ pip3 install .
   Multi host inference is supported with sharding annotations:
 
   ```bash
-  python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl_lightning.yml run_name="my_run"
+  python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_run" lightning_repo="ByteDance/SDXL-Lightning" lightning_ckpt="sdxl_lightning_4step_unet.safetensors"
   ```
 - Stable Diffusion XL
 

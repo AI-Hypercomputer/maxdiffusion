@@ -36,6 +36,8 @@ from maxdiffusion import (
   FlaxStableDiffusionPipeline,
   FlaxDDIMScheduler
 )
+
+from maxdiffusion.maxdiffusion_utils import rescale_noise_cfg
 from flax.linen import partitioning as nn_partitioning
 from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh, PositionalSharding
@@ -43,7 +45,7 @@ from maxdiffusion.image_processor import VaeImageProcessor
 
 cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
-def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale):
+def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidance_rescale):
     latents, scheduler_state, state = args
     latents_input = jnp.concatenate([latents] * 2)
 
@@ -61,6 +63,10 @@ def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale):
 
     noise_pred_uncond, noise_prediction_text = jnp.split(noise_pred, 2, axis=0)
     noise_pred = noise_pred_uncond + guidance_scale * (noise_prediction_text - noise_pred_uncond)
+
+    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+    noise_pred = rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale=guidance_rescale)
+
     latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
     return latents, scheduler_state, state
@@ -82,12 +88,14 @@ def get_unet_inputs(rng, config, batch_size, pipeline, params):
     negative_prompt_ids = [config.negative_prompt] * batch_size
     negative_prompt_ids = tokenize(negative_prompt_ids, pipeline.tokenizer)
     guidance_scale = config.guidance_scale
+    guidance_rescale = config.guidance_rescale
     num_inference_steps = config.num_inference_steps
 
     prompt_embeds = pipeline.text_encoder(prompt_ids, params=params["text_encoder"])[0]
     negative_prompt_embeds = pipeline.text_encoder(negative_prompt_ids, params=params["text_encoder"])[0]
     context = jnp.concatenate([negative_prompt_embeds, prompt_embeds])
     guidance_scale = jnp.array([guidance_scale], dtype=jnp.float32)
+    guidance_rescale = jnp.array([guidance_rescale], dtype=jnp.float32)
 
     batch_size = prompt_ids.shape[0]
     latents_shape = (
@@ -105,7 +113,7 @@ def get_unet_inputs(rng, config, batch_size, pipeline, params):
     )
     latents = latents * params["scheduler"].init_noise_sigma
 
-    return latents, context, guidance_scale, scheduler_state
+    return latents, context, guidance_scale, guidance_rescale, scheduler_state
 
 def vae_decode(latents, state, pipeline):
     latents = 1 / pipeline.vae.config.scaling_factor * latents
@@ -162,12 +170,14 @@ def run(config):
         (latents,
         context,
         guidance_scale,
+        guidance_rescale,
         scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
 
         loop_body_p = functools.partial(loop_body, model=pipeline.unet,
                                         pipeline=pipeline,
                                         prompt_embeds=context,
-                                        guidance_scale=guidance_scale)
+                                        guidance_scale=guidance_scale,
+                                        guidance_rescale=guidance_rescale)
 
         vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
 

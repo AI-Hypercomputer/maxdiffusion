@@ -164,9 +164,13 @@ class FlaxEulerDiscreteScheduler(FlaxSchedulerMixin, ConfigMixin):
             step_ratio = self.config.num_train_timesteps // num_inference_steps
             timesteps = (jnp.arange(0, num_inference_steps) * step_ratio).round()[::-1].copy().astype(float)
             timesteps += 1
+        elif self.config.timestep_spacing == "trailing":
+            step_ratio = self.config.num_train_timesteps / num_inference_steps
+            timesteps = (jnp.arange(self.config.num_train_timesteps, 0, -step_ratio)).round()
+            timesteps -=1
         else:
             raise ValueError(
-                f"timestep_spacing must be one of ['linspace', 'leading'], got {self.config.timestep_spacing}"
+                f"timestep_spacing must be one of ['linspace', 'leading', 'trailing'], got {self.config.timestep_spacing}"
             )
 
         sigmas = ((1 - state.common.alphas_cumprod) / state.common.alphas_cumprod) ** 0.5
