@@ -142,7 +142,7 @@ class Train(unittest.TestCase):
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
 
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
-      f"pretrained_model_name_or_path={output_dir}", "from_pt=True",
+      f"pretrained_model_name_or_path={output_dir}", "from_pt=False",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=7.5",
       "num_inference_steps=30","seed=47", "attention=dot_product"])
