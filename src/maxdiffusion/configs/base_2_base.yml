@@ -48,6 +48,15 @@ norm_num_groups: 32
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
 
+# Override parameters from checkpoints's scheduler.
+diffusion_scheduler_config: {
+  _class_name: '',
+  # values are v_prediction or leave empty to use scheduler's default. 
+  prediction_type: '',
+  rescale_zero_terminal_snr: False,
+  timestep_spacing: ''
+}
+
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
 base_output_directory: ""
@@ -145,6 +154,8 @@ profiler_steps: 5
 prompt: "A magical castle in the middle of a forest, artistic drawing"
 negative_prompt: "purple, red"
 guidance_scale: 7.5
+# Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+guidance_rescale: 0.0
 num_inference_steps: 30
 
 # For preprocessing data to tfrecords

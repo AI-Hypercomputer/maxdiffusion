@@ -218,6 +218,32 @@ def betas_for_alpha_bar(num_diffusion_timesteps: int, max_beta=0.999, dtype=jnp.
         betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
     return jnp.array(betas, dtype=dtype)
 
+def rescale_betas_zero_snr(betas):
+        """
+        Rescales betas to have a zero terminal SNR Based on https://arxiv.org/pdf/2305.08891.pdf (Algorithm 1)
+        """
+
+        alphas = 1.0 - betas
+        alphas_cumprod = jnp.cumprod(alphas, axis=0)
+        alphas_bar_sqrt = jnp.sqrt(alphas_cumprod)
+
+        # Store old values.
+        alphas_bar_sqrt_0 = jnp.copy(alphas_bar_sqrt[0])
+        alphas_bar_sqrt_T = jnp.copy(alphas_bar_sqrt[-1])
+
+        # Shift so the last timestep is zero.
+        alphas_bar_sqrt -= alphas_bar_sqrt_T
+
+        # Scale so the first timestep is back to the old value.
+        alphas_bar_sqrt *= alphas_bar_sqrt_0 / (alphas_bar_sqrt_0 - alphas_bar_sqrt_T)
+
+        # Convert alphas_bar_sqrt to betas
+        alphas_bar = alphas_bar_sqrt**2 # Revert sqrt
+        alphas = alphas_bar[1:] / alphas_bar[:-1] # Revert cumprod
+        alphas = jnp.concatenate([alphas_bar[0:1], alphas])
+        betas = 1 - alphas
+
+        return betas
 
 @flax.struct.dataclass
 class CommonSchedulerState:
@@ -248,6 +274,9 @@ class CommonSchedulerState:
             raise NotImplementedError(
                 f"beta_schedule {config.beta_schedule} is not implemented for scheduler {scheduler.__class__.__name__}"
             )
+
+        if config.get("rescale_zero_terminal_snr", False):
+            betas = rescale_betas_zero_snr(betas)
 
         alphas = 1.0 - betas
 

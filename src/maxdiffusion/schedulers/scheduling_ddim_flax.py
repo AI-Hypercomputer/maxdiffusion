@@ -120,6 +120,7 @@ class FlaxDDIMScheduler(FlaxSchedulerMixin, ConfigMixin):
         set_alpha_to_one: bool = True,
         steps_offset: int = 0,
         prediction_type: str = "epsilon",
+        timestep_spacing: str = "leading",
         dtype: jnp.dtype = jnp.float32,
     ):
         self.dtype = dtype
@@ -174,11 +175,19 @@ class FlaxDDIMScheduler(FlaxSchedulerMixin, ConfigMixin):
             num_inference_steps (`int`):
                 the number of diffusion steps used when generating samples with a pre-trained model.
         """
-        step_ratio = self.config.num_train_timesteps // num_inference_steps
-        # creates integer timesteps by multiplying by ratio
-        # rounding to avoid issues when num_inference_step is power of 3
-        timesteps = (jnp.arange(0, num_inference_steps) * step_ratio).round()[::-1] + self.config.steps_offset
-
+        if self.config.timestep_spacing == "leading":
+            step_ratio = self.config.num_train_timesteps // num_inference_steps
+            # creates integer timesteps by multiplying by ratio
+            # rounding to avoid issues when num_inference_step is power of 3
+            timesteps = (jnp.arange(0, num_inference_steps) * step_ratio).round()[::-1] + self.config.steps_offset
+        elif self.config.timestep_spacing == "trailing":
+            step_ratio = self.config.num_train_timesteps / num_inference_steps
+            timesteps = (jnp.arange(self.config.num_train_timesteps, 0, -step_ratio)).round()
+            timesteps -=1
+        else:
+            raise ValueError(
+                f"timestep_spacing must be one of ['leading', 'trailing'], got {self.config.timestep_spacing}"
+            )
         return state.replace(
             num_inference_steps=num_inference_steps,
             timesteps=timesteps,

@@ -49,12 +49,13 @@ from maxdiffusion.max_utils import (
 )
 from maxdiffusion.maxdiffusion_utils import (
   load_sdxllightning_unet,
-  get_add_time_ids
+  get_add_time_ids,
+  rescale_noise_cfg
 )
 
 cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
-def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale):
+def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
   latents, scheduler_state, state = args
   latents_input = jnp.concatenate([latents] * 2)
 
@@ -72,6 +73,10 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
 
   noise_pred_uncond, noise_prediction_text = jnp.split(noise_pred, 2, axis=0)
   noise_pred = noise_pred_uncond + guidance_scale * (noise_prediction_text - noise_pred_uncond)
+
+  # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+  noise_pred = rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale=guidance_rescale)
+
 
   latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
@@ -166,6 +171,7 @@ def run(config):
     negative_prompt_ids = [config.negative_prompt] * batch_size
     negative_prompt_ids = tokenize(negative_prompt_ids, pipeline)
     guidance_scale = config.guidance_scale
+    guidance_rescale = config.guidance_rescale
     num_inference_steps = config.num_inference_steps
     height = config.resolution
     width = config.resolution
@@ -181,6 +187,7 @@ def run(config):
     add_time_ids = jnp.concatenate([add_time_ids, add_time_ids], axis=0)
     # Ensure model output will be `float32` before going into the scheduler
     guidance_scale = jnp.array([guidance_scale], dtype=jnp.float32)
+    guidance_rescale = jnp.array([guidance_rescale], dtype=jnp.float32)
 
     latents_shape = (
       batch_size,
@@ -206,7 +213,7 @@ def run(config):
     added_cond_kwargs['text_embeds'] = jax.device_put(added_cond_kwargs['text_embeds'], data_sharding)
     added_cond_kwargs['time_ids'] = jax.device_put(added_cond_kwargs['time_ids'], data_sharding)
 
-    return latents, prompt_embeds, added_cond_kwargs, guidance_scale, scheduler_state
+    return latents, prompt_embeds, added_cond_kwargs, guidance_scale, guidance_rescale, scheduler_state
 
   def vae_decode(latents, state, pipeline):
     latents = 1 / pipeline.vae.config.scaling_factor * latents
@@ -224,13 +231,15 @@ def run(config):
     prompt_embeds,
     added_cond_kwargs,
     guidance_scale,
+    guidance_rescale,
     scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
 
     loop_body_p = functools.partial(loop_body, model=pipeline.unet,
                         pipeline=pipeline,
                         added_cond_kwargs=added_cond_kwargs,
                         prompt_embeds=prompt_embeds,
-                        guidance_scale=guidance_scale)
+                        guidance_scale=guidance_scale,
+                        guidance_rescale=guidance_rescale)
     vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
 
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):

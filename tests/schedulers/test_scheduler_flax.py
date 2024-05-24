@@ -556,6 +556,26 @@ class FlaxDDIMSchedulerTest(FlaxSchedulerCommonTest):
         state = scheduler.set_timesteps(state, 5)
         assert jnp.equal(state.timesteps, jnp.array([801, 601, 401, 201, 1])).all()
 
+    def test_steps_trailing(self):
+        self.check_over_configs(timestep_spacing="trailing")
+
+        scheduler_class = self.scheduler_classes[0]
+        scheduler_config = self.get_scheduler_config(timestep_spacing="trailing")
+        scheduler = scheduler_class(**scheduler_config)
+        state = scheduler.create_state()
+        state = scheduler.set_timesteps(state, 5)
+        assert jnp.equal(state.timesteps, jnp.array([999, 799, 599, 399, 199])).all()
+
+    def test_steps_leading(self):
+        self.check_over_configs(timestep_spacing="leading")
+
+        scheduler_class = self.scheduler_classes[0]
+        scheduler_config = self.get_scheduler_config(timestep_spacing="leading")
+        scheduler = scheduler_class(**scheduler_config)
+        state = scheduler.create_state()
+        state = scheduler.set_timesteps(state, 5)
+        assert jnp.equal(state.timesteps, jnp.array([800, 600, 400, 200, 0])).all()
+
     def test_betas(self):
         for beta_start, beta_end in zip([0.0001, 0.001, 0.01, 0.1], [0.002, 0.02, 0.2, 2]):
             self.check_over_configs(beta_start=beta_start, beta_end=beta_end)
