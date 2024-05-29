@@ -113,8 +113,6 @@ class FlaxStableDiffusionXLControlNetPipeline(FlaxDiffusionPipeline):
         output_type: str = None,
         jit: bool = False,
     ):
-        # 0. Default height and width to unet
-        height, width = image.shape[-2:]
 
         if isinstance(guidance_scale, float) and jit:
             # Convert to a tensor so each device gets a copy.
@@ -224,6 +222,8 @@ class FlaxStableDiffusionXLControlNetPipeline(FlaxDiffusionPipeline):
 
         # Ensure model output will be `float32` before going into the scheduler
         guidance_scale = jnp.array([guidance_scale], dtype=jnp.float32)
+
+        image = jnp.concatenate([image] * 2)
 
         # Create random latents
         latents_shape = (

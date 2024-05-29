@@ -376,6 +376,7 @@ class FlaxControlNetModel(nn.Module, FlaxModelMixin, ConfigMixin):
         t_emb = self.time_proj(timesteps)
         t_emb = self.time_embedding(t_emb)
 
+        aug_emb = None
         if self.config.addition_embed_type == "text_time":
             if added_cond_kwargs is None:
                 raise ValueError(
@@ -406,6 +407,7 @@ class FlaxControlNetModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
         controlnet_cond = jnp.transpose(controlnet_cond, (0, 2, 3, 1))
         controlnet_cond = self.controlnet_cond_embedding(controlnet_cond)
+
         sample += controlnet_cond
 
         # 3. down

@@ -14,58 +14,77 @@
  limitations under the License.
  """
 
+import os
+from typing import Sequence
+from absl import app
+
 import jax
 import numpy as np
 import jax.numpy as jnp
 from flax.jax_utils import replicate
 from flax.training.common_utils import shard
-from maxdiffusion.utils import load_image, make_image_grid
+from jax.experimental.compilation_cache import compilation_cache as cc
+from maxdiffusion import pyconfig
+from maxdiffusion.utils import load_image
 from maxdiffusion import FlaxStableDiffusionControlNetPipeline, FlaxControlNetModel
-def create_key(seed=0):
-  return jax.random.PRNGKey(seed)
 
+cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
-rng = create_key(0)
+def run(config):
 
-# get canny image
-canny_image = load_image(
-  "https://huggingface.co/datasets/YiYiXu/test-doc-assets/resolve/main/blog_post_cell_10_output_0.jpeg"
-)
+  rng = jax.random.PRNGKey(config.seed)
 
-prompts = "best quality, extremely detailed"
-negative_prompts = "monochrome, lowres, bad anatomy, worst quality, low quality"
+  # get canny image
+  canny_image = load_image(config.controlnet_image)
 
-# load control net and stable diffusion v1-5
-controlnet, controlnet_params = FlaxControlNetModel.from_pretrained(
-  "lllyasviel/sd-controlnet-canny", from_pt=True, dtype=jnp.float32
-)
-pipe, params = FlaxStableDiffusionControlNetPipeline.from_pretrained(
-  "runwayml/stable-diffusion-v1-5", controlnet=controlnet, revision="flax", dtype=jnp.float32
-)
-params["controlnet"] = controlnet_params
+  prompts = config.prompt
+  negative_prompts = config.negative_prompt
+  controlnet_conditioning_scale = config.controlnet_conditioning_scale
 
-num_samples = jax.device_count()
-rng = jax.random.split(rng, jax.device_count())
+  # load control net and stable diffusion v1-5
+  controlnet, controlnet_params = FlaxControlNetModel.from_pretrained(
+    config.controlnet_model_name_or_path,
+    from_pt=config.controlnet_from_pt,
+    dtype=jnp.float32
+  )
+  pipe, params = FlaxStableDiffusionControlNetPipeline.from_pretrained(
+    config.pretrained_model_name_or_path,
+    controlnet=controlnet,
+    revision=config.revision,
+    dtype=jnp.float32
+  )
+  params["controlnet"] = controlnet_params
 
-prompt_ids = pipe.prepare_text_inputs([prompts] * num_samples)
-negative_prompt_ids = pipe.prepare_text_inputs([negative_prompts] * num_samples)
-processed_image = pipe.prepare_image_inputs([canny_image] * num_samples)
+  num_samples = jax.device_count() * config.per_device_batch_size
+  rng = jax.random.split(rng, jax.device_count())
 
-p_params = replicate(params)
-prompt_ids = shard(prompt_ids)
-negative_prompt_ids = shard(negative_prompt_ids)
-processed_image = shard(processed_image)
+  prompt_ids = pipe.prepare_text_inputs([prompts] * num_samples)
+  negative_prompt_ids = pipe.prepare_text_inputs([negative_prompts] * num_samples)
+  processed_image = pipe.prepare_image_inputs([canny_image] * num_samples)
 
-output = pipe(
-    prompt_ids=prompt_ids,
-    image=processed_image,
-    params=p_params,
-    prng_seed=rng,
-    num_inference_steps=50,
-    neg_prompt_ids=negative_prompt_ids,
-    jit=True,
-).images
+  p_params = replicate(params)
+  prompt_ids = shard(prompt_ids)
+  negative_prompt_ids = shard(negative_prompt_ids)
+  processed_image = shard(processed_image)
 
-output_images = pipe.numpy_to_pil(np.asarray(output.reshape((num_samples,) + output.shape[-3:])))
-output_images = make_image_grid(output_images, num_samples // 4, 4)
-output_images.save("generated_image.png")
+  output = pipe(
+      prompt_ids=prompt_ids,
+      image=processed_image,
+      params=p_params,
+      prng_seed=rng,
+      num_inference_steps=config.num_inference_steps,
+      neg_prompt_ids=negative_prompt_ids,
+      controlnet_conditioning_scale=controlnet_conditioning_scale,
+      jit=True,
+  ).images
+
+  output_images = pipe.numpy_to_pil(np.asarray(output.reshape((num_samples,) + output.shape[-3:])))
+  output_images[0].save("generated_image.png")
+  return output_images
+
+def main(argv: Sequence[str]) -> None:
+  pyconfig.initialize(argv)
+  run(pyconfig.config)
+
+if __name__ == "__main__":
+  app.run(main)
