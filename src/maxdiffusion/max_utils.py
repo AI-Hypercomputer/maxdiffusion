@@ -467,7 +467,6 @@ def calculate_training_tflops(pipeline, unet_params, config):
                                 shape=input_shape,
                                 dtype=dtype
                                 )
-    latents = jnp.concatenate([latents] * 2)
     timesteps = jnp.ones((latents.shape[0],))
     encoder_hidden_states_shape = (latents.shape[0],
                                     pipeline.text_encoder.config.max_position_embeddings,
