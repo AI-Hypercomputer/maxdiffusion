@@ -37,8 +37,8 @@ MaxDiffusion supports
   * [Local Development for single host](#getting-started-local-development-for-single-host)
     * [Training](#training)
     * [Inference](#inference)
-    * [SDXL Lightning](#sdxl-lightning)
-    * [ControlNet](#controlnet)
+      * [SDXL Lightning](#sdxl-lightning)
+      * [ControlNet](#controlnet)
 * [Comparison To Alternatives](#comparison-to-alternatives)
 * [Development](#development)
 
@@ -116,29 +116,29 @@ To generate images, run the following command:
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
   ```
 
-## SDXL Lightning
+  ## SDXL Lightning
 
-Single and Multi host inference is supported with sharding annotations:
+  Single and Multi host inference is supported with sharding annotations:
 
-  ```bash
-  python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_run" lightning_repo="ByteDance/SDXL-Lightning" lightning_ckpt="sdxl_lightning_4step_unet.safetensors"
-  ```
+    ```bash
+    python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_run" lightning_repo="ByteDance/SDXL-Lightning" lightning_ckpt="sdxl_lightning_4step_unet.safetensors"
+    ```
 
-## ControlNet
+  ## ControlNet
 
-Might require installing extra libraries: `apt-get update && apt-get install ffmpeg libsm6 libxext6  -y`
+  Might require installing extra libraries for opencv: `apt-get update && apt-get install ffmpeg libsm6 libxext6  -y`
 
-- Stable Diffusion 1.4
+  - Stable Diffusion 1.4
 
-  ```bash
-  python src/maxdiffusion/controlnet/generate_controlnet_replicated.py
-  ```
+    ```bash
+    python src/maxdiffusion/controlnet/generate_controlnet_replicated.py
+    ```
 
-- Stable Diffusion XL
+  - Stable Diffusion XL
 
-  ```bash
-  python src/maxdiffusion/controlnet/generate_controlnet_sdxl_replicated.py
-  ```
+    ```bash
+    python src/maxdiffusion/controlnet/generate_controlnet_sdxl_replicated.py
+    ```
   
 
 ## Getting Started: Multihost development
