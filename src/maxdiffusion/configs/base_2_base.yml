@@ -136,6 +136,7 @@ max_train_samples: -1
 max_train_steps: 25442
 seed: 0
 output_dir: 'sd-model-finetuned'
+tensorboard_dir: 'gs://mlperf-exp/stablediffusion'
 per_device_batch_size: 4
 pre_compile: true
 
