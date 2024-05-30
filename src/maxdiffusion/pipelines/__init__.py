@@ -80,7 +80,12 @@ except OptionalDependencyNotAvailable:
 
     _dummy_objects.update(get_objects_from_module(dummy_flax_and_transformers_objects))
 else:
-    _import_structure["controlnet"].extend(["FlaxStableDiffusionControlNetPipeline"])
+    _import_structure["controlnet"].extend(
+        [
+            "FlaxStableDiffusionControlNetPipeline",
+            "FlaxStableDiffusionXLControlNetPipeline"
+        ]
+    )
     _import_structure["stable_diffusion"].extend(
         [
             "FlaxStableDiffusionImg2ImgPipeline",
@@ -132,7 +137,10 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         except OptionalDependencyNotAvailable:
             from ..utils.dummy_flax_and_transformers_objects import *
         else:
-            from .controlnet import FlaxStableDiffusionControlNetPipeline
+            from .controlnet import (
+                FlaxStableDiffusionControlNetPipeline,
+                FlaxStableDiffusionXLControlNetPipeline
+            )
             from .stable_diffusion import (
                 FlaxStableDiffusionImg2ImgPipeline,
                 FlaxStableDiffusionInpaintPipeline,

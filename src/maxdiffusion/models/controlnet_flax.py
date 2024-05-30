@@ -163,8 +163,11 @@ class FlaxControlNetModel(nn.Module, FlaxModelMixin, ConfigMixin):
     freq_shift: int = 0
     controlnet_conditioning_channel_order: str = "rgb"
     conditioning_embedding_out_channels: Tuple[int] = (16, 32, 96, 256)
+    addition_embed_type: Optional[str] = None
+    addition_time_embed_dim: Optional[int] = None
+    projection_class_embeddings_input_dim: Optional[int] = None
 
-    def init_weights(self, rng: jax.Array) -> FrozenDict:
+    def init_weights(self, rng: jax.Array, eval_only = False) -> FrozenDict:
         # init input tensors
         sample_shape = (1, self.in_channels, self.sample_size, self.sample_size)
         sample = jnp.zeros(sample_shape, dtype=jnp.float32)
@@ -173,10 +176,31 @@ class FlaxControlNetModel(nn.Module, FlaxModelMixin, ConfigMixin):
         controlnet_cond_shape = (1, 3, self.sample_size * 8, self.sample_size * 8)
         controlnet_cond = jnp.zeros(controlnet_cond_shape, dtype=jnp.float32)
 
+        added_cond_kwargs = None
+        if self.addition_embed_type == "text_time":
+            # we retrieve the expected `text_embeds_dim` by first checking if the architecture is a refiner
+            # or non-refiner architecture and then by "reverse-computing" from `projection_class_embeddings_input_dim`
+            is_refiner = (
+                5 * self.config.addition_time_embed_dim + self.config.cross_attention_dim
+                == self.config.projection_class_embeddings_input_dim
+            )
+            num_micro_conditions = 5 if is_refiner else 6
+
+            text_embeds_dim = self.config.projection_class_embeddings_input_dim - (
+                num_micro_conditions * self.config.addition_time_embed_dim
+            )
+
+            time_ids_channels = self.projection_class_embeddings_input_dim - text_embeds_dim
+            time_ids_dims = time_ids_channels // self.addition_time_embed_dim
+            added_cond_kwargs = {
+                "text_embeds": jnp.zeros((1, text_embeds_dim), dtype=jnp.float32),
+                "time_ids": jnp.zeros((1, time_ids_dims), dtype=jnp.float32),
+            }
+
         params_rng, dropout_rng = jax.random.split(rng)
         rngs = {"params": params_rng, "dropout": dropout_rng}
-
-        return self.init(rngs, sample, timesteps, encoder_hidden_states, controlnet_cond)["params"]
+        # ignore eval as we aren't sharding controlnet modules yet.
+        return self.init(rngs, sample, timesteps, encoder_hidden_states, controlnet_cond, added_cond_kwargs=added_cond_kwargs)["params"]
 
     def setup(self):
         block_out_channels = self.block_out_channels
@@ -204,6 +228,9 @@ class FlaxControlNetModel(nn.Module, FlaxModelMixin, ConfigMixin):
             block_out_channels[0], flip_sin_to_cos=self.flip_sin_to_cos, freq_shift=self.config.freq_shift
         )
         self.time_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype)
+        if self.addition_embed_type == "text_time":
+            self.add_time_proj = FlaxTimesteps(self.addition_time_embed_dim, flip_sin_to_cos=self.flip_sin_to_cos, freq_shift=self.config.freq_shift)
+            self.add_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype)
 
         self.controlnet_cond_embedding = FlaxControlNetConditioningEmbedding(
             conditioning_embedding_channels=block_out_channels[0],
@@ -315,6 +342,7 @@ class FlaxControlNetModel(nn.Module, FlaxModelMixin, ConfigMixin):
         conditioning_scale: float = 1.0,
         return_dict: bool = True,
         train: bool = False,
+        added_cond_kwargs = None,
     ) -> Union[FlaxControlNetOutput, Tuple]:
         r"""
         Args:
@@ -348,12 +376,38 @@ class FlaxControlNetModel(nn.Module, FlaxModelMixin, ConfigMixin):
         t_emb = self.time_proj(timesteps)
         t_emb = self.time_embedding(t_emb)
 
+        aug_emb = None
+        if self.config.addition_embed_type == "text_time":
+            if added_cond_kwargs is None:
+                raise ValueError(
+                    f"Need to provide argument `added_cond_kwargs` for {self.__class__} when using `addition_embed_type={self.addition_embed_type}`"
+                )
+            text_embeds = added_cond_kwargs.get("text_embeds")
+            if text_embeds is None:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `text_embeds` to be passed in `added_cond_kwargs`"
+                )
+            time_ids = added_cond_kwargs.get("time_ids")
+            if time_ids is None:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `time_ids` to be passed in `added_cond_kwargs`"
+                )
+
+            time_embeds = self.add_time_proj(jnp.ravel(time_ids))
+            time_embeds = jnp.reshape(time_embeds, (text_embeds.shape[0], -1))
+
+            add_embeds = jnp.concatenate([text_embeds, time_embeds], axis=-1)
+            aug_emb = self.add_embedding(add_embeds)
+
+        t_emb = t_emb + aug_emb if aug_emb is not None else t_emb
+
         # 2. pre-process
         sample = jnp.transpose(sample, (0, 2, 3, 1))
         sample = self.conv_in(sample)
 
         controlnet_cond = jnp.transpose(controlnet_cond, (0, 2, 3, 1))
         controlnet_cond = self.controlnet_cond_embedding(controlnet_cond)
+
         sample += controlnet_cond
 
         # 3. down
