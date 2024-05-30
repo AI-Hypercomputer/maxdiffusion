@@ -103,7 +103,7 @@ class _HyperParameters():
     run_name = raw_keys["run_name"]
     base_output_directory = raw_keys["base_output_directory"]
     if run_name:
-      raw_keys["tensorboard_dir"] = os.path.join(base_output_directory, run_name, "tensorboard", "")
+      #raw_keys["tensorboard_dir"] = os.path.join(base_output_directory, run_name, "tensorboard", "")
       raw_keys["checkpoint_dir"] = os.path.join(base_output_directory, run_name, "checkpoints", "")
       raw_keys["metrics_dir"] = os.path.join(base_output_directory, run_name, "metrics", "")
 
