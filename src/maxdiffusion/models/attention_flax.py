@@ -151,10 +151,7 @@ class AttentionOp(nn.Module):
         # and that is expected.
         if not (query.shape[0] / devices_in_data_fsdp).is_integer():
             max_logging.log("Warning, batch dimension should be shardable among the devices in data and fsdp"
-                            " axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}")
-            jax.debug.print("Warning, batch dimension should be shardable among the devices in data and fsdp"
-                            " axis, batch dimension: {x}, devices_in_data_fsdp: {y}",
-                            x=query.shape[0], y=devices_in_data_fsdp)
+                            f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}")
         x = wrap_flash_attention(query, key, value, decoder_segment_ids)
         x = x[:,:,:,:kv_size]
         x = self.reshape_heads_to_head_dim(x)

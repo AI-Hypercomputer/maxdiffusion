@@ -45,14 +45,14 @@ from maxdiffusion.train_utils import (
     record_scalar_metrics,
     write_metrics,
     get_params_to_save,
-    compute_snr
+    compute_snr,
+    generate_timestep_weights
 )
 
 from transformers import FlaxCLIPTextModel
 
 from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax.linen import partitioning as nn_partitioning
-from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
 from transformers import CLIPImageProcessor, set_seed
@@ -208,7 +208,7 @@ def train(config):
 
     def train_step(unet_state, vae_state, batch, train_rng, cache_latents_text_encoder_outputs):
         _, gen_dummy_rng = jax.random.split(train_rng)
-        sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
+        sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng)
         def compute_loss(unet_params):
 
             if cache_latents_text_encoder_outputs:
@@ -232,13 +232,17 @@ def train(config):
             noise = jax.random.normal(noise_rng, latents.shape)
             # Sample a random timestep for each image
             bsz = latents.shape[0]
-            timesteps = jax.random.randint(
-                timestep_rng,
-                (bsz,),
-                0,
-                noise_scheduler.config.num_train_timesteps,
-            )
-
+            if config.timestep_bias["strategy"] == "none":
+                timesteps = jax.random.randint(
+                    timestep_rng,
+                    (bsz,),
+                    0,
+                    noise_scheduler.config.num_train_timesteps,
+                )
+            else:
+                weights = generate_timestep_weights(config, noise_scheduler.config.num_train_timesteps)
+                timesteps = jax.random.categorical(timestep_bias_rng, logits=jnp.log(weights), shape=(bsz,))
+                
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
@@ -341,7 +345,8 @@ def train(config):
                                                                 train_rngs)
         new_time = datetime.datetime.now()
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
-        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+        if config.write_metrics:
+            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
@@ -393,9 +398,10 @@ def train(config):
 
 def main(argv: Sequence[str]) -> None:
     max_logging.log(f"Found {jax.device_count()} devices.")
-    cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
+    if len(config.cache_dir) > 0:
+        jax.config.update("jax_compilation_cache_dir", config.cache_dir)
     mllog_utils.train_init_start(config)
     validate_train_config(config)
     train(config)

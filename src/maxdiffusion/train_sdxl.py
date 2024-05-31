@@ -146,8 +146,7 @@ def tokenize_captions_xl(examples, caption_column, tokenizers, p_encode=None):
 
 def train_step(unet_state, batch, train_rng, noise_scheduler, noise_scheduler_state, config):
   _, gen_dummy_rng = jax.random.split(train_rng)
-  sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
-  sample_rng, sample_rng2 = jax.random.split(sample_rng)
+  sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
   def compute_loss(unet_params):
     if config.cache_latents_text_encoder_outputs:
       latents = batch["pixel_values"]
@@ -170,10 +169,11 @@ def train_step(unet_state, batch, train_rng, noise_scheduler, noise_scheduler_st
       )
     else:
       weights = generate_timestep_weights(config, noise_scheduler.config.num_train_timesteps)
-      timesteps = jax.random.categorical(sample_rng2, logits=jnp.log(weights), shape=(bsz,))
-      # Add noise to the latents according to the noise magnitude at each timestep
-      # (this is the forward diffusion process)
-      noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
+      timesteps = jax.random.categorical(timestep_bias_rng, logits=jnp.log(weights), shape=(bsz,))
+    
+    # Add noise to the latents according to the noise magnitude at each timestep
+    # (this is the forward diffusion process)
+    noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
 
     # TODO : @jfacevedo - support cropping.
     add_time_ids = get_add_time_ids(
@@ -299,14 +299,19 @@ def train(config):
         eps=config.adam_eps,
         weight_decay=config.adam_weight_decay,
     )
-
+    max_logging.log("Creating states...")
+    s = time.time()
     (unet_state,
     unet_state_mesh_shardings,
     _, _) = max_utils.get_states(mesh,tx, rng, config,pipeline, params["unet"], params["vae"], training=True)
-
-    per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
+    max_logging.log(f"Create state time: {(time.time() - s)}")
+    max_logging.log("Calculating training tflops...")
+    s = time.time()
+    per_device_tflops = 0 #max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
+    max_logging.log(f"Calculate training tflops time: {(time.time() - s)}")
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
-
+    max_logging.log(f"Preparing dataset: {config.dataset_name}")
+    s = time.time()
     if config.dataset_name == "diffusers/pokemon-gpt4-captions":
         p_encode = None
         p_vae_apply = None
@@ -315,6 +320,8 @@ def train(config):
                               text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
                               text_encoder_params=[params["text_encoder"], params["text_encoder_2"]]))
           p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+        else:
+           raise ValueError("cache_latents_text_encoder_outputs = False currently not supported!")
 
         tokenize_fn = partial(tokenize_captions_xl,
                           caption_column=config.caption_column,
@@ -336,7 +343,7 @@ def train(config):
         )
     else:
         raise ValueError(f"{config.dataset_name} is currently not supported in this pipeline.")
-
+    max_logging.log(f"Dataset prepare time: {time.time() - s}")
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 

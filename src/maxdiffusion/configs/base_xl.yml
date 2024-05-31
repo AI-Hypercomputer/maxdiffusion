@@ -17,7 +17,7 @@ run_name: ''
 
 metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
 # If true save metrics such as loss and TFLOPS to GCS in {base_output_directory}/{run_name}/metrics/
-write_metrics: False
+write_metrics: True
 gcs_metrics: False
 # If true save config to GCS in {base_output_directory}/{run_name}/
 save_config_to_gcs: False
