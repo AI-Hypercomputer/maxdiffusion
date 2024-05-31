@@ -47,7 +47,8 @@ class Train(unittest.TestCase):
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
       "revision=refs/pr/95","dtype=bfloat16","run_name=sdxl_train_smoke_test",
       "max_train_steps=21","dataset_name=diffusers/pokemon-gpt4-captions",
-      "resolution=1024","per_device_batch_size=1",
+      "resolution=1024","per_device_batch_size=1","snr_gamma=5.0",
+      'timestep_bias={"strategy" : "later", "multiplier" : 2.0, "portion" : 0.25}',
       "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}"])
 
     img_url = os.path.join(THIS_DIR,'images','test_sdxl.png')
