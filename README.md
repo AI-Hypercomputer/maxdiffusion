@@ -26,12 +26,19 @@ MaxDiffusion supports
 * Stable Diffusion 2 base (training and inference)
 * Stable Diffusion 2.1 (training and inference) 
 * Stable Diffusion XL (training and inference).
+* Stable Diffusion Lightning (inference).
+* ControlNet inference (Stable Diffusion 1.4 & SDXL).
 
 **WARNING: The training code is purely experimental and is under development.**
 
 # Table of Contents
 
 * [Getting Started](#getting-started)
+  * [Local Development for single host](#getting-started-local-development-for-single-host)
+    * [Training](#training)
+    * [Inference](#inference)
+      * [SDXL Lightning](#sdxl-lightning)
+      * [ControlNet](#controlnet)
 * [Comparison To Alternatives](#comparison-to-alternatives)
 * [Development](#development)
 
@@ -45,16 +52,32 @@ Minimum requirements: Ubuntu Version 22.04, Python 3.10 and Tensorflow >= 2.12.0
 Local development is a convenient way to run MaxDiffusion on a single host. 
 
 1. [Create and SSH to a single-host TPU (v4-8). ](https://cloud.google.com/tpu/docs/users-guide-tpu-vm#creating_a_cloud_tpu_vm_with_gcloud)
-2. Clone MaxDiffusion in your TPU VM.
-3. Within the root directory of the MaxDiffusion `git` repo, install dependencies by running:
+1. Clone MaxDiffusion in your TPU VM.
+1. Within the root directory of the MaxDiffusion `git` repo, install dependencies by running:
 ```bash
 pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 pip3 install -r requirements.txt
 pip3 install .
 ```
-4. After installation completes, run the training script.
 
-- Stable Diffusion 2 base
+## Training
+
+After installation completes, run the training script.
+
+- **Stable Diffusion XL**
+
+  ```bash
+  export LIBTPU_INIT_ARGS=""
+  python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_xl_run" base_output_directory="gs://your-bucket/" per_device_batch_size=1
+  ```
+
+  To generate images with a trained checkpoint, run:
+
+  ```bash
+  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_xl.yml run_name="my_run" pretrained_model_name_or_path=<your_saved_checkpoint_path> from_pt=False attention=dot_product
+  ```
+
+- **Stable Diffusion 2 base**
 
   ```bash
   export LIBTPU_INIT_ARGS=""
@@ -67,36 +90,12 @@ pip3 install .
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_2_base.yml run_name="my_run" pretrained_model_name_or_path=<your_saved_checkpoint_path> from_pt=False attention=dot_product
   ```
 
-- Stable Diffusion XL
+## Inference
 
-  ```bash
-  export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_xl_run" base_output_directory="gs://your-bucket/" per_device_batch_size=1
-  ```
+To generate images, run the following command:
+- **Stable Diffusion XL**
 
-  To generate images with a trained checkpoint, add `pretrained_model_name_or_path=<your_saved_checkpoint_path>` to the commands below.
-
-5. To generate images, run the following command:
- 
-- Stable Diffusion 2 base
-  ```bash
-  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_2_base.yml run_name="my_run"
-
-- Stable Diffusion 2.1
-  ```bash
-  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
-  ```
-
-- Stable Diffusion XL Lightning
-
-  Multi host inference is supported with sharding annotations:
-
-  ```bash
-  python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_run" lightning_repo="ByteDance/SDXL-Lightning" lightning_ckpt="sdxl_lightning_4step_unet.safetensors"
-  ```
-- Stable Diffusion XL
-
-  Multi host inference is supported with sharding annotations:
+  Single and Multi host inference is supported with sharding annotations:
 
   ```bash
   python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_run"
@@ -107,6 +106,40 @@ pip3 install .
   ```bash
   python -m src.maxdiffusion.generate_sdxl_replicated
   ```
+
+- **Stable Diffusion 2 base**
+  ```bash
+  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_2_base.yml run_name="my_run"
+
+- **Stable Diffusion 2.1**
+  ```bash
+  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
+  ```
+
+  ## SDXL Lightning
+
+  Single and Multi host inference is supported with sharding annotations:
+
+    ```bash
+    python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_run" lightning_repo="ByteDance/SDXL-Lightning" lightning_ckpt="sdxl_lightning_4step_unet.safetensors"
+    ```
+
+  ## ControlNet
+
+  Might require installing extra libraries for opencv: `apt-get update && apt-get install ffmpeg libsm6 libxext6  -y`
+
+  - Stable Diffusion 1.4
+
+    ```bash
+    python src/maxdiffusion/controlnet/generate_controlnet_replicated.py
+    ```
+
+  - Stable Diffusion XL
+
+    ```bash
+    python src/maxdiffusion/controlnet/generate_controlnet_sdxl_replicated.py
+    ```
+  
 
 ## Getting Started: Multihost development
 Multihost training for Stable Diffusion 2 base can be run using the following command:

@@ -409,6 +409,7 @@ else:
     _import_structure["pipelines"].extend(
         [
             "FlaxStableDiffusionControlNetPipeline",
+            "FlaxStableDiffusionXLControlNetPipeline",
             "FlaxStableDiffusionImg2ImgPipeline",
             "FlaxStableDiffusionInpaintPipeline",
             "FlaxStableDiffusionPipeline",
@@ -477,6 +478,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
     else:
         from .pipelines import (
             FlaxStableDiffusionControlNetPipeline,
+            FlaxStableDiffusionXLControlNetPipeline,
             FlaxStableDiffusionImg2ImgPipeline,
             FlaxStableDiffusionInpaintPipeline,
             FlaxStableDiffusionPipeline,
