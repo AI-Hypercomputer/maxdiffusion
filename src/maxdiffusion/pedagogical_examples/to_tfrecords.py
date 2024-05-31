@@ -83,10 +83,20 @@ def create_example(latent, hidden_states):
     hidden_states = tf.io.serialize_tensor(hidden_states)
     feature = {
         "moments": bytes_feature(latent),
-        "caption": bytes_feature(hidden_states),
+        "clip_embeddings": bytes_feature(hidden_states),
     }
     example = tf.train.Example(features=tf.train.Features(feature=feature))
     return example.SerializeToString()
+
+def tokenize_captions(caption, pipeline, p_encode):
+   text_inputs = pipeline.tokenizer([caption],
+                                    max_length=pipeline.tokenizer.model_max_length,
+                                    padding="max_length",
+                                    truncation=True)
+   hidden_states = p_encode(np.stack(text_inputs.input_ids))
+   hidden_states = jnp.squeeze(hidden_states).astype(jnp.bfloat16)
+   print(hidden_states.shape)
+   return hidden_states
 
 def generate_dataset(config):
   tfrecords_dir=config.tfrecords_dir
@@ -94,6 +104,22 @@ def generate_dataset(config):
 
   if not os.path.exists(tfrecords_dir):
     os.makedirs(tfrecords_dir)  # creating TFRecords output folder
+
+  weight_dtype = max_utils.get_dtype(config)
+
+  pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+      config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+      safety_checker=None,
+      feature_extractor=None,
+      split_head_dim=config.split_head_dim,
+      norm_num_groups=config.norm_num_groups,
+      from_pt=config.from_pt,
+      attention_kernel=config.attention,
+  )
+
+  p_encode = jax.jit(functools.partial(encode,
+                                        text_encoder=pipeline.text_encoder,
+                                        text_encoder_params=params["text_encoder"]))
 
   tf_rec_num = 0
   filenames = tf.io.gfile.glob(config.data_files_pattern)
@@ -120,7 +146,9 @@ def generate_dataset(config):
       caption_file = moments_file.split(".")[0] + ".txt"
       with open(caption_file, "r") as f:
         caption = f.read()
-      example = create_example(moments, caption)
+
+      embedding = np.array(tokenize_captions(caption, pipeline, p_encode))
+      example = create_example(moments, embedding)
       writer.write(example)
       shard_record_count+=1
       global_record_count+=1
