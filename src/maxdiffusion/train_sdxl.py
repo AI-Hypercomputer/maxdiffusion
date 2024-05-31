@@ -144,6 +144,88 @@ def tokenize_captions_xl(examples, caption_column, tokenizers, p_encode=None):
 
   return examples
 
+def train_step(unet_state, batch, train_rng, noise_scheduler, noise_scheduler_state, config):
+  _, gen_dummy_rng = jax.random.split(train_rng)
+  sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
+  sample_rng, sample_rng2 = jax.random.split(sample_rng)
+  def compute_loss(unet_params):
+    if config.cache_latents_text_encoder_outputs:
+      latents = batch["pixel_values"]
+      prompt_embeds = batch["prompt_embeds"]
+      text_embeds = batch["text_embeds"]
+    else:
+      raise ValueError("cache_latents_text_encoder_outputs = False currently not supported!")
+
+    # Sample noise that we'll add to the latents
+    noise_rng, timestep_rng = jax.random.split(sample_rng)
+    noise = jax.random.normal(noise_rng, latents.shape)
+    # Sample a random timestep for each image
+    bsz = latents.shape[0]
+    if config.timestep_bias["strategy"] == "none":
+      timesteps = jax.random.randint(
+        timestep_rng,
+        (bsz,),
+        0,
+        noise_scheduler.config.num_train_timesteps,
+      )
+    else:
+      weights = generate_timestep_weights(config, noise_scheduler.config.num_train_timesteps)
+      timesteps = jax.random.categorical(sample_rng2, logits=jnp.log(weights), shape=(bsz,))
+      # Add noise to the latents according to the noise magnitude at each timestep
+      # (this is the forward diffusion process)
+      noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
+
+    # TODO : @jfacevedo - support cropping.
+    add_time_ids = get_add_time_ids(
+      (config.resolution, config.resolution),
+      (0, 0),
+      (config.resolution, config.resolution),
+      prompt_embeds.shape[0],
+      dtype=prompt_embeds.dtype
+    )
+    unet_added_conditions = {"time_ids" : add_time_ids, "text_embeds" : text_embeds}
+
+    # Predict the noise residual and compute loss
+    model_pred = unet_state.apply_fn(
+      {"params": unet_params},
+      noisy_latents,
+      timesteps,
+      prompt_embeds,
+      added_cond_kwargs=unet_added_conditions,
+      train=True
+    ).sample
+
+    # Get the target for loss depending on the prediction type
+    if noise_scheduler.config.prediction_type == "epsilon":
+      target = noise
+    elif noise_scheduler.config.prediction_type == "v_prediction":
+      target = noise_scheduler.get_velocity(noise_scheduler_state, latents, noise, timesteps)
+    else:
+      raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+    loss = (target - model_pred) ** 2
+
+    # snr
+    if config.snr_gamma > 0:
+      snr = jnp.array(compute_snr(timesteps, noise_scheduler_state))
+      snr_loss_weights = jnp.where(snr < config.snr_gamma, snr, jnp.ones_like(snr) * config.snr_gamma)
+      if noise_scheduler.config.prediction_type == "epsilon":
+        snr_loss_weights = snr_loss_weights / snr
+      elif noise_scheduler.config.prediction_type == "v_prediction":
+        snr_loss_weights = snr_loss_weights / (snr + 1)
+      loss = loss * snr_loss_weights[:, None, None, None]
+
+    loss = loss.mean()
+
+    return loss
+
+  grad_fn = jax.value_and_grad(compute_loss)
+  loss, grad = grad_fn(unet_state.params)
+
+  new_state = unet_state.apply_gradients(grads=grad)
+  metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
+
+  return new_state, metrics, new_train_rng
+
 def train(config):
     rng = jax.random.PRNGKey(config.seed)
 
@@ -258,89 +340,6 @@ def train(config):
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
-    def train_step(unet_state, batch, train_rng, cache_latents_text_encoder_outputs):
-        _, gen_dummy_rng = jax.random.split(train_rng)
-        sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
-        sample_rng, sample_rng2 = jax.random.split(sample_rng)
-        def compute_loss(unet_params):
-
-            if cache_latents_text_encoder_outputs:
-                latents = batch["pixel_values"]
-                prompt_embeds = batch["prompt_embeds"]
-                text_embeds = batch["text_embeds"]
-            else:
-                raise ValueError("cache_latents_text_encoder_outputs = False currently not supported!")
-
-            # Sample noise that we'll add to the latents
-            noise_rng, timestep_rng = jax.random.split(sample_rng)
-            noise = jax.random.normal(noise_rng, latents.shape)
-            # Sample a random timestep for each image
-            bsz = latents.shape[0]
-            if config.timestep_bias["strategy"] == "none":
-                timesteps = jax.random.randint(
-                    timestep_rng,
-                    (bsz,),
-                    0,
-                    noise_scheduler.config.num_train_timesteps,
-                )
-            else:
-                weights = generate_timestep_weights(config, noise_scheduler.config.num_train_timesteps)
-                timesteps = jax.random.categorical(sample_rng2, logits=jnp.log(weights), shape=(bsz,))
-            # Add noise to the latents according to the noise magnitude at each timestep
-            # (this is the forward diffusion process)
-            noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
-
-            # TODO : @jfacevedo - support cropping.
-            add_time_ids = get_add_time_ids(
-              (config.resolution, config.resolution),
-              (0, 0),
-              (config.resolution, config.resolution),
-              prompt_embeds.shape[0],
-              dtype=prompt_embeds.dtype
-            )
-            unet_added_conditions = {"time_ids" : add_time_ids, "text_embeds" : text_embeds}
-
-            # Predict the noise residual and compute loss
-            model_pred = pipeline.unet.apply(
-                {"params": unet_params},
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                added_cond_kwargs=unet_added_conditions,
-                train=True
-            ).sample
-
-            # Get the target for loss depending on the prediction type
-            if noise_scheduler.config.prediction_type == "epsilon":
-                target = noise
-            elif noise_scheduler.config.prediction_type == "v_prediction":
-                target = noise_scheduler.get_velocity(noise_scheduler_state, latents, noise, timesteps)
-            else:
-                raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-            loss = (target - model_pred) ** 2
-
-            # snr
-            if config.snr_gamma > 0:
-                snr = jnp.array(compute_snr(timesteps, noise_scheduler_state))
-                snr_loss_weights = jnp.where(snr < config.snr_gamma, snr, jnp.ones_like(snr) * config.snr_gamma)
-                if noise_scheduler.config.prediction_type == "epsilon":
-                    snr_loss_weights = snr_loss_weights / snr
-                elif noise_scheduler.config.prediction_type == "v_prediction":
-                    snr_loss_weights = snr_loss_weights / (snr + 1)
-                loss = loss * snr_loss_weights[:, None, None, None]
-
-            loss = loss.mean()
-
-            return loss
-
-        grad_fn = jax.value_and_grad(compute_loss)
-        loss, grad = grad_fn(unet_state.params)
-
-        new_state = unet_state.apply_gradients(grads=grad)
-        metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
-
-        return new_state, metrics, new_train_rng
-
     num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
@@ -351,7 +350,7 @@ def train(config):
 
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         p_train_step = jax.jit(
-            partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
+            partial(train_step, noise_scheduler=noise_scheduler, noise_scheduler_state=noise_scheduler_state, config=config),
             in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
             out_shardings=(unet_state_mesh_shardings, None, None),
             donate_argnums=(0,)

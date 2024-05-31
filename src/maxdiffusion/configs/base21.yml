@@ -37,6 +37,9 @@ norm_num_groups: 32
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
 
+# https://arxiv.org/pdf/2305.08891.pdf
+snr_gamma: -1.0
+
 # Override parameters from checkpoints's scheduler.
 diffusion_scheduler_config: {
   _class_name: '',
