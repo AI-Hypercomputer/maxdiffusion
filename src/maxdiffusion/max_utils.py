@@ -368,19 +368,23 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
   unboxed_abstract_state,
   state_mesh_annotations,
   training=training)
-  vae_variables = jax.jit(pipeline.vae.init_weights)(rng)
-  unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.vae, tx, config, mesh, vae_variables, training=training)
-  del vae_variables
-  vae_state, vae_state_mesh_shardings = setup_initial_state(
-      pipeline.vae,
-      tx,
-      config,
-      mesh,
-      vae_params,
-      unboxed_abstract_state,
-      state_mesh_annotations,
-      training=training
-  )
+
+  vae_state = None
+  vae_state_mesh_shardings = None
+  if vae_params:
+    vae_variables = jax.jit(pipeline.vae.init_weights)(rng)
+    unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.vae, tx, config, mesh, vae_variables, training=training)
+    del vae_variables
+    vae_state, vae_state_mesh_shardings = setup_initial_state(
+        pipeline.vae,
+        tx,
+        config,
+        mesh,
+        vae_params,
+        unboxed_abstract_state,
+        state_mesh_annotations,
+        training=training
+    )
 
   return unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings
 

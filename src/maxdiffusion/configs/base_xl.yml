@@ -17,7 +17,8 @@ run_name: ''
 
 metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
 # If true save metrics such as loss and TFLOPS to GCS in {base_output_directory}/{run_name}/metrics/
-gcs_metrics: True
+write_metrics: False
+gcs_metrics: False
 # If true save config to GCS in {base_output_directory}/{run_name}/
 save_config_to_gcs: False
 log_period: 100
@@ -33,9 +34,30 @@ flash_block_sizes: {}
 # GroupNorm groups
 norm_num_groups: 32
 
+# aot compilation
+pre_compile: True
 # If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
+
+# https://arxiv.org/pdf/2305.08891.pdf
+snr_gamma: -1.0
+
+timestep_bias: {
+  # a value of later will increase the frequence of the model's final training steps.
+  # none, earlier, later, range
+  strategy: "none",
+  # multiplier for bias, a value of 2.0 will double the weight of the bias, 0.5 will halve it.
+  multiplier: 1.0,
+  # when using strategy=range, the beginning (inclusive) timestep to bias.
+  begin: 0,
+  # when using strategy=range, the final step (inclusive) to bias.
+  end: 1000,
+  # portion of timesteps to bias. 
+  # 0.5 will bias one half of the timesteps. Value of strategy determines
+  # whether the biased portions are in the earlier or later timesteps.
+  portion: 0.25
+}
 
 # Override parameters from checkpoints's scheduler.
 diffusion_scheduler_config: {
@@ -136,8 +158,8 @@ adam_weight_decay: 1.e-2 # AdamW Weight decay
 enable_profiler: True
 # Skip first n steps for profiling, to omit things like compilation and to give
 # the iteration time a chance to stabilize.
-skip_first_n_steps_for_profiler: 1
-profiler_steps: 5
+skip_first_n_steps_for_profiler: 5
+profiler_steps: 10
 
 # Generation parameters
 prompt: "A magical castle in the middle of a forest, artistic drawing"

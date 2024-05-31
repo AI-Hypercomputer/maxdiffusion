@@ -44,7 +44,8 @@ from maxdiffusion.train_utils import (
     validate_train_config,
     record_scalar_metrics,
     write_metrics,
-    get_params_to_save
+    get_params_to_save,
+    compute_snr
 )
 
 from transformers import FlaxCLIPTextModel
@@ -260,6 +261,17 @@ def train(config):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
             loss = (target - model_pred) ** 2
+
+            # snr
+            if config.snr_gamma > 0:
+                snr = jnp.array(compute_snr(timesteps, noise_scheduler_state))
+                snr_loss_weights = jnp.where(snr < config.snr_gamma, snr, jnp.ones_like(snr) * config.snr_gamma)
+                if noise_scheduler.config.prediction_type == "epsilon":
+                    snr_loss_weights = snr_loss_weights / snr
+                elif noise_scheduler.config.prediction_type == "v_prediction":
+                    snr_loss_weights = snr_loss_weights / (snr + 1)
+                loss = loss * snr_loss_weights[:, None, None, None]
+
             loss = loss.mean()
 
             return loss
