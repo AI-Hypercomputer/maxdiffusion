@@ -22,10 +22,10 @@ Example file of how to prepare tfrecords with latents and hidden_states preproce
 3. Run this file:
 python src/maxdiffusion/pedagogical_examples/to_tfrecords.py \
   src/maxdiffusion/configs/base_2_base.yml attention=dot_product \
-  data_files_pattern=/mnt/disks/laion400-disk/webdataset-moments-filtered-tars/*.tar \
-  extracted_files_dir=/mnt/disks/laion400-disk/raw-data-extracted \
-  tfrecords_dir=/mnt/disks/laion400-disk/laion400m_moments-tfrec \
-  run_name=test no_records_per_shard=2048 base_output_directory=gs://jfacevedo-maxdiffusion/training_results/
+  data_files_pattern=/mnt/data/webdataset-moments-filtered/*.tar \
+  extracted_files_dir=/tmp/raw-data-extracted \
+  tfrecords_dir=/mnt/data/tf_records_512_encoder_state \
+  run_name=test no_records_per_shard=12720 base_output_directory=/tmp/output > result_512_encode.txt
 """
 
 import os
@@ -144,6 +144,7 @@ def generate_dataset(config):
       # CWH -> WHC
       moments = moments.transpose((1,2,0))
       caption_file = moments_file.split(".")[0] + ".txt"
+      json_file = moments_file.split(".")[0] + ".json"
       with open(caption_file, "r") as f:
         caption = f.read()
 
@@ -152,6 +153,9 @@ def generate_dataset(config):
       writer.write(example)
       shard_record_count+=1
       global_record_count+=1
+      os.remove(moments_file)
+      os.remove(caption_file)
+      os.remove(json_file)
       if shard_record_count >= no_records_per_shard:
         writer.close()
         shard_record_count = 0
