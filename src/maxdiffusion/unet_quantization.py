@@ -51,12 +51,12 @@ from maxdiffusion.max_utils import (
   get_abstract_state,
   setup_initial_state
 )
-from maxdiffusion.maxdiffusion_utils import (
+from .maxdiffusion_utils import (
   load_sdxllightning_unet,
   get_add_time_ids,
   rescale_noise_cfg
 )
-from maxdiffusion.models import quantizations
+from .models import quantizations
 
 cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
@@ -260,7 +260,7 @@ def run(config):
     guidance_rescale,
     scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
 
-    loop_body_quant_p = functools.partial(loop_body, model=pipeline.unet,
+    loop_body_quant_p = functools.partial(loop_body_for_quantization, model=pipeline.unet,
                         pipeline=pipeline,
                         added_cond_kwargs=added_cond_kwargs,
                         prompt_embeds=prompt_embeds,
@@ -268,7 +268,7 @@ def run(config):
                         guidance_rescale=guidance_rescale)
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
       quantized_unet_vars  = jax.lax.fori_loop(0, 1,
-                                        loop_body_p, (latents, scheduler_state, unet_state))
+                                        loop_body_quant_p, (latents, scheduler_state, unet_state))
     unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, None, config, mesh, quantized_unet_vars, training=False)
     unet_state, unet_state_mesh_shardings = setup_initial_state(
         pipeline.unet,
@@ -289,7 +289,7 @@ def run(config):
                         guidance_rescale=guidance_rescale)
     vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
 
-    
+
 
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
       latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps,

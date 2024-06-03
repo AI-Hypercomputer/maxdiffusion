@@ -58,8 +58,9 @@ def _get_quant_config(config):
     else:
       drhs_bits = 8
       drhs_accumulator_dtype = jnp.int32
+      print(config.quantization_local_shard_count) # -1
       drhs_local_aqt = aqt_config.LocalAqt(config.quantization_local_shard_count)
-    return aqt_config.config_v3(
+    return aqt_config.config_v4(
       fwd_bits=8,
       dlhs_bits=8,
       drhs_bits=drhs_bits,
