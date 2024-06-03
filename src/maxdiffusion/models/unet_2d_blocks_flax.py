@@ -18,6 +18,10 @@ import jax.numpy as jnp
 
 from .attention_flax import FlaxTransformer2DModel
 from .resnet_flax import FlaxDownsample2D, FlaxResnetBlock2D, FlaxUpsample2D
+from . import quantizations
+
+Quant = quantizations.AqtQuantization
+
 from ..common_types import BlockSizes
 
 class FlaxCrossAttnDownBlock2D(nn.Module):
@@ -53,6 +57,8 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
             jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
     """
     in_channels: int
     out_channels: int
@@ -69,6 +75,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
+    quant: Quant = None
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
 
@@ -102,7 +109,8 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                quant=self.quant,
             )
             attentions.append(attn_block)
 
@@ -219,6 +227,8 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
             jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
     """
     in_channels: int
     out_channels: int
@@ -238,6 +248,8 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
+    quant: Quant = None
+
 
     def setup(self):
         resnets = []
@@ -270,7 +282,8 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                quant=self.quant,
             )
             attentions.append(attn_block)
 
@@ -389,6 +402,8 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
             jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
     """
     in_channels: int
     dropout: float = 0.0
@@ -404,6 +419,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
+    quant=None
 
     def setup(self):
         # there is always at least one resnet
@@ -433,7 +449,8 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                quant=self.quant,
             )
             attentions.append(attn_block)
 

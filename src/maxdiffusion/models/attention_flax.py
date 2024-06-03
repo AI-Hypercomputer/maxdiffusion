@@ -23,6 +23,8 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
 from ..import common_types, max_logging
+from . import quantizations
+
 
 Array = common_types.Array
 Mesh = common_types.Mesh
@@ -36,6 +38,11 @@ LENGTH = common_types.LENGTH
 HEAD = common_types.HEAD
 D_KV = common_types.D_KV
 
+Quant = quantizations.AqtQuantization
+
+def _maybe_aqt_einsum(quant: Quant):
+    return jnp.einsum if quant is None else quant.einsum()
+
 class AttentionOp(nn.Module):
     mesh: Mesh
     attention_kernel: str
@@ -48,6 +55,7 @@ class AttentionOp(nn.Module):
     flash_axis_names: AxisNames = (BATCH, HEAD, LENGTH, D_KV)
     flash_min_seq_length: int = 4096
     flash_block_sizes: BlockSizes = None
+    quant: Quant = None
     dtype: DType = jnp.float32
 
     def check_attention_inputs(
@@ -385,6 +393,9 @@ class FlaxAttention(nn.Module):
             jax mesh is required if attention is set to flash.
         dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
             Parameters `dtype`
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
+
 
     """
     query_dim: int
@@ -402,6 +413,7 @@ class FlaxAttention(nn.Module):
     key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
     value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
     out_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+    quant: Quant = None
 
     def setup(self):
 
@@ -421,7 +433,8 @@ class FlaxAttention(nn.Module):
             use_memory_efficient_attention=self.use_memory_efficient_attention,
             split_head_dim=self.split_head_dim,
             flash_block_sizes=self.flash_block_sizes,
-            dtype=self.dtype
+            dtype=self.dtype,
+            quant=self.quant
         )
 
         qkv_init_kernel = nn.with_logical_partitioning(
@@ -429,9 +442,14 @@ class FlaxAttention(nn.Module):
             ("embed","heads")
         )
 
+        dot_general_cls = None
+        if self.quant:
+            dot_general_cls = self.quant.dot_general_cls()
+
         self.query = nn.Dense(
             inner_dim,
             kernel_init=qkv_init_kernel,
+            dot_general_cls=dot_general_cls,
             use_bias=False,
             dtype=self.dtype,
             name="to_q"
@@ -440,6 +458,7 @@ class FlaxAttention(nn.Module):
         self.key = nn.Dense(
             inner_dim,
             kernel_init=qkv_init_kernel,
+            dot_general_cls=dot_general_cls,
             use_bias=False,
             dtype=self.dtype,
             name="to_k"
@@ -448,6 +467,7 @@ class FlaxAttention(nn.Module):
         self.value = nn.Dense(
             inner_dim,
             kernel_init=qkv_init_kernel,
+            dot_general_cls=dot_general_cls,
             use_bias=False,
             dtype=self.dtype,
             name="to_v")
@@ -458,6 +478,7 @@ class FlaxAttention(nn.Module):
                 nn.initializers.lecun_normal(),
                 ("heads","embed")
             ),
+            dot_general_cls=dot_general_cls,
             dtype=self.dtype,
             name="to_out_0")
         self.dropout_layer = nn.Dropout(rate=self.dropout)
@@ -520,6 +541,8 @@ class FlaxBasicTransformerBlock(nn.Module):
             Overrides default block sizes for flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
     """
     dim: int
     n_heads: int
@@ -533,6 +556,7 @@ class FlaxBasicTransformerBlock(nn.Module):
     flash_min_seq_length: int = 4096
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
+    quant: Quant = None
 
     def setup(self):
         # self attention (or cross_attention if only_cross_attention is True)
@@ -548,6 +572,7 @@ class FlaxBasicTransformerBlock(nn.Module):
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
+            quant=self.quant,
         )
         # cross attention
         self.attn2 = FlaxAttention(
@@ -562,6 +587,7 @@ class FlaxBasicTransformerBlock(nn.Module):
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
+            quant=self.quant,
         )
         self.ff = FlaxFeedForward(dim=self.dim, dropout=self.dropout, dtype=self.dtype)
         self.norm1 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
@@ -625,6 +651,8 @@ class FlaxTransformer2DModel(nn.Module):
             Overrides default block sizes for flash attention.
         mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
             jax mesh is required if attention is set to flash.
+        quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
     """
     in_channels: int
     n_heads: int
@@ -641,6 +669,7 @@ class FlaxTransformer2DModel(nn.Module):
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     norm_num_groups: int = 32
+    quant: Quant = None
 
     def setup(self):
         self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
@@ -679,7 +708,8 @@ class FlaxTransformer2DModel(nn.Module):
                 attention_kernel=self.attention_kernel,
                 flash_min_seq_length=self.flash_min_seq_length,
                 flash_block_sizes=self.flash_block_sizes,
-                mesh=self.mesh
+                mesh=self.mesh,
+                quant=self.quant
             )
             for _ in range(self.depth)
         ]

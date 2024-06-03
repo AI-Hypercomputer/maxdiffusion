@@ -329,6 +329,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         mesh = kwargs.pop("mesh", None)
         dtype = kwargs.pop("dtype", None)
         norm_num_groups = kwargs.pop("norm_num_groups", 32)
+        quant = kwargs.pop("quant", None)
 
         # 1. Download the checkpoints and configs
         # use snapshot download here to get it working from from_pretrained
@@ -513,6 +514,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                         mesh=mesh,
                         norm_num_groups=norm_num_groups,
                         dtype=dtype,
+                        quant=quant,
                     )
                     params[name] = loaded_params
                 elif is_transformers_available() and issubclass(class_obj, FlaxPreTrainedModel):

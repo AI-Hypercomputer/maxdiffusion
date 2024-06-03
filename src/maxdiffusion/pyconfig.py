@@ -111,12 +111,31 @@ class _HyperParameters():
 
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
     raw_keys["data_sharding"] = _lists_to_tuples(raw_keys["data_sharding"])
-
+    raw_keys["num_slices"] = get_num_slices(raw_keys)
+    raw_keys["quantization_local_shard_count"] = get_quantization_local_shard_count(raw_keys)
+    
     if raw_keys["learning_rate_schedule_steps"]==-1:
       raw_keys["learning_rate_schedule_steps"] = raw_keys["max_train_steps"]
 
     if "gs://" in raw_keys["pretrained_model_name_or_path"]:
       raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
+
+def get_num_slices(raw_keys):
+  if int(raw_keys['compile_topology_num_slices']) > 0:
+    return raw_keys['compile_topology_num_slices']
+  else:
+    devices = jax.devices()
+    try:
+      return 1 + max([d.slice_index for d in devices])
+    except:
+      return 1
+
+def get_quantization_local_shard_count(raw_keys):
+  if raw_keys['quantization_local_shard_count'] == -1:
+    return raw_keys['num_slices']
+  else:
+    return raw_keys['quantization_local_shard_count']
+
 
 def get_num_target_devices(raw_keys):
   return len(jax.devices())

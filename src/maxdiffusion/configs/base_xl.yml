@@ -155,3 +155,8 @@ lightning_repo: ""
 lightning_ckpt: ""
 
 enable_mllog: False
+
+quantization: 'int8'
+# Shard the range finding operation for quantization. By default this is set to number of slices.
+quantization_local_shard_count: -1
+compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
