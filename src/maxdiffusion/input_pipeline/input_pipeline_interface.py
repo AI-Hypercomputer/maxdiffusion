@@ -89,18 +89,18 @@ def make_laion400m_train_iterator(
 
   partial_tokenize = functools.partial(tokenize, tokenizer=tokenizer)
 
-
+  num_thread=4
   train_ds = (
     tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True, seed=config.seed)
       .shard(num_shards = jax.process_count(), index = jax.process_index())
-      .interleave(tf.data.TFRecordDataset, num_parallel_calls=AUTOTUNE)
-      .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
-      .map(prepare_sample, num_parallel_calls=AUTOTUNE)
-      .map(create_dict, num_parallel_calls=AUTOTUNE)
+      .interleave(tf.data.TFRecordDataset, num_parallel_calls=num_thread)
+      .map(_parse_tfrecord_fn, num_parallel_calls=num_thread)
+      .map(prepare_sample, num_parallel_calls=num_thread)
+      .map(create_dict, num_parallel_calls=num_thread)
       .shuffle(global_batch_size * 10 // jax.process_count(), seed=config.seed)
       .batch(global_batch_size // jax.process_count(), drop_remainder=False)
       .repeat(-1)
-      .prefetch(AUTOTUNE)
+      .prefetch(2)
   )
 
   train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
