@@ -59,7 +59,7 @@ def make_laion400m_train_iterator(
   """
   feature_description = {
     "moments" : tf.io.FixedLenFeature([], tf.string),
-    "caption" : tf.io.FixedLenFeature([], tf.string)
+    "clip_embeddings" : tf.io.FixedLenFeature([], tf.string)
   }
 
   def _parse_tfrecord_fn(example):
@@ -67,7 +67,7 @@ def make_laion400m_train_iterator(
 
   def prepare_sample(features):
     moments = tf.io.parse_tensor(tnp.asarray(features["moments"]), out_type=tf.float32)
-    captions = tf.io.parse_tensor(tnp.asarray(features["caption"]), out_type=tf.string)
+    captions = tf.io.parse_tensor(tnp.asarray(features["clip_embeddings"]), out_type=tf.bfloat16)
     return (moments, captions)
   
   def tokenize(moments, captions, tokenizer):
@@ -80,7 +80,7 @@ def make_laion400m_train_iterator(
     return (moments, input_ids)
 
   def create_dict(moments, input_ids):
-    return {"moments" : moments, "input_ids" : input_ids}
+    return {"moments" : moments, "clip_embeddings" : input_ids}
 
   tokenizer = CLIPTokenizer.from_pretrained(
     config.pretrained_model_name_or_path,
@@ -96,7 +96,6 @@ def make_laion400m_train_iterator(
       .interleave(tf.data.TFRecordDataset, num_parallel_calls=AUTOTUNE)
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
-      .map(lambda x, y: tf.py_function(partial_tokenize, inp=[x, y], Tout=(tf.float32, tf.float32)), num_parallel_calls=AUTOTUNE)
       .map(create_dict, num_parallel_calls=AUTOTUNE)
       .shuffle(global_batch_size * 10 // jax.process_count(), seed=config.seed)
       .batch(global_batch_size // jax.process_count(), drop_remainder=False)
@@ -233,8 +232,8 @@ def get_shaped_batch(config, pipeline):
         config.resolution // vae_scale_factor,
         config.resolution // vae_scale_factor, 8)
   #bs, encoder_input, seq_length
-  batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
+  batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings, 1024)
   shaped_batch = {}
   shaped_batch["moments"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
-  shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+  shaped_batch["clip_embeddings"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.bfloat16)
   return shaped_batch

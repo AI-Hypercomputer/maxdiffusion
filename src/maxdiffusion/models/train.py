@@ -346,11 +346,7 @@ def train(config):
                 latents = jnp.transpose(latents, (0, 3, 1, 2))
                 latents = latents * pipeline.vae.config.scaling_factor
                 # Get the text embedding for conditioning
-                encoder_hidden_states = pipeline.text_encoder(
-                    batch["input_ids"],
-                    params=params["text_encoder"],
-                train=False,
-                )[0]
+                encoder_hidden_states = batch["clip_embeddings"]
 
             # Sample noise that we'll add to the latents
             noise_rng, timestep_rng = jax.random.split(sample_rng)
@@ -428,7 +424,7 @@ def train(config):
     num_model_parameters = calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
-    my_data_sharding = {'input_ids': data_sharding, 'moments': data_sharding}
+    my_data_sharding = {'clip_embeddings': data_sharding, 'moments': data_sharding}
     dummy_batch = get_shaped_batch(config, pipeline)
     if config.pre_compile:
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
