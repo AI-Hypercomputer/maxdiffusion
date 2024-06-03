@@ -242,7 +242,7 @@ def train(config):
             else:
                 weights = generate_timestep_weights(config, noise_scheduler.config.num_train_timesteps)
                 timesteps = jax.random.categorical(timestep_bias_rng, logits=jnp.log(weights), shape=(bsz,))
-                
+
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
