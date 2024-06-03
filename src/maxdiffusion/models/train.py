@@ -208,7 +208,7 @@ def train(config):
 
     def train_step(unet_state, vae_state, batch, train_rng, cache_latents_text_encoder_outputs):
         _, gen_dummy_rng = jax.random.split(train_rng)
-        sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng)
+        sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
         def compute_loss(unet_params):
 
             if cache_latents_text_encoder_outputs:
