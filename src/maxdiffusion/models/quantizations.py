@@ -14,6 +14,7 @@
 import functools
 
 from aqt.jax.v2 import config as aqt_config
+
 from aqt.jax.v2.flax import aqt_flax
 from ..common_types import Config
 from dataclasses import dataclass
@@ -59,7 +60,7 @@ def _get_quant_config(config):
       drhs_bits = 8
       drhs_accumulator_dtype = jnp.int32
       print(config.quantization_local_shard_count) # -1
-      drhs_local_aqt = aqt_config.LocalAqt(config.quantization_local_shard_count)
+      drhs_local_aqt = aqt_config.LocalAqt(contraction_axis_shard_count=config.quantization_local_shard_count)
     return aqt_config.config_v4(
       fwd_bits=8,
       dlhs_bits=8,

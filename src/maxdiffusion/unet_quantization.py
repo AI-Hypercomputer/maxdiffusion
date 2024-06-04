@@ -88,7 +88,7 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
   return latents, scheduler_state, state
 
 def loop_body_for_quantization(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
-  latents, scheduler_state, state = args
+  latents, scheduler_state, state, rng = args
   latents_input = jnp.concatenate([latents] * 2)
 
   t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
@@ -96,11 +96,13 @@ def loop_body_for_quantization(step, args, model, pipeline, added_cond_kwargs, p
 
   latents_input = pipeline.scheduler.scale_model_input(scheduler_state, latents_input, t)
   noise_pred, quantized_unet_vars = model.apply(
-    {"params" : state.params},
+    state.params | {"aqt" : {}},
     jnp.array(latents_input),
     jnp.array(timestep, dtype=jnp.int32),
     encoder_hidden_states=prompt_embeds,
-    added_cond_kwargs=added_cond_kwargs
+    added_cond_kwargs=added_cond_kwargs,
+    rngs={"params": rng},
+    mutable=True,
   )
   return quantized_unet_vars
 
@@ -267,8 +269,8 @@ def run(config):
                         guidance_scale=guidance_scale,
                         guidance_rescale=guidance_rescale)
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-      quantized_unet_vars  = jax.lax.fori_loop(0, 1,
-                                        loop_body_quant_p, (latents, scheduler_state, unet_state))
+      quantized_unet_vars  = loop_body_quant_p, (latents, scheduler_state, unet_state, rng)
+    
     unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, None, config, mesh, quantized_unet_vars, training=False)
     unet_state, unet_state_mesh_shardings = setup_initial_state(
         pipeline.unet,
