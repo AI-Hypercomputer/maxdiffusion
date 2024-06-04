@@ -232,7 +232,7 @@ def get_shaped_batch(config, pipeline):
         config.resolution // vae_scale_factor,
         config.resolution // vae_scale_factor, 8)
   #bs, encoder_input, seq_length
-  batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings, 1024)
+  batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings, pipeline.text_encoder.config.hidden_size)
   shaped_batch = {}
   shaped_batch["moments"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
   shaped_batch["clip_embeddings"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.bfloat16)
