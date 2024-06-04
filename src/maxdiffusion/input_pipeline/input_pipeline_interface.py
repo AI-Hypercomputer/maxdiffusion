@@ -89,7 +89,7 @@ def make_laion400m_train_iterator(
 
   partial_tokenize = functools.partial(tokenize, tokenizer=tokenizer)
 
-  num_thread=4
+  num_thread=32
   train_ds = (
     tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True, seed=config.seed)
       .shard(num_shards = jax.process_count(), index = jax.process_index())
