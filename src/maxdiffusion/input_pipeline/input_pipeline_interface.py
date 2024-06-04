@@ -100,7 +100,7 @@ def make_laion400m_train_iterator(
       .shuffle(global_batch_size * 10 // jax.process_count(), seed=config.seed)
       .batch(global_batch_size // jax.process_count(), drop_remainder=False)
       .repeat(-1)
-      .prefetch(2)
+      .prefetch(AUTOTUNE)
   )
 
   train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
