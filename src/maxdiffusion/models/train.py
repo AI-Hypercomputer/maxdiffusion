@@ -17,6 +17,7 @@
 import datetime
 import logging
 import os
+import time
 from typing import Sequence
 from functools import partial
 
@@ -61,6 +62,27 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
   make_laion400m_train_iterator
 )
+
+def get_shaped_batch(config, pipeline):
+  """Return the shape of the batch - this is what eval_shape would return for the
+  output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078."""
+  vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+  total_train_batch_size = config.per_device_batch_size * jax.device_count()
+  if config.cache_latents_text_encoder_outputs:
+    batch_image_shape = (total_train_batch_size, 4,
+            config.resolution // vae_scale_factor,
+            config.resolution // vae_scale_factor)
+    #bs, encoder_input, seq_length
+    batch_ids_shape = (total_train_batch_size,
+                       pipeline.text_encoder.config.max_position_embeddings,
+                       pipeline.text_encoder.config.hidden_size)
+  else:
+    batch_image_shape = (total_train_batch_size, 3, config.resolution, config.resolution)
+    batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
+  shaped_batch = {}
+  shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
+  shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+  return shaped_batch
 
 def encode(input_ids, text_encoder, text_encoder_params):
   return text_encoder(
@@ -195,14 +217,6 @@ def train(config):
            config, mesh, total_train_batch_size
         )
 
-    if config.cache_latents_text_encoder_outputs:
-       vae_state = None
-       vae_state_mesh_shardings = None
-       pipeline.vae = None
-       params["vae"] = None
-       pipeline.text_encoder = None
-       params["text_encoder"] = None
-
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
@@ -292,21 +306,30 @@ def train(config):
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
     my_data_sharding = {'input_ids': data_sharding, 'pixel_values': data_sharding}
-    if (not config.enable_profiler):
-        with jax.transfer_guard("disallow"):
-            p_train_step = jax.jit(
-                partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-                in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, my_data_sharding, None),
-                out_shardings=(unet_state_mesh_shardings, None, None),
-                donate_argnums=(0,)
-            )
-    else:
+
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         p_train_step = jax.jit(
             partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
             in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, my_data_sharding, None),
             out_shardings=(unet_state_mesh_shardings, None, None),
             donate_argnums=(0,)
         )
+        max_logging.log("Precompiling...")
+        s = time.time()
+        dummy_batch = get_shaped_batch(config, pipeline)
+        p_train_step = p_train_step.lower(unet_state,
+                                          vae_state,
+                                          dummy_batch,
+                                          train_rngs)
+        p_train_step = p_train_step.compile()
+        max_logging.log(f"Compile time: {(time.time() - s )}")
+
+    if config.cache_latents_text_encoder_outputs:
+       pipeline.vae = None
+       params["vae"] = None
+       pipeline.text_encoder = None
+       params["text_encoder"] = None
+
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
@@ -338,11 +361,10 @@ def train(config):
     mllog_utils.train_step_start(config, start_step)
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
-        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-            unet_state, train_metric, train_rngs = p_train_step(unet_state,
-                                                                vae_state,
-                                                                example_batch,
-                                                                train_rngs)
+        unet_state, train_metric, train_rngs = p_train_step(unet_state,
+                                                            vae_state,
+                                                            example_batch,
+                                                            train_rngs)
         new_time = datetime.datetime.now()
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
         if config.write_metrics:

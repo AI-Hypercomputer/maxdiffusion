@@ -34,8 +34,6 @@ flash_block_sizes: {}
 # GroupNorm groups
 norm_num_groups: 32
 
-# aot compilation
-pre_compile: True
 # If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
