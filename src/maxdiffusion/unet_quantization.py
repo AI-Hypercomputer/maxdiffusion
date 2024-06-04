@@ -87,11 +87,11 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
 
   return latents, scheduler_state, state
 
-def loop_body_for_quantization(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
-  latents, scheduler_state, state, rng = args
+def loop_body_for_quantization(latents, scheduler_state, state, rng,  model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
+  # latents, scheduler_state, state, rng = args
   latents_input = jnp.concatenate([latents] * 2)
 
-  t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+  t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[0]
   timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
   latents_input = pipeline.scheduler.scale_model_input(scheduler_state, latents_input, t)
@@ -252,6 +252,28 @@ def run(config):
     ).sample
     image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
     return image
+  
+  def get_quantized_unet_vars(unet_state, params, rng, config, batch_size, pipeline):
+
+    (latents,
+    prompt_embeds,
+    added_cond_kwargs,
+    guidance_scale,
+    guidance_rescale,
+    scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
+
+    loop_body_quant_p = jax.jit(functools.partial(loop_body_for_quantization, 
+                                                  model=pipeline.unet,
+                                                  pipeline=pipeline,
+                                                  added_cond_kwargs=added_cond_kwargs,
+                                                  prompt_embeds=prompt_embeds,
+                                                  guidance_scale=guidance_scale,
+                                                  guidance_rescale=guidance_rescale))
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+      quantized_unet_vars  = loop_body_quant_p(latents=latents, scheduler_state=scheduler_state, state=unet_state,rng=rng)
+
+
+    return quantized_unet_vars
 
   def run_inference(unet_state, vae_state, params, rng, config, batch_size, pipeline):
 
@@ -262,14 +284,16 @@ def run(config):
     guidance_rescale,
     scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
 
-    loop_body_quant_p = functools.partial(loop_body_for_quantization, model=pipeline.unet,
-                        pipeline=pipeline,
-                        added_cond_kwargs=added_cond_kwargs,
-                        prompt_embeds=prompt_embeds,
-                        guidance_scale=guidance_scale,
-                        guidance_rescale=guidance_rescale)
-    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-      quantized_unet_vars  = loop_body_quant_p, (latents, scheduler_state, unet_state, rng)
+    # loop_body_quant_p = jax.jit(functools.partial(loop_body_for_quantization, 
+    #                                               model=pipeline.unet,
+    #                                               pipeline=pipeline,
+    #                                               added_cond_kwargs=added_cond_kwargs,
+    #                                               prompt_embeds=prompt_embeds,
+    #                                               guidance_scale=guidance_scale,
+    #                                               guidance_rescale=guidance_rescale))
+    # with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+    #   quantized_unet_vars  = loop_body_quant_p(latents=latents, scheduler_state=scheduler_state, state=unet_state,rng=rng)
+    
     
     unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, None, config, mesh, quantized_unet_vars, training=False)
     unet_state, unet_state_mesh_shardings = setup_initial_state(
@@ -298,7 +322,42 @@ def run(config):
                                         loop_body_p, (latents, scheduler_state, unet_state))
       image = vae_decode_p(latents, vae_state)
       return image
+  
+  quantized_unet_vars = get_quantized_unet_vars(unet_state, params, rng, config, batch_size, pipeline)
+  
+  del params
+  del pipeline
+  
+  quant = quantizations.configure_quantization(config=config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE)
+  pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+    config.pretrained_model_name_or_path,
+    revision=config.revision,
+    dtype=weight_dtype,
+    split_head_dim=config.split_head_dim,
+    norm_num_groups=config.norm_num_groups,
+    attention_kernel=config.attention,
+    flash_block_sizes=flash_block_sizes,
+    mesh=mesh,
+    quant=quant,
+  )
 
+  scheduler_state = params.pop("scheduler")
+  old_params = params
+  params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), old_params)
+  params["scheduler"] = scheduler_state
+
+  data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
+
+  sharding = PositionalSharding(devices_array).replicate()
+  partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
+  params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
+  params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
+
+  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, None, rng, config, pipeline, quantized_unet_vars, params["vae"], training=False)
+  del params["vae"]
+  del params["unet"]
+  
+  
   p_run_inference = jax.jit(
     functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline),
     in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None),
