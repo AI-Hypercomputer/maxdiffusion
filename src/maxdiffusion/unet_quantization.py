@@ -41,6 +41,7 @@ from maxdiffusion import (
 from maxdiffusion import pyconfig
 from maxdiffusion.image_processor import VaeImageProcessor
 from maxdiffusion.max_utils import (
+  InferenceState,
   create_device_mesh,
   get_dtype,
   get_states,
@@ -284,29 +285,6 @@ def run(config):
     guidance_rescale,
     scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
 
-    # loop_body_quant_p = jax.jit(functools.partial(loop_body_for_quantization, 
-    #                                               model=pipeline.unet,
-    #                                               pipeline=pipeline,
-    #                                               added_cond_kwargs=added_cond_kwargs,
-    #                                               prompt_embeds=prompt_embeds,
-    #                                               guidance_scale=guidance_scale,
-    #                                               guidance_rescale=guidance_rescale))
-    # with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-    #   quantized_unet_vars  = loop_body_quant_p(latents=latents, scheduler_state=scheduler_state, state=unet_state,rng=rng)
-    
-    
-    unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, None, config, mesh, quantized_unet_vars, training=False)
-    unet_state, unet_state_mesh_shardings = setup_initial_state(
-        pipeline.unet,
-        None,
-        config,
-        mesh,
-        quantized_unet_vars,
-        unboxed_abstract_state,
-        state_mesh_annotations,
-        training=False)
-    
-
     loop_body_p = functools.partial(loop_body, model=pipeline.unet,
                         pipeline=pipeline,
                         added_cond_kwargs=added_cond_kwargs,
@@ -314,8 +292,6 @@ def run(config):
                         guidance_scale=guidance_scale,
                         guidance_rescale=guidance_rescale)
     vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
-
-
 
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
       latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps,
@@ -328,7 +304,7 @@ def run(config):
   del params
   del pipeline
   
-  quant = quantizations.configure_quantization(config=config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE)
+  quant = quantizations.configure_quantization(config=config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.CONVERT)
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision,
@@ -353,9 +329,10 @@ def run(config):
   params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
   params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
 
-  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, None, rng, config, pipeline, quantized_unet_vars, params["vae"], training=False)
-  del params["vae"]
-  del params["unet"]
+  unet_state = InferenceState(pipeline.unet.apply, params=quantized_unet_vars)
+  # unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, None, rng, config, pipeline, quantized_unet_vars, params["vae"], training=False)
+  # del params["vae"]
+  # del params["unet"]
   
   
   p_run_inference = jax.jit(

@@ -419,7 +419,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
-    quant=None
+    quant: Quant = None
 
     def setup(self):
         # there is always at least one resnet

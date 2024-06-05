@@ -354,7 +354,7 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
     unet_variables = jax.jit(pipeline.unet.init_weights, static_argnames=["eval_only"])(rng, eval_only=False)
   else:
     #unet_variables = jax.jit(pipeline.unet.init_weights, static_argnames=["quantization_enabled"])(rng, quantization_enabled=quant_enabled)
-    unet_variables = pipeline.unet.init_weights(rng, eval_only=True, quant_enabled=quant_enabled)
+    unet_variables = pipeline.unet.init_weights(rng, eval_only=True, quantization_enabled=quant_enabled)
 
   unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, tx, config, mesh, unet_variables, training=training)
   if config.train_new_unet:
