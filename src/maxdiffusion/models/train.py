@@ -155,7 +155,6 @@ def train(config):
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
     )
-    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)

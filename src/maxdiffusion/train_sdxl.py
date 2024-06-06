@@ -307,7 +307,7 @@ def train(config):
     max_logging.log(f"Create state time: {(time.time() - s)}")
     max_logging.log("Calculating training tflops...")
     s = time.time()
-    per_device_tflops = 0 #max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
+    per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
     max_logging.log(f"Calculate training tflops time: {(time.time() - s)}")
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
     max_logging.log(f"Preparing dataset: {config.dataset_name}")
