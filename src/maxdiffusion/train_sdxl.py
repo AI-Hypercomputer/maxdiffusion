@@ -19,7 +19,7 @@ import logging
 import os
 from typing import Sequence
 from functools import partial
-
+import time
 import numpy as np
 
 import jax
@@ -43,20 +43,20 @@ from maxdiffusion.train_utils import (
     validate_train_config,
     record_scalar_metrics,
     write_metrics,
-    get_params_to_save
+    get_params_to_save,
+    compute_snr,
+    generate_timestep_weights
 )
 
 from transformers import FlaxCLIPTextModel, FlaxCLIPTextModelWithProjection
 
 from flax.linen import partitioning as nn_partitioning
-from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
 from transformers import set_seed
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
-  make_pokemon_train_iterator,
-  make_laion400m_train_iterator
+  make_pokemon_train_iterator
 )
 
 from maxdiffusion.maxdiffusion_utils import (
@@ -64,6 +64,45 @@ from maxdiffusion.maxdiffusion_utils import (
   transform_images,
   get_add_time_ids
 )
+
+def get_shaped_batch(config, pipeline):
+    """Return the shape of the batch - this is what eval_shape would return for the
+    output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078."""
+
+    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) -1)
+    total_train_batch_size = config.per_device_batch_size * jax.device_count()
+
+    batch_latent_shape = (
+        total_train_batch_size,
+        pipeline.unet.config.in_channels,
+        config.resolution // vae_scale_factor,
+        config.resolution // vae_scale_factor
+    )
+
+    text_embeds_dim = pipeline.unet.config.projection_class_embeddings_input_dim - (
+        6 * pipeline.unet.config.addition_time_embed_dim
+    )
+    text_embeds_shape = (
+        total_train_batch_size,
+        text_embeds_dim
+    )
+    input_ids_shape = (
+        total_train_batch_size,
+        2,
+        pipeline.text_encoder.config.max_position_embeddings
+    )
+    prompt_embeds_shape = (
+        total_train_batch_size,
+        pipeline.text_encoder.config.max_position_embeddings,
+        2048
+    )
+
+    shaped_batch = {}
+    shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_latent_shape, jnp.float32)
+    shaped_batch["prompt_embeds"] = jax.ShapeDtypeStruct(prompt_embeds_shape, jnp.float32)
+    shaped_batch["text_embeds"] = jax.ShapeDtypeStruct(text_embeds_shape, jnp.float32)
+    shaped_batch["input_ids"] = jax.ShapeDtypeStruct(input_ids_shape, jnp.int32)
+    return shaped_batch
 
 def encode_xl(input_ids, text_encoders, text_encoder_params):
   te_1_inputs = input_ids[:, 0, :]
@@ -82,7 +121,6 @@ def encode_xl(input_ids, text_encoders, text_encoder_params):
   prompt_embeds = jnp.concatenate([prompt_embeds, prompt_embeds_2], axis=-1)
 
   return prompt_embeds, text_embeds
-
 
 def tokenize_captions_xl(examples, caption_column, tokenizers, p_encode=None):
   inputs = []
@@ -105,6 +143,88 @@ def tokenize_captions_xl(examples, caption_column, tokenizers, p_encode=None):
   examples["input_ids"] = inputs
 
   return examples
+
+def train_step(unet_state, batch, train_rng, noise_scheduler, noise_scheduler_state, config):
+  _, gen_dummy_rng = jax.random.split(train_rng)
+  sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
+  def compute_loss(unet_params):
+    if config.cache_latents_text_encoder_outputs:
+      latents = batch["pixel_values"]
+      prompt_embeds = batch["prompt_embeds"]
+      text_embeds = batch["text_embeds"]
+    else:
+      raise ValueError("cache_latents_text_encoder_outputs = False currently not supported!")
+
+    # Sample noise that we'll add to the latents
+    noise_rng, timestep_rng = jax.random.split(sample_rng)
+    noise = jax.random.normal(noise_rng, latents.shape)
+    # Sample a random timestep for each image
+    bsz = latents.shape[0]
+    if config.timestep_bias["strategy"] == "none":
+      timesteps = jax.random.randint(
+        timestep_rng,
+        (bsz,),
+        0,
+        noise_scheduler.config.num_train_timesteps,
+      )
+    else:
+      weights = generate_timestep_weights(config, noise_scheduler.config.num_train_timesteps)
+      timesteps = jax.random.categorical(timestep_bias_rng, logits=jnp.log(weights), shape=(bsz,))
+
+    # Add noise to the latents according to the noise magnitude at each timestep
+    # (this is the forward diffusion process)
+    noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
+
+    # TODO : @jfacevedo - support cropping.
+    add_time_ids = get_add_time_ids(
+      (config.resolution, config.resolution),
+      (0, 0),
+      (config.resolution, config.resolution),
+      prompt_embeds.shape[0],
+      dtype=prompt_embeds.dtype
+    )
+    unet_added_conditions = {"time_ids" : add_time_ids, "text_embeds" : text_embeds}
+
+    # Predict the noise residual and compute loss
+    model_pred = unet_state.apply_fn(
+      {"params": unet_params},
+      noisy_latents,
+      timesteps,
+      prompt_embeds,
+      added_cond_kwargs=unet_added_conditions,
+      train=True
+    ).sample
+
+    # Get the target for loss depending on the prediction type
+    if noise_scheduler.config.prediction_type == "epsilon":
+      target = noise
+    elif noise_scheduler.config.prediction_type == "v_prediction":
+      target = noise_scheduler.get_velocity(noise_scheduler_state, latents, noise, timesteps)
+    else:
+      raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+    loss = (target - model_pred) ** 2
+
+    # snr
+    if config.snr_gamma > 0:
+      snr = jnp.array(compute_snr(timesteps, noise_scheduler_state))
+      snr_loss_weights = jnp.where(snr < config.snr_gamma, snr, jnp.ones_like(snr) * config.snr_gamma)
+      if noise_scheduler.config.prediction_type == "epsilon":
+        snr_loss_weights = snr_loss_weights / snr
+      elif noise_scheduler.config.prediction_type == "v_prediction":
+        snr_loss_weights = snr_loss_weights / (snr + 1)
+      loss = loss * snr_loss_weights[:, None, None, None]
+
+    loss = loss.mean()
+
+    return loss
+
+  grad_fn = jax.value_and_grad(compute_loss)
+  loss, grad = grad_fn(unet_state.params)
+
+  new_state = unet_state.apply_gradients(grads=grad)
+  metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
+
+  return new_state, metrics, new_train_rng
 
 def train(config):
     rng = jax.random.PRNGKey(config.seed)
@@ -179,17 +299,19 @@ def train(config):
         eps=config.adam_eps,
         weight_decay=config.adam_weight_decay,
     )
-
+    max_logging.log("Creating states...")
+    s = time.time()
     (unet_state,
     unet_state_mesh_shardings,
-    vae_state, vae_state_mesh_shardings) = max_utils.get_states(mesh,
-                                                                tx, rng, config,
-                                                                pipeline, params["unet"],
-                                                                params["vae"], training=True)
-
+    _, _) = max_utils.get_states(mesh,tx, rng, config,pipeline, params["unet"], params["vae"], training=True)
+    max_logging.log(f"Create state time: {(time.time() - s)}")
+    max_logging.log("Calculating training tflops...")
+    s = time.time()
     per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
+    max_logging.log(f"Calculate training tflops time: {(time.time() - s)}")
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
-
+    max_logging.log(f"Preparing dataset: {config.dataset_name}")
+    s = time.time()
     if config.dataset_name == "diffusers/pokemon-gpt4-captions":
         p_encode = None
         p_vae_apply = None
@@ -198,6 +320,8 @@ def train(config):
                               text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
                               text_encoder_params=[params["text_encoder"], params["text_encoder_2"]]))
           p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+        else:
+           raise ValueError("cache_latents_text_encoder_outputs = False currently not supported!")
 
         tokenize_fn = partial(tokenize_captions_xl,
                           caption_column=config.caption_column,
@@ -218,90 +342,10 @@ def train(config):
            image_transforms_fn
         )
     else:
-        data_iterator = make_laion400m_train_iterator(
-           config, mesh, total_train_batch_size
-        )
-
-    if config.cache_latents_text_encoder_outputs:
-       vae_state = None
-       vae_state_mesh_shardings = None
-       pipeline.vae = None
-       params["vae"] = None
-       pipeline.text_encoder = None
-       params["text_encoder"] = None
-       pipeline.text_encoder_2 = None
-       params["text_encoder_2"] = None
-
+        raise ValueError(f"{config.dataset_name} is currently not supported in this pipeline.")
+    max_logging.log(f"Dataset prepare time: {time.time() - s}")
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
-
-    def train_step(unet_state, vae_state, batch, train_rng, cache_latents_text_encoder_outputs):
-        _, gen_dummy_rng = jax.random.split(train_rng)
-        sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
-        def compute_loss(unet_params):
-
-            if cache_latents_text_encoder_outputs:
-                latents = batch["pixel_values"]
-                prompt_embeds = batch["prompt_embeds"]
-                text_embeds = batch["text_embeds"]
-            else:
-                raise ValueError("cache_latents_text_encoder_outputs = False currently not supported!")
-
-            # Sample noise that we'll add to the latents
-            noise_rng, timestep_rng = jax.random.split(sample_rng)
-            noise = jax.random.normal(noise_rng, latents.shape)
-            # Sample a random timestep for each image
-            bsz = latents.shape[0]
-            timesteps = jax.random.randint(
-                timestep_rng,
-                (bsz,),
-                0,
-                noise_scheduler.config.num_train_timesteps,
-            )
-
-            # Add noise to the latents according to the noise magnitude at each timestep
-            # (this is the forward diffusion process)
-            noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
-
-            # TODO : @jfacevedo - support cropping.
-            add_time_ids = get_add_time_ids(
-              (config.resolution, config.resolution),
-              (0, 0),
-              (config.resolution, config.resolution),
-              prompt_embeds.shape[0],
-              dtype=prompt_embeds.dtype
-            )
-            unet_added_conditions = {"time_ids" : add_time_ids, "text_embeds" : text_embeds}
-
-            # Predict the noise residual and compute loss
-            model_pred = pipeline.unet.apply(
-                {"params": unet_params},
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                added_cond_kwargs=unet_added_conditions,
-                train=True
-            ).sample
-
-            # Get the target for loss depending on the prediction type
-            if noise_scheduler.config.prediction_type == "epsilon":
-                target = noise
-            elif noise_scheduler.config.prediction_type == "v_prediction":
-                target = noise_scheduler.get_velocity(noise_scheduler_state, latents, noise, timesteps)
-            else:
-                raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-            loss = (target - model_pred) ** 2
-            loss = loss.mean()
-
-            return loss
-
-        grad_fn = jax.value_and_grad(compute_loss)
-        loss, grad = grad_fn(unet_state.params)
-
-        new_state = unet_state.apply_gradients(grads=grad)
-        metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
-
-        return new_state, metrics, new_train_rng
 
     num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
@@ -310,21 +354,30 @@ def train(config):
                         'pixel_values': data_sharding,
                         'prompt_embeds' : data_sharding,
                         'text_embeds' : data_sharding}
-    if (not config.enable_profiler):
-        with jax.transfer_guard("disallow"):
-            p_train_step = jax.jit(
-                partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-                in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, my_data_sharding, None),
-                out_shardings=(unet_state_mesh_shardings, None, None),
-                donate_argnums=(0,)
-            )
-    else:
-        p_train_step = jax.jit(
-            partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-            in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, my_data_sharding, None),
-            out_shardings=(unet_state_mesh_shardings, None, None),
-            donate_argnums=(0,)
-        )
+
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+      p_train_step = jax.jit(
+          partial(train_step, noise_scheduler=noise_scheduler, noise_scheduler_state=noise_scheduler_state, config=config),
+          in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
+          out_shardings=(unet_state_mesh_shardings, None, None),
+          donate_argnums=(0,)
+      )
+      max_logging.log("Precompiling...")
+      s = time.time()
+      dummy_batch = get_shaped_batch(config, pipeline)
+      p_train_step = p_train_step.lower(unet_state, dummy_batch, train_rngs)
+      p_train_step = p_train_step.compile()
+      max_logging.log(f"Compile time: {(time.time() - s )}")
+
+    # clean up unused models in the training loop.
+    if config.cache_latents_text_encoder_outputs:
+       pipeline.vae = None
+       params["vae"] = None
+       pipeline.text_encoder = None
+       params["text_encoder"] = None
+       pipeline.text_encoder_2 = None
+       params["text_encoder_2"] = None
+
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
@@ -356,14 +409,13 @@ def train(config):
     mllog_utils.train_step_start(config, start_step)
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
-        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-            unet_state, train_metric, train_rngs = p_train_step(unet_state,
-                                                                vae_state,
-                                                                example_batch,
-                                                                train_rngs)
+        unet_state, train_metric, train_rngs = p_train_step(unet_state,
+                                                            example_batch,
+                                                            train_rngs)
         new_time = datetime.datetime.now()
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
-        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+        if config.write_metrics:
+            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
@@ -416,11 +468,11 @@ def train(config):
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
-
     max_logging.log(f"Found {jax.device_count()} devices.")
-    cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
+    if len(config.cache_dir) > 0:
+        jax.config.update("jax_compilation_cache_dir", config.cache_dir)
     mllog_utils.train_init_start(config)
     validate_train_config(config)
     train(config)

@@ -16,6 +16,7 @@
 
 import numpy as np
 import jax
+import jax.numpy as jnp
 
 from maxdiffusion import max_utils, max_logging
 
@@ -108,3 +109,48 @@ def write_metrics_to_tensorboard(writer, metrics, step, config):
 def get_params_to_save(params):
   """Retrieves params from host"""
   return jax.device_get(jax.tree_util.tree_map(lambda x: x, params))
+
+def compute_snr(timesteps, noise_scheduler_state):
+  """
+  Computes SNR as per https://github.com/TiankaiHang/Min-SNR-Diffusion-Training/blob/521b624bd70c67cee4bdf49225915f5945a872e3/guided_diffusion/gaussian_diffusion.py#L847-L849
+  """
+  alphas_cumprod = noise_scheduler_state.common.alphas_cumprod
+  sqrt_alphas_cumprod = alphas_cumprod**0.5
+  sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
+
+  alpha = sqrt_alphas_cumprod[timesteps]
+  sigma = sqrt_one_minus_alphas_cumprod[timesteps]
+  # Compute SNR.
+  snr = (alpha / sigma) ** 2
+  return snr
+
+def generate_timestep_weights(config, num_timesteps):
+  timestep_bias_config = config.timestep_bias
+  weights = np.ones(num_timesteps)
+
+  # Determine the indices to bias
+  num_to_bias = int(timestep_bias_config["portion"] * num_timesteps)
+  strategy = timestep_bias_config["strategy"]
+  if strategy == "later":
+    bias_indices = slice(-num_to_bias, None)
+  elif strategy == "earlier":
+    bias_indices = slice(0, -num_to_bias)
+  elif strategy == "range":
+    # Out of possible 1000 steps, we might want to focus on eg. 200-500.
+    range_begin = timestep_bias_config["begin"]
+    range_end = timestep_bias_config["end"]
+    if range_begin < 0:
+      raise ValueError(
+        "When using the range strategy for timestep bias, you must provide a beginning timestep greater or equal to zero."
+      )
+    if range_end > num_timesteps:
+      raise ValueError(
+        "When using the range strategy for timestep bias, you must provide an ending timestep smaller than the number of timesteps."
+      )
+    bias_indices = slice(range_begin, range_end)
+  else:
+    raise ValueError(f"strategy {strategy} is not supported.")
+
+  weights[bias_indices] *= timestep_bias_config["multiplier"]
+  weights /= weights.sum()
+  return jnp.array(weights)

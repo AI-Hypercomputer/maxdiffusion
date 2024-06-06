@@ -17,6 +17,7 @@
 import datetime
 import logging
 import os
+import time
 from typing import Sequence
 from functools import partial
 
@@ -44,14 +45,15 @@ from maxdiffusion.train_utils import (
     validate_train_config,
     record_scalar_metrics,
     write_metrics,
-    get_params_to_save
+    get_params_to_save,
+    compute_snr,
+    generate_timestep_weights
 )
 
 from transformers import FlaxCLIPTextModel
 
 from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax.linen import partitioning as nn_partitioning
-from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
 from transformers import CLIPImageProcessor, set_seed
@@ -60,6 +62,27 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
   make_laion400m_train_iterator
 )
+
+def get_shaped_batch(config, pipeline):
+  """Return the shape of the batch - this is what eval_shape would return for the
+  output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078."""
+  vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+  total_train_batch_size = config.per_device_batch_size * jax.device_count()
+  if config.cache_latents_text_encoder_outputs:
+    batch_image_shape = (total_train_batch_size, 4,
+            config.resolution // vae_scale_factor,
+            config.resolution // vae_scale_factor)
+    #bs, encoder_input, seq_length
+    batch_ids_shape = (total_train_batch_size,
+                       pipeline.text_encoder.config.max_position_embeddings,
+                       pipeline.text_encoder.config.hidden_size)
+  else:
+    batch_image_shape = (total_train_batch_size, 3, config.resolution, config.resolution)
+    batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
+  shaped_batch = {}
+  shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
+  shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+  return shaped_batch
 
 def encode(input_ids, text_encoder, text_encoder_params):
   return text_encoder(
@@ -132,7 +155,6 @@ def train(config):
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
     )
-    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
@@ -194,20 +216,12 @@ def train(config):
            config, mesh, total_train_batch_size
         )
 
-    if config.cache_latents_text_encoder_outputs:
-       vae_state = None
-       vae_state_mesh_shardings = None
-       pipeline.vae = None
-       params["vae"] = None
-       pipeline.text_encoder = None
-       params["text_encoder"] = None
-
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
     def train_step(unet_state, vae_state, batch, train_rng, cache_latents_text_encoder_outputs):
         _, gen_dummy_rng = jax.random.split(train_rng)
-        sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
+        sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
         def compute_loss(unet_params):
 
             if cache_latents_text_encoder_outputs:
@@ -231,12 +245,16 @@ def train(config):
             noise = jax.random.normal(noise_rng, latents.shape)
             # Sample a random timestep for each image
             bsz = latents.shape[0]
-            timesteps = jax.random.randint(
-                timestep_rng,
-                (bsz,),
-                0,
-                noise_scheduler.config.num_train_timesteps,
-            )
+            if config.timestep_bias["strategy"] == "none":
+                timesteps = jax.random.randint(
+                    timestep_rng,
+                    (bsz,),
+                    0,
+                    noise_scheduler.config.num_train_timesteps,
+                )
+            else:
+                weights = generate_timestep_weights(config, noise_scheduler.config.num_train_timesteps)
+                timesteps = jax.random.categorical(timestep_bias_rng, logits=jnp.log(weights), shape=(bsz,))
 
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
@@ -260,6 +278,17 @@ def train(config):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
             loss = (target - model_pred) ** 2
+
+            # snr
+            if config.snr_gamma > 0:
+                snr = jnp.array(compute_snr(timesteps, noise_scheduler_state))
+                snr_loss_weights = jnp.where(snr < config.snr_gamma, snr, jnp.ones_like(snr) * config.snr_gamma)
+                if noise_scheduler.config.prediction_type == "epsilon":
+                    snr_loss_weights = snr_loss_weights / snr
+                elif noise_scheduler.config.prediction_type == "v_prediction":
+                    snr_loss_weights = snr_loss_weights / (snr + 1)
+                loss = loss * snr_loss_weights[:, None, None, None]
+
             loss = loss.mean()
 
             return loss
@@ -276,21 +305,30 @@ def train(config):
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
     my_data_sharding = {'input_ids': data_sharding, 'pixel_values': data_sharding}
-    if (not config.enable_profiler):
-        with jax.transfer_guard("disallow"):
-            p_train_step = jax.jit(
-                partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-                in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, my_data_sharding, None),
-                out_shardings=(unet_state_mesh_shardings, None, None),
-                donate_argnums=(0,)
-            )
-    else:
+
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         p_train_step = jax.jit(
             partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
             in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, my_data_sharding, None),
             out_shardings=(unet_state_mesh_shardings, None, None),
             donate_argnums=(0,)
         )
+        max_logging.log("Precompiling...")
+        s = time.time()
+        dummy_batch = get_shaped_batch(config, pipeline)
+        p_train_step = p_train_step.lower(unet_state,
+                                          vae_state,
+                                          dummy_batch,
+                                          train_rngs)
+        p_train_step = p_train_step.compile()
+        max_logging.log(f"Compile time: {(time.time() - s )}")
+
+    if config.cache_latents_text_encoder_outputs:
+       pipeline.vae = None
+       params["vae"] = None
+       pipeline.text_encoder = None
+       params["text_encoder"] = None
+
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
@@ -322,14 +360,14 @@ def train(config):
     mllog_utils.train_step_start(config, start_step)
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
-        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-            unet_state, train_metric, train_rngs = p_train_step(unet_state,
-                                                                vae_state,
-                                                                example_batch,
-                                                                train_rngs)
+        unet_state, train_metric, train_rngs = p_train_step(unet_state,
+                                                            vae_state,
+                                                            example_batch,
+                                                            train_rngs)
         new_time = datetime.datetime.now()
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
-        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+        if config.write_metrics:
+            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
         last_step_completion = new_time
         # Start profiling at end of first step to avoid compilation.
         # Move before for loop to include.
@@ -381,9 +419,10 @@ def train(config):
 
 def main(argv: Sequence[str]) -> None:
     max_logging.log(f"Found {jax.device_count()} devices.")
-    cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
     pyconfig.initialize(argv)
     config = pyconfig.config
+    if len(config.cache_dir) > 0:
+        jax.config.update("jax_compilation_cache_dir", config.cache_dir)
     mllog_utils.train_init_start(config)
     validate_train_config(config)
     train(config)
