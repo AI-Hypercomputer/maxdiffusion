@@ -155,6 +155,7 @@ def train(config):
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
     )
+    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
@@ -215,6 +216,14 @@ def train(config):
         data_iterator = make_laion400m_train_iterator(
            config, mesh, total_train_batch_size
         )
+
+    if config.cache_latents_text_encoder_outputs:
+       vae_state = None
+       vae_state_mesh_shardings = None
+       pipeline.vae = None
+       params["vae"] = None
+       pipeline.text_encoder = None
+       params["text_encoder"] = None
 
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
