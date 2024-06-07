@@ -330,6 +330,7 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
     init_train_state_partial = functools.partial(init_train_state, model=model, tx=tx, training=training)
 
     sharding = PositionalSharding(mesh.devices).replicate()
+    # TODO - Inspect structure of sharding?
     partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
     model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
 
@@ -344,9 +345,10 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
 
   state_mesh_shardings = jax.tree_util.tree_map(
     lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
+  
   return state, state_mesh_shardings
 
-def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, training=True):
+def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, training=True, q_v=None):
   
   # Needed to initialize weights on multi-host with addressable devices.
   quant_enabled = config.quantization is not None
@@ -355,8 +357,10 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
   else:
     #unet_variables = jax.jit(pipeline.unet.init_weights, static_argnames=["quantization_enabled"])(rng, quantization_enabled=quant_enabled)
     unet_variables = pipeline.unet.init_weights(rng, eval_only=True, quantization_enabled=quant_enabled)
-
-  unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, tx, config, mesh, unet_variables, training=training)
+  if q_v:
+    unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, tx, config, mesh, q_v, training=training)
+  else:
+    unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, tx, config, mesh, unet_variables, training=training)
   if config.train_new_unet:
     unet_params = unet_variables
   else:
@@ -366,7 +370,7 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
   tx,
   config,
   mesh,
-  unet_params,
+  q_v,
   unboxed_abstract_state,
   state_mesh_annotations,
   training=training)
@@ -383,7 +387,7 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
       state_mesh_annotations,
       training=training
   )
-
+  # breakpoint()
   return unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings
 
 # Learning Rate Schedule
