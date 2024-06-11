@@ -217,14 +217,6 @@ def train(config):
            config, mesh, total_train_batch_size
         )
 
-    if config.cache_latents_text_encoder_outputs:
-       vae_state = None
-       vae_state_mesh_shardings = None
-       pipeline.vae = None
-       params["vae"] = None
-       pipeline.text_encoder = None
-       params["text_encoder"] = None
-
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
@@ -331,12 +323,6 @@ def train(config):
                                           train_rngs)
         p_train_step = p_train_step.compile()
         max_logging.log(f"Compile time: {(time.time() - s )}")
-
-    if config.cache_latents_text_encoder_outputs:
-       pipeline.vae = None
-       params["vae"] = None
-       pipeline.text_encoder = None
-       params["text_encoder"] = None
 
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)

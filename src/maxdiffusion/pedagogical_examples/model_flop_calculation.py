@@ -48,7 +48,8 @@ from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import (
   create_device_mesh,
   get_dtype,
-  get_flash_block_sizes
+  get_flash_block_sizes,
+  calculate_training_tflops
 )
 from maxdiffusion.maxdiffusion_utils import get_dummy_inputs
 
@@ -113,7 +114,7 @@ def run(config):
   mesh = Mesh(devices_array, config.mesh_axes)
   weight_dtype = get_dtype(config)
   flash_block_sizes = get_flash_block_sizes(config)
-  pipeline, _ = FlaxStableDiffusionPipeline.from_pretrained(
+  pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
     config.pretrained_model_name_or_path,revision=config.revision,
     dtype=weight_dtype,
     safety_checker=None,
@@ -129,13 +130,16 @@ def run(config):
    encoder_hidden_states, added_cond_kwargs) = get_dummy_inputs(config, pipeline)
   total_flops = calculate_model_flops(pipeline.unet,
                         rng,
-                        train=False,
+                        train=True,
                         sample=latents,
                         timesteps=timesteps,
                         encoder_hidden_states=encoder_hidden_states,
                         added_cond_kwargs=added_cond_kwargs)
   
+  model_tflops = calculate_training_tflops(pipeline, params["unet"], config)
+
   print(total_flops)
+  print(model_tflops)
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
