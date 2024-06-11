@@ -59,6 +59,7 @@ from .maxdiffusion_utils import (
   get_add_time_ids,
   rescale_noise_cfg
 )
+from maxdiffusion.train_utils import get_params_to_save
 from .models import quantizations
 from jax.tree_util import tree_flatten_with_path, tree_unflatten
 
@@ -122,8 +123,8 @@ def get_quantized_unet_variables(config):
   encoder_hidden_states = jnp.ones((8, 77, 2048))
 
   added_cond_kwargs = {
-                "text_embeds": jnp.zeros((8, 1280), dtype=jnp.float32),
-                "time_ids": jnp.zeros((8, 6), dtype=jnp.float32),
+                "text_embeds": jnp.ones((8, 1280), dtype=jnp.float32),
+                "time_ids": jnp.ones((8, 6), dtype=jnp.float32),
             }
   noise_pred, quantized_unet_vars = pipeline.unet.apply(
     params["unet"] | {"aqt" : {}},
@@ -136,7 +137,7 @@ def get_quantized_unet_variables(config):
   )
   del pipeline
   del params
-  
+  # del quantized_unet_vars['params']
   return quantized_unet_vars
 
 def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
@@ -147,9 +148,8 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
   timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
   latents_input = pipeline.scheduler.scale_model_input(scheduler_state, latents_input, t)
-  # breakpoint()
   noise_pred = model.apply(
-    {"params" : state.params, "aqt": state.params["aqt"] },
+    state.params,
     jnp.array(latents_input),
     jnp.array(timestep, dtype=jnp.int32),
     encoder_hidden_states=prompt_embeds,
@@ -167,26 +167,6 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
   latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
   return latents, scheduler_state, state
-
-def loop_body_for_quantization(latents, scheduler_state, state, rng,  model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
-  # latents, scheduler_state, state, rng = args
-  latents_input = jnp.concatenate([latents] * 2)
-
-  t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[0]
-  timestep = jnp.broadcast_to(t, latents_input.shape[0])
-
-  latents_input = pipeline.scheduler.scale_model_input(scheduler_state, latents_input, t)
-  noise_pred, quantized_unet_vars = model.apply(
-    state.params | {"aqt" : {}},
-    jnp.array(latents_input),
-    jnp.array(timestep, dtype=jnp.int32),
-    encoder_hidden_states=prompt_embeds,
-    added_cond_kwargs=added_cond_kwargs,
-    rngs={"params": rng},
-    mutable=True,
-  )
-  return quantized_unet_vars
-
 
 def get_embeddings(prompt_ids, pipeline, params):
   te_1_inputs = prompt_ids[:, 0, :]
@@ -269,21 +249,24 @@ def run(config, q_v):
   params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
   params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
 
-  # p = {}
-  # p["aqt"] = q_v["aqt"]
-  #     # Remove param values which have corresponding qtensors in aqt to save memory.
-  # p["params"] = remove_quantized_params(q_v["params"], q_v["aqt"])
-  learning_rate_scheduler = create_learning_rate_schedule(config)
-  tx = optax.adamw(
-        learning_rate=learning_rate_scheduler,
-        b1=config.adam_b1,
-        b2=config.adam_b2,
-        eps=config.adam_eps,
-        weight_decay=config.adam_weight_decay,
-    )
-  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, tx, rng, config, pipeline, q_v, params["vae"], training=False, q_v=q_v)
+  p = {}
+  p["aqt"] = q_v["aqt"]
+      # Remove param values which have corresponding qtensors in aqt to save memory.
+  p["params"] = remove_quantized_params(q_v["params"], q_v["aqt"])
+  del q_v
+  # learning_rate_scheduler = create_learning_rate_schedule(config)
+  # tx = optax.adamw(
+  #       learning_rate=learning_rate_scheduler,
+  #       b1=config.adam_b1,
+  #       b2=config.adam_b2,
+  #       eps=config.adam_eps,
+  #       weight_decay=config.adam_weight_decay,
+  #   )
+  tx = None
+  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, tx, rng, config, pipeline, p, params["vae"], training=False, q_v=p)
   del params["vae"]
   del params["unet"]
+  # del unet_state.params["params"]
   # unet_state.params = q_v
   # params["unet"] = jax.tree_util.tree_map(partial_device_put_replicated, params["unet"])
   # unet_state = InferenceState(pipeline.unet.apply, params=params["unet"])
@@ -348,28 +331,6 @@ def run(config, q_v):
     ).sample
     image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
     return image
-  
-  def get_quantized_unet_vars(unet_state, params, rng, config, batch_size, pipeline):
-
-    (latents,
-    prompt_embeds,
-    added_cond_kwargs,
-    guidance_scale,
-    guidance_rescale,
-    scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
-
-    loop_body_quant_p = jax.jit(functools.partial(loop_body_for_quantization, 
-                                                  model=pipeline.unet,
-                                                  pipeline=pipeline,
-                                                  added_cond_kwargs=added_cond_kwargs,
-                                                  prompt_embeds=prompt_embeds,
-                                                  guidance_scale=guidance_scale,
-                                                  guidance_rescale=guidance_rescale))
-    # with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-    quantized_unet_vars  = loop_body_quant_p(latents=latents, scheduler_state=scheduler_state, state=unet_state,rng=rng)
-
-
-    return quantized_unet_vars
 
   def run_inference(unet_state, vae_state, params, rng, config, batch_size, pipeline):
 
@@ -393,44 +354,8 @@ def run(config, q_v):
                                         loop_body_p, (latents, scheduler_state, unet_state))
       image = vae_decode_p(latents, vae_state)
       return image
-  
-  #quantized_unet_vars = get_quantized_unet_vars(unet_state, params, rng, config, batch_size, pipeline)
-  
-  #del params
-  #del pipeline
-  #del unet_state
-  #quant = quantizations.configure_quantization(config=config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE)
-  
-  # pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-  #   config.pretrained_model_name_or_path,
-  #   revision=config.revision,
-  #   dtype=weight_dtype,
-  #   split_head_dim=config.split_head_dim,
-  #   norm_num_groups=config.norm_num_groups,
-  #   attention_kernel=config.attention,
-  #   flash_block_sizes=flash_block_sizes,
-  #   mesh=mesh,
-  #   quant=quant,
-  # )
 
-  # scheduler_state = params.pop("scheduler")
-  # old_params = params
-  # params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), old_params)
-  # params["scheduler"] = scheduler_state
-
-  # data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
-
-  # sharding = PositionalSharding(devices_array).replicate()
-  # partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
-  # params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
-  # params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
-
-  # unet_state = InferenceState(pipeline.unet.apply, params=quantized_unet_vars)
-  # unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, None, rng, config, pipeline, quantized_unet_vars, params["vae"], training=False)
-  #del params["vae"]
-  #del params["unet"]
-  
-  
+  breakpoint()
   p_run_inference = jax.jit(
     functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline),
     in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None),
@@ -464,14 +389,31 @@ def run(config, q_v):
   for i, image in enumerate(images):
     image.save(f"image_sdxl_{i}.png")
 
+  # params['unet'] = q_v
+  # params['vae'] = vae_state.params
+  # pipeline.save_pretrained(
+  #           "output_trained",
+  #           params={
+  #               "text_encoder": get_params_to_save(params["text_encoder"]),
+  #               "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
+  #               "vae": get_params_to_save(params["vae"]),
+  #               "unet": get_params_to_save(q_v),
+  #           },
+  #       )
+
   return images
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   q_v = get_quantized_unet_variables(pyconfig.config)
   # breakpoint()
-  del q_v['params']
-  print(q_v.keys())
+  # del q_v['params']
+  # print(q_v.keys())
+  # p = {}
+  # for k, v in q_v['params'].items():
+  #   p[k] = v
+  # p['aqt'] = q_v['aqt']
+  # del q_v
   # addedkw_args...., params, aqt
   run(pyconfig.config, q_v)
 

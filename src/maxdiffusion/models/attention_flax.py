@@ -445,6 +445,7 @@ class FlaxAttention(nn.Module):
         dot_general_cls = None
         if self.quant:
             dot_general_cls = self.quant.dot_general_cls()
+            # breakpoint()
 
         self.query = nn.Dense(
             inner_dim,

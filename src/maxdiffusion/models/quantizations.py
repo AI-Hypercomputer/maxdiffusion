@@ -14,12 +14,29 @@
 import functools
 
 from aqt.jax.v2 import config as aqt_config
+from aqt.jax.v2 import aqt_conv_general
 
 from aqt.jax.v2.flax import aqt_flax
 from ..common_types import Config
 from dataclasses import dataclass
 import jax.numpy as jnp
 
+
+def create_weight_only_cfg(w_bits):
+  aqt_config.dot_general_make(
+      lhs_bits=None, rhs_bits=8
+  )
+  # cfg = aqt_config.default_unquantized_config()
+  # aqt_config.set_bits(
+  #     cfg,
+  #     fwd_lhs_bit=None,
+  #     fwd_rhs_bit=w_bits,
+  #     dlhs_lhs_bit=None,
+  #     dlhs_rhs_bit=None,
+  #     drhs_lhs_bit=None,
+  #     drhs_rhs_bit=None,
+  # )
+  # return cfg
 
 @dataclass
 class AqtQuantization:
@@ -51,8 +68,25 @@ class AqtQuantization:
       )
     )
     return aqt_einsum
-
+  def conv_general_dialated(self):
+    conv_general = functools.partial(aqt_conv_general.make_conv_general_dilated(
+       aqt_config.DotGeneralRaw.make_conv_general_dilated()))
+    return conv_general
+  
 def _get_quant_config(config):
+  return aqt_config.config_v3(
+      fwd_bits=8,
+      dlhs_bits=8,
+      drhs_bits=8,
+      rng_type='jax.uniform',
+      dlhs_local_aqt=None,
+      drhs_local_aqt=None,
+      fwd_accumulator_dtype=jnp.float32,
+      dlhs_accumulator_dtype=jnp.float32,
+      drhs_accumulator_dtype=jnp.float32,
+    )
+
+def _get_quant_config_old(config):
   if not config.quantization or config.quantization == '':
     return None
   elif config.quantization == "int8":
@@ -65,7 +99,7 @@ def _get_quant_config(config):
       drhs_accumulator_dtype = jnp.int32
       print(config.quantization_local_shard_count) # -1
       drhs_local_aqt = aqt_config.LocalAqt(contraction_axis_shard_count=config.quantization_local_shard_count)
-    return aqt_config.config_v4(
+    return aqt_config.config_v3(
       fwd_bits=8,
       dlhs_bits=8,
       drhs_bits=drhs_bits,
@@ -99,7 +133,19 @@ def get_quant_mode(quant_mode_str: str = 'train'):
 
 def configure_quantization(config: Config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.TRAIN):
   """ Configure quantization based on user config and quant mode."""
-  quant_cfg = _get_quant_config(config)
+  # quant_cfg = _get_quant_config(config)
+  quant_cfg = create_weight_only_cfg(config)
+  if quant_cfg:
+    return AqtQuantization(quant_dg=quant_cfg, lhs_quant_mode=lhs_quant_mode, rhs_quant_mode=rhs_quant_mode)
+  return None
+
+def configure_quantizatio_old(config: Config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.TRAIN):
+  """ Configure quantization based on user config and quant mode."""
+
+  if not config:
+    return None
+  # quant_cfg = _get_quant_config(config)
+  quant_cfg = create_weight_only_cfg(8)
   if quant_cfg:
     return AqtQuantization(quant_dg=quant_cfg, lhs_quant_mode=lhs_quant_mode, rhs_quant_mode=rhs_quant_mode)
   return None

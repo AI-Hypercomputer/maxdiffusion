@@ -184,7 +184,8 @@ class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline):
 
         # Encode input prompt
         prompt_embeds, pooled_embeds = self.get_embeddings(prompt_ids, params)
-
+        print("params keys ", params.keys())
+        breakpoint()
         # Get unconditional embeddings
         batch_size = prompt_embeds.shape[0]
         if neg_prompt_ids is None:
@@ -247,6 +248,7 @@ class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline):
                 jnp.array(timestep, dtype=jnp.int32),
                 encoder_hidden_states=prompt_embeds,
                 added_cond_kwargs=added_cond_kwargs,
+                rngs={"params": jax.random.PRNGKey(0)}
             ).sample
             # perform guidance
             noise_pred_uncond, noise_prediction_text = jnp.split(noise_pred, 2, axis=0)

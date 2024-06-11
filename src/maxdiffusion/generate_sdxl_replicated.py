@@ -33,15 +33,60 @@ NUM_DEVICES = jax.device_count()
 # 1. Let's start by downloading the model and loading it into our pipeline class
 # Adhering to JAX's functional approach, the model's parameters are returned seperatetely and
 # will have to be passed to the pipeline during inference
-pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-xl-base-1.0", revision="refs/pr/95", split_head_dim=True
-)
+from aqt.jax.v2.flax import aqt_flax
+from maxdiffusion.models import quantizations
+def get_quantized_unet_variables():
+  quant = quantizations.configure_quantization(config=None, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.CONVERT)
+  pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    revision="refs/pr/95",
+    dtype=jnp.bfloat16,
+    split_head_dim=True,
+    quant=quant,
+    )
+  latents = jnp.ones((4, 4,128,128), dtype=jnp.float32)
+  timesteps = jnp.ones((4,))
+  encoder_hidden_states = jnp.ones((4, 77, 2048))
 
+  added_cond_kwargs = {
+                "text_embeds": jnp.ones((4, 1280), dtype=jnp.float32),
+                "time_ids": jnp.ones((4, 6), dtype=jnp.float32),
+            }
+  _, quantized_unet_vars = pipeline.unet.apply(
+    # params["unet"],
+    params["unet"] | {"aqt" : {}},
+    latents,
+    timesteps,
+    encoder_hidden_states=encoder_hidden_states,
+    added_cond_kwargs=added_cond_kwargs,
+    rngs={"params": jax.random.PRNGKey(0)},
+    mutable=True,
+  )
+  breakpoint()
+  del pipeline
+  del params
+  del quantized_unet_vars["params"]
+  return quantized_unet_vars
+
+
+quantized_unet_vars = get_quantized_unet_variables()
+
+quant = quantizations.configure_quantization(config=None, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE)
+pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+    "stabilityai/stable-diffusion-xl-base-1.0", revision="refs/pr/95", split_head_dim=True, quant=quant,
+)
+print("params loaded keys ", params.keys())
+breakpoint()
 # 2. We cast all parameters to bfloat16 EXCEPT the scheduler which we leave in
 # float32 to keep maximal precision
 scheduler_state = params.pop("scheduler")
 params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), params)
 params["scheduler"] = scheduler_state
+# del params["unet"]
+params["unet"] = quantized_unet_vars
+# del quantized_unet_vars
+
+# p[]['aqt'] = quantized_unet_vars['aqt']
 
 # 3. Next, we define the different inputs to the pipeline
 default_prompt = "a colorful photo of a castle in the middle of a forest with trees and bushes, by Ismail Inceoglu, shadows, high contrast, dynamic shading, hdr, detailed vegetation, digital painting, digital drawing, detailed painting, a detailed digital painting, gothic art, featured on deviantart"
