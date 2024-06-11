@@ -93,8 +93,8 @@ def eval_at_checkpoint(
     clip, fid = eval.eval_scores(config, images_directory, checkpoint_name)
     print("clip score is :" + str(clip))
     print("fid score is : " + str(fid))
-    metrics['scalar'].update({'FID': fid})
-    metrics['scalar'].update({'CLIP' : clip})
+    metrics['scalar'].update({'eval/FID': fid})
+    metrics['scalar'].update({'eval/CLIP': clip})
     if config.upload_images:
         max_utils.walk_and_upload_gen_images(config, images_directory, checkpoint_number)
     pipeline.scheduler = training_scheduler
@@ -525,7 +525,6 @@ def train(config):
             max_utils.deactivate_profiler(config)
 
         mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
-    max_utils.close_summary_writer(writer)
 
     del pipeline
     del params
@@ -541,9 +540,12 @@ def train(config):
 
         generate.run(config, images_directory)
 
-        eval.eval_scores(config, images_directory, checkpoint_name)
+        clip, fid = eval.eval_scores(config, images_directory, checkpoint_name)
+        writer.add_scalar('eval/FID', np.array(fid), int(checkpoint_name))
+        writer.add_scalar('eval/CLIP', np.array(clip), int(checkpoint_name))
+        
         shutil.rmtree(images_directory)
-
+    max_utils.close_summary_writer(writer)
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     config = pyconfig.config
