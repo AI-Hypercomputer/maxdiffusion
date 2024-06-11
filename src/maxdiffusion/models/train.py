@@ -541,11 +541,13 @@ def train(config):
         generate.run(config, images_directory)
 
         clip, fid = eval.eval_scores(config, images_directory, checkpoint_name)
-        writer.add_scalar('eval/FID', np.array(fid), int(checkpoint_name))
-        writer.add_scalar('eval/CLIP', np.array(clip), int(checkpoint_name))
+        if config.write_metrics:
+            writer.add_scalar('eval/FID', np.array(fid), int(checkpoint_name))
+            writer.add_scalar('eval/CLIP', np.array(clip), int(checkpoint_name))
         
         shutil.rmtree(images_directory)
     max_utils.close_summary_writer(writer)
+
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     config = pyconfig.config
