@@ -542,8 +542,10 @@ def train(config):
 
         clip, fid = eval.eval_scores(config, images_directory, checkpoint_name)
         if config.write_metrics:
-            writer.add_scalar('eval/FID', np.array(fid), int(checkpoint_name))
-            writer.add_scalar('eval/CLIP', np.array(clip), int(checkpoint_name))
+            if jax.process_index() == 0:
+                num_samples = checkpoint_name.split("samples_count=")[-1]
+                writer.add_scalar('eval/FID', np.array(fid), int(num_samples))
+                writer.add_scalar('eval/CLIP', np.array(clip), int(num_samples))
         
         shutil.rmtree(images_directory)
     max_utils.close_summary_writer(writer)
