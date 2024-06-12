@@ -446,6 +446,8 @@ class FlaxAttention(nn.Module):
         if self.quant:
             dot_general_cls = self.quant.dot_general_cls()
             # breakpoint()
+        else:
+            print("Quant is NONE ***************")
 
         self.query = nn.Dense(
             inner_dim,

@@ -242,8 +242,9 @@ class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline):
             latents_input = self.scheduler.scale_model_input(scheduler_state, latents_input, t)
 
             # predict the noise residual
+            breakpoint()
             noise_pred = self.unet.apply(
-                {"params": params["unet"]},
+                {'params': params["unet"], 'aqt': params['unet']["aqt"]},
                 jnp.array(latents_input),
                 jnp.array(timestep, dtype=jnp.int32),
                 encoder_hidden_states=prompt_embeds,
@@ -262,6 +263,7 @@ class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline):
             # run with python for loop
             for i in range(num_inference_steps):
                 latents, scheduler_state = loop_body(i, (latents, scheduler_state))
+
         else:
             latents, _ = jax.lax.fori_loop(0, num_inference_steps, loop_body, (latents, scheduler_state))
 

@@ -41,7 +41,7 @@ def get_quantized_unet_variables():
     "stabilityai/stable-diffusion-xl-base-1.0",
     revision="refs/pr/95",
     dtype=jnp.bfloat16,
-    split_head_dim=True,
+    split_head_dim=False,
     quant=quant,
     )
   latents = jnp.ones((4, 4,128,128), dtype=jnp.float32)
@@ -73,7 +73,7 @@ quantized_unet_vars = get_quantized_unet_variables()
 
 quant = quantizations.configure_quantization(config=None, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE)
 pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-xl-base-1.0", revision="refs/pr/95", split_head_dim=True, quant=quant,
+    "stabilityai/stable-diffusion-xl-base-1.0", revision="refs/pr/95", split_head_dim=False, quant=quant,
 )
 print("params loaded keys ", params.keys())
 breakpoint()
@@ -83,8 +83,13 @@ scheduler_state = params.pop("scheduler")
 params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), params)
 params["scheduler"] = scheduler_state
 # del params["unet"]
-params["unet"] = quantized_unet_vars
+# p ={}
+# p['aqt'] = quantized_unet_vars['aqt']
+# del quantized_unet_vars['aqt']
+# p['params'] = quantized_unet_vars['params']
+# params["unet"] = p
 # del quantized_unet_vars
+params["unet"] = quantized_unet_vars
 
 # p[]['aqt'] = quantized_unet_vars['aqt']
 

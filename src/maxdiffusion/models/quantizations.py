@@ -23,20 +23,20 @@ import jax.numpy as jnp
 
 
 def create_weight_only_cfg(w_bits):
-  aqt_config.dot_general_make(
-      lhs_bits=None, rhs_bits=8
-  )
-  # cfg = aqt_config.default_unquantized_config()
-  # aqt_config.set_bits(
-  #     cfg,
-  #     fwd_lhs_bit=None,
-  #     fwd_rhs_bit=w_bits,
-  #     dlhs_lhs_bit=None,
-  #     dlhs_rhs_bit=None,
-  #     drhs_lhs_bit=None,
-  #     drhs_rhs_bit=None,
+  # return aqt_config.dot_general_make(
+  #     lhs_bits=None, rhs_bits=8
   # )
-  # return cfg
+  cfg = aqt_config.default_unquantized_config()
+  aqt_config.set_bits(
+      cfg,
+      fwd_lhs_bit=8,
+      fwd_rhs_bit=8,
+      dlhs_lhs_bit=None,
+      dlhs_rhs_bit=None,
+      drhs_lhs_bit=None,
+      drhs_rhs_bit=None,
+  )
+  return cfg
 
 @dataclass
 class AqtQuantization:
@@ -52,8 +52,8 @@ class AqtQuantization:
       self.quant_dg,
       lhs_quant_mode=self.lhs_quant_mode,
       rhs_quant_mode=self.rhs_quant_mode,
-      lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
-      rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
+      lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
+      rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
       )
     return aqt_dg_cls
 
