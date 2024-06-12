@@ -41,7 +41,7 @@ def get_quantized_unet_variables():
     "stabilityai/stable-diffusion-xl-base-1.0",
     revision="refs/pr/95",
     dtype=jnp.bfloat16,
-    split_head_dim=False,
+    split_head_dim=True,
     quant=quant,
     )
   latents = jnp.ones((4, 4,128,128), dtype=jnp.float32)
@@ -73,7 +73,7 @@ quantized_unet_vars = get_quantized_unet_variables()
 
 quant = quantizations.configure_quantization(config=None, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE)
 pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-xl-base-1.0", revision="refs/pr/95", split_head_dim=False, quant=quant,
+    "stabilityai/stable-diffusion-xl-base-1.0", revision="refs/pr/95", split_head_dim=True, quant=quant,
 )
 print("params loaded keys ", params.keys())
 breakpoint()
@@ -98,7 +98,7 @@ default_prompt = "a colorful photo of a castle in the middle of a forest with tr
 default_neg_prompt = "fog, grainy, purple"
 default_seed = 33
 default_guidance_scale = 5.0
-default_num_steps = 40
+default_num_steps = 20
 width = 1024
 height = 1024
 

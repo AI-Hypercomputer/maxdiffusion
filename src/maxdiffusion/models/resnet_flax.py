@@ -20,7 +20,7 @@ import jax.numpy as jnp
 # Not sure which initializer to use, ruff was complaining, so added an ignore
 # from jax.nn import initializers # noqa: F811
 
-
+from . import quantizations
 # Type annotations
 Array = jnp.ndarray
 DType = jnp.dtype
@@ -33,17 +33,23 @@ Initializer = Callable[[PRNGKey, Shape, DType], Array]
 InitializerAxis = Union[int, Tuple[int, ...]]
 NdInitializer = Callable[
     [PRNGKey, Shape, DType, InitializerAxis, InitializerAxis], Array]
-
+Quant = quantizations.AqtQuantization
 class FlaxUpsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
+    quant:Quant = None
+    conv_general = None
+
     def setup(self):
+        if self.quant:
+            self.conv_general = self.quant.conv_general_dialated()
         self.conv = nn.Conv(
             self.out_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            conv_general_dilated=self.conv_general,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -69,14 +75,19 @@ class FlaxUpsample2D(nn.Module):
 class FlaxDownsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
+    quant:Quant = None
+    conv_general = None
 
     def setup(self):
+        if self.quant:
+            self.conv_general = self.quant.conv_general_dialated()
         self.conv = nn.Conv(
             self.out_channels,
             kernel_size=(3, 3),
             strides=(2, 2),
             padding=((1, 1), (1, 1)),  # padding="VALID",
             dtype=self.dtype,
+            conv_general_dilated=self.conv_general,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -99,8 +110,12 @@ class FlaxResnetBlock2D(nn.Module):
     use_nin_shortcut: bool = None
     dtype: jnp.dtype = jnp.float32
     norm_num_groups: int = 32
+    quant:Quant = None
+    conv_general = None
 
     def setup(self):
+        if self.quant:
+            self.conv_general = self.quant.conv_general_dialated()
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
 
         self.norm1 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
@@ -118,6 +133,7 @@ class FlaxResnetBlock2D(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                conv_general_dilated=self.conv_general,
                 kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -130,6 +146,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            conv_general_dilated=self.conv_general,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -146,6 +163,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            conv_general_dilated=self.conv_general,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')

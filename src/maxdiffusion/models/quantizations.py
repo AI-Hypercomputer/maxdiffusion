@@ -70,7 +70,7 @@ class AqtQuantization:
     return aqt_einsum
   def conv_general_dialated(self):
     conv_general = functools.partial(aqt_conv_general.make_conv_general_dilated(
-       aqt_config.DotGeneralRaw.make_conv_general_dilated()))
+       aqt_config.conv_general_dilated_make(lhs_bits=8, rhs_bits=8)))
     return conv_general
   
 def _get_quant_config(config):
