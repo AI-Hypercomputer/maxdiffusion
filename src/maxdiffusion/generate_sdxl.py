@@ -209,7 +209,6 @@ def run(config):
     added_cond_kwargs = {"text_embeds" : add_text_embeds, "time_ids" : add_time_ids}
     latents = jax.device_put(latents, data_sharding)
     prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
-    guidance_scale = jax.device_put(guidance_scale, PositionalSharding(devices_array).replicate())
     added_cond_kwargs['text_embeds'] = jax.device_put(added_cond_kwargs['text_embeds'], data_sharding)
     added_cond_kwargs['time_ids'] = jax.device_put(added_cond_kwargs['time_ids'], data_sharding)
 
