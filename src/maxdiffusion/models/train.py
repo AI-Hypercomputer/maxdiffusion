@@ -529,7 +529,7 @@ def train(config):
         mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
 
     steptime = (time.time() - start_time)/ (config.max_train_steps - start_step) * 1000
-    max_logging.log(f"avg step time of {max_train_steps}, {steptime} ms")
+    max_logging.log(f"avg step time of {config.max_train_steps}, {steptime} ms")
     del pipeline
     del params
     del unet_state
