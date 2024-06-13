@@ -1,9 +1,9 @@
 from typing import Sequence
 from absl import app
 import jax
-from maxdiffusion import FlaxStableDiffusionXLPipeline
-from maxdiffusion import pyconfig
-from maxdiffusion.max_utils import get_dtype
+from diffusers import FlaxStableDiffusionXLPipeline
+from diffusers import pyconfig
+from diffusers.max_utils import get_dtype
 
 def run(config):
   weight_dtype = get_dtype(config)
@@ -13,7 +13,7 @@ def run(config):
     revision=config.revision,
     dtype=weight_dtype,
     split_head_dim=True,
-    # cache_dir="/data"
+    cache_dir="/data"
   )
   del params["scheduler"]
   unet_count = sum(x.size for x in jax.tree_util.tree_leaves(params["unet"]))

@@ -248,17 +248,12 @@ def run(config, q_v):
   partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
   params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
   params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
-  breakpoint()
-  p = {}
-  p["aqt"] = q_v["aqt"]
+
+  # p = {}
+  # p["aqt"] = q_v["aqt"]
   #     # Remove param values which have corresponding qtensors in aqt to save memory.
-  p["params"] = remove_quantized_params(params["unet"], q_v["aqt"])
-  del q_v
-  p_1 = {}
-  p_1.update(p['params'])
-  p_1['aqt'] = p['aqt']
-  del p
-  breakpoint()
+  # p["params"] = remove_quantized_params(q_v["params"], q_v["aqt"])
+  # del q_v
   # learning_rate_scheduler = create_learning_rate_schedule(config)
   # tx = optax.adamw(
   #       learning_rate=learning_rate_scheduler,
@@ -268,12 +263,9 @@ def run(config, q_v):
   #       weight_decay=config.adam_weight_decay,
   #   )
   tx = None
-  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, tx, rng, config, pipeline, p_1, params["vae"], training=False, q_v=p_1)
+  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, tx, rng, config, pipeline, q_v, params["vae"], training=False, q_v=q_v)
   del params["vae"]
   del params["unet"]
-  # p = {}
-  # p['aqt'] = q_v['aqt']
-  # p['params'] = remove_quantized_params()
   # del unet_state.params["params"]
   # unet_state.params = q_v
   # params["unet"] = jax.tree_util.tree_map(partial_device_put_replicated, params["unet"])
@@ -398,7 +390,7 @@ def run(config, q_v):
   for i, image in enumerate(images[:10]):
     image.save(f"image_sdxl_{i}.png")
 
-  params['unet'] = p_1
+  params['unet'] = q_v
   params['vae'] = vae_state.params
   pipeline.save_pretrained(
             "output_trained_working",
@@ -406,7 +398,7 @@ def run(config, q_v):
                 "text_encoder": get_params_to_save(params["text_encoder"]),
                 "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
                 "vae": get_params_to_save(params["vae"]),
-                "unet": get_params_to_save(params['unet']),
+                "unet": get_params_to_save(q_v),
             },
         )
 

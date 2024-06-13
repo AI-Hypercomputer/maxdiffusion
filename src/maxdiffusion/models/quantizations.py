@@ -47,16 +47,15 @@ class AqtQuantization:
 
   def dot_general_cls(self):
     """ Returns dot_general configured with aqt params. """
-    return None
-    # aqt_dg_cls = functools.partial(
-    #   aqt_flax.AqtDotGeneral,
-    #   self.quant_dg,
-    #   lhs_quant_mode=self.lhs_quant_mode,
-    #   rhs_quant_mode=self.rhs_quant_mode,
-    #   lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
-    #   rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
-    #   )
-    # return aqt_dg_cls
+    aqt_dg_cls = functools.partial(
+      aqt_flax.AqtDotGeneral,
+      self.quant_dg,
+      lhs_quant_mode=self.lhs_quant_mode,
+      rhs_quant_mode=self.rhs_quant_mode,
+      lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
+      rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
+      )
+    return aqt_dg_cls
 
   def einsum(self):
     """ Returns einsum configured with aqt params """
