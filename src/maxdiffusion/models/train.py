@@ -551,7 +551,7 @@ def train(config):
                 writer.add_scalar('eval/FID', np.array(fid), int(num_samples))
                 writer.add_scalar('eval/CLIP', np.array(clip), int(num_samples))
 
-                if clip >= 0.15 and fid <= 90
+                if clip >= 0.15 and fid <= 90:
                     writer.add_scalar('mlperf_convergence_samples', int(num_samples))
         shutil.rmtree(images_directory)
     max_utils.close_summary_writer(writer)
