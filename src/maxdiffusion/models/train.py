@@ -494,9 +494,9 @@ def train(config):
         record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
 
         step_time_delta = new_time - last_step_completion
-        max_logging.log(f"completed step: {step}, seconds: {step_time_delta.total_seconds()}, "
-          f"TFLOP/s/device: {per_device_tflops / step_time_delta.total_seconds()}, "
-          f"loss: {train_metric['scalar']['learning/loss']:.3f}")
+        # max_logging.log(f"completed step: {step}, seconds: {step_time_delta.total_seconds()}, "
+        #   f"TFLOP/s/device: {per_device_tflops / step_time_delta.total_seconds()}, "
+        #   f"loss: {train_metric['scalar']['learning/loss']:.3f}")
           
         if config.write_metrics:
             write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
