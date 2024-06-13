@@ -15,6 +15,7 @@
  """
 
 import datetime
+import time
 import logging
 import os
 from typing import Sequence
@@ -93,8 +94,8 @@ def eval_at_checkpoint(
     clip, fid = eval.eval_scores(config, images_directory, checkpoint_name)
     print("clip score is :" + str(clip))
     print("fid score is : " + str(fid))
-    metrics['scalar'].update({'FID': fid})
-    metrics['scalar'].update({'CLIP' : clip})
+    metrics['scalar'].update({'eval/FID': fid})
+    metrics['scalar'].update({'eval/CLIP': clip})
     if config.upload_images:
         max_utils.walk_and_upload_gen_images(config, images_directory, checkpoint_number)
     pipeline.scheduler = training_scheduler
@@ -482,6 +483,7 @@ def train(config):
     mllog_utils.train_step_start(config, start_step, samples_count=0)
     # for checkpointing
     eval_checkpoints = []
+    start_time = time.time()
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         unet_state, train_metric, train_rngs = p_train_step(unet_state,
@@ -525,8 +527,9 @@ def train(config):
             max_utils.deactivate_profiler(config)
 
         mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
-    max_utils.close_summary_writer(writer)
 
+    steptime = (time.time() - start_time)/ (config.max_train_steps - start_step) * 1000
+    max_logging.log(f"avg step time of {max_train_steps}, {steptime} ms")
     del pipeline
     del params
     del unet_state
@@ -541,8 +544,17 @@ def train(config):
 
         generate.run(config, images_directory)
 
-        eval.eval_scores(config, images_directory, checkpoint_name)
+        clip, fid = eval.eval_scores(config, images_directory, checkpoint_name)
+        if config.write_metrics:
+            if jax.process_index() == 0:
+                num_samples = checkpoint_name.split("samples_count=")[-1]
+                writer.add_scalar('eval/FID', np.array(fid), int(num_samples))
+                writer.add_scalar('eval/CLIP', np.array(clip), int(num_samples))
+
+                if clip >= 0.15 and fid <= 90
+                    writer.add_scalar('mlperf_convergence_samples', int(num_samples))
         shutil.rmtree(images_directory)
+    max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
