@@ -129,7 +129,7 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
   noise_cfg = guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
   return noise_cfg
 
-def get_dummy_inputs(config, pipeline):
+def get_dummy_unet_inputs(config, pipeline):
   vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
   batch_size = config.per_device_batch_size
   dtype=max_utils.get_dtype(config)
@@ -155,7 +155,7 @@ def get_dummy_inputs(config, pipeline):
       == unet_config.projection_class_embeddings_input_dim
     )
     num_micro_conditions = 5 if is_refiner else 6
-    
+
     text_embeds_dim = unet_config.projection_class_embeddings_input_dim - (
       num_micro_conditions * unet_config.addition_time_embed_dim
     )
@@ -166,3 +166,17 @@ def get_dummy_inputs(config, pipeline):
       "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=dtype),
     }
   return (latents, timesteps, encoder_hidden_states, added_cond_kwargs)
+
+def calculate_unet_tflops(config, pipeline, rngs, train):
+  """Calculates unet tflops."""
+
+  (latents, timesteps,
+    encoder_hidden_states, added_cond_kwargs) = get_dummy_unet_inputs(config, pipeline)
+  return max_utils.calculate_model_tflops(
+    pipeline.unet,
+    rngs,
+    train,
+    sample=latents,
+    timesteps=timesteps,
+    encoder_hidden_states=encoder_hidden_states,
+    added_cond_kwargs=added_cond_kwargs)

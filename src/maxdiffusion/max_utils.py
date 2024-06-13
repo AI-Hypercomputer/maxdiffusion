@@ -18,6 +18,7 @@
 # pylint: disable=bare-except, consider-using-generator
 """ Common Max Utils needed by multiple modules"""
 import functools
+from functools import reduce
 import json
 import yaml
 import os
@@ -31,14 +32,27 @@ import jax
 import jax.numpy as jnp
 import optax
 from maxdiffusion import checkpointing, max_logging
-from maxdiffusion.maxdiffusion_utils import get_dummy_inputs
+from maxdiffusion.models.attention_flax import AttentionOp
 from flax import linen as nn
+import flax.linen as nn
+import flax.linen.module as module_lib
+from flax.linen.summary import _process_inputs
+from flax.typing import (
+  PRNGKey,
+  RNGSequences,
+)
 from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
 from jax.experimental import mesh_utils
 from jax.sharding import PositionalSharding
 from flax import struct
-from typing import Callable, Any
+from typing import (
+  Callable,
+  Any,
+  Tuple,
+  Union,
+  Set,
+)
 from flax import core
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
@@ -457,21 +471,63 @@ def get_memory_allocations():
     max_logging.log(f'device : {device.process_index},'
                     f'bytes in use: {m_stats["bytes_in_use"] / gb} / {m_stats["bytes_limit"] / gb} GB')
 
-def calculate_training_tflops(pipeline, unet_params, config):
-    """Calculate per device training tflops (back and fwd pass)."""
 
-    (latents, timesteps,
-   encoder_hidden_states, added_cond_kwargs) = get_dummy_inputs(config, pipeline)
-    c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : unet_params}, latents, timesteps, encoder_hidden_states, added_cond_kwargs).compile()
+# Taking inspiration from flax's https://flax.readthedocs.io/en/v0.5.3/_modules/flax/linen/summary.html#tabulate
+# to retrieve layer parameters and calculate 
+def calculate_model_tflops(
+    module: module_lib.Module,
+    rngs: Union[PRNGKey, RNGSequences],
+    train,
+    **kwargs
+):
+  """Calculates model tflops by passing a module."""
+  with module_lib._tabulate_context():
+    _ = jax.eval_shape(module.init,
+                       rngs,
+                       **kwargs)
+    calls = module_lib._context.call_info_stack[-1].calls
+    calls.sort(key=lambda c: c.index)
 
-    model_flops = 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12) 
-
-    # Cost analysis over estimates flops when splash pallas kernel is enabled
-    # dividing by 3.2 provides a better estimate.
-    if 'flash' in config.attention:
-      model_flops = model_flops / 3.2
-    
-    return model_flops
+  visited_paths: Set[Tuple[str, ...]] = set()
+  total_flops = 0
+  for c in calls:
+    inputs = _process_inputs(c.args, c.kwargs)
+    if c.path in visited_paths:
+      continue
+    else:
+      # Multiply 2 * input shapes * features
+      # For simple Dense layer input_shape = batch, in_features = (16, 10) and features = 20
+      # Then 2 * 16 * 10 * 20.
+      # In case of attention, an example if input shape batch,seq,hidden = (16, 4096, 320) and features = 320
+      # Then 2 * 16 * 4096 * 320^2.
+      if isinstance(c.module, nn.Dense):
+        total_flops += 2 * (
+          reduce(lambda x, y: x * y, inputs.shape)
+          * c.module.features
+        )
+      # Here we capture qk einsum, scaling, softmax and attention_values * v
+      # qk einsum : 2 * batch_size * seq_length_1 * seq_length_2 * heads * head_dim where (heads * head_dim) == hidden_dim
+      # Note that in qk einsum and diffusion, seq_length_1 and seq_length_2 can be different due to cross attention.
+      # scaling : division of the attn scores matrix by sqrt of hidden dimension batch_size * seq_length^2)
+      # softmax : rough estimate is batch_size * seq_length_1 * log(seq_length_2)
+      # attention_values * v : 2 * batch_size * seq_length_1 * seq_length_2 * heads * head_dim where (heads * head_dim) == hidden_dim
+      elif isinstance(c.module, AttentionOp):
+        qk_einsum = 2 * (reduce(lambda x, y: x * y, inputs[0].shape)) * inputs[1].shape[1]
+        scaling = inputs[0].shape[0] * inputs[0].shape[1] * inputs[1].shape[1]
+        softmax = reduce(lambda x, y: x * y, inputs[0].shape) * np.log(inputs[1].shape[1])
+        att_v = 2 * (reduce(lambda x, y: x * y, inputs[0].shape)) * inputs[2].shape[1]
+        # When seq_length_1 == seq_length_2 then,
+        # qk_einsum + scaling + softmax + att_v == 4 * batch_size * hidden_dim * seq_length ^ 2
+        total_flops += qk_einsum + scaling + softmax + att_v
+      elif isinstance(c.module, nn.Conv):
+        total_flops += 2 * (
+          reduce(lambda x, y: x * y, inputs.shape)
+          * c.module.features
+          * reduce(lambda x, y: x * y, c.module.kernel_size)) / reduce(lambda x, y: x * y, c.module.strides)
+    visited_paths.add(c.path)
+  
+  total_flops = (total_flops * 3 if train else total_flops) / 10**12
+  return total_flops
 
 def calculate_num_params_from_pytree(params):
   """Calculates number of parameters from a pytree"""

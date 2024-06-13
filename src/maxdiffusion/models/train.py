@@ -37,7 +37,7 @@ from maxdiffusion import (
     pyconfig,
     mllog_utils,
 )
-from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images
+from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images, calculate_unet_tflops
 
 from maxdiffusion.train_utils import (
     get_first_step,
@@ -188,7 +188,7 @@ def train(config):
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
 
-    per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
+    per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
 
     if config.dataset_name == "diffusers/pokemon-gpt4-captions":
