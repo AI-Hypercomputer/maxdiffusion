@@ -15,6 +15,7 @@
  """
 
 import datetime
+import time
 import logging
 import os
 from typing import Sequence
@@ -482,6 +483,7 @@ def train(config):
     mllog_utils.train_step_start(config, start_step, samples_count=0)
     # for checkpointing
     eval_checkpoints = []
+    start_time = time.time()
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         unet_state, train_metric, train_rngs = p_train_step(unet_state,
@@ -526,6 +528,8 @@ def train(config):
 
         mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
 
+    steptime = (time.time() - start_time)/ (config.max_train_steps - start_step) * 1000
+    max_logging.log(f"avg step time of {max_train_steps}, {steptime} ms")
     del pipeline
     del params
     del unet_state
