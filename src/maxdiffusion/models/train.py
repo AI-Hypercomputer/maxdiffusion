@@ -37,7 +37,7 @@ from maxdiffusion import (
     pyconfig,
     mllog_utils,
 )
-from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images
+from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images, calculate_unet_tflops
 
 from maxdiffusion.train_utils import (
     get_first_step,
@@ -155,6 +155,7 @@ def train(config):
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
     )
+    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
@@ -187,7 +188,7 @@ def train(config):
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
 
-    per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
+    per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
 
     if config.dataset_name == "diffusers/pokemon-gpt4-captions":
@@ -322,12 +323,6 @@ def train(config):
                                           train_rngs)
         p_train_step = p_train_step.compile()
         max_logging.log(f"Compile time: {(time.time() - s )}")
-
-    if config.cache_latents_text_encoder_outputs:
-       pipeline.vae = None
-       params["vae"] = None
-       pipeline.text_encoder = None
-       params["text_encoder"] = None
 
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)

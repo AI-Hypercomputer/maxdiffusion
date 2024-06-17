@@ -62,7 +62,8 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
 from maxdiffusion.maxdiffusion_utils import (
   vae_apply,
   transform_images,
-  get_add_time_ids
+  get_add_time_ids,
+  calculate_unet_tflops
 )
 
 def get_shaped_batch(config, pipeline):
@@ -307,7 +308,7 @@ def train(config):
     max_logging.log(f"Create state time: {(time.time() - s)}")
     max_logging.log("Calculating training tflops...")
     s = time.time()
-    per_device_tflops = max_utils.calculate_training_tflops(pipeline, unet_state.params, config)
+    per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
     max_logging.log(f"Calculate training tflops time: {(time.time() - s)}")
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
     max_logging.log(f"Preparing dataset: {config.dataset_name}")
