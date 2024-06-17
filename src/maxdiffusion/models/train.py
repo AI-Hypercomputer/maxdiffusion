@@ -525,8 +525,8 @@ def train(config):
             max_utils.activate_profiler(config)
         if step == last_profiling_step:
             max_utils.deactivate_profiler(config)
-
-        mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
+        if step % 100 == 0:
+            mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
 
     steptime = (time.time() - start_time)/ (config.max_train_steps - start_step) * 1000
     max_logging.log(f"avg step time of {config.max_train_steps}, {steptime} ms")
