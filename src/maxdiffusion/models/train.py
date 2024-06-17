@@ -149,10 +149,16 @@ def validate_train_config(config):
 
   assert config.max_train_steps > 0 or config.num_train_epochs > 0, "You must set steps or learning_rate_schedule_steps to a positive interger."
 
-def record_scalar_metrics(metrics, step_time_delta, per_device_tflops, lr):
+def record_scalar_metrics(metrics, step_time_delta, num_step, per_device_tflops, lr):
   """Records scalar metrics to be written to tensorboard"""
   metrics['scalar'].update({
-      'perf/step_time_seconds': step_time_delta.total_seconds()
+      'perf/period_time_seconds': step_time_delta.total_seconds()
+  })
+  metrics['scalar'].update({
+      'perf/period_step_count': num_step
+  })
+  metrics['scalar'].update({
+      'perf/step_time_seconds': step_time_delta.total_seconds() / num_step
   })
   metrics['scalar'].update({
       'perf/per_device_tflops' : per_device_tflops
@@ -202,7 +208,8 @@ def write_metrics_to_tensorboard(writer, metrics, step, config):
 
     full_log = step % config.log_period == 0
     if jax.process_index() == 0:
-        max_logging.log(f"completed step: {step}, seconds: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
+        max_logging.log(f"completed step: {step}, "
+            f"avg time for the period of {metrics['scalar']['perf/period_step_count']} steps: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
             f"TFLOP/s/device: {metrics['scalar']['perf/per_device_tflops_per_sec']:.3f}, "
             f"loss: {metrics['scalar']['learning/loss']:.3f}")
 
@@ -489,20 +496,28 @@ def train(config):
         unet_state, train_metric, train_rngs = p_train_step(unet_state,
                                                             example_batch,
                                                             train_rngs)
-        new_time = datetime.datetime.now()
 
-        record_scalar_metrics(train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step))
-
-        step_time_delta = new_time - last_step_completion
-        max_logging.log(f"completed step: {step}, seconds: {step_time_delta.total_seconds()}, "
-          f"TFLOP/s/device: {per_device_tflops / step_time_delta.total_seconds()}, "
-          f"loss: {train_metric['scalar']['learning/loss']:.3f}")
-          
-        if config.write_metrics:
-            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
-        last_step_completion = new_time
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
+
+        if config.write_metrics and (step % config.metrics_period == 0 or step == config.max_train_steps - 1):
+            new_time = datetime.datetime.now()
+            step_time_delta = new_time - last_step_completion
+            # using global vars _buffered_step, _buffered_metrics
+            if _buffered_step is None:
+                step_num_delta = step + 1
+                _buffered_step_num = step + 1
+            else:
+                step_num_delta = step - _buffered_step
+                _buffered_step_num = _buffered_step + 1
+            _buffered_sample_count = total_train_batch_size * _buffered_step_num
+            # record metrics of current period
+            record_scalar_metrics(train_metric, step_time_delta, step_num_delta, per_device_tflops, learning_rate_scheduler(step))
+            # print metrics of previous period
+            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+            mllog_utils.maybe_train_step_log(config, start_step, _buffered_step_num, _buffered_sample_count, _buffered_metrics)
+            last_step_completion = new_time
+
         if step != 0 and samples_count % config.checkpoint_every == 0:
             checkpoint_name = f"{step_num=}-{samples_count=}"
             if config.eval_at_checkpoint:
@@ -526,10 +541,13 @@ def train(config):
         if step == last_profiling_step:
             max_utils.deactivate_profiler(config)
 
-        mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, train_metric)
-
-    steptime = (time.time() - start_time)/ (config.max_train_steps - start_step) * 1000
-    max_logging.log(f"avg step time of {max_train_steps}, {steptime} ms")
+    if config.write_metrics:
+        # log the last metrics_period
+        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, config.max_train_steps - config.metrics_period, config)
+        mllog_utils.maybe_train_step_log(config, start_step, config.max_train_steps, config.max_train_steps*total_train_batch_size, _buffered_metrics)
+    totaltime = time.time() - start_time
+    steptime = totaltime / (config.max_train_steps - start_step) * 1000
+    max_logging.log(f"Total time for {config.max_train_steps} steps: {totaltime} s. Avg step time: {steptime} ms")
     del pipeline
     del params
     del unet_state
@@ -551,7 +569,7 @@ def train(config):
                 writer.add_scalar('eval/FID', np.array(fid), int(num_samples))
                 writer.add_scalar('eval/CLIP', np.array(clip), int(num_samples))
 
-                if clip >= 0.15 and fid <= 90
+                if clip >= 0.15 and fid <= 90:
                     writer.add_scalar('mlperf_convergence_samples', int(num_samples))
         shutil.rmtree(images_directory)
     max_utils.close_summary_writer(writer)
