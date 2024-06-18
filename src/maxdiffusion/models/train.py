@@ -339,7 +339,7 @@ def train(config):
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
-    def train_step(unet_state, batch, train_rng, cache_latents_text_encoder_outputs, last_step_completion, step):
+    def train_step(unet_state, batch, train_rng, last_step_completion, step, cache_latents_text_encoder_outputs):
         _, gen_dummy_rng = jax.random.split(train_rng)
         sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
 
