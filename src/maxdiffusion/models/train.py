@@ -500,13 +500,13 @@ def train(config):
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
 
-        if config.write_metrics and (step % config.metrics_period == 0 or step == config.max_train_steps - 1):
+        if config.write_metrics and (step_num % config.metrics_period == 0 or step_num == config.max_train_steps):
             new_time = datetime.datetime.now()
             step_time_delta = new_time - last_step_completion
             # using global vars _buffered_step, _buffered_metrics
             if _buffered_step is None:
-                step_num_delta = step + 1
-                _buffered_step_num = step + 1
+                step_num_delta = step_num
+                _buffered_step_num = step_num
             else:
                 step_num_delta = step - _buffered_step
                 _buffered_step_num = _buffered_step + 1
@@ -514,8 +514,8 @@ def train(config):
             # record metrics of current period
             record_scalar_metrics(train_metric, step_time_delta, step_num_delta, per_device_tflops, learning_rate_scheduler(step))
             # print metrics of previous period
-            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
             mllog_utils.maybe_train_step_log(config, start_step, _buffered_step_num, _buffered_sample_count, _buffered_metrics)
+            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
             last_step_completion = new_time
 
         if step != 0 and samples_count % config.checkpoint_every == 0:
@@ -543,8 +543,8 @@ def train(config):
 
     if config.write_metrics:
         # log the last metrics_period
-        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, config.max_train_steps - config.metrics_period, config)
         mllog_utils.maybe_train_step_log(config, start_step, config.max_train_steps, config.max_train_steps*total_train_batch_size, _buffered_metrics)
+        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, config.max_train_steps - config.metrics_period, config)
     totaltime = time.time() - start_time
     steptime = totaltime / (config.max_train_steps - start_step) * 1000
     max_logging.log(f"Total time for {config.max_train_steps} steps: {totaltime} s. Avg step time: {steptime} ms")
