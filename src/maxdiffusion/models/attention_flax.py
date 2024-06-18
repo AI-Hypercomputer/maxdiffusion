@@ -69,8 +69,7 @@ class AttentionOp(nn.Module):
         self,
         query: Array,
         key: Array,
-        value: Array,
-        decoder_segment_ids: Array | None = None
+        value: Array
     ):
         """Routes to different attention kernels."""
         self.check_attention_inputs(query, key, value)
@@ -82,7 +81,7 @@ class AttentionOp(nn.Module):
         if self.attention_kernel == "dot_product" or self.use_memory_efficient_attention or not can_use_flash_attention:
             return self.apply_attention_dot(query, key, value)
         elif self.attention_kernel == "flash":
-            return self.tpu_flash_attention(query, key * self.scale, value, decoder_segment_ids)
+            return self.tpu_flash_attention(query, key * self.scale, value)
         else:
             raise ValueError(f'Unexpected attention kernel {self.attention_kernel=}.')
 
@@ -90,22 +89,14 @@ class AttentionOp(nn.Module):
         self,
         query: jax.Array,
         key: jax.Array,
-        value: jax.Array,
-        decoder_segment_ids: Array | None) -> jax.Array:
+        value: jax.Array) -> jax.Array:
         """TPU Flash Attention"""
 
         query, kv_size = self.reshape_data_for_flash(query)
         key, _ = self.reshape_data_for_flash(key)
         value, _ = self.reshape_data_for_flash(value)
 
-        if decoder_segment_ids is not None:
-            decoder_segment_ids = splash_attention_kernel.SegmentIds(
-            decoder_segment_ids, decoder_segment_ids
-            )
         axis_names = nn.logical_to_mesh_axes(self.flash_axis_names)
-        segment_axis_names = nn.logical_to_mesh_axes(
-            (BATCH, 'activation_length_no_heads')
-        )
 
         @functools.partial(
             shard_map.shard_map,
@@ -114,17 +105,11 @@ class AttentionOp(nn.Module):
                 axis_names,
                 axis_names,
                 axis_names,
-                segment_axis_names
             ),
             out_specs=axis_names,
             check_rep=False
         )
-        def wrap_flash_attention(query, key, value, decoder_segment_ids):
-            if decoder_segment_ids is not None:
-               assert (
-                    query.shape[2]
-                    == decoder_segment_ids.q.shape[1]
-                ), 'Sharding along sequence dimension not allowed in tpu kernel attention'
+        def wrap_flash_attention(query, key, value):
             if self.flash_block_sizes:
                 block_sizes = self.flash_block_sizes
             else:
@@ -145,14 +130,14 @@ class AttentionOp(nn.Module):
                                                               head_shards = 1,
                                                               q_seq_shards = 1,
                                                               block_sizes = block_sizes)
-            return jax.vmap(splash_kernel)(query,key,value, segment_ids = decoder_segment_ids)
+            return jax.vmap(splash_kernel)(query,key,value)
         devices_in_data_fsdp = self.mesh.shape['data'] * self.mesh.shape['fsdp']
         # This warning might show up when doing model eval for example, when calculating model flops
         # and that is expected.
         if not (query.shape[0] / devices_in_data_fsdp).is_integer():
             max_logging.log("Warning, batch dimension should be shardable among the devices in data and fsdp"
                             f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}")
-        x = wrap_flash_attention(query, key, value, decoder_segment_ids)
+        x = wrap_flash_attention(query, key, value)
         x = x[:,:,:,:kv_size]
         x = self.reshape_heads_to_head_dim(x)
 
