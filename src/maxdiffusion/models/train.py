@@ -151,12 +151,12 @@ def validate_train_config(config):
 
 def record_scalar_metrics(metrics, step_time_delta, num_step, per_device_tflops, lr):
   """Records scalar metrics to be written to tensorboard"""
-  metrics['scalar'].update({
-      'perf/period_time_seconds': step_time_delta.total_seconds()
-  })
-  metrics['scalar'].update({
-      'perf/period_step_count': num_step
-  })
+#   metrics['scalar'].update({
+#       'perf/period_time_seconds': step_time_delta.total_seconds()
+#   })
+#   metrics['scalar'].update({
+#       'perf/period_step_count': num_step
+#   })
 #   metrics['scalar'].update({
 #       'perf/step_time_seconds': step_time_delta.total_seconds() / num_step
 #   })
