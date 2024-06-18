@@ -339,7 +339,7 @@ def train(config):
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
-    def train_step(unet_state, batch, train_rng, last_step_completion, step, cache_latents_text_encoder_outputs):
+    def train_step(unet_state, batch, train_rng, step, cache_latents_text_encoder_outputs):
         _, gen_dummy_rng = jax.random.split(train_rng)
         sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
 
@@ -441,10 +441,10 @@ def train(config):
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step_lower = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None, None, None),
+                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None, None),
                 out_shardings=(unet_state_mesh_shardings, None, None),
                 donate_argnums=(0,)
-            ).lower(unet_state, dummy_batch, train_rngs, 0.0, 0)
+            ).lower(unet_state, dummy_batch, train_rngs, 0)
         p_train_step = p_train_step_lower.compile()
         host_id = jax.process_index()
         all_host_ids = jax.experimental.multihost_utils.process_allgather(host_id)
@@ -452,7 +452,7 @@ def train(config):
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None, None, None),
+                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None, None),
                 out_shardings=(unet_state_mesh_shardings, None, None),
                 donate_argnums=(0,)
             )
