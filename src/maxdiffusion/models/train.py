@@ -491,7 +491,9 @@ def train(config):
     # for checkpointing
     eval_checkpoints = []
     start_time = time.time()
-    for step in np.arange(start_step, config.max_train_steps):
+    last_step_completion = datetime.datetime.now()
+    for step in np.arange(start_step, config.max_train_steps): 
+
         example_batch = load_next_batch(data_iterator, example_batch, config)
         unet_state, train_metric, train_rngs = p_train_step(unet_state,
                                                             example_batch,
@@ -500,9 +502,14 @@ def train(config):
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
 
+        new_time = datetime.datetime.now()
+        step_time_delta = new_time - last_step_completion
+        last_step_completion = new_time
+        record_scalar_metrics(train_metric, step_time_delta, 1, per_device_tflops, learning_rate_scheduler(step))
+
         if config.write_metrics and (step % config.metrics_period == 0 or step == config.max_train_steps - 1):
-            new_time = datetime.datetime.now()
-            step_time_delta = new_time - last_step_completion
+            #new_time = datetime.datetime.now()
+            #step_time_delta = new_time - last_step_completion
             # using global vars _buffered_step, _buffered_metrics
             if _buffered_step is None:
                 step_num_delta = step + 1
@@ -512,11 +519,11 @@ def train(config):
                 _buffered_step_num = _buffered_step + 1
             _buffered_sample_count = total_train_batch_size * _buffered_step_num
             # record metrics of current period
-            record_scalar_metrics(train_metric, step_time_delta, step_num_delta, per_device_tflops, learning_rate_scheduler(step))
+            #record_scalar_metrics(train_metric, step_time_delta, step_num_delta, per_device_tflops, learning_rate_scheduler(step))
             # print metrics of previous period
             write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
             mllog_utils.maybe_train_step_log(config, start_step, _buffered_step_num, _buffered_sample_count, _buffered_metrics)
-            last_step_completion = new_time
+            #last_step_completion = new_time
 
         if step != 0 and samples_count % config.checkpoint_every == 0:
             checkpoint_name = f"{step_num=}-{samples_count=}"
