@@ -157,9 +157,9 @@ def record_scalar_metrics(metrics, step_time_delta, num_step, per_device_tflops,
   metrics['scalar'].update({
       'perf/period_step_count': num_step
   })
-  metrics['scalar'].update({
-      'perf/step_time_seconds': step_time_delta.total_seconds() / num_step
-  })
+#   metrics['scalar'].update({
+#       'perf/step_time_seconds': step_time_delta.total_seconds() / num_step
+#   })
   metrics['scalar'].update({
       'perf/per_device_tflops' : per_device_tflops
   })
@@ -428,7 +428,7 @@ def train(config):
         #metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
         metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
     
-        record_scalar_metrics(metrics, datetime.datetime.now() - last_step_completion, 1, per_device_tflops, learning_rate_scheduler(step))
+        record_scalar_metrics(metrics, 0, 1, per_device_tflops, learning_rate_scheduler(step))
 
         return new_state, metrics, new_train_rng
 
@@ -500,8 +500,12 @@ def train(config):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         unet_state, train_metric, train_rngs = p_train_step(unet_state,
                                                             example_batch,
-                                                            train_rngs, last_step_completion, step)
-        last_step_completion = datetime.datetime.now()
+                                                            train_rngs, step)
+        current_time = datetime.datetime.now()
+        train_metric['scalar'].update({
+            'perf/step_time_seconds': (current_time - last_step_completion).total_seconds()
+        })                                                   
+        last_step_completion = current_time
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
 
