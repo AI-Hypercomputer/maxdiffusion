@@ -163,11 +163,11 @@ def record_scalar_metrics(metrics, step_time_delta, num_step, per_device_tflops,
   metrics['scalar'].update({
       'perf/per_device_tflops' : per_device_tflops
   })
-  metrics['scalar'].update({
-      'perf/per_device_tflops_per_sec':
-          per_device_tflops /
-          step_time_delta.total_seconds()
-  })
+#   metrics['scalar'].update({
+#       'perf/per_device_tflops_per_sec':
+#           per_device_tflops /
+#           step_time_delta.total_seconds()
+#   })
   metrics['scalar'].update({'learning/current_learning_rate': lr })
 
 _buffered_step = None
