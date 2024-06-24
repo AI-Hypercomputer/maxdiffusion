@@ -223,11 +223,35 @@ def run(config,
     pipeline.scheduler = scheduler
     params["scheduler"] = scheduler_state
 
-    p_run_inference = jax.jit(
-        functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline, mesh=mesh),
-        in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None, None),
-        out_shardings=None,
-    )
+    p_run_inference = None
+
+    if config.pre_compile:
+        mesh_configs = [ici_data_parallelism, ici_fsdp_parallelism, ici_tensor_parallelism]
+        target_path = os.path.join(os.join(config.base_output_directory, "inference"), "x".join(mesh_configs))
+        try: 
+            print("Loading the compiled function...", flush=True)
+            p_run_inference = max_utils.load_compiled(config, run_inference, unet_state)
+            print("Loaded compiled function!", flush=True)
+        except:
+            print("precompiled not exist")
+        if p_run_inference = None:
+            PerHostBatchSize = jax.local_device_count() * config.per_device_batch_size
+            negative_prompt_ids = tokenize([""] * PerHostBatchSize, pipeline.tokenizer)
+            negative_prompt_ids_sharded = multihost_dataloading.get_data_sharded(negative_prompt_ids, mesh)
+
+            p_run_inference_lower = jax.jit(
+                functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline, mesh=mesh),
+                in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None, None),
+                out_shardings=None,
+            ).lower(unet_state, vae_state, params, negative_prompt_ids_sharded, negative_prompt_ids_sharded)
+        p_run_inference = p_run_inference_lower.compile()
+        max_utils.save_compiled(p_run_inference, target_path)
+    else:
+        p_run_inference = jax.jit(
+            functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline, mesh=mesh),
+            in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None, None, None),
+            out_shardings=None,
+        )
 
     def parse_tsv_line(line):
     # Customize this function to parse your TSV file based on your specific format

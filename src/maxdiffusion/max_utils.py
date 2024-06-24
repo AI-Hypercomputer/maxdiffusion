@@ -56,6 +56,23 @@ from google.cloud import storage
 
 FrozenDict = core.frozen_dict.FrozenDict
 
+def load_compiled(config, partial_train, state):
+  """# Loading a serialized compiled train step function."""
+
+  # Currently partial_train and state  are needed to reconstruct
+  # input/output shapes to construct the in_trees and out_trees for load API
+  # Parker is working on a serializing these
+  def load_serialized_compiled(save_name):
+    with open(save_name, "rb") as f:
+      serialized_compiled = pickle.load(f)
+    return serialized_compiled
+
+def save_compiled(compiled, save_name):
+  """Serialize and save the compiled function."""
+  serialized, _, _ = serialize(compiled)
+  with open(save_name, "wb") as f:
+    pickle.dump(serialized, f)
+  
 class InferenceState(struct.PyTreeNode):
   # pylint: disable=g-bare-generic
   apply_fn: Callable = struct.field(pytree_node=False)
