@@ -226,10 +226,10 @@ def run(config,
     p_run_inference = None
 
     if config.pre_compile:
-        mesh_configs = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
+        mesh_configs = [str(config.ici_data_parallelism), str(config.ici_fsdp_parallelism), str(config.ici_tensor_parallelism)]
         target_path = os.path.join(os.path.join(config.base_output_directory, "inference"), "x".join(mesh_configs))
         try: 
-            print("Loading the compiled function...", flush=True)
+            print("Loading the compiled function... ", target_path, flush=True)
             p_run_inference = max_utils.load_compiled(config, run_inference, unet_state)
             print("Loaded compiled function!", flush=True)
         except:
