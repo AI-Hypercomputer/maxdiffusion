@@ -226,7 +226,7 @@ def run(config,
     p_run_inference = None
 
     if config.pre_compile:
-        mesh_configs = [ici_data_parallelism, ici_fsdp_parallelism, ici_tensor_parallelism]
+        mesh_configs = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
         target_path = os.path.join(os.join(config.base_output_directory, "inference"), "x".join(mesh_configs))
         try: 
             print("Loading the compiled function...", flush=True)
