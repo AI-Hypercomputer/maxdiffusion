@@ -234,7 +234,7 @@ def run(config,
             print("Loaded compiled function!", flush=True)
         except:
             print("precompiled not exist")
-        if p_run_inference = None:
+        if p_run_inference is None:
             PerHostBatchSize = jax.local_device_count() * config.per_device_batch_size
             negative_prompt_ids = tokenize([""] * PerHostBatchSize, pipeline.tokenizer)
             negative_prompt_ids_sharded = multihost_dataloading.get_data_sharded(negative_prompt_ids, mesh)
