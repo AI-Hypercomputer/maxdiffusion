@@ -155,6 +155,18 @@ def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids
     context,
     guidance_scale,
     scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params, prompt_ids, negative_prompt_ids)
+    # def inference_step(context, guidance_scale, num_inference_steps, latents, scheduler_state, unet_state, vae_state):
+    #     loop_body_p = functools.partial(loop_body, model=pipeline.unet,
+    #                                     pipeline=pipeline,
+    #                                     prompt_embeds=context,
+    #                                     guidance_scale=guidance_scale)
+
+    #     vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
+    #     latents, _, _ = jax.lax.fori_loop(0, num_inference_steps,
+    #                                     loop_body_p, (latents, scheduler_state, unet_state))
+    #     images = vae_decode_p(latents, vae_state)     
+    #     return images    
+
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         loop_body_p = functools.partial(loop_body, model=pipeline.unet,
                                         pipeline=pipeline,
@@ -165,6 +177,14 @@ def run_inference(unet_state, vae_state, params, prompt_ids, negative_prompt_ids
         latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps,
                                         loop_body_p, (latents, scheduler_state, unet_state))
         images = vae_decode_p(latents, vae_state)
+
+        # p_inference_step = functools.partial(inference_step, context=context, guidance_scale=guidance_scale, num_inference_steps=config.num_inference_steps)
+        # p_inference_step_lower = jax.jit(p_inference_step,  
+        # in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
+        #         out_shardings=(unet_state_mesh_shardings, None, None),
+        #         donate_argnums=(0,)
+        #     )
+        # images = p_inference_step(latents, scheduler_state, unet_state, vae_state)
         return images
 
 def run(config,
@@ -212,7 +232,8 @@ def run(config,
 
         params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
          # Text encoder params
-        sharding = PositionalSharding(mesh.devices).replicate()
+        #sharding = PositionalSharding(mesh.devices).replicate()
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
         partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
         params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
         (unet_state,
