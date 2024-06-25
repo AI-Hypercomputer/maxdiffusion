@@ -49,6 +49,7 @@ from flax import struct
 from typing import Callable, Any
 from flax import core
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
+from jax.experimental.serialize_executable import serialize
 
 from tensorboardX import writer
 
