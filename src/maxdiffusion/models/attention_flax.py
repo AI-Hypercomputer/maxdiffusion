@@ -672,7 +672,7 @@ class FlaxTransformer2DModel(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
-                param_dtype=self.dtype,
+                param_dtype=jnp.float32,
             )
 
         self.transformer_blocks = [
@@ -703,7 +703,7 @@ class FlaxTransformer2DModel(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
-                param_dtype=self.dtype,
+                param_dtype=jnp.float32,
             )
 
         self.dropout_layer = nn.Dropout(rate=self.dropout)
