@@ -30,7 +30,10 @@ from maxdiffusion.max_utils import (
   get_states,
   device_put_replicated,
   get_flash_block_sizes,
-  create_scheduler
+  create_scheduler,
+  save_compiled,
+  load_compiled,
+
 )
 from maxdiffusion import pyconfig
 from maxdiffusion import multihost_dataloading
@@ -230,7 +233,7 @@ def run(config,
         target_path = os.path.join(os.path.join(config.base_output_directory, "inference"), "x".join(mesh_configs))
         try: 
             print("Loading the compiled function... ", target_path, flush=True)
-            p_run_inference = max_utils.load_compiled(config, run_inference, unet_state)
+            p_run_inference = load_compiled(config, run_inference, unet_state)
             print("Loaded compiled function!", flush=True)
         except:
             print("precompiled not exist")
@@ -245,7 +248,7 @@ def run(config,
                 out_shardings=None,
             ).lower(unet_state, vae_state, params, negative_prompt_ids_sharded, negative_prompt_ids_sharded)
         p_run_inference = p_run_inference_lower.compile()
-        max_utils.save_compiled(p_run_inference, target_path)
+        save_compiled(p_run_inference, target_path)
     else:
         p_run_inference = jax.jit(
             functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline, mesh=mesh),
