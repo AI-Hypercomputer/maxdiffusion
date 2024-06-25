@@ -51,6 +51,7 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
   get_shaped_batch
 )
 from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
+from maxdiffusion.maxdiffusion_utils import calculate_unet_tflops
 
 TOTAL_TRAIN_SAMPLES = 6513144
 TOTAL_EVAL_SAMPLES = 30000
@@ -101,31 +102,6 @@ def eval_at_checkpoint(
     pipeline.scheduler = training_scheduler
     params["scheduler"] = training_scheduler_state
 
-def calculate_training_tflops(pipeline, unet_params, config):
-    """Calculate per device training tflops (back and fwd pass)."""
-
-    vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
-    batch_size = config.per_device_batch_size
-
-    input_shape = (batch_size,
-                    pipeline.unet.config['in_channels'],
-                    config.resolution // vae_scale_factor,
-                    config.resolution // vae_scale_factor)
-
-    latents = jax.random.normal(jax.random.PRNGKey(0),
-                                shape=input_shape,
-                                dtype=max_utils.get_dtype(config)
-                                )
-    latents = jnp.concatenate([latents] * 2)
-    timesteps = jnp.ones((latents.shape[0],))
-    encoder_hidden_states_shape = (latents.shape[0],
-                                    pipeline.text_encoder.config.max_position_embeddings,
-                                    pipeline.text_encoder.config.hidden_size)
-    encoder_hidden_states = jnp.zeros(encoder_hidden_states_shape)
-    c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : unet_params}, latents, timesteps, encoder_hidden_states).compile()
-
-    return 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12)
-
 def get_first_step(state):
   with jax.spmd_mode('allow_all'):
     return int(state.step)
@@ -165,7 +141,7 @@ def record_scalar_metrics(metrics, step_time_delta, num_step, per_device_tflops,
   })
   metrics['scalar'].update({
       'perf/per_device_tflops_per_sec':
-          per_device_tflops /
+          (num_step * per_device_tflops) /
           step_time_delta.total_seconds()
   })
   metrics['scalar'].update({'learning/current_learning_rate': lr })
@@ -311,11 +287,11 @@ def train(config):
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
 
+    per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
+    max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
+
     params["unet"] = None
     params["vae"] = None
-
-    per_device_tflops = calculate_training_tflops(pipeline, unet_state.params, config)
-    max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
 
     if config.dataset_name == "lambdalabs/pokemon-blip-captions":
         data_iterator = make_pokemon_train_iterator(
