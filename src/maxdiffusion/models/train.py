@@ -194,9 +194,6 @@ def write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, step
     if config.gcs_metrics and jax.process_index() == 0:
       running_gcs_metrics = max_utils.write_metrics_for_gcs(_buffered_metrics, _buffered_step, config, running_gcs_metrics)
 
-  _buffered_step = step
-  _buffered_metrics = metrics
-
 def write_metrics_to_tensorboard(writer, metrics, step, config):
   """Writes metrics to tensorboard"""
   with jax.spmd_mode('allow_all'):
@@ -500,7 +497,7 @@ def train(config):
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
 
-        if config.write_metrics and (step_num % config.metrics_period == 0 or step_num == config.max_train_steps):
+        if (step_num % config.metrics_period == 0 or step_num == config.max_train_steps):
             new_time = datetime.datetime.now()
             step_time_delta = new_time - last_step_completion
             # using global vars _buffered_step, _buffered_metrics
@@ -515,7 +512,12 @@ def train(config):
             record_scalar_metrics(train_metric, step_time_delta, step_num_delta, per_device_tflops, learning_rate_scheduler(step))
             # print metrics of previous period
             mllog_utils.maybe_train_step_log(config, start_step, _buffered_step_num, _buffered_sample_count, _buffered_metrics)
-            write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+
+            if config.write_metrics:
+                write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+
+             _buffered_step = step
+            _buffered_metrics = train_metric
             last_step_completion = new_time
 
         if step != 0 and samples_count % config.checkpoint_every == 0:
@@ -541,9 +543,10 @@ def train(config):
         if step == last_profiling_step:
             max_utils.deactivate_profiler(config)
 
+    # log the last metrics_period
+    mllog_utils.maybe_train_step_log(config, start_step, config.max_train_steps, config.max_train_steps*total_train_batch_size, _buffered_metrics)
+    
     if config.write_metrics:
-        # log the last metrics_period
-        mllog_utils.maybe_train_step_log(config, start_step, config.max_train_steps, config.max_train_steps*total_train_batch_size, _buffered_metrics)
         write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, config.max_train_steps - config.metrics_period, config)
     totaltime = time.time() - start_time
     steptime = totaltime / (config.max_train_steps - start_step) * 1000
