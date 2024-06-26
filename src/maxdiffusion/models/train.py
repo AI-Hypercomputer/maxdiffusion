@@ -516,7 +516,7 @@ def train(config):
             if config.write_metrics:
                 write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
 
-             _buffered_step = step
+            _buffered_step = step
             _buffered_metrics = train_metric
             last_step_completion = new_time
 
