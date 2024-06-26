@@ -423,7 +423,7 @@ class FlaxAttention(nn.Module):
             split_head_dim=self.split_head_dim,
             flash_block_sizes=self.flash_block_sizes,
             dtype=self.dtype,
-            float32_qk_product=False,
+            float32_qk_product=True,
         )
 
         qkv_init_kernel = nn.with_logical_partitioning(
@@ -437,7 +437,7 @@ class FlaxAttention(nn.Module):
             use_bias=False,
             dtype=self.dtype,
             name="to_q",
-            param_dtype=self.dtype,
+            param_dtype=jnp.float32,
         )
 
         self.key = nn.Dense(
@@ -446,7 +446,7 @@ class FlaxAttention(nn.Module):
             use_bias=False,
             dtype=self.dtype,
             name="to_k",
-            param_dtype=self.dtype,
+            param_dtype=jnp.float32,
         )
 
         self.value = nn.Dense(
