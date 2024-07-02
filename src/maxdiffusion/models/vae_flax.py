@@ -909,11 +909,17 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
         else:
             return self.init(rngs, sample)["params"]
 
-    def encode(self, sample, deterministic: bool = True, return_dict: bool = True):
+    def moments(self, sample, deterministic: bool = True):
         sample = jnp.transpose(sample, (0, 2, 3, 1))
 
         hidden_states = self.encoder(sample, deterministic=deterministic)
         moments = self.quant_conv(hidden_states)
+        return moments
+
+
+    def encode(self, sample, deterministic: bool = True, return_dict: bool = True):
+        
+        moments = self.moments(sample, deterministic)
         posterior = FlaxDiagonalGaussianDistribution(moments)
 
         if not return_dict:
