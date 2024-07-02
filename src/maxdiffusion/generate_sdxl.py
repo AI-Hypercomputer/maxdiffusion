@@ -128,6 +128,7 @@ def run(config):
     config.pretrained_model_name_or_path,
     revision=config.revision,
     dtype=weight_dtype,
+    from_pt=config.from_pt,
     split_head_dim=config.split_head_dim,
     norm_num_groups=config.norm_num_groups,
     attention_kernel=config.attention,
