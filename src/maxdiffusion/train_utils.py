@@ -187,5 +187,3 @@ def save_checkpoint(save_fn, params, config, output_dir):
     max_logging.log(f"Deleting {local_output_dir} to save space.")
     shutil.rmtree(local_output_dir)
 
-  return local_output_dir
-

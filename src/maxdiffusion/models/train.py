@@ -366,7 +366,7 @@ def train(config):
     mllog_utils.train_init_stop(config)
     mllog_utils.train_run_start(config)
     mllog_utils.train_step_start(config, start_step)
-    for step in np.arange(start_step, config.max_train_steps+1):
+    for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         unet_state, train_metric, train_rngs = p_train_step(unet_state,
                                                             vae_state,
@@ -392,6 +392,9 @@ def train(config):
                             get_params_to_save(unet_state.params),
                             config,
                             os.path.join(config.checkpoint_dir, checkpoint_name))
+
+    if config.write_metrics:
+        write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
 
     # save the last checkpoint
     if jax.process_index() == 0:

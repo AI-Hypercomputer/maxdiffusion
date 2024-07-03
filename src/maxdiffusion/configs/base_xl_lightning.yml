@@ -49,7 +49,7 @@ diffusion_scheduler_config: {
 
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
-base_output_directory: "" 
+base_output_directory: ""
 
 # Parallelism
 mesh_axes: ['data', 'fsdp', 'tensor']
