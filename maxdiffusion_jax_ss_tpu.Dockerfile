@@ -16,8 +16,15 @@ WORKDIR /deps
 COPY . .
 RUN ls .
 
-# Install Python packages from requirements.txt
-RUN pip install -r /deps/requirements.txt
+ARG USE_MAXTEXT_REQUIREMENTS_FILE
+
+# Install Maxdiffusion requirements
+RUN if [ "${USE_MAXDIFFUSION_REQUIREMENTS_FILE}" = "true" ]; then \
+        echo "Using MaxDiffusion requirements: /deps/requirements.txt" && \
+        pip install -r /deps/requirements.txt; \
+    else \
+        echo "Not using MaxDiffusion requirements: /deps/requirements.txt"; \
+    fi
 
 # Install MaxDiffusion
 RUN pip install .

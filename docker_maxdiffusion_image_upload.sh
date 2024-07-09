@@ -32,6 +32,11 @@ for ARGUMENT in "$@"; do
     echo "$KEY"="$VALUE"
 done
 
+if [[ ! -v BASEIMAGE ]]; then
+  echo "Erroring out because BASEIMAGE is unset, please set it!"
+  exit 1
+fi
+
 if [[ ! -v PROJECT_ID ]]; then
   echo "Erroring out because PROJECT_ID is unset, please set it!"
   exit 1
@@ -47,6 +52,11 @@ if [[ ! -v IMAGE_TAG ]]; then
   exit 1
 fi
 
+if [[ ! -v USE_MAXDIFFUSION_REQUIREMENTS_FILE ]]; then
+  echo "Erroring out because USE_MAXDIFFUSION_REQUIREMENTS_FILE is unset, please set it!"
+  exit 1
+fi
+
 COMMIT_HASH=$(git rev-parse --short HEAD)
 
 echo "Building JAX SS MaxDiffusion at commit hash ${COMMIT_HASH} . . ."  
@@ -54,6 +64,7 @@ echo "Building JAX SS MaxDiffusion at commit hash ${COMMIT_HASH} . . ."
 docker build \
   --build-arg JAX_SS_BASEIMAGE=${BASEIMAGE} \
   --build-arg COMMIT_HASH=${COMMIT_HASH} \
+  --build-arg USE_MAXDIFFUSION_REQUIREMENTS_FILE=${USE_MAXDIFFUSION_REQUIREMENTS_FILE} \
   --network=host \
   -t gcr.io/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${IMAGE_TAG} \
   -f ./maxdiffusion_jax_ss_tpu.Dockerfile .
