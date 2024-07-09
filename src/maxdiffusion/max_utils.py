@@ -460,6 +460,16 @@ def get_dtype(config):
     retval = jnp.float16
   return retval
 
+def get_precision(config):
+  """Get precision from config."""
+  precision_str = config.precision
+  retval = jax.lax.Precision.DEFAULT
+  if precision_str == "HIGH":
+    retval = jax.lax.Precision.HIGH
+  if precision_str == "HIGHEST":
+    retval = jax.lax.Precision.HIGHEST
+  return retval
+
 def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
   flash_block_sizes = None

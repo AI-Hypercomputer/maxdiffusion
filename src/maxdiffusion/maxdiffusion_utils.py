@@ -58,6 +58,10 @@ def transform_images(examples, image_column, image_resolution, rng, global_batch
         image = (image - 0.5) / 0.5
         image = tf.transpose(image, perm=[2,0,1])
         tensor_list.append(image)
+    
+    assert np.max(tensor_list) == 1
+    assert np.min(tensor_list) == -1
+
     if p_vae_apply:
         tensor_list = np.stack(tensor_list)
         ds_length = tensor_list.shape[0]
@@ -74,10 +78,12 @@ def transform_images(examples, image_column, image_resolution, rng, global_batch
 
         # TODO (Juan Acevedo): do last iteration, its required for the Pyarrow dataset
         # to not break due to items being fewer than expected. Is there a better way?
-        sample_rng, rng = jax.random.split(rng)
-        latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
-
-        examples["pixel_values"] = np.append(latents_list, latents, axis=0)
+        if tensor_list[i+global_batch_size:].shape[0] != 0:
+          sample_rng, rng = jax.random.split(rng)
+          latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
+          examples["pixel_values"] = np.append(latents_list, latents, axis=0)
+        else:
+           examples["pixel_values"] = latents_list
     else:
         examples["pixel_values"] = tf.stack(tensor_list)
 
@@ -180,3 +186,49 @@ def calculate_unet_tflops(config, pipeline, rngs, train):
     timesteps=timesteps,
     encoder_hidden_states=encoder_hidden_states,
     added_cond_kwargs=added_cond_kwargs)
+
+def encode(input_ids, text_encoder, text_encoder_params):
+  return text_encoder(
+    input_ids,
+    params=text_encoder_params,
+    train=False
+  )[0]
+
+def tokenize_captions(examples, caption_column, tokenizer, p_encode=None):
+    captions = list(examples[caption_column])
+    text_inputs = tokenizer(
+        captions,
+        max_length=tokenizer.model_max_length,
+        padding="max_length",
+        truncation=True
+    )
+
+    if p_encode:
+        encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
+        examples["input_ids"] = encoder_hidden_states
+    else:
+        examples["input_ids"] = text_inputs.input_ids
+    return examples
+
+def get_shaped_batch(config, pipeline):
+  """Return the shape of the batch - this is what eval_shape would return for the
+  output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078.
+  This function works with sd1.x and 2.x.
+  """
+  vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+  total_train_batch_size = config.per_device_batch_size * jax.device_count()
+  if config.cache_latents_text_encoder_outputs:
+    batch_image_shape = (total_train_batch_size, 4,
+            config.resolution // vae_scale_factor,
+            config.resolution // vae_scale_factor)
+    #bs, encoder_input, seq_length
+    batch_ids_shape = (total_train_batch_size,
+                       pipeline.text_encoder.config.max_position_embeddings,
+                       pipeline.text_encoder.config.hidden_size)
+  else:
+    batch_image_shape = (total_train_batch_size, 3, config.resolution, config.resolution)
+    batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
+  shaped_batch = {}
+  shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
+  shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+  return shaped_batch

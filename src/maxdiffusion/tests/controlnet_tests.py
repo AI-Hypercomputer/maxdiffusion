@@ -13,7 +13,7 @@ from skimage.metrics import structural_similarity as ssim
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-class Generate(unittest.TestCase):
+class ControlNetTest(unittest.TestCase):
   """Smoke test."""
   def test_controlnet(self):
     img_url = os.path.join(THIS_DIR,'images','cnet_test.png')

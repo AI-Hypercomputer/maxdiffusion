@@ -17,6 +17,7 @@
 import datetime
 import logging
 import os
+from pathlib import Path
 import time
 from typing import Sequence
 from functools import partial
@@ -62,15 +63,79 @@ from maxdiffusion.train_utils import (
 from transformers import FlaxCLIPTextModel
 
 from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
+from flax import jax_utils
+from flax.training import train_state
+from flax.training.common_utils import shard
 from flax.linen import partitioning as nn_partitioning
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
 from transformers import CLIPImageProcessor, set_seed
+import torch
+from torch.utils.data import Dataset
+from tqdm import tqdm
+from huggingface_hub.utils import insecure_hashlib
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
   make_laion400m_train_iterator
 )
+
+class PromptDataset(Dataset):
+    """A simple dataset to prepare the prompts to generate class images on multiple GPUs."""
+
+    def __init__(self, prompt, num_samples):
+        self.prompt = prompt
+        self.num_samples = num_samples
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, index):
+        example = {}
+        example["prompt"] = self.prompt
+        example["index"] = index
+        return example
+
+def prepare_w_prior_preservation(rng, config):
+    class_images_dir = Path(config.class_data_dir)
+    if not class_images_dir.exists():
+        class_images_dir.mkdir(parents=True)
+    cur_class_images = len(list(class_images_dir.iterdir()))
+
+    # just use pmap here
+    if cur_class_images < config.num_class_images:
+        pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+            config.pretrained_model_name_or_path,
+            safety_checker=None,
+            revision=config.revision,
+            split_head_dim=config.split_head_dim
+        )
+        pipeline.set_progress_bar_config(disable=True)
+        num_new_images = config.num_class_images - cur_class_images
+        max_logging.log(f"Number of class images to sample: {num_new_images}.")
+        sample_dataset = PromptDataset(config.class_prompt, num_new_images)
+        total_sample_batch_size = config.per_device_batch_size * jax.local_device_count()
+        sample_dataloader = torch.utils.data.DataLoader(sample_dataset, batch_size=total_sample_batch_size)
+        for example in tqdm(
+            sample_dataloader, desc="Generating class images",
+            disable=not jax.process_index() == 0
+        ):
+            prompt_ids = pipeline.prepare_inputs(example["prompt"])
+            prompt_ids = shard(prompt_ids)
+            p_params = jax_utils.replicate(params)
+            rng = jax.random.split(rng)[0]
+            sample_rng = jax.random.split(rng, jax.device_count())
+            images = pipeline(prompt_ids, p_params, sample_rng, jit=True).images
+            images = images.reshape((images.shape[0] * images.shape[1],) + images.shape[-3:])
+            images = pipeline.numpy_to_pil(np.array(images))
+
+            for i, image in enumerate(images):
+                    hash_image = insecure_hashlib.sha1(image.tobytes()).hexdigest()
+                    image_filename = class_images_dir / f"{example['index'][i] + cur_class_images}-{hash_image}.jpg"
+                    image.save(image_filename)
+            
+        max_utils.delete_pytree(params)
+        del pipeline
 
 def train(config):
     rng = jax.random.PRNGKey(config.seed)
@@ -78,6 +143,9 @@ def train(config):
     writer = max_utils.initialize_summary_writer(config)
     if config.dataset_name is None and config.train_data_dir is None:
         raise ValueError("Need either a dataset name or a training folder.")
+
+    if config.with_prior_preservation:
+        prepare_w_prior_preservation(rng, config)
 
     # Setup Mesh
     devices_array = max_utils.create_device_mesh(config)
@@ -120,17 +188,6 @@ def train(config):
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
     )
-    if len(config.unet_checkpoint) > 0:
-        unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
-                config.unet_checkpoint,
-                split_head_dim=config.split_head_dim,
-                norm_num_groups=config.norm_num_groups,
-                attention_kernel=config.attention,
-                flash_block_sizes=flash_block_sizes,
-                mesh=mesh
-            )
-        params["unet"] = unet_params
-        pipeline.unet = unet
     params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
@@ -163,7 +220,9 @@ def train(config):
                                                                 tx, rng, config,
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
-
+    text_encoder_state = train_state.TrainState.create(
+        apply_fn=text_encoder.__call__, params=text_encoder.params, tx=tx
+    )
     per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
 
@@ -171,7 +230,8 @@ def train(config):
         p_encode = None
         p_vae_apply = None
         if config.cache_latents_text_encoder_outputs:
-            p_encode = jax.jit(partial(encode,text_encoder=pipeline.text_encoder,text_encoder_params=params["text_encoder"]))
+            if not config.train_text_encoder:
+                p_encode = jax.jit(partial(encode,text_encoder=pipeline.text_encoder,text_encoder_params=params["text_encoder"]))
             p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
         tokenize_fn = partial(tokenize_captions,caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode)
         image_transforms_fn = partial(transform_images,
@@ -199,11 +259,18 @@ def train(config):
     def train_step(unet_state, vae_state, batch, train_rng, cache_latents_text_encoder_outputs):
         _, gen_dummy_rng = jax.random.split(train_rng)
         sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
-        def compute_loss(unet_params):
+        if config.train_text_encoder:
+            params = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
+        else:
+            params = {"unet" : unet_state.params}
+        def compute_loss(params):
 
             if cache_latents_text_encoder_outputs:
                latents = batch["pixel_values"]
-               encoder_hidden_states = batch["input_ids"]
+               if not config.train_text_encoder:
+                    encoder_hidden_states = batch["input_ids"]
+               else:
+                    encoder_hidden_states = encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])
             else:
                 # Convert images to latent space
                 vae_outputs = pipeline.vae.apply(
@@ -237,14 +304,9 @@ def train(config):
             # (this is the forward diffusion process)
             noisy_latents = noise_scheduler.add_noise(noise_scheduler_state, latents, noise, timesteps)
 
-            # TODO - laion dataset was prepared with an extra dim.
-            # need to preprocess the dataset with dim removed.
-            if len(encoder_hidden_states.shape) == 4:
-                encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
-
             # Predict the noise residual and compute loss
             model_pred = pipeline.unet.apply(
-                {"params": unet_params}, noisy_latents, timesteps, encoder_hidden_states, train=True
+                {"params": params["unet"]}, noisy_latents, timesteps, encoder_hidden_states, train=True
             ).sample
 
             # Get the target for loss depending on the prediction type
@@ -254,6 +316,20 @@ def train(config):
                 target = noise_scheduler.get_velocity(noise_scheduler_state, latents, noise, timesteps)
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+            
+            if config.with_prior_preservation:
+                # Chunk the noise and noise_pred into two parts and compute the loss on each part separately.
+                model_pred, model_pred_prior = jnp.split(model_pred, 2, axis=0)
+                target, target_prior = jnp.split(target, 2, axis=0)
+
+                # Compute instance loss
+                loss = (target - model_pred) ** 2
+                loss = loss.mean()
+
+                # Compute prior loss
+                prior_loss = (target_prior - model_pred_prior) ** 2
+                prior_loss = prior_loss.mean()
+
             loss = (target - model_pred) ** 2
 
             # snr
@@ -271,7 +347,7 @@ def train(config):
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
-        loss, grad = grad_fn(unet_state.params)
+        loss, grad = grad_fn(params)
 
         new_state = unet_state.apply_gradients(grads=grad)
         metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}

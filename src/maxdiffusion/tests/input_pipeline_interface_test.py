@@ -31,7 +31,8 @@ from ..import pyconfig
 from ..import max_utils
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_laion400m_train_iterator,
-  make_pokemon_train_iterator
+  make_pokemon_train_iterator,
+  make_dreambooth_train_iterator
 )
 
 from skimage.metrics import structural_similarity as ssim
@@ -64,6 +65,49 @@ class InputPipelineInterface(unittest.TestCase):
   """Test Unet sharding"""
   def setUp(self):
     InputPipelineInterface.dummy_data = {}
+
+  def test_make_dreambooth_train_iterator(self):
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+      "cache_latents_text_encoder_outputs=True",
+      "dataset_name=my_dreambooth_dataset",
+      "instance_data_dir=/home/jfacevedo/dreambooth/processed/Person01_processed",
+      "class_data_dir=/home/jfacevedo/dreambooth/class-dir/class_dir_man",
+      'instance_prompt=photo of ohwx man', 'class_prompt=photo of man'])
+    config = pyconfig.config
+    global_batch_size = config.per_device_batch_size * jax.device_count()
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+    weight_dtype = max_utils.get_dtype(config)
+
+    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+        safety_checker=None, feature_extractor=None, from_pt=config.from_pt
+    )
+    rng = jax.random.PRNGKey(config.seed)
+
+    p_encode = jax.jit(partial(encode,text_encoder=pipeline.text_encoder,text_encoder_params=params["text_encoder"]))
+    p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+    tokenize_fn = partial(tokenize_captions,caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode)
+    image_transforms_fn = partial(transform_images,
+                                  image_column=config.image_column,
+                                  image_resolution=config.resolution,
+                                  rng=rng,
+                                  global_batch_size=global_batch_size,
+                                  p_vae_apply=p_vae_apply)
+
+    train_iterator = make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenize_fn, image_transforms_fn)
+    data = train_iterator()
+    device_count = jax.device_count()
+
+    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+    encoder_hidden_states = data["input_ids"]
+
+    assert encoder_hidden_states.shape == (device_count,77, 768)
+    assert data["pixel_values"].shape == (device_count,
+                                          pipeline.unet.config.in_channels,
+                                          config.resolution // vae_scale_factor,
+                                          config.resolution // vae_scale_factor)
+
 
   def test_make_pokemon_iterator_cache(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),

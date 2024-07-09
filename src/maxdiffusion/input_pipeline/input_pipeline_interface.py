@@ -16,33 +16,30 @@
 
 import os
 import math
+import numpy as np
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
-from datasets import load_dataset, load_from_disk
+from datasets import load_dataset, load_from_disk, Dataset
 import jax
 import jax.numpy as jnp
 
 from maxdiffusion import multihost_dataloading
+from PIL import Image
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
-def vae_apply(images, sample_rng, vae, vae_params):
-  vae_outputs = vae.apply(
-    {"params" : vae_params}, images,
-      deterministic=True, method=vae.encode
-  )
-  latents = vae_outputs.latent_dist.sample(sample_rng)
-  latents = jnp.transpose(latents, (0, 3, 1, 2))
-  latents = latents * vae.config.scaling_factor
+# taken from https://github.com/huggingface/transformers/blob/abbffc4525566a48a9733639797c812301218b83/examples/tensorflow/contrastive-image-text/run_clip.py#L225
+def load_as_tf_dataset(dataset, batch_size, shuffle, config):
+  dataset = dataset.with_format("tensorflow")[:]
+  tf_dataset = tf.data.Dataset.from_tensor_slices(dataset)
 
-  return latents
+  if shuffle:
+    tf_dataset = tf_dataset.shuffle(len(tf_dataset))
+  tf_dataset = tf_dataset.batch(batch_size // jax.process_count(), drop_remainder=False)
+  tf_dataset = tf_dataset.prefetch(tf.data.experimental.AUTOTUNE)
+  tf_dataset = tf_dataset.repeat(-1)
 
-def encode(input_ids, text_encoder, text_encoder_params):
-  return text_encoder(
-    input_ids,
-    params=text_encoder_params,
-    train=False
-  )[0]
+  return tf_dataset
 
 # TODO - https://github.com/google/array_record/blob/main/beam/examples/example_gcs_conversion.py
 def make_laion400m_train_iterator(
@@ -73,9 +70,9 @@ def make_laion400m_train_iterator(
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
       .shuffle(global_batch_size * 10)
-      .batch(global_batch_size, drop_remainder=True)
+      .batch(global_batch_size // jax.process_count(), drop_remainder=True)
       .prefetch(AUTOTUNE)
-      .repeat(100000000)
+      .repeat(-1)
   )
 
   train_ds = train_ds.shard(num_shards = jax.process_count(), index = jax.process_index())
@@ -118,22 +115,58 @@ def make_pokemon_train_iterator(
     train_ds.save_to_disk(dataset_save_location)
     train_ds.cleanup_cache_files()
 
-  # taken from https://github.com/huggingface/transformers/blob/abbffc4525566a48a9733639797c812301218b83/examples/tensorflow/contrastive-image-text/run_clip.py#L225
-  def load_as_tf_dataset(dataset, batch_size, shuffle):
-    dataset = dataset.with_format("tensorflow")[:]
-    tf_dataset = tf.data.Dataset.from_tensor_slices(dataset)
+  train_ds = load_as_tf_dataset(
+    train_ds, global_batch_size, True, config
+  )
+  train_ds = train_ds.shard(num_shards = jax.process_count(), index = jax.process_index())
 
-    if shuffle:
-      tf_dataset = tf_dataset.shuffle(len(tf_dataset))
-    tf_dataset = tf_dataset.batch(batch_size // jax.process_count(), drop_remainder=True)
-    tf_dataset = tf_dataset.prefetch(tf.data.experimental.AUTOTUNE)
-    repeats = math.ceil((config.max_train_steps * batch_size) / len(tf_dataset))
-    tf_dataset = tf_dataset.repeat(repeats)
+  train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
+  return train_iter
 
-    return tf_dataset
+def make_dreambooth_train_iterator(
+  config,
+  mesh,
+  global_batch_size,
+  tokenize_fn,
+  image_transforms_fn
+):
+  
+  captions_column = config.caption_column
+  image_column = config.image_column
+  cache_latents_text_encoder_outputs = config.cache_latents_text_encoder_outputs
+
+  folder_paths = [config.instance_data_dir, config.class_data_dir]
+  prompts = [config.instance_prompt, config.class_prompt]
+  all_images = []
+  all_prompts = []
+  for idx, folder_path in enumerate(folder_paths):
+    image_paths = tf.io.gfile.glob(f"{folder_path}/*")
+    for image_path in image_paths:
+      all_images.append(Image.open(image_path).convert("RGB"))
+    all_prompts.extend([prompts[idx]] * len(image_paths))
+  
+  dataset_dict = {image_column : all_images, captions_column : all_prompts}
+
+  train_ds = Dataset.from_dict(dataset_dict)
+
+  train_ds = train_ds.map(
+    function=tokenize_fn,
+    batched=True,
+    remove_columns=[captions_column],
+    num_proc=1 if cache_latents_text_encoder_outputs else 4,
+    desc="Running tokenizer on train dataset",
+  )
+
+  train_ds = train_ds.map(
+    function=image_transforms_fn,
+    batched=True,
+    remove_columns=[image_column],
+    num_proc=1 if cache_latents_text_encoder_outputs else config.transform_images_num_proc,
+    desc="Transforming images",
+  )
 
   train_ds = load_as_tf_dataset(
-    train_ds, global_batch_size, True
+    train_ds, global_batch_size, True, config
   )
   train_ds = train_ds.shard(num_shards = jax.process_count(), index = jax.process_index())
 
