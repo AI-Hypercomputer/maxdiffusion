@@ -46,7 +46,7 @@ def load_as_tf_dataset(dataset, batch_size, shuffle, config):
 
   if shuffle:
     tf_dataset = tf_dataset.shuffle(len(tf_dataset))
-  tf_dataset = tf_dataset.batch(batch_size // jax.process_count(), drop_remainder=False)
+  tf_dataset = tf_dataset.batch(batch_size // jax.process_count(), drop_remainder=True)
   tf_dataset = tf_dataset.prefetch(tf.data.experimental.AUTOTUNE)
   tf_dataset = tf_dataset.repeat(-1)
 

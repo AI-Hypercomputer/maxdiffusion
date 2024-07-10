@@ -209,8 +209,10 @@ def train(config):
     )
     params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
-    noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
-        revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
+    noise_scheduler = FlaxDDPMScheduler(
+        beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, dtype=jnp.float32
+    )
+    noise_scheduler_state = noise_scheduler.create_state()
 
     pipeline.scheduler = noise_scheduler
     params["scheduler"] = noise_scheduler_state
@@ -400,6 +402,7 @@ def train(config):
     mllog_utils.train_init_stop(config)
     mllog_utils.train_run_start(config)
     mllog_utils.train_step_start(config, start_step)
+    s = time.time()
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
         unet_state, text_encoder_state, train_metric, train_rngs = p_train_step(unet_state,
@@ -456,6 +459,7 @@ def train(config):
         save_checkpoint(pipeline.save_pretrained, params, config, os.path.join(config.checkpoint_dir, checkpoint_name))
 
     max_utils.close_summary_writer(writer)
+    max_logging.log(f"training time: {(time.time() - s)}")
 
 def main(argv: Sequence[str]) -> None:
     max_logging.log(f"Found {jax.device_count()} devices.")
