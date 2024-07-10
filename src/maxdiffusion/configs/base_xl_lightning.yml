@@ -23,6 +23,7 @@ save_config_to_gcs: False
 log_period: 100
 
 pretrained_model_name_or_path: 'stabilityai/stable-diffusion-xl-base-1.0'
+unet_checkpoint: ''
 revision: 'refs/pr/95'
 dtype: 'bfloat16'
 # Set true to load weights from pytorch
@@ -36,6 +37,15 @@ norm_num_groups: 32
 # If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
+
+# Override parameters from checkpoints's scheduler.
+diffusion_scheduler_config: {
+  _class_name: 'DDIMScheduler',
+  # values are v_prediction or leave empty to use scheduler's default. 
+  prediction_type: '',
+  rescale_zero_terminal_snr: False,
+  timestep_spacing: 'trailing'
+}
 
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
@@ -122,6 +132,7 @@ profiler_steps: 5
 prompt: "portrait photo of muscular bearded guy in a worn mech suit, light bokeh, intricate, steel metal, elegant, sharp focus, soft lighting, vibrant colors"
 negative_prompt: "purple, red"
 guidance_scale: 2
+guidance_rescale: -1
 num_inference_steps: 4
 
 # SDXL Lightning parameters
