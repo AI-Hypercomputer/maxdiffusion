@@ -16,7 +16,7 @@
 run_name: ''
 metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
 # If true save metrics such as loss and TFLOPS to GCS in {base_output_directory}/{run_name}/metrics/
-write_metrics: True
+write_metrics: False # write metrics with a buffer
 gcs_metrics: False
 metrics_period: 100  # calculate step time and loss
 # If true save config to GCS in {base_output_directory}/{run_name}/
@@ -80,11 +80,13 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
-                      ['out_channels', 'fsdp'],
+                      ['activation_batch', ['data', 'fsdp',]],
+                      ['activation_heads', 'tensor'],
+                      ['activation_kv', 'tensor'],
+                      ['embed', 'fsdp'],
+                      ['heads', 'tensor'],
+                      ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
-                      ['length', 'fsdp']
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
