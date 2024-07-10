@@ -16,7 +16,7 @@
 
 import os
 import math
-import numpy as np
+from functools import partial
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
 from datasets import load_dataset, load_from_disk, Dataset
@@ -24,6 +24,17 @@ import jax
 import jax.numpy as jnp
 
 from maxdiffusion import multihost_dataloading
+from maxdiffusion.maxdiffusion_utils import tokenize_captions, transform_images, vae_apply
+from maxdiffusion.dreambooth.dreambooth_constants import (
+  INSTANCE_IMAGES,
+  INSTANCE_IMAGE_LATENTS,
+  INSTANCE_PROMPT_IDS,
+  INSTANCE_PROMPT_INPUT_IDS,
+  CLASS_IMAGES,
+  CLASS_IMAGE_LATENTS,
+  CLASS_PROMPT_IDS,
+  CLASS_PROMPT_INPUT_IDS
+)
 from PIL import Image
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
@@ -127,47 +138,105 @@ def make_dreambooth_train_iterator(
   config,
   mesh,
   global_batch_size,
-  tokenize_fn,
-  image_transforms_fn
+  tokenizer,
+  vae,
+  vae_params
 ):
+  """Creates a dreambooth training iterator for sd1.x,sd2.x"""
+
+  instance_images = []
+  instance_prompt_ids = []
+  class_images = []
+  class_prompt_ids = []
   
-  captions_column = config.caption_column
-  image_column = config.image_column
-  cache_latents_text_encoder_outputs = config.cache_latents_text_encoder_outputs
+  # load class data
+  class_image_paths = tf.io.gfile.glob(f"{config.class_data_dir}/*")
+  for image_path in class_image_paths:
+    class_images.append(Image.open(image_path).convert("RGB"))
+  class_prompt_ids.extend([config.class_prompt] * len(class_images))
 
-  folder_paths = [config.instance_data_dir, config.class_data_dir]
-  prompts = [config.instance_prompt, config.class_prompt]
-  all_images = []
-  all_prompts = []
-  for idx, folder_path in enumerate(folder_paths):
-    image_paths = tf.io.gfile.glob(f"{folder_path}/*")
-    for image_path in image_paths:
-      all_images.append(Image.open(image_path).convert("RGB"))
-    all_prompts.extend([prompts[idx]] * len(image_paths))
+  # load instance data. Since we use prior preservation, we need to match
+  # the number of instance images we're using.
+  instance_image_paths = tf.io.gfile.glob(f"{config.instance_data_dir}/*")
+  for index in range(len(class_images)):
+    instance_image = instance_image_paths[index % len(instance_image_paths)]
+    instance_images.append(Image.open(instance_image).convert("RGB"))
+  instance_prompt_ids.extend([config.instance_prompt] * len(instance_images))
   
-  dataset_dict = {image_column : all_images, captions_column : all_prompts}
+  instance_dataset_dict = {
+    INSTANCE_IMAGES : instance_images,
+    INSTANCE_PROMPT_IDS : instance_prompt_ids,
+  }
 
-  train_ds = Dataset.from_dict(dataset_dict)
+  class_dataset_dict = {
+    CLASS_IMAGES : class_images,
+    CLASS_PROMPT_IDS : class_prompt_ids
+  }
 
-  train_ds = train_ds.map(
+  instance_train_ds = Dataset.from_dict(instance_dataset_dict)
+  class_train_ds = Dataset.from_dict(class_dataset_dict)
+
+  tokenize_fn = partial(tokenize_captions,
+                        caption_column=INSTANCE_PROMPT_IDS,
+                        tokenizer=tokenizer,
+                        input_ids_key=INSTANCE_PROMPT_INPUT_IDS)
+  instance_train_ds = instance_train_ds.map(
     function=tokenize_fn,
     batched=True,
-    remove_columns=[captions_column],
-    num_proc=1 if cache_latents_text_encoder_outputs else 4,
-    desc="Running tokenizer on train dataset",
+    remove_columns=[INSTANCE_PROMPT_IDS],
+    num_proc=1,
+    desc="Running tokenizer on instance dataset",
   )
-
-  train_ds = train_ds.map(
-    function=image_transforms_fn,
+  rng = jax.random.key(config.seed)
+  p_vae_apply = jax.jit(partial(vae_apply, vae=vae, vae_params=vae_params))
+  transform_images_fn = partial(transform_images,
+                                image_column=INSTANCE_IMAGES,
+                                image_resolution=config.resolution,
+                                rng=rng,
+                                global_batch_size=global_batch_size,
+                                pixel_ids_key=INSTANCE_IMAGE_LATENTS,
+                                p_vae_apply=p_vae_apply)
+  instance_train_ds = instance_train_ds.map(
+    function=transform_images_fn,
     batched=True,
-    remove_columns=[image_column],
-    num_proc=1 if cache_latents_text_encoder_outputs else config.transform_images_num_proc,
-    desc="Transforming images",
+    remove_columns=[INSTANCE_IMAGES],
+    num_proc=1,
+    desc="Running vae on instance dataset"
   )
 
-  train_ds = load_as_tf_dataset(
-    train_ds, global_batch_size, True, config
+  tokenize_fn = partial(tokenize_captions,
+                        caption_column=CLASS_PROMPT_IDS,
+                        tokenizer=tokenizer,
+                        input_ids_key=CLASS_PROMPT_INPUT_IDS)
+  class_train_ds = class_train_ds.map(
+    function=tokenize_fn,
+    batched=True,
+    remove_columns=[CLASS_PROMPT_IDS],
+    num_proc=1,
+    desc="Running tokenizer on class dataset",
   )
+  transform_images_fn = partial(transform_images,
+                                image_column=CLASS_IMAGES,
+                                image_resolution=config.resolution,
+                                rng=rng,
+                                global_batch_size=global_batch_size,
+                                pixel_ids_key=CLASS_IMAGE_LATENTS,
+                                p_vae_apply=p_vae_apply)
+  class_train_ds = class_train_ds.map(
+    function=transform_images_fn,
+    batched=True,
+    remove_columns=[CLASS_IMAGES],
+    num_proc=1,
+    desc="Running vae on instance dataset"
+  )
+
+  instance_train_ds = load_as_tf_dataset(
+    instance_train_ds, global_batch_size, True, config
+  )
+  class_train_ds = load_as_tf_dataset(
+    class_train_ds, global_batch_size, True, config
+  )
+  train_ds = tf.data.Dataset.zip((instance_train_ds, class_train_ds))
   train_ds = train_ds.shard(num_shards = jax.process_count(), index = jax.process_index())
 
   train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)

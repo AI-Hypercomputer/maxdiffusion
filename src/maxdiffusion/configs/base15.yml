@@ -195,4 +195,3 @@ class_prompt: ''
 with_prior_preservation: True
 prior_loss_weight: 1.0
 num_class_images: 100
-train_text_encoder: True

@@ -47,7 +47,15 @@ def vae_apply(images, sample_rng, vae, vae_params):
 
   return latents
 
-def transform_images(examples, image_column, image_resolution, rng, global_batch_size, p_vae_apply = None):
+def transform_images(
+      examples,
+      image_column,
+      image_resolution,
+      rng,
+      global_batch_size,
+      pixel_ids_key="pixel_values",
+      p_vae_apply = None
+      ):
     """Preprocess images to latents."""
     images = list(examples[image_column])
     images = [np.asarray(image) for image in images]
@@ -81,11 +89,11 @@ def transform_images(examples, image_column, image_resolution, rng, global_batch
         if tensor_list[i+global_batch_size:].shape[0] != 0:
           sample_rng, rng = jax.random.split(rng)
           latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
-          examples["pixel_values"] = np.append(latents_list, latents, axis=0)
+          examples[pixel_ids_key] = np.append(latents_list, latents, axis=0)
         else:
-           examples["pixel_values"] = latents_list
+           examples[pixel_ids_key] = latents_list
     else:
-        examples["pixel_values"] = tf.stack(tensor_list)
+        examples[pixel_ids_key] = tf.stack(tensor_list)
 
     return examples
 
@@ -194,7 +202,8 @@ def encode(input_ids, text_encoder, text_encoder_params):
     train=False
   )[0]
 
-def tokenize_captions(examples, caption_column, tokenizer, p_encode=None):
+def tokenize_captions(examples, caption_column, tokenizer, input_ids_key="input_ids", p_encode=None):
+    """Tokenize captions for sd1.x,sd2.x models."""
     captions = list(examples[caption_column])
     text_inputs = tokenizer(
         captions,
@@ -205,9 +214,9 @@ def tokenize_captions(examples, caption_column, tokenizer, p_encode=None):
 
     if p_encode:
         encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
-        examples["input_ids"] = encoder_hidden_states
+        examples[input_ids_key] = encoder_hidden_states
     else:
-        examples["input_ids"] = text_inputs.input_ids
+        examples[input_ids_key] = text_inputs.input_ids
     return examples
 
 def get_shaped_batch(config, pipeline):

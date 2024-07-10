@@ -1,0 +1,8 @@
+INSTANCE_IMAGES = "instance_images"
+INSTANCE_IMAGE_LATENTS = "instance_image_latents"
+INSTANCE_PROMPT_IDS = "instance_prompt_ids"
+INSTANCE_PROMPT_INPUT_IDS = "instance_prompt_input_ids"
+CLASS_IMAGES = "class_images"
+CLASS_IMAGE_LATENTS = "class_image_latents"
+CLASS_PROMPT_IDS = "class_prompt_ids"
+CLASS_PROMPT_INPUT_IDS = "class_prompt_input_ids"

@@ -51,7 +51,15 @@ from maxdiffusion.train_sdxl import (
    encode_xl,
    tokenize_captions_xl
 )
+
 from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images
+
+from maxdiffusion.dreambooth.dreambooth_constants import (
+  INSTANCE_IMAGE_LATENTS,
+  INSTANCE_PROMPT_INPUT_IDS,
+  CLASS_IMAGE_LATENTS,
+  CLASS_PROMPT_INPUT_IDS
+)
 
 HOME_DIR = pathlib.Path.home()
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -83,27 +91,31 @@ class InputPipelineInterface(unittest.TestCase):
         config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
         safety_checker=None, feature_extractor=None, from_pt=config.from_pt
     )
-    rng = jax.random.PRNGKey(config.seed)
 
-    p_encode = jax.jit(partial(encode,text_encoder=pipeline.text_encoder,text_encoder_params=params["text_encoder"]))
-    p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
-    tokenize_fn = partial(tokenize_captions,caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode)
-    image_transforms_fn = partial(transform_images,
-                                  image_column=config.image_column,
-                                  image_resolution=config.resolution,
-                                  rng=rng,
-                                  global_batch_size=global_batch_size,
-                                  p_vae_apply=p_vae_apply)
+    train_iterator = make_dreambooth_train_iterator(
+      config,
+      mesh,
+      global_batch_size,
+      pipeline.tokenizer,
+      pipeline.vae,
+      params["vae"]
+    )
 
-    train_iterator = make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenize_fn, image_transforms_fn)
     data = train_iterator()
     device_count = jax.device_count()
 
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-    encoder_hidden_states = data["input_ids"]
+    instance_hidden_states = data[0][INSTANCE_PROMPT_INPUT_IDS]
+    class_hidden_states = data[1][CLASS_PROMPT_INPUT_IDS]
 
-    assert encoder_hidden_states.shape == (device_count,77, 768)
-    assert data["pixel_values"].shape == (device_count,
+    assert instance_hidden_states.shape == (device_count,77)
+    assert class_hidden_states.shape == (device_count,77)
+
+    assert data[0][INSTANCE_IMAGE_LATENTS].shape == (device_count,
+                                          pipeline.unet.config.in_channels,
+                                          config.resolution // vae_scale_factor,
+                                          config.resolution // vae_scale_factor)
+    assert data[1][CLASS_IMAGE_LATENTS].shape == (device_count,
                                           pipeline.unet.config.in_channels,
                                           config.resolution // vae_scale_factor,
                                           config.resolution // vae_scale_factor)

@@ -40,12 +40,8 @@ from maxdiffusion import (
     mllog_utils,
 )
 from maxdiffusion.maxdiffusion_utils import (
-    vae_apply,
-    transform_images,
     calculate_unet_tflops,
-    tokenize_captions,
     encode,
-    get_shaped_batch
 )
 
 from maxdiffusion.train_utils import (
@@ -55,12 +51,9 @@ from maxdiffusion.train_utils import (
     record_scalar_metrics,
     write_metrics,
     get_params_to_save,
-    compute_snr,
     generate_timestep_weights,
     save_checkpoint
 )
-
-from transformers import FlaxCLIPTextModel
 
 from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
 from flax import jax_utils
@@ -75,10 +68,36 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from huggingface_hub.utils import insecure_hashlib
 
-from maxdiffusion.input_pipeline.input_pipeline_interface import (
-  make_pokemon_train_iterator,
-  make_laion400m_train_iterator
+from maxdiffusion.input_pipeline.input_pipeline_interface import make_dreambooth_train_iterator
+
+from dreambooth_constants import (
+    INSTANCE_IMAGE_LATENTS,
+    INSTANCE_PROMPT_INPUT_IDS,
+    CLASS_IMAGE_LATENTS,
+    CLASS_PROMPT_INPUT_IDS
 )
+
+def get_shaped_batch(config, pipeline):
+  """Return the shape of the batch - this is what eval_shape would return for the
+  output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078.
+  This function works with sd1.x and 2.x.
+  """
+  vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+  total_train_batch_size = config.per_device_batch_size * jax.device_count()
+  batch_image_shape = (total_train_batch_size, 4,
+            config.resolution // vae_scale_factor,
+            config.resolution // vae_scale_factor)
+  batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
+  shaped_batch = (
+      {
+          INSTANCE_IMAGE_LATENTS : jax.ShapeDtypeStruct(batch_image_shape, jnp.float32),
+          INSTANCE_PROMPT_INPUT_IDS : jax.ShapeDtypeStruct(batch_ids_shape, jnp.int32)
+      },{
+          CLASS_IMAGE_LATENTS : jax.ShapeDtypeStruct(batch_image_shape, jnp.float32),
+          CLASS_PROMPT_INPUT_IDS : jax.ShapeDtypeStruct(batch_ids_shape, jnp.int32)
+      }
+  )
+  return shaped_batch
 
 class PromptDataset(Dataset):
     """A simple dataset to prepare the prompts to generate class images on multiple GPUs."""
@@ -216,73 +235,45 @@ def train(config):
 
     (unet_state,
     unet_state_mesh_shardings,
-    vae_state, vae_state_mesh_shardings) = max_utils.get_states(mesh,
-                                                                tx, rng, config,
-                                                                pipeline, params["unet"],
-                                                                params["vae"], training=True)
+    _, _) = max_utils.get_states(mesh, tx, rng, config,
+                                 pipeline, params["unet"],
+                                 None, training=True)
     text_encoder_state = train_state.TrainState.create(
-        apply_fn=text_encoder.__call__, params=text_encoder.params, tx=tx
+        apply_fn=pipeline.text_encoder.__call__, params=params["text_encoder"], tx=tx
     )
     per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
 
-    if config.dataset_name == "diffusers/pokemon-gpt4-captions":
-        p_encode = None
-        p_vae_apply = None
-        if config.cache_latents_text_encoder_outputs:
-            if not config.train_text_encoder:
-                p_encode = jax.jit(partial(encode,text_encoder=pipeline.text_encoder,text_encoder_params=params["text_encoder"]))
-            p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
-        tokenize_fn = partial(tokenize_captions,caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode)
-        image_transforms_fn = partial(transform_images,
-                                      image_column=config.image_column,
-                                      image_resolution=config.resolution,
-                                      rng=rng,
-                                      global_batch_size=total_train_batch_size,
-                                      p_vae_apply=p_vae_apply)
-
-        data_iterator = make_pokemon_train_iterator(
-           config,
-           mesh,
-           total_train_batch_size,
-           tokenize_fn,
-           image_transforms_fn
-        )
-    else:
-        data_iterator = make_laion400m_train_iterator(
-           config, mesh, total_train_batch_size
-        )
+    data_iterator = make_dreambooth_train_iterator(
+        config,
+        mesh,
+        total_train_batch_size,
+        pipeline.tokenizer,
+        pipeline.vae,
+        params["vae"]
+    )
 
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
-    def train_step(unet_state, vae_state, batch, train_rng, cache_latents_text_encoder_outputs):
+    def train_step(unet_state, text_encoder_state, batch, train_rng):
+        
         _, gen_dummy_rng = jax.random.split(train_rng)
         sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
-        if config.train_text_encoder:
-            params = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
-        else:
-            params = {"unet" : unet_state.params}
+        instance_batch = batch[0]
+        class_batch = batch[1]
+
+        instance_latents = instance_batch[INSTANCE_IMAGE_LATENTS]
+        instance_input_ids = instance_batch[INSTANCE_PROMPT_INPUT_IDS]
+        class_latents = class_batch[CLASS_IMAGE_LATENTS]
+        class_input_ids = class_batch[CLASS_PROMPT_INPUT_IDS]
+
+        latents = jnp.concatenate((instance_latents, class_latents), axis=0)
+        input_ids = jnp.concatenate((instance_input_ids, class_input_ids), axis=0)
+        params = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
+        
         def compute_loss(params):
-
-            if cache_latents_text_encoder_outputs:
-               latents = batch["pixel_values"]
-               if not config.train_text_encoder:
-                    encoder_hidden_states = batch["input_ids"]
-               else:
-                    encoder_hidden_states = encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])
-            else:
-                # Convert images to latent space
-                vae_outputs = pipeline.vae.apply(
-                {"params": vae_state.params}, batch["pixel_values"], deterministic=True, method=pipeline.vae.encode
-                )
-                latents = vae_outputs.latent_dist.sample(sample_rng)
-                # (NHWC) -> (NCHW)
-                latents = jnp.transpose(latents, (0, 3, 1, 2))
-                latents = latents * pipeline.vae.config.scaling_factor
-
-                # Get the text embedding for conditioning
-                encoder_hidden_states = encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])
+            encoder_hidden_states = encode(input_ids, pipeline.text_encoder, params["text_encoder"])
 
             # Sample noise that we'll add to the latents
             noise_rng, timestep_rng = jax.random.split(sample_rng)
@@ -330,47 +321,51 @@ def train(config):
                 prior_loss = (target_prior - model_pred_prior) ** 2
                 prior_loss = prior_loss.mean()
 
-            loss = (target - model_pred) ** 2
-
-            # snr
-            if config.snr_gamma > 0:
-                snr = jnp.array(compute_snr(timesteps, noise_scheduler_state))
-                snr_loss_weights = jnp.where(snr < config.snr_gamma, snr, jnp.ones_like(snr) * config.snr_gamma)
-                if noise_scheduler.config.prediction_type == "epsilon":
-                    snr_loss_weights = snr_loss_weights / snr
-                elif noise_scheduler.config.prediction_type == "v_prediction":
-                    snr_loss_weights = snr_loss_weights / (snr + 1)
-                loss = loss * snr_loss_weights[:, None, None, None]
-
-            loss = loss.mean()
+                # Add the prior loss to the instance loss.
+                loss = loss + config.prior_loss_weight * prior_loss
+            else:
+                loss = (target - model_pred) ** 2
+                loss = loss.mean()
 
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
         loss, grad = grad_fn(params)
 
-        new_state = unet_state.apply_gradients(grads=grad)
+        new_unet_state = unet_state.apply_gradients(grads=grad["unet"])
+        new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad["text_encoder"])
         metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
 
-        return new_state, metrics, new_train_rng
+        return new_unet_state, new_text_encoder_state, metrics, new_train_rng
 
     num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
-    my_data_sharding = {'input_ids': data_sharding, 'pixel_values': data_sharding}
+    my_data_sharding = (
+        {INSTANCE_IMAGE_LATENTS : data_sharding,
+        INSTANCE_PROMPT_INPUT_IDS : data_sharding},
+        {CLASS_IMAGE_LATENTS : data_sharding,
+        CLASS_PROMPT_INPUT_IDS : data_sharding}
+    )
+    # my_data_sharding = (
+    #     {INSTANCE_IMAGE_LATENTS : data_sharding,
+    #     INSTANCE_PROMPT_INPUT_IDS : data_sharding,
+    #     CLASS_IMAGE_LATENTS : data_sharding,
+    #     CLASS_PROMPT_INPUT_IDS : data_sharding
+    # )
 
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         p_train_step = jax.jit(
-            partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-            in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, my_data_sharding, None),
-            out_shardings=(unet_state_mesh_shardings, None, None),
+            train_step,
+            in_shardings=(unet_state_mesh_shardings, None, my_data_sharding, None),
+            out_shardings=(unet_state_mesh_shardings, None, None, None),
             donate_argnums=(0,)
         )
         max_logging.log("Precompiling...")
         s = time.time()
         dummy_batch = get_shaped_batch(config, pipeline)
         p_train_step = p_train_step.lower(unet_state,
-                                          vae_state,
+                                          text_encoder_state,
                                           dummy_batch,
                                           train_rngs)
         p_train_step = p_train_step.compile()
@@ -407,8 +402,8 @@ def train(config):
     mllog_utils.train_step_start(config, start_step)
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
-        unet_state, train_metric, train_rngs = p_train_step(unet_state,
-                                                            vae_state,
+        unet_state, text_encoder_state, train_metric, train_rngs = p_train_step(unet_state,
+                                                            text_encoder_state,
                                                             example_batch,
                                                             train_rngs)
         samples_count = total_train_batch_size * (step + 1)
@@ -441,18 +436,6 @@ def train(config):
         safety_checker = FlaxStableDiffusionSafetyChecker.from_pretrained(
             "CompVis/stable-diffusion-safety-checker", from_pt=True
         )
-        # Restore vae and text encoder if we cached latents and encoder outputs.
-        if config.cache_latents_text_encoder_outputs:
-            text_encoder = FlaxCLIPTextModel.from_pretrained(
-                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=weight_dtype, from_pt=config.from_pt
-            )
-            vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-                config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
-            )
-            pipeline.vae = vae
-            pipeline.text_encoder = text_encoder
-            params["text_encoder"] = text_encoder.params
-            params["vae"] = vae_params
 
         pipeline = FlaxStableDiffusionPipeline(
             text_encoder=pipeline.text_encoder,
@@ -465,7 +448,7 @@ def train(config):
         )
 
         params = {
-            "text_encoder": get_params_to_save(params["text_encoder"]),
+            "text_encoder": get_params_to_save(text_encoder_state.params),
             "vae": get_params_to_save(params["vae"]),
             "unet": get_params_to_save(unet_state.params),
             "safety_checker": safety_checker.params,
