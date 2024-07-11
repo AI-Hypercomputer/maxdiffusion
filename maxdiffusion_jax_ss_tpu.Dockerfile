@@ -16,14 +16,12 @@ WORKDIR /deps
 COPY . .
 RUN ls .
 
-ARG USE_MAXTEXT_REQUIREMENTS_FILE
+ARG MAXDIFFUSION_REQUIREMENTS_FILE
 
 # Install Maxdiffusion requirements
-RUN if [ "${USE_MAXDIFFUSION_REQUIREMENTS_FILE}" = "true" ]; then \
-        echo "Using MaxDiffusion requirements: /deps/requirements.txt" && \
-        pip install -r /deps/requirements.txt; \
-    else \
-        echo "Not using MaxDiffusion requirements: /deps/requirements.txt"; \
+RUN if [ ! -z "${MAXDIFFUSION_REQUIREMENTS_FILE}" ]; then \
+        echo "Using MaxDiffusion requirements: ${MAXDIFFUSION_REQUIREMENTS_FILE}" && \
+        pip install -r /deps/${MAXDIFFUSION_REQUIREMENTS_FILE}; \
     fi
 
 # Install MaxDiffusion

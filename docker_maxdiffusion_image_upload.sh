@@ -21,7 +21,7 @@
 # (minutes). However, if you are simply changing local code and not updating dependencies, uploading just takes a few seconds.
 
 # Example command:
-# bash docker_maxdiffusion_image_upload.sh PROJECT_ID=tpu-prod-env-multipod BASEIMAGE=gcr.io/tpu-prod-env-multipod/jax-ss/tpu:jax0.4.28-v1.0.0 CLOUD_IMAGE_NAME=maxdiffusion-jax-ss-0.4.28-v1.0.0 IMAGE_TAG=latest
+# bash docker_maxdiffusion_image_upload.sh PROJECT_ID=tpu-prod-env-multipod BASEIMAGE=gcr.io/tpu-prod-env-multipod/jax-ss/tpu:jax0.4.28-v1.0.0 CLOUD_IMAGE_NAME=maxdiffusion-jax-ss-0.4.28-v1.0.0 IMAGE_TAG=latest MAXDIFFUSION_REQUIREMENTS_FILE=requirements_with_jax_ss.txt
 
 set -e
 
@@ -52,8 +52,8 @@ if [[ ! -v IMAGE_TAG ]]; then
   exit 1
 fi
 
-if [[ ! -v USE_MAXDIFFUSION_REQUIREMENTS_FILE ]]; then
-  echo "Erroring out because USE_MAXDIFFUSION_REQUIREMENTS_FILE is unset, please set it!"
+if [[ ! -v MAXDIFFUSION_REQUIREMENTS_FILE ]]; then
+  echo "Erroring out because MAXDIFFUSION_REQUIREMENTS_FILE is unset, please set it!"
   exit 1
 fi
 
@@ -64,7 +64,7 @@ echo "Building JAX SS MaxDiffusion at commit hash ${COMMIT_HASH} . . ."
 docker build \
   --build-arg JAX_SS_BASEIMAGE=${BASEIMAGE} \
   --build-arg COMMIT_HASH=${COMMIT_HASH} \
-  --build-arg USE_MAXDIFFUSION_REQUIREMENTS_FILE=${USE_MAXDIFFUSION_REQUIREMENTS_FILE} \
+  --build-arg MAXDIFFUSION_REQUIREMENTS_FILE=${MAXDIFFUSION_REQUIREMENTS_FILE} \
   --network=host \
   -t gcr.io/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${IMAGE_TAG} \
   -f ./maxdiffusion_jax_ss_tpu.Dockerfile .
