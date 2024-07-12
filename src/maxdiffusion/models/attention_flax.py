@@ -642,7 +642,7 @@ class FlaxTransformer2DModel(nn.Module):
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     norm_num_groups: int = 32
-
+    hidden_states_axis_names: AxisNames = (BATCH, LENGTH, D_KV)
     def setup(self):
         self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
 
@@ -720,6 +720,10 @@ class FlaxTransformer2DModel(nn.Module):
             hidden_states = hidden_states.reshape(batch, height, width, channels)
             hidden_states = self.proj_out(hidden_states)
 
+        hidden_states = nn.with_logical_constraint(
+            hidden_states,
+            self.hidden_states_axis_names
+        )
         hidden_states = hidden_states + residual
         return self.dropout_layer(hidden_states, deterministic=deterministic)
 

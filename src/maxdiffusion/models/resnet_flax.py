@@ -58,6 +58,12 @@ class FlaxUpsample2D(nn.Module):
             shape=(batch, height * 2, width * 2, channels),
             method="nearest",
         )
+
+        hidden_states = nn.with_logical_constraint(
+            hidden_states,
+            ('batch', 'keep_1', 'keep_2', 'out_channels')
+        )
+
         hidden_states = self.conv(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
@@ -159,7 +165,7 @@ class FlaxResnetBlock2D(nn.Module):
         hidden_states = self.conv1(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
-            ('batch', 'keep_1', 'keep_2', 'out_channels')
+            ('batch', None, None, 'out_channels')
         )
 
         temb = self.time_emb_proj(nn.swish(temb))
