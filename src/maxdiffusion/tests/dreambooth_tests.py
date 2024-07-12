@@ -32,7 +32,7 @@ class DreamBoothTest(unittest.TestCase):
 
     def setUp(self):
         DreamBoothTest.dummy_data = {}
-    
+
     def test_prior_preservation(self):
         """Test prior preservation function generates images."""
 

@@ -25,7 +25,6 @@ import jax
 import jax.numpy as jnp
 from maxdiffusion.max_utils import (
   create_device_mesh,
-  get_dtype,
   get_states,
   device_put_replicated,
   get_flash_block_sizes
@@ -134,10 +133,10 @@ def run(config):
 
     batch_size = jax.device_count() * config.per_device_batch_size
 
-    weight_dtype = get_dtype(config)
     flash_block_sizes = get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+        config.pretrained_model_name_or_path,revision=config.revision,
+        dtype=config.activations_dtype,
         safety_checker=None,
         feature_extractor=None,
         split_head_dim=config.split_head_dim,
@@ -150,6 +149,7 @@ def run(config):
     if len(config.unet_checkpoint) > 0:
         unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
                 config.unet_checkpoint,
+                dtype=config.activations_dtype,
                 split_head_dim=config.split_head_dim,
                 norm_num_groups=config.norm_num_groups,
                 attention_kernel=config.attention,
@@ -162,7 +162,7 @@ def run(config):
         config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
     )
     pipeline.scheduler = scheduler
-    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
+    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
     params["scheduler"] = scheduler_state
 
     # Text encoder params

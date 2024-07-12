@@ -32,8 +32,6 @@ from absl import app
 from maxdiffusion import (
     FlaxDDPMScheduler,
     FlaxStableDiffusionPipeline,
-    FlaxAutoencoderKL,
-    FlaxUNet2DConditionModel,
     max_logging,
     max_utils,
     pyconfig,
@@ -77,7 +75,7 @@ from dreambooth_constants import (
     CLASS_PROMPT_INPUT_IDS
 )
 
-def get_shaped_batch(config, pipeline):
+def get_shaped_batch_dreambooth(config, pipeline):
   """Return the shape of the batch - this is what eval_shape would return for the
   output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078.
   This function works with sd1.x and 2.x.
@@ -152,7 +150,7 @@ def prepare_w_prior_preservation(rng, config):
                     hash_image = insecure_hashlib.sha1(image.tobytes()).hexdigest()
                     image_filename = class_images_dir / f"{example['index'][i] + cur_class_images}-{hash_image}.jpg"
                     image.save(image_filename)
-            
+
         max_utils.delete_pytree(params)
         del pipeline
 
@@ -192,12 +190,11 @@ def train(config):
     data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
 
     total_train_batch_size = config.per_device_batch_size * jax.device_count()
-
-    weight_dtype = max_utils.get_dtype(config)
+    precision = max_utils.get_precision(config)
     flash_block_sizes = max_utils.get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision,
-        dtype=weight_dtype,
+        dtype=config.activations_dtype,
         safety_checker=None,
         feature_extractor=None,
         from_pt=config.from_pt,
@@ -206,8 +203,9 @@ def train(config):
         attention_kernel=config.attention,
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
+        precision=precision
     )
-    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
+    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
     noise_scheduler = FlaxDDPMScheduler(
         beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, dtype=jnp.float32
@@ -217,8 +215,8 @@ def train(config):
     pipeline.scheduler = noise_scheduler
     params["scheduler"] = noise_scheduler_state
 
-    sharding = PositionalSharding(devices_array).replicate()
-    partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=sharding)
+    text_encoder_sharding = PositionalSharding(devices_array).replicate()
+    partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=text_encoder_sharding)
     params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
 
     # Optimization
@@ -244,7 +242,7 @@ def train(config):
         apply_fn=pipeline.text_encoder.__call__, params=params["text_encoder"], tx=tx
     )
     per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
-    max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
+    max_logging.log(f"Per train step, estimated total TFLOPs for UNET will be {per_device_tflops:.2f}")
 
     data_iterator = make_dreambooth_train_iterator(
         config,
@@ -259,7 +257,7 @@ def train(config):
     _, train_rngs = jax.random.split(rng)
 
     def train_step(unet_state, text_encoder_state, batch, train_rng):
-        
+
         _, gen_dummy_rng = jax.random.split(train_rng)
         sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
         instance_batch = batch[0]
@@ -273,7 +271,7 @@ def train(config):
         latents = jnp.concatenate((instance_latents, class_latents), axis=0)
         input_ids = jnp.concatenate((instance_input_ids, class_input_ids), axis=0)
         params = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
-        
+
         def compute_loss(params):
             encoder_hidden_states = encode(input_ids, pipeline.text_encoder, params["text_encoder"])
 
@@ -309,7 +307,7 @@ def train(config):
                 target = noise_scheduler.get_velocity(noise_scheduler_state, latents, noise, timesteps)
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-            
+
             if config.with_prior_preservation:
                 # Chunk the noise and noise_pred into two parts and compute the loss on each part separately.
                 model_pred, model_pred_prior = jnp.split(model_pred, 2, axis=0)
@@ -334,6 +332,9 @@ def train(config):
         grad_fn = jax.value_and_grad(compute_loss)
         loss, grad = grad_fn(params)
 
+        if config.max_grad_norm > 0:
+            grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(grad, unet_state, None)
+
         new_unet_state = unet_state.apply_gradients(grads=grad["unet"])
         new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad["text_encoder"])
         metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
@@ -349,23 +350,17 @@ def train(config):
         {CLASS_IMAGE_LATENTS : data_sharding,
         CLASS_PROMPT_INPUT_IDS : data_sharding}
     )
-    # my_data_sharding = (
-    #     {INSTANCE_IMAGE_LATENTS : data_sharding,
-    #     INSTANCE_PROMPT_INPUT_IDS : data_sharding,
-    #     CLASS_IMAGE_LATENTS : data_sharding,
-    #     CLASS_PROMPT_INPUT_IDS : data_sharding
-    # )
 
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         p_train_step = jax.jit(
             train_step,
-            in_shardings=(unet_state_mesh_shardings, None, my_data_sharding, None),
-            out_shardings=(unet_state_mesh_shardings, None, None, None),
+            in_shardings=(unet_state_mesh_shardings, text_encoder_sharding, my_data_sharding, None),
+            out_shardings=(unet_state_mesh_shardings, text_encoder_sharding, None, None),
             donate_argnums=(0,)
         )
         max_logging.log("Precompiling...")
         s = time.time()
-        dummy_batch = get_shaped_batch(config, pipeline)
+        dummy_batch = get_shaped_batch_dreambooth(config, pipeline)
         p_train_step = p_train_step.lower(unet_state,
                                           text_encoder_state,
                                           dummy_batch,
@@ -432,7 +427,7 @@ def train(config):
 
     if config.write_metrics:
         write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
-
+    max_logging.log(f"training time: {(time.time() - s)}")
     # save the last checkpoint
     if jax.process_index() == 0:
         checkpoint_name = "final"
@@ -459,7 +454,6 @@ def train(config):
         save_checkpoint(pipeline.save_pretrained, params, config, os.path.join(config.checkpoint_dir, checkpoint_name))
 
     max_utils.close_summary_writer(writer)
-    max_logging.log(f"training time: {(time.time() - s)}")
 
 def main(argv: Sequence[str]) -> None:
     max_logging.log(f"Found {jax.device_count()} devices.")

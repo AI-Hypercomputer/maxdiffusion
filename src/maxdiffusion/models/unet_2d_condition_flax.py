@@ -347,6 +347,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
         # out
         self.conv_norm_out = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
+        # keep last layer in float32
         self.conv_out = nn.Conv(
             self.out_channels,
             kernel_size=(3, 3),

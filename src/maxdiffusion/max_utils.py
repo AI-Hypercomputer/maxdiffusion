@@ -450,15 +450,6 @@ def create_learning_rate_schedule(config):
 
   return optax.join_schedules(pieces, boundaries)
 
-def get_dtype(config):
-  """Get dtype from config."""
-  dtype_str = config.dtype
-  retval = jnp.bfloat16
-  if dtype_str == "float32":
-    retval = jnp.float32
-  if dtype_str == "float16":
-    retval = jnp.float16
-  return retval
 
 def get_precision(config):
   """Get precision from config."""

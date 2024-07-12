@@ -390,7 +390,6 @@ class FlaxAttention(nn.Module):
 
         if self.attention_kernel == "flash" and self.mesh is None:
             raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
-
         inner_dim = self.dim_head * self.heads
         scale = self.dim_head**-0.5
 
@@ -634,6 +633,7 @@ class FlaxTransformer2DModel(nn.Module):
     mesh: jax.sharding.Mesh = None
     norm_num_groups: int = 32
     precision: jax.lax.Precision = None
+    hidden_state_axis_names: AxisNames = (BATCH, LENGTH, D_KV)
 
     def setup(self):
         self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
@@ -715,6 +715,11 @@ class FlaxTransformer2DModel(nn.Module):
         else:
             hidden_states = hidden_states.reshape(batch, height, width, channels)
             hidden_states = self.proj_out(hidden_states)
+        
+        hidden_states = nn.with_logical_constraint(
+            hidden_states,
+            self.hidden_state_axis_names
+        )
 
         hidden_states = hidden_states + residual
         return self.dropout_layer(hidden_states, deterministic=deterministic)

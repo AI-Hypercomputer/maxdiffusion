@@ -26,7 +26,11 @@ log_period: 10000000000  # Flushes Tensorboard
 pretrained_model_name_or_path: 'runwayml/stable-diffusion-v1-5'
 unet_checkpoint: ''
 revision: 'flax'
-dtype: 'bfloat16'
+
+# This will convert the weights to this dtype.
+weights_dtype: 'float32'
+# This sets the layer's dtype in the model. Ex: nn.Dense(dtype=activations_dtype)
+activations_dtype: 'bfloat16'
 
 # matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
 # Options are "DEFAULT", "HIGH", "HIGHEST"
@@ -94,11 +98,13 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
-                      ['out_channels', 'fsdp'],
+                      ['activation_batch', ['data','fsdp']],
+                      ['activation_heads', 'tensor'],
+                      ['activation_kv', 'tensor'],
+                      ['embed','fsdp'],
+                      ['heads', 'tensor'],
+                      ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
-                      ['length', 'fsdp']
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
@@ -195,3 +201,5 @@ class_prompt: ''
 with_prior_preservation: True
 prior_loss_weight: 1.0
 num_class_images: 100
+# If true, set dataset_save_location.
+cache_dreambooth_dataset: False

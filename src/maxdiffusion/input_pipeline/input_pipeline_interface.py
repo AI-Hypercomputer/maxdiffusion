@@ -15,13 +15,11 @@
  """
 
 import os
-import math
 from functools import partial
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
 from datasets import load_dataset, load_from_disk, Dataset
 import jax
-import jax.numpy as jnp
 
 from maxdiffusion import multihost_dataloading
 from maxdiffusion.maxdiffusion_utils import tokenize_captions, transform_images, vae_apply
@@ -33,7 +31,9 @@ from maxdiffusion.dreambooth.dreambooth_constants import (
   CLASS_IMAGES,
   CLASS_IMAGE_LATENTS,
   CLASS_PROMPT_IDS,
-  CLASS_PROMPT_INPUT_IDS
+  CLASS_PROMPT_INPUT_IDS,
+  INSTANCE_DATASET_NAME,
+  CLASS_DATASET_NAME
 )
 from PIL import Image
 
@@ -148,87 +148,98 @@ def make_dreambooth_train_iterator(
   instance_prompt_ids = []
   class_images = []
   class_prompt_ids = []
-  
-  # load class data
-  class_image_paths = tf.io.gfile.glob(f"{config.class_data_dir}/*")
-  for image_path in class_image_paths:
-    class_images.append(Image.open(image_path).convert("RGB"))
-  class_prompt_ids.extend([config.class_prompt] * len(class_images))
 
-  # load instance data. Since we use prior preservation, we need to match
-  # the number of instance images we're using.
-  instance_image_paths = tf.io.gfile.glob(f"{config.instance_data_dir}/*")
-  for index in range(len(class_images)):
-    instance_image = instance_image_paths[index % len(instance_image_paths)]
-    instance_images.append(Image.open(instance_image).convert("RGB"))
-  instance_prompt_ids.extend([config.instance_prompt] * len(instance_images))
-  
-  instance_dataset_dict = {
-    INSTANCE_IMAGES : instance_images,
-    INSTANCE_PROMPT_IDS : instance_prompt_ids,
-  }
+  instance_dataset_full_path = os.path.join(config.dataset_save_location, INSTANCE_DATASET_NAME)
+  class_dataset_full_path = os.path.join(config.dataset_save_location, CLASS_DATASET_NAME)
 
-  class_dataset_dict = {
-    CLASS_IMAGES : class_images,
-    CLASS_PROMPT_IDS : class_prompt_ids
-  }
+  if config.cache_dreambooth_dataset and os.path.isdir(config.dataset_save_location):
+    instance_train_ds = load_from_disk(instance_dataset_full_path)
+    class_train_ds = load_from_disk(class_dataset_full_path)
+  else:
+    # load class data
+    class_image_paths = tf.io.gfile.glob(f"{config.class_data_dir}/*")
+    for image_path in class_image_paths:
+      class_images.append(Image.open(image_path).convert("RGB"))
+    class_prompt_ids.extend([config.class_prompt] * len(class_images))
 
-  instance_train_ds = Dataset.from_dict(instance_dataset_dict)
-  class_train_ds = Dataset.from_dict(class_dataset_dict)
+    # load instance data. Since we use prior preservation, we need to match
+    # the number of instance images we're using.
+    instance_image_paths = tf.io.gfile.glob(f"{config.instance_data_dir}/*")
+    for index in range(len(class_images)):
+      instance_image = instance_image_paths[index % len(instance_image_paths)]
+      instance_images.append(Image.open(instance_image).convert("RGB"))
+    instance_prompt_ids.extend([config.instance_prompt] * len(instance_images))
 
-  tokenize_fn = partial(tokenize_captions,
-                        caption_column=INSTANCE_PROMPT_IDS,
-                        tokenizer=tokenizer,
-                        input_ids_key=INSTANCE_PROMPT_INPUT_IDS)
-  instance_train_ds = instance_train_ds.map(
-    function=tokenize_fn,
-    batched=True,
-    remove_columns=[INSTANCE_PROMPT_IDS],
-    num_proc=1,
-    desc="Running tokenizer on instance dataset",
-  )
-  rng = jax.random.key(config.seed)
-  p_vae_apply = jax.jit(partial(vae_apply, vae=vae, vae_params=vae_params))
-  transform_images_fn = partial(transform_images,
-                                image_column=INSTANCE_IMAGES,
-                                image_resolution=config.resolution,
-                                rng=rng,
-                                global_batch_size=global_batch_size,
-                                pixel_ids_key=INSTANCE_IMAGE_LATENTS,
-                                p_vae_apply=p_vae_apply)
-  instance_train_ds = instance_train_ds.map(
-    function=transform_images_fn,
-    batched=True,
-    remove_columns=[INSTANCE_IMAGES],
-    num_proc=1,
-    desc="Running vae on instance dataset"
-  )
+    instance_dataset_dict = {
+      INSTANCE_IMAGES : instance_images,
+      INSTANCE_PROMPT_IDS : instance_prompt_ids,
+    }
 
-  tokenize_fn = partial(tokenize_captions,
-                        caption_column=CLASS_PROMPT_IDS,
-                        tokenizer=tokenizer,
-                        input_ids_key=CLASS_PROMPT_INPUT_IDS)
-  class_train_ds = class_train_ds.map(
-    function=tokenize_fn,
-    batched=True,
-    remove_columns=[CLASS_PROMPT_IDS],
-    num_proc=1,
-    desc="Running tokenizer on class dataset",
-  )
-  transform_images_fn = partial(transform_images,
-                                image_column=CLASS_IMAGES,
-                                image_resolution=config.resolution,
-                                rng=rng,
-                                global_batch_size=global_batch_size,
-                                pixel_ids_key=CLASS_IMAGE_LATENTS,
-                                p_vae_apply=p_vae_apply)
-  class_train_ds = class_train_ds.map(
-    function=transform_images_fn,
-    batched=True,
-    remove_columns=[CLASS_IMAGES],
-    num_proc=1,
-    desc="Running vae on instance dataset"
-  )
+    class_dataset_dict = {
+      CLASS_IMAGES : class_images,
+      CLASS_PROMPT_IDS : class_prompt_ids
+    }
+
+    instance_train_ds = Dataset.from_dict(instance_dataset_dict)
+    class_train_ds = Dataset.from_dict(class_dataset_dict)
+
+    tokenize_fn = partial(tokenize_captions,
+                          caption_column=INSTANCE_PROMPT_IDS,
+                          tokenizer=tokenizer,
+                          input_ids_key=INSTANCE_PROMPT_INPUT_IDS)
+    instance_train_ds = instance_train_ds.map(
+      function=tokenize_fn,
+      batched=True,
+      remove_columns=[INSTANCE_PROMPT_IDS],
+      num_proc=1,
+      desc="Running tokenizer on instance dataset",
+    )
+    rng = jax.random.key(config.seed)
+    p_vae_apply = jax.jit(partial(vae_apply, vae=vae, vae_params=vae_params))
+    transform_images_fn = partial(transform_images,
+                                  image_column=INSTANCE_IMAGES,
+                                  image_resolution=config.resolution,
+                                  rng=rng,
+                                  global_batch_size=global_batch_size,
+                                  pixel_ids_key=INSTANCE_IMAGE_LATENTS,
+                                  p_vae_apply=p_vae_apply)
+    instance_train_ds = instance_train_ds.map(
+      function=transform_images_fn,
+      batched=True,
+      remove_columns=[INSTANCE_IMAGES],
+      num_proc=1,
+      desc="Running vae on instance dataset"
+    )
+
+    tokenize_fn = partial(tokenize_captions,
+                          caption_column=CLASS_PROMPT_IDS,
+                          tokenizer=tokenizer,
+                          input_ids_key=CLASS_PROMPT_INPUT_IDS)
+    class_train_ds = class_train_ds.map(
+      function=tokenize_fn,
+      batched=True,
+      remove_columns=[CLASS_PROMPT_IDS],
+      num_proc=1,
+      desc="Running tokenizer on class dataset",
+    )
+    transform_images_fn = partial(transform_images,
+                                  image_column=CLASS_IMAGES,
+                                  image_resolution=config.resolution,
+                                  rng=rng,
+                                  global_batch_size=global_batch_size,
+                                  pixel_ids_key=CLASS_IMAGE_LATENTS,
+                                  p_vae_apply=p_vae_apply)
+    class_train_ds = class_train_ds.map(
+      function=transform_images_fn,
+      batched=True,
+      remove_columns=[CLASS_IMAGES],
+      num_proc=1,
+      desc="Running vae on instance dataset"
+    )
+
+    if config.cache_dreambooth_dataset:
+      instance_train_ds.save_to_disk(instance_dataset_full_path)
+      class_train_ds.save_to_disk(class_dataset_full_path)
 
   instance_train_ds = load_as_tf_dataset(
     instance_train_ds, global_batch_size, True, config
