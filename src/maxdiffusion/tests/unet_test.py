@@ -63,7 +63,7 @@ class UnetTest(unittest.TestCase):
   def test_unet21_sharding_test(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
-      "revision=bf16","dtype=bfloat16","resolution=768"])
+      "revision=bf16","activations_dtype=bfloat16","resolution=768"])
     config = pyconfig.config
     unet, params = FlaxUNet2DConditionModel.from_pretrained(
       config.pretrained_model_name_or_path, revision=config.revision, subfolder="unet", dtype=jnp.bfloat16, from_pt=config.from_pt

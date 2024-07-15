@@ -37,15 +37,15 @@ class DreamBoothTest(unittest.TestCase):
         """Test prior preservation function generates images."""
 
         pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base15.yml'),
-            "class_data_dir=/tmp/class_data_dir","class_prompt=a man",
-            "num_class_images=16","with_prior_preservation=True"])
+            "class_data_dir=/tmp/class_data_dir","class_prompt=a photo of a dog",
+            "num_class_images=100"])
         config = pyconfig.config
         rng = jax.random.key(config.seed)
         prepare_w_prior_preservation(rng, config)
         image_count = len(tf.io.gfile.glob(f"{config.class_data_dir}/*.jpg"))
-        assert image_count == 16
+        assert image_count == 100
 
-        cleanup(config.class_data_dir)
+        #cleanup(config.class_data_dir)
 
 if __name__ == '__main__':
   absltest.main()

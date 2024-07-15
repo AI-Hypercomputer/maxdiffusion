@@ -142,10 +142,9 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
   noise_cfg = guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
   return noise_cfg
 
-def get_dummy_unet_inputs(config, pipeline):
+def get_dummy_unet_inputs(config, pipeline, batch_size):
+  """Returns randomly initialized unet inputs."""
   vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
-  batch_size = config.per_device_batch_size
-  dtype=max_utils.get_dtype(config)
   input_shape = (batch_size,
                   pipeline.unet.config['in_channels'],
                   config.resolution // vae_scale_factor,
@@ -153,7 +152,7 @@ def get_dummy_unet_inputs(config, pipeline):
 
   latents = jax.random.normal(jax.random.PRNGKey(0),
                               shape=input_shape,
-                              dtype=dtype
+                              dtype=config.weights_dtype
                               )
   timesteps = jnp.ones((latents.shape[0],))
   encoder_hidden_states_shape = (latents.shape[0],
@@ -175,16 +174,20 @@ def get_dummy_unet_inputs(config, pipeline):
     time_ids_channels = pipeline.unet.projection_class_embeddings_input_dim - text_embeds_dim
     time_ids_dims = time_ids_channels // pipeline.unet.addition_time_embed_dim
     added_cond_kwargs = {
-      "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=dtype),
-      "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=dtype),
+      "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=config.weights_dtype),
+      "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=config.weights_dtype),
     }
   return (latents, timesteps, encoder_hidden_states, added_cond_kwargs)
 
-def calculate_unet_tflops(config, pipeline, rngs, train):
-  """Calculates unet tflops."""
+def calculate_unet_tflops(config, pipeline, batch_size, rngs, train):
+  """
+  Calculates unet tflops.
+  batch_size should be per_device_batch_size * jax.local_device_count() or attention's shard_map won't
+  cache the compilation when flash is enabled.
+  """
 
   (latents, timesteps,
-    encoder_hidden_states, added_cond_kwargs) = get_dummy_unet_inputs(config, pipeline)
+    encoder_hidden_states, added_cond_kwargs) = get_dummy_unet_inputs(config, pipeline, batch_size)
   return max_utils.calculate_model_tflops(
     pipeline.unet,
     rngs,
@@ -192,7 +195,7 @@ def calculate_unet_tflops(config, pipeline, rngs, train):
     sample=latents,
     timesteps=timesteps,
     encoder_hidden_states=encoder_hidden_states,
-    added_cond_kwargs=added_cond_kwargs)
+    added_cond_kwargs=added_cond_kwargs) / jax.local_device_count()
 
 def encode(input_ids, text_encoder, text_encoder_params):
   return text_encoder(

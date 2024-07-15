@@ -262,11 +262,10 @@ def train(config):
 
     total_train_batch_size = config.per_device_batch_size * jax.device_count()
 
-    weight_dtype = max_utils.get_dtype(config)
     flash_block_sizes = max_utils.get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision,
-        dtype=weight_dtype,
+        dtype=config.activations_dtype,
         safety_checker=None,
         feature_extractor=None,
         from_pt=config.from_pt,
@@ -276,7 +275,7 @@ def train(config):
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
     )
-    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
+    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
@@ -309,7 +308,7 @@ def train(config):
     max_logging.log(f"Create state time: {(time.time() - s)}")
     max_logging.log("Calculating training tflops...")
     s = time.time()
-    per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
+    per_device_tflops = calculate_unet_tflops(config, pipeline,(config.per_device_batch_size * jax.local_device_count()), rng, train=True)
     max_logging.log(f"Calculate training tflops time: {(time.time() - s)}")
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
     max_logging.log(f"Preparing dataset: {config.dataset_name}")

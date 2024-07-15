@@ -26,7 +26,11 @@ log_period: 100
 pretrained_model_name_or_path: 'stabilityai/stable-diffusion-xl-base-1.0'
 unet_checkpoint: ''
 revision: 'refs/pr/95'
-dtype: 'bfloat16'
+# This will convert the weights to this dtype.
+# When running inference on TPUv5e, use weights_dtype: 'bfloat16'
+weights_dtype: 'float32'
+# This sets the layer's dtype in the model. Ex: nn.Dense(dtype=activations_dtype)
+activations_dtype: 'bfloat16'
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True

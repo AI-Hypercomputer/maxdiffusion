@@ -19,7 +19,7 @@ class Generate(unittest.TestCase):
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
-      "revision=bf16","dtype=bfloat16","resolution=768",
+      "revision=bf16","weights_dtype=bfloat16","activations_dtype=bfloat16","resolution=768",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=7.5",
       "num_inference_steps=30","seed=47","split_head_dim=False"])

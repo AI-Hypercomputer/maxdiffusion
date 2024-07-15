@@ -88,10 +88,10 @@ def get_shaped_batch_dreambooth(config, pipeline):
   batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
   shaped_batch = (
       {
-          INSTANCE_IMAGE_LATENTS : jax.ShapeDtypeStruct(batch_image_shape, jnp.float32),
+          INSTANCE_IMAGE_LATENTS : jax.ShapeDtypeStruct(batch_image_shape, config.weights_dtype),
           INSTANCE_PROMPT_INPUT_IDS : jax.ShapeDtypeStruct(batch_ids_shape, jnp.int32)
       },{
-          CLASS_IMAGE_LATENTS : jax.ShapeDtypeStruct(batch_image_shape, jnp.float32),
+          CLASS_IMAGE_LATENTS : jax.ShapeDtypeStruct(batch_image_shape, config.weights_dtype),
           CLASS_PROMPT_INPUT_IDS : jax.ShapeDtypeStruct(batch_ids_shape, jnp.int32)
       }
   )
@@ -155,14 +155,14 @@ def prepare_w_prior_preservation(rng, config):
         del pipeline
 
 def train(config):
+    full_script_start_time = time.time()
     rng = jax.random.PRNGKey(config.seed)
 
     writer = max_utils.initialize_summary_writer(config)
     if config.dataset_name is None and config.train_data_dir is None:
         raise ValueError("Need either a dataset name or a training folder.")
 
-    if config.with_prior_preservation:
-        prepare_w_prior_preservation(rng, config)
+    prepare_w_prior_preservation(rng, config)
 
     # Setup Mesh
     devices_array = max_utils.create_device_mesh(config)
@@ -239,9 +239,17 @@ def train(config):
                                  pipeline, params["unet"],
                                  None, training=True)
     text_encoder_state = train_state.TrainState.create(
-        apply_fn=pipeline.text_encoder.__call__, params=params["text_encoder"], tx=tx
+        apply_fn=pipeline.text_encoder.__call__,
+        params=params["text_encoder"],
+        tx=tx
     )
-    per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
+    # In dreambooth training the class and instance batch sizes are concatenated to use a single
+    # forward pass, so the batch size passed to tflops is multiplied by 2.
+    per_device_tflops = calculate_unet_tflops(config,
+                                              pipeline,
+                                              (2 * config.per_device_batch_size * jax.local_device_count()),
+                                              rng,
+                                              train=True)
     max_logging.log(f"Per train step, estimated total TFLOPs for UNET will be {per_device_tflops:.2f}")
 
     data_iterator = make_dreambooth_train_iterator(
@@ -308,24 +316,21 @@ def train(config):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-            if config.with_prior_preservation:
-                # Chunk the noise and noise_pred into two parts and compute the loss on each part separately.
-                model_pred, model_pred_prior = jnp.split(model_pred, 2, axis=0)
-                target, target_prior = jnp.split(target, 2, axis=0)
+            # This script always uses prior preservation.
+            # Chunk the noise and noise_pred into two parts and compute the loss on each part separately.
+            model_pred, model_pred_prior = jnp.split(model_pred, 2, axis=0)
+            target, target_prior = jnp.split(target, 2, axis=0)
 
-                # Compute instance loss
-                loss = (target - model_pred) ** 2
-                loss = loss.mean()
+            # Compute instance loss
+            loss = (target - model_pred) ** 2
+            loss = loss.mean()
 
-                # Compute prior loss
-                prior_loss = (target_prior - model_pred_prior) ** 2
-                prior_loss = prior_loss.mean()
+            # Compute prior loss
+            prior_loss = (target_prior - model_pred_prior) ** 2
+            prior_loss = prior_loss.mean()
 
-                # Add the prior loss to the instance loss.
-                loss = loss + config.prior_loss_weight * prior_loss
-            else:
-                loss = (target - model_pred) ** 2
-                loss = loss.mean()
+            # Add the prior loss to the instance loss.
+            loss = loss + config.prior_loss_weight * prior_loss
 
             return loss
 
@@ -354,8 +359,8 @@ def train(config):
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         p_train_step = jax.jit(
             train_step,
-            in_shardings=(unet_state_mesh_shardings, text_encoder_sharding, my_data_sharding, None),
-            out_shardings=(unet_state_mesh_shardings, text_encoder_sharding, None, None),
+            in_shardings=(unet_state_mesh_shardings, None, my_data_sharding, None),
+            out_shardings=(unet_state_mesh_shardings, None, None, None),
             donate_argnums=(0,)
         )
         max_logging.log("Precompiling...")
@@ -454,6 +459,7 @@ def train(config):
         save_checkpoint(pipeline.save_pretrained, params, config, os.path.join(config.checkpoint_dir, checkpoint_name))
 
     max_utils.close_summary_writer(writer)
+    print("full script runtime: ", (time.time() - full_script_start_time))
 
 def main(argv: Sequence[str]) -> None:
     max_logging.log(f"Found {jax.device_count()} devices.")

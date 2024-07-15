@@ -45,8 +45,8 @@ class Train(unittest.TestCase):
     output_dir="train-smoke-test"
     run_name="sdxl_train_smoke_test"
     train_sdxl_main([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
-      "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
-      "revision=refs/pr/95","dtype=bfloat16",f"run_name={run_name}",
+      "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
+      "revision=refs/pr/95","activations_dtype=bfloat16","weights_dtype=bfloat16",f"run_name={run_name}",
       "max_train_steps=21","dataset_name=diffusers/pokemon-gpt4-captions",
       "resolution=1024","per_device_batch_size=1","snr_gamma=5.0",
       'timestep_bias={"strategy" : "later", "multiplier" : 2.0, "portion" : 0.25}',
@@ -59,7 +59,7 @@ class Train(unittest.TestCase):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
       f"pretrained_model_name_or_path={output_dir}/{run_name}/checkpoints/final",
       f"run_name={run_name}",
-      "revision=main","dtype=bfloat16","resolution=1024",
+      "revision=main","activations_dtype=bfloat16","weights_dtype=bfloat16","resolution=1024",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=9",
       "num_inference_steps=20","seed=47","per_device_batch_size=1",
@@ -80,7 +80,7 @@ class Train(unittest.TestCase):
     run_name="sd2.1_smoke_test"
     train_main([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
-      "revision=bf16","dtype=bfloat16",f"run_name={run_name}",
+      "revision=bf16","activations_dtype=bfloat16","weights_dtype=bfloat16",f"run_name={run_name}",
       "max_train_steps=21","dataset_name=diffusers/pokemon-gpt4-captions",
       "resolution=768","per_device_batch_size=1",
       "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
@@ -91,7 +91,7 @@ class Train(unittest.TestCase):
 
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       f"pretrained_model_name_or_path={output_dir}/{run_name}/checkpoints/final",
-      "revision=bf16","dtype=bfloat16","resolution=768",
+      "revision=bf16","activations_dtype=bfloat16","weights_dtype=bfloat16","resolution=768",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=7.5",
       "num_inference_steps=30","seed=47",])
@@ -119,7 +119,7 @@ class Train(unittest.TestCase):
 
     # here we test the unet saving works.
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
-      "dtype=bfloat16",
+      "activations_dtype=bfloat16","weights_dtype=bfloat16",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=7.5",
       "num_inference_steps=30","seed=47", "cache_dir=gs://jfacevedo-maxdiffusion/cache_dir",

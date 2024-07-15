@@ -193,12 +193,11 @@ controlnet_from_pt: True
 controlnet_conditioning_scale: 1.0
 controlnet_image: 'https://huggingface.co/datasets/YiYiXu/test-doc-assets/resolve/main/blog_post_cell_10_output_0.jpeg'
 
-# dreambooth
+# dreambooth - this script always uses prior preservation.
 instance_data_dir: ''
 class_data_dir: ''
 instance_prompt: ''
 class_prompt: ''
-with_prior_preservation: True
 prior_loss_weight: 1.0
 num_class_images: 100
 # If true, set dataset_save_location.

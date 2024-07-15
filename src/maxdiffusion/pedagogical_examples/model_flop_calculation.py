@@ -32,7 +32,6 @@ from maxdiffusion import (
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import (
   create_device_mesh,
-  get_dtype,
   get_flash_block_sizes,
 )
 from maxdiffusion.maxdiffusion_utils import calculate_unet_tflops
@@ -44,11 +43,10 @@ def run(config):
   # and ici/dcn parallelism rules
   devices_array = create_device_mesh(config)
   mesh = Mesh(devices_array, config.mesh_axes)
-  weight_dtype = get_dtype(config)
   flash_block_sizes = get_flash_block_sizes(config)
   pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
     config.pretrained_model_name_or_path,revision=config.revision,
-    dtype=weight_dtype,
+    dtype=config.activations_dtype,
     safety_checker=None,
     feature_extractor=None,
     from_pt=config.from_pt,

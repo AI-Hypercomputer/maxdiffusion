@@ -22,7 +22,6 @@ from jax.sharding import Mesh
 from ..import pyconfig
 from maxdiffusion.max_utils import (
   create_device_mesh,
-  get_dtype,
   get_flash_block_sizes,
 )
 from maxdiffusion import (
@@ -44,7 +43,7 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
     """Test create scheduler with different schedulers"""
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
-      "revision=refs/pr/95","dtype=bfloat16",
+      "revision=refs/pr/95","activations_dtype=bfloat16",
       'diffusion_scheduler_config={"prediction_type" : "v_prediction", '
       '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'])
 
@@ -53,13 +52,12 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
     # Setup Mesh
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    weight_dtype = get_dtype(config)
     flash_block_sizes = get_flash_block_sizes(config)
 
     pipeline, _ = FlaxStableDiffusionXLPipeline.from_pretrained(
       config.pretrained_model_name_or_path,
       revision=config.revision,
-      dtype=weight_dtype,
+      dtype=config.activations_dtype,
       split_head_dim=config.split_head_dim,
       norm_num_groups=config.norm_num_groups,
       attention_kernel=config.attention,
@@ -88,7 +86,7 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
     # Test class name override without Flax Name.
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
-      "revision=refs/pr/95","dtype=bfloat16",
+      "revision=refs/pr/95","activations_dtype=bfloat16",
       'diffusion_scheduler_config={"_class_name" : "DDIMScheduler", "prediction_type" : "v_prediction", '
       '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'])
 
@@ -107,7 +105,7 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
     # Test class name override with Flax Name.
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
-      "revision=refs/pr/95","dtype=bfloat16",
+      "revision=refs/pr/95","activations_dtype=bfloat16",
       'diffusion_scheduler_config={"_class_name" : "FlaxDDPMScheduler", "prediction_type" : "v_prediction", '
       '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'])
 

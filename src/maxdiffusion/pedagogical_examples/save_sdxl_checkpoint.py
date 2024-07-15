@@ -35,7 +35,6 @@ from maxdiffusion import (
 
 from maxdiffusion.max_utils import (
   create_device_mesh,
-  get_dtype,
   get_flash_block_sizes
 )
 
@@ -44,13 +43,12 @@ def run(config):
   devices_array = create_device_mesh(config)
   mesh = Mesh(devices_array, config.mesh_axes)
 
-  weight_dtype = get_dtype(config)
   flash_block_sizes = get_flash_block_sizes(config)
 
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision,
-    dtype=weight_dtype,
+    dtype=config.activations_dtype,
     split_head_dim=config.split_head_dim,
     norm_num_groups=config.norm_num_groups,
     attention_kernel=config.attention,

@@ -28,9 +28,6 @@ from maxdiffusion.utils import load_image
 from PIL import Image
 from maxdiffusion import pyconfig
 from maxdiffusion import FlaxStableDiffusionXLControlNetPipeline, FlaxControlNetModel
-from maxdiffusion.max_utils import (
-  get_dtype
-)
 import cv2
 
 cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
@@ -40,7 +37,6 @@ def create_key(seed=0):
 
 def run(config):
   rng = jax.random.PRNGKey(config.seed)
-  weight_dtype = get_dtype(config)
 
   prompts = config.prompt
   negative_prompts = config.negative_prompt
@@ -57,14 +53,14 @@ def run(config):
   controlnet, controlnet_params = FlaxControlNetModel.from_pretrained(
     config.controlnet_model_name_or_path,
     from_pt=config.controlnet_from_pt,
-    dtype=weight_dtype
+    dtype=config.activations_dtype
   )
 
   pipe, params = FlaxStableDiffusionXLControlNetPipeline.from_pretrained(
     config.pretrained_model_name_or_path,
     controlnet=controlnet,
     revision=config.revision,
-    dtype=weight_dtype
+    dtype=config.activations_dtype
   )
 
   scheduler_state = params.pop("scheduler")

@@ -35,6 +35,8 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_dreambooth_train_iterator
 )
 
+from google.cloud import storage
+
 from skimage.metrics import structural_similarity as ssim
 from PIL import Image
 
@@ -65,6 +67,22 @@ HOME_DIR = pathlib.Path.home()
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = str(HOME_DIR / ".cache" / "huggingface" / "datasets")
 
+def download_dataset_from_gcs(gcs_directory, local_directory):
+    split_path = gcs_directory.replace("gs://","").split("/")
+    bucket_name = split_path[0]
+    prefix = "/".join(split_path[1:])
+
+    storage_client = storage.Client()
+    bucket = storage_client.get_bucket(bucket_name)
+    blobs = bucket.list_blobs(prefix=prefix)
+    #to_dir = os.path.join("/tmp","dreambooth_dataset","instance_class")
+    os.makedirs(local_directory, exist_ok=True)
+
+    for blob in blobs:
+        filename = blob.name.replace('/','_')
+        if "jpg" in filename:
+            blob.download_to_filename((os.path.join(local_directory, filename)))
+
 def cleanup(output_dir):
   if os.path.isdir(output_dir):
     shutil.rmtree(output_dir)
@@ -75,20 +93,20 @@ class InputPipelineInterface(unittest.TestCase):
     InputPipelineInterface.dummy_data = {}
 
   def test_make_dreambooth_train_iterator(self):
+
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
       "cache_latents_text_encoder_outputs=True",
       "dataset_name=my_dreambooth_dataset",
       "instance_data_dir=/home/jfacevedo/dreambooth/processed/Person01_processed",
       "class_data_dir=/home/jfacevedo/dreambooth/class-dir/class_dir_man",
-      'instance_prompt=photo of ohwx man', 'class_prompt=photo of man'])
+      'instance_prompt=photo of ohwx dog', 'class_prompt=photo of dog'])
     config = pyconfig.config
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    weight_dtype = max_utils.get_dtype(config)
 
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+        config.pretrained_model_name_or_path,revision=config.revision, dtype=config.activations_dtype,
         safety_checker=None, feature_extractor=None, from_pt=config.from_pt
     )
 
@@ -132,9 +150,8 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    weight_dtype = max_utils.get_dtype(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+        config.pretrained_model_name_or_path,revision=config.revision, dtype=config.activations_dtype,
         safety_checker=None, feature_extractor=None, from_pt=config.from_pt
     )
     rng = jax.random.PRNGKey(config.seed)
@@ -182,9 +199,8 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    weight_dtype = max_utils.get_dtype(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+        config.pretrained_model_name_or_path,revision=config.revision, dtype=config.activations_dtype,
         safety_checker=None, feature_extractor=None, from_pt=config.from_pt
     )
     rng = jax.random.PRNGKey(config.seed)
@@ -230,9 +246,8 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    weight_dtype = max_utils.get_dtype(config)
     pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+        config.pretrained_model_name_or_path,revision=config.revision, dtype=config.activations_dtype,
         safety_checker=None, feature_extractor=None, from_pt=config.from_pt
     )
     rng = jax.random.PRNGKey(config.seed)
@@ -284,10 +299,9 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    weight_dtype = max_utils.get_dtype(config)
 
     pipeline, _ = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+        config.pretrained_model_name_or_path,revision=config.revision, dtype=config.activations_dtype,
         safety_checker=None, feature_extractor=None, from_pt=config.from_pt
     )
 

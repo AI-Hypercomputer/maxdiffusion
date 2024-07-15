@@ -106,11 +106,10 @@ def train(config):
 
     total_train_batch_size = config.per_device_batch_size * jax.device_count()
 
-    weight_dtype = max_utils.get_dtype(config)
     flash_block_sizes = max_utils.get_flash_block_sizes(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision,
-        dtype=weight_dtype,
+        dtype=config.activations_dtype,
         safety_checker=None,
         feature_extractor=None,
         from_pt=config.from_pt,
@@ -131,7 +130,7 @@ def train(config):
             )
         params["unet"] = unet_params
         pipeline.unet = unet
-    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
+    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
     noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(config.pretrained_model_name_or_path,
         revision=config.revision, subfolder="scheduler", dtype=jnp.float32)
@@ -164,7 +163,7 @@ def train(config):
                                                                 pipeline, params["unet"],
                                                                 params["vae"], training=True)
 
-    per_device_tflops = calculate_unet_tflops(config, pipeline, rng, train=True)
+    per_device_tflops = calculate_unet_tflops(config, pipeline, (config.per_device_batch_size * jax.local_device_count()), rng, train=True)
     max_logging.log(f"Per train step, estimated total TFLOPs will be {per_device_tflops:.2f}")
 
     if config.dataset_name == "diffusers/pokemon-gpt4-captions":
@@ -368,10 +367,10 @@ def train(config):
         # Restore vae and text encoder if we cached latents and encoder outputs.
         if config.cache_latents_text_encoder_outputs:
             text_encoder = FlaxCLIPTextModel.from_pretrained(
-                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=weight_dtype, from_pt=config.from_pt
+                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=config.activations_dtype, from_pt=config.from_pt
             )
             vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-                config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
+                config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=config.activations_dtype, from_pt=config.from_pt
             )
             pipeline.vae = vae
             pipeline.text_encoder = text_encoder
