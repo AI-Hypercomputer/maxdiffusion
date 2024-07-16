@@ -160,6 +160,9 @@ def generate_timestep_weights(config, num_timesteps):
   weights /= weights.sum()
   return jnp.array(weights)
 
+# def save_orbax_checkpoint(unet_state, pipeline, text_encoder_state = None):
+  
+
 def save_checkpoint(save_fn, params, config, output_dir):
   """
   Save checkpoint.

@@ -314,16 +314,30 @@ def init_train_state(model_params, model, tx, training=True):
 
 def get_abstract_state(model, tx, config, mesh, model_params, training=True):
   """ Get a shaped abstraction of the state (including optimizer)"""
-  abstract_state = jax.eval_shape(functools.partial(init_train_state, model=model, tx=tx, training=training), model_params=model_params)
+  init_state_partial = functools.partial(
+    init_train_state, model=model, tx=tx, training=training
+  )
+  with nn_partitioning.axis_rules(config.logical_axis_rules):
+    abstract_state = jax.eval_shape(init_state_partial, model_params=model_params)
+  
   state_logical_annotations = nn.get_partition_spec(abstract_state)
-  unboxed_abstract_state = unbox_logicallypartioned_trainstate(abstract_state)
+  
+  state_mesh_shardings = nn.logical_to_mesh_sharding(
+    state_logical_annotations, mesh, config.logical_axis_rules
+  )
+
+  abstract_sharded_state = jax.jit(
+    init_state_partial, in_shardings=None, out_shardings=state_mesh_shardings
+  ).eval_shape(model_params)
+
+  unboxed_sharded_abstract_state = unbox_logicallypartioned_trainstate(abstract_sharded_state)
 
   # Initialization
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
     state_mesh_annotations = nn.logical_to_mesh(state_logical_annotations)
-  return unboxed_abstract_state, state_mesh_annotations
+  return unboxed_sharded_abstract_state, state_mesh_annotations, state_mesh_shardings
 
-def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_state, state_mesh_annotations, checkpoint_manager=None, training=True):
+def setup_initial_state(model, tx, config, mesh, model_params, checkpoint_manager=None, training=True):
   """ We initialize the model and optimizer state, and optionally load from a
   checkpoint as necessary.
 
@@ -345,18 +359,13 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
 
   # Initialization
   state = None
+  unboxed_abstract_state, state_mesh_annotations, state_mesh_shardings = get_abstract_state(
+    model, tx, config, mesh, model_params, training)
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     if checkpoint_manager:
-      state, raw_params = checkpointing.load_state_if_possible(checkpoint_manager,
-                                                  config.load_parameters_path,
-                                                  config.load_from_other_directory,
-                                                  config.load_from_other_directory_step,
-                                                  unboxed_abstract_state,
-                                                  mesh,
-                                                  state_mesh_annotations)
-
-    state_mesh_shardings = jax.tree_util.tree_map(
-        lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
+      state, _ = checkpointing.load_state_if_possible(checkpoint_manager,
+                                                  unboxed_abstract_state)
+      breakpoint()
   if not state:
     init_train_state_partial = functools.partial(init_train_state, model=model, tx=tx, training=training)
 
@@ -377,7 +386,7 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
     lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
   return state, state_mesh_shardings
 
-def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, training=True):
+def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, checkpoint_manager=None, training=True):
   
   # Needed to initialize weights on multi-host with addressable devices.
   if config.train_new_unet:
@@ -385,7 +394,6 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
   else:
     unet_variables = pipeline.unet.init_weights(rng, eval_only=True)
 
-  unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, tx, config, mesh, unet_variables, training=training)
   if config.train_new_unet:
     unet_params = unet_variables
   else:
@@ -396,10 +404,9 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
   config,
   mesh,
   unet_params,
-  unboxed_abstract_state,
-  state_mesh_annotations,
+  checkpoint_manager=checkpoint_manager,
   training=training)
-
+  breakpoint()
   vae_state = None
   vae_state_mesh_shardings = None
   if vae_params:

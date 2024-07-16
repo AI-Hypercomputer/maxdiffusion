@@ -16,22 +16,93 @@
  """
 
 """Create an Orbax CheckpointManager with specified (Async or not) Checkpointer."""
+
+from typing import Optional, Union
+import json
 import jax
+import numpy as np
 from maxdiffusion import max_logging
 from etils import epath
 from flax.training import train_state
-from orbax import checkpoint
+import orbax
+import orbax.checkpoint as ocp
+from orbax.checkpoint.logging import abstract_logger
 from orbax.checkpoint import type_handlers
 from orbax.checkpoint.checkpoint_manager import Checkpointer, CheckpointManager, CheckpointManagerOptions
 
+def create_orbax_checkpoint_manager(
+  checkpoint_dir: str,
+  enable_checkpointing: bool,
+  save_interval_steps,
+  checkpoint_type: str,
+  use_async: bool = True,
+  orbax_logger: Optional[abstract_logger.AbstractLogger] = None
+):
+  """
+  Returns specified Orbax (async or not) CheckpointManager or None if checkpointing is disabled.
+  checkpoint_type: Options are sd or sdxl.
+  """
+  if not enable_checkpointing:
+    max_logging.log("Checkpointing disabled, not creating checkpoint manager.")
+    return None
+  
+  max_logging.log("Creating checkpoing manager...")
+  max_logging.log(f"checkpoint dir: {checkpoint_dir}")
+  p = epath.Path(checkpoint_dir)
 
-def load_state_if_possible(checkpoint_manager: CheckpointManager,
-                           first_checkpoint_path: str,
-                           load_from_other_directory: str,
-                           load_from_other_directory_step: int,
-                           abstract_unboxed_pre_state: train_state.TrainState,
-                           mesh,
-                           state_mesh_annotations):
+  item_names = (
+    "unet_state", "unet_config",
+    "vae_state", "vae_config",
+    "text_encoder_params", "text_encoder_state", "text_encoder_config",
+    "scheduler_config"
+  )
+  if checkpoint_type == "sdxl":
+    item_names + ("text_encoder_2_params", "text_encoder_2_state", "text_encoder_2_config")
+  
+  mngr = CheckpointManager(
+    p,
+    item_names=item_names,
+    options=CheckpointManagerOptions(
+      create=True,
+      save_interval_steps=save_interval_steps,
+      enable_async_checkpointing=use_async
+    ),
+    logger=orbax_logger
+  )
+
+  max_logging.log("Checkpoint manager created!")
+  return mngr
+
+def _find_idx(array: np.ndarray, replica_axis_idx: int):
+  """Returns the index along given dimension that the current host belongs to."""
+  idx = None
+  for idx, val in np.ndenumerate(array):
+    if val.process_index == jax.process_index():
+      break
+  return idx[replica_axis_idx]
+
+
+def _replica_devices(device_array: np.ndarray, replica_axis_idx: int):
+  """Returns the devices from the replica that current host belongs to.
+
+  Replicas are assumed to be restricted to the first axis.
+
+  Args:
+    device_array: devices of the mesh that can be obtained by mesh.devices()
+    replica_axis_idx: axis dimension along which replica is taken
+
+  Returns:
+    devices inside the replica that current host is in
+  """
+  idx = _find_idx(device_array, replica_axis_idx)
+  replica_result = np.take(device_array, idx, axis=replica_axis_idx)
+  return np.expand_dims(replica_result, axis=replica_axis_idx)
+
+def load_state_if_possible(
+  checkpoint_manager: CheckpointManager,
+  abstract_unboxed_pre_state: train_state.TrainState,
+  enable_single_replica_ckpt_restoring: Optional[bool] = False,
+):
   """Loads TrainState as possible from the inputs.
 
   Args:
@@ -55,41 +126,68 @@ def load_state_if_possible(checkpoint_manager: CheckpointManager,
   if checkpoint_manager is None:
     max_logging.log("no checkpoint manager, not restoring checkpoint")
     return None, None
-  def map_to_pspec(data, pspec):
-    if isinstance(data, (jax.Array, jax.ShapeDtypeStruct)) \
-          and pspec is not None:
-      return type_handlers.ArrayRestoreArgs(mesh=mesh, mesh_axes=pspec)
-    else:
-      return type_handlers.RestoreArgs()
-
-  restore_args = jax.tree_util.tree_map(map_to_pspec,
-                                        abstract_unboxed_pre_state,
-                                        state_mesh_annotations)
+  
   latest_step = checkpoint_manager.latest_step()
   if latest_step is not None:
-    max_logging.log(f"restoring state from this run's directory latest step \
-        {latest_step}")
-    return checkpoint_manager.restore(latest_step, abstract_unboxed_pre_state,
-                                      {"restore_args" : restore_args}), None
-  elif first_checkpoint_path != "":
-    max_logging.log(f"restoring state from first_checkpoint_path {first_checkpoint_path}")
-    p = epath.Path(first_checkpoint_path)
-    checkpointer = Checkpointer(checkpoint.PyTreeCheckpointHandler())
-    return None, checkpointer.restore(p,
-                                      item=abstract_unboxed_pre_state,
-                                      restore_args=restore_args).params
-  elif load_from_other_directory != "":
-    p = epath.Path(load_from_other_directory)
-    checkpointer_loader = Checkpointer(checkpoint.PyTreeCheckpointHandler())
-    mngr_loader = CheckpointManager(p, checkpointer_loader, options=CheckpointManagerOptions(create=True))
-    if load_from_other_directory_step == -1:
-      step = mngr_loader.latest_step()
-      max_logging.log(f"restoring state from {load_from_other_directory} latest step {step}")
-    else:
-      step = load_from_other_directory_step
-      max_logging.log(f"restoring state from {load_from_other_directory} step {step}")
-    return mngr_loader.restore(step, abstract_unboxed_pre_state,
-                                      {"restore_args" : restore_args}), None
-  else:
-    max_logging.log("No existing checkpoints found, not restoring checkpoint.")
-    return None, None
+    max_logging.log(
+      f"restoring from this run's directory latest step {latest_step}"
+    )
+
+    def map_to_pspec(data):
+      pspec = data.sharding.spec
+      mesh = data.sharding.mesh
+      if not enable_single_replica_ckpt_restoring:
+        return orbax.checkpoint.type_handlers.ArrayRestoreArgs(
+          mesh=mesh, mesh_axes = pspec
+        )
+      replicate_axis_index = 0
+      replica_devices = _replica_devices(mesh.devices, replicate_axis_index)
+      replicate_mesh = jax.sharding.Mesh(replica_devices, mesh.axis_names)
+      single_replica_sharding = jax.sharding.NamedSharding(
+        replicate_mesh, pspec
+      )
+
+      array_handler = (
+        orbax.checkpoint.type_handlers.SingleReplicaArrayHandler(
+          replica_axis_index=0,
+          broadcast_memory_limit_bytes=1024 * 1024 * 1000  # 1000 MB limit
+        )
+      )
+      orbax.checkpoint.type_handler.register_type_handler(
+        jax.Array,
+        array_handler,
+        override=True
+      )
+
+      return orbax.checkpoint.type_handlers.SingleReplicaArrayRestoreArgs(
+        sharding=jax.sharding.NamedSharding(mesh, pspec),
+        single_replica_sharding=single_replica_sharding,
+        global_shape=data.shape,
+        dtype=data.dtype
+      )
+    
+    restore_args = jax.tree_util.tree_map(
+      map_to_pspec,
+      abstract_unboxed_pre_state
+    ) 
+
+    return (
+      checkpoint_manager.restore(
+        latest_step,
+        args=orbax.checkpoint.args.Composite(
+          items=orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state, restore_args=restore_args)
+        )
+      ),
+      None,
+    )
+
+def save_checkpoint(checkpoint_manager, step, unet_state, pipeline):
+
+  def config_to_json(config):
+    return json.loads(config.to_json_string())
+  
+  unet_config = config_to_json(pipeline.unet.config)
+  checkpoint_manager.save(step, args=ocp.args.Composite(
+    unet_state=ocp.args.StandardSave(unet_state),
+    unet_config=ocp.args.JsonSave(unet_config)
+  ))
