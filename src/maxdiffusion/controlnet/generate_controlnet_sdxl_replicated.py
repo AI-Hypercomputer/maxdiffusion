@@ -14,7 +14,6 @@
  limitations under the License.
  """
 
-import os
 from typing import Sequence
 from absl import app
 
@@ -90,7 +89,7 @@ def run(config):
 
   output_images = pipe.numpy_to_pil(np.asarray(output.reshape((num_samples,) + output.shape[-3:])))
   output_images[0].save("generated_image.png")
-  return output_images[0]
+  return output_images
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)

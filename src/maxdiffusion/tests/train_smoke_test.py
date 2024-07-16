@@ -45,6 +45,10 @@ class Train(unittest.TestCase):
   def test_sdxl_config(self):
     output_dir="train-smoke-test"
     run_name="sdxl_train_smoke_test"
+    cache_dir="gs://maxdiffusion-github-runner-test-assets/cache_dir"
+    # calling train_dreambooth directly bypasses setting the cache dir
+    # so setting it here.
+    jax.config.update("jax_compilation_cache_dir",cache_dir)
     train_sdxl_main([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
       "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
       "revision=refs/pr/95","activations_dtype=bfloat16","weights_dtype=bfloat16",f"run_name={run_name}",
@@ -52,7 +56,7 @@ class Train(unittest.TestCase):
       "resolution=1024","per_device_batch_size=1","snr_gamma=5.0",
       'timestep_bias={"strategy" : "later", "multiplier" : 2.0, "portion" : 0.25}',
       "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
-      "cache_dir=gs://jfacevedo-maxdiffusion/cache_dir"])
+      f"cache_dir={cache_dir}"])
 
     img_url = os.path.join(THIS_DIR,'images','test_sdxl.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
@@ -64,7 +68,7 @@ class Train(unittest.TestCase):
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=9",
       "num_inference_steps=20","seed=47","per_device_batch_size=1",
-      "split_head_dim=False", "cache_dir=gs://jfacevedo-maxdiffusion/cache_dir"])
+      "split_head_dim=False", f"cache_dir={cache_dir}"])
 
     images = generate_run_xl(pyconfig.config)
     test_image = np.array(images[0]).astype(np.uint8)
@@ -121,7 +125,7 @@ class Train(unittest.TestCase):
     # calling train_dreambooth directly bypasses setting the cache dir
     # so setting it here.
     jax.config.update("jax_compilation_cache_dir",cache_dir)
-    
+
     train_main([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
       f"run_name={run_name}", "checkpoint_every=256","upload_ckpts_to_gcs=True",
       "max_train_steps=21","per_device_batch_size=8",

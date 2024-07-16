@@ -35,11 +35,11 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 def cleanup(output_dir):
   shutil.rmtree(output_dir)
 
-class DreamBoothTest(unittest.TestCase):
+class DreamBooth(unittest.TestCase):
     """Test DreamBooth"""
 
     def setUp(self):
-        DreamBoothTest.dummy_data = {}
+        DreamBooth.dummy_data = {}
 
     def test_prior_preservation(self):
         """Test prior preservation function generates images."""
@@ -79,7 +79,7 @@ class DreamBoothTest(unittest.TestCase):
             "class_data_dir=test_dreambooth", f"instance_data_dir={instance_class_local_dir}",
             f"class_data_dir={class_class_local_dir}","instance_prompt=a photo of ohwx dog",
             "class_prompt=photo of a dog","max_train_steps=150",f"cache_dir={cache_dir}",
-            "class_prompt=a photo of a dog","max_train_steps=150", "activations_dtype=bfloat16",
+            "class_prompt=a photo of a dog", "activations_dtype=bfloat16",
             "weights_dtype=float32","per_device_batch_size=1","enable_profiler=False","precision=DEFAULT",
             "cache_dreambooth_dataset=False","learning_rate=4e-6",f"output_dir={output_dir}",
             f"num_class_images={num_class_images}",f"run_name={run_name}",

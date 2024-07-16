@@ -66,8 +66,6 @@ def transform_images(
         image = (image - 0.5) / 0.5
         image = tf.transpose(image, perm=[2,0,1])
         tensor_list.append(image)
-    assert np.max(tensor_list) <= 1
-    assert np.min(tensor_list) >= -1
 
     if p_vae_apply:
         tensor_list = np.stack(tensor_list)

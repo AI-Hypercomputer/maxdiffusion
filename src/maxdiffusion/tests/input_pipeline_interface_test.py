@@ -230,6 +230,7 @@ class InputPipelineInterface(unittest.TestCase):
 
   def test_make_pokemon_iterator_sdxl_cache(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
+        "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
         "cache_latents_text_encoder_outputs=True","per_device_batch_size=1",
         "dataset_name=diffusers/pokemon-gpt4-captions"])
     config = pyconfig.config

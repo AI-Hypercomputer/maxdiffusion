@@ -14,7 +14,6 @@
  limitations under the License.
  """
 
-import os
 import functools
 from absl import app
 from typing import Sequence
