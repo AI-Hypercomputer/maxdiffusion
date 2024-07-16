@@ -19,6 +19,7 @@ import os
 import pathlib
 import shutil
 import unittest
+import jax
 from maxdiffusion.models.train import main as train_main
 from maxdiffusion.train_sdxl import main as train_sdxl_main
 from ..import pyconfig
@@ -78,13 +79,19 @@ class Train(unittest.TestCase):
   def test_sd21_config(self):
     output_dir="train-smoke-test"
     run_name="sd2.1_smoke_test"
+    cache_dir="gs://maxdiffusion-github-runner-test-assets/cache_dir"
+
+    # calling train_dreambooth directly bypasses setting the cache dir
+    # so setting it here.
+    jax.config.update("jax_compilation_cache_dir",cache_dir)
+
     train_main([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
       "revision=bf16","activations_dtype=bfloat16","weights_dtype=bfloat16",f"run_name={run_name}",
       "max_train_steps=21","dataset_name=diffusers/pokemon-gpt4-captions",
       "resolution=768","per_device_batch_size=1",
       "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
-      "cache_dir=gs://jfacevedo-maxdiffusion/cache_dir"])
+      f"cache_dir={cache_dir}"])
 
     img_url = os.path.join(THIS_DIR,'images','test.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
@@ -109,6 +116,12 @@ class Train(unittest.TestCase):
   def test_sd15_config(self):
     output_dir="train-smoke-test"
     run_name="sd15_smoke_test"
+    cache_dir="gs://maxdiffusion-github-runner-test-assets/cache_dir"
+
+    # calling train_dreambooth directly bypasses setting the cache dir
+    # so setting it here.
+    jax.config.update("jax_compilation_cache_dir",cache_dir)
+    
     train_main([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
       f"run_name={run_name}", "checkpoint_every=256","upload_ckpts_to_gcs=True",
       "max_train_steps=21","per_device_batch_size=8",

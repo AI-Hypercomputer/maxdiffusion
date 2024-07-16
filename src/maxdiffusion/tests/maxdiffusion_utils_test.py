@@ -42,7 +42,7 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
   def test_create_scheduler(self):
     """Test create scheduler with different schedulers"""
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
-      "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
+      "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
       "revision=refs/pr/95","activations_dtype=bfloat16",
       'diffusion_scheduler_config={"prediction_type" : "v_prediction", '
       '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'])
@@ -85,7 +85,7 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
 
     # Test class name override without Flax Name.
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
-      "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
+      "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
       "revision=refs/pr/95","activations_dtype=bfloat16",
       'diffusion_scheduler_config={"_class_name" : "DDIMScheduler", "prediction_type" : "v_prediction", '
       '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'])
@@ -104,7 +104,7 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
 
     # Test class name override with Flax Name.
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
-      "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
+      "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
       "revision=refs/pr/95","activations_dtype=bfloat16",
       'diffusion_scheduler_config={"_class_name" : "FlaxDDPMScheduler", "prediction_type" : "v_prediction", '
       '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'])

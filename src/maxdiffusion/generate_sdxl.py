@@ -25,7 +25,6 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
-from jax.experimental.compilation_cache import compilation_cache as cc
 from flax.linen import partitioning as nn_partitioning
 from jax.sharding import PositionalSharding
 
@@ -52,8 +51,6 @@ from maxdiffusion.maxdiffusion_utils import (
   get_add_time_ids,
   rescale_noise_cfg
 )
-
-cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
 def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
   latents, scheduler_state, state = args
@@ -295,6 +292,9 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
+  config = pyconfig.config
+  if len(config.cache_dir) > 0:
+    jax.config.update("jax_compilation_cache_dir", config.cache_dir)
   run(pyconfig.config)
 
 if __name__ == "__main__":
