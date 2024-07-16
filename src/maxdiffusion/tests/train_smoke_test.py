@@ -112,7 +112,8 @@ class Train(unittest.TestCase):
     train_main([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
       f"run_name={run_name}", "checkpoint_every=256","upload_ckpts_to_gcs=True",
       "max_train_steps=21","per_device_batch_size=8",
-      "base_output_directory=gs://maxdiffusion-github-runner-test-assets/training_results/", f"output_dir={output_dir}"])
+      "base_output_directory=gs://maxdiffusion-github-runner-test-assets/training_results/",
+      f"output_dir={output_dir}"])
 
     img_url = os.path.join(THIS_DIR,'images','test_sd15.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)

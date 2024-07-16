@@ -15,7 +15,6 @@
  """
 
 import functools
-import os
 import time
 from typing import Sequence
 
@@ -39,11 +38,8 @@ from maxdiffusion import (
 
 from maxdiffusion.maxdiffusion_utils import rescale_noise_cfg
 from flax.linen import partitioning as nn_partitioning
-from jax.experimental.compilation_cache import compilation_cache as cc
 from jax.sharding import Mesh, PositionalSharding
 from maxdiffusion.image_processor import VaeImageProcessor
-
-cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
 def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidance_rescale):
     latents, scheduler_state, state = args
@@ -221,6 +217,9 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
+    config = pyconfig.config
+    if len(config.cache_dir) > 0:
+        jax.config.update("jax_compilation_cache_dir", config.cache_dir)
     run(pyconfig.config)
 
 if __name__ == "__main__":

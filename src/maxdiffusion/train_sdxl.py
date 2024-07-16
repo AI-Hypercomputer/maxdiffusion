@@ -440,13 +440,13 @@ def train(config):
         # Restore vae and text encoder if we cached latents and encoder outputs.
         if config.cache_latents_text_encoder_outputs:
             text_encoder = FlaxCLIPTextModel.from_pretrained(
-                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=weight_dtype, from_pt=config.from_pt
+                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder", dtype=config.activations_dtype, from_pt=config.from_pt
             )
             text_encoder_2 = FlaxCLIPTextModelWithProjection.from_pretrained(
-                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder_2", dtype=weight_dtype, from_pt=config.from_pt
+                config.pretrained_model_name_or_path, revision=config.revision, subfolder="text_encoder_2", dtype=config.activations_dtype, from_pt=config.from_pt
             )
             vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-                config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=weight_dtype, from_pt=config.from_pt
+                config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=config.activations_dtype, from_pt=config.from_pt
             )
             pipeline.vae = vae
             pipeline.text_encoder = text_encoder

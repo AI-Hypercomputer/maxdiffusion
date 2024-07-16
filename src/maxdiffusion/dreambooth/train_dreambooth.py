@@ -68,7 +68,7 @@ from huggingface_hub.utils import insecure_hashlib
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import make_dreambooth_train_iterator
 
-from dreambooth_constants import (
+from maxdiffusion.dreambooth.dreambooth_constants import (
     INSTANCE_IMAGE_LATENTS,
     INSTANCE_PROMPT_INPUT_IDS,
     CLASS_IMAGE_LATENTS,

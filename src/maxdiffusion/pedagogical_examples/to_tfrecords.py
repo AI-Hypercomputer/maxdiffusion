@@ -50,8 +50,7 @@ PIL.Image.MAX_IMAGE_PIXELS = None
 
 from maxdiffusion import (
   FlaxStableDiffusionPipeline,
-  pyconfig,
-  max_utils
+  pyconfig
 )
 
 dl_manager = tfds.download.DownloadManager(download_dir="/tmp")

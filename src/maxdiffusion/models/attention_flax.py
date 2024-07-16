@@ -715,7 +715,7 @@ class FlaxTransformer2DModel(nn.Module):
         else:
             hidden_states = hidden_states.reshape(batch, height, width, channels)
             hidden_states = self.proj_out(hidden_states)
-        
+
         hidden_states = nn.with_logical_constraint(
             hidden_states,
             self.hidden_state_axis_names

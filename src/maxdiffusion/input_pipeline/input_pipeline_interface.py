@@ -157,14 +157,14 @@ def make_dreambooth_train_iterator(
     class_train_ds = load_from_disk(class_dataset_full_path)
   else:
     # load class data
-    class_image_paths = tf.io.gfile.glob(f"{config.class_data_dir}/*")
+    class_image_paths = tf.io.gfile.glob(os.path.join(config.class_data_dir,"*"))
     for image_path in class_image_paths:
       class_images.append(Image.open(image_path).convert("RGB"))
     class_prompt_ids.extend([config.class_prompt] * len(class_images))
 
     # load instance data. Since we use prior preservation, we need to match
     # the number of instance images we're using.
-    instance_image_paths = tf.io.gfile.glob(f"{config.instance_data_dir}/*")
+    instance_image_paths = tf.io.gfile.glob(os.path.join(config.instance_data_dir,"*"))
     for index in range(len(class_images)):
       instance_image = instance_image_paths[index % len(instance_image_paths)]
       instance_images.append(Image.open(instance_image).convert("RGB"))

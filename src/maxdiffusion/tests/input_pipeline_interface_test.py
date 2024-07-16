@@ -35,7 +35,6 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_dreambooth_train_iterator
 )
 
-from google.cloud import storage
 
 from skimage.metrics import structural_similarity as ssim
 from PIL import Image
@@ -67,22 +66,6 @@ HOME_DIR = pathlib.Path.home()
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = str(HOME_DIR / ".cache" / "huggingface" / "datasets")
 
-def download_dataset_from_gcs(gcs_directory, local_directory):
-    split_path = gcs_directory.replace("gs://","").split("/")
-    bucket_name = split_path[0]
-    prefix = "/".join(split_path[1:])
-
-    storage_client = storage.Client()
-    bucket = storage_client.get_bucket(bucket_name)
-    blobs = bucket.list_blobs(prefix=prefix)
-    #to_dir = os.path.join("/tmp","dreambooth_dataset","instance_class")
-    os.makedirs(local_directory, exist_ok=True)
-
-    for blob in blobs:
-        filename = blob.name.replace('/','_')
-        if "jpg" in filename:
-            blob.download_to_filename((os.path.join(local_directory, filename)))
-
 def cleanup(output_dir):
   if os.path.isdir(output_dir):
     shutil.rmtree(output_dir)
@@ -94,11 +77,18 @@ class InputPipelineInterface(unittest.TestCase):
 
   def test_make_dreambooth_train_iterator(self):
 
+    instance_class_gcs_dir="gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/instance_class"
+    class_class_gcs_dir="gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/class_class"
+    local_dir="/tmp/"
+    instance_class_local_dir = max_utils.download_blobs(instance_class_gcs_dir, local_dir)
+    class_class_local_dir = max_utils.download_blobs(class_class_gcs_dir, local_dir)
+
+
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
       "cache_latents_text_encoder_outputs=True",
       "dataset_name=my_dreambooth_dataset",
-      "instance_data_dir=/home/jfacevedo/dreambooth/processed/Person01_processed",
-      "class_data_dir=/home/jfacevedo/dreambooth/class-dir/class_dir_man",
+      f"instance_data_dir={instance_class_local_dir}",
+      f"class_data_dir={class_class_local_dir}",
       'instance_prompt=photo of ohwx dog', 'class_prompt=photo of dog'])
     config = pyconfig.config
     global_batch_size = config.per_device_batch_size * jax.device_count()
@@ -137,6 +127,9 @@ class InputPipelineInterface(unittest.TestCase):
                                           pipeline.unet.config.in_channels,
                                           config.resolution // vae_scale_factor,
                                           config.resolution // vae_scale_factor)
+
+    cleanup(instance_class_local_dir)
+    cleanup(class_class_local_dir)
 
 
   def test_make_pokemon_iterator_cache(self):
