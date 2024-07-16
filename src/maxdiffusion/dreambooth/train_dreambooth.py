@@ -258,17 +258,17 @@ def train(config):
         tx=tx
     )
 
-    options = ocp.CheckpointManagerOptions()
-    mngr = ocp.CheckpointManager(
-        ocp.test_utils.erase_and_create_empty('gs://jfacevedo-maxdiffusion/orbax_checkpoints/'),
-        item_names=(
-            'unet_state',
-            'unet_config'
-            ),
-        options=options
-    )
-    save_checkpoint(mngr, 0, unet_state, pipeline)
-    breakpoint()
+    # options = ocp.CheckpointManagerOptions()
+    # mngr = ocp.CheckpointManager(
+    #     ocp.test_utils.erase_and_create_empty('gs://jfacevedo-maxdiffusion/orbax_checkpoints/'),
+    #     item_names=(
+    #         'unet_state',
+    #         'unet_config'
+    #         ),
+    #     options=options
+    # )
+    # save_checkpoint(mngr, 0, unet_state, pipeline)
+    # breakpoint()
 
     # In dreambooth training the class and instance batch sizes are concatenated to use a single
     # forward pass, so the batch size passed to tflops is multiplied by 2.
@@ -372,7 +372,6 @@ def train(config):
         metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
 
         return new_unet_state, new_text_encoder_state, metrics, new_train_rng
-
     num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 

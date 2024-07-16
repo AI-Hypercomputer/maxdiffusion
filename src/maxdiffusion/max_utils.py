@@ -365,7 +365,6 @@ def setup_initial_state(model, tx, config, mesh, model_params, checkpoint_manage
     if checkpoint_manager:
       state, _ = checkpointing.load_state_if_possible(checkpoint_manager,
                                                   unboxed_abstract_state)
-      breakpoint()
   if not state:
     init_train_state_partial = functools.partial(init_train_state, model=model, tx=tx, training=training)
 
@@ -406,7 +405,7 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, checkpo
   unet_params,
   checkpoint_manager=checkpoint_manager,
   training=training)
-  breakpoint()
+  unet_state = unet_state["unet_state"]
   vae_state = None
   vae_state_mesh_shardings = None
   if vae_params:

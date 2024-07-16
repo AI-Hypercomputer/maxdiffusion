@@ -175,7 +175,7 @@ def load_state_if_possible(
       checkpoint_manager.restore(
         latest_step,
         args=orbax.checkpoint.args.Composite(
-          items=orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state, restore_args=restore_args)
+          unet_state=orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state, restore_args=restore_args)
         )
       ),
       None,
@@ -183,10 +183,9 @@ def load_state_if_possible(
 
 def save_checkpoint(checkpoint_manager, step, unet_state, pipeline):
 
-  def config_to_json(config):
-    return json.loads(config.to_json_string())
-  
-  unet_config = config_to_json(pipeline.unet.config)
+  def config_to_json(model):
+    return json.loads(model.to_json_string())
+  unet_config = config_to_json(pipeline.unet)
   checkpoint_manager.save(step, args=ocp.args.Composite(
     unet_state=ocp.args.StandardSave(unet_state),
     unet_config=ocp.args.JsonSave(unet_config)
