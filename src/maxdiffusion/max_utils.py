@@ -337,7 +337,7 @@ def get_abstract_state(model, tx, config, mesh, model_params, training=True):
     state_mesh_annotations = nn.logical_to_mesh(state_logical_annotations)
   return unboxed_sharded_abstract_state, state_mesh_annotations, state_mesh_shardings
 
-def setup_initial_state(model, tx, config, mesh, model_params, checkpoint_manager=None, training=True):
+def setup_initial_state(model, tx, config, mesh, model_params, checkpoint_manager=None, checkpoint_item=None, training=True):
   """ We initialize the model and optimizer state, and optionally load from a
   checkpoint as necessary.
 
@@ -365,6 +365,7 @@ def setup_initial_state(model, tx, config, mesh, model_params, checkpoint_manage
     if checkpoint_manager:
       state, _ = checkpointing.load_state_if_possible(checkpoint_manager,
                                                   unboxed_abstract_state)
+      state = state[checkpoint_item]
   if not state:
     init_train_state_partial = functools.partial(init_train_state, model=model, tx=tx, training=training)
 
@@ -381,8 +382,8 @@ def setup_initial_state(model, tx, config, mesh, model_params, checkpoint_manage
 
   state = unbox_logicallypartioned_trainstate(state)
 
-  state_mesh_shardings = jax.tree_util.tree_map(
-    lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
+  # state_mesh_shardings = jax.tree_util.tree_map(
+  #   lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
   return state, state_mesh_shardings
 
 def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, checkpoint_manager=None, training=True):
@@ -404,8 +405,8 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, checkpo
   mesh,
   unet_params,
   checkpoint_manager=checkpoint_manager,
+  checkpoint_item="unet_state",
   training=training)
-  unet_state = unet_state["unet_state"]
   vae_state = None
   vae_state_mesh_shardings = None
   if vae_params:

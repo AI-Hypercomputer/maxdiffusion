@@ -50,8 +50,7 @@ from maxdiffusion.train_utils import (
     record_scalar_metrics,
     write_metrics,
     get_params_to_save,
-    generate_timestep_weights,
-    save_checkpoint
+    generate_timestep_weights
 )
 
 from maxdiffusion.pipelines.stable_diffusion import FlaxStableDiffusionSafetyChecker
@@ -250,7 +249,8 @@ def train(config):
     unet_state_mesh_shardings,
     _, _) = max_utils.get_states(mesh, tx, rng, config,
                                  pipeline, params["unet"],
-                                 None, checkpoint_manager=checkpoint_manager,
+                                 None,
+                                 checkpoint_manager=checkpoint_manager,
                                  training=True)
     text_encoder_state = train_state.TrainState.create(
         apply_fn=pipeline.text_encoder.__call__,
@@ -258,16 +258,17 @@ def train(config):
         tx=tx
     )
 
-    # options = ocp.CheckpointManagerOptions()
-    # mngr = ocp.CheckpointManager(
-    #     ocp.test_utils.erase_and_create_empty('gs://jfacevedo-maxdiffusion/orbax_checkpoints/'),
-    #     item_names=(
-    #         'unet_state',
-    #         'unet_config'
-    #         ),
-    #     options=options
+    # save_checkpoint(
+    #     checkpoint_manager,
+    #     0,
+    #     pipeline,
+    #     params,
+    #     unet_state=unet_state,
+    #     vae_state=None,
+    #     text_encoder_state=text_encoder_state,
+    #     text_encoder_2_state=None        
     # )
-    # save_checkpoint(mngr, 0, unet_state, pipeline)
+
     # breakpoint()
 
     # In dreambooth training the class and instance batch sizes are concatenated to use a single
@@ -485,7 +486,8 @@ def train(config):
             "unet": get_params_to_save(unet_state.params),
             "safety_checker": safety_checker.params,
         }
-        save_checkpoint(pipeline.save_pretrained, params, config, os.path.join(config.checkpoint_dir, checkpoint_name))
+        save_checkpoint(checkpoint_manager,step,pipeline,params,unet_state,vae_state=None,text_encoder_state=text_encoder_state)
+        checkpoint_manager.wait_until_finished()
 
     max_utils.close_summary_writer(writer)
     print("full script runtime: ", (time.time() - full_script_start_time))

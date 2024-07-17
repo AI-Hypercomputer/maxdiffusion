@@ -51,10 +51,19 @@ def create_orbax_checkpoint_manager(
   p = epath.Path(checkpoint_dir)
 
   item_names = (
-    "unet_state", "unet_config",
-    "vae_state", "vae_config",
-    "text_encoder_params", "text_encoder_state", "text_encoder_config",
-    "scheduler_config"
+    "unet_config",
+    "vae_config",
+    "text_encoder_config",
+    "text_encoder_2_config",
+    "scheduler_config",
+    "unet_state",
+    "unet_params",
+    "vae_state",
+    "vae_params",
+    "text_encoder_state",
+    "text_encoder_params",
+    "text_encoder_2_state",
+    "text_encoder_2_params"
   )
   if checkpoint_type == "sdxl":
     item_names + ("text_encoder_2_params", "text_encoder_2_state", "text_encoder_2_config")
@@ -181,12 +190,72 @@ def load_state_if_possible(
       None,
     )
 
-def save_checkpoint(checkpoint_manager, step, unet_state, pipeline):
+def validate_checkpoint(
+  pipeline,
+  params,
+  unet_state,
+  vae_state,
+  text_encoder_state,
+  text_encoder_2_state,
+):
+  
+  assert unet_state is not None or params["unet"] is not None, \
+    'At least unet_state or params["unet"] must not be none.'
+  assert vae_state is not None or params["vae"] is not None, \
+    'At least vae_state or params["vae"] must not be none.'
+  assert text_encoder_state is not None or params["text_encoder"] is not None, \
+    'At least text_encoder_state or params["text_encoder"] must not be none.'
 
-  def config_to_json(model):
-    return json.loads(model.to_json_string())
-  unet_config = config_to_json(pipeline.unet)
+  if hasattr(pipeline, "text_encoder_2"):
+    assert text_encoder_2_state is not None or params["text_encoder_2"] is not None, \
+      'At least text_encoder_2_state or params["text_encoder_2"] must not be none.'
+
+
+  
+
+def save_checkpoint(
+  checkpoint_manager,
+  step,
+  pipeline,
+  params,
+  unet_state = None,
+  vae_state = None,
+  text_encoder_state = None,
+  text_encoder_2_state = None,
+):
+  validate_checkpoint(pipeline, params, unet_state, vae_state, text_encoder_state, text_encoder_2_state)
+
+  def config_to_json(model_or_config):
+    return json.loads(model_or_config.to_json_string())
+  items = {
+    'unet_config' : ocp.args.JsonSave(config_to_json(pipeline.unet)),
+    'vae_config' : ocp.args.JsonSave(config_to_json(pipeline.vae)),
+    'text_encoder_config' : ocp.args.JsonSave(config_to_json(pipeline.text_encoder.config)),
+    "scheduler_config" : ocp.args.JsonSave(config_to_json(pipeline.scheduler))
+  }
+  
+  if unet_state:
+    items['unet_state'] = ocp.args.StandardSave(unet_state)
+  else:
+    items['unet_params'] = ocp.args.StandardSave(params["unet"])
+
+  if vae_state:
+    items['vae_state'] = ocp.args.StandardSave(vae_state)
+  else:
+    items['vae_params'] = ocp.args.StandardSave(params["vae"])
+  
+  if text_encoder_state:
+    items["text_encoder_state"] = ocp.args.StandardSave(text_encoder_state)
+  else:
+    items["text_encoder_params"] = ocp.args.StandardSave(params["text_encoder"])
+
+  if hasattr(pipeline, "text_encoder_2"):
+    if text_encoder_2_state:
+      items["text_encoder_state_2"] = ocp.args.StandardSave(text_encoder_2_state)
+    else:
+      items["text_encoder_2_params"] = ocp.args.StandardSave(params["text_encoder_2"])
+    items["text_encoder_2_config"] = ocp.args.JsonSave(config_to_json(pipeline.text_encoder_2.config))
+
   checkpoint_manager.save(step, args=ocp.args.Composite(
-    unet_state=ocp.args.StandardSave(unet_state),
-    unet_config=ocp.args.JsonSave(unet_config)
+    **items
   ))
