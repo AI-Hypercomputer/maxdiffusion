@@ -24,6 +24,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ke
 
 from ..import common_types, max_logging
 from . import quantizations
+from .linear import DenseGeneral
 
 
 Array = common_types.Array
@@ -449,31 +450,49 @@ class FlaxAttention(nn.Module):
         else:
             print("Quant is NONE ***************")
 
-        self.query = nn.Dense(
-            inner_dim,
-            kernel_init=qkv_init_kernel,
-            dot_general_cls=dot_general_cls,
-            use_bias=False,
-            dtype=self.dtype,
-            name="to_q"
-        )
+        self.query = DenseGeneral(features=inner_dim,
+                                  weight_dtype = self.dtype,
+                                  dtype = self.dtype,
+                                  #kernel_init = nn.initializers.lecun_normal(),
+                                  kernel_axes=("embed", "heads"),
+                                  quant = self.quant,
+                                  name='to_q',
+                                  use_bias=False)
+        
+        self.key = DenseGeneral(features=inner_dim,
+                                  weight_dtype = self.dtype,
+                                  dtype = self.dtype,
+                                  #kernel_init = nn.initializers.lecun_normal(),
+                                  kernel_axes=("embed", "heads"),
+                                  quant = self.quant,
+                                  name='to_k',
+                                  use_bias=False)
+        self.value = DenseGeneral(features=inner_dim,
+                                  weight_dtype = self.dtype,
+                                  dtype = self.dtype,
+                                  #kernel_init = nn.initializers.lecun_normal(),
+                                  kernel_axes=("embed", "heads"),
+                                  quant = self.quant,
+                                  name='to_v',
+                                  use_bias=False)
 
-        self.key = nn.Dense(
-            inner_dim,
-            kernel_init=qkv_init_kernel,
-            dot_general_cls=dot_general_cls,
-            use_bias=False,
-            dtype=self.dtype,
-            name="to_k"
-        )
 
-        self.value = nn.Dense(
-            inner_dim,
-            kernel_init=qkv_init_kernel,
-            dot_general_cls=dot_general_cls,
-            use_bias=False,
-            dtype=self.dtype,
-            name="to_v")
+        # self.key = nn.Dense(
+        #     inner_dim,
+        #     kernel_init=qkv_init_kernel,
+        #     dot_general_cls=dot_general_cls,
+        #     use_bias=False,
+        #     dtype=self.dtype,
+        #     name="to_k"
+        # )
+
+        # self.value = nn.Dense(
+        #     inner_dim,
+        #     kernel_init=qkv_init_kernel,
+        #     dot_general_cls=dot_general_cls,
+        #     use_bias=False,
+        #     dtype=self.dtype,
+        #     name="to_v")
 
         self.proj_attn = nn.Dense(
             self.query_dim,

@@ -37,40 +37,24 @@ NUM_DEVICES = jax.device_count()
 from aqt.jax.v2.flax import aqt_flax
 from maxdiffusion.models import quantizations
 def get_quantized_unet_variables():
-  quant = quantizations.configure_quantization(config=None, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.CONVERT)
-  pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-xl-base-1.0",
-    revision="refs/pr/95",
-    dtype=jnp.bfloat16,
+  quant = quantizations.configure_quantization(config=None, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE)
+  _, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+    "output_trained_working",
+    # revision="refs/pr/95",
+    # dtype=jnp.bfloat16,
     split_head_dim=True,
     quant=quant,
     )
-  latents = jnp.ones((4, 4,128,128), dtype=jnp.float32)
-  timesteps = jnp.ones((4,))
-  encoder_hidden_states = jnp.ones((4, 77, 2048))
 
-  added_cond_kwargs = {
-                "text_embeds": jnp.ones((4, 1280), dtype=jnp.float32),
-                "time_ids": jnp.ones((4, 6), dtype=jnp.float32),
-            }
-  _, quantized_unet_vars = pipeline.unet.apply(
-    # params["unet"],
-    params["unet"] | {"aqt" : {}},
-    latents,
-    timesteps,
-    encoder_hidden_states=encoder_hidden_states,
-    added_cond_kwargs=added_cond_kwargs,
-    rngs={"params": jax.random.PRNGKey(0)},
-    mutable=True,
-  )
-  breakpoint()
-  del pipeline
+  p1 = {}
+  p1.update(params['unet']['params'])
+  p1['aqt'] = params['unet']['aqt']
   del params
-  del quantized_unet_vars["params"]
-  return quantized_unet_vars
+  return p1
 
 
 quantized_unet_vars = get_quantized_unet_variables()
+breakpoint()
 
 quant = quantizations.configure_quantization(config=None, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE)
 pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
@@ -208,17 +192,16 @@ print(f"Inference in {time.time() - start}")
 
 for i, image in enumerate(images):
     image.save(f"castle_{i}.png")
-p1= {}
-p1['aqt'] = quantized_unet_vars["aqt"]
-p1["params"] = quantizations.remove_quantized_params(unet_params, quantized_unet_vars["aqt"])
-breakpoint()
-pipeline.save_pretrained(
-            "output_trained_working",
-            params={
-                "unet": p1,
-                "text_encoder": get_params_to_save(params["text_encoder"]),
-                "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
-                "vae": get_params_to_save(params["vae"]),
-                "unet": get_params_to_save(p1),
-            },
-        )
+# p1= {}
+# p1['aqt'] = quantized_unet_vars["aqt"]
+# p1["params"] = quantizations.remove_quantized_params(unet_params, quantized_unet_vars["aqt"])
+# breakpoint()
+# pipeline.save_pretrained(
+#             "output_trained_working",
+#             params={
+#                 "text_encoder": get_params_to_save(params["text_encoder"]),
+#                 "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
+#                 "vae": get_params_to_save(params["vae"]),
+#                 "unet": get_params_to_save(p1),
+#             },
+#         )
