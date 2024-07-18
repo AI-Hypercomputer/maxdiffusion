@@ -27,10 +27,10 @@ from maxdiffusion.train_utils import (
     validate_train_config,
 )
 
-from maxdiffusion.trainers.dreambooth_trainer import DreamboothTrainer
+from maxdiffusion.trainers.stable_diffusion_trainer import StableDiffusionTrainer
 
 def train(config):
-    trainer = DreamboothTrainer(config)
+    trainer = StableDiffusionTrainer(config)
     trainer.start_training()
 
 def main(argv: Sequence[str]) -> None:
@@ -39,5 +39,6 @@ def main(argv: Sequence[str]) -> None:
     config = pyconfig.config
     validate_train_config(config)
     train(config)
+
 if __name__ == "__main__":
     app.run(main)

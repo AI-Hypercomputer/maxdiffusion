@@ -7,9 +7,8 @@ import os
 import numpy as np
 import jax
 import jax.numpy as jnp
-from jax.sharding import PartitionSpec as P, PositionalSharding
+from jax.sharding import PartitionSpec as P
 from flax import jax_utils
-from flax.training import train_state
 from flax.training.common_utils import shard
 from flax.linen import partitioning as nn_partitioning
 import optax

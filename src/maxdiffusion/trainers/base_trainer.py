@@ -47,7 +47,7 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
        pass
 
     @abstractmethod
-    def compile_train_step(self, *args, **kwargs):
+    def compile_train_step(self):
        pass
 
     @abstractmethod
@@ -162,7 +162,7 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
 
         self.post_create_states_and_shard()
 
-    def start_trainining(self):
+    def start_training(self):
         
         # Hook
         self.pre_training_steps()
