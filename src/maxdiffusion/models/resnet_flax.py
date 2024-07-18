@@ -42,14 +42,14 @@ class FlaxUpsample2D(nn.Module):
 
     def setup(self):
         if self.quant:
-            self.conv_general = self.quant.conv_general_dialated()
+            self.conv_general = self.quant.conv_general()
         self.conv = nn.Conv(
             self.out_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
-            conv_general_dilated=self.conv_general,
+            conv_general_dilated_cls=self.conv_general,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -80,14 +80,14 @@ class FlaxDownsample2D(nn.Module):
 
     def setup(self):
         if self.quant:
-            self.conv_general = self.quant.conv_general_dialated()
+            self.conv_general = self.quant.conv_general()
         self.conv = nn.Conv(
             self.out_channels,
             kernel_size=(3, 3),
             strides=(2, 2),
             padding=((1, 1), (1, 1)),  # padding="VALID",
             dtype=self.dtype,
-            conv_general_dilated=self.conv_general,
+            conv_general_dilated_cls=self.conv_general,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -115,7 +115,7 @@ class FlaxResnetBlock2D(nn.Module):
 
     def setup(self):
         if self.quant:
-            self.conv_general = self.quant.conv_general_dialated()
+            self.conv_general = self.quant.conv_general()
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
 
         self.norm1 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
@@ -133,7 +133,7 @@ class FlaxResnetBlock2D(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
-                conv_general_dilated=self.conv_general,
+                conv_general_dilated_cls=self.conv_general,
                 kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -146,7 +146,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
-            conv_general_dilated=self.conv_general,
+            conv_general_dilated_cls=self.conv_general,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -163,7 +163,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
-            conv_general_dilated=self.conv_general,
+            conv_general_dilated_cls=self.conv_general,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')

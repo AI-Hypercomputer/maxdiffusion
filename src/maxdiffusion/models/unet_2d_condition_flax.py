@@ -201,7 +201,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         # which is why we correct for the naming here.
         num_attention_heads = self.num_attention_heads or self.attention_head_dim
         if self.quant:
-            conv_general = self.quant.conv_general_dialated()
+            conv_general = self.quant.conv_general()
         # input
         self.conv_in = nn.Conv(
             block_out_channels[0],
@@ -209,7 +209,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
-            conv_general_dilated=conv_general
+            conv_general_dilated_cls=conv_general
         )
 
         # time
@@ -356,14 +356,14 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         # out
         self.conv_norm_out = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
         if self.quant:
-            conv_general = self.quant.conv_general_dialated()
+            conv_general = self.quant.conv_general()
         self.conv_out = nn.Conv(
             self.out_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
-            conv_general_dilated=conv_general,
+            conv_general_dilated_cls=conv_general,
         )
 
     def __call__(

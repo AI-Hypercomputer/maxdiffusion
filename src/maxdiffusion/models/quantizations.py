@@ -20,7 +20,7 @@ from aqt.jax.v2.flax import aqt_flax
 from ..common_types import Config
 from dataclasses import dataclass
 import jax.numpy as jnp
-
+import copy
 
 def create_weight_only_cfg(w_bits):
   # return aqt_config.dot_general_make(
@@ -42,8 +42,10 @@ def create_weight_only_cfg(w_bits):
 class AqtQuantization:
   """ Configures AQT quantization github.com/google/aqt. """
   quant_dg: aqt_config.DotGeneral
+  quant_dg_conv: aqt_config.DotGeneralRaw
   lhs_quant_mode: aqt_flax.QuantMode
   rhs_quant_mode: aqt_flax.QuantMode
+
 
   def dot_general_cls(self):
     """ Returns dot_general configured with aqt params. """
@@ -55,7 +57,22 @@ class AqtQuantization:
       lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
       rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
       )
+    #return None
     return aqt_dg_cls
+    #return None
+  
+  def conv_general(self):
+      """ Returns dot_general configured with aqt params. """
+      aqt_cfg_conv = copy.deepcopy(self.quant_dg)
+      aqt_cfg_conv = aqt_cfg_conv.replace(fwd=self.quant_dg_conv)
+      aqt_dg_cls = functools.partial(
+              aqt_flax.AqtConvGeneralDilated,
+              aqt_cfg_conv,
+              lhs_quant_mode=self.lhs_quant_mode,
+              rhs_quant_mode=self.rhs_quant_mode,
+              lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
+              rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,)
+      return aqt_dg_cls
 
   def einsum(self):
     """ Returns einsum configured with aqt params """
@@ -70,7 +87,7 @@ class AqtQuantization:
     return aqt_einsum
   def conv_general_dialated(self):
     conv_general = functools.partial(aqt_conv_general.make_conv_general_dilated(
-       aqt_config.conv_general_dilated_make(lhs_bits=8, rhs_bits=8)))
+       aqt_config.conv_general_dilated_make(lhs_bits=8, rhs_bits=8, spatial_dimensions=2, window_strides=(1,1), padding=((1, 1), (1, 1)))))
     return conv_general
   
 def _get_quant_config(config):
@@ -131,23 +148,27 @@ def get_quant_mode(quant_mode_str: str = 'train'):
     raise ValueError(f'Invalid quantization mode {quant_mode_str}.')
   return None
 
-def configure_quantization(config: Config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.TRAIN):
+def configure_quantization(config: Config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.TRAIN, weights_quant_mode=aqt_flax.QuantMode.TRAIN):
   """ Configure quantization based on user config and quant mode."""
   # quant_cfg = _get_quant_config(config)
   quant_cfg = create_weight_only_cfg(config)
+  quant_dg_conv = aqt_config.conv_general_dilated_make(
+      2, lhs_bits=8, rhs_bits=8, initialize_calibration=False)
   if quant_cfg:
-    return AqtQuantization(quant_dg=quant_cfg, lhs_quant_mode=lhs_quant_mode, rhs_quant_mode=rhs_quant_mode)
+    return AqtQuantization(quant_dg=quant_cfg, quant_dg_conv=quant_dg_conv, lhs_quant_mode=lhs_quant_mode, rhs_quant_mode=rhs_quant_mode)
   return None
 
-def configure_quantizatio_old(config: Config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.TRAIN):
+def configure_quantizatio_old(config: Config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.TRAIN, weights_quant_mode=aqt_flax.QuantMode.TRAIN):
   """ Configure quantization based on user config and quant mode."""
 
   if not config:
     return None
   # quant_cfg = _get_quant_config(config)
   quant_cfg = create_weight_only_cfg(8)
+  quant_dg_conv = aqt_config.conv_general_dilated_make(
+      2, lhs_bits=8, rhs_bits=8, initialize_calibration=False)
   if quant_cfg:
-    return AqtQuantization(quant_dg=quant_cfg, lhs_quant_mode=lhs_quant_mode, rhs_quant_mode=rhs_quant_mode)
+    return AqtQuantization(quant_dg=quant_cfg, quant_dg_conv=quant_dg_conv, lhs_quant_mode=lhs_quant_mode, rhs_quant_mode=rhs_quant_mode)
   return None
 
 # @dataclass
