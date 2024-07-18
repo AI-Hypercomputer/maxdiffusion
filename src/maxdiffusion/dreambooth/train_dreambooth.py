@@ -41,6 +41,7 @@ from maxdiffusion import (
 from maxdiffusion.maxdiffusion_utils import (
     calculate_unet_tflops,
     encode,
+    load_stable_diffusion_checkpoint
 )
 
 from maxdiffusion.train_utils import (
@@ -67,7 +68,11 @@ from tqdm import tqdm
 from huggingface_hub.utils import insecure_hashlib
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import make_dreambooth_train_iterator
-from maxdiffusion.checkpointing import create_orbax_checkpoint_manager, save_checkpoint
+from maxdiffusion.checkpointing import (
+    create_orbax_checkpoint_manager,
+    save_checkpoint,
+    STABLE_DIFFUSION_CHECKPOINT
+)
 from maxdiffusion.dreambooth.dreambooth_constants import (
     INSTANCE_IMAGE_LATENTS,
     INSTANCE_PROMPT_INPUT_IDS,
@@ -158,6 +163,15 @@ def train(config):
     full_script_start_time = time.time()
     rng = jax.random.PRNGKey(config.seed)
 
+    checkpoint_manager = None
+    if config.checkpoint_type == "orbax":
+        checkpoint_manager = create_orbax_checkpoint_manager(
+            config.checkpoint_dir,
+            enable_checkpointing=True,
+            save_interval_steps=1,
+            checkpoint_type="sd"
+        )
+
     writer = max_utils.initialize_summary_writer(config)
     if config.dataset_name is None and config.train_data_dir is None:
         raise ValueError("Need either a dataset name or a training folder.")
@@ -167,6 +181,7 @@ def train(config):
     # Setup Mesh
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
+    breakpoint()
 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -190,26 +205,11 @@ def train(config):
     data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
 
     total_train_batch_size = config.per_device_batch_size * jax.device_count()
-    precision = max_utils.get_precision(config)
-    flash_block_sizes = max_utils.get_flash_block_sizes(config)
 
-    
-
-    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision,
-        dtype=config.activations_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        from_pt=config.from_pt,
-        split_head_dim=config.split_head_dim,
-        norm_num_groups=config.norm_num_groups,
-        attention_kernel=config.attention,
-        flash_block_sizes=flash_block_sizes,
-        mesh=mesh,
-        precision=precision
-    )
-
-    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+    pipeline, params, unet_state, _, text_encoder_state = load_stable_diffusion_checkpoint(
+        checkpoint_manager, config, STABLE_DIFFUSION_CHECKPOINT,
+        is_training=True, train_step=train_step)
+    breakpoint()
 
     noise_scheduler = FlaxDDPMScheduler(
         beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, dtype=jnp.float32
@@ -219,55 +219,17 @@ def train(config):
     pipeline.scheduler = noise_scheduler
     params["scheduler"] = noise_scheduler_state
 
-    text_encoder_sharding = PositionalSharding(devices_array).replicate()
-    partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=text_encoder_sharding)
-    params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
+    # text_encoder_sharding = PositionalSharding(devices_array).replicate()
+    # partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=text_encoder_sharding)
+    # params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
 
-    # Optimization
-    if config.scale_lr:
-        config.learning_rate = config.learning_rate * total_train_batch_size
-
-    learning_rate_scheduler = max_utils.create_learning_rate_schedule(config)
-
-    tx = optax.adamw(
-        learning_rate=learning_rate_scheduler,
-        b1=config.adam_b1,
-        b2=config.adam_b2,
-        eps=config.adam_eps,
-        weight_decay=config.adam_weight_decay,
-    )
-
-    checkpoint_manager = None
-    if config.checkpoint_type == "orbax":
-        checkpoint_manager = create_orbax_checkpoint_manager(
-            "gs://jfacevedo-maxdiffusion/orbax_checkpoints/",
-            enable_checkpointing=True,
-            save_interval_steps=512,
-            checkpoint_type="sd"
-        )
-    (unet_state,
-    unet_state_mesh_shardings,
-    _, _) = max_utils.get_states(mesh, tx, rng, config,
-                                 pipeline, params["unet"],
-                                 None,
-                                 checkpoint_manager=checkpoint_manager,
-                                 training=True)
-    text_encoder_state = train_state.TrainState.create(
-        apply_fn=pipeline.text_encoder.__call__,
-        params=params["text_encoder"],
-        tx=tx
-    )
-
-    # save_checkpoint(
-    #     checkpoint_manager,
-    #     0,
-    #     pipeline,
-    #     params,
-    #     unet_state=unet_state,
-    #     vae_state=None,
-    #     text_encoder_state=text_encoder_state,
-    #     text_encoder_2_state=None        
+    # text_encoder_state = train_state.TrainState.create(
+    #     apply_fn=pipeline.text_encoder.__call__,
+    #     params=params["text_encoder"],
+    #     tx=tx
     # )
+
+
 
     # breakpoint()
 

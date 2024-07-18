@@ -379,7 +379,6 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
             )
         else:
             cached_folder = pretrained_model_name_or_path
-
         config_dict = cls.load_config(cached_folder)
 
         # 2. Load the pipeline class, if using custom module then load it from the hub

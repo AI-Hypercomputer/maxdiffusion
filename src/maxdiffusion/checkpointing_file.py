@@ -30,6 +30,9 @@ from orbax.checkpoint.logging import abstract_logger
 from orbax.checkpoint import type_handlers
 from orbax.checkpoint.checkpoint_manager import Checkpointer, CheckpointManager, CheckpointManagerOptions
 
+STABLE_DIFFUSION_CHECKPOINT = "STABLE_DIFFUSION_CHECKPOINT"
+STABLE_DIFFUSION_XL_CHECKPOINT = "STABLE_DIFUSSION_XL_CHECKPOINT"
+
 def create_orbax_checkpoint_manager(
   checkpoint_dir: str,
   enable_checkpointing: bool,
@@ -65,7 +68,7 @@ def create_orbax_checkpoint_manager(
     "text_encoder_2_state",
     "text_encoder_2_params"
   )
-  if checkpoint_type == "sdxl":
+  if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
     item_names + ("text_encoder_2_params", "text_encoder_2_state", "text_encoder_2_config")
   
   mngr = CheckpointManager(
@@ -106,6 +109,41 @@ def _replica_devices(device_array: np.ndarray, replica_axis_idx: int):
   idx = _find_idx(device_array, replica_axis_idx)
   replica_result = np.take(device_array, idx, axis=replica_axis_idx)
   return np.expand_dims(replica_result, axis=replica_axis_idx)
+
+def load_stable_diffusion_configs(
+  checkpoint_manager: CheckpointManager,
+  checkpoint_type: str,
+  step: Optional[int] = None,
+):
+  f"""
+  Loads Orbax configurations for different stable diffusion models
+  
+  Args:
+  checkpoint_manager (`orbax.checkpoint.checkpoint_manager`)
+  checkpoint_type (`str`) : use sd or sdxl
+  step (int) : step to restore, if None is passed, defaults to latest.
+  """
+  if step is None:
+    step = checkpoint_manager.latest_step()
+    if step is None:
+      return None
+  
+  restore_args = {
+    "unet_config" : orbax.checkpoint.args.JsonRestore(),
+    "vae_config" : orbax.checkpoint.args.JsonRestore(),
+    "text_encoder_config" : orbax.checkpoint.args.JsonRestore(),
+    "scheduler_config" : orbax.checkpoint.args.JsonRestore(),
+  }
+
+  if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
+    restore_args["text_encoder_2_config"] = orbax.checkpoint.args.JsonRestore()
+  
+  return (
+      checkpoint_manager.restore(step,
+        args=orbax.checkpoint.args.Composite(**restore_args)
+      ),None)
+
+
 
 def load_state_if_possible(
   checkpoint_manager: CheckpointManager,
@@ -174,17 +212,12 @@ def load_state_if_possible(
         global_shape=data.shape,
         dtype=data.dtype
       )
-    
-    restore_args = jax.tree_util.tree_map(
-      map_to_pspec,
-      abstract_unboxed_pre_state
-    ) 
 
     return (
       checkpoint_manager.restore(
         latest_step,
         args=orbax.checkpoint.args.Composite(
-          unet_state=orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state, restore_args=restore_args)
+          unet_state=orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)
         )
       ),
       None,

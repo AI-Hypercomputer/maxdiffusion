@@ -19,10 +19,26 @@ import numpy as np
 import tensorflow as tf
 import jax
 import jax.numpy as jnp
-
+import optax
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
-from maxdiffusion import max_utils
+from maxdiffusion import (
+  max_utils,
+  FlaxStableDiffusionXLPipeline,
+  FlaxStableDiffusionPipeline,
+  FlaxUNet2DConditionModel,
+  FlaxAutoencoderKL
+)
+from transformers import (
+  CLIPTokenizer,
+  FlaxCLIPTextModel,
+  PretrainedConfig
+)
+# from maxdiffusion.checkpointing import (
+#   load_stable_diffusion_configs,
+#   STABLE_DIFFUSION_CHECKPOINT,
+# )
+
 
 from .models.modeling_flax_pytorch_utils import convert_pytorch_state_dict_to_flax
 
@@ -241,3 +257,154 @@ def get_shaped_batch(config, pipeline):
   shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
   shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
   return shaped_batch
+
+
+# def load_stable_diffusion_checkpoint(
+#   checkpoint_manager,
+#   mesh,
+#   config,
+#   checkpoint_type,
+#   is_training,
+#   train_step = None,
+#   scheduler_class = None,
+#   step = None
+# ):
+  
+#   # tx = None
+#   # if is_training:
+#   #   if config.scale_lr:
+#   #     config.learning_rate = config.learning_rate * max_utils.get_global_batch_size(config)
+    
+#   #   learning_rate_scheduler = max_utils.create_learning_rate_schedule(config)
+
+#   #   tx = optax.adamw(
+#   #       learning_rate=learning_rate_scheduler,
+#   #       b1=config.adam_b1,
+#   #       b2=config.adam_b2,
+#   #       eps=config.adam_eps,
+#   #       weight_decay=config.adam_weight_decay,
+#   #   )
+  
+#   if checkpoint_type == STABLE_DIFFUSION_CHECKPOINT:
+#     pipeline_class = FlaxStableDiffusionPipeline
+#   else:
+#     pipeline_class = FlaxStableDiffusionXLPipeline
+
+#   precision = max_utils.get_precision(config)
+#   flash_block_sizes = max_utils.get_flash_block_sizes(config)
+
+#   # try loading using orbax, if not, use diffusers loading
+#   model_configs = load_stable_diffusion_configs(checkpoint_manager,checkpoint_type, step)
+#   if model_configs:
+#     # TODO
+#     # 1. load from orbax all weights
+#     # 1. load states
+#     # 1. Create a pipeline
+#     # 1. return pipeline, params, states
+#     unet = FlaxUNet2DConditionModel.from_config(
+#       model_configs[0]["unet_config"],
+#       dtype=config.activations_dtype,
+#       from_pt=config.from_pt,
+#       split_head_dim=config.split_head_dim,
+#       norm_num_groups=config.norm_num_groups,
+#       attention_kernel=config.attention,
+#       flash_block_sizes=flash_block_sizes,
+#       mesh=mesh,
+#       precision=precision
+#     )
+#     vae = FlaxAutoencoderKL.from_config(
+#       model_configs[0]["vae_config"],
+#       dtype=config.activations_dtype,
+#       from_pt=config.from_pt
+#     )
+#     te_pretrained_config = PretrainedConfig.from_dict(model_configs[0]["text_encoder_config"])
+#     text_encoder = FlaxCLIPTextModel(
+#       te_pretrained_config,
+#       seed=config.seed,
+#       dtype=config.activations_dtype
+#     )
+#     tokenizer = CLIPTokenizer.from_pretrained(
+#       config.tokenizer_model_name_or_path,
+#       subfolder="tokenizer",
+#       dtype=config.activations_dtype,
+#     )
+#     scheduler = None
+#     if scheduler_class:
+#       scheduler = scheduler_class.from_config(model_configs[0]["scheduler_config"])
+    
+#     pipeline_kwargs = {
+#       "unet" : unet,
+#       "vae" : vae,
+#       "text_encoder" : text_encoder,
+#       "scheduler" : scheduler,
+#       "tokenizer" : tokenizer,
+#     }
+
+#     if checkpoint_type == STABLE_DIFFUSION_CHECKPOINT:
+#       pipeline_kwargs["safety_checker"] = None
+#       pipeline_kwargs["feature_extractor"] = None
+#     else:
+#       te_pretrained_2_config = PretrainedConfig.from_dict(model_configs[0]["text_encoder_2_config"])
+#       text_encoder_2 = FlaxCLIPTextModel(
+#         te_pretrained_2_config,
+#         seed=config.seed,
+#         dtype=config.activations_dtype
+#       )
+#       pipeline_kwargs["text_encoder_2"] = text_encoder_2
+#       pipeline_kwargs["tokenizer_2"] = tokenizer
+
+#     pipeline = pipeline_class(
+#       **pipeline_kwargs
+#     )
+
+#     (unet_state,
+#      unet_state_mesh_shardings,
+#      vae_state,
+#      vae_state_shardings) = max_utils.get_states(pipeline)
+
+#   else:
+#     pipeline, params = pipeline_class.from_pretrained(
+#       config.pretrained_model_name_or_path,
+#       revision=config.revision,
+#       dtype=config.activations_dtype,
+#       safety_checker=None,
+#       feature_extractor=None,
+#       from_pt=config.from_pt,
+#       split_head_dim=config.split_head_dim,
+#       norm_num_groups=config.norm_num_groups,
+#       attention_kernel=config.attention,
+#       flash_block_sizes=flash_block_sizes,
+#       mesh=mesh,
+#       precision=precision
+#     )
+
+#     params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+
+#     # (unet_state,
+#     #  unet_state_mesh_shardings,
+#     #  vae_state,
+#     #  vae_state_shardings) = max_utils.get_states(
+#     #     mesh, tx, jax.random.PRNGKey(config.seed),
+#     #     config, pipeline, params["unet"],
+#     #     params["vae"], checkpoint_manager, training=is_training)
+    
+#     # text_encoder_sharding = PositionalSharding(mesh.devices).replicate()
+#     # partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=text_encoder_sharding)
+#     # params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
+
+#     # text_encoder_state = train_state.Train_state.create(
+#     #   appy_fn=pipeline.text_encoder.__call__,
+#     #   params=params["text_encoder"],
+#     #   tx=tx
+#     # )
+
+#     # if is_training:
+#     #   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+#     #     p_train_step = jax.jit(
+#     #       train_step,
+#     #       in_shardings=(unet_state_mesh_shardings, None, my_data_sharding, None),
+#     #       out_shardings=(unet_state_mesh_shardings, None, None, None),
+#     #       donate_argnums=(0,)
+#     #     )
+
+#   return pipeline, params, unet_state, vae_state, text_encoder_state

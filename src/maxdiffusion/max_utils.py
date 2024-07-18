@@ -31,7 +31,8 @@ import flax
 import jax
 import jax.numpy as jnp
 import optax
-from maxdiffusion import checkpointing, max_logging
+from maxdiffusion import max_logging
+from maxdiffusion.checkpointing import checkpointing_utils
 from maxdiffusion.models.attention_flax import AttentionOp
 from flax import linen as nn
 import flax.linen as nn
@@ -305,7 +306,7 @@ def init_train_state(model_params, model, tx, training=True):
   """
   if training:
     state = train_state.TrainState.create(
-      apply_fn=model.apply,
+      apply_fn=model.apply if hasattr(model, 'apply') else model.__call__,
       params=model_params,
       tx=tx)
   else:
@@ -337,7 +338,7 @@ def get_abstract_state(model, tx, config, mesh, model_params, training=True):
     state_mesh_annotations = nn.logical_to_mesh(state_logical_annotations)
   return unboxed_sharded_abstract_state, state_mesh_annotations, state_mesh_shardings
 
-def setup_initial_state(model, tx, config, mesh, model_params, checkpoint_manager=None, checkpoint_item=None, training=True):
+def setup_initial_state(model, tx, config, mesh, model_params = None, checkpoint_manager=None, checkpoint_item=None, training=True):
   """ We initialize the model and optimizer state, and optionally load from a
   checkpoint as necessary.
 
@@ -363,9 +364,10 @@ def setup_initial_state(model, tx, config, mesh, model_params, checkpoint_manage
     model, tx, config, mesh, model_params, training)
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     if checkpoint_manager:
-      state, _ = checkpointing.load_state_if_possible(checkpoint_manager,
+      state, _ = checkpointing_utils.load_state_if_possible(checkpoint_manager,
                                                   unboxed_abstract_state)
-      state = state[checkpoint_item]
+      if state:
+        state = state[checkpoint_item]
   if not state:
     init_train_state_partial = functools.partial(init_train_state, model=model, tx=tx, training=training)
 
@@ -386,7 +388,7 @@ def setup_initial_state(model, tx, config, mesh, model_params, checkpoint_manage
   #   lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
   return state, state_mesh_shardings
 
-def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, checkpoint_manager=None, training=True):
+def get_states(mesh, tx, rng, config, pipeline, unet_params = None, vae_params = None, checkpoint_manager=None, training=True):
   
   # Needed to initialize weights on multi-host with addressable devices.
   if config.train_new_unet:
@@ -457,6 +459,14 @@ def create_learning_rate_schedule(config):
 
   return optax.join_schedules(pieces, boundaries)
 
+def create_optimizer(config, learning_rate_scheduler):
+  return optax.adamw(
+    learning_rate=learning_rate_scheduler,
+    b1=config.adam_b1,
+    b2=config.adam_b2,
+    eps=config.adam_eps,
+    weight_decay=config.adam_weight_decay
+  )
 
 def get_precision(config):
   """Get precision from config."""
@@ -558,3 +568,6 @@ def calculate_num_params_from_pytree(params):
   params_sizes = jax.tree_util.tree_map(jax.numpy.size, params)
   total_parameters = jax.tree_util.tree_reduce(lambda x, y: x + y, params_sizes)
   return total_parameters
+
+def get_global_batch_size(config):
+  return config.per_device_batch_size * jax.device_count()
