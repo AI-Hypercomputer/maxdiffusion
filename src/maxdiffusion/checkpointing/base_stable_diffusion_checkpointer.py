@@ -1,6 +1,7 @@
 
 
 import jax
+from jax.sharding import Mesh
 from maxdiffusion import (
     max_utils,
     FlaxStableDiffusionPipeline,
@@ -29,11 +30,16 @@ class BaseStableDiffusionCheckpointer:
     def __init__(self, config, checkpoint_type):
         self.config = config
         self.checkpoint_type = checkpoint_type
+        if len(config.cache_dir) > 0:
+            jax.config.update("jax_compilation_cache_dir", config.cache_dir)
+        
+        self.rng = jax.random.PRNGKey(self.config.seed)
+
+        devices_array = max_utils.create_device_mesh(config)
+        self.mesh = Mesh(devices_array, self.config.mesh_axes)
 
         self.pipeline = None
         self.params = {}
-        self.train_states = {}
-        self.state_shardings = {}
 
         self.checkpoint_manager = create_orbax_checkpoint_manager(
             self.config.checkpoint_dir,
@@ -56,9 +62,22 @@ class BaseStableDiffusionCheckpointer:
     def load_diffusers_checkpoint(self):
         pipeline_class = self._get_pipeline_class()
 
+        precision = max_utils.get_precision(self.config)
+        flash_block_sizes = max_utils.get_flash_block_sizes(self.config)
+
         pipeline, params = pipeline_class.from_pretrained(
             self.config.pretrained_model_name_or_path,
-            revision=self.config.revision
+            revision=self.config.revision,
+            dtype=self.config.activations_dtype,
+            safety_checker=None,
+            feature_extractor=None,
+            from_pt=self.config.from_pt,
+            split_head_dim=self.config.split_head_dim,
+            norm_num_groups=self.config.norm_num_groups,
+            attention_kernel=self.config.attention,
+            flash_block_sizes=flash_block_sizes,
+            mesh=self.mesh,
+            precision=precision
         )
 
         params = jax.tree_util.tree_map(lambda x: x.astype(self.config.weights_dtype), params)

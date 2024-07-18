@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from functools import partial
 import jax
-from jax.sharding import Mesh, PartitionSpec as P, PositionalSharding
+from jax.sharding import PartitionSpec as P
 from maxdiffusion import (
     max_utils,
     maxdiffusion_utils
@@ -16,17 +16,8 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
     def __init__(self, config, checkpoint_type):
         BaseStableDiffusionCheckpointer.__init__(self, config, checkpoint_type)
 
-        if len(config.cache_dir) > 0:
-            jax.config.update("jax_compilation_cache_dir", config.cache_dir)
-        
-        self.config = config
-        self.rng = jax.random.PRNGKey(self.config.seed)
-
-        devices_array = max_utils.create_device_mesh(config)
-        self.mesh = Mesh(devices_array, self.config.mesh_axes)
-
         # sharding
-        self.data_sharding = jax.sharding.NamedSharding(self.mesh, P(*config.data_sharding))
+        self.data_sharding = None
 
         self.total_train_batch_size = max_utils.get_global_batch_size(self.config)
 
@@ -37,6 +28,9 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
         #Optimizer params
         self.learning_rate_scheduler = None
         self.optimizer = None
+
+        self.train_states = {}
+        self.state_shardings = {}
     
     def _create_optimizer(self):
         self.learning_rate_scheduler = max_utils.create_learning_rate_schedule(self.config)
@@ -73,6 +67,14 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
         pass
 
     @abstractmethod
+    def get_data_shardings(self):
+        pass
+
+    @abstractmethod
+    def create_scheduler(self):
+        pass
+
+    @abstractmethod
     def post_create_states_and_shard(self):
         """
         Hook to create any other states or additional shardings. 
@@ -81,7 +83,7 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
         pass
 
     def calculate_tflops(self):
-        self.per_device_tflops = maxdiffusion_utils.calculate_unet_flops(
+        self.per_device_tflops = maxdiffusion_utils.calculate_unet_tflops(
             self.config, self.pipeline, 
             (2 * self.config.per_device_batch_size * jax.local_device_count()),
             self.rng,
@@ -168,10 +170,13 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
         self.load_checkpoint()
         # Create or load train states and shard models
         self.create_states_and_shard()
+        # Create scheduler
+        self.create_scheduler()
         # Calculate tflops
         self.calculate_tflops()
         # Load dataset
         self.load_dataset()
+        self.get_data_shardings()
         # Compile train_step
         self.compile_train_step()
         # Start training

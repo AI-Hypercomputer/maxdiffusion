@@ -1,7 +1,8 @@
 
 from pathlib import Path
 import time
-from maxdiffusion.trainers.base_trainer import BaseTrainer
+from functools import partial
+import datetime
 import os
 import numpy as np
 import jax
@@ -17,10 +18,13 @@ from torch.utils.data import Dataset
 from huggingface_hub.utils import insecure_hashlib
 from tqdm import tqdm
 
+from maxdiffusion.trainers.base_trainer import BaseTrainer
 from maxdiffusion import (
     FlaxStableDiffusionPipeline,
+    FlaxDDPMScheduler,
     max_logging,
-    max_utils
+    max_utils,
+    train_utils
 )
 from maxdiffusion.maxdiffusion_utils import (
     encode
@@ -88,16 +92,27 @@ class DreamboothTrainer(BaseTrainer):
     
     def post_training_steps(self):
         return super().post_training_steps()
-
-    def create_other_states(self):
-
-        # text_encoder states have already been replicated
-        # in BaseTrainer.create_states_and_shard
-        text_encoder_state = train_state.TrainState.create(
-            apply_fn=self.pipeline.text_encoder.__call__,
-            params=self.__str__params["text_encoder"],
-            tx=self.get_optimizer()
-    )
+    
+    def create_scheduler(self):
+        noise_scheduler = FlaxDDPMScheduler(
+            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, dtype=jnp.float32
+        )
+        noise_scheduler_state = noise_scheduler.create_state()
+        self.pipeline.scheduler = noise_scheduler
+        self.params["scheduler"] = noise_scheduler_state
+    
+    def get_data_shardings(self):
+        if self.data_sharding is None:
+            data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
+            data_sharding = (
+                {INSTANCE_IMAGE_LATENTS : data_sharding,
+                INSTANCE_PROMPT_INPUT_IDS : data_sharding},
+                {CLASS_IMAGE_LATENTS : data_sharding,
+                CLASS_PROMPT_INPUT_IDS : data_sharding}
+            )
+            self.data_sharding = data_sharding
+        
+        return self.data_sharding
 
     def load_dataset(self):
         self.data_iterator = make_dreambooth_train_iterator(
@@ -154,28 +169,82 @@ class DreamboothTrainer(BaseTrainer):
         self.rng, train_rngs = jax.random.split(self.rng)
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
             p_train_step = jax.jit(
-                _train_step,
-                in_shardings=(self.unet_state_mesh_shardings, None, self.get_my_data_shardings(), None),
-                out_shardings=(self.unet_state_mesh_shardings, None, None, None),
+                partial(_train_step, config=self.config, pipeline=self.pipeline, params=self.params),
+                in_shardings=(self.state_shardings["unet_state_shardings"], None, self.get_data_shardings(), None),
+                out_shardings=(self.state_shardings["unet_state_shardings"], None, None, None),
                 donate_argnums=(0,)
             )
             max_logging.log("Precompiling...")
             s = time.time()
             dummy_batch = self.get_shaped_batch(self.config, self.pipeline)
-            p_train_step = p_train_step.lower(self.unet_state,
-                                            self.text_encoder_state,
+            p_train_step = p_train_step.lower(self.train_states["unet_state"],
+                                            self.train_states["text_encoder_state"],
                                             dummy_batch,
                                             train_rngs)
             self.p_train_step = p_train_step.compile()
             max_logging.log(f"Compile time: {(time.time() - s )}")
     
     def training_loop(self):
-        num_model_parameters = max_utils.calculate_num_params_from_pytree(self.unet_state.params)
+
+        writer = max_utils.initialize_summary_writer(self.config)
+        unet_state = self.train_states["unet_state"]
+        text_encoder_state = self.train_states["text_encoder_state"]
+
+        num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
         max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), self.writer)
         max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], self.writer)
         max_utils.add_config_to_summary_writer(self.config, self.writer)
 
-def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeline):
+        if jax.process_index() == 0:
+            max_logging.log("***** Running training *****")
+            max_logging.log(f"  Instantaneous batch size per device = {self.config.per_device_batch_size}")
+            max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.total_train_batch_size}")
+            max_logging.log(f"  Total optimization steps = {self.config.max_train_steps}")
+        
+        last_step_completion = datetime.datetime.now()
+        local_metrics_file = open(self.config.metrics_file, 'a', encoding="utf8") if self.config.metrics_file else None
+        running_gcs_metrics = [] if self.config.gcs_metrics else None
+        example_batch = None
+
+        first_profiling_step = self.config.skip_first_n_steps_for_profiler
+        if self.config.enable_profiler and first_profiling_step >= self.config.max_train_steps:
+            raise ValueError("Profiling requested but initial profiling step set past training final step")
+        last_profiling_step = np.clip(first_profiling_step + self.config.profiler_steps -1, first_profiling_step, self.config.max_train_steps - 1)
+
+        start_step = train_utils.get_first_step(self.train_states["unet_state"])
+        _, train_rngs = jax.random.split(self.rng)
+        for step in np.arange(start_step, self.config.max_train_steps):
+            example_batch = train_utils.load_next_batch(self.data_iterator, example_batch, self.config)
+            unet_state, text_encoder_state, train_metric, train_rngs = self.p_train_step(
+                unet_state, text_encoder_state, example_batch, train_rngs
+            )
+
+            samples_count = self.total_train_batch_size * (step + 1)
+            new_time = datetime.datetime.now()
+
+            train_utils.record_scalar_metrics(train_metric, new_time - last_step_completion, self.per_device_tflops, self.learning_rate_scheduler(step))
+            if self.config.write_metrics:
+                train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
+            last_step_completion = new_time
+            if step == first_profiling_step:
+                max_utils.activate_profiler(self.config)
+            if step == last_profiling_step:
+                max_utils.deactivate_profiler(self.config)
+            
+            if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
+                print("TODO save orbax checkpoint")
+        
+        if self.config.write_metrics:
+            train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
+        
+        if jax.process_index() == 0:
+            params = {
+                "text_encoder": train_utils.get_params_to_save(text_encoder_state.params),
+                "vae": train_utils.get_params_to_save(self.params["vae"]),
+                "unet": train_utils.get_params_to_save(unet_state.params),
+            }
+
+def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeline, params):
     _, gen_dummy_rng = jax.random.split(train_rng)
     sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
     instance_batch = batch[0]
@@ -188,10 +257,10 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
 
     latents = jnp.concatenate((instance_latents, class_latents), axis=0)
     input_ids = jnp.concatenate((instance_input_ids, class_input_ids), axis=0)
-    params = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
+    states = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
 
-    def compute_loss(params):
-        encoder_hidden_states = encode(input_ids, pipeline.text_encoder, params["text_encoder"])
+    def compute_loss(states):
+        encoder_hidden_states = encode(input_ids, pipeline.text_encoder, states["text_encoder"])
 
         # Sample noise that we'll add to the latents
         noise_rng, timestep_rng = jax.random.split(sample_rng)
@@ -215,7 +284,7 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
 
         # Predict the noise residual and compute loss
         model_pred = pipeline.unet.apply(
-            {"params": params["unet"]}, noisy_latents, timesteps, encoder_hidden_states, train=True
+            {"params": states["unet"]}, noisy_latents, timesteps, encoder_hidden_states, train=True
         ).sample
 
         # Get the target for loss depending on the prediction type
@@ -245,7 +314,7 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
         return loss
     
     grad_fn = jax.value_and_grad(compute_loss)
-    loss, grad = grad_fn(params)
+    loss, grad = grad_fn(states)
 
     if config.max_grad_norm > 0:
         grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(grad, unet_state, None)
