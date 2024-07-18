@@ -24,7 +24,7 @@ python src/maxdiffusion/pedagogical_examples/to_tfrecords.py \
   src/maxdiffusion/configs/base_2_base.yml attention=dot_product \
   data_files_pattern=/mnt/data/webdataset-moments-filtered/*.tar \
   extracted_files_dir=/tmp/raw-data-extracted \
-  tfrecords_dir=/mnt/data/tf_records_512_encoder_state \
+  tfrecords_dir=/mnt/data/tf_records_512_encoder_state_fp32 \
   run_name=test no_records_per_shard=12720 base_output_directory=/tmp/output > result_512_encode.txt
 """
 
@@ -94,8 +94,7 @@ def tokenize_captions(caption, pipeline, p_encode):
                                     padding="max_length",
                                     truncation=True)
    hidden_states = p_encode(np.stack(text_inputs.input_ids))
-   hidden_states = jnp.squeeze(hidden_states).astype(jnp.bfloat16)
-   print(hidden_states.shape)
+   hidden_states = jnp.squeeze(hidden_states).astype(jnp.float32)
    return hidden_states
 
 def generate_dataset(config):
