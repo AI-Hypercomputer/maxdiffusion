@@ -81,4 +81,4 @@ def calculate_unet_tflops(config, pipeline, rngs, train):
     sample=latents,
     timesteps=timesteps,
     encoder_hidden_states=encoder_hidden_states,
-    added_cond_kwargs=added_cond_kwargs)
+    added_cond_kwargs=added_cond_kwargs) / jax.local_device_count()
