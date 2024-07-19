@@ -13,7 +13,7 @@
  See the License for the specific language governing permissions and
  limitations under the License.
  """
-
+import pdb
 import os
 import functools
 from absl import app
@@ -73,7 +73,7 @@ def _get_aqt_key_paths(aqt_vars):
   for k, _ in aqt_tree_flat:
     pruned_keys = []
     for d in list(k):
-      if "AqtDotGeneral" in d.key:
+      if "AqtDotGeneral" in d.key or "AqtConvGeneralDilated" in d.key:
         pruned_keys.append(jax.tree_util.DictKey(key="kernel"))
         break
       else:
@@ -104,7 +104,11 @@ def get_quantized_unet_variables(config):
   weight_dtype = get_dtype(config)
   flash_block_sizes = get_flash_block_sizes(config)
 
-  quant = quantizations.configure_quantization(config=config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.CONVERT, weights_quant_mode=aqt_flax.QuantMode.CONVERT)
+  quant = quantizations.configure_quantization(
+    config=config,
+    lhs_quant_mode=aqt_flax.QuantMode.TRAIN,
+    rhs_quant_mode=aqt_flax.QuantMode.CONVERT,
+    weights_quant_mode=aqt_flax.QuantMode.CONVERT)
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision,
@@ -210,7 +214,12 @@ def run(config, q_v):
   weight_dtype = get_dtype(config)
   flash_block_sizes = get_flash_block_sizes(config)
 
-  quant = quantizations.configure_quantization(config=config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE, weights_quant_mode=aqt_flax.QuantMode.CONVERT)
+  quant = quantizations.configure_quantization(
+    config=config,
+    lhs_quant_mode=aqt_flax.QuantMode.TRAIN,
+    rhs_quant_mode=aqt_flax.QuantMode.SERVE,
+    weights_quant_mode=aqt_flax.QuantMode.CONVERT
+    )
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision,
@@ -222,7 +231,7 @@ def run(config, q_v):
     mesh=mesh,
     quant=quant,
   )
-
+  pdb.set_trace()
   # if this checkpoint was trained with maxdiffusion
   # the training scheduler was saved with it, switch it
   # to a Euler scheduler
@@ -263,7 +272,10 @@ def run(config, q_v):
   #       weight_decay=config.adam_weight_decay,
   #   )
   tx = None
-  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, tx, rng, config, pipeline, q_v, params["vae"], training=False, q_v=q_v)
+  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = (
+    get_states(
+      mesh, tx, rng, config, pipeline, q_v, params["vae"], training=False, q_v=q_v)
+      )
   del params["vae"]
   del params["unet"]
   # del unet_state.params["params"]
@@ -355,7 +367,7 @@ def run(config, q_v):
       image = vae_decode_p(latents, vae_state)
       return image
 
-  breakpoint()
+  # breakpoint()
   p_run_inference = jax.jit(
     functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline),
     in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None),
@@ -407,6 +419,9 @@ def run(config, q_v):
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   q_v = get_quantized_unet_variables(pyconfig.config)
+  pdb.set_trace()
+  
+  result = remove_quantized_params(q_v["params"], q_v["aqt"])
   # breakpoint()
   del q_v['params']
   # print(q_v.keys())
