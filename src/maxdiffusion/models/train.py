@@ -504,7 +504,7 @@ def train(config):
             last_step_completion = new_time
             last_log_step_num = step_num
 
-        if step != 0 and samples_count % config.checkpoint_every == 0:
+        if step != 0 and samples_count % config.checkpoint_every == 0 and train_metric['scalar']['learning/loss'] < 0.35:
             checkpoint_name = f"{step_num=}-{samples_count=}"
             if config.eval_at_checkpoint:
                 eval_at_checkpoint(config,
