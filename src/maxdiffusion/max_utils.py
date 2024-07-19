@@ -364,7 +364,7 @@ def setup_initial_state(model, tx, config, mesh, model_params = None, checkpoint
     model, tx, config, mesh, model_params, training)
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     if checkpoint_manager:
-      state, _ = checkpointing_utils.load_state_if_possible(checkpoint_manager,
+      state = checkpointing_utils.load_state_if_possible(checkpoint_manager,
                                                   unboxed_abstract_state)
       if state:
         state = state[checkpoint_item]

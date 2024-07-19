@@ -41,7 +41,7 @@ def validate_train_config(config):
     assert len(bucket_name) > 5 and bucket_name[0:5]=='gs://', f"Erroring out, {config_var} should start with 'gs://' "
 
   assert config.run_name, "Erroring out, need a real run_name"
-  _validate_gcs_bucket_name(config.base_output_directory, "base_output_directory")
+  _validate_gcs_bucket_name(config.output_dir, "output_dir")
 
   assert config.max_train_steps > 0 or config.num_train_epochs > 0, "You must set steps or learning_rate_schedule_steps to a positive interger."
 

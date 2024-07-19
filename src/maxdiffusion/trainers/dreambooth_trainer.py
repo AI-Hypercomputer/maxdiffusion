@@ -231,17 +231,21 @@ class DreamboothTrainer(BaseTrainer):
                 max_utils.deactivate_profiler(self.config)
             
             if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
+                self.train_states["unet_state"] = unet_state
+                self.train_states["text_encoder_state"] = text_encoder_state
                 print("TODO save orbax checkpoint")
         
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
         
         if jax.process_index() == 0:
-            params = {
-                "text_encoder": train_utils.get_params_to_save(text_encoder_state.params),
-                "vae": train_utils.get_params_to_save(self.params["vae"]),
-                "unet": train_utils.get_params_to_save(unet_state.params),
-            }
+            self.train_states["unet_state"] = unet_state
+            self.train_states["text_encoder_state"] = text_encoder_state
+            self.save_checkpoint(step)
+            self.checkpoint_manager.wait_until_finished()
+    
+    def post_create_states_and_shard(self):
+        return super().post_create_states_and_shard()
 
 def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeline, params):
     _, gen_dummy_rng = jax.random.split(train_rng)
