@@ -384,12 +384,12 @@ class FlaxAttention(nn.Module):
     key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
     value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
     out_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+    precision: jax.lax.Precision = None
 
     def setup(self):
 
         if self.attention_kernel == "flash" and self.mesh is None:
             raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
-
         inner_dim = self.dim_head * self.heads
         scale = self.dim_head**-0.5
 
@@ -416,7 +416,8 @@ class FlaxAttention(nn.Module):
             kernel_init=qkv_init_kernel,
             use_bias=False,
             dtype=self.dtype,
-            name="to_q"
+            name="to_q",
+            precision=self.precision
         )
 
         self.key = nn.Dense(
@@ -424,7 +425,8 @@ class FlaxAttention(nn.Module):
             kernel_init=qkv_init_kernel,
             use_bias=False,
             dtype=self.dtype,
-            name="to_k"
+            name="to_k",
+            precision=self.precision
         )
 
         self.value = nn.Dense(
@@ -432,7 +434,9 @@ class FlaxAttention(nn.Module):
             kernel_init=qkv_init_kernel,
             use_bias=False,
             dtype=self.dtype,
-            name="to_v")
+            name="to_v",
+            precision=self.precision
+        )
 
         self.proj_attn = nn.Dense(
             self.query_dim,
@@ -441,7 +445,9 @@ class FlaxAttention(nn.Module):
                 ("heads","embed")
             ),
             dtype=self.dtype,
-            name="to_out_0")
+            name="to_out_0",
+            precision=self.precision
+        )
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
     def __call__(self, hidden_states, context=None, deterministic=True):
@@ -515,6 +521,7 @@ class FlaxBasicTransformerBlock(nn.Module):
     flash_min_seq_length: int = 4096
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
+    precision: jax.lax.Precision = None
 
     def setup(self):
         # self attention (or cross_attention if only_cross_attention is True)
@@ -530,6 +537,7 @@ class FlaxBasicTransformerBlock(nn.Module):
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
+            precision=self.precision
         )
         # cross attention
         self.attn2 = FlaxAttention(
@@ -544,8 +552,9 @@ class FlaxBasicTransformerBlock(nn.Module):
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
+            precision=self.precision
         )
-        self.ff = FlaxFeedForward(dim=self.dim, dropout=self.dropout, dtype=self.dtype)
+        self.ff = FlaxFeedForward(dim=self.dim, dropout=self.dropout, dtype=self.dtype, precision=self.precision)
         self.norm1 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
         self.norm2 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
         self.norm3 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
@@ -623,6 +632,8 @@ class FlaxTransformer2DModel(nn.Module):
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     norm_num_groups: int = 32
+    precision: jax.lax.Precision = None
+    hidden_state_axis_names: AxisNames = (BATCH, LENGTH, D_KV)
 
     def setup(self):
         self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
@@ -636,7 +647,8 @@ class FlaxTransformer2DModel(nn.Module):
         if self.use_linear_projection:
             self.proj_in = nn.Dense(
                 inner_dim,
-                dtype=self.dtype
+                dtype=self.dtype,
+                precision=self.precision
             )
         else:
             self.proj_in = nn.Conv(
@@ -646,6 +658,7 @@ class FlaxTransformer2DModel(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                precision=self.precision
             )
 
         self.transformer_blocks = [
@@ -661,13 +674,14 @@ class FlaxTransformer2DModel(nn.Module):
                 attention_kernel=self.attention_kernel,
                 flash_min_seq_length=self.flash_min_seq_length,
                 flash_block_sizes=self.flash_block_sizes,
-                mesh=self.mesh
+                mesh=self.mesh,
+                precision=self.precision
             )
             for _ in range(self.depth)
         ]
 
         if self.use_linear_projection:
-            self.proj_out = nn.Dense(inner_dim, dtype=self.dtype)
+            self.proj_out = nn.Dense(inner_dim, dtype=self.dtype, precision=self.precision)
         else:
             self.proj_out = nn.Conv(
                 inner_dim,
@@ -676,6 +690,7 @@ class FlaxTransformer2DModel(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                precision=self.precision
             )
 
         self.dropout_layer = nn.Dropout(rate=self.dropout)
@@ -701,6 +716,11 @@ class FlaxTransformer2DModel(nn.Module):
             hidden_states = hidden_states.reshape(batch, height, width, channels)
             hidden_states = self.proj_out(hidden_states)
 
+        hidden_states = nn.with_logical_constraint(
+            hidden_states,
+            self.hidden_state_axis_names
+        )
+
         hidden_states = hidden_states + residual
         return self.dropout_layer(hidden_states, deterministic=deterministic)
 
@@ -725,12 +745,13 @@ class FlaxFeedForward(nn.Module):
     dim: int
     dropout: float = 0.0
     dtype: jnp.dtype = jnp.float32
+    precision: jax.lax.Precision = None
 
     def setup(self):
         # The second linear layer needs to be called
         # net_2 for now to match the index of the Sequential layer
-        self.net_0 = FlaxGEGLU(self.dim, self.dropout, self.dtype)
-        self.net_2 = nn.Dense(self.dim, dtype=self.dtype)
+        self.net_0 = FlaxGEGLU(self.dim, self.dropout, self.dtype, precision=self.precision)
+        self.net_2 = nn.Dense(self.dim, dtype=self.dtype, precision=self.precision)
 
     def __call__(self, hidden_states, deterministic=True):
         hidden_states = self.net_0(hidden_states, deterministic=deterministic)
@@ -754,10 +775,11 @@ class FlaxGEGLU(nn.Module):
     dim: int
     dropout: float = 0.0
     dtype: jnp.dtype = jnp.float32
+    precision: jax.lax.Precision = None
 
     def setup(self):
         inner_dim = self.dim * 4
-        self.proj = nn.Dense(inner_dim * 2, dtype=self.dtype)
+        self.proj = nn.Dense(inner_dim * 2, dtype=self.dtype, precision=self.precision)
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
     def __call__(self, hidden_states, deterministic=True):

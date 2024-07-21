@@ -47,7 +47,15 @@ def vae_apply(images, sample_rng, vae, vae_params):
 
   return latents
 
-def transform_images(examples, image_column, image_resolution, rng, global_batch_size, p_vae_apply = None):
+def transform_images(
+      examples,
+      image_column,
+      image_resolution,
+      rng,
+      global_batch_size,
+      pixel_ids_key="pixel_values",
+      p_vae_apply = None
+      ):
     """Preprocess images to latents."""
     images = list(examples[image_column])
     images = [np.asarray(image) for image in images]
@@ -58,6 +66,7 @@ def transform_images(examples, image_column, image_resolution, rng, global_batch
         image = (image - 0.5) / 0.5
         image = tf.transpose(image, perm=[2,0,1])
         tensor_list.append(image)
+
     if p_vae_apply:
         tensor_list = np.stack(tensor_list)
         ds_length = tensor_list.shape[0]
@@ -74,12 +83,14 @@ def transform_images(examples, image_column, image_resolution, rng, global_batch
 
         # TODO (Juan Acevedo): do last iteration, its required for the Pyarrow dataset
         # to not break due to items being fewer than expected. Is there a better way?
-        sample_rng, rng = jax.random.split(rng)
-        latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
-
-        examples["pixel_values"] = np.append(latents_list, latents, axis=0)
+        if tensor_list[i+global_batch_size:].shape[0] != 0:
+          sample_rng, rng = jax.random.split(rng)
+          latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
+          examples[pixel_ids_key] = np.append(latents_list, latents, axis=0)
+        else:
+           examples[pixel_ids_key] = latents_list
     else:
-        examples["pixel_values"] = tf.stack(tensor_list)
+        examples[pixel_ids_key] = tf.stack(tensor_list)
 
     return examples
 
@@ -129,10 +140,9 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
   noise_cfg = guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
   return noise_cfg
 
-def get_dummy_unet_inputs(config, pipeline):
+def get_dummy_unet_inputs(config, pipeline, batch_size):
+  """Returns randomly initialized unet inputs."""
   vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
-  batch_size = config.per_device_batch_size
-  dtype=max_utils.get_dtype(config)
   input_shape = (batch_size,
                   pipeline.unet.config['in_channels'],
                   config.resolution // vae_scale_factor,
@@ -140,7 +150,7 @@ def get_dummy_unet_inputs(config, pipeline):
 
   latents = jax.random.normal(jax.random.PRNGKey(0),
                               shape=input_shape,
-                              dtype=dtype
+                              dtype=config.weights_dtype
                               )
   timesteps = jnp.ones((latents.shape[0],))
   encoder_hidden_states_shape = (latents.shape[0],
@@ -162,16 +172,20 @@ def get_dummy_unet_inputs(config, pipeline):
     time_ids_channels = pipeline.unet.projection_class_embeddings_input_dim - text_embeds_dim
     time_ids_dims = time_ids_channels // pipeline.unet.addition_time_embed_dim
     added_cond_kwargs = {
-      "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=dtype),
-      "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=dtype),
+      "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=config.weights_dtype),
+      "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=config.weights_dtype),
     }
   return (latents, timesteps, encoder_hidden_states, added_cond_kwargs)
 
-def calculate_unet_tflops(config, pipeline, rngs, train):
-  """Calculates unet tflops."""
+def calculate_unet_tflops(config, pipeline, batch_size, rngs, train):
+  """
+  Calculates unet tflops.
+  batch_size should be per_device_batch_size * jax.local_device_count() or attention's shard_map won't
+  cache the compilation when flash is enabled.
+  """
 
   (latents, timesteps,
-    encoder_hidden_states, added_cond_kwargs) = get_dummy_unet_inputs(config, pipeline)
+    encoder_hidden_states, added_cond_kwargs) = get_dummy_unet_inputs(config, pipeline, batch_size)
   return max_utils.calculate_model_tflops(
     pipeline.unet,
     rngs,
@@ -179,4 +193,51 @@ def calculate_unet_tflops(config, pipeline, rngs, train):
     sample=latents,
     timesteps=timesteps,
     encoder_hidden_states=encoder_hidden_states,
-    added_cond_kwargs=added_cond_kwargs)
+    added_cond_kwargs=added_cond_kwargs) / jax.local_device_count()
+
+def encode(input_ids, text_encoder, text_encoder_params):
+  return text_encoder(
+    input_ids,
+    params=text_encoder_params,
+    train=False
+  )[0]
+
+def tokenize_captions(examples, caption_column, tokenizer, input_ids_key="input_ids", p_encode=None):
+    """Tokenize captions for sd1.x,sd2.x models."""
+    captions = list(examples[caption_column])
+    text_inputs = tokenizer(
+        captions,
+        max_length=tokenizer.model_max_length,
+        padding="max_length",
+        truncation=True
+    )
+
+    if p_encode:
+        encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
+        examples[input_ids_key] = encoder_hidden_states
+    else:
+        examples[input_ids_key] = text_inputs.input_ids
+    return examples
+
+def get_shaped_batch(config, pipeline):
+  """Return the shape of the batch - this is what eval_shape would return for the
+  output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078.
+  This function works with sd1.x and 2.x.
+  """
+  vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+  total_train_batch_size = config.per_device_batch_size * jax.device_count()
+  if config.cache_latents_text_encoder_outputs:
+    batch_image_shape = (total_train_batch_size, 4,
+            config.resolution // vae_scale_factor,
+            config.resolution // vae_scale_factor)
+    #bs, encoder_input, seq_length
+    batch_ids_shape = (total_train_batch_size,
+                       pipeline.text_encoder.config.max_position_embeddings,
+                       pipeline.text_encoder.config.hidden_size)
+  else:
+    batch_image_shape = (total_train_batch_size, 3, config.resolution, config.resolution)
+    batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
+  shaped_batch = {}
+  shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
+  shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+  return shaped_batch

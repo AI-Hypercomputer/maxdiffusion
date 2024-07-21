@@ -14,7 +14,6 @@
  limitations under the License.
  """
 
-import os
 from typing import Sequence
 from absl import app
 
@@ -23,12 +22,9 @@ import numpy as np
 import jax.numpy as jnp
 from flax.jax_utils import replicate
 from flax.training.common_utils import shard
-from jax.experimental.compilation_cache import compilation_cache as cc
 from maxdiffusion import pyconfig
 from maxdiffusion.utils import load_image
 from maxdiffusion import FlaxStableDiffusionControlNetPipeline, FlaxControlNetModel
-
-cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
 def run(config):
 
@@ -84,6 +80,9 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
+  config = pyconfig.config
+  if len(config.cache_dir) > 0:
+    jax.config.update("jax_compilation_cache_dir", config.cache_dir)
   run(pyconfig.config)
 
 if __name__ == "__main__":

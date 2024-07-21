@@ -50,8 +50,7 @@ PIL.Image.MAX_IMAGE_PIXELS = None
 
 from maxdiffusion import (
   FlaxStableDiffusionPipeline,
-  pyconfig,
-  max_utils
+  pyconfig
 )
 
 dl_manager = tfds.download.DownloadManager(download_dir="/tmp")
@@ -187,9 +186,8 @@ def img_to_latents(img, p_vae_apply, sample_rng):
 
 def run(config):
 
-  weight_dtype = max_utils.get_dtype(config)
   pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-    config.pretrained_model_name_or_path,revision=config.revision, dtype=weight_dtype,
+    config.pretrained_model_name_or_path,revision=config.revision, dtype=config.activations_dtype,
     safety_checker=None, feature_extractor=None,
     split_head_dim=config.split_head_dim, from_pt=config.from_pt,
     attention_kernel=config.attention, flash_block_sizes=None,

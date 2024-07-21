@@ -890,10 +890,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
             strides=(1, 1),
             padding="VALID",
             dtype=self.dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
+            #shape is too small to shard
         )
 
     def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:

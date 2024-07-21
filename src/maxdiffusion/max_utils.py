@@ -450,14 +450,15 @@ def create_learning_rate_schedule(config):
 
   return optax.join_schedules(pieces, boundaries)
 
-def get_dtype(config):
-  """Get dtype from config."""
-  dtype_str = config.dtype
-  retval = jnp.bfloat16
-  if dtype_str == "float32":
-    retval = jnp.float32
-  if dtype_str == "float16":
-    retval = jnp.float16
+
+def get_precision(config):
+  """Get precision from config."""
+  precision_str = config.precision
+  retval = jax.lax.Precision.DEFAULT
+  if precision_str == "HIGH":
+    retval = jax.lax.Precision.HIGH
+  if precision_str == "HIGHEST":
+    retval = jax.lax.Precision.HIGHEST
   return retval
 
 def get_flash_block_sizes(config):

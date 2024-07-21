@@ -17,7 +17,7 @@
 """Load and save a checkpoint. This is useful for uploading checkpoints to gcs
 and later loading them from gcs directly.
 After calling this script, use gsutil to upload the weights to a bucket:
-gsutil -m cp -r sdxl-model-finetuned gs://<your-bucket>/sdxl_1.0_base/
+gsutil -m cp -r sd-model-finetuned gs://<your-bucket>/sd_checkpoint/
 """
 
 from typing import Sequence
@@ -26,7 +26,7 @@ import jax
 from jax.sharding import Mesh
 
 from maxdiffusion import (
-    FlaxStableDiffusionXLPipeline,
+    FlaxStableDiffusionPipeline,
     max_logging,
     pyconfig
 )
@@ -43,7 +43,7 @@ def run(config):
 
   flash_block_sizes = get_flash_block_sizes(config)
 
-  pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+  pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision,
     dtype=config.activations_dtype,
@@ -61,10 +61,10 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   max_logging.log(f"Found {jax.device_count()} devices.")
+  pyconfig.initialize(argv)
   config = pyconfig.config
   if len(config.cache_dir) > 0:
     jax.config.update("jax_compilation_cache_dir", config.cache_dir)
-  pyconfig.initialize(argv)
   config = pyconfig.config
   run(config)
 if __name__ == "__main__":

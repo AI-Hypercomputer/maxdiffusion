@@ -18,8 +18,8 @@ class Generate(unittest.TestCase):
     img_url = os.path.join(THIS_DIR,'images','test_sdxl.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
-      "pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0",
-      "revision=refs/pr/95","dtype=bfloat16","resolution=1024",
+      "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
+      "revision=refs/pr/95","weights_dtype=bfloat16","activations_dtype=bfloat16", "resolution=1024",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=9",
       "num_inference_steps=20","seed=47","per_device_batch_size=1",
@@ -38,7 +38,7 @@ class Generate(unittest.TestCase):
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
       "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
-      "revision=main","dtype=bfloat16","resolution=1024",
+      "revision=main","weights_dtype=bfloat16","activations_dtype=bfloat16","resolution=1024",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=9",
       "num_inference_steps=20","seed=47","per_device_batch_size=1",

@@ -30,7 +30,6 @@ from maxdiffusion.models import FlaxUNet2DConditionModel
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import (
   create_device_mesh,
-  get_dtype,
   get_abstract_state,
   setup_initial_state
 )
@@ -46,17 +45,16 @@ def run(config):
   # and ici/dcn parallelism rules
   devices_array = create_device_mesh(config)
   mesh = Mesh(devices_array, config.mesh_axes)
-  weight_dtype = get_dtype(config)
 
   # Load the UNET from the checkpoint
   unet, params = FlaxUNet2DConditionModel.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision,
-    dtype=weight_dtype,
+    dtype=config.activations_dtype,
     subfolder="unet",
     split_head_dim=True
   )
-  params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
+  params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
   # Initialize the model in order to "activate" the PartitionSpecs
   unet_variables = jax.jit(unet.init_weights)(rng)

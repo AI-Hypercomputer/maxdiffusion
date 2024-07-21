@@ -46,7 +46,7 @@ class VaeTest(unittest.TestCase):
   def test_vae21_sharding_test(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
-      "revision=bf16","dtype=bfloat16","resolution=768"])
+      "revision=bf16","activations_dtype=bfloat16","resolution=768"])
     config = pyconfig.config
     vae, vae_params = FlaxAutoencoderKL.from_pretrained(
       config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=jnp.bfloat16, from_pt=config.from_pt

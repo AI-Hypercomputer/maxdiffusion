@@ -26,7 +26,17 @@ log_period: 10000000000  # Flushes Tensorboard
 pretrained_model_name_or_path: 'runwayml/stable-diffusion-v1-5'
 unet_checkpoint: ''
 revision: 'flax'
-dtype: 'bfloat16'
+
+# This will convert the weights to this dtype.
+weights_dtype: 'float32'
+# This sets the layer's dtype in the model. Ex: nn.Dense(dtype=activations_dtype)
+activations_dtype: 'bfloat16'
+
+# matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
+# Options are "DEFAULT", "HIGH", "HIGHEST"
+precision: "DEFAULT"
+# orbax or diffusers
+checkpoint_type: 'orbax'
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
@@ -88,11 +98,13 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
-                      ['out_channels', 'fsdp'],
+                      ['activation_batch', ['data','fsdp']],
+                      ['activation_heads', 'tensor'],
+                      ['activation_kv', 'tensor'],
+                      ['embed','fsdp'],
+                      ['heads', 'tensor'],
+                      ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
-                      ['length', 'fsdp']
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
@@ -157,6 +169,7 @@ adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradient
 adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradients.
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 1.e-2 # AdamW Weight decay
+max_grad_norm: 1.0
 
 enable_profiler: True
 # Skip first n steps for profiling, to omit things like compilation and to give
@@ -179,3 +192,13 @@ controlnet_model_name_or_path: 'lllyasviel/sd-controlnet-canny'
 controlnet_from_pt: True
 controlnet_conditioning_scale: 1.0
 controlnet_image: 'https://huggingface.co/datasets/YiYiXu/test-doc-assets/resolve/main/blog_post_cell_10_output_0.jpeg'
+
+# dreambooth - this script always uses prior preservation.
+instance_data_dir: ''
+class_data_dir: ''
+instance_prompt: ''
+class_prompt: ''
+prior_loss_weight: 1.0
+num_class_images: 100
+# If true, set dataset_save_location.
+cache_dreambooth_dataset: False

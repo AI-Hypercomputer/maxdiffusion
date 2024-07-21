@@ -37,6 +37,7 @@ NdInitializer = Callable[
 class FlaxUpsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
+    precision: jax.lax.Precision = None
     def setup(self):
         self.conv = nn.Conv(
             self.out_channels,
@@ -47,7 +48,8 @@ class FlaxUpsample2D(nn.Module):
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
+            ),
+            precision=self.precision
         )
 
     @nn.compact
@@ -57,7 +59,14 @@ class FlaxUpsample2D(nn.Module):
             hidden_states,
             shape=(batch, height * 2, width * 2, channels),
             method="nearest",
+            precision=self.precision
         )
+
+        hidden_states = nn.with_logical_constraint(
+            hidden_states,
+            ('batch', 'keep_1', 'keep_2', 'out_channels')
+        )
+
         hidden_states = self.conv(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
@@ -69,6 +78,7 @@ class FlaxUpsample2D(nn.Module):
 class FlaxDownsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
+    precision: jax.lax.Precision = None
 
     def setup(self):
         self.conv = nn.Conv(
@@ -80,7 +90,8 @@ class FlaxDownsample2D(nn.Module):
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
+            ),
+            precision=self.precision
         )
     @nn.compact
     def __call__(self, hidden_states):
@@ -99,6 +110,7 @@ class FlaxResnetBlock2D(nn.Module):
     use_nin_shortcut: bool = None
     dtype: jnp.dtype = jnp.float32
     norm_num_groups: int = 32
+    precision: jax.lax.Precision = None
 
     def setup(self):
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
@@ -119,9 +131,10 @@ class FlaxResnetBlock2D(nn.Module):
                 padding="VALID",
                 dtype=self.dtype,
                 kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
+                    nn.initializers.lecun_normal(),
+                    ('keep_1', 'keep_2', 'conv_in', 'conv_out')
+                ),
+                precision=self.precision
             )
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
         self.conv1 = nn.Conv(
@@ -133,12 +146,14 @@ class FlaxResnetBlock2D(nn.Module):
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
+            ),
+            precision=self.precision
         )
 
         self.time_emb_proj = nn.Dense(
            out_channels,
            dtype=self.dtype,
+           precision=self.precision
            )
         self.conv2 = nn.Conv(
             out_channels,
@@ -149,7 +164,8 @@ class FlaxResnetBlock2D(nn.Module):
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
+            ),
+            precision=self.precision
         )
 
     def __call__(self, hidden_states, temb, deterministic=True):
@@ -159,7 +175,7 @@ class FlaxResnetBlock2D(nn.Module):
         hidden_states = self.conv1(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
-            ('batch', 'keep_1', 'keep_2', 'out_channels')
+            ('batch', None, None, 'out_channels')
         )
 
         temb = self.time_emb_proj(nn.swish(temb))

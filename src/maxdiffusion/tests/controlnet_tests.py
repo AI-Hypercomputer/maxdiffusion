@@ -13,18 +13,18 @@ from skimage.metrics import structural_similarity as ssim
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-class Generate(unittest.TestCase):
+class ControlNet(unittest.TestCase):
   """Smoke test."""
   def test_controlnet(self):
     img_url = os.path.join(THIS_DIR,'images','cnet_test.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
-      "prompt=best quality, extremely detailed",
+      "prompt=best quality, extremely detailed","activations_dtype=bfloat16","weights_dtype=bfloat16",
       "negative_prompt=monochrome, lowres, bad anatomy, worst quality, low quality",
       "num_inference_steps=50","seed=0","split_head_dim=False"])
 
     images = generate_run(pyconfig.config)
-    test_image = np.array(images[0]).astype(np.uint8)
+    test_image = np.array(images[1]).astype(np.uint8)
     ssim_compare = ssim(base_image, test_image,
       multichannel=True, channel_axis=-1, data_range=255
     )
@@ -34,7 +34,9 @@ class Generate(unittest.TestCase):
   def test_controlnet_sdxl(self):
     img_url = os.path.join(THIS_DIR,'images','cnet_test_sdxl.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml')])
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
+      "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
+      "activations_dtype=bfloat16","weights_dtype=bfloat16"])
     images = generate_run_sdxl(pyconfig.config)
     test_image = np.array(images[0]).astype(np.uint8)
     ssim_compare = ssim(base_image, test_image,

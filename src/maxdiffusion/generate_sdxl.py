@@ -14,7 +14,6 @@
  limitations under the License.
  """
 
-import os
 import functools
 from absl import app
 from typing import Sequence
@@ -25,7 +24,6 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
-from jax.experimental.compilation_cache import compilation_cache as cc
 from flax.linen import partitioning as nn_partitioning
 from jax.sharding import PositionalSharding
 
@@ -41,7 +39,6 @@ from maxdiffusion import pyconfig
 from maxdiffusion.image_processor import VaeImageProcessor
 from maxdiffusion.max_utils import (
   create_device_mesh,
-  get_dtype,
   get_states,
   activate_profiler,
   deactivate_profiler,
@@ -53,8 +50,6 @@ from maxdiffusion.maxdiffusion_utils import (
   get_add_time_ids,
   rescale_noise_cfg
 )
-
-cc.set_cache_dir(os.path.expanduser("~/jax_cache"))
 
 def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
   latents, scheduler_state, state = args
@@ -122,12 +117,11 @@ def run(config):
 
   batch_size = config.per_device_batch_size * jax.device_count()
 
-  weight_dtype = get_dtype(config)
   flash_block_sizes = get_flash_block_sizes(config)
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision,
-    dtype=weight_dtype,
+    dtype=config.activations_dtype,
     from_pt=config.from_pt,
     split_head_dim=config.split_head_dim,
     norm_num_groups=config.norm_num_groups,
@@ -163,7 +157,7 @@ def run(config):
 
   scheduler_state = params.pop("scheduler")
   old_params = params
-  params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), old_params)
+  params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), old_params)
   params["scheduler"] = scheduler_state
 
   data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
@@ -297,6 +291,9 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
+  config = pyconfig.config
+  if len(config.cache_dir) > 0:
+    jax.config.update("jax_compilation_cache_dir", config.cache_dir)
   run(pyconfig.config)
 
 if __name__ == "__main__":

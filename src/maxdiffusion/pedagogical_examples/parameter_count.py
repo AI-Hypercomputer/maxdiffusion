@@ -3,15 +3,13 @@ from absl import app
 import jax
 from diffusers import FlaxStableDiffusionXLPipeline
 from diffusers import pyconfig
-from diffusers.max_utils import get_dtype
 
 def run(config):
-  weight_dtype = get_dtype(config)
 
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision,
-    dtype=weight_dtype,
+    dtype=config.activations_dtype,
     split_head_dim=True,
     cache_dir="/data"
   )

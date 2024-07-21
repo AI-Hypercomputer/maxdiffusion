@@ -26,7 +26,11 @@ log_period: 10000000000  # Flushes Tensorboard
 pretrained_model_name_or_path: 'stabilityai/stable-diffusion-2-base'
 unet_checkpoint: ''
 revision: 'main'
-dtype: 'bfloat16'
+
+# This will convert the weights to this dtype.
+weights_dtype: 'float32'
+# This sets the layer's dtype in the model. Ex: nn.Dense(dtype=activations_dtype)
+activations_dtype: 'bfloat16'
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
@@ -191,3 +195,13 @@ tfrecords_dir: ""
 no_records_per_shard: 1000
 
 enable_mllog: False
+
+# dreambooth - this script always uses prior preservation.
+instance_data_dir: ''
+class_data_dir: ''
+instance_prompt: ''
+class_prompt: ''
+prior_loss_weight: 1.0
+num_class_images: 100
+# If true, set dataset_save_location.
+cache_dreambooth_dataset: False
