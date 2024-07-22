@@ -33,7 +33,7 @@ def load_sdxllightning_unet(config, pipeline, params):
 
 def get_dummy_unet_inputs(config, pipeline):
   vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
-  batch_size = config.per_device_batch_size
+  batch_size = config.per_device_batch_size * jax.local_device_count()
   dtype=max_utils.get_dtype(config)
   input_shape = (batch_size,
                   pipeline.unet.config['in_channels'],
@@ -81,4 +81,4 @@ def calculate_unet_tflops(config, pipeline, rngs, train):
     sample=latents,
     timesteps=timesteps,
     encoder_hidden_states=encoder_hidden_states,
-    added_cond_kwargs=added_cond_kwargs)
+    added_cond_kwargs=added_cond_kwargs) / jax.local_device_count()

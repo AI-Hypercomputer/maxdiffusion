@@ -255,7 +255,6 @@ def train(config):
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
     )
-    params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), params)
 
     # TODO - add unit test to verify scheduler changes.
     noise_scheduler, noise_scheduler_state = max_utils.create_scheduler(config.training_scheduler, pipeline.scheduler.config, config)
