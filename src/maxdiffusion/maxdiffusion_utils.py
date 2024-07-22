@@ -105,6 +105,12 @@ def transform_images(
           examples[pixel_ids_key] = np.append(latents_list, latents, axis=0)
         else:
            examples[pixel_ids_key] = latents_list
+        if tensor_list[i+global_batch_size:].shape[0] != 0:
+          sample_rng, rng = jax.random.split(rng)
+          latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
+          examples[pixel_ids_key] = np.append(latents_list, latents, axis=0)
+        else:
+           examples[pixel_ids_key] = latents_list
     else:
         examples[pixel_ids_key] = tf.stack(tensor_list)
 
@@ -158,6 +164,8 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
 
 def get_dummy_unet_inputs(config, pipeline, batch_size):
   """Returns randomly initialized unet inputs."""
+def get_dummy_unet_inputs(config, pipeline, batch_size):
+  """Returns randomly initialized unet inputs."""
   vae_scale_factor = 2 ** (len(pipeline.vae.config['block_out_channels']) -1)
   input_shape = (batch_size,
                   pipeline.unet.config['in_channels'],
@@ -190,9 +198,17 @@ def get_dummy_unet_inputs(config, pipeline, batch_size):
     added_cond_kwargs = {
       "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=config.weights_dtype),
       "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=config.weights_dtype),
+      "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=config.weights_dtype),
+      "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=config.weights_dtype),
     }
   return (latents, timesteps, encoder_hidden_states, added_cond_kwargs)
 
+def calculate_unet_tflops(config, pipeline, batch_size, rngs, train):
+  """
+  Calculates unet tflops.
+  batch_size should be per_device_batch_size * jax.local_device_count() or attention's shard_map won't
+  cache the compilation when flash is enabled.
+  """
 def calculate_unet_tflops(config, pipeline, batch_size, rngs, train):
   """
   Calculates unet tflops.
@@ -258,153 +274,49 @@ def get_shaped_batch(config, pipeline):
   shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
   return shaped_batch
 
+def encode(input_ids, text_encoder, text_encoder_params):
+  return text_encoder(
+    input_ids,
+    params=text_encoder_params,
+    train=False
+  )[0]
 
-# def load_stable_diffusion_checkpoint(
-#   checkpoint_manager,
-#   mesh,
-#   config,
-#   checkpoint_type,
-#   is_training,
-#   train_step = None,
-#   scheduler_class = None,
-#   step = None
-# ):
-  
-#   # tx = None
-#   # if is_training:
-#   #   if config.scale_lr:
-#   #     config.learning_rate = config.learning_rate * max_utils.get_global_batch_size(config)
-    
-#   #   learning_rate_scheduler = max_utils.create_learning_rate_schedule(config)
+def tokenize_captions(examples, caption_column, tokenizer, input_ids_key="input_ids", p_encode=None):
+    """Tokenize captions for sd1.x,sd2.x models."""
+    captions = list(examples[caption_column])
+    text_inputs = tokenizer(
+        captions,
+        max_length=tokenizer.model_max_length,
+        padding="max_length",
+        truncation=True
+    )
 
-#   #   tx = optax.adamw(
-#   #       learning_rate=learning_rate_scheduler,
-#   #       b1=config.adam_b1,
-#   #       b2=config.adam_b2,
-#   #       eps=config.adam_eps,
-#   #       weight_decay=config.adam_weight_decay,
-#   #   )
-  
-#   if checkpoint_type == STABLE_DIFFUSION_CHECKPOINT:
-#     pipeline_class = FlaxStableDiffusionPipeline
-#   else:
-#     pipeline_class = FlaxStableDiffusionXLPipeline
+    if p_encode:
+        encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
+        examples[input_ids_key] = encoder_hidden_states
+    else:
+        examples[input_ids_key] = text_inputs.input_ids
+    return examples
 
-#   precision = max_utils.get_precision(config)
-#   flash_block_sizes = max_utils.get_flash_block_sizes(config)
-
-#   # try loading using orbax, if not, use diffusers loading
-#   model_configs = load_stable_diffusion_configs(checkpoint_manager,checkpoint_type, step)
-#   if model_configs:
-#     # TODO
-#     # 1. load from orbax all weights
-#     # 1. load states
-#     # 1. Create a pipeline
-#     # 1. return pipeline, params, states
-#     unet = FlaxUNet2DConditionModel.from_config(
-#       model_configs[0]["unet_config"],
-#       dtype=config.activations_dtype,
-#       from_pt=config.from_pt,
-#       split_head_dim=config.split_head_dim,
-#       norm_num_groups=config.norm_num_groups,
-#       attention_kernel=config.attention,
-#       flash_block_sizes=flash_block_sizes,
-#       mesh=mesh,
-#       precision=precision
-#     )
-#     vae = FlaxAutoencoderKL.from_config(
-#       model_configs[0]["vae_config"],
-#       dtype=config.activations_dtype,
-#       from_pt=config.from_pt
-#     )
-#     te_pretrained_config = PretrainedConfig.from_dict(model_configs[0]["text_encoder_config"])
-#     text_encoder = FlaxCLIPTextModel(
-#       te_pretrained_config,
-#       seed=config.seed,
-#       dtype=config.activations_dtype
-#     )
-#     tokenizer = CLIPTokenizer.from_pretrained(
-#       config.tokenizer_model_name_or_path,
-#       subfolder="tokenizer",
-#       dtype=config.activations_dtype,
-#     )
-#     scheduler = None
-#     if scheduler_class:
-#       scheduler = scheduler_class.from_config(model_configs[0]["scheduler_config"])
-    
-#     pipeline_kwargs = {
-#       "unet" : unet,
-#       "vae" : vae,
-#       "text_encoder" : text_encoder,
-#       "scheduler" : scheduler,
-#       "tokenizer" : tokenizer,
-#     }
-
-#     if checkpoint_type == STABLE_DIFFUSION_CHECKPOINT:
-#       pipeline_kwargs["safety_checker"] = None
-#       pipeline_kwargs["feature_extractor"] = None
-#     else:
-#       te_pretrained_2_config = PretrainedConfig.from_dict(model_configs[0]["text_encoder_2_config"])
-#       text_encoder_2 = FlaxCLIPTextModel(
-#         te_pretrained_2_config,
-#         seed=config.seed,
-#         dtype=config.activations_dtype
-#       )
-#       pipeline_kwargs["text_encoder_2"] = text_encoder_2
-#       pipeline_kwargs["tokenizer_2"] = tokenizer
-
-#     pipeline = pipeline_class(
-#       **pipeline_kwargs
-#     )
-
-#     (unet_state,
-#      unet_state_mesh_shardings,
-#      vae_state,
-#      vae_state_shardings) = max_utils.get_states(pipeline)
-
-#   else:
-#     pipeline, params = pipeline_class.from_pretrained(
-#       config.pretrained_model_name_or_path,
-#       revision=config.revision,
-#       dtype=config.activations_dtype,
-#       safety_checker=None,
-#       feature_extractor=None,
-#       from_pt=config.from_pt,
-#       split_head_dim=config.split_head_dim,
-#       norm_num_groups=config.norm_num_groups,
-#       attention_kernel=config.attention,
-#       flash_block_sizes=flash_block_sizes,
-#       mesh=mesh,
-#       precision=precision
-#     )
-
-#     params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
-
-#     # (unet_state,
-#     #  unet_state_mesh_shardings,
-#     #  vae_state,
-#     #  vae_state_shardings) = max_utils.get_states(
-#     #     mesh, tx, jax.random.PRNGKey(config.seed),
-#     #     config, pipeline, params["unet"],
-#     #     params["vae"], checkpoint_manager, training=is_training)
-    
-#     # text_encoder_sharding = PositionalSharding(mesh.devices).replicate()
-#     # partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=text_encoder_sharding)
-#     # params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
-
-#     # text_encoder_state = train_state.Train_state.create(
-#     #   appy_fn=pipeline.text_encoder.__call__,
-#     #   params=params["text_encoder"],
-#     #   tx=tx
-#     # )
-
-#     # if is_training:
-#     #   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-#     #     p_train_step = jax.jit(
-#     #       train_step,
-#     #       in_shardings=(unet_state_mesh_shardings, None, my_data_sharding, None),
-#     #       out_shardings=(unet_state_mesh_shardings, None, None, None),
-#     #       donate_argnums=(0,)
-#     #     )
-
-#   return pipeline, params, unet_state, vae_state, text_encoder_state
+def get_shaped_batch(config, pipeline):
+  """Return the shape of the batch - this is what eval_shape would return for the
+  output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078.
+  This function works with sd1.x and 2.x.
+  """
+  vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+  total_train_batch_size = config.per_device_batch_size * jax.device_count()
+  if config.cache_latents_text_encoder_outputs:
+    batch_image_shape = (total_train_batch_size, 4,
+            config.resolution // vae_scale_factor,
+            config.resolution // vae_scale_factor)
+    #bs, encoder_input, seq_length
+    batch_ids_shape = (total_train_batch_size,
+                       pipeline.text_encoder.config.max_position_embeddings,
+                       pipeline.text_encoder.config.hidden_size)
+  else:
+    batch_image_shape = (total_train_batch_size, 3, config.resolution, config.resolution)
+    batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
+  shaped_batch = {}
+  shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
+  shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+  return shaped_batch

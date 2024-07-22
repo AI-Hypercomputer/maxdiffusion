@@ -1,0 +1,17 @@
+# Requirements for Building the MaxDifussion Docker Image
+# These requirements are additional to the dependencies present in the JAX SS base image.
+absl-py
+transformers>=4.25.1
+datasets
+torch
+torchvision
+ftfy
+Jinja2
+scikit-image
+parameterized
+Pillow
+pytest
+tensorflow-datasets
+ruff>=0.1.5,<=0.2
+git+https://github.com/mlperf/logging.git
+opencv-python
