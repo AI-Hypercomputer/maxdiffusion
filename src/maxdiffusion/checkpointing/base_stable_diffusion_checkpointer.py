@@ -1,5 +1,6 @@
 
 from abc import ABC, abstractmethod
+import os
 import json
 import jax
 from jax.sharding import Mesh
@@ -35,11 +36,11 @@ class BaseStableDiffusionCheckpointer(ABC):
         self.checkpoint_format = None
         if len(config.cache_dir) > 0:
             jax.config.update("jax_compilation_cache_dir", config.cache_dir)
-        
-        self.rng = jax.random.PRNGKey(self.config.seed)
 
+        self.rng = jax.random.PRNGKey(self.config.seed)
         devices_array = max_utils.create_device_mesh(config)
         self.mesh = Mesh(devices_array, self.config.mesh_axes)
+        self.total_train_batch_size = max_utils.get_global_batch_size(self.config)
 
         self.pipeline = None
         self.params = {}
@@ -52,11 +53,11 @@ class BaseStableDiffusionCheckpointer(ABC):
             save_interval_steps=1,
             checkpoint_type=checkpoint_type
         )
-    
+
     @abstractmethod
     def post_create_states_and_shard(self):
         """
-        Hook to create any other states or additional shardings. 
+        Hook to create any other states or additional shardings.
         Called last in create_states().
         """
         pass
@@ -64,34 +65,31 @@ class BaseStableDiffusionCheckpointer(ABC):
     def _create_unet_state(self):
         if self.config.train_new_unet:
             unet_variables = jax.jit(self.pipeline.unet.init_weights, static_argnames=["eval_only"])(self.rng, eval_only=False)
-        else:
-            unet_variables = self.pipeline.unet.init_weights(self.rng, eval_only=True)
-        
-        if self.config.train_new_unet:
             self.params["unet"] = unet_variables
         else:
-            del unet_variables
+            # required to initilaize the model
+            _ = self.pipeline.unet.init_weights(self.rng, eval_only=True)
 
         unet_state, unet_state_mesh_shardings = max_utils.setup_initial_state(
             model=self.pipeline.unet,
             tx=self.get_optimizer(),
             config=self.config,
             mesh=self.mesh,
-            model_params=self.params.get("unet", None),
+            model_params=self.params.get("unet", self.pipeline.unet.init_weights(self.rng, eval_only=True)),
             checkpoint_manager=self.checkpoint_manager,
             checkpoint_item="unet_state",
             training=True
         )
         self.train_states["unet_state"] = unet_state
         self.state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
-    
+
     def _create_vae_state(self):
         vae_state, vae_state_mesh_shardings = max_utils.setup_initial_state(
             model=self.pipeline.vae,
             tx=self.get_optimizer(),
             config=self.config,
             mesh=self.mesh,
-            model_params=self.params.get("vae", None),
+            model_params=self.params.get("vae", self.pipeline.vae.init_weights(self.rng, eval_only=True)),
             checkpoint_manager=self.checkpoint_manager,
             checkpoint_item="vae_state",
             training=True
@@ -105,7 +103,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             tx=self.get_optimizer(),
             config=self.config,
             mesh=self.mesh,
-            model_params=self.params.get("text_encoder", None),
+            model_params=self.params.get("text_encoder", self.pipeline.text_encoder.init_weights(self.rng, (self.total_train_batch_size, self.pipeline.tokenizer.model_max_length))),
             checkpoint_manager=self.checkpoint_manager,
             checkpoint_item="text_encoder_state",
             training=True
@@ -121,25 +119,25 @@ class BaseStableDiffusionCheckpointer(ABC):
         # but check anyway.
         if self.pipeline is None:
             self.load_checkpoint()
-        
+
         self._create_unet_state()
         self._create_vae_state()
         self._create_text_encoder_state()
 
         # Hook
         self.post_create_states_and_shard()
-    
+
     def _get_pipeline_class(self):
         if self.checkpoint_type == STABLE_DIFFUSION_CHECKPOINT:
             pipeline_class = FlaxStableDiffusionPipeline
         else:
             pipeline_class = FlaxStableDiffusionXLPipeline
-        
+
         return pipeline_class
 
     def _set_checkpoint_format(self, checkpoint_format):
         self.checkpoint_format = checkpoint_format
-    
+
     def load_diffusers_checkpoint(self):
         pipeline_class = self._get_pipeline_class()
 
@@ -161,6 +159,19 @@ class BaseStableDiffusionCheckpointer(ABC):
             precision=precision
         )
 
+
+        if len(self.config.unet_checkpoint) > 0:
+            unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
+                    self.config.unet_checkpoint,
+                    split_head_dim=self.config.split_head_dim,
+                    norm_num_groups=self.config.norm_num_groups,
+                    attention_kernel=self.config.attention,
+                    flash_block_sizes=flash_block_sizes,
+                    mesh=self.mesh
+                )
+            params["unet"] = unet_params
+            pipeline.unet = unet
+
         params = jax.tree_util.tree_map(lambda x: x.astype(self.config.weights_dtype), params)
 
         self.pipeline = pipeline
@@ -180,16 +191,12 @@ class BaseStableDiffusionCheckpointer(ABC):
         items['unet_state'] = ocp.args.StandardSave(self.train_states["unet_state"])
         items['vae_state'] = ocp.args.StandardSave(self.train_states["vae_state"])
         items["text_encoder_state"] = ocp.args.StandardSave(self.train_states["text_encoder_state"])
-        # breakpoint()
+
         if hasattr(self.pipeline, "text_encoder_2"):
             items["text_encoder_state_2"] = ocp.args.StandardSave(self.train_states["text_encoder_2_state"])
-        
-        # TODO (jfacevedo) - better way to get the tokenizer path
-        # if self.checkpoint_format == _CHECKPOINT_FORMAT_DIFFUSERS:
-        #     tokenizer_config = {"path" : self.config.pretrained_model_name_or_path}
-        # else:
-        #     breakpoint()
-        #     tokenizer_config = self.pipeline.tokenizer
+
+        tokenizer_config = {"path" : self.config.tokenizer_model_name_or_path}
+        items["tokenizer_config"] = ocp.args.JsonSave(tokenizer_config)
         self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
 
     def load_checkpoint(self, step = None, scheduler_class = None):
@@ -197,11 +204,12 @@ class BaseStableDiffusionCheckpointer(ABC):
         pipeline_class = self._get_pipeline_class()
 
         self.checkpoint_format = _CHECKPOINT_FORMAT_ORBAX
-        
+
         precision = max_utils.get_precision(self.config)
         flash_block_sizes = max_utils.get_flash_block_sizes(self.config)
         # try loading using orbax, if not, use diffusers loading
         model_configs = load_stable_diffusion_configs(
+            self.config,
             self.checkpoint_manager,
             self.checkpoint_type, step)
 
@@ -217,21 +225,24 @@ class BaseStableDiffusionCheckpointer(ABC):
                 mesh=self.mesh,
                 precision=precision
             )
-            
+
             vae = FlaxAutoencoderKL.from_config(
                 model_configs[0]["vae_config"],
                 dtype=self.config.activations_dtype,
                 from_pt=self.config.from_pt
             )
-            
+
             te_pretrained_config = PretrainedConfig.from_dict(model_configs[0]["text_encoder_config"])
             text_encoder = FlaxCLIPTextModel(
                 te_pretrained_config,
                 seed=self.config.seed,
                 dtype=self.config.activations_dtype
             )
-            
             tokenizer_path = model_configs[0]["tokenizer_config"]["path"]
+            if "gs://" in tokenizer_path:
+                if "tokenizer" not in tokenizer_path:
+                    tokenizer_path = os.path.join(tokenizer_path, "tokenizer")
+                tokenizer_path = max_utils.download_blobs(tokenizer_path, "/tmp")
             tokenizer = CLIPTokenizer.from_pretrained(
                 tokenizer_path,
                 subfolder="tokenizer",
@@ -241,7 +252,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             scheduler = None
             if scheduler_class:
                 scheduler = scheduler_class.from_config(model_configs[0]["scheduler_config"])
-            
+
             pipeline_kwargs = {
             "unet" : unet,
             "vae" : vae,
@@ -260,8 +271,8 @@ class BaseStableDiffusionCheckpointer(ABC):
                     seed=self.config.seed,
                     dtype=self.config.activations_dtype
                 )
-            pipeline_kwargs["text_encoder_2"] = text_encoder_2
-            pipeline_kwargs["tokenizer_2"] = tokenizer
+                pipeline_kwargs["text_encoder_2"] = text_encoder_2
+                pipeline_kwargs["tokenizer_2"] = tokenizer
 
             pipeline = pipeline_class(
             **pipeline_kwargs
@@ -270,7 +281,7 @@ class BaseStableDiffusionCheckpointer(ABC):
         else:
             self.checkpoint_format = _CHECKPOINT_FORMAT_DIFFUSERS
             self.load_diffusers_checkpoint()
-        
+
         self.create_states_and_shard()
 
         if self.checkpoint_format == _CHECKPOINT_FORMAT_DIFFUSERS:

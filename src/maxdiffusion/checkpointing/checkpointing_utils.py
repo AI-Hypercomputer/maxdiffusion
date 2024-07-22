@@ -82,6 +82,7 @@ def create_orbax_checkpoint_manager(
   return mngr
 
 def load_stable_diffusion_configs(
+  config: dict,
   checkpoint_manager: CheckpointManager,
   checkpoint_type: str,
   step: Optional[int] = None,
@@ -99,11 +100,16 @@ def load_stable_diffusion_configs(
     if step is None:
       return None
   
+  if (step + 1) >= config.max_train_steps:
+    assert (step + 1) < config.max_train_steps, \
+      f'The latest checkpoint {step + 1} is larger or equal to the maximum number of train steps {config.max_train_steps}. Set config.max_train_steps to be larger than the saved checkpoint step.'
+
   restore_args = {
     "unet_config" : orbax.checkpoint.args.JsonRestore(),
     "vae_config" : orbax.checkpoint.args.JsonRestore(),
     "text_encoder_config" : orbax.checkpoint.args.JsonRestore(),
     "scheduler_config" : orbax.checkpoint.args.JsonRestore(),
+    "tokenizer_config" : orbax.checkpoint.args.JsonRestore()
   }
 
   if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
@@ -116,7 +122,8 @@ def load_stable_diffusion_configs(
 
 def load_state_if_possible(
   checkpoint_manager: CheckpointManager,
-  abstract_unboxed_pre_state: train_state.TrainState
+  abstract_unboxed_pre_state: train_state.TrainState,
+  checkpoint_item: str
 ):
   """Loads TrainState as possible from the inputs.
 
@@ -125,6 +132,7 @@ def load_state_if_possible(
       that TrainState. This enables a full reload of a run in progress.
     abstract_unboxed_pre_state: an unboxed, abstract TrainState that Orbax
       matches type against.
+    checkpoint_item: the name of the checkpoint item that is being loaded. Ex: vae_state
 
   Returns:
     A tuple of (train_state, train_state_params) where full_train_state captures
@@ -142,9 +150,5 @@ def load_state_if_possible(
     max_logging.log(
       f"restoring from this run's directory latest step {latest_step}"
     )
-    return checkpoint_manager.restore(
-      latest_step,
-      args=orbax.checkpoint.args.Composite(
-        unet_state=orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)
-      )
-    )
+    item = { checkpoint_item : orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
+    return checkpoint_manager.restore(latest_step,args=orbax.checkpoint.args.Composite(**item))

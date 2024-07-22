@@ -85,13 +85,13 @@ class DreamboothTrainer(BaseTrainer):
             }
         )
         return shaped_batch
-    
+
     def pre_training_steps(self):
         self.prepare_w_prior_preservation()
-    
+
     def post_training_steps(self):
         return super().post_training_steps()
-    
+
     def create_scheduler(self):
         noise_scheduler = FlaxDDPMScheduler(
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, dtype=jnp.float32
@@ -99,7 +99,7 @@ class DreamboothTrainer(BaseTrainer):
         noise_scheduler_state = noise_scheduler.create_state()
         self.pipeline.scheduler = noise_scheduler
         self.params["scheduler"] = noise_scheduler_state
-    
+
     def get_data_shardings(self):
         if self.data_sharding is None:
             data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
@@ -110,7 +110,7 @@ class DreamboothTrainer(BaseTrainer):
                 CLASS_PROMPT_INPUT_IDS : data_sharding}
             )
             self.data_sharding = data_sharding
-        
+
         return self.data_sharding
 
     def load_dataset(self):
@@ -120,7 +120,7 @@ class DreamboothTrainer(BaseTrainer):
             self.total_train_batch_size,
             self.pipeline.tokenizer,
             self.pipeline.vae,
-            self.params["vae"]
+            self.train_states["vae_state"].params
         )
 
     def prepare_w_prior_preservation(self):
@@ -150,8 +150,8 @@ class DreamboothTrainer(BaseTrainer):
                 prompt_ids = pipeline.prepare_inputs(example["prompt"])
                 prompt_ids = shard(prompt_ids)
                 p_params = jax_utils.replicate(params)
-                rng = jax.random.split(rng)[0]
-                sample_rng = jax.random.split(rng, jax.device_count())
+                self.rng = jax.random.split(self.rng)[0]
+                sample_rng = jax.random.split(self.rng, jax.device_count())
                 images = pipeline(prompt_ids, p_params, sample_rng, jit=True).images
                 images = images.reshape((images.shape[0] * images.shape[1],) + images.shape[-3:])
                 images = pipeline.numpy_to_pil(np.array(images))
@@ -163,7 +163,7 @@ class DreamboothTrainer(BaseTrainer):
 
             max_utils.delete_pytree(params)
             del pipeline
-    
+
     def compile_train_step(self):
         self.rng, train_rngs = jax.random.split(self.rng)
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -182,7 +182,7 @@ class DreamboothTrainer(BaseTrainer):
                                             train_rngs)
             self.p_train_step = p_train_step.compile()
             max_logging.log(f"Compile time: {(time.time() - s )}")
-    
+
     def training_loop(self):
 
         writer = max_utils.initialize_summary_writer(self.config)
@@ -199,7 +199,7 @@ class DreamboothTrainer(BaseTrainer):
             max_logging.log(f"  Instantaneous batch size per device = {self.config.per_device_batch_size}")
             max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.total_train_batch_size}")
             max_logging.log(f"  Total optimization steps = {self.config.max_train_steps}")
-        
+
         last_step_completion = datetime.datetime.now()
         local_metrics_file = open(self.config.metrics_file, 'a', encoding="utf8") if self.config.metrics_file else None
         running_gcs_metrics = [] if self.config.gcs_metrics else None
@@ -229,21 +229,21 @@ class DreamboothTrainer(BaseTrainer):
                 max_utils.activate_profiler(self.config)
             if step == last_profiling_step:
                 max_utils.deactivate_profiler(self.config)
-            
+
             if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
                 self.train_states["unet_state"] = unet_state
                 self.train_states["text_encoder_state"] = text_encoder_state
                 print("TODO save orbax checkpoint")
-        
+
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
-        
+
         if jax.process_index() == 0:
             self.train_states["unet_state"] = unet_state
             self.train_states["text_encoder_state"] = text_encoder_state
             self.save_checkpoint(step)
             self.checkpoint_manager.wait_until_finished()
-    
+
     def post_create_states_and_shard(self):
         return super().post_create_states_and_shard()
 
@@ -315,7 +315,7 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
         loss = loss + config.prior_loss_weight * prior_loss
 
         return loss
-    
+
     grad_fn = jax.value_and_grad(compute_loss)
     loss, grad = grad_fn(states)
 

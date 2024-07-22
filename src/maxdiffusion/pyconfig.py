@@ -116,6 +116,10 @@ class _HyperParameters():
     if raw_keys["learning_rate_schedule_steps"]==-1:
       raw_keys["learning_rate_schedule_steps"] = raw_keys["max_train_steps"]
 
+    # Orbax doesn't save the tokenizer params, instead it loads them from the pretrained_model_name_or_path
+    raw_keys["tokenizer_model_name_or_path"] = raw_keys["pretrained_model_name_or_path"]
+    if "gs://" in raw_keys["tokenizer_model_name_or_path"]:
+      raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
     if "gs://" in raw_keys["pretrained_model_name_or_path"]:
       raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
     if "gs://" in raw_keys["unet_checkpoint"]:

@@ -365,7 +365,7 @@ def setup_initial_state(model, tx, config, mesh, model_params = None, checkpoint
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     if checkpoint_manager:
       state = checkpointing_utils.load_state_if_possible(checkpoint_manager,
-                                                  unboxed_abstract_state)
+                                                  unboxed_abstract_state, checkpoint_item)
       if state:
         state = state[checkpoint_item]
   if not state:
@@ -409,11 +409,11 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params = None, vae_params =
   checkpoint_manager=checkpoint_manager,
   checkpoint_item="unet_state",
   training=training)
+
   vae_state = None
   vae_state_mesh_shardings = None
   if vae_params:
     vae_variables = jax.jit(pipeline.vae.init_weights)(rng)
-    unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.vae, tx, config, mesh, vae_variables, training=training)
     del vae_variables
     vae_state, vae_state_mesh_shardings = setup_initial_state(
         pipeline.vae,
@@ -421,8 +421,8 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params = None, vae_params =
         config,
         mesh,
         vae_params,
-        unboxed_abstract_state,
-        state_mesh_annotations,
+        checkpoint_manager=checkpoint_manager,
+        checkpoint_item="vae_state",
         training=training
     )
 

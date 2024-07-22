@@ -34,7 +34,7 @@ class StableDiffusionTrainer(BaseTrainer):
 
     def __init__(self, config):
         BaseTrainer.__init__(self, config, STABLE_DIFFUSION_CHECKPOINT)
-    
+
     def get_shaped_batch(self, config, pipeline):
         """Return the shape of the batch - this is what eval_shape would return for the
         output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078.
@@ -67,7 +67,7 @@ class StableDiffusionTrainer(BaseTrainer):
         )
         self.pipeline.scheduler = noise_scheduler
         self.params["scheduler"] = noise_scheduler_state
-    
+
     def get_data_shardings(self):
         if self.data_sharding is None:
             data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
@@ -76,7 +76,7 @@ class StableDiffusionTrainer(BaseTrainer):
                 "pixel_values" : data_sharding
             }
             self.data_sharding = data_sharding
-        
+
         return self.data_sharding
 
     def load_dataset(self):
@@ -123,7 +123,7 @@ class StableDiffusionTrainer(BaseTrainer):
             self.data_iterator = make_laion400m_train_iterator(
                 self.config, self.mesh, self.total_train_batch_size
             )
-    
+
     def compile_train_step(self):
         self.rng, train_rngs = jax.random.split(self.rng)
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -151,7 +151,7 @@ class StableDiffusionTrainer(BaseTrainer):
                                             train_rngs)
             self.p_train_step = p_train_step.compile()
             max_logging.log(f"Compile time: {(time.time() - s )}")
-        
+
     def training_loop(self):
         writer = max_utils.initialize_summary_writer(self.config)
         unet_state = self.train_states["unet_state"]
@@ -168,7 +168,7 @@ class StableDiffusionTrainer(BaseTrainer):
             max_logging.log(f"  Instantaneous batch size per device = {self.config.per_device_batch_size}")
             max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.total_train_batch_size}")
             max_logging.log(f"  Total optimization steps = {self.config.max_train_steps}")
-        
+
         last_step_completion = datetime.datetime.now()
         local_metrics_file = open(self.config.metrics_file, 'a', encoding="utf8") if self.config.metrics_file else None
         running_gcs_metrics = [] if self.config.gcs_metrics else None
@@ -204,16 +204,15 @@ class StableDiffusionTrainer(BaseTrainer):
 
             if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
                 print("TODO save orbax checkpoint")
-        
+
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
-        
+
         if jax.process_index() == 0:
-            params = {
-                "text_encoder": train_utils.get_params_to_save(self.params["text_encoder"]),
-                "vae": train_utils.get_params_to_save(vae_state.params),
-                "unet": train_utils.get_params_to_save(unet_state.params),
-            }
+            self.train_states["unet_state"] = unet_state
+            self.train_states["vae_state"] = vae_state
+            self.save_checkpoint(step)
+            self.checkpoint_manager.wait_until_finished()
 
 def _train_step(unet_state, vae_state, batch, train_rng, config, pipeline, params):
     _, gen_dummy_rng = jax.random.split(train_rng)
@@ -251,7 +250,7 @@ def _train_step(unet_state, vae_state, batch, train_rng, config, pipeline, param
         else:
             weights = train_utils.generate_timestep_weights(config, pipeline.scheduler.config.num_train_timesteps)
             timesteps = jax.random.categorical(timestep_bias_rng, logits=jnp.log(weights), shape=(bsz,))
-        
+
         # Add noise to the latents according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
         noisy_latents = pipeline.scheduler.add_noise(params["scheduler"], latents, noise, timesteps)
@@ -294,7 +293,7 @@ def _train_step(unet_state, vae_state, batch, train_rng, config, pipeline, param
 
     if config.max_grad_norm > 0:
         grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(grad, unet_state, None)
-    
+
     new_state = unet_state.apply_gradients(grads=grad)
     metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
 

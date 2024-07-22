@@ -1,8 +1,6 @@
 
 from abc import abstractmethod
-from functools import partial
 import jax
-from jax.sharding import PartitionSpec as P
 from maxdiffusion import (
     max_utils,
     maxdiffusion_utils
@@ -19,8 +17,6 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
         # sharding
         self.data_sharding = None
 
-        self.total_train_batch_size = max_utils.get_global_batch_size(self.config)
-
         self.per_device_tflops = None
 
         self.writer = max_utils.initialize_summary_writer(config)
@@ -28,17 +24,17 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
         #Optimizer params
         self.learning_rate_scheduler = None
         self.optimizer = None
-    
+
     def _create_optimizer(self):
         self.learning_rate_scheduler = max_utils.create_learning_rate_schedule(self.config)
         tx = max_utils.create_optimizer(self.config, self.learning_rate_scheduler)
         return tx
-    
+
     def get_optimizer(self):
-        if self.optimizer == None:
+        if self.optimizer is None:
             self.optimizer = self._create_optimizer()
         return self.optimizer
-    
+
     @abstractmethod
     def get_shaped_batch(self, config, pipeline):
        pass
@@ -73,14 +69,14 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
 
     def calculate_tflops(self):
         self.per_device_tflops = maxdiffusion_utils.calculate_unet_tflops(
-            self.config, self.pipeline, 
+            self.config, self.pipeline,
             (2 * self.config.per_device_batch_size * jax.local_device_count()),
             self.rng,
             train=True
         )
 
     def start_training(self):
-        
+
         # Hook
         self.pre_training_steps()
         # Load checkpoint - will load or create states
