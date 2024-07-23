@@ -518,9 +518,9 @@ def walk_and_upload_gen_images(config, output_dir, checkpoint_number="0"):
       max_logging.log(f"File {file_to_upload} moved successfully!")
 
 def save_checkpoint(pipeline, unet_state, config, output_dir):
-
-  user_dir = os.path.expanduser('~')
-  local_output_dir = output_dir.replace(os.path.join(config.base_output_directory, config.run_name), user_dir)
+  local_output_dir = output_dir.replace(os.path.join(config.base_output_directory, config.run_name), os.getcwd())
+  max_logging.log(f"saving checkpoint dir at {local_output_dir}")
+  
   pipeline.unet.save_pretrained(
     local_output_dir,
     params=get_params_to_save(unet_state.params)
