@@ -62,16 +62,20 @@ def activate_profiler(config):
   if jax.process_index() == 0 and config.enable_profiler:
     jax.profiler.start_trace(config.tensorboard_dir)
 
+
 def deactivate_profiler(config):
   if jax.process_index() == 0 and config.enable_profiler:
     jax.profiler.stop_trace()
 
+
 def initialize_summary_writer(config):
   return writer.SummaryWriter(config.tensorboard_dir) if jax.process_index() == 0 else None
+
 
 def close_summary_writer(summary_writer):
   if jax.process_index() == 0:
     summary_writer.close()
+
 
 def _prepare_metrics_for_json(metrics, step, run_name):
   """Converts metric dictionary into json supported types (e.g. float)"""
@@ -81,6 +85,7 @@ def _prepare_metrics_for_json(metrics, step, run_name):
   metrics_dict['step'] = float(step)
   metrics_dict['run_name'] = run_name
   return metrics_dict
+
 
 def write_metrics_locally(metrics, step, config, file):
   """Writes metrics locally for testing"""
@@ -92,6 +97,7 @@ def write_metrics_locally(metrics, step, config, file):
 
   if step == config.max_train_steps - 1:
     file.close()
+
 
 def write_metrics_for_gcs(metrics, step, config, running_metrics):
   """Writes metrics to gcs"""
@@ -112,16 +118,19 @@ def write_metrics_for_gcs(metrics, step, config, running_metrics):
     running_metrics = [] # reset running_metrics to empty list
   return running_metrics
 
+
 def add_config_to_summary_writer(config, summary_writer):
   """Writes config params to tensorboard"""
   if jax.process_index() == 0:
     for key, value in config.get_keys().items():
       add_text_to_summary_writer(key, str(value), summary_writer)
 
+
 def add_text_to_summary_writer(key, value, summary_writer):
   """Writes given key-value pair to tensorboard as text/summary"""
   if jax.process_index() == 0:
     summary_writer.add_text(key, value)
+
 
 def write_metrics_for_gcs(metrics, step, config, running_metrics):
   """Writes metrics to gcs"""
@@ -143,6 +152,7 @@ def write_metrics_for_gcs(metrics, step, config, running_metrics):
     running_metrics = [] # reset running_metrics to empty list
   return running_metrics
 
+
 def write_config_raw_keys_for_gcs(raw_keys):
   """Writes config raw keys to GCS"""
   if not raw_keys["save_config_to_gcs"] or jax.process_index() != 0:
@@ -160,11 +170,13 @@ def write_config_raw_keys_for_gcs(raw_keys):
   upload_blob(gcs_filename, filename)
   max_logging.log(f"File {filename} moved successfully!")
 
+
 def parse_gcs_bucket_and_prefix(destination_gcs_name):
   path_parts = destination_gcs_name.replace("gs://", "").split("/")
   bucket = path_parts.pop(0)
   key = "/".join(path_parts)
   return bucket, key
+
 
 def download_blobs(source_gcs_folder, local_destination):
   """Downloads a folder to a local location"""
@@ -183,6 +195,7 @@ def download_blobs(source_gcs_folder, local_destination):
       blob.download_to_filename(download_to_filename)
   return os.path.join(local_destination, prefix_name)
 
+
 def upload_blob(destination_gcs_name, source_file_name):
   """Uploads a file to a GCS location"""
   bucket_name, prefix_name = parse_gcs_bucket_and_prefix(destination_gcs_name)
@@ -190,6 +203,7 @@ def upload_blob(destination_gcs_name, source_file_name):
   bucket = storage_client.get_bucket(bucket_name)
   blob = bucket.blob(prefix_name)
   blob.upload_from_filename(source_file_name)
+
 
 def initialize_jax_distributed_system():
   """ The best recipe to initialize the Jax Distributed System has varied over time. We keep a layer of
@@ -345,11 +359,11 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
 
   state_mesh_shardings = jax.tree_util.tree_map(
     lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
-  
+
   return state, state_mesh_shardings
 
 def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, training=True, q_v=None):
-  
+
   # Needed to initialize weights on multi-host with addressable devices.
   quant_enabled = config.quantization is not None
   if config.train_new_unet:
@@ -487,7 +501,7 @@ def calculate_training_tflops(pipeline, unet_params, config):
         == unet_config.projection_class_embeddings_input_dim
       )
       num_micro_conditions = 5 if is_refiner else 6
-      
+
       text_embeds_dim = unet_config.projection_class_embeddings_input_dim - (
         num_micro_conditions * unet_config.addition_time_embed_dim
       )
@@ -499,13 +513,13 @@ def calculate_training_tflops(pipeline, unet_params, config):
       }
     c_unet_apply = jax.jit(pipeline.unet.apply).lower({"params" : unet_params}, latents, timesteps, encoder_hidden_states, added_cond_kwargs).compile()
 
-    model_flops = 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12) 
+    model_flops = 3*(c_unet_apply.cost_analysis()[0]['flops'] / 10**12)
 
     # Cost analysis over estimates flops when splash pallas kernel is enabled
     # dividing by 3.2 provides a better estimate.
     if 'flash' in config.attention:
       model_flops = model_flops / 3.2
-    
+
     return model_flops
 
 def calculate_num_params_from_pytree(params):

@@ -136,7 +136,7 @@ def get_quantized_unet_variables(config):
   )
   del pipeline
   del params
-  
+
   return quantized_unet_vars
 
 def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
@@ -147,10 +147,10 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
   timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
   latents_input = pipeline.scheduler.scale_model_input(scheduler_state, latents_input, t)
-  # breakpoint()
+  breakpoint()
   noise_pred = model.apply(
-    state.params,
-   # {"params" : state.params, "aqt": state.params["aqt"] },
+    # state.params,
+   {"params" : state.params, "aqt": state.params["aqt"] },
     jnp.array(latents_input),
     jnp.array(timestep, dtype=jnp.int32),
     encoder_hidden_states=prompt_embeds,
@@ -231,9 +231,14 @@ def run(config, q_v):
   weight_dtype = get_dtype(config)
   flash_block_sizes = get_flash_block_sizes(config)
 
-  quant = quantizations.configure_quantization(config=config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE, weights_quant_mode=aqt_flax.QuantMode.SERVE)
+  quant = quantizations.configure_quantization(
+    config=config,
+    lhs_quant_mode=aqt_flax.QuantMode.TRAIN,
+    rhs_quant_mode=aqt_flax.QuantMode.SERVE,
+    weights_quant_mode=aqt_flax.QuantMode.SERVE
+    )
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-    "output_trained_working",
+    "output_trained_working_orig",
     revision=config.revision,
     dtype=weight_dtype,
     split_head_dim=config.split_head_dim,
@@ -243,7 +248,8 @@ def run(config, q_v):
     mesh=mesh,
     quant=quant,
   )
-  breakpoint()
+  # breakpoint()
+  # import pdb; pdb.set_trace()
 
   # if this checkpoint was trained with maxdiffusion
   # the training scheduler was saved with it, switch it
@@ -271,15 +277,8 @@ def run(config, q_v):
   params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
   params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
 
-  #p1 = {}
-  #import pdb
-  #pdb.set_trace()
-  #p1.update(params['unet']['params'])
-  #p1['aqt'] = params['unet']['aqt']
-  #del params['unet']
-  
   unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False, q_v=params["unet"])
-  
+
 
   del params["vae"]
   # unet_state.params = q_v
@@ -346,7 +345,7 @@ def run(config, q_v):
     ).sample
     image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
     return image
-  
+
   def get_quantized_unet_vars(unet_state, params, rng, config, batch_size, pipeline):
 
     (latents,
@@ -356,7 +355,7 @@ def run(config, q_v):
     guidance_rescale,
     scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
 
-    loop_body_quant_p = jax.jit(functools.partial(loop_body_for_quantization, 
+    loop_body_quant_p = jax.jit(functools.partial(loop_body_for_quantization,
                                                   model=pipeline.unet,
                                                   pipeline=pipeline,
                                                   added_cond_kwargs=added_cond_kwargs,
@@ -391,14 +390,14 @@ def run(config, q_v):
                                         loop_body_p, (latents, scheduler_state, unet_state))
       image = vae_decode_p(latents, vae_state)
       return image
-  
+
   #quantized_unet_vars = get_quantized_unet_vars(unet_state, params, rng, config, batch_size, pipeline)
-  
+
   #del params
   #del pipeline
   #del unet_state
   #quant = quantizations.configure_quantization(config=config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.SERVE)
-  
+
   # pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
   #   config.pretrained_model_name_or_path,
   #   revision=config.revision,
@@ -427,8 +426,8 @@ def run(config, q_v):
   # unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, None, rng, config, pipeline, quantized_unet_vars, params["vae"], training=False)
   #del params["vae"]
   #del params["unet"]
-  
-  
+
+
   p_run_inference = jax.jit(
     functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline),
     in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None),

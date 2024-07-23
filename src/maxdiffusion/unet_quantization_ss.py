@@ -224,6 +224,7 @@ def get_embeddings(prompt_ids, pipeline, params):
   prompt_embeds = jnp.concatenate([prompt_embeds, prompt_embeds_2], axis=-1)
   return prompt_embeds, text_embeds
 
+
 def tokenize(prompt, pipeline):
   inputs = []
   for _tokenizer in [pipeline.tokenizer, pipeline.tokenizer_2]:
@@ -238,7 +239,12 @@ def tokenize(prompt, pipeline):
   inputs = jnp.stack(inputs,axis=1)
   return inputs
 
-def run(config, q_v):
+
+def main(argv: Sequence[str]) -> None:
+  pyconfig.initialize(argv)
+  # q_v = get_quantized_unet_variables(pyconfig.config)
+
+  config = pyconfig.config
   rng = jax.random.PRNGKey(config.seed)
 
   # Setup Mesh
@@ -252,8 +258,9 @@ def run(config, q_v):
 
   quant = quantizations.configure_quantization(
     config=config,
-    lhs_quant_mode=aqt_flax.QuantMode.TRAIN,
-    rhs_quant_mode=aqt_flax.QuantMode.SERVE,
+    lhs_quant_mode=aqt_flax.QuantMode.CONVERT,
+    rhs_quant_mode=aqt_flax.QuantMode.CONVERT,
+    activation_quant_mode=aqt_flax.QuantMode.CONVERT,
     weights_quant_mode=aqt_flax.QuantMode.CONVERT
     )
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
@@ -268,6 +275,47 @@ def run(config, q_v):
     quant=quant,
   )
 
+  k = jax.random.key(0)
+  latents = jnp.ones((8, 4,128,128), dtype=jnp.float32)
+  timesteps = jnp.ones((8,))
+  encoder_hidden_states = jnp.ones((8, 77, 2048))
+
+  added_cond_kwargs = {
+                "text_embeds": jnp.ones((8, 1280), dtype=jnp.float32),
+                "time_ids": jnp.ones((8, 6), dtype=jnp.float32),
+            }
+  _, q_v = pipeline.unet.apply(
+    params["unet"] | {"aqt" : {}},
+    latents,
+    timesteps,
+    encoder_hidden_states=encoder_hidden_states,
+    added_cond_kwargs=added_cond_kwargs,
+    rngs={"params": jax.random.PRNGKey(0)},
+    mutable=True,
+  )
+  del pipeline
+  del params
+  del q_v['params']
+
+  quant = quantizations.configure_quantization(
+    config=config,
+    lhs_quant_mode=aqt_flax.QuantMode.SERVE,
+    rhs_quant_mode=aqt_flax.QuantMode.SERVE,
+    activation_quant_mode=aqt_flax.QuantMode.SERVE,
+    weights_quant_mode=aqt_flax.QuantMode.SERVE
+    )
+  pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+    config.pretrained_model_name_or_path,
+    revision=config.revision,
+    dtype=weight_dtype,
+    split_head_dim=config.split_head_dim,
+    norm_num_groups=config.norm_num_groups,
+    attention_kernel=config.attention,
+    flash_block_sizes=flash_block_sizes,
+    mesh=mesh,
+    quant=quant,
+  )
+  # import sys; sys.exit()
   # if this checkpoint was trained with maxdiffusion
   # the training scheduler was saved with it, switch it
   # to a Euler scheduler
@@ -287,7 +335,7 @@ def run(config, q_v):
   params = jax.tree_util.tree_map(lambda x: x.astype(weight_dtype), old_params)
   params["scheduler"] = scheduler_state
 
-  data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
+  data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
 
   sharding = PositionalSharding(devices_array).replicate()
   partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
@@ -400,20 +448,7 @@ def run(config, q_v):
   images = p_run_inference(unet_state, vae_state, params).block_until_ready()
   images.block_until_ready()
   print("inference time: ",(time.time() - s))
-  s = time.time()
-  images = p_run_inference(unet_state, vae_state, params).block_until_ready() #run_inference(unet_state, vae_state, latents, scheduler_state)
-  images.block_until_ready()
-  print("inference time: ",(time.time() - s))
-  s = time.time()
-  images = p_run_inference(unet_state, vae_state, params).block_until_ready() # run_inference(unet_state, vae_state, latents, scheduler_state)
-  images.block_until_ready()
-  print("inference time: ",(time.time() - s))
-  s = time.time()
-  activate_profiler(config)
-  images = p_run_inference(unet_state, vae_state, params).block_until_ready()
-  deactivate_profiler(config)
-  images.block_until_ready()
-  print("inference time: ",(time.time() - s))
+
   images = jax.experimental.multihost_utils.process_allgather(images)
   numpy_images = np.array(images)
   images = VaeImageProcessor.numpy_to_pil(numpy_images)
@@ -421,26 +456,22 @@ def run(config, q_v):
   for i, image in enumerate(images[:10]):
     image.save(f"image_sdxl_{i}.png")
 
-  pdb.set_trace()
-  # q_v = remove_quantized_params(q_v["params"], q_v["aqt"])
-  params['unet'] = q_v
-  params['vae'] = vae_state.params
+  # pdb.set_trace()
+  # # q_v = remove_quantized_params(q_v["params"], q_v["aqt"])
+  # params['unet'] = q_v
+  # params['vae'] = vae_state.params
 
-  pipeline.save_pretrained(
-            "output_trained_working",
-            params={
-                "text_encoder": get_params_to_save(params["text_encoder"]),
-                "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
-                "vae": get_params_to_save(params["vae"]),
-                "unet": get_params_to_save(q_v),
-            },
-        )
+  # pipeline.save_pretrained(
+  #           "output_trained_working",
+  #           params={
+  #               "text_encoder": get_params_to_save(params["text_encoder"]),
+  #               "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
+  #               "vae": get_params_to_save(params["vae"]),
+  #               "unet": get_params_to_save(q_v),
+  #           },
+  #       )
 
   return images
-
-def main(argv: Sequence[str]) -> None:
-  pyconfig.initialize(argv)
-  q_v = get_quantized_unet_variables(pyconfig.config)
 
   # pdb.set_trace()
   # q_v["params"] = remove_quantized_params(q_v["params"], q_v["aqt"])

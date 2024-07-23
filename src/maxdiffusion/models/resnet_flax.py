@@ -34,6 +34,8 @@ InitializerAxis = Union[int, Tuple[int, ...]]
 NdInitializer = Callable[
     [PRNGKey, Shape, DType, InitializerAxis, InitializerAxis], Array]
 Quant = quantizations.AqtQuantization
+
+
 class FlaxUpsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
