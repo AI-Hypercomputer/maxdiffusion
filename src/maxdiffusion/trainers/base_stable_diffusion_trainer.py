@@ -10,7 +10,7 @@ from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
     BaseStableDiffusionCheckpointer
 )
 
-class BaseTrainer(BaseStableDiffusionCheckpointer):
+class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
     def __init__(self, config, checkpoint_type):
         BaseStableDiffusionCheckpointer.__init__(self, config, checkpoint_type)
 
@@ -23,17 +23,8 @@ class BaseTrainer(BaseStableDiffusionCheckpointer):
 
         #Optimizer params
         self.learning_rate_scheduler = None
-        self.optimizer = None
 
-    def _create_optimizer(self):
-        self.learning_rate_scheduler = max_utils.create_learning_rate_schedule(self.config)
-        tx = max_utils.create_optimizer(self.config, self.learning_rate_scheduler)
-        return tx
-
-    def get_optimizer(self):
-        if self.optimizer is None:
-            self.optimizer = self._create_optimizer()
-        return self.optimizer
+        self.p_train_step = None
 
     @abstractmethod
     def get_shaped_batch(self, config, pipeline):

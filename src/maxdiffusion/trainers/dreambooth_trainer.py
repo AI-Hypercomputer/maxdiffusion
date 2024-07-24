@@ -17,7 +17,7 @@ from torch.utils.data import Dataset
 from huggingface_hub.utils import insecure_hashlib
 from tqdm import tqdm
 
-from maxdiffusion.trainers.base_trainer import BaseTrainer
+from maxdiffusion.src.maxdiffusion.trainers.base_stable_diffusion_trainer import BaseStableDiffusionTrainer
 from maxdiffusion import (
     FlaxStableDiffusionPipeline,
     FlaxDDPMScheduler,
@@ -64,9 +64,9 @@ class PromptDataset(Dataset):
         example["index"] = index
         return example
 
-class DreamboothTrainer(BaseTrainer):
+class DreamboothTrainer(BaseStableDiffusionTrainer):
     def __init__(self, config):
-        BaseTrainer.__init__(self, config, STABLE_DIFFUSION_CHECKPOINT)
+        BaseStableDiffusionTrainer.__init__(self, config, STABLE_DIFFUSION_CHECKPOINT)
 
     def get_shaped_batch(self, config, pipeline):
         vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)

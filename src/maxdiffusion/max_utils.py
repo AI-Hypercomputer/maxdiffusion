@@ -357,10 +357,10 @@ def setup_initial_state(model, tx, config, mesh, model_params = None, checkpoint
     state: the initialized train state
     state_mesh_annotations: the mesh annotations for the train state
   """
-
+  max_logging.log(f"setup_initial_state for {checkpoint_item}")
   # Initialization
   state = None
-  unboxed_abstract_state, state_mesh_annotations, state_mesh_shardings = get_abstract_state(
+  unboxed_abstract_state, _, state_mesh_shardings = get_abstract_state(
     model, tx, config, mesh, model_params, training)
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     if checkpoint_manager:
@@ -384,8 +384,6 @@ def setup_initial_state(model, tx, config, mesh, model_params = None, checkpoint
 
   state = unbox_logicallypartioned_trainstate(state)
 
-  # state_mesh_shardings = jax.tree_util.tree_map(
-  #   lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
   return state, state_mesh_shardings
 
 def get_states(mesh, tx, rng, config, pipeline, unet_params = None, vae_params = None, checkpoint_manager=None, training=True):

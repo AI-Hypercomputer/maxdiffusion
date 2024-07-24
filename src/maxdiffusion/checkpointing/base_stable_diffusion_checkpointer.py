@@ -43,6 +43,7 @@ class BaseStableDiffusionCheckpointer(ABC):
         self.total_train_batch_size = max_utils.get_global_batch_size(self.config)
 
         self.pipeline = None
+        self.optimizer = None
         self.params = {}
         self.train_states = {}
         self.state_shardings = {}
@@ -61,6 +62,16 @@ class BaseStableDiffusionCheckpointer(ABC):
         Called last in create_states().
         """
         pass
+
+    def _create_optimizer(self):
+        self.learning_rate_scheduler = max_utils.create_learning_rate_schedule(self.config)
+        tx = max_utils.create_optimizer(self.config, self.learning_rate_scheduler)
+        return tx
+
+    def get_optimizer(self):
+        if self.optimizer is None:
+            self.optimizer = self._create_optimizer()
+        return self.optimizer
 
     def _create_unet_state(self):
         if self.config.train_new_unet:
@@ -111,14 +122,11 @@ class BaseStableDiffusionCheckpointer(ABC):
         self.train_states["text_encoder_state"] = text_encoder_state
         self.state_shardings["text_encoder_state_shardings"] = text_encoder_mesh_shardings
 
-    def create_states_and_shard(self):
+    def  _create_states_and_shard(self):
         """
         Creates train states and shards models accordingly.
         """
-        # pipeline should already be initialized here
-        # but check anyway.
-        if self.pipeline is None:
-            self.load_checkpoint()
+        assert self.pipeline is not None, "pipeline is none, did you call load_checkpoint()?"
 
         self._create_unet_state()
         self._create_vae_state()
@@ -282,9 +290,10 @@ class BaseStableDiffusionCheckpointer(ABC):
             self.checkpoint_format = _CHECKPOINT_FORMAT_DIFFUSERS
             self.load_diffusers_checkpoint()
 
-        self.create_states_and_shard()
+        self._create_states_and_shard()
 
         if self.checkpoint_format == _CHECKPOINT_FORMAT_DIFFUSERS:
             # save the original checkpoint using orbax
             self.save_checkpoint(0)
+            self.checkpoint_manager.wait_until_finished()
 

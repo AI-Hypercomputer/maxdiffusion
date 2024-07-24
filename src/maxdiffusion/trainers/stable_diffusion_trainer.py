@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 from flax.linen import partitioning as nn_partitioning
 import optax
-from maxdiffusion.trainers.base_trainer import BaseTrainer
+from maxdiffusion.src.maxdiffusion.trainers.base_stable_diffusion_trainer import BaseStableDiffusionTrainer
 
 from maxdiffusion import (
     FlaxDDPMScheduler,
@@ -29,11 +29,11 @@ from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
     STABLE_DIFFUSION_CHECKPOINT
 )
 
-class StableDiffusionTrainer(BaseTrainer):
+class StableDiffusionTrainer(BaseStableDiffusionTrainer):
     checkpoint_manager: None
 
     def __init__(self, config):
-        BaseTrainer.__init__(self, config, STABLE_DIFFUSION_CHECKPOINT)
+        BaseStableDiffusionTrainer.__init__(self, config, STABLE_DIFFUSION_CHECKPOINT)
 
     def get_shaped_batch(self, config, pipeline):
         """Return the shape of the batch - this is what eval_shape would return for the

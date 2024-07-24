@@ -17,18 +17,13 @@
 
 """Create an Orbax CheckpointManager with specified (Async or not) Checkpointer."""
 
-from typing import Optional, Union
-import json
-import jax
-import numpy as np
+from typing import Optional
 from maxdiffusion import max_logging
 from etils import epath
 from flax.training import train_state
 import orbax
-import orbax.checkpoint as ocp
 from orbax.checkpoint.logging import abstract_logger
-from orbax.checkpoint import type_handlers
-from orbax.checkpoint.checkpoint_manager import Checkpointer, CheckpointManager, CheckpointManagerOptions
+from orbax.checkpoint.checkpoint_manager import CheckpointManager, CheckpointManagerOptions
 
 STABLE_DIFFUSION_CHECKPOINT = "STABLE_DIFFUSION_CHECKPOINT"
 STABLE_DIFFUSION_XL_CHECKPOINT = "STABLE_DIFUSSION_XL_CHECKPOINT"
@@ -95,6 +90,7 @@ def load_stable_diffusion_configs(
   checkpoint_type (`str`) : use sd or sdxl
   step (int) : step to restore, if None is passed, defaults to latest.
   """
+  max_logging.log("Restoring stable diffusion configs")
   if step is None:
     step = checkpoint_manager.latest_step()
     if step is None:
@@ -140,6 +136,7 @@ def load_state_if_possible(
      At most one will be non-None. Both can be None if neither checkpoint is
      set.
   """
+  max_logging.log(f"loading state for {checkpoint_item}")
   if checkpoint_manager is None:
     max_logging.log("no checkpoint manager, not restoring checkpoint")
     return None
