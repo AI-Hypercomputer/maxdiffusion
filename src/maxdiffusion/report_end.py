@@ -50,7 +50,7 @@ def create_step_num_to_timestamp(mllog_path: str):
     for line in f:
       if line.startswith(":::MLLOG"):
         log_dict = json.loads(line[len(":::MLLOG"):])
-        if log_dict["key"] == "checkpoint":
+        if log_dict["key"] == "block_stop":
           step_num, timestamp = log_dict["metadata"]["step_num"], log_dict['time_ms']
           step_num_to_timestamp[step_num] = timestamp
 
