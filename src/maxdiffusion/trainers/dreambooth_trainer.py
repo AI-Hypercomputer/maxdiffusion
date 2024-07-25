@@ -17,7 +17,7 @@ from torch.utils.data import Dataset
 from huggingface_hub.utils import insecure_hashlib
 from tqdm import tqdm
 
-from maxdiffusion.src.maxdiffusion.trainers.base_stable_diffusion_trainer import BaseStableDiffusionTrainer
+from maxdiffusion.trainers.base_stable_diffusion_trainer import BaseStableDiffusionTrainer
 from maxdiffusion import (
     FlaxStableDiffusionPipeline,
     FlaxDDPMScheduler,

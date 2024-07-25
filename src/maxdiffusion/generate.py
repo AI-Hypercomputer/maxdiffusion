@@ -21,25 +21,30 @@ from typing import Sequence
 import numpy as np
 
 import jax
+from jax.sharding import PartitionSpec as P
 import jax.numpy as jnp
-from maxdiffusion.max_utils import (
-  create_device_mesh,
-  get_states,
-  device_put_replicated,
-  get_flash_block_sizes
-)
 from maxdiffusion import pyconfig
 from absl import app
 from maxdiffusion import (
-  FlaxStableDiffusionPipeline,
   FlaxDDIMScheduler,
-  FlaxUNet2DConditionModel
 )
 
 from maxdiffusion.maxdiffusion_utils import rescale_noise_cfg
 from flax.linen import partitioning as nn_partitioning
-from jax.sharding import Mesh, PositionalSharding
 from maxdiffusion.image_processor import VaeImageProcessor
+from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
+    BaseStableDiffusionCheckpointer,
+    STABLE_DIFFUSION_CHECKPOINT
+)
+from maxdiffusion.generators.stable_diffusion_generator import StableDiffusionGenerator
+
+class CheckpointLoader(BaseStableDiffusionCheckpointer):
+    def __init__(self, config, checkpoint_type):
+        BaseStableDiffusionCheckpointer.__init__(self, config, checkpoint_type)
+    
+    def post_create_states_and_shard(self):
+        return super().post_create_states_and_shard()
+
 
 def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidance_rescale):
     latents, scheduler_state, state = args
@@ -49,7 +54,7 @@ def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidan
     timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
     latents_input = pipeline.scheduler.scale_model_input(scheduler_state, latents_input, t)
-
+    
     noise_pred = model.apply(
         {"params" : state.params},
         jnp.array(latents_input),
@@ -64,7 +69,6 @@ def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidan
     noise_pred = rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale=guidance_rescale)
 
     latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
-
     return latents, scheduler_state, state
 
 def tokenize(prompt, tokenizer):
@@ -77,7 +81,17 @@ def tokenize(prompt, tokenizer):
         return_tensors="np"
     ).input_ids
 
-def get_unet_inputs(rng, config, batch_size, pipeline, params):
+def get_unet_inputs(checkpoint_loader):
+    rng = checkpoint_loader.rng
+    batch_size = checkpoint_loader.total_train_batch_size
+    params = checkpoint_loader.params
+    states = checkpoint_loader.train_states
+    config = checkpoint_loader.config
+    pipeline = checkpoint_loader.pipeline
+    mesh = checkpoint_loader.mesh
+
+    data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
+
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
     prompt_ids = [config.prompt] * batch_size
     prompt_ids = tokenize(prompt_ids, pipeline.tokenizer)
@@ -87,8 +101,8 @@ def get_unet_inputs(rng, config, batch_size, pipeline, params):
     guidance_rescale = config.guidance_rescale
     num_inference_steps = config.num_inference_steps
 
-    prompt_embeds = pipeline.text_encoder(prompt_ids, params=params["text_encoder"])[0]
-    negative_prompt_embeds = pipeline.text_encoder(negative_prompt_ids, params=params["text_encoder"])[0]
+    prompt_embeds = pipeline.text_encoder(prompt_ids, params=states["text_encoder_state"].params)[0]
+    negative_prompt_embeds = pipeline.text_encoder(negative_prompt_ids, params=states["text_encoder_state"].params)[0]
     context = jnp.concatenate([negative_prompt_embeds, prompt_embeds])
     guidance_scale = jnp.array([guidance_scale], dtype=jnp.float32)
     guidance_rescale = jnp.array([guidance_rescale], dtype=jnp.float32)
@@ -109,6 +123,9 @@ def get_unet_inputs(rng, config, batch_size, pipeline, params):
     )
     latents = latents * params["scheduler"].init_noise_sigma
 
+    latents = jax.device_put(latents, data_sharding)
+    context = jax.device_put(context, data_sharding)
+
     return latents, context, guidance_scale, guidance_rescale, scheduler_state
 
 def vae_decode(latents, state, pipeline):
@@ -121,92 +138,57 @@ def vae_decode(latents, state, pipeline):
     image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
     return image
 
+def run_inference(unet_state, vae_state, checkpoint_loader):
+
+    pipeline = checkpoint_loader.pipeline
+    config = checkpoint_loader.config
+    mesh = checkpoint_loader.mesh
+
+    (latents,
+    context,
+    guidance_scale,
+    guidance_rescale,
+    scheduler_state) = get_unet_inputs(checkpoint_loader)
+
+    loop_body_p = functools.partial(loop_body, model=pipeline.unet,
+                                    pipeline=pipeline,
+                                    prompt_embeds=context,
+                                    guidance_scale=guidance_scale,
+                                    guidance_rescale=guidance_rescale)
+    
+    vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
+
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+        latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps,
+                                        loop_body_p, (latents, scheduler_state, unet_state))
+        image = vae_decode_p(latents, vae_state)
+        return image
+
 def run(config):
-    rng = jax.random.PRNGKey(config.seed)
-    # Setup Mesh
-    devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
 
-    batch_size = jax.device_count() * config.per_device_batch_size
+    checkpoint_loader = CheckpointLoader(config, STABLE_DIFFUSION_CHECKPOINT)
+    checkpoint_loader.load_checkpoint()
+    state_shardings = checkpoint_loader.state_shardings
+    states = checkpoint_loader.train_states
 
-    flash_block_sizes = get_flash_block_sizes(config)
-    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,revision=config.revision,
-        dtype=config.activations_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        split_head_dim=config.split_head_dim,
-        norm_num_groups=config.norm_num_groups,
-        from_pt=config.from_pt,
-        attention_kernel=config.attention,
-        flash_block_sizes=flash_block_sizes,
-        mesh=mesh
-    )
-    if len(config.unet_checkpoint) > 0:
-        unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
-                config.unet_checkpoint,
-                dtype=config.activations_dtype,
-                split_head_dim=config.split_head_dim,
-                norm_num_groups=config.norm_num_groups,
-                attention_kernel=config.attention,
-                flash_block_sizes=flash_block_sizes,
-                mesh=mesh
-            )
-        params["unet"] = unet_params
-        pipeline.unet = unet
     scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
         config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
     )
-    pipeline.scheduler = scheduler
-    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
-    params["scheduler"] = scheduler_state
-
-    # Text encoder params
-    sharding = PositionalSharding(mesh.devices).replicate()
-    partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
-    params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
-
-    (unet_state,
-     unet_state_mesh_shardings,
-     vae_state,
-     vae_state_mesh_shardings) = get_states(mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False)
-    del params["vae"]
-    del params["unet"]
-
-    def run_inference(unet_state, vae_state, params, rng, config, batch_size, pipeline):
-
-        (latents,
-        context,
-        guidance_scale,
-        guidance_rescale,
-        scheduler_state) = get_unet_inputs(rng, config, batch_size, pipeline, params)
-
-        loop_body_p = functools.partial(loop_body, model=pipeline.unet,
-                                        pipeline=pipeline,
-                                        prompt_embeds=context,
-                                        guidance_scale=guidance_scale,
-                                        guidance_rescale=guidance_rescale)
-
-        vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
-
-        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-            latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps,
-                                            loop_body_p, (latents, scheduler_state, unet_state))
-            image = vae_decode_p(latents, vae_state)
-            return image
+    checkpoint_loader.pipeline.scheduler = scheduler
+    checkpoint_loader.params["scheduler"] = scheduler_state
 
     p_run_inference = jax.jit(
-        functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline),
-        in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None),
+        functools.partial(run_inference, checkpoint_loader=checkpoint_loader),
+        in_shardings=(state_shardings["unet_state_shardings"], state_shardings["vae_state_shardings"]),
         out_shardings=None
     )
 
     s = time.time()
-    p_run_inference(unet_state, vae_state, params).block_until_ready()
+    p_run_inference(states["unet_state"], states["vae_state"]).block_until_ready()
     print("compile time: ", (time.time() - s))
 
     s = time.time()
-    images = p_run_inference(unet_state, vae_state, params).block_until_ready()
+    images = p_run_inference(states["unet_state"], states["vae_state"]).block_until_ready()
     print("inference time: ",(time.time() - s))
     numpy_images = np.array(images)
     images = VaeImageProcessor.numpy_to_pil(numpy_images)
