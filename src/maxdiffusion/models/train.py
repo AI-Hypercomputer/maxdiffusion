@@ -546,6 +546,9 @@ def train(config):
         config.unet_checkpoint = checkpoint
         checkpoint_name = checkpoint.split("/")[-1]
         images_directory = os.path.join(config.images_directory, "output")
+        if os.path.isdir(images_directory):
+            shutil.rmtree(images_directory)
+            max_logging.logging(f"remove image folders under exist {images_directory}")
         os.makedirs(images_directory, exist_ok=True)
 
         generate.run(config, images_directory)
