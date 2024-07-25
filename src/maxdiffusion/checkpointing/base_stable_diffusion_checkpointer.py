@@ -16,7 +16,8 @@ from maxdiffusion import (
 from transformers import (
   CLIPTokenizer,
   FlaxCLIPTextModel,
-  PretrainedConfig
+  CLIPTextConfig,
+  FlaxCLIPTextModelWithProjection
 )
 
 from maxdiffusion.checkpointing.checkpointing_utils import (
@@ -240,12 +241,6 @@ class BaseStableDiffusionCheckpointer(ABC):
                 from_pt=self.config.from_pt
             )
 
-            te_pretrained_config = PretrainedConfig.from_dict(model_configs[0]["text_encoder_config"])
-            text_encoder = FlaxCLIPTextModel(
-                te_pretrained_config,
-                seed=self.config.seed,
-                dtype=self.config.activations_dtype
-            )
             tokenizer_path = model_configs[0]["tokenizer_config"]["path"]
             if "gs://" in tokenizer_path:
                 if "tokenizer" not in tokenizer_path:
@@ -255,6 +250,14 @@ class BaseStableDiffusionCheckpointer(ABC):
                 tokenizer_path,
                 subfolder="tokenizer",
                 dtype=self.config.activations_dtype,
+            )
+            
+            te_pretrained_config = CLIPTextConfig(**model_configs[0]["text_encoder_config"])
+            text_encoder = FlaxCLIPTextModel(
+                te_pretrained_config,
+                seed=self.config.seed,
+                dtype=self.config.activations_dtype,
+                _do_init=False
             )
 
             scheduler = None
@@ -273,8 +276,8 @@ class BaseStableDiffusionCheckpointer(ABC):
                 pipeline_kwargs["safety_checker"] = None
                 pipeline_kwargs["feature_extractor"] = None
             else:
-                te_pretrained_2_config = PretrainedConfig.from_dict(model_configs[0]["text_encoder_2_config"])
-                text_encoder_2 = FlaxCLIPTextModel(
+                te_pretrained_2_config = CLIPTextConfig(**model_configs[0]["text_encoder_2_config"])
+                text_encoder_2 = FlaxCLIPTextModelWithProjection(
                     te_pretrained_2_config,
                     seed=self.config.seed,
                     dtype=self.config.activations_dtype
