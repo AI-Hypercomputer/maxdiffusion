@@ -1,7 +1,7 @@
-ARG JAX_SS_BASEIMAGE
+ARG JAX_STABLE_STACK_BASEIMAGE
 
 # JAX Stable Stack Base Image
-From $JAX_SS_BASEIMAGE
+FROM $JAX_STABLE_STACK_BASEIMAGE
 
 ARG COMMIT_HASH
 
@@ -27,5 +27,5 @@ RUN if [ ! -z "${MAXDIFFUSION_REQUIREMENTS_FILE}" ]; then \
 # Install MaxDiffusion
 RUN pip install .
 
-# Run the script available in JAX-SS base image to generate the manifest file
+# Run the script available in JAX-Stable-Stack base image to generate the manifest file
 RUN bash /generate_manifest.sh PREFIX=maxdiffusion COMMIT_HASH=$COMMIT_HASH

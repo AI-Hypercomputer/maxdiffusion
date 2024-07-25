@@ -21,9 +21,11 @@
 # (minutes). However, if you are simply changing local code and not updating dependencies, uploading just takes a few seconds.
 
 # Example command:
-# bash docker_maxdiffusion_image_upload.sh PROJECT_ID=tpu-prod-env-multipod BASEIMAGE=gcr.io/tpu-prod-env-multipod/jax-ss/tpu:jax0.4.28-v1.0.0 CLOUD_IMAGE_NAME=maxdiffusion-jax-ss-0.4.28-v1.0.0 IMAGE_TAG=latest MAXDIFFUSION_REQUIREMENTS_FILE=requirements_with_jax_ss.txt
+# bash docker_maxdiffusion_image_upload.sh PROJECT_ID=tpu-prod-env-multipod BASEIMAGE=us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/tpu:jax0.4.30-rev1 CLOUD_IMAGE_NAME=maxdiffusion-jax-stable-stack IMAGE_TAG=latest MAXDIFFUSION_REQUIREMENTS_FILE=requirements_with_jax_stable_stack.txt
 
 set -e
+
+export LOCAL_IMAGE_NAME=maxdiffusion_base_image
 
 # Set environment variables
 for ARGUMENT in "$@"; do
@@ -57,18 +59,32 @@ if [[ ! -v MAXDIFFUSION_REQUIREMENTS_FILE ]]; then
   exit 1
 fi
 
+# Default: Don't delete local image
+DELETE_LOCAL_IMAGE="${DELETE_LOCAL_IMAGE:-false}"
+
+gcloud auth configure-docker us-docker.pkg.dev --quiet
+
 COMMIT_HASH=$(git rev-parse --short HEAD)
 
-echo "Building JAX SS MaxDiffusion at commit hash ${COMMIT_HASH} . . ."  
+echo "Building JAX Stable Stack MaxDiffusion at commit hash ${COMMIT_HASH} . . ."  
 
-docker build \
-  --build-arg JAX_SS_BASEIMAGE=${BASEIMAGE} \
+IMAGE_DATE=$(date +%Y-%m-%d)
+
+FULL_IMAGE_TAG=${IMAGE_TAG}-${IMAGE_DATE}
+
+docker build --no-cache \
+  --build-arg JAX_STABLE_STACK_BASEIMAGE=${BASEIMAGE} \
   --build-arg COMMIT_HASH=${COMMIT_HASH} \
   --build-arg MAXDIFFUSION_REQUIREMENTS_FILE=${MAXDIFFUSION_REQUIREMENTS_FILE} \
   --network=host \
-  -t gcr.io/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${IMAGE_TAG} \
-  -f ./maxdiffusion_jax_ss_tpu.Dockerfile .
+  -t us-docker.pkg.dev/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${FULL_IMAGE_TAG} \
+  -f maxdiffusion_jax_stable_stack_tpu.Dockerfile .
 
-docker push gcr.io/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${IMAGE_TAG}
+docker push us-docker.pkg.dev/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${FULL_IMAGE_TAG}
 
-echo "All done, check out your artifacts at: gcr.io/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${IMAGE_TAG}"
+echo "All done, check out your artifacts at: us-docker.pkg.dev/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${FULL_IMAGE_TAG}"
+
+if [ "$DELETE_LOCAL_IMAGE" == "true" ]; then
+  docker rmi us-docker.pkg.dev/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${FULL_IMAGE_TAG}
+  echo "Local image deleted."
+fi

@@ -1,5 +1,5 @@
 # Requirements for Building the MaxDifussion Docker Image
-# These requirements are additional to the dependencies present in the JAX SS base image.
+# These requirements are additional to the dependencies present in the JAX Stable Stack base image.
 absl-py
 transformers>=4.25.1
 datasets
