@@ -180,8 +180,8 @@ def get_dummy_unet_inputs(config, pipeline, batch_size):
     time_ids_channels = pipeline.unet.projection_class_embeddings_input_dim - text_embeds_dim
     time_ids_dims = time_ids_channels // pipeline.unet.addition_time_embed_dim
     added_cond_kwargs = {
-      "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=config.weights_dtype),
-      "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=config.weights_dtype),
+      "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=jnp.float32),
+      "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=jnp.float32),
     }
   return (latents, timesteps, encoder_hidden_states, added_cond_kwargs)
 

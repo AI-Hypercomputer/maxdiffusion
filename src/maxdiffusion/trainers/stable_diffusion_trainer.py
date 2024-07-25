@@ -1,3 +1,18 @@
+"""
+ Copyright 2024 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+      https://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ """
 
 import os
 from functools import partial
@@ -9,7 +24,7 @@ import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 from flax.linen import partitioning as nn_partitioning
 import optax
-from maxdiffusion.src.maxdiffusion.trainers.base_stable_diffusion_trainer import BaseStableDiffusionTrainer
+from maxdiffusion.trainers.base_stable_diffusion_trainer import BaseStableDiffusionTrainer
 
 from maxdiffusion import (
     FlaxDDPMScheduler,
@@ -34,6 +49,16 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
 
     def __init__(self, config):
         BaseStableDiffusionTrainer.__init__(self, config, STABLE_DIFFUSION_CHECKPOINT)
+
+    def post_create_states_and_shard(self):
+        return super().post_create_states_and_shard()
+
+    def post_training_steps(self):
+        # For example, can call self.pipeline.save_pretrained here
+        return super().post_training_steps()
+
+    def pre_training_steps(self):
+        return super().pre_training_steps()
 
     def get_shaped_batch(self, config, pipeline):
         """Return the shape of the batch - this is what eval_shape would return for the
@@ -88,14 +113,14 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
                     partial(
                         maxdiffusion_utils.encode,
                         text_encoder=self.pipeline.text_encoder,
-                        text_encoder_params=self.params["text_encoder"]
+                        text_encoder_params=self.train_states["text_encoder_state"].params
                     )
                 )
                 p_vae_apply = jax.jit(
                     partial(
                         maxdiffusion_utils.vae_apply,
                         vae=self.pipeline.vae,
-                        vae_params=self.params["vae"]
+                        vae_params=self.train_states["vae_state"].params
                     )
                 )
             tokenize_fn = partial(

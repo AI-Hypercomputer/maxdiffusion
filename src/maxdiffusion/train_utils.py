@@ -38,7 +38,8 @@ def validate_train_config(config):
 
   def _validate_gcs_bucket_name(bucket_name, config_var):
     assert bucket_name, f"Please set {config_var}."
-    assert len(bucket_name) > 5 and bucket_name[0:5]=='gs://', f"Erroring out, {config_var} should start with 'gs://' "
+    if 'gs://' not in bucket_name:
+      max_logging.log(f"***WARNING : It is highly recommended that your output_dir uses a gcs directory, currently your output dir is set to {bucket_name}")
 
   assert config.run_name, "Erroring out, need a real run_name"
   _validate_gcs_bucket_name(config.output_dir, "output_dir")

@@ -36,12 +36,11 @@ from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
     BaseStableDiffusionCheckpointer,
     STABLE_DIFFUSION_CHECKPOINT
 )
-from maxdiffusion.generators.stable_diffusion_generator import StableDiffusionGenerator
 
 class CheckpointLoader(BaseStableDiffusionCheckpointer):
     def __init__(self, config, checkpoint_type):
         BaseStableDiffusionCheckpointer.__init__(self, config, checkpoint_type)
-    
+
     def post_create_states_and_shard(self):
         return super().post_create_states_and_shard()
 
@@ -54,7 +53,7 @@ def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidan
     timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
     latents_input = pipeline.scheduler.scale_model_input(scheduler_state, latents_input, t)
-    
+
     noise_pred = model.apply(
         {"params" : state.params},
         jnp.array(latents_input),
@@ -155,7 +154,7 @@ def run_inference(unet_state, vae_state, checkpoint_loader):
                                     prompt_embeds=context,
                                     guidance_scale=guidance_scale,
                                     guidance_rescale=guidance_rescale)
-    
+
     vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
 
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):

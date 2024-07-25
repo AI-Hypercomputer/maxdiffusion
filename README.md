@@ -16,6 +16,11 @@
 
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
+# What's new?
+
+- **`2024/8/1`**: Orbax is the new default checkpointer for Stable Diffusion 1.X, 2.x. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
+- **`2024/7/20`**: Dreambooth training for Stable Diffusion 1.x,2.x is now supported.
+
 # Overview 
 
 MaxDiffusion is a collection of reference implementations of various latent diffusion models written in pure Python/Jax that run on XLA devices including Cloud TPUs and GPUs. MaxDiffusion aims to be a launching off point for ambitious Diffusion projects both in research and production. We encourage you to start by experimenting with MaxDiffusion out of the box and then fork and modify MaxDiffusion to meet your needs.
@@ -28,6 +33,7 @@ MaxDiffusion supports
 * Stable Diffusion XL (training and inference).
 * Stable Diffusion Lightning (inference).
 * ControlNet inference (Stable Diffusion 1.4 & SDXL).
+* Dreambooth training support for Stable Diffusion 1.x,2.x.
 
 **WARNING: The training code is purely experimental and is under development.**
 
@@ -82,13 +88,20 @@ After installation completes, run the training script.
 
   ```bash
   export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" base_output_directory="gs://your-bucket/"
+  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
+  ```
+
+- **Stable Diffusion 1.5**
+
+  ```bash
+  export LIBTPU_INIT_ARGS=""
+  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base15.yml run_name="my_run" cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
   ```
 
   To generate images with a trained checkpoint, run:
 
   ```bash
-  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_2_base.yml run_name="my_run" pretrained_model_name_or_path=<your_saved_checkpoint_path> from_pt=False attention=dot_product
+  python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_2_base.yml run_name="my_run" output_dir=gs://your-bucket/ from_pt=False attention=dot_product
   ```
 
   ## Dreambooth
@@ -157,6 +170,7 @@ TPU_NAME=<your-tpu-name>
 ZONE=<your-zone>
 PROJECT_ID=<your-project-id>
 gcloud compute tpus tpu-vm ssh $TPU_NAME --zone=$ZONE --project $PROJECT_ID --worker=all --command="
+export LIBTPU_INIT_ARGS=""
 git clone https://github.com/google/maxdiffusion
 pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 pip3 install -r requirements.txt
