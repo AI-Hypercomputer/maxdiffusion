@@ -21,7 +21,8 @@ class Generate(unittest.TestCase):
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
       "revision=bf16","weights_dtype=bfloat16","activations_dtype=bfloat16","resolution=768",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
-      "negative_prompt=purple, red","guidance_scale=7.5",
+      "negative_prompt=purple, red","guidance_scale=7.5","run_name=test-sd21-config",
+      "output_dir=gs://maxdiffusion-github-runner-test-assets",
       "num_inference_steps=30","seed=47","split_head_dim=False"])
     images = generate_run(pyconfig.config)
     test_image = np.array(images[1]).astype(np.uint8)
@@ -34,7 +35,8 @@ class Generate(unittest.TestCase):
   def test_sd_2_base_config(self):
     img_url = os.path.join(THIS_DIR,'images','test_2_base.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'), "seed=47"])
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
+      "seed=47","output_dir=gs://maxdiffusion-github-runner-test-assets","run_name=test-sd2-base-config"])
     images = generate_run(pyconfig.config)
     test_image = np.array(images[0]).astype(np.uint8)
     ssim_compare = ssim(base_image, test_image,
@@ -48,7 +50,8 @@ class Generate(unittest.TestCase):
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
       "seed=47", "from_pt=False",
-      "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-2-base"])
+      "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-2-base",
+      "output_dir=gs://maxdiffusion-github-runner-test-assets","run_name=test-sd2-base-config"])
     images = generate_run(pyconfig.config)
     test_image = np.array(images[0]).astype(np.uint8)
     ssim_compare = ssim(base_image, test_image,

@@ -81,7 +81,7 @@ class Train(unittest.TestCase):
     cleanup(output_dir)
 
   def test_sd21_config(self):
-    output_dir="train-smoke-test"
+    output_dir="gs://maxdiffusion-github-runner-test-assets"
     run_name="sd2.1_smoke_test"
     cache_dir="gs://maxdiffusion-github-runner-test-assets/cache_dir"
 
@@ -93,16 +93,15 @@ class Train(unittest.TestCase):
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
       "revision=bf16","activations_dtype=bfloat16","weights_dtype=bfloat16",f"run_name={run_name}",
       "max_train_steps=21","dataset_name=diffusers/pokemon-gpt4-captions",
-      "resolution=768","per_device_batch_size=1",
-      "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
+      "resolution=768","per_device_batch_size=1", f"output_dir={output_dir}",
       f"cache_dir={cache_dir}"])
 
     img_url = os.path.join(THIS_DIR,'images','test.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
 
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
-      f"pretrained_model_name_or_path={output_dir}/{run_name}/checkpoints/final",
-      "revision=bf16","activations_dtype=bfloat16","weights_dtype=bfloat16","resolution=768",
+      f"run_name={run_name}",f"output_dir={output_dir}",
+      "revision=bf16","activations_dtype=bfloat16","weights_dtype=float32","resolution=768",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=7.5",
       "num_inference_steps=30","seed=47",])
