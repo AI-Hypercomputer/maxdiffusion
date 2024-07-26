@@ -103,7 +103,10 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
 
   latents_input = pipeline.scheduler.scale_model_input(scheduler_state, latents_input, t)
   noise_pred = model.apply(
-    {"params" : state.params, "aqt": state.params["aqt"] },
+    # state.params,
+    {"params" : state.params,
+    #  "aqt": state.params["aqt"]
+    },
     jnp.array(latents_input),
     jnp.array(timestep, dtype=jnp.int32),
     encoder_hidden_states=prompt_embeds,
@@ -248,58 +251,7 @@ def run_inference(unet_state, vae_state, params, rng, config, batch_size, pipeli
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   config = pyconfig.config
-  devices_array = create_device_mesh(config)
-  mesh = Mesh(devices_array, config.mesh_axes)
-
-  batch_size = config.per_device_batch_size * jax.device_count()
-
-  weight_dtype = get_dtype(config)
-  flash_block_sizes = get_flash_block_sizes(config)
-
-  quant = quantizations.configure_quantization(
-    config=config,
-    lhs_quant_mode=aqt_flax.QuantMode.TRAIN,
-    rhs_quant_mode=aqt_flax.QuantMode.CONVERT,
-    # activation_quant_mode=aqt_flax.QuantMode.CONVERT,
-    weights_quant_mode=aqt_flax.QuantMode.CONVERT)
-  pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-    config.pretrained_model_name_or_path,
-    revision=config.revision,
-    dtype=weight_dtype,
-    split_head_dim=config.split_head_dim,
-    norm_num_groups=config.norm_num_groups,
-    attention_kernel=config.attention,
-    flash_block_sizes=flash_block_sizes,
-    mesh=mesh,
-    quant=quant,
-    )
-
-  k = jax.random.key(0)
-  latents = jnp.ones((8, 4,128,128), dtype=jnp.float32)
-  timesteps = jnp.ones((8,))
-  encoder_hidden_states = jnp.ones((8, 77, 2048))
-
-  added_cond_kwargs = {
-                "text_embeds": jnp.ones((8, 1280), dtype=jnp.float32),
-                "time_ids": jnp.ones((8, 6), dtype=jnp.float32),
-            }
-  _, quantized_unet_vars = pipeline.unet.apply(
-    params["unet"] | {"aqt" : {}},
-    latents,
-    timesteps,
-    encoder_hidden_states=encoder_hidden_states,
-    added_cond_kwargs=added_cond_kwargs,
-    rngs={"params": jax.random.PRNGKey(0)},
-    mutable=True,
-  )
-  del pipeline
-  del params
-  q_v = quantized_unet_vars
-  del q_v['params']
-
   rng = jax.random.PRNGKey(config.seed)
-
-  # Setup Mesh
   devices_array = create_device_mesh(config)
   mesh = Mesh(devices_array, config.mesh_axes)
 
@@ -353,10 +305,10 @@ def main(argv: Sequence[str]) -> None:
   tx = None
   unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = (
     get_states(
-      mesh, tx, rng, config, pipeline, q_v, params["vae"], training=False, q_v=q_v)
+      mesh, tx, rng, config, pipeline, params["unet"], params["vae"], training=False, q_v=params["unet"])
       )
   del params["vae"]
-  del params["unet"]
+  # del params["unet"]
 
 
   # breakpoint()
@@ -389,17 +341,7 @@ def main(argv: Sequence[str]) -> None:
   for i, image in enumerate(images[:10]):
     image.save(f"image_sdxl_{i}.png")
 
-  params['unet'] = q_v
-  params['vae'] = vae_state.params
-  pipeline.save_pretrained(
-            "output_trained_working_orig",
-            params={
-                "text_encoder": get_params_to_save(params["text_encoder"]),
-                "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
-                "vae": get_params_to_save(params["vae"]),
-                "unet": get_params_to_save(q_v),
-            },
-        )
+  return
 
 
 if __name__ == "__main__":

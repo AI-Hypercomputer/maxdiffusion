@@ -46,7 +46,8 @@ class AqtQuantization:
   quant_dg_conv: aqt_config.DotGeneralRaw
   lhs_quant_mode: aqt_flax.QuantMode
   rhs_quant_mode: aqt_flax.QuantMode
-  activation_quant_mode: utils.QuantMode = utils.QuantMode.CONVERT
+  activation_quant_mode: utils.QuantMode = utils.QuantMode.TRAIN
+  # activation_quant_mode: utils.QuantMode = utils.QuantMode.CONVERT
   weights_quant_mode: utils.QuantMode = utils.QuantMode.CONVERT
 
   def dot_general_cls(self):
@@ -59,9 +60,8 @@ class AqtQuantization:
       lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
       rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
       )
-    return None
-    # return aqt_dg_cls
-    #return None
+    # return None
+    return aqt_dg_cls
 
   def conv_general(self):
       """ Returns dot_general configured with aqt params. """
@@ -73,8 +73,8 @@ class AqtQuantization:
               aqt_cfg_conv,
               lhs_quant_mode=self.activation_quant_mode,
               rhs_quant_mode=self.weights_quant_mode,
-              lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
-              rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,)
+              lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
+              rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,)
       return aqt_dg_cls
 
   def einsum(self):

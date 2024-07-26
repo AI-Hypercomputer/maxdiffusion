@@ -139,6 +139,7 @@ def get_quantized_unet_variables(config):
 
   return quantized_unet_vars
 
+
 def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
   latents, scheduler_state, state = args
   latents_input = jnp.concatenate([latents] * 2)
@@ -168,6 +169,7 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
   latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
   return latents, scheduler_state, state
+
 
 def loop_body_for_quantization(latents, scheduler_state, state, rng,  model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
   # latents, scheduler_state, state, rng = args
@@ -277,7 +279,10 @@ def run(config, q_v):
   params["text_encoder"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder"])
   params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
 
-  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False, q_v=params["unet"])
+  unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = (
+    get_states(
+      mesh, None, rng, config, pipeline, params["unet"], params["vae"], training=False, q_v=params["unet"])
+  )
 
 
   del params["vae"]
@@ -465,11 +470,6 @@ def run(config, q_v):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
-  # q_v = get_quantized_unet_variables(pyconfig.config)
-  # breakpoint()
-  # del q_v['params']
-  # print(q_v.keys())
-  # addedkw_args...., params, aqt
   run(pyconfig.config, q_v=None)
 
 if __name__ == "__main__":
