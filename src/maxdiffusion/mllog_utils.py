@@ -19,7 +19,7 @@ import numpy as np
 import os
 
 mllogger = mllog.get_mllogger()
-mllog.config(filename="sd_worker.log")
+mllog.config(filename="sd_worker.log", filemode='w')
 
 def train_init_start(config):
   if jax.process_index() == 0 and config.enable_mllog:
