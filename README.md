@@ -172,6 +172,7 @@ PROJECT_ID=<your-project-id>
 gcloud compute tpus tpu-vm ssh $TPU_NAME --zone=$ZONE --project $PROJECT_ID --worker=all --command="
 export LIBTPU_INIT_ARGS=""
 git clone https://github.com/google/maxdiffusion
+cd maxdiffusion
 pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 pip3 install -r requirements.txt
 pip3 install .
