@@ -103,6 +103,7 @@ class AqtQuantization:
     conv_general = functools.partial(aqt_conv_general.make_conv_general_dilated(
        aqt_config.conv_general_dilated_make(lhs_bits=8, rhs_bits=8)))
     return conv_general
+  
   def get_quant_mode(self, quant_mode_str: str = 'train'):
     """ Set quant mode."""
     if quant_mode_str == 'train':

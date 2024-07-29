@@ -248,13 +248,13 @@ def run(config, q_v):
   # if this checkpoint was trained with maxdiffusion
   # the training scheduler was saved with it, switch it
   # to a Euler scheduler
-  if isinstance(pipeline.scheduler, FlaxDDPMScheduler):
-    noise_scheduler, noise_scheduler_state = FlaxEulerDiscreteScheduler.from_pretrained(
+  # if isinstance(pipeline.scheduler, FlaxDDPMScheduler):
+  noise_scheduler, noise_scheduler_state = FlaxEulerDiscreteScheduler.from_pretrained(
       config.pretrained_model_name_or_path,
       revision=config.revision, subfolder="scheduler", dtype=jnp.float32
     )
-    pipeline.scheduler = noise_scheduler
-    params["scheduler"] = noise_scheduler_state
+  pipeline.scheduler = noise_scheduler
+  params["scheduler"] = noise_scheduler_state
 
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
@@ -272,8 +272,13 @@ def run(config, q_v):
   params["text_encoder_2"] = jax.tree_util.tree_map(partial_device_put_replicated, params["text_encoder_2"])
 
   p1 = {}
-  p1.update(params['unet']['params'])
+  breakpoint()
+  # p1.update(params['unet'])
   p1['aqt'] = params['unet']['aqt']
+  del(params['unet']['aqt'])
+  del(params['unet']['params'])
+  p1['params'] = params['unet']
+
   del params['unet']
   
   unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings  = get_states(mesh, None, rng, config, pipeline, p1, params["vae"], training=False, q_v=p1)

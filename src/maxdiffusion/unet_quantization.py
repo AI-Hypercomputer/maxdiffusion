@@ -405,9 +405,48 @@ def run(config, q_v):
   return images
 
 def main(argv: Sequence[str]) -> None:
+
+
+
   pyconfig.initialize(argv)
+  config = pyconfig.config
+
+  # # Setup Mesh
+  # devices_array = create_device_mesh(config)
+  # mesh = Mesh(devices_array, config.mesh_axes)
+
+  # weight_dtype = get_dtype(config)
+  # flash_block_sizes = get_flash_block_sizes(config)
+
+
+  # quant = quantizations.configure_quantization(config=config, lhs_quant_mode=aqt_flax.QuantMode.TRAIN, rhs_quant_mode=aqt_flax.QuantMode.CONVERT)
+
   q_v = get_quantized_unet_variables(pyconfig.config)
-  # breakpoint()
+  # pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+  #   config.pretrained_model_name_or_path,
+  #   revision=config.revision,
+  #   dtype=weight_dtype,
+  #   split_head_dim=config.split_head_dim,
+  #   norm_num_groups=config.norm_num_groups,
+  #   attention_kernel=config.attention,
+  #   flash_block_sizes=flash_block_sizes,
+  #   mesh=mesh,
+  #   quant=quant,
+  # )
+  # del q_v['params']
+  # pipeline.save_pretrained(
+  #           "output_trained_working",
+  #           params={
+  #               "text_encoder": get_params_to_save(params["text_encoder"]),
+  #               "text_encoder_2" : get_params_to_save(params["text_encoder_2"]),
+  #               "vae": get_params_to_save(params["vae"]),
+  #               "unet": get_params_to_save(q_v),
+  #           },
+  #       )
+
+
+
+  breakpoint()
   del q_v['params']
   # print(q_v.keys())
   # p = {}
