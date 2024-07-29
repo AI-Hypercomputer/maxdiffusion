@@ -117,7 +117,7 @@ class Train(unittest.TestCase):
     cleanup(output_dir)
 
   def test_sd15_config(self):
-    output_dir="train-smoke-test"
+    output_dir="gs://maxdiffusion-github-runner-test-assets"
     run_name="sd15_smoke_test"
     cache_dir="gs://maxdiffusion-github-runner-test-assets/cache_dir"
 
@@ -139,8 +139,8 @@ class Train(unittest.TestCase):
       "activations_dtype=bfloat16","weights_dtype=bfloat16",
       "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=7.5",
-      "num_inference_steps=30","seed=47", "cache_dir=gs://jfacevedo-maxdiffusion/cache_dir",
-      f"unet_checkpoint=gs://maxdiffusion-github-runner-test-assets/training_results/{output_dir}/{run_name}/checkpoints/UNET-samples-512"])
+      "num_inference_steps=30","seed=47", f"cache_dir={cache_dir}",
+      f"output_dir={output_dir}",f"run_name={run_name}"])
 
     images = generate_run(pyconfig.config)
     test_image = np.array(images[0]).astype(np.uint8)

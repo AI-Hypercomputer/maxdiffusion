@@ -398,13 +398,13 @@ def train(config):
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
-    max_logging.log(f"Found {jax.device_count()} devices.")
     pyconfig.initialize(argv)
     config = pyconfig.config
     if len(config.cache_dir) > 0:
         jax.config.update("jax_compilation_cache_dir", config.cache_dir)
     mllog_utils.train_init_start(config)
     validate_train_config(config)
+    max_logging.log(f"Found {jax.device_count()} devices.")
     train(config)
 if __name__ == "__main__":
     app.run(main)
