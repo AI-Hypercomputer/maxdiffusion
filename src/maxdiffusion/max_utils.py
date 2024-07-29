@@ -569,3 +569,6 @@ def calculate_num_params_from_pytree(params):
 
 def get_global_batch_size(config):
   return config.per_device_batch_size * jax.device_count()
+
+def maybe_initialize_jax_distributed_system(raw_keys):
+  jax.distributed.initialize()

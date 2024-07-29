@@ -34,10 +34,10 @@ def train(config):
     trainer.start_training()
 
 def main(argv: Sequence[str]) -> None:
-    max_logging.log(f"Found {jax.device_count()} devices.")
     pyconfig.initialize(argv)
     config = pyconfig.config
     validate_train_config(config)
+    max_logging.log(f"Found {jax.device_count()} devices.")
     train(config)
 
 if __name__ == "__main__":

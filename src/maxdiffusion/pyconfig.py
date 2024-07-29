@@ -86,6 +86,8 @@ class _HyperParameters():
       else:
         raw_keys[k] = raw_data_from_yaml[k]
 
+    max_utils.maybe_initialize_jax_distributed_system(raw_keys)
+
     _HyperParameters.user_init(raw_keys)
     self.keys = raw_keys
 
