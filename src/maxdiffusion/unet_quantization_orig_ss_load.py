@@ -104,9 +104,7 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
   latents_input = pipeline.scheduler.scale_model_input(scheduler_state, latents_input, t)
   noise_pred = model.apply(
     # state.params,
-    {"params" : state.params,
-    #  "aqt": state.params["aqt"]
-    },
+    {"params" : state.params, "aqt": state.params["aqt"]},
     jnp.array(latents_input),
     jnp.array(timestep, dtype=jnp.int32),
     encoder_hidden_states=prompt_embeds,
@@ -265,10 +263,9 @@ def main(argv: Sequence[str]) -> None:
     lhs_quant_mode=aqt_flax.QuantMode.TRAIN,
     rhs_quant_mode=aqt_flax.QuantMode.SERVE,
     # activation_quant_mode=aqt_flax.QuantMode.SERVE,
-    weights_quant_mode=aqt_flax.QuantMode.SERVE
-    )
+    weights_quant_mode=aqt_flax.QuantMode.SERVE)
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-    config.pretrained_model_name_or_path,
+    "output_trained_working",
     revision=config.revision,
     dtype=weight_dtype,
     split_head_dim=config.split_head_dim,

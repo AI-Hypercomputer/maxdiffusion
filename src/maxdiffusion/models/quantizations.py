@@ -60,8 +60,8 @@ class AqtQuantization:
       lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
       rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
       )
-    # return None
-    return aqt_dg_cls
+    return None
+    # return aqt_dg_cls
 
   def conv_general(self):
       """ Returns dot_general configured with aqt params. """

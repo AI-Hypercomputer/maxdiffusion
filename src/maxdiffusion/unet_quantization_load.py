@@ -126,7 +126,7 @@ def get_quantized_unet_variables(config):
                 "time_ids": jnp.zeros((8, 6), dtype=jnp.float32),
             }
   noise_pred, quantized_unet_vars = pipeline.unet.apply(
-    params["unet"] | {"aqt" : {}},
+    params["unet"] | {"aqt": {}},
     latents,
     timesteps,
     encoder_hidden_states=encoder_hidden_states,
