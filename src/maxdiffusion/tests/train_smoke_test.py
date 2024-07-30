@@ -20,7 +20,7 @@ import pathlib
 import shutil
 import unittest
 import jax
-from maxdiffusion.models.train import main as train_main
+from maxdiffusion.models.train import train as train_main, validate_train_config
 from maxdiffusion.train_sdxl import main as train_sdxl_main
 from ..import pyconfig
 from maxdiffusion.generate import run as generate_run
@@ -125,22 +125,20 @@ class Train(unittest.TestCase):
     # so setting it here.
     jax.config.update("jax_compilation_cache_dir",cache_dir)
 
-    train_main([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
       f"run_name={run_name}", "checkpoint_every=256","upload_ckpts_to_gcs=True",
       "max_train_steps=21","per_device_batch_size=8",
       "base_output_directory=gs://maxdiffusion-github-runner-test-assets/training_results/",
-      f"output_dir={output_dir}"])
+      f"output_dir={output_dir}", "prompt=A magical castle in the middle of a forest, artistic drawing",
+      "negative_prompt=purple, red","guidance_scale=7.5",
+      "num_inference_steps=30","seed=47",f"jax_cache_dir={cache_dir}"])
+
+    config = pyconfig.config
+    validate_train_config(config)
+    train_main(config)
 
     img_url = os.path.join(THIS_DIR,'images','test_sd15.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
-
-    # here we test the unet saving works.
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
-      "activations_dtype=bfloat16","weights_dtype=bfloat16",
-      "prompt=A magical castle in the middle of a forest, artistic drawing",
-      "negative_prompt=purple, red","guidance_scale=7.5",
-      "num_inference_steps=30","seed=47", f"cache_dir={cache_dir}",
-      f"output_dir={output_dir}",f"run_name={run_name}"])
 
     images = generate_run(pyconfig.config)
     test_image = np.array(images[0]).astype(np.uint8)

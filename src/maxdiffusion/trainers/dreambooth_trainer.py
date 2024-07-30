@@ -254,11 +254,10 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
 
-        if jax.process_index() == 0:
-            self.train_states["unet_state"] = unet_state
-            self.train_states["text_encoder_state"] = text_encoder_state
-            self.save_checkpoint(step)
-            self.checkpoint_manager.wait_until_finished()
+        self.train_states["unet_state"] = unet_state
+        self.train_states["text_encoder_state"] = text_encoder_state
+        self.save_checkpoint(step)
+        self.checkpoint_manager.wait_until_finished()
 
     def post_create_states_and_shard(self):
         return super().post_create_states_and_shard()

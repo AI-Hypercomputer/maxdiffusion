@@ -233,11 +233,10 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
 
-        if jax.process_index() == 0:
-            self.train_states["unet_state"] = unet_state
-            self.train_states["vae_state"] = vae_state
-            self.save_checkpoint(step)
-            self.checkpoint_manager.wait_until_finished()
+        self.train_states["unet_state"] = unet_state
+        self.train_states["vae_state"] = vae_state
+        self.save_checkpoint(step)
+        self.checkpoint_manager.wait_until_finished()
 
 def _train_step(unet_state, vae_state, batch, train_rng, config, pipeline, params):
     _, gen_dummy_rng = jax.random.split(train_rng)
