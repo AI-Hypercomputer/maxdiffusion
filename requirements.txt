@@ -1,5 +1,5 @@
-jax>=0.4.23
-jaxlib>=0.4.23
+jax>=0.4.30
+jaxlib>=0.4.30
 google-cloud-storage==2.17.0
 absl-py
 transformers>=4.25.1
@@ -9,7 +9,7 @@ optax>=0.2.3
 torch>=2.3.1
 torchvision>=0.18.1
 ftfy
-tensorboard==2.15.2
+tensorboard==2.17.0
 tensorboardx==2.6.2.2
 tensorboard-plugin-profile==2.15.2
 Jinja2
@@ -17,8 +17,8 @@ scikit-image
 parameterized
 Pillow
 pytest==8.2.2
-tensorflow==2.15.0
-tensorflow-datasets==4.9.6
+tensorflow>=2.17.0
+tensorflow-datasets>=4.9.6
 ruff>=0.1.5,<=0.2
 git+https://github.com/mlperf/logging.git
 opencv-python==4.10.0.84
