@@ -22,4 +22,4 @@ tensorflow-datasets
 ruff>=0.1.5,<=0.2
 git+https://github.com/mlperf/logging.git
 opencv-python
-orbax-checkpoint
+orbax-checkpoint>=0.5.20
