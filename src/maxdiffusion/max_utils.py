@@ -561,8 +561,4 @@ def get_global_batch_size(config):
   return config.per_device_batch_size * jax.device_count()
 
 def maybe_initialize_jax_distributed_system(raw_keys):
-  # This prevents unit tests from failing when this is called twice 
-  # For example, train_smoke_test runs a training job, then a generation job.
-  # On the generation job, this function is called and fails.
-  if jax.process_count() > 1:
-    jax.distributed.initialize()
+  jax.distributed.initialize()
