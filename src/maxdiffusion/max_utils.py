@@ -223,16 +223,6 @@ def walk_and_upload_blobs(config, output_dir):
       uploaded_files.add(file_to_upload)
       max_logging.log(f"File {file_to_upload} moved successfully!")
 
-def initialize_jax_distributed_system():
-  """ The best recipe to initialize the Jax Distributed System has varied over time. We keep a layer of
-      indirection in MaxText to avoid breaking the call sites unnecessarily.
-
-      Currently jax.distributed.initialize() fully works as expected!
-  """
-  max_logging.log("Attempting to initialize the jax distributed system...")
-  jax.distributed.initialize()
-  max_logging.log("Jax distributed system initialized!")
-
 def device_put_replicated(x, sharding):
   return jax.make_array_from_callback(x.shape, sharding, lambda index: x[index])
 
