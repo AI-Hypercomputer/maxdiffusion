@@ -61,9 +61,6 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   max_logging.log(f"Found {jax.device_count()} devices.")
-  config = pyconfig.config
-  if len(config.cache_dir) > 0:
-    jax.config.update("jax_compilation_cache_dir", config.cache_dir)
   pyconfig.initialize(argv)
   config = pyconfig.config
   run(config)

@@ -95,7 +95,7 @@ ici_tensor_parallelism: 1
 dataset_name: ''
 train_data_dir: ''
 dataset_config_name: ''
-cache_dir: ''
+jax_cache_dir: ''
 image_column: 'image'
 caption_column: 'text'
 resolution: 1024

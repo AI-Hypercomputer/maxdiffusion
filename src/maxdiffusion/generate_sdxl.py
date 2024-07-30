@@ -291,9 +291,6 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
-  config = pyconfig.config
-  if len(config.cache_dir) > 0:
-    jax.config.update("jax_compilation_cache_dir", config.cache_dir)
   run(pyconfig.config)
 
 if __name__ == "__main__":

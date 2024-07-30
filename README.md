@@ -88,14 +88,14 @@ After installation completes, run the training script.
 
   ```bash
   export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
+  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
   ```
 
 - **Stable Diffusion 1.5**
 
   ```bash
   export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base15.yml run_name="my_run" cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
+  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base15.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
   ```
 
   To generate images with a trained checkpoint, run:
@@ -109,7 +109,7 @@ After installation completes, run the training script.
   **Stable Diffusion 1.x,2.x**
 
   ```bash
-  python src/maxdiffusion/dreambooth/train_dreambooth.py src/maxdiffusion/configs/base15.yml class_data_dir=<your-class-dir> instance_data_dir=<your-instance-dir> instance_prompt="a photo of ohwx dog" class_prompt="photo of a dog" max_train_steps=150 cache_dir=<your-cache-dir> class_prompt="a photo of a dog" activations_dtype=bfloat16 weights_dtype=float32 per_device_batch_size=1 enable_profiler=False precision=DEFAULT cache_dreambooth_dataset=False learning_rate=4e-6 output_dir=<your-output-dir> num_class_images=100 run_name=<your-run-name> base_output_directory=gs://<your-bucket-name>
+  python src/maxdiffusion/dreambooth/train_dreambooth.py src/maxdiffusion/configs/base15.yml class_data_dir=<your-class-dir> instance_data_dir=<your-instance-dir> instance_prompt="a photo of ohwx dog" class_prompt="photo of a dog" max_train_steps=150 jax_cache_dir=<your-cache-dir> class_prompt="a photo of a dog" activations_dtype=bfloat16 weights_dtype=float32 per_device_batch_size=1 enable_profiler=False precision=DEFAULT cache_dreambooth_dataset=False learning_rate=4e-6 output_dir=<your-output-dir> num_class_images=100 run_name=<your-run-name> base_output_directory=gs://<your-bucket-name>
   ```
 
 ## Inference

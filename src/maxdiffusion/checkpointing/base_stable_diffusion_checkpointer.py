@@ -51,8 +51,6 @@ class BaseStableDiffusionCheckpointer(ABC):
         self.config = config
         self.checkpoint_type = checkpoint_type
         self.checkpoint_format = None
-        if len(config.cache_dir) > 0:
-            jax.config.update("jax_compilation_cache_dir", config.cache_dir)
 
         self.rng = jax.random.PRNGKey(self.config.seed)
         devices_array = max_utils.create_device_mesh(config)

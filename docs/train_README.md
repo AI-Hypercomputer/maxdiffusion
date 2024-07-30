@@ -41,7 +41,7 @@ Let's start with a simple example. After setting up your environment, create a t
 
   ```bash
   export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base15.yml run_name="my_run" cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
+  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base15.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
   ```
 
 The job will use the predefined parameters in base15.yml and will overwrite any parameters that as passed into the cli.

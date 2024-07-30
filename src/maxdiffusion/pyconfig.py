@@ -88,6 +88,9 @@ class _HyperParameters():
 
     max_utils.maybe_initialize_jax_distributed_system(raw_keys)
 
+    if raw_keys["jax_cache_dir"]:
+      jax.config.update("jax_compilation_cache_dir", raw_keys["jax_cache_dir"])
+
     _HyperParameters.user_init(raw_keys)
     self.keys = raw_keys
 
