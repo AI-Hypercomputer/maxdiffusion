@@ -582,6 +582,7 @@ class ConfigMixin:
         config_dict.pop("_ignore_files", None)
         config_dict.pop("_use_default_values", None)
         config_dict.pop("mesh", None)
+        config_dict.pop("weights_initializer", None)
 
         return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
 
