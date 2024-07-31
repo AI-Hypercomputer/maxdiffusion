@@ -37,6 +37,7 @@ NdInitializer = Callable[
 class FlaxUpsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
     def setup(self):
         self.conv = nn.Conv(
             self.out_channels,
@@ -45,7 +46,7 @@ class FlaxUpsample2D(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                self.weights_initializer,
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
         )
@@ -75,6 +76,7 @@ class FlaxUpsample2D(nn.Module):
 class FlaxDownsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
 
     def setup(self):
         self.conv = nn.Conv(
@@ -84,7 +86,7 @@ class FlaxDownsample2D(nn.Module):
             padding=((1, 1), (1, 1)),  # padding="VALID",
             dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                self.weights_initializer,
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
         )
@@ -105,6 +107,7 @@ class FlaxResnetBlock2D(nn.Module):
     use_nin_shortcut: bool = None
     dtype: jnp.dtype = jnp.float32
     norm_num_groups: int = 32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
 
     def setup(self):
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
@@ -125,7 +128,7 @@ class FlaxResnetBlock2D(nn.Module):
                 padding="VALID",
                 dtype=self.dtype,
                 kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                self.weights_initializer,
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
             )
@@ -137,7 +140,7 @@ class FlaxResnetBlock2D(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                self.weights_initializer,
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
         )
@@ -145,6 +148,7 @@ class FlaxResnetBlock2D(nn.Module):
         self.time_emb_proj = nn.Dense(
            out_channels,
            dtype=self.dtype,
+           kernel_init=self.weights_initializer,
            )
         self.conv2 = nn.Conv(
             out_channels,
@@ -153,7 +157,7 @@ class FlaxResnetBlock2D(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
+                self.weights_initializer,
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
         )

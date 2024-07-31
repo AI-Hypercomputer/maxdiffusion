@@ -20,6 +20,7 @@ import os
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
+import flax.linen as nn
 
 import flax
 import PIL.Image
@@ -323,6 +324,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         from_pt = kwargs.pop("from_pt", False)
         use_memory_efficient_attention = kwargs.pop("use_memory_efficient_attention", False)
         split_head_dim = kwargs.pop("split_head_dim", False)
+        weight_initializer = kwargs.pop("weight_initializer", nn.initializers.lecun_normal())
         attention_kernel = kwargs.pop("attention_kernel", "dot_product")
         flash_min_seq_length = kwargs.pop("flash_min_seq_length", 4096)
         flash_block_sizes = kwargs.pop("flash_block_sizes", None)
@@ -500,7 +502,6 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                     loadable_folder = os.path.join(cached_folder, name)
                 else:
                     loaded_sub_model = cached_folder
-
                 if issubclass(class_obj, FlaxModelMixin):
                     loaded_sub_model, loaded_params = load_method(
                         loadable_folder,
@@ -513,6 +514,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                         mesh=mesh,
                         norm_num_groups=norm_num_groups,
                         dtype=dtype,
+                        weight_initializer=weight_initializer,
                     )
                     params[name] = loaded_params
                 elif is_transformers_available() and issubclass(class_obj, FlaxPreTrainedModel):

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, Callable
 
 import flax
 import flax.linen as nn
@@ -140,6 +140,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     addition_embed_type_num_heads: int = 64
     projection_class_embeddings_input_dim: Optional[int] = None
     norm_num_groups: int = 32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
 
     def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
         # init input tensors
@@ -201,13 +202,14 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            kernel_init=self.weights_initializer,
         )
 
         # time
         self.time_proj = FlaxTimesteps(
             block_out_channels[0], flip_sin_to_cos=self.flip_sin_to_cos, freq_shift=self.config.freq_shift
         )
-        self.time_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype)
+        self.time_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype, weights_initializer=self.weights_initializer)
 
         only_cross_attention = self.only_cross_attention
         if isinstance(only_cross_attention, bool):
@@ -230,7 +232,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     f"addition_embed_type {self.addition_embed_type} requires `addition_time_embed_dim` to not be None"
                 )
             self.add_time_proj = FlaxTimesteps(self.addition_time_embed_dim, self.flip_sin_to_cos, self.freq_shift)
-            self.add_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype)
+            self.add_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype, weights_initializer=self.weights_initializer)
         else:
             raise ValueError(f"addition_embed_type: {self.addition_embed_type} must be None or `text_time`.")
 
@@ -260,6 +262,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     flash_block_sizes=self.flash_block_sizes,
                     mesh=self.mesh,
                     dtype=self.dtype,
+                    weights_initializer=self.weights_initializer,
                 )
             else:
                 down_block = FlaxDownBlock2D(
@@ -269,6 +272,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     num_layers=self.layers_per_block,
                     add_downsample=not is_final_block,
                     dtype=self.dtype,
+                    weights_initializer=self.weights_initializer,
                 )
 
             down_blocks.append(down_block)
@@ -288,6 +292,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
+            weights_initializer=self.weights_initializer,
         )
 
         # up
@@ -323,6 +328,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     flash_block_sizes=self.flash_block_sizes,
                     mesh=self.mesh,
                     dtype=self.dtype,
+                    weights_initializer=self.weights_initializer,
                 )
             else:
                 up_block = FlaxUpBlock2D(
@@ -333,6 +339,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     add_upsample=not is_final_block,
                     dropout=self.dropout,
                     dtype=self.dtype,
+                    weights_initializer=self.weights_initializer,
                 )
 
             up_blocks.append(up_block)
@@ -346,7 +353,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             kernel_size=(3, 3),
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
-            dtype=self.dtype,
+            dtype=jnp.float32,
+            kernel_init=self.weights_initializer,
         )
 
     def __call__(

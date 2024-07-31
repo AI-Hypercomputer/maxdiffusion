@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+from typing import Callable
 import jax
 import flax.linen as nn
 import jax.numpy as jnp
@@ -71,6 +71,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
 
     def setup(self):
         resnets = []
@@ -84,7 +85,8 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                weights_initializer=self.weights_initializer
             )
             resnets.append(res_block)
 
@@ -102,7 +104,8 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                weights_initializer=self.weights_initializer
             )
             attentions.append(attn_block)
 
@@ -152,6 +155,7 @@ class FlaxDownBlock2D(nn.Module):
     add_downsample: bool = True
     dtype: jnp.dtype = jnp.float32
     norm_num_groups: int = 32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
 
     def setup(self):
         resnets = []
@@ -164,13 +168,14 @@ class FlaxDownBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                weights_initializer=self.weights_initializer
             )
             resnets.append(res_block)
         self.resnets = resnets
 
         if self.add_downsample:
-            self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype)
+            self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype, weights_initializer=self.weights_initializer)
 
     def __call__(self, hidden_states, temb, deterministic=True):
         output_states = ()
@@ -238,6 +243,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
 
     def setup(self):
         resnets = []
@@ -252,7 +258,8 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                weights_initializer=self.weights_initializer
             )
             resnets.append(res_block)
 
@@ -270,7 +277,8 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                weights_initializer=self.weights_initializer
             )
             attentions.append(attn_block)
 
@@ -278,7 +286,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
         self.attentions = attentions
 
         if self.add_upsample:
-            self.upsamplers_0 = FlaxUpsample2D(self.out_channels, dtype=self.dtype)
+            self.upsamplers_0 = FlaxUpsample2D(self.out_channels, dtype=self.dtype, weights_initializer=self.weights_initializer)
 
     def __call__(self, hidden_states, res_hidden_states_tuple, temb, encoder_hidden_states, deterministic=True):
         for resnet, attn in zip(self.resnets, self.attentions):
@@ -324,6 +332,7 @@ class FlaxUpBlock2D(nn.Module):
     add_upsample: bool = True
     dtype: jnp.dtype = jnp.float32
     norm_num_groups: int = 32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
 
     def setup(self):
         resnets = []
@@ -337,14 +346,15 @@ class FlaxUpBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                weights_initializer=self.weights_initializer
             )
             resnets.append(res_block)
 
         self.resnets = resnets
 
         if self.add_upsample:
-            self.upsamplers_0 = FlaxUpsample2D(self.out_channels, dtype=self.dtype)
+            self.upsamplers_0 = FlaxUpsample2D(self.out_channels, dtype=self.dtype, weights_initializer=self.weights_initializer)
 
     def __call__(self, hidden_states, res_hidden_states_tuple, temb, deterministic=True):
         for resnet in self.resnets:
@@ -404,6 +414,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
     dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
 
     def setup(self):
         # there is always at least one resnet
@@ -413,7 +424,8 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 out_channels=self.in_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                weights_initializer=self.weights_initializer
             )
         ]
 
@@ -433,7 +445,8 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                weights_initializer=self.weights_initializer
             )
             attentions.append(attn_block)
 
@@ -442,7 +455,8 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 out_channels=self.in_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
-                norm_num_groups=self.norm_num_groups
+                norm_num_groups=self.norm_num_groups,
+                weights_initializer=self.weights_initializer
             )
             resnets.append(res_block)
 

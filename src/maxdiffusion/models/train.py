@@ -30,7 +30,6 @@ import optax
 import transformers
 from absl import app
 from maxdiffusion import (
-    FlaxDDPMScheduler,
     FlaxStableDiffusionPipeline,
     max_logging,
     max_utils,
@@ -243,6 +242,7 @@ def train(config):
 
     weight_dtype = max_utils.get_dtype(config)
     flash_block_sizes = max_utils.get_flash_block_sizes(config)
+    weights_initializer = max_utils.get_weights_initializer(config)
     pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
         config.pretrained_model_name_or_path,revision=config.revision,
         dtype=weight_dtype,
@@ -254,6 +254,7 @@ def train(config):
         attention_kernel=config.attention,
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
+        weight_initializer=weights_initializer
     )
 
     # TODO - add unit test to verify scheduler changes.

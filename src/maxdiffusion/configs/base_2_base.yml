@@ -157,6 +157,8 @@ adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradi
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 1.e-2 # AdamW Weight decay
 max_grad_norm: 1.0
+# lecun_normal, kaiming_uniform
+weights_initializer: 'kaiming_uniform'
 
 enable_profiler: False
 # Skip first n steps for profiling, to omit things like compilation and to give

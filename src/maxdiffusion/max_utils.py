@@ -34,6 +34,7 @@ from typing import (
 import numpy as np
 
 import flax
+import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import optax
@@ -620,3 +621,14 @@ def calculate_model_tflops(
   
   total_flops = (total_flops * 3 if train else total_flops) / 10**12
   return total_flops
+
+def get_weights_initializer(config):
+  weights_initializer = None
+  if config.weights_initializer == "lecun_normal":
+    weights_initializer = nn.initializers.lecun_normal()
+  elif config.weights_initializer == "kaiming_uniform":
+    weights_initializer = nn.initializers.kaiming_uniform()
+  else:
+    raise TypeError(f"{config.weights_initializer} is not supported!")
+  
+  return weights_initializer

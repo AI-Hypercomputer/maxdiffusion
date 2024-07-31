@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
-
+from typing import Callable
 import flax.linen as nn
+import jax
 import jax.numpy as jnp
 
 
@@ -67,12 +68,27 @@ class FlaxTimestepEmbedding(nn.Module):
     """
     time_embed_dim: int = 32
     dtype: jnp.dtype = jnp.float32
+    weights_initializer: Callable = nn.initializers.lecun_normal()
 
-    @nn.compact
+    def setup(self):
+        self.linear_1 = nn.Dense(
+                            self.time_embed_dim,
+                            dtype=self.dtype,
+                            name="linear_1",
+                            kernel_init=self.weights_initializer,
+                        )
+        
+        self.linear_2 = nn.Dense(
+                            self.time_embed_dim,
+                            dtype=self.dtype,
+                            name="linear_2",
+                            kernel_init=self.weights_initializer,
+                        )
+
     def __call__(self, temb):
-        temb = nn.Dense(self.time_embed_dim, dtype=self.dtype, name="linear_1")(temb)
+        temb = self.linear_1(temb)
         temb = nn.silu(temb)
-        temb = nn.Dense(self.time_embed_dim, dtype=self.dtype, name="linear_2")(temb)
+        temb = self.linear_2(temb)
         return temb
 
 
