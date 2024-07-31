@@ -21,12 +21,13 @@ import shutil
 import unittest
 import jax
 from maxdiffusion.models.train import train as train_main, validate_train_config
+from maxdiffusion.train import train as train_orbax_main
 from maxdiffusion.train_sdxl import main as train_sdxl_main
 from ..import pyconfig
 from maxdiffusion.generate import run as generate_run
 from maxdiffusion.generate_sdxl import run as generate_run_xl
 from absl.testing import absltest
-
+from google.cloud import storage
 from skimage.metrics import structural_similarity as ssim
 import numpy as np
 from PIL import Image
@@ -36,6 +37,15 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def cleanup(output_dir):
   shutil.rmtree(output_dir)
+
+def delete_blobs(gcs_dir):
+  gcs_dir_arr = gcs_dir.replace("gs://","").split("/")
+  storage_client = storage.Client()
+  bucket = storage_client.get_bucket(gcs_dir_arr[0])
+  folder = "/".join(gcs_dir_arr[1:])
+  blobs = bucket.list_blobs(prefix=folder)
+  for blob in blobs:
+    blob.delete()
 
 class Train(unittest.TestCase):
   """Smoke test."""
@@ -89,24 +99,23 @@ class Train(unittest.TestCase):
     # so setting it here.
     jax.config.update("jax_compilation_cache_dir",cache_dir)
 
-    train_main([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
       "revision=bf16","activations_dtype=bfloat16","weights_dtype=bfloat16",f"run_name={run_name}",
       "max_train_steps=21","dataset_name=diffusers/pokemon-gpt4-captions",
       "resolution=768","per_device_batch_size=1", f"output_dir={output_dir}",
-      f"cache_dir={cache_dir}"])
+      f"jax_cache_dir={cache_dir}", "resolution=768",
+      "prompt=A magical castle in the middle of a forest, artistic drawing",
+      "negative_prompt=purple, red","guidance_scale=7.5",
+      "num_inference_steps=30","seed=47"])
+    
+    config = pyconfig.config
+    train_main(config)
 
     img_url = os.path.join(THIS_DIR,'images','test.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
 
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
-      f"run_name={run_name}",f"output_dir={output_dir}",
-      "revision=bf16","activations_dtype=bfloat16","weights_dtype=float32","resolution=768",
-      "prompt=A magical castle in the middle of a forest, artistic drawing",
-      "negative_prompt=purple, red","guidance_scale=7.5",
-      "num_inference_steps=30","seed=47",])
-
-    images = generate_run(pyconfig.config)
+    images = generate_run(config)
     test_image = np.array(images[1]).astype(np.uint8)
     ssim_compare = ssim(base_image, test_image,
       multichannel=True, channel_axis=-1, data_range=255
@@ -115,22 +124,52 @@ class Train(unittest.TestCase):
     assert ssim_compare >=0.70
 
     cleanup(output_dir)
+  
+  def test_sd15_orbax(self):
+    output_dir="gs://maxdiffusion-github-runner-test-assets"
+    run_name="sd15_orbax_smoke_test"
+    cache_dir="gs://maxdiffusion-github-runner-test-assets/cache_dir"
+
+    # TODO - run test
+    # TODO - delete run_name folder or the next test will fail since orbax checks
+    # that max_train_steps > orbax_checkpoint latest
+
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+      f"run_name={run_name}", "checkpoint_every=256","upload_ckpts_to_gcs=True",
+      "max_train_steps=21","per_device_batch_size=2",
+      "base_output_directory=gs://maxdiffusion-github-runner-test-assets/training_results/",
+      f"output_dir={output_dir}", "prompt=A magical castle in the middle of a forest, artistic drawing",
+      "negative_prompt=purple, red","guidance_scale=7.5", 
+      "num_inference_steps=30","seed=47",f"jax_cache_dir={cache_dir}"])
+    
+    config = pyconfig.config
+    validate_train_config(config)
+    train_orbax_main(config)
+
+    img_url = os.path.join(THIS_DIR,'images','test_sd15.png')
+    base_image = np.array(Image.open(img_url)).astype(np.uint8)
+    images = generate_run(pyconfig.config)
+    test_image = np.array(images[0]).astype(np.uint8)
+    ssim_compare = ssim(base_image, test_image,
+      multichannel=True, channel_axis=-1, data_range=255
+    )
+    assert base_image.shape == test_image.shape
+    assert ssim_compare >=0.70
+
+    delete_blobs(os.path.join(output_dir,run_name))
+
 
   def test_sd15_config(self):
     output_dir="gs://maxdiffusion-github-runner-test-assets"
     run_name="sd15_smoke_test"
     cache_dir="gs://maxdiffusion-github-runner-test-assets/cache_dir"
 
-    # calling train_dreambooth directly bypasses setting the cache dir
-    # so setting it here.
-    jax.config.update("jax_compilation_cache_dir",cache_dir)
-
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
       f"run_name={run_name}", "checkpoint_every=256","upload_ckpts_to_gcs=True",
       "max_train_steps=21","per_device_batch_size=8",
       "base_output_directory=gs://maxdiffusion-github-runner-test-assets/training_results/",
       f"output_dir={output_dir}", "prompt=A magical castle in the middle of a forest, artistic drawing",
-      "negative_prompt=purple, red","guidance_scale=7.5",
+      "negative_prompt=purple, red","guidance_scale=7.5", 
       "num_inference_steps=30","seed=47",f"jax_cache_dir={cache_dir}"])
 
     config = pyconfig.config
@@ -139,7 +178,6 @@ class Train(unittest.TestCase):
 
     img_url = os.path.join(THIS_DIR,'images','test_sd15.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
-
     images = generate_run(pyconfig.config)
     test_image = np.array(images[0]).astype(np.uint8)
     ssim_compare = ssim(base_image, test_image,
