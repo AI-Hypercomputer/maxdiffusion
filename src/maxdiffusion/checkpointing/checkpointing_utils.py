@@ -95,10 +95,6 @@ def load_stable_diffusion_configs(
     step = checkpoint_manager.latest_step()
     if step is None:
       return None
-  
-  if (step + 1) >= config.max_train_steps:
-    assert (step + 1) < config.max_train_steps, \
-      f'The latest checkpoint {step + 1} is larger or equal to the maximum number of train steps {config.max_train_steps}. Set config.max_train_steps to be larger than the saved checkpoint step.'
 
   restore_args = {
     "unet_config" : orbax.checkpoint.args.JsonRestore(),

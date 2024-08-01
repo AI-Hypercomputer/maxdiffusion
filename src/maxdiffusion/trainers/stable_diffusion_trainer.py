@@ -157,11 +157,13 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
                 in_shardings=(
                     self.state_shardings["unet_state_shardings"],
                     self.state_shardings["vae_state_shardings"],
+                    None,
                     self.get_data_shardings(),
                     None
                 ),
                 out_shardings=(
                     self.state_shardings["unet_state_shardings"],
+                    None,
                     None,
                     None
                 ),
@@ -172,6 +174,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
             dummy_batch = self.get_shaped_batch(self.config, self.pipeline)
             p_train_step = p_train_step.lower(self.train_states["unet_state"],
                                             self.train_states["vae_state"],
+                                            self.train_states["text_encoder_state"],
                                             dummy_batch,
                                             train_rngs)
             self.p_train_step = p_train_step.compile()
@@ -181,6 +184,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         writer = max_utils.initialize_summary_writer(self.config)
         unet_state = self.train_states["unet_state"]
         vae_state = self.train_states["vae_state"]
+        text_encoder_state = self.train_states["text_encoder_state"]
 
         num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
 
@@ -209,16 +213,17 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
 
         for step in np.arange(start_step, self.config.max_train_steps):
             example_batch = train_utils.load_next_batch(self.data_iterator, example_batch, self.config)
-            unet_state, train_metric, train_rngs = self.p_train_step(
+            unet_state, text_encoder_state, train_metric, train_rngs = self.p_train_step(
                 unet_state,
                 vae_state,
+                text_encoder_state,
                 example_batch,
                 train_rngs
             )
             samples_count = self.total_train_batch_size * (step + 1)
             new_time = datetime.datetime.now()
 
-            train_utils.record_scalar_metrics(train_metric, new_time - last_step_completion, self.per_device_tflops, self.learning_rate_scheduler(step))
+            train_utils.record_scalar_metrics(train_metric, new_time - last_step_completion, self.per_device_tflops, self.unet_learning_rate_scheduler(step))
             if self.config.write_metrics:
                 train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
             last_step_completion = new_time
@@ -235,10 +240,11 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
 
         self.train_states["unet_state"] = unet_state
         self.train_states["vae_state"] = vae_state
+        self.train_states["text_encoder"] = text_encoder_state
         self.save_checkpoint(step)
         self.checkpoint_manager.wait_until_finished()
 
-def _train_step(unet_state, vae_state, batch, train_rng, config, pipeline, params):
+def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, config, pipeline, params):
     _, gen_dummy_rng = jax.random.split(train_rng)
     sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
     def compute_loss(unet_params):
@@ -319,9 +325,15 @@ def _train_step(unet_state, vae_state, batch, train_rng, config, pipeline, param
         grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(grad, unet_state, None)
 
     new_state = unet_state.apply_gradients(grads=grad)
+
+    if config.train_text_encoder:
+        new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad["text_encoder"])
+    else:
+        new_text_encoder_state = text_encoder_state
+
     metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
 
-    return new_state, metrics, new_train_rng
+    return new_state, new_text_encoder_state, metrics, new_train_rng
 
 
 

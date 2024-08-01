@@ -18,7 +18,8 @@ from abc import abstractmethod
 import jax
 from maxdiffusion import (
     max_utils,
-    maxdiffusion_utils
+    maxdiffusion_utils,
+    max_logging
 )
 
 from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
@@ -35,9 +36,6 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
         self.per_device_tflops = None
 
         self.writer = max_utils.initialize_summary_writer(config)
-
-        #Optimizer params
-        self.learning_rate_scheduler = None
 
         self.p_train_step = None
 
@@ -80,6 +78,7 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
             self.rng,
             train=True
         )
+        max_logging.log(f"UNET per device TFLOPS: {self.per_device_tflops}")
 
     def start_training(self):
 

@@ -46,7 +46,7 @@ class VaeTest(unittest.TestCase):
   def test_vae21_sharding_test(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
       "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
-      "revision=bf16","activations_dtype=bfloat16","resolution=768"])
+      "revision=bf16","activations_dtype=bfloat16","resolution=768"],unittest=True)
     config = pyconfig.config
     vae, vae_params = FlaxAutoencoderKL.from_pretrained(
       config.pretrained_model_name_or_path, revision=config.revision, subfolder="vae", dtype=jnp.bfloat16, from_pt=config.from_pt
@@ -59,9 +59,9 @@ class VaeTest(unittest.TestCase):
     latents = jnp.ones((4,4,96,96), dtype=jnp.float32)
 
     variables = jax.jit(vae.init)(k, latents)
-    unboxed_abstract_state, state_mesh_annotations = max_utils.get_abstract_state(vae, tx, config, mesh, variables['params'])
+    unboxed_abstract_state, state_mesh_annotations, _ = max_utils.get_abstract_state(vae, tx, config, mesh, variables['params'])
     del variables
-    qkv_sharding =PartitionSpec(None, None)
+    qkv_sharding = PartitionSpec(None, None)
     conv_sharding = PartitionSpec(None, None, None, 'fsdp')
     assert state_mesh_annotations.params['decoder']['mid_block']['resnets_0']['conv1']['kernel'] == conv_sharding
     assert state_mesh_annotations.params['decoder']['mid_block']['resnets_0']['conv2']['kernel'] == conv_sharding
@@ -71,13 +71,14 @@ class VaeTest(unittest.TestCase):
 
     vae_state, vae_state_state_mesh_shardings = max_utils.setup_initial_state(
       vae,
-      tx,config,
+      tx,
+      config,
       mesh,
-      vae_params,
-      unboxed_abstract_state,
-      state_mesh_annotations
+      vae_params
     )
 
+    conv_sharding = PartitionSpec()
+    qkv_sharding = PartitionSpec()
     qkv_named_sharding = NamedSharding(mesh, qkv_sharding)
     conv_named_sharding = NamedSharding(mesh, conv_sharding)
     assert vae_state_state_mesh_shardings.params['decoder']['mid_block']['resnets_0']['conv1']['kernel'] == conv_named_sharding

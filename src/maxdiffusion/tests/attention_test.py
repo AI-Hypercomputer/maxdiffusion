@@ -35,7 +35,7 @@ class AttentionTest(unittest.TestCase):
   def test_splash_attention(self):
     """Test numerics of splash attention are equivalent to dot_product"""
 
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml')])
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml')],unittest=True)
     config = pyconfig.config
 
     batch = 8
@@ -87,7 +87,7 @@ class AttentionTest(unittest.TestCase):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
                          'flash_block_sizes={"block_q" : 256, "block_kv_compute": 256, "block_kv": 256,'
                          '"block_q_dkv": 256, "block_kv_dkv": 256, "block_kv_dkv_compute": 256,'
-                         '"block_q_dq": 256, "block_kv_dq": 256}','attention=flash'])
+                         '"block_q_dq": 256, "block_kv_dq": 256}','attention=flash'],unittest=True)
     config = pyconfig.config
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)

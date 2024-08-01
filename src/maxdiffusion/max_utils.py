@@ -300,7 +300,9 @@ def init_train_state(model_params, model, tx, training=True):
       params=model_params,
       tx=tx)
   else:
-    state = InferenceState(apply_fn=model.apply, params=model_params)
+    state = InferenceState(
+      apply_fn=model.apply if hasattr(model, 'apply') else model.__call__,
+      params=model_params)
   return state
 
 def get_abstract_state(model, tx, config, mesh, model_params, training=True):
@@ -419,7 +421,12 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params = None, vae_params =
 # Learning Rate Schedule
 # -----------------------------------------------------------------------------
 
-def create_learning_rate_schedule(config):
+def create_learning_rate_schedule(
+    learning_rate,
+    learning_rate_schedule_steps,
+    warmup_steps_fraction,
+    max_train_steps
+  ):
   """Creates a warmup to constant learning rate schedule:
   We take inspiration from WarmupHoldPolicy used in stable diffusion
     see https://github.com/NVIDIA/NeMo/blob/dbc8a6ee490355bfa0cb1e10b8d199dcc47482e0/nemo/core/optim/lr_scheduler.py#L142
@@ -427,10 +434,10 @@ def create_learning_rate_schedule(config):
   1) Linear warmup from 0 to [learning_rate] over steps 0 to [learning_rate_schedule_steps * warmup_steps_fraction]
   2) Constant learning rate of 0 afterwards.
   """
-  lr = config.learning_rate
+  lr = learning_rate
 
-  warmup_steps = int(config.learning_rate_schedule_steps * config.warmup_steps_fraction)
-  constant_zero_steps = config.max_train_steps - warmup_steps
+  warmup_steps = int(learning_rate_schedule_steps * warmup_steps_fraction)
+  constant_zero_steps = max_train_steps - warmup_steps
 
   warmup_schedule = optax.linear_schedule(
       init_value=0.0,

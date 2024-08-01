@@ -43,6 +43,10 @@ norm_num_groups: 32
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
 
+# train text_encoder - Currently not supported for SDXL
+train_text_encoder: False
+text_encoder_learning_rate: 4.25e-6
+
 # https://arxiv.org/pdf/2305.08891.pdf
 snr_gamma: -1.0
 
@@ -163,7 +167,7 @@ adam_eps: 1.e-8 # A small constant applied to denominator outside of the square 
 adam_weight_decay: 1.e-2 # AdamW Weight decay
 max_grad_norm: 1.0
 
-enable_profiler: True
+enable_profiler: False
 # Skip first n steps for profiling, to omit things like compilation and to give
 # the iteration time a chance to stabilize.
 skip_first_n_steps_for_profiler: 5

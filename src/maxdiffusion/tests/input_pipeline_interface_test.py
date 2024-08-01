@@ -44,7 +44,7 @@ from maxdiffusion import (
   FlaxStableDiffusionXLPipeline
 )
 from maxdiffusion.models import FlaxAutoencoderKL
-from maxdiffusion.models.train import (
+from maxdiffusion.maxdiffusion_utils import (
   encode,
   tokenize_captions
 )
@@ -89,7 +89,7 @@ class InputPipelineInterface(unittest.TestCase):
       "dataset_name=my_dreambooth_dataset",
       f"instance_data_dir={instance_class_local_dir}",
       f"class_data_dir={class_class_local_dir}",
-      'instance_prompt=photo of ohwx dog', 'class_prompt=photo of dog'])
+      'instance_prompt=photo of ohwx dog', 'class_prompt=photo of dog'],unittest=True)
     config = pyconfig.config
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
@@ -135,7 +135,7 @@ class InputPipelineInterface(unittest.TestCase):
   def test_make_pokemon_iterator_cache(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
       "cache_latents_text_encoder_outputs=True",
-      "dataset_name=diffusers/pokemon-gpt4-captions"])
+      "dataset_name=diffusers/pokemon-gpt4-captions"],unittest=True)
     config = pyconfig.config
 
     cleanup(config.dataset_save_location)
@@ -184,7 +184,7 @@ class InputPipelineInterface(unittest.TestCase):
   def test_make_pokemon_iterator_no_cache(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
       "cache_latents_text_encoder_outputs=False","tokenize_captions_num_proc=1","transform_images_num_proc=1",
-      "dataset_name=diffusers/pokemon-gpt4-captions"])
+      "dataset_name=diffusers/pokemon-gpt4-captions"],unittest=True)
     config = pyconfig.config
 
     cleanup(config.dataset_save_location)
@@ -232,7 +232,7 @@ class InputPipelineInterface(unittest.TestCase):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
         "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
         "cache_latents_text_encoder_outputs=True","per_device_batch_size=1",
-        "dataset_name=diffusers/pokemon-gpt4-captions"])
+        "dataset_name=diffusers/pokemon-gpt4-captions"], unittest=True)
     config = pyconfig.config
 
     cleanup(config.dataset_save_location)
@@ -288,7 +288,8 @@ class InputPipelineInterface(unittest.TestCase):
   def test_make_laion_iterator(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
       "cache_latents_text_encoder_outputs=True",
-      "train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/processed/laion400m_tfrec"])
+      "train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/processed/laion400m_tfrec"],
+      unittest=True)
     config = pyconfig.config
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)

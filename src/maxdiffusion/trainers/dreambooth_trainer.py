@@ -177,7 +177,6 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
                         image_filename = class_images_dir / f"{example['index'][i] + cur_class_images}-{hash_image}.jpg"
                         image.save(image_filename)
 
-            max_utils.delete_pytree(params)
             del pipeline
 
     def compile_train_step(self):
@@ -237,7 +236,7 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
             samples_count = self.total_train_batch_size * (step + 1)
             new_time = datetime.datetime.now()
 
-            train_utils.record_scalar_metrics(train_metric, new_time - last_step_completion, self.per_device_tflops, self.learning_rate_scheduler(step))
+            train_utils.record_scalar_metrics(train_metric, new_time - last_step_completion, self.per_device_tflops, self.unet_learning_rate_scheduler(step))
             if self.config.write_metrics:
                 train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
             last_step_completion = new_time
@@ -338,7 +337,13 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
         grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(grad, unet_state, None)
 
     new_unet_state = unet_state.apply_gradients(grads=grad["unet"])
-    new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad["text_encoder"])
+
+    
+    if config.train_text_encoder:
+        new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad["text_encoder"])
+    else:
+        new_text_encoder_state = text_encoder_state
+
     metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
 
     return new_unet_state, new_text_encoder_state, metrics, new_train_rng

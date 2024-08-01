@@ -291,7 +291,11 @@ def train(config):
     if config.scale_lr:
         config.learning_rate = config.learning_rate * total_train_batch_size
 
-    learning_rate_scheduler = max_utils.create_learning_rate_schedule(config)
+    learning_rate_scheduler = max_utils.create_learning_rate_schedule(
+      config.learning_rate,
+      config.learning_rate_schedule_steps,
+      config.warmup_steps_fraction,
+      config.max_train_steps)
 
     tx = optax.adamw(
         learning_rate=learning_rate_scheduler,
@@ -474,11 +478,11 @@ def train(config):
     max_utils.close_summary_writer(writer)
 
 def main(argv: Sequence[str]) -> None:
-    max_logging.log(f"Found {jax.device_count()} devices.")
     pyconfig.initialize(argv)
     config = pyconfig.config
     mllog_utils.train_init_start(config)
     validate_train_config(config)
+    max_logging.log(f"Found {jax.device_count()} devices.")
     train(config)
 if __name__ == "__main__":
     app.run(main)

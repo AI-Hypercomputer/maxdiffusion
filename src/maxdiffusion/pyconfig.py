@@ -53,7 +53,7 @@ class _HyperParameters():
   def __init__(self, argv: list[str], **kwargs):
     with open(argv[1], "r", encoding="utf-8") as yaml_file:
       raw_data_from_yaml = yaml.safe_load(yaml_file)
-    raw_data_from_cmd_line = self._load_kwargs(argv, **kwargs)
+    raw_data_from_cmd_line = self._load_kwargs(argv)
 
     for k in raw_data_from_cmd_line:
       if k not in raw_data_from_yaml:
@@ -86,7 +86,9 @@ class _HyperParameters():
       else:
         raw_keys[k] = raw_data_from_yaml[k]
 
-    max_utils.maybe_initialize_jax_distributed_system(raw_keys)
+    is_unittest = kwargs.get("unittest",False)
+    if not is_unittest:
+      max_utils.maybe_initialize_jax_distributed_system(raw_keys)
 
     if raw_keys["jax_cache_dir"]:
       jax.config.update("jax_compilation_cache_dir", raw_keys["jax_cache_dir"])
@@ -94,9 +96,8 @@ class _HyperParameters():
     _HyperParameters.user_init(raw_keys)
     self.keys = raw_keys
 
-  def _load_kwargs(self, argv: list[str], **kwargs):
+  def _load_kwargs(self, argv: list[str]):
     args_dict = dict(a.split("=") for a in argv[2:])
-    args_dict.update(kwargs)
     return args_dict
 
   @staticmethod

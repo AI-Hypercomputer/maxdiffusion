@@ -61,6 +61,10 @@ norm_num_groups: 32
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
 
+# train text_encoder
+train_text_encoder: False
+text_encoder_learning_rate: 4.25e-6
+
 # https://arxiv.org/pdf/2305.08891.pdf
 snr_gamma: -1.0
 
@@ -181,7 +185,7 @@ adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradi
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 1.e-2 # AdamW Weight decay
 
-enable_profiler: True
+enable_profiler: False
 # Skip first n steps for profiling, to omit things like compilation and to give
 # the iteration time a chance to stabilize.
 skip_first_n_steps_for_profiler: 1
