@@ -125,16 +125,16 @@ def validate_train_config(config):
 
   assert config.max_train_steps > 0 or config.num_train_epochs > 0, "You must set steps or learning_rate_schedule_steps to a positive interger."
 
-def record_scalar_metrics(metrics, step_time_delta, num_step, per_device_tflops, lr):
+def record_scalar_metrics(metrics, total_seconds, num_step, per_device_tflops, lr):
   """Records scalar metrics to be written to tensorboard"""
   metrics['scalar'].update({
-      'perf/period_time_seconds': step_time_delta.total_seconds()
+      'perf/period_time_seconds': total_seconds
   })
   metrics['scalar'].update({
       'perf/period_step_count': num_step
   })
   metrics['scalar'].update({
-      'perf/step_time_seconds': step_time_delta.total_seconds() / num_step
+      'perf/step_time_seconds': total_seconds / num_step
   })
   metrics['scalar'].update({
       'perf/per_device_tflops' : per_device_tflops
@@ -142,7 +142,7 @@ def record_scalar_metrics(metrics, step_time_delta, num_step, per_device_tflops,
   metrics['scalar'].update({
       'perf/per_device_tflops_per_sec':
           (num_step * per_device_tflops) /
-          step_time_delta.total_seconds()
+          total_seconds
   })
   metrics['scalar'].update({'learning/current_learning_rate': lr })
 
@@ -420,6 +420,9 @@ def train(config):
         p_train_step = p_train_step_lower.compile()
         host_id = jax.process_index()
         all_host_ids = jax.experimental.multihost_utils.process_allgather(host_id)
+
+        p_learning_rate_scheduler = jax.jit(learning_rate_scheduler).lower(0)
+        p_learning_rate_scheduler = p_learning_rate_scheduler.compile()
     else:
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step = jax.jit(
@@ -479,11 +482,11 @@ def train(config):
         if step_num % config.metrics_period == 0 or step_num == config.max_train_steps:
             new_time = datetime.datetime.now()
             
-            step_time_delta = new_time - last_step_completion
+            step_time_delta = float((new_time - last_step_completion).total_seconds())
             step_num_delta = step_num - last_log_step_num
 
             # record metrics of current period
-            record_scalar_metrics(train_metric, step_time_delta, step_num_delta, per_device_tflops, learning_rate_scheduler(step))
+            record_scalar_metrics(train_metric, step_time_delta, step_num_delta, per_device_tflops, p_learning_rate_scheduler(step))
 
             if config.write_metrics:
                 # print metrics of previous period
