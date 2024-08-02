@@ -105,7 +105,7 @@ class FlaxUpsample2D(nn.Module):
         hidden_states = self.conv(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
-            (BATCH, KEEP_1, KEEP_2, 'out_channels')
+            ('conv_batch', 'height' KEEP_2, 'out_channels')
         )
         return hidden_states
 
@@ -143,7 +143,7 @@ class FlaxDownsample2D(nn.Module):
         hidden_states = self.conv(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
-            (BATCH, 'keep_1', 'keep_2', 'out_channels')
+            ('conv_batch', 'height' 'keep_2', 'out_channels')
         )
         return hidden_states
 
@@ -223,7 +223,7 @@ class FlaxResnetBlock2D(nn.Module):
         hidden_states = self.conv1(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
-            (BATCH, KEEP_1, KEEP_2, CONV_OUT)
+            ('conv_batch', 'height' KEEP_2, CONV_OUT)
         )
 
         hidden_states = self.norm2(hidden_states)
@@ -232,7 +232,7 @@ class FlaxResnetBlock2D(nn.Module):
         hidden_states = self.conv2(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
-            (BATCH, KEEP_1, KEEP_2, CONV_OUT)
+            ('conv_batch', 'height' KEEP_2, CONV_OUT)
         )
 
         if self.conv_shortcut is not None:
@@ -925,7 +925,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
         hidden_states = self.post_quant_conv(latents)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
-            (BATCH, 'keep_1', 'keep_2', 'out_channels')
+            ('conv_batch', 'height' 'keep_2', 'out_channels')
         )
         hidden_states = self.decoder(hidden_states, deterministic=deterministic)
 
