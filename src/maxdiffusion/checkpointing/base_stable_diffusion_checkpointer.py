@@ -313,11 +313,11 @@ class BaseStableDiffusionCheckpointer(ABC):
                 text_encoder_2 = FlaxCLIPTextModelWithProjection(
                     te_pretrained_2_config,
                     seed=self.config.seed,
-                    dtype=self.config.activations_dtype
+                    dtype=self.config.activations_dtype,
+                    _do_init=False
                 )
                 pipeline_kwargs["text_encoder_2"] = text_encoder_2
                 pipeline_kwargs["tokenizer_2"] = tokenizer
-
             pipeline = pipeline_class(
             **pipeline_kwargs
             )

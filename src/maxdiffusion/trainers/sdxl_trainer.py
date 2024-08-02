@@ -171,20 +171,23 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
             raise ValueError(f"{config.dataset_name} is currently not supported in this pipeline.")
 
     def compile_train_step(self):
+
+        # delete unused weights
+        if self.config.cache_latents_text_encoder_outputs:
+            max_utils.delete_pytree(self.train_states["vae_state"].params)
+            max_utils.delete_pytree(self.train_states["text_encoder_state"].params)
+            max_utils.delete_pytree(self.train_states["text_encoder_2_state"].params)
+
         self.rng, train_rngs = jax.random.split(self.rng)
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
             p_train_step = jax.jit(
                 partial(_train_step, pipeline=self.pipeline, params=self.params, config=self.config),
                 in_shardings=(
                     self.state_shardings["unet_state_shardings"],
-                    None,
-                    None,
                     self.get_data_shardings(), 
                     None
                 ),
                 out_shardings=(self.state_shardings["unet_state_shardings"],
-                    None,
-                    None,
                     None,
                     None
                 ),
@@ -195,8 +198,6 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
             dummy_batch = self.get_shaped_batch(self.config, self.pipeline)
             p_train_step = p_train_step.lower(
                 self.train_states["unet_state"],
-                self.train_states["text_encoder_state"],
-                self.train_states["text_encoder_2_state"],
                 dummy_batch, train_rngs
             )
             self.p_train_step = p_train_step.compile()
@@ -209,6 +210,13 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         text_encoder_state = self.train_states["text_encoder_state"]
         text_encoder_2_state = self.train_states["text_encoder_2_state"]
         num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
+
+        # delete unused weights
+        if self.config.cache_latents_text_encoder_outputs:
+            max_utils.delete_pytree(self.train_states["vae_state"].params)
+            max_utils.delete_pytree(self.train_states["text_encoder_state"].params)
+            max_utils.delete_pytree(self.train_states["text_encoder_2_state"].params)
+            
 
         max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
         max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
@@ -232,14 +240,11 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
 
         start_step = get_first_step(self.train_states["unet_state"])
         _, train_rngs = jax.random.split(self.rng)
-
         for step in np.arange(start_step, self.config.max_train_steps):
             example_batch = load_next_batch(self.data_iterator, example_batch, self.config)
             (unet_state,
-             text_encoder_state,
-             text_encoder_2_state,
              train_metric,
-             train_rngs) = self.p_train_step(unet_state, text_encoder_state, text_encoder_2_state, example_batch, train_rngs)
+             train_rngs) = self.p_train_step(unet_state, example_batch, train_rngs)
             
             samples_count = self.total_train_batch_size * (step + 1)
             new_time = datetime.datetime.now()
@@ -268,21 +273,14 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         self.save_checkpoint(step)
         self.checkpoint_manager.wait_until_finished()
 
-def _train_step(unet_state, text_encoder_state, text_encoder_2_state, batch, train_rng, pipeline, params, config):
+def _train_step(unet_state, batch, train_rng, pipeline, params, config):
     _, gen_dummy_rng = jax.random.split(train_rng)
     sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
 
     noise_scheduler = pipeline.scheduler
     noise_scheduler_state = params["scheduler"]
 
-    if config.train_text_encoder:
-        state_params = {
-            "text_encoder" : text_encoder_state.params,
-            "text_encoder_2" : text_encoder_2_state.params,
-            "unet" : unet_state.params
-        }
-    else:
-        state_params = {"unet" : unet_state.params}
+    state_params = {"unet" : unet_state.params}
 
     def compute_loss(state_params):
         if config.cache_latents_text_encoder_outputs:
@@ -290,7 +288,6 @@ def _train_step(unet_state, text_encoder_state, text_encoder_2_state, batch, tra
             prompt_embeds = batch["prompt_embeds"]
             text_embeds = batch["text_embeds"]
         else:
-            # TODO - support text_encoder training
             raise ValueError("cache_latents_text_encoder_outputs = False currently not supported!")
 
         # Sample noise that we'll add to the latents
@@ -361,16 +358,9 @@ def _train_step(unet_state, text_encoder_state, text_encoder_2_state, batch, tra
 
     new_state = unet_state.apply_gradients(grads=grad["unet"])
 
-    if config.train_text_encoder:
-        new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad["text_encoder"])
-        new_text_encoder_2_state = text_encoder_2_state.apply_gradients(grads=grad["text_encoder_2"])
-    else:
-        new_text_encoder_state = text_encoder_state
-        new_text_encoder_2_state = text_encoder_2_state
-
     metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
 
-    return new_state, new_text_encoder_state, new_text_encoder_2_state, metrics, new_train_rng
+    return new_state, metrics, new_train_rng
     
 
 def encode_xl(input_ids, text_encoders, text_encoder_params):
