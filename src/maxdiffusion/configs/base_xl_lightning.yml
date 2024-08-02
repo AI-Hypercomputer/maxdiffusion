@@ -29,6 +29,13 @@ revision: 'refs/pr/95'
 weights_dtype: 'bfloat16'
 # This sets the layer's dtype in the model. Ex: nn.Dense(dtype=activations_dtype)
 activations_dtype: 'bfloat16'
+
+# matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
+# Options are "DEFAULT", "HIGH", "HIGHEST"
+# fp32 activations and fp32 weights with HIGHEST will provide the best precision
+# at the cost of time.
+precision: "DEFAULT"
+
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True

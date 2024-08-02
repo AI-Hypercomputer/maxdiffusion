@@ -274,10 +274,16 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
 
     latents = jnp.concatenate((instance_latents, class_latents), axis=0)
     input_ids = jnp.concatenate((instance_input_ids, class_input_ids), axis=0)
-    states = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
+    if config.train_text_encoder:
+        state_params = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
+    else:
+        state_params = {"unet" : unet_state.params}
 
-    def compute_loss(states):
-        encoder_hidden_states = encode(input_ids, pipeline.text_encoder, states["text_encoder"])
+    def compute_loss(state_params):
+        if config.train_text_encoder:
+            encoder_hidden_states = encode(input_ids, pipeline.text_encoder, params["text_encoder"])
+        else:    
+            encoder_hidden_states = encode(input_ids, pipeline.text_encoder, state_params["text_encoder"])
 
         # Sample noise that we'll add to the latents
         noise_rng, timestep_rng = jax.random.split(sample_rng)
@@ -301,7 +307,7 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
 
         # Predict the noise residual and compute loss
         model_pred = pipeline.unet.apply(
-            {"params": states["unet"]}, noisy_latents, timesteps, encoder_hidden_states, train=True
+            {"params": state_params["unet"]}, noisy_latents, timesteps, encoder_hidden_states, train=True
         ).sample
 
         # Get the target for loss depending on the prediction type
@@ -331,14 +337,13 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
         return loss
 
     grad_fn = jax.value_and_grad(compute_loss)
-    loss, grad = grad_fn(states)
+    loss, grad = grad_fn(state_params)
 
     if config.max_grad_norm > 0:
         grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(grad, unet_state, None)
 
     new_unet_state = unet_state.apply_gradients(grads=grad["unet"])
 
-    
     if config.train_text_encoder:
         new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad["text_encoder"])
     else:

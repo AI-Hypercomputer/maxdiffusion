@@ -31,6 +31,13 @@ revision: 'refs/pr/95'
 weights_dtype: 'float32'
 # This sets the layer's dtype in the model. Ex: nn.Dense(dtype=activations_dtype)
 activations_dtype: 'bfloat16'
+
+# matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
+# Options are "DEFAULT", "HIGH", "HIGHEST"
+# fp32 activations and fp32 weights with HIGHEST will provide the best precision
+# at the cost of time.
+precision: "DEFAULT"
+
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
@@ -96,11 +103,13 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
+                      ['activation_batch', ['data','fsdp']],
+                      ['activation_heads', 'tensor'],
+                      ['activation_kv', 'tensor'],
+                      ['embed','fsdp'],
+                      ['heads', 'tensor'],
                       ['out_channels', 'fsdp'],
                       ['conv_out', 'fsdp'],
-                      ['length', 'fsdp']
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
@@ -111,8 +120,8 @@ data_sharding: [['data', 'fsdp', 'tensor']]
 dcn_data_parallelism: -1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: 1
 dcn_tensor_parallelism: 1
-ici_data_parallelism: -1
-ici_fsdp_parallelism: 1  # recommended ICI axis to be auto-sharded
+ici_data_parallelism: 1
+ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
 # Dataset

@@ -234,7 +234,8 @@ class BaseStableDiffusionCheckpointer(ABC):
         items["text_encoder_state"] = ocp.args.StandardSave(self.train_states["text_encoder_state"])
 
         if hasattr(self.pipeline, "text_encoder_2"):
-            items["text_encoder_state_2"] = ocp.args.StandardSave(self.train_states["text_encoder_2_state"])
+            items["text_encoder_2_state"] = ocp.args.StandardSave(self.train_states["text_encoder_2_state"])
+            items["text_encoder_2_config"] = ocp.args.JsonSave(config_to_json(self.pipeline.text_encoder_2.config))
 
         tokenizer_config = {"path" : self.config.tokenizer_model_name_or_path}
         items["tokenizer_config"] = ocp.args.JsonSave(tokenizer_config)

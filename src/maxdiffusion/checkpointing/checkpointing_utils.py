@@ -57,6 +57,7 @@ def create_orbax_checkpoint_manager(
     "unet_state",
     "vae_state",
     "text_encoder_state",
+    "text_encoder_2_state",
     "tokenizer_config"
   )
   if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:

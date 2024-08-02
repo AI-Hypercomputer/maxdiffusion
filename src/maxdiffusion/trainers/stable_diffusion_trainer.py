@@ -47,8 +47,8 @@ from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
 class StableDiffusionTrainer(BaseStableDiffusionTrainer):
     checkpoint_manager: None
 
-    def __init__(self, config):
-        BaseStableDiffusionTrainer.__init__(self, config, STABLE_DIFFUSION_CHECKPOINT)
+    def __init__(self, config, checkpoint_type = STABLE_DIFFUSION_CHECKPOINT):
+        BaseStableDiffusionTrainer.__init__(self, config, checkpoint_type)
 
     def post_create_states_and_shard(self):
         return super().post_create_states_and_shard()
@@ -66,7 +66,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         This function works with sd1.x and 2.x.
         """
         vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-        total_train_batch_size = config.per_device_batch_size * jax.device_count()
+        total_train_batch_size = self.total_train_batch_size
         if config.cache_latents_text_encoder_outputs:
             batch_image_shape = (total_train_batch_size, 4,
                     config.resolution // vae_scale_factor,
@@ -233,7 +233,10 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
                 max_utils.deactivate_profiler(self.config)
 
             if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
-                print("TODO save orbax checkpoint")
+                self.train_states["unet_state"] = unet_state
+                self.train_states["vae_state"] = vae_state
+                self.train_states["text_encoder"] = text_encoder_state  
+                self.save_checkpoint(step)
 
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
@@ -247,7 +250,13 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
 def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, config, pipeline, params):
     _, gen_dummy_rng = jax.random.split(train_rng)
     sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
-    def compute_loss(unet_params):
+
+    if config.train_text_encoder:
+        state_params = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
+    else:
+        state_params = {"unet" : unet_state.params}
+
+    def compute_loss(state_params):
 
         if config.cache_latents_text_encoder_outputs:
             latents = batch["pixel_values"]
@@ -263,7 +272,10 @@ def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, con
             latents = latents * pipeline.vae.config.scaling_factor
 
             # Get the text embedding for conditioning
-            encoder_hidden_states = maxdiffusion_utils.encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])
+            if config.train_text_encoder:
+                encoder_hidden_states = maxdiffusion_utils.encode(batch["input_ids"], pipeline.text_encoder, state_params["text_encoder"])
+            else:
+                encoder_hidden_states = maxdiffusion_utils.encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])    
 
         # Sample noise that we'll add to the latents
         noise_rng, timestep_rng = jax.random.split(sample_rng)
@@ -291,7 +303,7 @@ def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, con
 
         # Predict the noise residual and compute loss
         model_pred = pipeline.unet.apply(
-            {"params": unet_params}, noisy_latents, timesteps, encoder_hidden_states, train=True
+            {"params": state_params["unet"]}, noisy_latents, timesteps, encoder_hidden_states, train=True
         ).sample
 
 
@@ -319,12 +331,12 @@ def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, con
         return loss
 
     grad_fn = jax.value_and_grad(compute_loss)
-    loss, grad = grad_fn(unet_state.params)
+    loss, grad = grad_fn(state_params)
 
     if config.max_grad_norm > 0:
         grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(grad, unet_state, None)
 
-    new_state = unet_state.apply_gradients(grads=grad)
+    new_state = unet_state.apply_gradients(grads=grad["unet"])
 
     if config.train_text_encoder:
         new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad["text_encoder"])

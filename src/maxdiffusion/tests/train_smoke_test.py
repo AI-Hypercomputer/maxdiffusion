@@ -67,15 +67,15 @@ class Train(unittest.TestCase):
       "revision=refs/pr/95","activations_dtype=bfloat16","weights_dtype=bfloat16",f"run_name={run_name}",
       "max_train_steps=21","dataset_name=diffusers/pokemon-gpt4-captions",
       "resolution=1024","per_device_batch_size=1","snr_gamma=5.0",
+      "per_device_batch_size=1",
       'timestep_bias={"strategy" : "later", "multiplier" : 2.0, "portion" : 0.25}',
       "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
       f"jax_cache_dir={cache_dir}"],unittest=True)
     
-    
+    train_sdxl(pyconfig.config)
 
     img_url = os.path.join(THIS_DIR,'images','test_sdxl.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
-    
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
       f"pretrained_model_name_or_path={output_dir}/{run_name}/checkpoints/final",
       f"run_name={run_name}",
