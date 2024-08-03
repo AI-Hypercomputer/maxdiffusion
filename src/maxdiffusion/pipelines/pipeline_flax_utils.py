@@ -329,6 +329,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         flash_block_sizes = kwargs.pop("flash_block_sizes", None)
         mesh = kwargs.pop("mesh", None)
         dtype = kwargs.pop("dtype", None)
+        weights_dtype = kwargs.pop("weights_dtype", None)
         norm_num_groups = kwargs.pop("norm_num_groups", 32)
 
         # 1. Download the checkpoints and configs
@@ -514,6 +515,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                         mesh=mesh,
                         norm_num_groups=norm_num_groups,
                         dtype=dtype,
+                        weights_dtype=weights_dtype
                     )
                     params[name] = loaded_params
                 elif is_transformers_available() and issubclass(class_obj, FlaxPreTrainedModel):
@@ -545,7 +547,6 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
             raise ValueError(
                 f"Pipeline {pipeline_class} expected {expected_modules}, but only {passed_modules} were passed."
             )
-
         model = pipeline_class(**init_kwargs, dtype=dtype)
         return model, params
 

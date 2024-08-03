@@ -66,7 +66,6 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         if self.config.train_text_encoder:
             learining_rate = self.config.text_encoder_learning_rate
             tx, _ = self._create_optimizer(self.config, learining_rate)
-
         text_encoder_2_state, text_encoder_2_mesh_shardings = max_utils.setup_initial_state(
             model=self.pipeline.text_encoder_2,
             tx=tx,
@@ -133,7 +132,6 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     def load_dataset(self):
         config = self.config
         pipeline = self.pipeline
-        params = self.params
         total_train_batch_size = self.total_train_batch_size
         mesh = self.mesh
         train_states = self.train_states
@@ -171,12 +169,6 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
             raise ValueError(f"{config.dataset_name} is currently not supported in this pipeline.")
 
     def compile_train_step(self):
-
-        # delete unused weights
-        if self.config.cache_latents_text_encoder_outputs:
-            max_utils.delete_pytree(self.train_states["vae_state"].params)
-            max_utils.delete_pytree(self.train_states["text_encoder_state"].params)
-            max_utils.delete_pytree(self.train_states["text_encoder_2_state"].params)
 
         self.rng, train_rngs = jax.random.split(self.rng)
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):

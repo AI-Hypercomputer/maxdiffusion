@@ -380,6 +380,7 @@ class FlaxAttention(nn.Module):
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
     key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
     value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
@@ -416,6 +417,7 @@ class FlaxAttention(nn.Module):
             kernel_init=qkv_init_kernel,
             use_bias=False,
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             name="to_q",
             precision=self.precision
         )
@@ -425,6 +427,7 @@ class FlaxAttention(nn.Module):
             kernel_init=qkv_init_kernel,
             use_bias=False,
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             name="to_k",
             precision=self.precision
         )
@@ -434,6 +437,7 @@ class FlaxAttention(nn.Module):
             kernel_init=qkv_init_kernel,
             use_bias=False,
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             name="to_v",
             precision=self.precision
         )
@@ -445,6 +449,7 @@ class FlaxAttention(nn.Module):
                 ("heads","embed")
             ),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             name="to_out_0",
             precision=self.precision
         )
@@ -515,6 +520,7 @@ class FlaxBasicTransformerBlock(nn.Module):
     dropout: float = 0.0
     only_cross_attention: bool = False
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
     attention_kernel: str = "dot_product"
@@ -537,6 +543,7 @@ class FlaxBasicTransformerBlock(nn.Module):
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
             precision=self.precision
         )
         # cross attention
@@ -552,9 +559,10 @@ class FlaxBasicTransformerBlock(nn.Module):
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
             precision=self.precision
         )
-        self.ff = FlaxFeedForward(dim=self.dim, dropout=self.dropout, dtype=self.dtype, precision=self.precision)
+        self.ff = FlaxFeedForward(dim=self.dim, dropout=self.dropout, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
         self.norm1 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
         self.norm2 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
         self.norm3 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
@@ -625,6 +633,7 @@ class FlaxTransformer2DModel(nn.Module):
     use_linear_projection: bool = False
     only_cross_attention: bool = False
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     use_memory_efficient_attention: bool = False
     split_head_dim: bool = False
     attention_kernel: str = "dot_product"
@@ -648,6 +657,7 @@ class FlaxTransformer2DModel(nn.Module):
             self.proj_in = nn.Dense(
                 inner_dim,
                 dtype=self.dtype,
+                param_dtype=self.weights_dtype,
                 precision=self.precision
             )
         else:
@@ -658,6 +668,7 @@ class FlaxTransformer2DModel(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                param_dtype=self.weights_dtype,
                 precision=self.precision
             )
 
@@ -669,6 +680,7 @@ class FlaxTransformer2DModel(nn.Module):
                 dropout=self.dropout,
                 only_cross_attention=self.only_cross_attention,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 use_memory_efficient_attention=self.use_memory_efficient_attention,
                 split_head_dim=self.split_head_dim,
                 attention_kernel=self.attention_kernel,
@@ -681,7 +693,7 @@ class FlaxTransformer2DModel(nn.Module):
         ]
 
         if self.use_linear_projection:
-            self.proj_out = nn.Dense(inner_dim, dtype=self.dtype, precision=self.precision)
+            self.proj_out = nn.Dense(inner_dim, dtype=self.dtype, param_dtype=self.weights_dtype, precision=self.precision)
         else:
             self.proj_out = nn.Conv(
                 inner_dim,
@@ -690,6 +702,7 @@ class FlaxTransformer2DModel(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                param_dtype=self.weights_dtype,
                 precision=self.precision
             )
 
@@ -745,13 +758,14 @@ class FlaxFeedForward(nn.Module):
     dim: int
     dropout: float = 0.0
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     precision: jax.lax.Precision = None
 
     def setup(self):
         # The second linear layer needs to be called
         # net_2 for now to match the index of the Sequential layer
-        self.net_0 = FlaxGEGLU(self.dim, self.dropout, self.dtype, precision=self.precision)
-        self.net_2 = nn.Dense(self.dim, dtype=self.dtype, precision=self.precision)
+        self.net_0 = FlaxGEGLU(self.dim, self.dropout, self.dtype, self.weights_dtype, precision=self.precision)
+        self.net_2 = nn.Dense(self.dim, dtype=self.dtype, param_dtype=self.weights_dtype, precision=self.precision)
 
     def __call__(self, hidden_states, deterministic=True):
         hidden_states = self.net_0(hidden_states, deterministic=deterministic)
@@ -775,11 +789,12 @@ class FlaxGEGLU(nn.Module):
     dim: int
     dropout: float = 0.0
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     precision: jax.lax.Precision = None
 
     def setup(self):
         inner_dim = self.dim * 4
-        self.proj = nn.Dense(inner_dim * 2, dtype=self.dtype, precision=self.precision)
+        self.proj = nn.Dense(inner_dim * 2, dtype=self.dtype, param_dtype=self.weights_dtype, precision=self.precision)
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
     def __call__(self, hidden_states, deterministic=True):

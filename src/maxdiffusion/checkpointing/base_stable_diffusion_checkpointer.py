@@ -189,6 +189,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             self.config.pretrained_model_name_or_path,
             revision=self.config.revision,
             dtype=self.config.activations_dtype,
+            weights_dtype=self.config.weights_dtype,
             safety_checker=None,
             feature_extractor=None,
             from_pt=self.config.from_pt,
@@ -208,6 +209,8 @@ class BaseStableDiffusionCheckpointer(ABC):
                     norm_num_groups=self.config.norm_num_groups,
                     attention_kernel=self.config.attention,
                     flash_block_sizes=flash_block_sizes,
+                    dtype=self.activations_dtype,
+                    weights_dtype=self.weights_dtype,
                     mesh=self.mesh
                 )
             params["unet"] = unet_params
@@ -259,6 +262,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             unet = FlaxUNet2DConditionModel.from_config(
                 model_configs[0]["unet_config"],
                 dtype=self.config.activations_dtype,
+                weights_dtype=self.config.weights_dtype,
                 from_pt=self.config.from_pt,
                 split_head_dim=self.config.split_head_dim,
                 norm_num_groups=self.config.norm_num_groups,
