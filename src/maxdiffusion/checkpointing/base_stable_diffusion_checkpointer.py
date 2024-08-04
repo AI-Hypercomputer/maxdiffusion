@@ -18,6 +18,7 @@
 from abc import ABC, abstractmethod
 import os
 import json
+import functools
 import jax
 from jax.sharding import Mesh
 import orbax.checkpoint as ocp
@@ -107,12 +108,14 @@ class BaseStableDiffusionCheckpointer(ABC):
         tx, learining_rate_scheduler = self._create_optimizer(self.config, learning_rate)
         self.unet_learning_rate_scheduler = learining_rate_scheduler
 
+        weights_init_fn = functools.partial(self.pipeline.unet.init_weights, rng=self.rng)
         unet_state, unet_state_mesh_shardings = max_utils.setup_initial_state(
             model=self.pipeline.unet,
             tx=tx,
             config=self.config,
             mesh=self.mesh,
-            model_params=self.params.get("unet", self.pipeline.unet.init_weights(self.rng, eval_only=True)),
+            weights_init_fn=weights_init_fn,
+            model_params=self.params.get("unet", None),
             checkpoint_manager=self.checkpoint_manager,
             checkpoint_item="unet_state",
             training=True
@@ -121,12 +124,14 @@ class BaseStableDiffusionCheckpointer(ABC):
         self.state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
 
     def create_vae_state(self):
+        weights_init_fn = functools.partial(self.pipeline.vae.init_weights, rng=self.rng)
         vae_state, vae_state_mesh_shardings = max_utils.setup_initial_state(
             model=self.pipeline.vae,
             tx=None,
             config=self.config,
             mesh=self.mesh,
-            model_params=self.params.get("vae", self.pipeline.vae.init_weights(self.rng, eval_only=True)),
+            weights_init_fn=weights_init_fn,
+            model_params=self.params.get("vae", None),
             checkpoint_manager=self.checkpoint_manager,
             checkpoint_item="vae_state",
             training=False
@@ -142,12 +147,19 @@ class BaseStableDiffusionCheckpointer(ABC):
             tx, learning_rate_scheduler =self._create_optimizer(self.config, learning_rate)
             self.text_encoder_learning_rate_scheduler = learning_rate_scheduler
 
+        weights_init_fn = functools.partial(
+            self.pipeline.text_encoder.init_weights,
+            rng=self.rng,
+            input_shape=(self.total_train_batch_size, self.pipeline.tokenizer.model_max_length)
+        )
+
         text_encoder_state, text_encoder_mesh_shardings = max_utils.setup_initial_state(
             model=self.pipeline.text_encoder,
             tx=tx,
             config=self.config,
             mesh=self.mesh,
-            model_params=self.params.get("text_encoder", self.pipeline.text_encoder.init_weights(self.rng, (self.total_train_batch_size, self.pipeline.tokenizer.model_max_length))),
+            weights_init_fn=weights_init_fn,
+            model_params=self.params.get("text_encoder", None),
             checkpoint_manager=self.checkpoint_manager,
             checkpoint_item="text_encoder_state",
             training=self.config.train_text_encoder
@@ -184,23 +196,22 @@ class BaseStableDiffusionCheckpointer(ABC):
 
         precision = max_utils.get_precision(self.config)
         flash_block_sizes = max_utils.get_flash_block_sizes(self.config)
-
-        pipeline, params = pipeline_class.from_pretrained(
-            self.config.pretrained_model_name_or_path,
-            revision=self.config.revision,
-            dtype=self.config.activations_dtype,
-            weights_dtype=self.config.weights_dtype,
-            safety_checker=None,
-            feature_extractor=None,
-            from_pt=self.config.from_pt,
-            split_head_dim=self.config.split_head_dim,
-            norm_num_groups=self.config.norm_num_groups,
-            attention_kernel=self.config.attention,
-            flash_block_sizes=flash_block_sizes,
-            mesh=self.mesh,
-            precision=precision
-        )
-
+        with jax.default_device(jax.devices('cpu')[0]):
+            pipeline, params = pipeline_class.from_pretrained(
+                self.config.pretrained_model_name_or_path,
+                revision=self.config.revision,
+                dtype=self.config.activations_dtype,
+                weights_dtype=self.config.weights_dtype,
+                safety_checker=None,
+                feature_extractor=None,
+                from_pt=self.config.from_pt,
+                split_head_dim=self.config.split_head_dim,
+                norm_num_groups=self.config.norm_num_groups,
+                attention_kernel=self.config.attention,
+                flash_block_sizes=flash_block_sizes,
+                mesh=self.mesh,
+                precision=precision
+            )
 
         if len(self.config.unet_checkpoint) > 0:
             unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(

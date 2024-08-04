@@ -53,6 +53,7 @@ class VaeTest(unittest.TestCase):
     )
     devices_array = max_utils.create_device_mesh(config)
 
+    rng = jax.random.PRNGKey(config.seed)
     mesh = Mesh(devices_array, config.mesh_axes)
     k = jax.random.key(0)
     tx = optax.adam(learning_rate=0.001)
@@ -74,6 +75,7 @@ class VaeTest(unittest.TestCase):
       tx,
       config,
       mesh,
+      rng,
       vae_params
     )
 

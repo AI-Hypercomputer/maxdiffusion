@@ -670,7 +670,7 @@ class FlaxCLIPTextPreTrainedModel(FlaxPreTrainedModel):
         module = self.module_class(config=config, dtype=dtype, weights_dtype=weights_dtype, **kwargs)
         super().__init__(config, module, input_shape=input_shape, seed=seed, dtype=dtype, weights_dtype=weights_dtype, _do_init=_do_init)
 
-    def init_weights(self, rng: jax.random.PRNGKey, input_shape: Tuple, params: FrozenDict = None) -> FrozenDict:
+    def init_weights(self, rng: jax.random.PRNGKey, input_shape: Tuple, params: FrozenDict = None, eval_only=False) -> FrozenDict:
         # init input tensor
         input_ids = jnp.zeros(input_shape, dtype="i4")
         position_ids = jnp.broadcast_to(jnp.arange(jnp.atleast_2d(input_ids).shape[-1]), input_shape)
@@ -679,7 +679,10 @@ class FlaxCLIPTextPreTrainedModel(FlaxPreTrainedModel):
         params_rng, dropout_rng = jax.random.split(rng)
         rngs = {"params": params_rng, "dropout": dropout_rng}
 
-        random_params = self.module.init(rngs, input_ids, attention_mask, position_ids)["params"]
+        if eval_only:
+            random_params = jax.eval_shape(self.module.init, rngs, input_ids, attention_mask, position_ids)["params"]
+        else:
+            random_params = self.module.init(rngs, input_ids, attention_mask, position_ids)["params"]
 
         if params is not None:
             random_params = flatten_dict(unfreeze(random_params))

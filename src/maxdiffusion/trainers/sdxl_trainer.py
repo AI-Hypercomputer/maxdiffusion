@@ -66,17 +66,24 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         if self.config.train_text_encoder:
             learining_rate = self.config.text_encoder_learning_rate
             tx, _ = self._create_optimizer(self.config, learining_rate)
+
+        weights_init_fn = partial(
+            self.pipeline.text_encoder.init_weights,
+            rng=self.rng,
+            input_shape=(self.total_train_batch_size, self.pipeline.tokenizer.model_max_length)
+        )
+    
         text_encoder_2_state, text_encoder_2_mesh_shardings = max_utils.setup_initial_state(
             model=self.pipeline.text_encoder_2,
             tx=tx,
             config=self.config,
             mesh=self.mesh,
-            model_params=self.params.get("text_encoder_2", self.pipeline.text_encoder_2.init_weights(self.rng, (self.total_train_batch_size, self.pipeline.tokenizer.model_max_length))),
+            weights_init_fn=weights_init_fn,
+            model_params=self.params.get("text_encoder_2", None),
             checkpoint_manager=self.checkpoint_manager,
             checkpoint_item="text_encoder_2_state",
             training=self.config.train_text_encoder
         )
-
         self.train_states["text_encoder_2_state"] = text_encoder_2_state
         self.state_shardings["text_encoder_2_state_shardings"] = text_encoder_2_mesh_shardings
 
@@ -222,7 +229,6 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         if self.config.enable_profiler and first_profiling_step >= self.config.max_train_steps:
             raise ValueError("Profiling requested but initial profiling step set past training final step")
         last_profiling_step = np.clip(first_profiling_step + self.config.profiler_steps -1, first_profiling_step, self.config.max_train_steps - 1)
-
         start_step = get_first_step(self.train_states["unet_state"])
         _, train_rngs = jax.random.split(self.rng)
         for step in np.arange(start_step, self.config.max_train_steps):

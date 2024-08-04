@@ -19,6 +19,7 @@
 """ Common Max Utils needed by multiple modules"""
 import functools
 from functools import reduce
+from contextlib import nullcontext
 import json
 import yaml
 import os
@@ -286,7 +287,7 @@ def unbox_logicallypartioned_trainstate(
         else x, boxed_train_state, \
         is_leaf=lambda k: isinstance(k, flax.linen.spmd.LogicallyPartitioned))
 
-def init_train_state(model_params, model, tx, training=True):
+def init_train_state(model, tx, weights_init_fn, training=True, eval_only=False):
   """
   We pass in "static" objects like model, tx, config, as JAX compares them by
   object hash, and instantiating them inside causes pjit top-level annotations
@@ -294,6 +295,7 @@ def init_train_state(model_params, model, tx, training=True):
 
   Args: model_params, model, tx, training
   """
+  model_params = weights_init_fn(eval_only=eval_only)
   if training:
     state = train_state.TrainState.create(
       apply_fn=model.apply if hasattr(model, 'apply') else model.__call__,
@@ -305,13 +307,13 @@ def init_train_state(model_params, model, tx, training=True):
       params=model_params)
   return state
 
-def get_abstract_state(model, tx, config, mesh, model_params, training=True):
+def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
   """ Get a shaped abstraction of the state (including optimizer)"""
   init_state_partial = functools.partial(
-    init_train_state, model=model, tx=tx, training=training
+    init_train_state, model=model, tx=tx,weights_init_fn=weights_init_fn, training=training, eval_only=True
   )
   with nn_partitioning.axis_rules(config.logical_axis_rules):
-    abstract_state = jax.eval_shape(init_state_partial, model_params=model_params)
+    abstract_state = jax.eval_shape(init_state_partial)
   
   state_logical_annotations = nn.get_partition_spec(abstract_state)
   
@@ -321,7 +323,7 @@ def get_abstract_state(model, tx, config, mesh, model_params, training=True):
 
   abstract_sharded_state = jax.jit(
     init_state_partial, in_shardings=None, out_shardings=state_mesh_shardings
-  ).eval_shape(model_params)
+  ).eval_shape()
 
   unboxed_sharded_abstract_state = unbox_logicallypartioned_trainstate(abstract_sharded_state)
 
@@ -330,7 +332,7 @@ def get_abstract_state(model, tx, config, mesh, model_params, training=True):
     state_mesh_annotations = nn.logical_to_mesh(state_logical_annotations)
   return unboxed_sharded_abstract_state, state_mesh_annotations, state_mesh_shardings
 
-def setup_initial_state(model, tx, config, mesh, model_params = None, checkpoint_manager=None, checkpoint_item=None, training=True):
+def setup_initial_state(model, tx, config, mesh, weights_init_fn, model_params = None, checkpoint_manager=None, checkpoint_item=None, training=True):
   """ We initialize the model and optimizer state, and optionally load from a
   checkpoint as necessary.
 
@@ -353,26 +355,32 @@ def setup_initial_state(model, tx, config, mesh, model_params = None, checkpoint
   # Initialization
   state = None
   unboxed_abstract_state, _, state_mesh_shardings = get_abstract_state(
-    model, tx, config, mesh, model_params, training)
+    model, tx, config, mesh, weights_init_fn, training)
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     if checkpoint_manager:
       state = checkpointing_utils.load_state_if_possible(checkpoint_manager,
                                                   unboxed_abstract_state, checkpoint_item)
       if state:
         state = state[checkpoint_item]
-  if not state:
-    init_train_state_partial = functools.partial(init_train_state, model=model, tx=tx, training=training)
+    if not state:
+      init_train_state_partial = functools.partial(init_train_state,
+                                                    model=model,
+                                                    tx=tx,
+                                                    weights_init_fn=weights_init_fn,
+                                                    training=training,
+                                                    eval_only=False
+                                                   )
 
-    sharding = PositionalSharding(mesh.devices).replicate()
-    partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
-    model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
-
-    with jax.transfer_guard("disallow"):
+      # sharding = PositionalSharding(mesh.devices).replicate()
+      # partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
+      # model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
+      
       state = jax.jit(
           init_train_state_partial,
           in_shardings=None,
           out_shardings=state_mesh_shardings
-      )(model_params=model_params)
+      )()
+      state = state.replace(params=model_params)
 
   state = unbox_logicallypartioned_trainstate(state)
 

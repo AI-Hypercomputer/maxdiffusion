@@ -53,6 +53,7 @@ class UnetTest(unittest.TestCase):
     )
     devices_array = max_utils.create_device_mesh(config)
 
+    rng = jax.random.PRNGKey(config.seed)
     mesh = Mesh(devices_array, config.mesh_axes)
     k = jax.random.key(0)
     tx = optax.adam(learning_rate=0.001)
@@ -81,6 +82,7 @@ class UnetTest(unittest.TestCase):
       unet,
       tx,config,
       mesh,
+      rng,
       params,
       unboxed_abstract_state,
       state_mesh_annotations
