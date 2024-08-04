@@ -247,7 +247,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     f"addition_embed_type {self.addition_embed_type} requires `addition_time_embed_dim` to not be None"
                 )
             self.add_time_proj = FlaxTimesteps(self.addition_time_embed_dim, self.flip_sin_to_cos, self.freq_shift)
-            self.add_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype)
+            self.add_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype, weights_dtype=self.weights_dtype)
         else:
             raise ValueError(f"addition_embed_type: {self.addition_embed_type} must be None or `text_time`.")
 

@@ -275,6 +275,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             vae = FlaxAutoencoderKL.from_config(
                 model_configs[0]["vae_config"],
                 dtype=self.config.activations_dtype,
+                weights_dtype=self.config.weights_dtype,
                 from_pt=self.config.from_pt
             )
 
