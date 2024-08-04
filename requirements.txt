@@ -2,7 +2,6 @@ jax>=0.4.30
 jaxlib>=0.4.30
 google-cloud-storage==2.17.0
 absl-py
-transformers>=4.25.1
 datasets
 flax==0.8.5
 optax>=0.2.3

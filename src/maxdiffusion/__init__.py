@@ -29,7 +29,6 @@ from .utils import (
     is_scipy_available,
     is_torch_available,
     is_torchsde_available,
-    is_transformers_available,
 )
 
 
@@ -58,7 +57,6 @@ _import_structure = {
         "is_scipy_available",
         "is_torch_available",
         "is_torchsde_available",
-        "is_transformers_available",
         "is_transformers_version",
         "is_unidecode_available",
         "logging",
@@ -195,7 +193,7 @@ else:
     _import_structure["schedulers"].extend(["DPMSolverSDEScheduler"])
 
 try:
-    if not (is_torch_available() and is_transformers_available()):
+    if not (is_torch_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
     from .utils import dummy_torch_and_transformers_objects  # noqa F403
@@ -301,7 +299,7 @@ else:
     )
 
 try:
-    if not (is_torch_available() and is_transformers_available() and is_k_diffusion_available()):
+    if not (is_torch_available() and is_k_diffusion_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
     from .utils import dummy_torch_and_transformers_and_k_diffusion_objects  # noqa F403
@@ -314,7 +312,7 @@ else:
     _import_structure["pipelines"].extend(["StableDiffusionKDiffusionPipeline"])
 
 try:
-    if not (is_torch_available() and is_transformers_available() and is_onnx_available()):
+    if not (is_torch_available() and is_onnx_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
     from .utils import dummy_torch_and_transformers_and_onnx_objects  # noqa F403
@@ -349,7 +347,7 @@ else:
     _import_structure["pipelines"].extend(["AudioDiffusionPipeline", "Mel"])
 
 try:
-    if not (is_transformers_available() and is_torch_available() and is_note_seq_available()):
+    if not (is_torch_available() and is_note_seq_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
     from .utils import dummy_transformers_and_torch_and_note_seq_objects  # noqa F403
@@ -395,7 +393,7 @@ else:
 
 
 try:
-    if not (is_flax_available() and is_transformers_available()):
+    if not (is_flax_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
     from .utils import dummy_flax_and_transformers_objects  # noqa F403
@@ -471,7 +469,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         )
 
     try:
-        if not (is_flax_available() and is_transformers_available()):
+        if not (is_flax_available()):
             raise OptionalDependencyNotAvailable()
     except OptionalDependencyNotAvailable:
         from .utils.dummy_flax_and_transformers_objects import *  # noqa F403

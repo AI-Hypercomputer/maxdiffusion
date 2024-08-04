@@ -25,7 +25,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import optax
-import transformers
+from maxdiffusion import transformers
 from absl import app
 from maxdiffusion import (
     FlaxDDPMScheduler,
@@ -36,6 +36,8 @@ from maxdiffusion import (
     pyconfig,
     mllog_utils,
 )
+
+from maxdiffusion.trainers.sdxl_trainer import StableDiffusionXLTrainer
 
 from maxdiffusion.train_utils import (
     get_first_step,
@@ -49,12 +51,11 @@ from maxdiffusion.train_utils import (
     save_checkpoint
 )
 
-from transformers import FlaxCLIPTextModel, FlaxCLIPTextModelWithProjection
+from maxdiffusion.transformers import FlaxCLIPTextModel, FlaxCLIPTextModelWithProjection
 
 from flax.linen import partitioning as nn_partitioning
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P, PositionalSharding
-from transformers import set_seed
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator
@@ -228,6 +229,7 @@ def train_step(unet_state, batch, train_rng, noise_scheduler, noise_scheduler_st
 
   return new_state, metrics, new_train_rng
 
+
 def train(config):
     rng = jax.random.PRNGKey(config.seed)
 
@@ -249,9 +251,6 @@ def train(config):
         transformers.utils.logging.set_verbosity_info()
     else:
         transformers.utils.logging.set_verbosity_error()
-
-    if config.seed is not None:
-        set_seed(config.seed)
 
     # Handle the repository creation
     if jax.process_index() == 0:
@@ -375,14 +374,14 @@ def train(config):
       max_logging.log(f"Compile time: {(time.time() - s )}")
 
     # clean up unused models in the training loop.
-    if config.cache_latents_text_encoder_outputs:
-       pipeline.vae = None
-       params["vae"] = None
-       pipeline.text_encoder = None
-       params["text_encoder"] = None
-       pipeline.text_encoder_2 = None
-       params["text_encoder_2"] = None
-
+    # if config.cache_latents_text_encoder_outputs:
+    #    pipeline.vae = None
+    #    params["vae"] = None
+    #    pipeline.text_encoder = None
+    #    params["text_encoder"] = None
+    #    pipeline.text_encoder_2 = None
+    #    params["text_encoder_2"] = None
+    breakpoint()
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
@@ -476,6 +475,10 @@ def train(config):
         }
         save_checkpoint(pipeline.save_pretrained, params, config, os.path.join(config.checkpoint_dir, checkpoint_name))
     max_utils.close_summary_writer(writer)
+
+def train(config):
+    trainer = StableDiffusionXLTrainer(config)
+    trainer.start_training()
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)

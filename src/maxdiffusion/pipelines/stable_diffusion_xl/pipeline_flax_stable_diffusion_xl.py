@@ -55,7 +55,6 @@ class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline):
     ):
         super().__init__()
         self.dtype = dtype
-
         self.register_modules(
             vae=vae,
             text_encoder=text_encoder,

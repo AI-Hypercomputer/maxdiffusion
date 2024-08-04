@@ -203,13 +203,6 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         text_encoder_2_state = self.train_states["text_encoder_2_state"]
         num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
 
-        # delete unused weights
-        if self.config.cache_latents_text_encoder_outputs:
-            max_utils.delete_pytree(self.train_states["vae_state"].params)
-            max_utils.delete_pytree(self.train_states["text_encoder_state"].params)
-            max_utils.delete_pytree(self.train_states["text_encoder_2_state"].params)
-            
-
         max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
         max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
         max_utils.add_config_to_summary_writer(self.config, writer)

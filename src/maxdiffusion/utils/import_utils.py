@@ -296,11 +296,6 @@ def is_torch_xla_available():
 def is_flax_available():
     return _flax_available
 
-
-def is_transformers_available():
-    return _transformers_available
-
-
 def is_inflect_available():
     return _inflect_available
 
@@ -500,7 +495,6 @@ BACKENDS_MAPPING = OrderedDict(
         ("opencv", (is_opencv_available, OPENCV_IMPORT_ERROR)),
         ("scipy", (is_scipy_available, SCIPY_IMPORT_ERROR)),
         ("torch", (is_torch_available, PYTORCH_IMPORT_ERROR)),
-        ("transformers", (is_transformers_available, TRANSFORMERS_IMPORT_ERROR)),
         ("unidecode", (is_unidecode_available, UNIDECODE_IMPORT_ERROR)),
         ("librosa", (is_librosa_available, LIBROSA_IMPORT_ERROR)),
         ("k_diffusion", (is_k_diffusion_available, K_DIFFUSION_IMPORT_ERROR)),
