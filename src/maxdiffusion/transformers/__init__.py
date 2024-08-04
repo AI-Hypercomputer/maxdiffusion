@@ -314,20 +314,6 @@ if TYPE_CHECKING:
     from .generation import GenerationConfig, TextIteratorStreamer, TextStreamer, WatermarkingConfig
     from .hf_argparser import HfArgumentParser
 
-    # Integrations
-    from .integrations import (
-        is_clearml_available,
-        is_comet_available,
-        is_dvclive_available,
-        is_neptune_available,
-        is_optuna_available,
-        is_ray_available,
-        is_ray_tune_available,
-        is_sigopt_available,
-        is_tensorboard_available,
-        is_wandb_available,
-    )
-
     # Model Cards
     from .modelcard import ModelCard
 

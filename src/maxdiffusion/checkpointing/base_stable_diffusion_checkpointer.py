@@ -288,6 +288,7 @@ class BaseStableDiffusionCheckpointer(ABC):
                 tokenizer_path,
                 subfolder="tokenizer",
                 dtype=self.config.activations_dtype,
+                weights_dtype=self.config.weights_dtype
             )
 
             te_pretrained_config = CLIPTextConfig(**model_configs[0]["text_encoder_config"])
@@ -295,6 +296,7 @@ class BaseStableDiffusionCheckpointer(ABC):
                 te_pretrained_config,
                 seed=self.config.seed,
                 dtype=self.config.activations_dtype,
+                weights_dtype=self.config.weights_dtype,
                 _do_init=False
             )
 

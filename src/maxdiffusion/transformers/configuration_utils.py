@@ -713,6 +713,9 @@ class PretrainedConfig(PushToHubMixin):
                     f" containing a {configuration_file} file"
                 )
 
+        config_dict = cls._dict_from_json_file(resolved_config_file)
+        config_dict["_commit_hash"] = commit_hash
+
         if is_local:
             logger.info(f"loading configuration file {resolved_config_file}")
         else:

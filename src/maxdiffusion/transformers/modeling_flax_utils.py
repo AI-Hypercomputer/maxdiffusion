@@ -194,6 +194,7 @@ class FlaxPreTrainedModel(PushToHubMixin, FlaxGenerationMixin):
         input_shape: Tuple = (1, 1),
         seed: int = 0,
         dtype: jnp.dtype = jnp.float32,
+        weights_dtype: jnp.dtype = jnp.float32,
         _do_init: bool = True,
     ):
         if config is None:
@@ -209,6 +210,7 @@ class FlaxPreTrainedModel(PushToHubMixin, FlaxGenerationMixin):
         # Those are public as their type is generic to every derived classes.
         self.key = PRNGKey(seed)
         self.dtype = dtype
+        self.weights_dtype = weights_dtype
         self.input_shape = input_shape
         self.generation_config = GenerationConfig.from_model_config(config) if self.can_generate() else None
 

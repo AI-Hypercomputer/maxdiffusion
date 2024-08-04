@@ -381,7 +381,6 @@ def train(config):
     #    params["text_encoder"] = None
     #    pipeline.text_encoder_2 = None
     #    params["text_encoder_2"] = None
-    breakpoint()
     # Train!
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)

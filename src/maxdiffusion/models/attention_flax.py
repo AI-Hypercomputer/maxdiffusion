@@ -563,9 +563,9 @@ class FlaxBasicTransformerBlock(nn.Module):
             precision=self.precision
         )
         self.ff = FlaxFeedForward(dim=self.dim, dropout=self.dropout, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
-        self.norm1 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
-        self.norm2 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
-        self.norm3 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
+        self.norm1 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
+        self.norm2 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
+        self.norm3 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
         self.dropout_layer = nn.Dropout(rate=self.dropout)
 
     def __call__(self, hidden_states, context, deterministic=True):
@@ -645,7 +645,7 @@ class FlaxTransformer2DModel(nn.Module):
     hidden_state_axis_names: AxisNames = (BATCH, LENGTH, D_KV)
 
     def setup(self):
-        self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
+        self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
 
         conv_kernel_init = nn.with_logical_partitioning(
             nn.initializers.lecun_normal(),

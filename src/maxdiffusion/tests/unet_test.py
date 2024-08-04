@@ -44,7 +44,7 @@ class UnetTest(unittest.TestCase):
   def setUp(self):
     UnetTest.dummy_data = {}
 
-  def test_unet21_sharding_test(self):
+  def test_unet15_sharding_test(self):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
       "activations_dtype=bfloat16","resolution=512"], unittest=True)
     config = pyconfig.config

@@ -225,6 +225,7 @@ class FlaxCLIPOutput(ModelOutput):
 class FlaxCLIPVisionEmbeddings(nn.Module):
     config: CLIPVisionConfig
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         embed_dim = self.config.hidden_size
@@ -232,7 +233,6 @@ class FlaxCLIPVisionEmbeddings(nn.Module):
         patch_size = self.config.patch_size
 
         self.class_embedding = self.param("class_embedding", jax.nn.initializers.normal(stddev=0.02), (embed_dim,))
-
         self.patch_embedding = nn.Conv(
             embed_dim,
             kernel_size=(patch_size, patch_size),
@@ -240,12 +240,18 @@ class FlaxCLIPVisionEmbeddings(nn.Module):
             padding="VALID",
             use_bias=False,
             dtype=self.dtype,
-            kernel_init=jax.nn.initializers.normal(),
+            param_dtype=self.weights_dtype,
+            kernel_init=jax.nn.initializers.normal()
         )
 
         self.num_patches = (image_size // patch_size) ** 2
         num_positions = self.num_patches + 1
-        self.position_embedding = nn.Embed(num_positions, embed_dim, embedding_init=jax.nn.initializers.normal())
+        self.position_embedding = nn.Embed(
+            num_positions,
+            embed_dim,
+            embedding_init=jax.nn.initializers.normal(),
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype)
         self.position_ids = jnp.expand_dims(jnp.arange(0, num_positions, dtype="i4"), axis=0)
 
     def __call__(self, pixel_values):
@@ -263,13 +269,24 @@ class FlaxCLIPVisionEmbeddings(nn.Module):
 class FlaxCLIPTextEmbeddings(nn.Module):
     config: CLIPTextConfig
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         embed_dim = self.config.hidden_size
 
-        self.token_embedding = nn.Embed(self.config.vocab_size, embed_dim, embedding_init=jax.nn.initializers.normal())
+        self.token_embedding = nn.Embed(
+            self.config.vocab_size,
+            embed_dim,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            embedding_init=jax.nn.initializers.normal()
+        )
         self.position_embedding = nn.Embed(
-            self.config.max_position_embeddings, embed_dim, embedding_init=jax.nn.initializers.normal()
+            self.config.max_position_embeddings,
+            embed_dim,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            embedding_init=jax.nn.initializers.normal()
         )
         self.position_ids = jnp.expand_dims(
             jnp.arange(0, self.config.max_position_embeddings, dtype="i4"), axis=(0, 1)
@@ -286,6 +303,7 @@ class FlaxCLIPTextEmbeddings(nn.Module):
 class FlaxCLIPAttention(nn.Module):
     config: Union[CLIPTextConfig, CLIPVisionConfig]
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.embed_dim = self.config.hidden_size
@@ -299,10 +317,10 @@ class FlaxCLIPAttention(nn.Module):
         self.scale = self.head_dim**-0.5
         self.dropout = self.config.attention_dropout
 
-        self.k_proj = nn.Dense(self.embed_dim, dtype=self.dtype, kernel_init=jax.nn.initializers.normal(0.01))
-        self.v_proj = nn.Dense(self.embed_dim, dtype=self.dtype, kernel_init=jax.nn.initializers.normal(0.01))
-        self.q_proj = nn.Dense(self.embed_dim, dtype=self.dtype, kernel_init=jax.nn.initializers.normal(0.01))
-        self.out_proj = nn.Dense(self.embed_dim, dtype=self.dtype, kernel_init=jax.nn.initializers.normal(0.01))
+        self.k_proj = nn.Dense(self.embed_dim, dtype=self.dtype, param_dtype=self.weights_dtype, kernel_init=jax.nn.initializers.normal(0.01))
+        self.v_proj = nn.Dense(self.embed_dim, dtype=self.dtype, param_dtype=self.weights_dtype, kernel_init=jax.nn.initializers.normal(0.01))
+        self.q_proj = nn.Dense(self.embed_dim, dtype=self.dtype, param_dtype=self.weights_dtype, kernel_init=jax.nn.initializers.normal(0.01))
+        self.out_proj = nn.Dense(self.embed_dim, dtype=self.dtype, param_dtype=self.weights_dtype, kernel_init=jax.nn.initializers.normal(0.01))
 
         self.causal = isinstance(self.config, CLIPTextConfig)
         if self.causal:
@@ -377,15 +395,21 @@ class FlaxCLIPAttention(nn.Module):
 class FlaxCLIPMLP(nn.Module):
     config: Union[CLIPTextConfig, CLIPVisionConfig]
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.activation_fn = ACT2FN[self.config.hidden_act]
         self.fc1 = nn.Dense(
             self.config.intermediate_size,
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init=jax.nn.initializers.normal(0.01),
         )
-        self.fc2 = nn.Dense(self.config.hidden_size, dtype=self.dtype, kernel_init=jax.nn.initializers.normal(0.01))
+        self.fc2 = nn.Dense(self.config.hidden_size,
+                            dtype=self.dtype,
+                            param_dtype=self.weights_dtype,
+                            kernel_init=jax.nn.initializers.normal(0.01)
+                            )
 
     def __call__(self, hidden_states):
         hidden_states = self.fc1(hidden_states)
@@ -397,12 +421,13 @@ class FlaxCLIPMLP(nn.Module):
 class FlaxCLIPEncoderLayer(nn.Module):
     config: Union[CLIPTextConfig, CLIPVisionConfig]
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.self_attn = FlaxCLIPAttention(self.config, dtype=self.dtype)
-        self.layer_norm1 = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
-        self.mlp = FlaxCLIPMLP(self.config, dtype=self.dtype)
-        self.layer_norm2 = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
+        self.self_attn = FlaxCLIPAttention(self.config, dtype=self.dtype, weights_dtype=self.weights_dtype)
+        self.layer_norm1 = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype, param_dtype=self.weights_dtype)
+        self.mlp = FlaxCLIPMLP(self.config, dtype=self.dtype, weights_dtype=self.weights_dtype)
+        self.layer_norm2 = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype, param_dtype=self.weights_dtype)
 
     def __call__(
         self,
@@ -439,10 +464,11 @@ class FlaxCLIPEncoderLayer(nn.Module):
 class FlaxCLIPLayerCollection(nn.Module):
     config: Union[CLIPTextConfig, CLIPVisionConfig]
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.layers = [
-            FlaxCLIPEncoderLayer(self.config, name=str(i), dtype=self.dtype)
+            FlaxCLIPEncoderLayer(self.config, name=str(i), dtype=self.dtype, weights_dtype=self.weights_dtype)
             for i in range(self.config.num_hidden_layers)
         ]
 
@@ -486,9 +512,10 @@ class FlaxCLIPLayerCollection(nn.Module):
 class FlaxCLIPEncoder(nn.Module):
     config: Union[CLIPTextConfig, CLIPVisionConfig]
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.layers = FlaxCLIPLayerCollection(self.config, dtype=self.dtype)
+        self.layers = FlaxCLIPLayerCollection(self.config, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
     def __call__(
         self,
@@ -512,11 +539,12 @@ class FlaxCLIPEncoder(nn.Module):
 class FlaxCLIPTextTransformer(nn.Module):
     config: CLIPTextConfig
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.embeddings = FlaxCLIPTextEmbeddings(self.config, dtype=self.dtype)
-        self.encoder = FlaxCLIPEncoder(self.config, dtype=self.dtype)
-        self.final_layer_norm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
+        self.embeddings = FlaxCLIPTextEmbeddings(self.config, dtype=self.dtype, weights_dtype=self.weights_dtype)
+        self.encoder = FlaxCLIPEncoder(self.config, dtype=self.dtype, weights_dtype=self.weights_dtype)
+        self.final_layer_norm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype, param_dtype=self.weights_dtype)
 
         # For `pooled_output` computation
         self.eos_token_id = self.config.eos_token_id
@@ -581,9 +609,9 @@ class FlaxCLIPVisionTransformer(nn.Module):
 
     def setup(self):
         self.embeddings = FlaxCLIPVisionEmbeddings(self.config, dtype=self.dtype)
-        self.pre_layrnorm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
+        self.pre_layrnorm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype, param_dtype=self.weights_dtype)
         self.encoder = FlaxCLIPEncoder(self.config, dtype=self.dtype)
-        self.post_layernorm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
+        self.post_layernorm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype, param_dtype=self.weights_dtype)
 
     def __call__(
         self,
@@ -635,11 +663,12 @@ class FlaxCLIPTextPreTrainedModel(FlaxPreTrainedModel):
         input_shape=(1, 1),
         seed: int = 0,
         dtype: jnp.dtype = jnp.float32,
+        weights_dtype: jnp.dtype = jnp.float32,
         _do_init: bool = True,
         **kwargs,
     ):
-        module = self.module_class(config=config, dtype=dtype, **kwargs)
-        super().__init__(config, module, input_shape=input_shape, seed=seed, dtype=dtype, _do_init=_do_init)
+        module = self.module_class(config=config, dtype=dtype, weights_dtype=weights_dtype, **kwargs)
+        super().__init__(config, module, input_shape=input_shape, seed=seed, dtype=dtype, weights_dtype=weights_dtype, _do_init=_do_init)
 
     def init_weights(self, rng: jax.random.PRNGKey, input_shape: Tuple, params: FrozenDict = None) -> FrozenDict:
         # init input tensor
@@ -984,9 +1013,10 @@ class FlaxCLIPPreTrainedModel(FlaxPreTrainedModel):
 class FlaxCLIPTextModule(nn.Module):
     config: CLIPTextConfig
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.text_model = FlaxCLIPTextTransformer(self.config, dtype=self.dtype)
+        self.text_model = FlaxCLIPTextTransformer(self.config, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
     def __call__(
         self,
@@ -1041,10 +1071,15 @@ append_replace_return_docstrings(
 class FlaxCLIPTextModelWithProjectionModule(nn.Module):
     config: CLIPTextConfig
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.text_model = FlaxCLIPTextTransformer(self.config, dtype=self.dtype)
-        self.text_projection = nn.Dense(self.config.projection_dim, use_bias=False, dtype=self.dtype)
+        self.text_model = FlaxCLIPTextTransformer(self.config, dtype=self.dtype, weights_dtype=self.weights_dtype)
+        self.text_projection = nn.Dense(
+            self.config.projection_dim,
+            use_bias=False,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype)
 
     def __call__(
         self,
