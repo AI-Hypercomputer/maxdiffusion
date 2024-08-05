@@ -371,10 +371,6 @@ def setup_initial_state(model, tx, config, mesh, weights_init_fn, model_params =
                                                     eval_only=False
                                                    )
 
-      # sharding = PositionalSharding(mesh.devices).replicate()
-      # partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
-      # model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
-      
       state = jax.jit(
           init_train_state_partial,
           in_shardings=None,

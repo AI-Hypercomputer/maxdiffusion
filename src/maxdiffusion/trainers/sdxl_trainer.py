@@ -68,7 +68,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
             tx, _ = self._create_optimizer(self.config, learining_rate)
 
         weights_init_fn = partial(
-            self.pipeline.text_encoder.init_weights,
+            self.pipeline.text_encoder_2.init_weights,
             rng=self.rng,
             input_shape=(self.total_train_batch_size, self.pipeline.tokenizer.model_max_length)
         )
@@ -231,6 +231,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         last_profiling_step = np.clip(first_profiling_step + self.config.profiler_steps -1, first_profiling_step, self.config.max_train_steps - 1)
         start_step = get_first_step(self.train_states["unet_state"])
         _, train_rngs = jax.random.split(self.rng)
+
         for step in np.arange(start_step, self.config.max_train_steps):
             example_batch = load_next_batch(self.data_iterator, example_batch, self.config)
             (unet_state,
