@@ -256,7 +256,7 @@ def create_device_mesh(config, devices=None, logging=True):
   except:
     num_slices = 1
 
-  dcn_parallelism = [config.dcn_data_parallelism, config.dcn_fsdp_parallelism, config.dnc_tensor_parallelism]
+  dcn_parallelism = [config.dcn_data_parallelism, config.dcn_fsdp_parallelism, config.dcn_tensor_parallelism]
   
   ici_parallelism = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
 
