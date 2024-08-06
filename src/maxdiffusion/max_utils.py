@@ -250,6 +250,12 @@ def create_device_mesh(config, devices=None, logging=True):
   if devices is None:
     devices = jax.devices()
   num_devices = len(devices)
+  multi_slice_env = hasattr(jax.devices()[0], "slice_index")
+  try:
+    num_slices = 1 + max([d.slice_index for d in devices])
+  except:
+    num_slices = 1
+
   dcn_parallelism = [
       config.dcn_data_parallelism,
   ]
@@ -266,19 +272,9 @@ def create_device_mesh(config, devices=None, logging=True):
   ), f"Number of devices {num_devices} \
         does not match the product of the parallelism {np.prod(dcn_parallelism) * np.prod(ici_parallelism)}"
 
-  multi_slice_env = hasattr(jax.devices()[0], "slice_index")
-
-  # Create device mesh
-  try:
-    num_slices = 1 + max([d.slice_index for d in devices])
-  except:
-    num_slices = 1
-
   num_devices_per_slice = num_devices//num_slices
   max_logging.log(f"Devices: {devices} (num_devices: {num_devices}), slices: {num_slices}")
   assert len(devices) > 1, "You must have at least two devices"
-
-  # Find possible unspecified parallelisms
 
   if multi_slice_env:
     assert config.dcn_data_parallelism == 1 + max(
