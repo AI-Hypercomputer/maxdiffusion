@@ -258,12 +258,25 @@ def create_device_mesh(config, devices=None, logging=True):
   max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
   assert len(devices) > 1, "You must have at least two devices"
 
-
   ici_parallelism = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
 
   # Find possible unspecified parallelisms
   ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, 'ICI')
-  mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
+
+  if num_slices > 1:
+    dcn_parallelism = [
+      config.dcn_data_parallelism,
+    ]
+    dcn_parallelism = fill_unspecified_mesh_axes(
+        dcn_parallelism, num_slices, "DCN"
+    )
+    mesh = mesh_utils.create_hybrid_device_mesh(
+        ici_parallelism,
+        dcn_parallelism,
+        devices,
+    )
+  else:
+    mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
 
   if logging:
     max_logging.log(f"Decided on mesh: {mesh}")
