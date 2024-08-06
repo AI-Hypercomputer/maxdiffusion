@@ -88,6 +88,8 @@ class _HyperParameters():
 
     _HyperParameters.user_init(raw_keys)
     self.keys = raw_keys
+    for k in raw_keys:
+      max_logging.log(f"Config param {k}: {raw_keys[k]}")
 
   def _load_kwargs(self, argv: list[str], **kwargs):
     args_dict = dict(a.split("=", 1) for a in argv[2:])
