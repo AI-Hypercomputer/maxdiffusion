@@ -254,6 +254,12 @@ def create_device_mesh(config, devices=None, logging=True):
       config.dcn_data_parallelism,
   ]
   ici_parallelism = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
+   # Find possible unspecified parallelisms
+  dcn_parallelism = fill_unspecified_mesh_axes(
+        dcn_parallelism, num_slices, "DCN"
+    )
+  ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, 'ICI')
+
     # Assert that we have correct inputs of sharding that fit the number of chips
   assert (
       np.prod(dcn_parallelism) * np.prod(ici_parallelism) == num_devices
@@ -273,12 +279,8 @@ def create_device_mesh(config, devices=None, logging=True):
   assert len(devices) > 1, "You must have at least two devices"
 
   # Find possible unspecified parallelisms
-  ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, 'ICI')
 
   if multi_slice_env:
-    dcn_parallelism = fill_unspecified_mesh_axes(
-        dcn_parallelism, num_slices, "DCN"
-    )
     assert config.dcn_data_parallelism == 1 + max(
         x.slice_index for x in jax.devices()
     ), f"Number of slices given {config.dcn_data_parallelism} \
