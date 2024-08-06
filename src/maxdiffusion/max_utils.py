@@ -260,21 +260,22 @@ def create_device_mesh(config, devices=None, logging=True):
       config.dcn_data_parallelism,
   ]
   ici_parallelism = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
-   # Find possible unspecified parallelisms
-  dcn_parallelism = fill_unspecified_mesh_axes(
-        dcn_parallelism, num_slices, "DCN"
-    )
-  ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, 'ICI')
-
-    # Assert that we have correct inputs of sharding that fit the number of chips
-  assert (
-      np.prod(dcn_parallelism) * np.prod(ici_parallelism) == num_devices
-  ), f"Number of devices {num_devices} \
-        does not match the product of the parallelism {np.prod(dcn_parallelism) * np.prod(ici_parallelism)}"
 
   num_devices_per_slice = num_devices//num_slices
   max_logging.log(f"Devices: {devices} (num_devices: {num_devices}), slices: {num_slices}")
   assert len(devices) > 1, "You must have at least two devices"
+  
+  # Find possible unspecified parallelisms
+  dcn_parallelism = fill_unspecified_mesh_axes(
+        dcn_parallelism, num_slices, "DCN"
+    )
+  ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, 'ICI')
+ 
+  # Assert that we have correct inputs of sharding that fit the number of chips
+  assert (
+      np.prod(dcn_parallelism) * np.prod(ici_parallelism) == num_devices
+  ), f"Number of devices {num_devices} \
+        does not match the product of the parallelism {np.prod(dcn_parallelism) * np.prod(ici_parallelism)}"
 
   if multi_slice_env:
     assert config.dcn_data_parallelism == 1 + max(
