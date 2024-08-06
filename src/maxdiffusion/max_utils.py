@@ -292,7 +292,7 @@ def create_device_mesh(config, devices=None, logging=True):
     mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
 
   if logging:
-    max_logging.log(f"Decided on mesh: {mesh}")
+    max_logging.log(f"Decided on mesh: {mesh},  shape {mesh.shape}")
 
   return mesh
 
