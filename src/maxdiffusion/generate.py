@@ -167,6 +167,17 @@ def run(config):
 
     checkpoint_loader = CheckpointLoader(config, STABLE_DIFFUSION_CHECKPOINT)
     checkpoint_loader.load_checkpoint()
+    unet_state, unet_state_shardings = checkpoint_loader.create_unet_state(None, training=False)
+    vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(False)
+    text_encoder_state, _ = checkpoint_loader.create_text_encoder_state(False)
+
+    checkpoint_loader.state_shardings["vae_state_shardings"] = vae_state_shardings
+    checkpoint_loader.state_shardings["unet_state_shardings"] = unet_state_shardings
+
+    checkpoint_loader.train_states["unet_state"] = unet_state
+    checkpoint_loader.train_states["vae_state"] = vae_state
+    checkpoint_loader.train_states["text_encoder_state"] = text_encoder_state
+    
     state_shardings = checkpoint_loader.state_shardings
     states = checkpoint_loader.train_states
 

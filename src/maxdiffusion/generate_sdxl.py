@@ -32,16 +32,29 @@ from maxdiffusion import (
 )
 
 
-from maxdiffusion import pyconfig
+from maxdiffusion import pyconfig, max_utils
 from maxdiffusion.image_processor import VaeImageProcessor
 from maxdiffusion.maxdiffusion_utils import (
   get_add_time_ids,
   rescale_noise_cfg
 )
 
+from maxdiffusion.checkpointing.checkpointing_utils import (
+  load_params_if_possible
+)
+
+from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
+    STABLE_DIFFUSION_XL_CHECKPOINT
+)
+
 from maxdiffusion.trainers.sdxl_trainer import (
   StableDiffusionXLTrainer
 )
+
+class GenerateSDXL(StableDiffusionXLTrainer):
+  def post_create_states_and_shard(self):
+    return super().post_create_states_and_shard()
+  
 
 def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
   latents, scheduler_state, state = args
@@ -203,8 +216,21 @@ def run_inference(unet_state, vae_state, checkpoint_loader):
 
 def run(config):
 
-  checkpoint_loader = StableDiffusionXLTrainer(config)
+  checkpoint_loader = GenerateSDXL(config)
   checkpoint_loader.load_checkpoint()
+  unet_state, unet_state_shardings = checkpoint_loader.create_unet_state(None, training=False)
+  vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(False)
+  text_encoder_state, _ = checkpoint_loader.create_text_encoder_state(False)
+  # This will create text_encoder_2 states
+  checkpoint_loader.post_create_states_and_shard()
+
+  checkpoint_loader.state_shardings["vae_state_shardings"] = vae_state_shardings
+  checkpoint_loader.state_shardings["unet_state_shardings"] = unet_state_shardings
+
+  checkpoint_loader.train_states["unet_state"] = unet_state
+  checkpoint_loader.train_states["vae_state"] = vae_state
+  checkpoint_loader.train_states["text_encoder_state"] = text_encoder_state
+
   state_shardings = checkpoint_loader.state_shardings
   states = checkpoint_loader.train_states
 

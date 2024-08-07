@@ -62,6 +62,9 @@ class BaseStableDiffusionCheckpointer(ABC):
         self.params = {}
         self.train_states = {}
         self.state_shardings = {}
+        # we save the inference_states after training
+        # to make it memory efficient to load during inference.
+        self.inference_states = {}
 
         self.unet_learning_rate_scheduler = None
         self.text_encoder_learning_rate_scheduler = None
@@ -95,37 +98,31 @@ class BaseStableDiffusionCheckpointer(ABC):
         tx = max_utils.create_optimizer(config, learning_rate_scheduler)
         return tx, learning_rate_scheduler
 
-    def create_unet_state(self):
-        if self.config.train_new_unet:
-            unet_variables = jax.jit(self.pipeline.unet.init_weights, static_argnames=["eval_only"])(self.rng, eval_only=False)
-            self.params["unet"] = unet_variables
-        else:
-            # required to initilaize the model
-            _ = self.pipeline.unet.init_weights(self.rng, eval_only=True)
+    def create_unet_state(self, params, training=True):
 
-        learning_rate = self.config.learning_rate
+        tx = None
+        if training:
+            learning_rate = self.config.learning_rate
 
-        tx, learining_rate_scheduler = self._create_optimizer(self.config, learning_rate)
-        self.unet_learning_rate_scheduler = learining_rate_scheduler
+            tx, learining_rate_scheduler = self._create_optimizer(self.config, learning_rate)
+            self.unet_learning_rate_scheduler = learining_rate_scheduler
 
         weights_init_fn = functools.partial(self.pipeline.unet.init_weights, rng=self.rng)
-        unet_state, unet_state_mesh_shardings = max_utils.setup_initial_state(
+        return max_utils.setup_initial_state(
             model=self.pipeline.unet,
             tx=tx,
             config=self.config,
             mesh=self.mesh,
             weights_init_fn=weights_init_fn,
-            model_params=self.params.get("unet", None),
+            model_params=params,
             checkpoint_manager=self.checkpoint_manager,
-            checkpoint_item="unet_state",
-            training=True
+            checkpoint_item="unet_state" if training else "inference_unet_state",
+            training=training
         )
-        self.train_states["unet_state"] = unet_state
-        self.state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
 
-    def create_vae_state(self):
+    def create_vae_state(self, training=False):
         weights_init_fn = functools.partial(self.pipeline.vae.init_weights, rng=self.rng)
-        vae_state, vae_state_mesh_shardings = max_utils.setup_initial_state(
+        return max_utils.setup_initial_state(
             model=self.pipeline.vae,
             tx=None,
             config=self.config,
@@ -134,15 +131,13 @@ class BaseStableDiffusionCheckpointer(ABC):
             model_params=self.params.get("vae", None),
             checkpoint_manager=self.checkpoint_manager,
             checkpoint_item="vae_state",
-            training=False
+            training=training
         )
-        self.train_states["vae_state"] = vae_state
-        self.state_shardings["vae_state_shardings"] = vae_state_mesh_shardings
 
-    def create_text_encoder_state(self):
+    def create_text_encoder_state(self, training=True):
 
         tx = None
-        if self.config.train_text_encoder:
+        if training:
             learning_rate = self.config.text_encoder_learning_rate
             tx, learning_rate_scheduler =self._create_optimizer(self.config, learning_rate)
             self.text_encoder_learning_rate_scheduler = learning_rate_scheduler
@@ -153,7 +148,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             input_shape=(self.total_train_batch_size, self.pipeline.tokenizer.model_max_length)
         )
 
-        text_encoder_state, text_encoder_mesh_shardings = max_utils.setup_initial_state(
+        return max_utils.setup_initial_state(
             model=self.pipeline.text_encoder,
             tx=tx,
             config=self.config,
@@ -162,23 +157,8 @@ class BaseStableDiffusionCheckpointer(ABC):
             model_params=self.params.get("text_encoder", None),
             checkpoint_manager=self.checkpoint_manager,
             checkpoint_item="text_encoder_state",
-            training=self.config.train_text_encoder
+            training=training
         )
-        self.train_states["text_encoder_state"] = text_encoder_state
-        self.state_shardings["text_encoder_state_shardings"] = text_encoder_mesh_shardings
-
-    def  _create_states_and_shard(self):
-        """
-        Creates train states and shards models accordingly.
-        """
-        assert self.pipeline is not None, "pipeline is none, did you call load_checkpoint()?"
-
-        self.create_unet_state()
-        self.create_vae_state()
-        self.create_text_encoder_state()
-
-        # Hook
-        self.post_create_states_and_shard()
 
     def _get_pipeline_class(self):
         if self.checkpoint_type == STABLE_DIFFUSION_CHECKPOINT:
@@ -231,8 +211,11 @@ class BaseStableDiffusionCheckpointer(ABC):
 
         self.pipeline = pipeline
         self.params = params
+    
+    def create_inferece_states(self):
+        self.create_unet_inference_state(self.train_states["unet_state"])
 
-    def save_checkpoint(self, train_step):
+    def save_checkpoint(self, train_step, save_inference_states=False):
         def config_to_json(model_or_config):
             return json.loads(model_or_config.to_json_string())
 
@@ -253,7 +236,24 @@ class BaseStableDiffusionCheckpointer(ABC):
 
         tokenizer_config = {"path" : self.config.tokenizer_model_name_or_path}
         items["tokenizer_config"] = ocp.args.JsonSave(tokenizer_config)
+
+        if save_inference_states:
+            inference_unet_state, _ = self.create_unet_state(self.train_states["unet_state"].params, False)
+            items["inference_unet_state"] = ocp.args.StandardSave(inference_unet_state)
+            if self.config.train_text_encoder:
+                inference_text_encoder_state, _ = self.create_text_encoder_state(self.train_states["text_encoder_state"].params, False)
+                items["inference_text_encoder_state"] = ocp.args.StandardSave(inference_text_encoder_state)
+                if hasattr(self.pipeline, "text_encoder_2"):
+                    inference_text_encoder_2_state, _ = self.create_text_encoder_state(self.train_states["text_encoder_2_state"].params, False)
+                    items["inference_text_encoder_2_state"] = ocp.args.StandardSave(inference_text_encoder_2_state)
+
         self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
+
+    def load_params(self, step = None):
+
+        self.checkpoint_format = _CHECKPOINT_FORMAT_ORBAX
+
+
 
     def load_checkpoint(self, step = None, scheduler_class = None):
 
@@ -343,11 +343,4 @@ class BaseStableDiffusionCheckpointer(ABC):
         else:
             self.checkpoint_format = _CHECKPOINT_FORMAT_DIFFUSERS
             self.load_diffusers_checkpoint()
-
-        self._create_states_and_shard()
-
-        if self.checkpoint_format == _CHECKPOINT_FORMAT_DIFFUSERS:
-            # save the original checkpoint using orbax
-            self.save_checkpoint(0)
-            self.checkpoint_manager.wait_until_finished()
 

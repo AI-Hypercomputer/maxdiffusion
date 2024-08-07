@@ -262,7 +262,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         self.train_states["unet_state"] = unet_state
         self.train_states["text_encoder_state"] = text_encoder_state
         self.train_states["text_encoder_2_state"] = text_encoder_2_state
-        self.save_checkpoint(step)
+        self.save_checkpoint(step,save_inference_states=True)
         self.checkpoint_manager.wait_until_finished()
 
 def _train_step(unet_state, batch, train_rng, pipeline, params, config):

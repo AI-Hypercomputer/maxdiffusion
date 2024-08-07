@@ -324,7 +324,6 @@ def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
   abstract_sharded_state = jax.jit(
     init_state_partial, in_shardings=None, out_shardings=state_mesh_shardings
   ).eval_shape()
-
   unboxed_sharded_abstract_state = unbox_logicallypartioned_trainstate(abstract_sharded_state)
 
   # Initialization
@@ -332,7 +331,17 @@ def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
     state_mesh_annotations = nn.logical_to_mesh(state_logical_annotations)
   return unboxed_sharded_abstract_state, state_mesh_annotations, state_mesh_shardings
 
-def setup_initial_state(model, tx, config, mesh, weights_init_fn, model_params = None, checkpoint_manager=None, checkpoint_item=None, training=True):
+def setup_initial_state(
+    model,
+    tx,
+    config,
+    mesh,
+    weights_init_fn,
+    model_params = None,
+    checkpoint_manager=None,
+    checkpoint_item=None,
+    training=True
+  ):
   """ We initialize the model and optimizer state, and optionally load from a
   checkpoint as necessary.
 
@@ -363,6 +372,13 @@ def setup_initial_state(model, tx, config, mesh, weights_init_fn, model_params =
       if state:
         state = state[checkpoint_item]
     if not state:
+
+      # for DDP needs replication before jit state.
+      if config.ici_data_parallelism == -1 or config.dcn_data_parallelism == -1:
+        sharding = PositionalSharding(mesh.devices).replicate()
+        partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
+        model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
+
       init_train_state_partial = functools.partial(init_train_state,
                                                     model=model,
                                                     tx=tx,
@@ -376,51 +392,12 @@ def setup_initial_state(model, tx, config, mesh, weights_init_fn, model_params =
           in_shardings=None,
           out_shardings=state_mesh_shardings
       )()
-      state = state.replace(params=model_params)
+      if model_params:
+        state = state.replace(params=model_params)
 
   state = unbox_logicallypartioned_trainstate(state)
 
   return state, state_mesh_shardings
-
-def get_states(mesh, tx, rng, config, pipeline, unet_params = None, vae_params = None, checkpoint_manager=None, training=True):
-  
-  # Needed to initialize weights on multi-host with addressable devices.
-  if config.train_new_unet:
-    unet_variables = jax.jit(pipeline.unet.init_weights, static_argnames=["eval_only"])(rng, eval_only=False)
-  else:
-    unet_variables = pipeline.unet.init_weights(rng, eval_only=True)
-
-  if config.train_new_unet:
-    unet_params = unet_variables
-  else:
-    del unet_variables
-  unet_state, unet_state_mesh_shardings = setup_initial_state(
-  pipeline.unet,
-  tx,
-  config,
-  mesh,
-  unet_params,
-  checkpoint_manager=checkpoint_manager,
-  checkpoint_item="unet_state",
-  training=training)
-
-  vae_state = None
-  vae_state_mesh_shardings = None
-  if vae_params:
-    vae_variables = jax.jit(pipeline.vae.init_weights)(rng)
-    del vae_variables
-    vae_state, vae_state_mesh_shardings = setup_initial_state(
-        pipeline.vae,
-        tx,
-        config,
-        mesh,
-        vae_params,
-        checkpoint_manager=checkpoint_manager,
-        checkpoint_item="vae_state",
-        training=training
-    )
-
-  return unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings
 
 # Learning Rate Schedule
 # -----------------------------------------------------------------------------

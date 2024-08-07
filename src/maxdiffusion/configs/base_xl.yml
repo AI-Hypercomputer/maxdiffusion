@@ -120,8 +120,8 @@ data_sharding: [['data', 'fsdp', 'tensor']]
 dcn_data_parallelism: -1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: 1
 dcn_tensor_parallelism: 1
-ici_data_parallelism: 1
-ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_data_parallelism: -1
+ici_fsdp_parallelism: 1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
 # Dataset

@@ -17,11 +17,12 @@
 
 """Create an Orbax CheckpointManager with specified (Async or not) Checkpointer."""
 
-from typing import Optional
+from typing import Optional, Any
 from maxdiffusion import max_logging
 from etils import epath
 from flax.training import train_state
 import orbax
+import orbax.checkpoint as ocp
 from orbax.checkpoint.logging import abstract_logger
 from orbax.checkpoint.checkpoint_manager import CheckpointManager, CheckpointManagerOptions
 
@@ -52,16 +53,22 @@ def create_orbax_checkpoint_manager(
     "unet_config",
     "vae_config",
     "text_encoder_config",
-    "text_encoder_2_config",
     "scheduler_config",
     "unet_state",
+    "inference_unet_state",
     "vae_state",
     "text_encoder_state",
-    "text_encoder_2_state",
+    "inference_text_encoder_state",
     "tokenizer_config"
   )
   if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
-    item_names + ("text_encoder_2_state", "text_encoder_2_config")
+    item_names+= (
+      "text_encoder_2_state",
+      "text_encoder_2_config",
+      "inference_text_encoder_2_state"
+    )
+  
+  print("item_names: ", item_names)
   
   mngr = CheckpointManager(
     p,

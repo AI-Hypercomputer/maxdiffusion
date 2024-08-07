@@ -153,7 +153,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         self.rng, train_rngs = jax.random.split(self.rng)
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
             p_train_step = jax.jit(
-                partial(_train_step, config=self.config, pipeline=self.pipeline, params=self.params),
+                partial(_train_step, pipeline=self.pipeline, params=self.params, config=self.config),
                 in_shardings=(
                     self.state_shardings["unet_state_shardings"],
                     self.state_shardings["vae_state_shardings"],
@@ -210,7 +210,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
 
         start_step = train_utils.get_first_step(self.train_states["unet_state"])
         _, train_rngs = jax.random.split(self.rng)
-
+        
         for step in np.arange(start_step, self.config.max_train_steps):
             example_batch = train_utils.load_next_batch(self.data_iterator, example_batch, self.config)
             unet_state, text_encoder_state, train_metric, train_rngs = self.p_train_step(
@@ -244,10 +244,11 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         self.train_states["unet_state"] = unet_state
         self.train_states["vae_state"] = vae_state
         self.train_states["text_encoder"] = text_encoder_state
-        self.save_checkpoint(step)
+        # save the inference states of the last checkpoint so they can be easily loaded during gen.
+        self.save_checkpoint(step,save_inference_states=True)
         self.checkpoint_manager.wait_until_finished()
 
-def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, config, pipeline, params):
+def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, pipeline, params, config):
     _, gen_dummy_rng = jax.random.split(train_rng)
     sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
 

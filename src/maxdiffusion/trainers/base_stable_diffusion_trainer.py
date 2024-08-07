@@ -86,6 +86,26 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
         self.pre_training_steps()
         # Load checkpoint - will load or create states
         self.load_checkpoint()
+
+        # create train states
+        unet_state, unet_state_mesh_shardings = self.create_unet_state(
+            training=True,
+            # ambiguous here, but if self.params.get("unet") doesn't exist
+            # that means the state will be loaded directly from orbax and not diffusers ckpt.
+            params= None if self.config.train_new_unet else self.params.get("unet", None)
+            )
+        self.train_states["unet_state"] = unet_state
+        self.state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
+
+        vae_state, vae_state_mesh_shardings = self.create_vae_state(training=False)
+        self.train_states["vae_state"] = vae_state
+        self.state_shardings["vae_state_shardings"] = vae_state_mesh_shardings
+
+        text_encoder_state, text_encoder_state_mesh_shardings = self.create_text_encoder_state(training=self.config.train_text_encoder)
+        self.train_states["text_encoder_state"] = text_encoder_state
+        self.state_shardings["text_encoder_state_shardings"] = text_encoder_state_mesh_shardings
+        self.post_create_states_and_shard()
+
         # Create scheduler
         self.create_scheduler()
         # Calculate tflops
