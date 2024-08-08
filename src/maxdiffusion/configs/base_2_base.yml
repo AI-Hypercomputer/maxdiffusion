@@ -80,12 +80,12 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_batch', ['data', 'fsdp',]],
+                      ['activation_batch', ['data','fsdp']],
                       ['activation_heads', 'tensor'],
                       ['activation_kv', 'tensor'],
                       ['embed', 'fsdp'],
                       ['heads', 'tensor'],
-                      ['height', 'data'],
+                      ['conv_batch', ['data','fsdp']],
                       ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
                     ]
