@@ -450,6 +450,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         import max_utils
         import pyconfig
         import input_pipeline
+        import transformers
         from .models.controlnet_flax import FlaxControlNetModel
         from .models.modeling_flax_utils import FlaxModelMixin
         from .models.unet_2d_condition_flax import FlaxUNet2DConditionModel

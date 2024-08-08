@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Union
 import jax
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
-from transformers import CLIPTokenizer, FlaxCLIPTextModel
+from maxdiffusion.transformers import CLIPTokenizer, FlaxCLIPTextModel
 
 from maxdiffusion.utils import logging
 

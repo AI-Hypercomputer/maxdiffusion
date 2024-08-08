@@ -30,7 +30,7 @@ from maxdiffusion import (
     FlaxAutoencoderKL,
 )
 
-from transformers import (
+from maxdiffusion.transformers import (
   CLIPTokenizer,
   FlaxCLIPTextModel,
   CLIPTextConfig,
