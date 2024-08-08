@@ -160,20 +160,31 @@ class FlaxResnetBlock2D(nn.Module):
 
     def __call__(self, hidden_states, temb, deterministic=True):
         residual = hidden_states
+        hidden_states = nn.with_logical_constraint(
+            hidden_states,
+            ('conv_batch', 'height', 'keep_2', 'out_channels')
+        )
+
         hidden_states = self.norm1(hidden_states)
-        hidden_states = nn.swish(hidden_states)
+        hidden_states = jax.nn.swish(hidden_states)
         hidden_states = self.conv1(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
             ('conv_batch', 'height', 'keep_2', 'out_channels')
         )
 
-        temb = self.time_emb_proj(nn.swish(temb))
+        temb = self.time_emb_proj(jax.nn.swish(temb))
+
+        temb = nn.with_logical_constraint(
+            temb,
+            ('conv_batch', 'out_channels')
+        )   
+        
         temb = jnp.expand_dims(jnp.expand_dims(temb, 1), 1)
         hidden_states = hidden_states + temb
 
         hidden_states = self.norm2(hidden_states)
-        hidden_states = nn.swish(hidden_states)
+        hidden_states = jax.nn.swish(hidden_states)
         hidden_states = self.dropout(hidden_states, deterministic)
         hidden_states = self.conv2(hidden_states)
         hidden_states = nn.with_logical_constraint(
@@ -183,5 +194,9 @@ class FlaxResnetBlock2D(nn.Module):
 
         if self.conv_shortcut is not None:
             residual = self.conv_shortcut(residual)
-
+            residual = nn.with_logical_constraint(
+                hidden_states,
+                ('conv_batch', 'height', 'keep_2', 'out_channels')
+            )
+            
         return hidden_states + residual

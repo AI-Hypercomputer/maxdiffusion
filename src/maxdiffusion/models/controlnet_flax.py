@@ -85,11 +85,11 @@ class FlaxControlNetConditioningEmbedding(nn.Module):
 
     def __call__(self, conditioning):
         embedding = self.conv_in(conditioning)
-        embedding = nn.silu(embedding)
+        embedding = jax.nn.silu(embedding)
 
         for block in self.blocks:
             embedding = block(embedding)
-            embedding = nn.silu(embedding)
+            embedding = jax.nn.silu(embedding)
 
         embedding = self.conv_out(embedding)
 

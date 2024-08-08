@@ -219,7 +219,7 @@ class FlaxResnetBlock2D(nn.Module):
     def __call__(self, hidden_states, deterministic=True):
         residual = hidden_states
         hidden_states = self.norm1(hidden_states)
-        hidden_states = nn.swish(hidden_states)
+        hidden_states = jax.nn.swish(hidden_states)
         hidden_states = self.conv1(hidden_states)
         hidden_states = nn.with_logical_constraint(
             hidden_states,
@@ -227,7 +227,7 @@ class FlaxResnetBlock2D(nn.Module):
         )
 
         hidden_states = self.norm2(hidden_states)
-        hidden_states = nn.swish(hidden_states)
+        hidden_states = jax.nn.swish(hidden_states)
         hidden_states = self.dropout_layer(hidden_states, deterministic)
         hidden_states = self.conv2(hidden_states)
         hidden_states = nn.with_logical_constraint(
@@ -635,7 +635,7 @@ class FlaxEncoder(nn.Module):
 
         # end
         sample = self.conv_norm_out(sample)
-        sample = nn.swish(sample)
+        sample = jax.nn.swish(sample)
         sample = self.conv_out(sample)
 
         return sample
@@ -749,7 +749,7 @@ class FlaxDecoder(nn.Module):
             sample = block(sample, deterministic=deterministic)
 
         sample = self.conv_norm_out(sample)
-        sample = nn.swish(sample)
+        sample = jax.nn.swish(sample)
         sample = self.conv_out(sample)
 
         return sample

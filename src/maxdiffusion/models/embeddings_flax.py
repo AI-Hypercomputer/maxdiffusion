@@ -15,7 +15,7 @@ import math
 
 import flax.linen as nn
 import jax.numpy as jnp
-
+import jax
 
 def get_sinusoidal_embeddings(
     timesteps: jnp.ndarray,
@@ -71,7 +71,7 @@ class FlaxTimestepEmbedding(nn.Module):
     @nn.compact
     def __call__(self, temb):
         temb = nn.Dense(self.time_embed_dim, dtype=self.dtype, name="linear_1")(temb)
-        temb = nn.silu(temb)
+        temb = jax.nn.silu(temb)
         temb = nn.Dense(self.time_embed_dim, dtype=self.dtype, name="linear_2")(temb)
         return temb
 

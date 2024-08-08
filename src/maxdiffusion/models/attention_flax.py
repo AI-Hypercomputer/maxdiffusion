@@ -483,7 +483,20 @@ class FlaxAttention(nn.Module):
         )
 
         hidden_states = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
-
+        # @functools.partial(
+        #     shard_map.shard_map,
+        #     mesh=self.mesh,
+        #     in_specs=(
+        #         nn.logical_to_mesh_axes('batch', LENGTH, HEAD),
+        #     ),
+        #     out_specs=(nn.logical_to_mesh_axes('batch', LENGTH, HEAD),),
+        #     check_rep=False
+        # )
+        # def wrap_proj_att(hidden):
+        #     hidden_states = self.proj_attn(hidden_states)
+        #     return hidden_states
+            
+        #hidden_states = wrap_proj_att(hidden_states)
         hidden_states = self.proj_attn(hidden_states)
         hidden_states = nn.with_logical_constraint(hidden_states,(BATCH, LENGTH, HEAD))
         return self.dropout_layer(hidden_states, deterministic=deterministic)
