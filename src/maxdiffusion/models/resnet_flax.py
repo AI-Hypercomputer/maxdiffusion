@@ -177,7 +177,7 @@ class FlaxResnetBlock2D(nn.Module):
 
         temb = nn.with_logical_constraint(
             temb,
-            ('conv_batch', 'out_channels')
+            ('activation_batch', 'out_channels')
         )   
         
         temb = jnp.expand_dims(jnp.expand_dims(temb, 1), 1)
