@@ -85,8 +85,7 @@ logical_axis_rules: [
                       ['activation_kv', 'tensor'],
                       ['embed', 'fsdp'],
                       ['heads', 'tensor'],
-                      ['conv_batch', 'data'],
-                      ['height', 'fsdp'],
+                      ['height', ['data','fsdp']],
                       ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
                     ]
