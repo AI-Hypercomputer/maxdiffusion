@@ -15,13 +15,11 @@
 """CLIP model configuration"""
 
 import os
-from collections import OrderedDict
-from typing import TYPE_CHECKING, Any, Mapping, Optional, Union
+from typing import TYPE_CHECKING, Union
 
 
 if TYPE_CHECKING:
-    from ...processing_utils import ProcessorMixin
-    from ...utils import TensorType
+    pass
 
 from ...configuration_utils import PretrainedConfig
 from ...utils import logging

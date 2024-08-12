@@ -48,7 +48,7 @@ def validate_train_config(config):
 
   if config.checkpoint_every > 0 and len(config.checkpoint_dir) <= 0:
     raise AssertionError("Need to set checkpoint_dir when checkpoint_every is set.")
-  
+
   if config.train_text_encoder and config.cache_latents_text_encoder_outputs:
     raise AssertionError("Cannot train text encoder and cache text encoder outputs." \
   " Set either train_text_encoder, or cache_latents_text_encoder_outputs to False")

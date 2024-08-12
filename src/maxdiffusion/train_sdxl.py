@@ -17,7 +17,6 @@
 from typing import Sequence
 
 import jax
-import optax
 from absl import app
 from maxdiffusion import (
     max_logging,

@@ -32,7 +32,7 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
 )
 
 from maxdiffusion import (
-    max_utils, 
+    max_utils,
     maxdiffusion_utils,
     max_logging
 )
@@ -57,7 +57,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         self.text_encoder_2_learning_rate_scheduler = None
 
         if config.train_text_encoder:
-            raise ValueError(f"this script currently doesn't support training text_encoders")
+            raise ValueError("this script currently doesn't support training text_encoders")
 
     def post_training_steps(self, pipeline, params, train_states):
         return super().post_training_steps(pipeline, params, train_states)
@@ -100,7 +100,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         shaped_batch["text_embeds"] = jax.ShapeDtypeStruct(text_embeds_shape, jnp.float32)
         shaped_batch["input_ids"] = jax.ShapeDtypeStruct(input_ids_shape, jnp.int32)
         return shaped_batch
-    
+
     def get_data_shardings(self):
         data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
         data_sharding = {
@@ -158,7 +158,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
                 partial(_train_step, pipeline=pipeline, params=params, config=self.config),
                 in_shardings=(
                     state_shardings["unet_state_shardings"],
-                    data_shardings, 
+                    data_shardings,
                     None
                 ),
                 out_shardings=(state_shardings["unet_state_shardings"],
@@ -177,7 +177,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
             p_train_step = p_train_step.compile()
             max_logging.log(f"Compile time: {(time.time() - s )}")
             return p_train_step
-    
+
     def training_loop(self, p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler):
 
         writer = max_utils.initialize_summary_writer(self.config)
@@ -213,7 +213,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
             (unet_state,
              train_metric,
              train_rngs) = p_train_step(unet_state, example_batch, train_rngs)
-            
+
             samples_count = self.total_train_batch_size * (step + 1)
             new_time = datetime.datetime.now()
 
@@ -225,7 +225,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
                 max_utils.activate_profiler(self.config)
             if step == last_profiling_step:
                 max_utils.deactivate_profiler(self.config)
-            
+
             if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
                 train_states["unet_state"] = unet_state
                 train_states["text_encoder_state"] = text_encoder_state
@@ -234,7 +234,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
 
         if self.config.write_metrics:
             write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
-        
+
         train_states["unet_state"] = unet_state
         train_states["text_encoder_state"] = text_encoder_state
         train_states["text_encoder_2_state"] = text_encoder_2_state
@@ -329,7 +329,7 @@ def _train_step(unet_state, batch, train_rng, pipeline, params, config):
     metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
 
     return new_state, metrics, new_train_rng
-    
+
 
 def encode_xl(input_ids, text_encoders, text_encoder_params):
     te_1_inputs = input_ids[:, 0, :]

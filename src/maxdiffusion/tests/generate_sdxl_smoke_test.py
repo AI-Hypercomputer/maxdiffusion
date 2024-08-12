@@ -51,7 +51,7 @@ class Generate(unittest.TestCase):
     )
     assert base_image.shape == test_image.shape
     assert ssim_compare >=0.80
-  
+
   def test_controlnet_sdxl(self):
     img_url = os.path.join(THIS_DIR,'images','cnet_test_sdxl.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)

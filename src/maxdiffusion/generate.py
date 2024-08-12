@@ -163,7 +163,7 @@ def run(config):
 
     checkpoint_loader = GenerateSD(config, STABLE_DIFFUSION_CHECKPOINT)
     pipeline, params = checkpoint_loader.load_checkpoint()
-    
+
     unet_state, unet_state_shardings, _ = checkpoint_loader.create_unet_state(
         pipeline,
         params,
@@ -177,11 +177,11 @@ def run(config):
         checkpoint_item_name="vae_state",
         is_training=False
     )
-    
+
     text_encoder_state, text_encoder_state_shardings = checkpoint_loader.create_text_encoder_state(
         pipeline,
         params,
-        checkpoint_item_name="inference_text_encoder_state",
+        checkpoint_item_name="inference_text_encoder_state" if config.train_text_encoder else "text_encoder_state",
         is_training=False
     )
 
@@ -231,7 +231,6 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
-    config = pyconfig.config
     run(pyconfig.config)
 
 if __name__ == "__main__":

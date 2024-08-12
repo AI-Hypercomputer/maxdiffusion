@@ -75,7 +75,7 @@ After installation completes, run the training script.
 
   ```bash
   export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_xl_run" base_output_directory="gs://your-bucket/" per_device_batch_size=1
+  python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_xl_run" output_dir="gs://your-bucket/" per_device_batch_size=1
   ```
 
   To generate images with a trained checkpoint, run:
@@ -109,7 +109,7 @@ After installation completes, run the training script.
   **Stable Diffusion 1.x,2.x**
 
   ```bash
-  python src/maxdiffusion/dreambooth/train_dreambooth.py src/maxdiffusion/configs/base15.yml class_data_dir=<your-class-dir> instance_data_dir=<your-instance-dir> instance_prompt="a photo of ohwx dog" class_prompt="photo of a dog" max_train_steps=150 jax_cache_dir=<your-cache-dir> class_prompt="a photo of a dog" activations_dtype=bfloat16 weights_dtype=float32 per_device_batch_size=1 enable_profiler=False precision=DEFAULT cache_dreambooth_dataset=False learning_rate=4e-6 output_dir=<your-output-dir> num_class_images=100 run_name=<your-run-name> base_output_directory=gs://<your-bucket-name>
+  python src/maxdiffusion/dreambooth/train_dreambooth.py src/maxdiffusion/configs/base15.yml class_data_dir=<your-class-dir> instance_data_dir=<your-instance-dir> instance_prompt="a photo of ohwx dog" class_prompt="photo of a dog" max_train_steps=150 jax_cache_dir=<your-cache-dir> class_prompt="a photo of a dog" activations_dtype=bfloat16 weights_dtype=float32 per_device_batch_size=1 enable_profiler=False precision=DEFAULT cache_dreambooth_dataset=False learning_rate=4e-6 num_class_images=100 run_name=<your-run-name> output_dir=gs://<your-bucket-name>
   ```
 
 ## Inference
@@ -176,7 +176,7 @@ cd maxdiffusion
 pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 pip3 install -r requirements.txt
 pip3 install .
-python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=my_run base_output_directory=gs://your-bucket/"
+python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=my_run output_dir=gs://your-bucket/"
 ```
 
 # Comparison to Alternatives

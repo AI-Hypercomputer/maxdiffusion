@@ -186,7 +186,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     "text_embeds": jnp.zeros((no_devices, text_embeds_dim), dtype=jnp.bfloat16),
                     "time_ids": jnp.zeros((no_devices, time_ids_dims), dtype=jnp.bfloat16),
                 }
-                
+
         if eval_only:
             return jax.eval_shape(self.init, rngs, sample, timesteps, encoder_hidden_states, added_cond_kwargs)["params"]
         else:
@@ -502,4 +502,3 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             return (sample,)
 
         return FlaxUNet2DConditionOutput(sample=sample)
-    

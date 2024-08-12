@@ -22,17 +22,15 @@ import time
 import numpy as np
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 from flax.linen import partitioning as nn_partitioning
-from jax.sharding import PositionalSharding
 
 from maxdiffusion import (
     FlaxEulerDiscreteScheduler,
 )
 
 
-from maxdiffusion import pyconfig, max_utils
+from maxdiffusion import pyconfig
 from maxdiffusion.image_processor import VaeImageProcessor
 from maxdiffusion.maxdiffusion_utils import (
   get_add_time_ids,
@@ -46,7 +44,6 @@ from maxdiffusion.trainers.sdxl_trainer import (
 class GenerateSDXL(StableDiffusionXLTrainer):
   def __init__(self, config):
     super().__init__(config)
-  
 
 def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
   latents, scheduler_state, state = args
@@ -224,7 +221,6 @@ def run(config):
     checkpoint_item_name="vae_state",
     is_training=False
   )
-  
   text_encoder_state, text_encoder_state_shardings = checkpoint_loader.create_text_encoder_state(
     pipeline,
     params,

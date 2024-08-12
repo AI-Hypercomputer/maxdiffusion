@@ -52,6 +52,9 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
 
     def pre_training_steps(self):
         return super().pre_training_steps()
+    
+    def post_training_steps(self, pipeline, params, train_states):
+        return super().post_training_steps(pipeline, params, train_states)
 
     def get_shaped_batch(self, config, pipeline):
         """Return the shape of the batch - this is what eval_shape would return for the
@@ -73,7 +76,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
             batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
         shaped_batch = {}
         shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
-        shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.int32)
+        shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
         return shaped_batch
 
     def create_scheduler(self, pipeline, params):
@@ -138,7 +141,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
             data_iterator = make_laion400m_train_iterator(
                 self.config, self.mesh, self.total_train_batch_size
             )
-        
+
         return data_iterator
 
     def compile_train_step(self, pipeline, params, train_states, state_shardings, data_shardings):
@@ -203,7 +206,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
 
         start_step = train_utils.get_first_step(train_states["unet_state"])
         _, train_rngs = jax.random.split(self.rng)
-        
+
         for step in np.arange(start_step, self.config.max_train_steps):
             example_batch = train_utils.load_next_batch(data_iterator, example_batch, self.config)
             unet_state, text_encoder_state, train_metric, train_rngs = p_train_step(
@@ -228,7 +231,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
             if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
                 train_states["unet_state"] = unet_state
                 train_states["vae_state"] = vae_state
-                train_states["text_encoder"] = text_encoder_state  
+                train_states["text_encoder"] = text_encoder_state
                 self.save_checkpoint(step, pipeline, params, train_states, save_inference_states=False)
 
         if self.config.write_metrics:
@@ -269,7 +272,7 @@ def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, pip
             if config.train_text_encoder:
                 encoder_hidden_states = maxdiffusion_utils.encode(batch["input_ids"], pipeline.text_encoder, state_params["text_encoder"])
             else:
-                encoder_hidden_states = maxdiffusion_utils.encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])    
+                encoder_hidden_states = maxdiffusion_utils.encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])
 
         # Sample noise that we'll add to the latents
         noise_rng, timestep_rng = jax.random.split(sample_rng)

@@ -15,7 +15,7 @@
  limitations under the License.
  """
 
-from abc import ABC, abstractmethod
+from abc import ABC
 import os
 import json
 import functools
@@ -70,7 +70,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             self,
             config,
             learning_rate):
-        
+
         learning_rate_scheduler = max_utils.create_learning_rate_schedule(
             learning_rate,
             config.learning_rate_schedule_steps,
@@ -150,7 +150,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             learning_rate = self.config.text_encoder_learning_rate
             tx, learning_rate_scheduler =self._create_optimizer(self.config, learning_rate)
             self.text_encoder_learning_rate_scheduler = learning_rate_scheduler
-        
+
         weights_init_fn = functools.partial(
             pipeline.text_encoder_2.init_weights,
             rng=self.rng,
@@ -249,14 +249,14 @@ class BaseStableDiffusionCheckpointer(ABC):
                 is_training=False,
             )
             items["inference_unet_state"] = ocp.args.StandardSave(inference_unet_state)
-            
+
             if self.config.train_text_encoder:
                 inference_text_encoder_state, _ = self.create_text_encoder_state(
                     pipeline,
                     {"text_encoder" : train_states["text_encoder_state"].params},
                     checkpoint_item_name="inference_text_encoder_state",
                     is_training=False)
-                
+
                 items["inference_text_encoder_state"] = ocp.args.StandardSave(inference_text_encoder_state)
 
                 # TODO - this is broken since create_text_encoder_state will create a text_encoder init weights
@@ -291,7 +291,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             self.config,
             self.checkpoint_manager,
             self.checkpoint_type, step)
-        
+
         pipeline, params = None, {}
 
         if model_configs:
@@ -359,7 +359,7 @@ class BaseStableDiffusionCheckpointer(ABC):
                 pipeline_kwargs["text_encoder_2"] = text_encoder_2
                 # both tokenizers in sdxl are the same.
                 pipeline_kwargs["tokenizer_2"] = tokenizer
-                
+
             pipeline = pipeline_class(
             **pipeline_kwargs
             )

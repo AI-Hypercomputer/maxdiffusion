@@ -49,11 +49,8 @@ logger = get_logger(__name__)
 _required_peft_version = is_peft_available() and version.parse(
     version.parse(importlib.metadata.version("peft")).base_version
 ) > version.parse("0.5")
-_required_transformers_version = version.parse(
-    version.parse(importlib.metadata.version("transformers")).base_version
-) > version.parse("4.33")
 
-USE_PEFT_BACKEND = _required_peft_version and _required_transformers_version
+USE_PEFT_BACKEND = _required_peft_version
 
 if is_torch_available():
     import torch

@@ -80,7 +80,6 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
-  config = pyconfig.config
   run(pyconfig.config)
 
 if __name__ == "__main__":

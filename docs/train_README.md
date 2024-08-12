@@ -19,7 +19,6 @@ MaxDiffusion provides training scripts:
  * [train.py](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/train.py) : supports training sd1.x, sd 2 base and sd2.1.
  * [train_dreambooth.py](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/dreambooth/train_dreambooth.py) : supports training dreambooth sd1.x, sd 2 base, and sd2.1.
  * [train_sdxl.py](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/train_sdxl.py) : supports sdxl training.
- * Deprecated - [train.py](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/models/train.py) : supports training sd1.x, sd 2 base and sd2.1.
 
 ## Configs
 
@@ -35,7 +34,7 @@ In this session, we'll explain some of the core config parameters and how they a
 | [base_xl.yml](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/configs/base_xl.yml) | [stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | training / inference
 | [base_xl_lightning.yml](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/configs/base_xl_lightning.yml) | [stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) & [ByteDance/SDXL-Lightning](https://huggingface.co/ByteDance/SDXL-Lightning) | inference
 
-Changes to a config can be applied by changing the yml file directly or by passing those parameters in cli when creating a job. The only required parameters to pass to a job are `run_name` and `base_output_directory`. 
+Changes to a config can be applied by changing the yml file directly or by passing those parameters in cli when creating a job. The only required parameters to pass to a job are `run_name` and `output_dir`. 
 
 Let's start with a simple example. After setting up your environment, create a training job as follows:
 
@@ -136,4 +135,4 @@ The `logical_axis_rules` specifies the sharding across the mesh. You are encoura
 
 Checkpointing can be enabled by using `checkpoint_every`. It is based on the number of samples (per_device_batch_size * jax.device_count()).
 
-For Stable Diffusion 1.x,2.x, orbax is used to save checkpoints, however, orbax does not currently store tokenizers. Instead the tokenizer model name or path is stored inside of the checkpoint and then loaded during inference. 
+Orbax is used to save checkpoints, however, orbax does not currently store tokenizers. Instead the tokenizer model name or path is stored inside of the checkpoint and then loaded during inference. 

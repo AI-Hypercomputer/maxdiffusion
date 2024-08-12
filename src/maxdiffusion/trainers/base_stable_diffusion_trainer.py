@@ -129,19 +129,19 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
             )
             train_states["text_encoder_2_state"] = text_encoder_2_state
             state_shardings["text_encoder_2_state_shardings"] = text_encoder_2_state_mesh_shardings
-        
+
         # Create scheduler
         noise_scheduler, noise_scheduler_state =self.create_scheduler(pipeline, params)
         pipeline.scheduler = noise_scheduler
         params["scheduler"] = noise_scheduler_state
-        
+
         # Calculate tflops
         per_device_tflops = self.calculate_tflops(pipeline, params)
         self.per_device_tflops = per_device_tflops
 
         # Load dataset
         data_iterator = self.load_dataset(pipeline, params, train_states)
-        
+
         data_shardings = self.get_data_shardings()
         # Compile train_step
         p_train_step = self.compile_train_step(

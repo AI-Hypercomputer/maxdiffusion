@@ -19,7 +19,6 @@ import os
 import pathlib
 import shutil
 import unittest
-import jax
 from maxdiffusion import max_utils
 from maxdiffusion.train import train as train_orbax_main
 from maxdiffusion.train_sdxl import train as train_sdxl
@@ -58,7 +57,7 @@ class Train(unittest.TestCase):
     Train.dummy_data = {}
 
   def test_sdxl_config(self):
-    output_dir="train-smoke-test"
+    output_dir="gs://maxdiffusion-github-runner-test-assets"
     run_name="sdxl_train_smoke_test"
     cache_dir="gs://maxdiffusion-github-runner-test-assets/cache_dir"
 
@@ -69,9 +68,9 @@ class Train(unittest.TestCase):
       "resolution=1024","per_device_batch_size=1","snr_gamma=5.0",
       "per_device_batch_size=1",
       'timestep_bias={"strategy" : "later", "multiplier" : 2.0, "portion" : 0.25}',
-      "base_output_directory=gs://maxdiffusion-tests", f"output_dir={output_dir}",
+      f"output_dir={output_dir}",
       f"jax_cache_dir={cache_dir}"],unittest=True)
-    
+
     train_sdxl(pyconfig.config)
 
     img_url = os.path.join(THIS_DIR,'images','test_sdxl.png')
@@ -84,7 +83,7 @@ class Train(unittest.TestCase):
       "negative_prompt=purple, red","guidance_scale=9",
       "num_inference_steps=20","seed=47","per_device_batch_size=1",
       "split_head_dim=False", f"jax_cache_dir={cache_dir}"],unittest=True)
-    
+
     train_sdxl(pyconfig.config)
 
     images = generate_run_xl(pyconfig.config)
@@ -96,7 +95,7 @@ class Train(unittest.TestCase):
     assert ssim_compare >=0.70
 
     cleanup(output_dir)
-  
+
   def test_dreambooth_orbax(self):
     num_class_images=100
     output_dir="gs://maxdiffusion-github-runner-test-assets"
@@ -120,7 +119,7 @@ class Train(unittest.TestCase):
       "cache_dreambooth_dataset=False","learning_rate=4e-6",f"output_dir={output_dir}",
       f"num_class_images={num_class_images}",f"run_name={run_name}",
       "prompt=a photo of ohwx dog"],unittest=True)
-    
+
     config = pyconfig.config
     validate_train_config(config)
     train_orbax_dreambooth(config)
@@ -139,7 +138,7 @@ class Train(unittest.TestCase):
     cleanup(instance_class_local_dir)
     cleanup(class_class_local_dir)
     delete_blobs(os.path.join(output_dir,run_name))
-  
+
   def test_sd15_orbax(self):
     output_dir="gs://maxdiffusion-github-runner-test-assets"
     run_name="sd15_orbax_smoke_test"
@@ -148,11 +147,10 @@ class Train(unittest.TestCase):
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
       f"run_name={run_name}", "checkpoint_every=256","upload_ckpts_to_gcs=True",
       "max_train_steps=21","per_device_batch_size=8",
-      "base_output_directory=gs://maxdiffusion-github-runner-test-assets/training_results/",
       f"output_dir={output_dir}", "prompt=A magical castle in the middle of a forest, artistic drawing",
-      "negative_prompt=purple, red","guidance_scale=7.5", 
+      "negative_prompt=purple, red","guidance_scale=7.5",
       "num_inference_steps=30","seed=47",f"jax_cache_dir={cache_dir}"], unittest=True)
-    
+
     config = pyconfig.config
     validate_train_config(config)
     train_orbax_main(config)

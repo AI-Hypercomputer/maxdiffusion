@@ -48,7 +48,7 @@ from maxdiffusion.maxdiffusion_utils import (
   encode,
   tokenize_captions
 )
-from maxdiffusion.train_sdxl import (
+from maxdiffusion.trainers.sdxl_trainer import (
    encode_xl,
    tokenize_captions_xl
 )

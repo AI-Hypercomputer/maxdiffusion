@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warnings
 from functools import partial
 from typing import Dict, List, Optional, Union
 
@@ -21,10 +20,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
-from flax.jax_utils import unreplicate
-from flax.training.common_utils import shard
 from packaging import version
-from PIL import Image
 from maxdiffusion.transformers import CLIPTokenizer, FlaxCLIPTextModel
 
 from ...models import FlaxAutoencoderKL, FlaxUNet2DConditionModel

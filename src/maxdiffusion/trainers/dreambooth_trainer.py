@@ -271,11 +271,11 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
 
     latents = jnp.concatenate((instance_latents, class_latents), axis=0)
     input_ids = jnp.concatenate((instance_input_ids, class_input_ids), axis=0)
-    
+
     state_params = {"text_encoder" : text_encoder_state.params, "unet" : unet_state.params}
 
     def compute_loss(state_params):
-           
+
         encoder_hidden_states = encode(input_ids, pipeline.text_encoder, state_params["text_encoder"])
 
         # Sample noise that we'll add to the latents

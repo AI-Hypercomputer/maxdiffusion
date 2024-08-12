@@ -151,5 +151,9 @@ def load_state_if_possible(
     max_logging.log(
       f"restoring from this run's directory latest step {latest_step}"
     )
-    item = { checkpoint_item : orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
-    return checkpoint_manager.restore(latest_step,args=orbax.checkpoint.args.Composite(**item))
+    try:
+      item = { checkpoint_item : orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
+      return checkpoint_manager.restore(latest_step,args=orbax.checkpoint.args.Composite(**item))
+    except:
+      max_logging.log(f"could not load {checkpoint_item} from orbax")
+      return None
