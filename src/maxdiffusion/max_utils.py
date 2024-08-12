@@ -372,7 +372,7 @@ def setup_initial_state(
       if state:
         state = state[checkpoint_item]
     if not state:
-
+      max_logging.log(f"Could not find {checkpoint_item} in orbax, creating state...")
       # for DDP needs replication before jit state.
       if config.ici_data_parallelism == -1 or config.dcn_data_parallelism == -1:
         sharding = PositionalSharding(mesh.devices).replicate()
@@ -394,6 +394,10 @@ def setup_initial_state(
       )()
       if model_params:
         state = state.replace(params=model_params)
+      else:
+        # this should only be the case when training a new model from scratch.
+        # else, its possible a model is being loaded from a wrong dir path.
+        max_logging.log(f"model_params is None, random init weights have been loaded...")
 
   state = unbox_logicallypartioned_trainstate(state)
 

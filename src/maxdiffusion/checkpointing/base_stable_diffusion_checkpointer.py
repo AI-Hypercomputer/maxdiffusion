@@ -28,6 +28,7 @@ from maxdiffusion import (
     FlaxStableDiffusionXLPipeline,
     FlaxUNet2DConditionModel,
     FlaxAutoencoderKL,
+    max_logging
 )
 
 from maxdiffusion.transformers import (
@@ -58,31 +59,12 @@ class BaseStableDiffusionCheckpointer(ABC):
         self.mesh = Mesh(devices_array, self.config.mesh_axes)
         self.total_train_batch_size = max_utils.get_global_batch_size(self.config)
 
-        self.pipeline = None
-        self.params = {}
-        self.train_states = {}
-        self.state_shardings = {}
-        # we save the inference_states after training
-        # to make it memory efficient to load during inference.
-        self.inference_states = {}
-
-        self.unet_learning_rate_scheduler = None
-        self.text_encoder_learning_rate_scheduler = None
-
         self.checkpoint_manager = create_orbax_checkpoint_manager(
             self.config.checkpoint_dir,
             enable_checkpointing=True,
             save_interval_steps=1,
             checkpoint_type=checkpoint_type
         )
-
-    @abstractmethod
-    def post_create_states_and_shard(self):
-        """
-        Hook to create any other states or additional shardings.
-        Called last in create_states().
-        """
-        pass
 
     def _create_optimizer(
             self,
@@ -98,66 +80,93 @@ class BaseStableDiffusionCheckpointer(ABC):
         tx = max_utils.create_optimizer(config, learning_rate_scheduler)
         return tx, learning_rate_scheduler
 
-    def create_unet_state(self, params, training=True):
+    def create_unet_state(self, pipeline, params, checkpoint_item_name, is_training):
 
-        tx = None
-        if training:
+        tx, learning_rate_scheduler = None, None
+        if is_training:
             learning_rate = self.config.learning_rate
 
-            tx, learining_rate_scheduler = self._create_optimizer(self.config, learning_rate)
-            self.unet_learning_rate_scheduler = learining_rate_scheduler
+            tx, learning_rate_scheduler = self._create_optimizer(self.config, learning_rate)
 
-        weights_init_fn = functools.partial(self.pipeline.unet.init_weights, rng=self.rng)
-        return max_utils.setup_initial_state(
-            model=self.pipeline.unet,
+        weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=self.rng)
+        unet_state, state_mesh_shardings = max_utils.setup_initial_state(
+            model=pipeline.unet,
             tx=tx,
             config=self.config,
             mesh=self.mesh,
             weights_init_fn=weights_init_fn,
-            model_params=params,
+            model_params=None if self.config.train_new_unet else params.get("unet", None),
             checkpoint_manager=self.checkpoint_manager,
-            checkpoint_item="unet_state" if training else "inference_unet_state",
-            training=training
+            checkpoint_item=checkpoint_item_name,
+            training=is_training
         )
+        return unet_state, state_mesh_shardings, learning_rate_scheduler
 
-    def create_vae_state(self, training=False):
-        weights_init_fn = functools.partial(self.pipeline.vae.init_weights, rng=self.rng)
+    def create_vae_state(self, pipeline, params, checkpoint_item_name, is_training=False):
+
+        # Currently VAE training is not supported.
+        weights_init_fn = functools.partial(pipeline.vae.init_weights, rng=self.rng)
         return max_utils.setup_initial_state(
-            model=self.pipeline.vae,
+            model=pipeline.vae,
             tx=None,
             config=self.config,
             mesh=self.mesh,
             weights_init_fn=weights_init_fn,
-            model_params=self.params.get("vae", None),
+            model_params=params.get("vae", None),
             checkpoint_manager=self.checkpoint_manager,
-            checkpoint_item="vae_state",
-            training=training
+            checkpoint_item=checkpoint_item_name,
+            training=is_training
         )
 
-    def create_text_encoder_state(self, training=True):
+    def create_text_encoder_state(self, pipeline, params, checkpoint_item_name, is_training):
 
         tx = None
-        if training:
+        if is_training:
             learning_rate = self.config.text_encoder_learning_rate
             tx, learning_rate_scheduler =self._create_optimizer(self.config, learning_rate)
             self.text_encoder_learning_rate_scheduler = learning_rate_scheduler
 
         weights_init_fn = functools.partial(
-            self.pipeline.text_encoder.init_weights,
+            pipeline.text_encoder.init_weights,
             rng=self.rng,
-            input_shape=(self.total_train_batch_size, self.pipeline.tokenizer.model_max_length)
+            input_shape=(self.total_train_batch_size, pipeline.tokenizer.model_max_length)
         )
 
         return max_utils.setup_initial_state(
-            model=self.pipeline.text_encoder,
+            model=pipeline.text_encoder,
             tx=tx,
             config=self.config,
             mesh=self.mesh,
             weights_init_fn=weights_init_fn,
-            model_params=self.params.get("text_encoder", None),
+            model_params=params.get("text_encoder", None),
             checkpoint_manager=self.checkpoint_manager,
-            checkpoint_item="text_encoder_state",
-            training=training
+            checkpoint_item=checkpoint_item_name,
+            training=is_training
+        )
+
+    def create_text_encoder_2_state(self, pipeline, params, checkpoint_item_name, is_training):
+        tx = None
+        if is_training:
+            learning_rate = self.config.text_encoder_learning_rate
+            tx, learning_rate_scheduler =self._create_optimizer(self.config, learning_rate)
+            self.text_encoder_learning_rate_scheduler = learning_rate_scheduler
+        
+        weights_init_fn = functools.partial(
+            pipeline.text_encoder_2.init_weights,
+            rng=self.rng,
+            input_shape=(self.total_train_batch_size, pipeline.tokenizer.model_max_length)
+        )
+
+        return max_utils.setup_initial_state(
+            model=pipeline.text_encoder_2,
+            tx=tx,
+            config=self.config,
+            mesh=self.mesh,
+            weights_init_fn=weights_init_fn,
+            model_params=params.get("text_encoder_2", None),
+            checkpoint_manager=self.checkpoint_manager,
+            checkpoint_item=checkpoint_item_name,
+            training=is_training
         )
 
     def _get_pipeline_class(self):
@@ -206,45 +215,59 @@ class BaseStableDiffusionCheckpointer(ABC):
                 )
             params["unet"] = unet_params
             pipeline.unet = unet
-
         params = jax.tree_util.tree_map(lambda x: x.astype(self.config.weights_dtype), params)
 
-        self.pipeline = pipeline
-        self.params = params
-    
-    def create_inferece_states(self):
-        self.create_unet_inference_state(self.train_states["unet_state"])
+        return pipeline, params
 
-    def save_checkpoint(self, train_step, save_inference_states=False):
+    def save_checkpoint(self, train_step, pipeline, params, train_states, save_inference_states=False):
         def config_to_json(model_or_config):
             return json.loads(model_or_config.to_json_string())
 
         items = {
-            'unet_config' : ocp.args.JsonSave(config_to_json(self.pipeline.unet)),
-            'vae_config' : ocp.args.JsonSave(config_to_json(self.pipeline.vae)),
-            'text_encoder_config' : ocp.args.JsonSave(config_to_json(self.pipeline.text_encoder.config)),
-            "scheduler_config" : ocp.args.JsonSave(config_to_json(self.pipeline.scheduler))
+            'unet_config' : ocp.args.JsonSave(config_to_json(pipeline.unet)),
+            'vae_config' : ocp.args.JsonSave(config_to_json(pipeline.vae)),
+            'text_encoder_config' : ocp.args.JsonSave(config_to_json(pipeline.text_encoder.config)),
+            "scheduler_config" : ocp.args.JsonSave(config_to_json(pipeline.scheduler))
         }
 
-        items['unet_state'] = ocp.args.StandardSave(self.train_states["unet_state"])
-        items['vae_state'] = ocp.args.StandardSave(self.train_states["vae_state"])
-        items["text_encoder_state"] = ocp.args.StandardSave(self.train_states["text_encoder_state"])
+        items['unet_state'] = ocp.args.StandardSave(train_states["unet_state"])
+        items['vae_state'] = ocp.args.StandardSave(train_states["vae_state"])
+        items["text_encoder_state"] = ocp.args.StandardSave(train_states["text_encoder_state"])
 
-        if hasattr(self.pipeline, "text_encoder_2"):
-            items["text_encoder_2_state"] = ocp.args.StandardSave(self.train_states["text_encoder_2_state"])
-            items["text_encoder_2_config"] = ocp.args.JsonSave(config_to_json(self.pipeline.text_encoder_2.config))
+        if hasattr(pipeline, "text_encoder_2"):
+            items["text_encoder_2_state"] = ocp.args.StandardSave(train_states["text_encoder_2_state"])
+            items["text_encoder_2_config"] = ocp.args.JsonSave(config_to_json(pipeline.text_encoder_2.config))
 
         tokenizer_config = {"path" : self.config.tokenizer_model_name_or_path}
         items["tokenizer_config"] = ocp.args.JsonSave(tokenizer_config)
 
         if save_inference_states:
-            inference_unet_state, _ = self.create_unet_state(self.train_states["unet_state"].params, False)
+            inference_unet_state, _, _ = self.create_unet_state(
+                pipeline,
+                {"unet" : train_states["unet_state"].params},
+                checkpoint_item_name="inference_unet_state",
+                is_training=False,
+            )
             items["inference_unet_state"] = ocp.args.StandardSave(inference_unet_state)
+            
             if self.config.train_text_encoder:
-                inference_text_encoder_state, _ = self.create_text_encoder_state(self.train_states["text_encoder_state"].params, False)
+                inference_text_encoder_state, _ = self.create_text_encoder_state(
+                    pipeline,
+                    {"text_encoder" : train_states["text_encoder_state"].params},
+                    checkpoint_item_name="inference_text_encoder_state",
+                    is_training=False)
+                
                 items["inference_text_encoder_state"] = ocp.args.StandardSave(inference_text_encoder_state)
-                if hasattr(self.pipeline, "text_encoder_2"):
-                    inference_text_encoder_2_state, _ = self.create_text_encoder_state(self.train_states["text_encoder_2_state"].params, False)
+
+                # TODO - this is broken since create_text_encoder_state will create a text_encoder init weights
+                # and not a text_encoder_2 init weights fn.
+                if hasattr(pipeline, "text_encoder_2"):
+                    inference_text_encoder_2_state, _ = self.create_text_encoder_2_state(
+                        pipeline,
+                        {"text_encoder" : train_states["text_encoder_2_state"].params},
+                        checkpoint_item_name="inference_text_encoder_2_state",
+                        is_training=False
+                    )
                     items["inference_text_encoder_2_state"] = ocp.args.StandardSave(inference_text_encoder_2_state)
 
         self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
@@ -268,6 +291,8 @@ class BaseStableDiffusionCheckpointer(ABC):
             self.config,
             self.checkpoint_manager,
             self.checkpoint_type, step)
+        
+        pipeline, params = None, {}
 
         if model_configs:
             unet = FlaxUNet2DConditionModel.from_config(
@@ -323,10 +348,7 @@ class BaseStableDiffusionCheckpointer(ABC):
             "tokenizer" : tokenizer,
             }
 
-            if self.checkpoint_type == STABLE_DIFFUSION_CHECKPOINT:
-                pipeline_kwargs["safety_checker"] = None
-                pipeline_kwargs["feature_extractor"] = None
-            else:
+            if self.checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
                 te_pretrained_2_config = CLIPTextConfig(**model_configs[0]["text_encoder_2_config"])
                 text_encoder_2 = FlaxCLIPTextModelWithProjection(
                     te_pretrained_2_config,
@@ -335,12 +357,15 @@ class BaseStableDiffusionCheckpointer(ABC):
                     _do_init=False
                 )
                 pipeline_kwargs["text_encoder_2"] = text_encoder_2
+                # both tokenizers in sdxl are the same.
                 pipeline_kwargs["tokenizer_2"] = tokenizer
+                
             pipeline = pipeline_class(
             **pipeline_kwargs
             )
-            self.pipeline = pipeline
         else:
+            max_logging.log(f"loading checkpoint specified in config : {self.config.pretrained_model_name_or_path}")
             self.checkpoint_format = _CHECKPOINT_FORMAT_DIFFUSERS
-            self.load_diffusers_checkpoint()
+            pipeline, params = self.load_diffusers_checkpoint()
 
+        return pipeline, params

@@ -39,21 +39,13 @@ from maxdiffusion.maxdiffusion_utils import (
   rescale_noise_cfg
 )
 
-from maxdiffusion.checkpointing.checkpointing_utils import (
-  load_params_if_possible
-)
-
-from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
-    STABLE_DIFFUSION_XL_CHECKPOINT
-)
-
 from maxdiffusion.trainers.sdxl_trainer import (
   StableDiffusionXLTrainer
 )
 
 class GenerateSDXL(StableDiffusionXLTrainer):
-  def post_create_states_and_shard(self):
-    return super().post_create_states_and_shard()
+  def __init__(self, config):
+    super().__init__(config)
   
 
 def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
@@ -113,15 +105,15 @@ def tokenize(prompt, pipeline):
   inputs = jnp.stack(inputs,axis=1)
   return inputs
 
-def get_unet_inputs(checkpoint_loader):
+def get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size):
 
-  rng = checkpoint_loader.rng
-  batch_size = checkpoint_loader.total_train_batch_size
-  params = checkpoint_loader.params
-  states = checkpoint_loader.train_states
-  config = checkpoint_loader.config
-  pipeline = checkpoint_loader.pipeline
-  mesh = checkpoint_loader.mesh
+  # rng = checkpoint_loader.rng
+  # batch_size = checkpoint_loader.total_train_batch_size
+  # params = checkpoint_loader.params
+  # states = checkpoint_loader.train_states
+  # config = checkpoint_loader.config
+  # pipeline = checkpoint_loader.pipeline
+  # mesh = checkpoint_loader.mesh
 
   data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
 
@@ -187,18 +179,17 @@ def vae_decode(latents, state, pipeline):
   image = (image / 2 + 0.5).clip(0, 1).transpose(0, 2, 3, 1)
   return image
 
-def run_inference(unet_state, vae_state, checkpoint_loader):
+def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
 
-  pipeline = checkpoint_loader.pipeline
-  config = checkpoint_loader.config
-  mesh = checkpoint_loader.mesh
+  unet_state = states["unet_state"]
+  vae_state = states["vae_state"]
 
   (latents,
   prompt_embeds,
   added_cond_kwargs,
   guidance_scale,
   guidance_rescale,
-  scheduler_state) = get_unet_inputs(checkpoint_loader)
+  scheduler_state) = get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size)
 
   loop_body_p = functools.partial(loop_body, model=pipeline.unet,
                       pipeline=pipeline,
@@ -217,43 +208,75 @@ def run_inference(unet_state, vae_state, checkpoint_loader):
 def run(config):
 
   checkpoint_loader = GenerateSDXL(config)
-  checkpoint_loader.load_checkpoint()
-  unet_state, unet_state_shardings = checkpoint_loader.create_unet_state(None, training=False)
-  vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(False)
-  text_encoder_state, _ = checkpoint_loader.create_text_encoder_state(False)
-  # This will create text_encoder_2 states
-  checkpoint_loader.post_create_states_and_shard()
+  pipeline, params = checkpoint_loader.load_checkpoint()
+  unet_state, unet_state_shardings, _ = checkpoint_loader.create_unet_state(
+    pipeline,
+    params,
+    # after training, the inference state is created and saved for easy loading
+    # and memory reduction.
+    checkpoint_item_name="inference_unet_state",
+    is_training=False
+  )
 
-  checkpoint_loader.state_shardings["vae_state_shardings"] = vae_state_shardings
-  checkpoint_loader.state_shardings["unet_state_shardings"] = unet_state_shardings
+  vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
+    pipeline,
+    params,
+    checkpoint_item_name="vae_state",
+    is_training=False
+  )
+  
+  text_encoder_state, text_encoder_state_shardings = checkpoint_loader.create_text_encoder_state(
+    pipeline,
+    params,
+    checkpoint_item_name="text_encoder_state",
+    is_training=False
+  )
 
-  checkpoint_loader.train_states["unet_state"] = unet_state
-  checkpoint_loader.train_states["vae_state"] = vae_state
-  checkpoint_loader.train_states["text_encoder_state"] = text_encoder_state
+  text_encoder_2_state, text_encoder_2_state_shardings = checkpoint_loader.create_text_encoder_2_state(
+    pipeline,
+    params,
+    checkpoint_item_name="text_encoder_2_state",
+    is_training=False
+  )
 
-  state_shardings = checkpoint_loader.state_shardings
-  states = checkpoint_loader.train_states
+  states = {}
+  state_shardings = {}
+
+  state_shardings["vae_state"] = vae_state_shardings
+  state_shardings["unet_state"] = unet_state_shardings
+  state_shardings["text_encoder_state"] = text_encoder_state_shardings
+  state_shardings["text_encoder_2_state"] = text_encoder_2_state_shardings
+
+  states["unet_state"] = unet_state
+  states["vae_state"] = vae_state
+  states["text_encoder_state"] = text_encoder_state
+  states["text_encoder_2_state"] = text_encoder_2_state
 
   noise_scheduler, noise_scheduler_state = FlaxEulerDiscreteScheduler.from_pretrained(
     config.pretrained_model_name_or_path,
     revision=config.revision, subfolder="scheduler", dtype=jnp.float32
   )
 
-  checkpoint_loader.pipeline.scheduler = noise_scheduler
-  checkpoint_loader.params["scheduler"] = noise_scheduler_state
+  pipeline.scheduler = noise_scheduler
+  params["scheduler"] = noise_scheduler_state
 
   p_run_inference = jax.jit(
-    functools.partial(run_inference, checkpoint_loader=checkpoint_loader),
-    in_shardings=(state_shardings["unet_state_shardings"], state_shardings["vae_state_shardings"]),
+    functools.partial(run_inference,
+                      pipeline=pipeline,
+                      params=params,
+                      config=config,
+                      rng=checkpoint_loader.rng,
+                      mesh=checkpoint_loader.mesh,
+                      batch_size=checkpoint_loader.total_train_batch_size),
+    in_shardings=(state_shardings,),
     out_shardings=None
   )
 
   s = time.time()
-  p_run_inference(states["unet_state"], states["vae_state"]).block_until_ready()
+  p_run_inference(states).block_until_ready()
   print("compile time: ", (time.time() - s))
-  breakpoint()
   s = time.time()
-  images = p_run_inference(states["unet_state"], states["vae_state"]).block_until_ready()
+  images = p_run_inference(states).block_until_ready()
   print("inference time: ",(time.time() - s))
   images = jax.experimental.multihost_utils.process_allgather(images)
   numpy_images = np.array(images)

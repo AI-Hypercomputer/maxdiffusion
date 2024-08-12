@@ -44,7 +44,7 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
        pass
 
     @abstractmethod
-    def compile_train_step(self):
+    def compile_train_step(self, pipeline, params, train_states, state_shardings, data_shardings):
        pass
 
     @abstractmethod
@@ -52,15 +52,15 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
         pass
 
     @abstractmethod
-    def post_training_steps(self):
+    def post_training_steps(self, pipeline, params, train_states):
         pass
 
     @abstractmethod
-    def load_dataset(self):
+    def load_dataset(self, pipeline, params, train_states):
         pass
 
     @abstractmethod
-    def training_loop(self):
+    def training_loop(self, p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler):
         pass
 
     @abstractmethod
@@ -68,55 +68,91 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
         pass
 
     @abstractmethod
-    def create_scheduler(self):
+    def create_scheduler(self, pipeline, params):
         pass
 
-    def calculate_tflops(self):
-        self.per_device_tflops = maxdiffusion_utils.calculate_unet_tflops(
-            self.config, self.pipeline,
+    def calculate_tflops(self, pipeline, params):
+        per_device_tflops = maxdiffusion_utils.calculate_unet_tflops(
+            self.config, pipeline,
             (2 * self.config.per_device_batch_size * jax.local_device_count()),
             self.rng,
             train=True
         )
-        max_logging.log(f"UNET per device TFLOPS: {self.per_device_tflops}")
+        max_logging.log(f"UNET per device TFLOPS: {per_device_tflops}")
+        return per_device_tflops
 
     def start_training(self):
 
         # Hook
         self.pre_training_steps()
         # Load checkpoint - will load or create states
-        self.load_checkpoint()
-
+        pipeline, params = self.load_checkpoint()
         # create train states
-        unet_state, unet_state_mesh_shardings = self.create_unet_state(
-            training=True,
+        train_states = {}
+        state_shardings = {}
+        unet_state, unet_state_mesh_shardings, unet_learning_rate_scheduler = self.create_unet_state(
             # ambiguous here, but if self.params.get("unet") doesn't exist
-            # that means the state will be loaded directly from orbax and not diffusers ckpt.
-            params= None if self.config.train_new_unet else self.params.get("unet", None)
+            # Then its 1 of 2 scenarios:
+            # 1. unet state will be loaded directly from orbax
+            # 2. a new unet is being trained from scratch.
+            pipeline=pipeline,
+            params=params,
+            checkpoint_item_name="unet_state",
+            is_training=True,
+        )
+        train_states["unet_state"] = unet_state
+        state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
+        vae_state, vae_state_mesh_shardings = self.create_vae_state(
+            pipeline=pipeline,
+            params=params,
+            checkpoint_item_name="vae_state",
+            is_training=False
+        )
+
+        train_states["vae_state"] = vae_state
+        state_shardings["vae_state_shardings"] = vae_state_mesh_shardings
+
+        text_encoder_state, text_encoder_state_mesh_shardings = self.create_text_encoder_state(
+            pipeline=pipeline,
+            params=params,
+            checkpoint_item_name="text_encoder_state",
+            is_training=self.config.train_text_encoder
             )
-        self.train_states["unet_state"] = unet_state
-        self.state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
-
-        vae_state, vae_state_mesh_shardings = self.create_vae_state(training=False)
-        self.train_states["vae_state"] = vae_state
-        self.state_shardings["vae_state_shardings"] = vae_state_mesh_shardings
-
-        text_encoder_state, text_encoder_state_mesh_shardings = self.create_text_encoder_state(training=self.config.train_text_encoder)
-        self.train_states["text_encoder_state"] = text_encoder_state
-        self.state_shardings["text_encoder_state_shardings"] = text_encoder_state_mesh_shardings
-        self.post_create_states_and_shard()
-
+        train_states["text_encoder_state"] = text_encoder_state
+        state_shardings["text_encoder_state_shardings"] = text_encoder_state_mesh_shardings
+        if hasattr(pipeline, "text_encoder_2"):
+            text_encoder_2_state, text_encoder_2_state_mesh_shardings = self.create_text_encoder_2_state(
+                pipeline,
+                params,
+                "text_encoder_2_state",
+                is_training=self.config.train_text_encoder
+            )
+            train_states["text_encoder_2_state"] = text_encoder_2_state
+            state_shardings["text_encoder_2_state_shardings"] = text_encoder_2_state_mesh_shardings
+        
         # Create scheduler
-        self.create_scheduler()
+        noise_scheduler, noise_scheduler_state =self.create_scheduler(pipeline, params)
+        pipeline.scheduler = noise_scheduler
+        params["scheduler"] = noise_scheduler_state
+        
         # Calculate tflops
-        self.calculate_tflops()
+        per_device_tflops = self.calculate_tflops(pipeline, params)
+        self.per_device_tflops = per_device_tflops
+
         # Load dataset
-        self.load_dataset()
-        self.get_data_shardings()
+        data_iterator = self.load_dataset(pipeline, params, train_states)
+        
+        data_shardings = self.get_data_shardings()
         # Compile train_step
-        self.compile_train_step()
+        p_train_step = self.compile_train_step(
+            pipeline,
+            params,
+            train_states,
+            state_shardings,
+            data_shardings
+        )
         # Start training
-        self.training_loop()
+        train_states = self.training_loop(p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler)
         # 6. save final checkpoint
         # Hook
-        self.post_training_steps()
+        self.post_training_steps(pipeline, params, train_states)

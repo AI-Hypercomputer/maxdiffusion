@@ -50,13 +50,6 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
     def __init__(self, config, checkpoint_type = STABLE_DIFFUSION_CHECKPOINT):
         BaseStableDiffusionTrainer.__init__(self, config, checkpoint_type)
 
-    def post_create_states_and_shard(self):
-        return super().post_create_states_and_shard()
-
-    def post_training_steps(self):
-        # For example, can call self.pipeline.save_pretrained here
-        return super().post_training_steps()
-
     def pre_training_steps(self):
         return super().pre_training_steps()
 
@@ -80,31 +73,28 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
             batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
         shaped_batch = {}
         shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
-        shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+        shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.int32)
         return shaped_batch
 
-    def create_scheduler(self):
+    def create_scheduler(self, pipeline, params):
         noise_scheduler, noise_scheduler_state = FlaxDDPMScheduler.from_pretrained(
             self.config.pretrained_model_name_or_path,
             revision=self.config.revision,
             subfolder="scheduler",
             dtype=jnp.float32
         )
-        self.pipeline.scheduler = noise_scheduler
-        self.params["scheduler"] = noise_scheduler_state
+        return noise_scheduler, noise_scheduler_state
 
     def get_data_shardings(self):
-        if self.data_sharding is None:
-            data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
-            data_sharding = {
-                "input_ids" : data_sharding,
-                "pixel_values" : data_sharding
-            }
-            self.data_sharding = data_sharding
+        data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
+        data_sharding = {
+            "input_ids" : data_sharding,
+            "pixel_values" : data_sharding
+        }
 
-        return self.data_sharding
+        return data_sharding
 
-    def load_dataset(self):
+    def load_dataset(self, pipeline, params, train_states):
         if self.config.dataset_name == "diffusers/pokemon-gpt4-captions":
             p_encode = None
             p_vae_apply = None
@@ -112,21 +102,21 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
                 p_encode = jax.jit(
                     partial(
                         maxdiffusion_utils.encode,
-                        text_encoder=self.pipeline.text_encoder,
-                        text_encoder_params=self.train_states["text_encoder_state"].params
+                        text_encoder=pipeline.text_encoder,
+                        text_encoder_params=train_states["text_encoder_state"].params
                     )
                 )
                 p_vae_apply = jax.jit(
                     partial(
                         maxdiffusion_utils.vae_apply,
-                        vae=self.pipeline.vae,
-                        vae_params=self.train_states["vae_state"].params
+                        vae=pipeline.vae,
+                        vae_params=train_states["vae_state"].params
                     )
                 )
             tokenize_fn = partial(
                 maxdiffusion_utils.tokenize_captions,
                 caption_column=self.config.caption_column,
-                tokenizer=self.pipeline.tokenizer,
+                tokenizer=pipeline.tokenizer,
                 p_encode=p_encode
             )
             image_transforms_fn = partial(
@@ -137,7 +127,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
                 global_batch_size=self.total_train_batch_size,
                 p_vae_apply=p_vae_apply
             )
-            self.data_iterator = make_pokemon_train_iterator(
+            data_iterator = make_pokemon_train_iterator(
                 self.config,
                 self.mesh,
                 self.total_train_batch_size,
@@ -145,24 +135,26 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
                 image_transforms_fn
             )
         else:
-            self.data_iterator = make_laion400m_train_iterator(
+            data_iterator = make_laion400m_train_iterator(
                 self.config, self.mesh, self.total_train_batch_size
             )
+        
+        return data_iterator
 
-    def compile_train_step(self):
+    def compile_train_step(self, pipeline, params, train_states, state_shardings, data_shardings):
         self.rng, train_rngs = jax.random.split(self.rng)
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
             p_train_step = jax.jit(
-                partial(_train_step, pipeline=self.pipeline, params=self.params, config=self.config),
+                partial(_train_step, pipeline=pipeline, params=params, config=self.config),
                 in_shardings=(
-                    self.state_shardings["unet_state_shardings"],
-                    self.state_shardings["vae_state_shardings"],
+                    state_shardings["unet_state_shardings"],
+                    state_shardings["vae_state_shardings"],
                     None,
-                    self.get_data_shardings(),
+                    data_shardings,
                     None
                 ),
                 out_shardings=(
-                    self.state_shardings["unet_state_shardings"],
+                    state_shardings["unet_state_shardings"],
                     None,
                     None,
                     None
@@ -171,20 +163,21 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
             )
             max_logging.log("Precompiling...")
             s = time.time()
-            dummy_batch = self.get_shaped_batch(self.config, self.pipeline)
-            p_train_step = p_train_step.lower(self.train_states["unet_state"],
-                                            self.train_states["vae_state"],
-                                            self.train_states["text_encoder_state"],
+            dummy_batch = self.get_shaped_batch(self.config, pipeline)
+            p_train_step = p_train_step.lower(train_states["unet_state"],
+                                            train_states["vae_state"],
+                                            train_states["text_encoder_state"],
                                             dummy_batch,
                                             train_rngs)
-            self.p_train_step = p_train_step.compile()
+            p_train_step = p_train_step.compile()
             max_logging.log(f"Compile time: {(time.time() - s )}")
+            return p_train_step
 
-    def training_loop(self):
+    def training_loop(self, p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler):
         writer = max_utils.initialize_summary_writer(self.config)
-        unet_state = self.train_states["unet_state"]
-        vae_state = self.train_states["vae_state"]
-        text_encoder_state = self.train_states["text_encoder_state"]
+        unet_state = train_states["unet_state"]
+        vae_state = train_states["vae_state"]
+        text_encoder_state = train_states["text_encoder_state"]
 
         num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
 
@@ -208,12 +201,12 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
             raise ValueError("Profiling requested but initial profiling step set past training final step")
         last_profiling_step = np.clip(first_profiling_step + self.config.profiler_steps -1, first_profiling_step, self.config.max_train_steps - 1)
 
-        start_step = train_utils.get_first_step(self.train_states["unet_state"])
+        start_step = train_utils.get_first_step(train_states["unet_state"])
         _, train_rngs = jax.random.split(self.rng)
         
         for step in np.arange(start_step, self.config.max_train_steps):
-            example_batch = train_utils.load_next_batch(self.data_iterator, example_batch, self.config)
-            unet_state, text_encoder_state, train_metric, train_rngs = self.p_train_step(
+            example_batch = train_utils.load_next_batch(data_iterator, example_batch, self.config)
+            unet_state, text_encoder_state, train_metric, train_rngs = p_train_step(
                 unet_state,
                 vae_state,
                 text_encoder_state,
@@ -223,7 +216,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
             samples_count = self.total_train_batch_size * (step + 1)
             new_time = datetime.datetime.now()
 
-            train_utils.record_scalar_metrics(train_metric, new_time - last_step_completion, self.per_device_tflops, self.unet_learning_rate_scheduler(step))
+            train_utils.record_scalar_metrics(train_metric, new_time - last_step_completion, self.per_device_tflops, unet_learning_rate_scheduler(step))
             if self.config.write_metrics:
                 train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
             last_step_completion = new_time
@@ -233,19 +226,19 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
                 max_utils.deactivate_profiler(self.config)
 
             if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
-                self.train_states["unet_state"] = unet_state
-                self.train_states["vae_state"] = vae_state
-                self.train_states["text_encoder"] = text_encoder_state  
-                self.save_checkpoint(step)
+                train_states["unet_state"] = unet_state
+                train_states["vae_state"] = vae_state
+                train_states["text_encoder"] = text_encoder_state  
+                self.save_checkpoint(step, pipeline, params, train_states, save_inference_states=False)
 
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
 
-        self.train_states["unet_state"] = unet_state
-        self.train_states["vae_state"] = vae_state
-        self.train_states["text_encoder"] = text_encoder_state
+        train_states["unet_state"] = unet_state
+        train_states["vae_state"] = vae_state
+        train_states["text_encoder"] = text_encoder_state
         # save the inference states of the last checkpoint so they can be easily loaded during gen.
-        self.save_checkpoint(step,save_inference_states=True)
+        self.save_checkpoint(step, pipeline, params, train_states, save_inference_states=True)
         self.checkpoint_manager.wait_until_finished()
 
 def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, pipeline, params, config):
