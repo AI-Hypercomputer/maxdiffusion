@@ -16,6 +16,7 @@
 
 """ Smoke test """
 import os
+import functools
 import unittest
 from absl.testing import absltest
 
@@ -62,7 +63,8 @@ class UnetTest(unittest.TestCase):
     encoder_hidden_states = jnp.ones((4, 77, 1024))
 
     variables = jax.jit(unet.init)(k, latents, timesteps, encoder_hidden_states)
-    unboxed_abstract_state, state_mesh_annotations, _ = max_utils.get_abstract_state(unet, tx, config, mesh, variables['params'])
+    weights_init_fn = functools.partial(unet.init_weights, rng=self.rng)
+    unboxed_abstract_state, state_mesh_annotations, _ = max_utils.get_abstract_state(unet, tx, config, mesh, weights_init_fn,False)
     del variables
     conv_sharding = PartitionSpec(None, None, None, 'fsdp')
     qkv_sharding = PartitionSpec('fsdp', 'tensor')
@@ -80,12 +82,14 @@ class UnetTest(unittest.TestCase):
 
     state, state_mesh_shardings = max_utils.setup_initial_state(
       unet,
-      tx,config,
+      tx,
+      config,
       mesh,
-      rng,
-      params,
-      unboxed_abstract_state,
-      state_mesh_annotations
+      weights_init_fn,
+      None,
+      None,
+      None,
+      False
     )
 
     # Validate named shardings.

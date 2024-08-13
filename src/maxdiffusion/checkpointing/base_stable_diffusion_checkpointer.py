@@ -16,6 +16,7 @@
  """
 
 from abc import ABC
+from contextlib import nullcontext
 import os
 import json
 import functools
@@ -185,7 +186,13 @@ class BaseStableDiffusionCheckpointer(ABC):
 
         precision = max_utils.get_precision(self.config)
         flash_block_sizes = max_utils.get_flash_block_sizes(self.config)
-        with jax.default_device(jax.devices('cpu')[0]):
+
+        # Multiprocess computations aren't implemented on cpu backend.
+        if jax.device_count() == jax.local_device_count():
+            context = jax.default_device(jax.devices('cpu')[0])
+        else:
+            context = nullcontext()
+        with context:
             pipeline, params = pipeline_class.from_pretrained(
                 self.config.pretrained_model_name_or_path,
                 revision=self.config.revision,
