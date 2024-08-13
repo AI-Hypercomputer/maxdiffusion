@@ -63,8 +63,8 @@ class UnetTest(unittest.TestCase):
     encoder_hidden_states = jnp.ones((4, 77, 1024))
 
     variables = jax.jit(unet.init)(k, latents, timesteps, encoder_hidden_states)
-    weights_init_fn = functools.partial(unet.init_weights, rng=self.rng)
-    unboxed_abstract_state, state_mesh_annotations, _ = max_utils.get_abstract_state(unet, tx, config, mesh, weights_init_fn,False)
+    weights_init_fn = functools.partial(unet.init_weights, rng=rng)
+    _, state_mesh_annotations, _ = max_utils.get_abstract_state(unet, tx, config, mesh, weights_init_fn,False)
     del variables
     conv_sharding = PartitionSpec(None, None, None, 'fsdp')
     qkv_sharding = PartitionSpec('fsdp', 'tensor')

@@ -71,12 +71,14 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
             batch_ids_shape = (total_train_batch_size,
                             pipeline.text_encoder.config.max_position_embeddings,
                             pipeline.text_encoder.config.hidden_size)
+            input_ids_dtype = jnp.float32
         else:
             batch_image_shape = (total_train_batch_size, 3, config.resolution, config.resolution)
             batch_ids_shape = (total_train_batch_size, pipeline.text_encoder.config.max_position_embeddings)
+            input_ids_dtype = jnp.int32
         shaped_batch = {}
         shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
-        shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
+        shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, input_ids_dtype)
         return shaped_batch
 
     def create_scheduler(self, pipeline, params):

@@ -17,6 +17,7 @@
 """ Smoke test """
 import os
 import unittest
+import functools
 from absl.testing import absltest
 
 import jax
@@ -60,7 +61,8 @@ class VaeTest(unittest.TestCase):
     latents = jnp.ones((4,4,96,96), dtype=jnp.float32)
 
     variables = jax.jit(vae.init)(k, latents)
-    unboxed_abstract_state, state_mesh_annotations, _ = max_utils.get_abstract_state(vae, tx, config, mesh, variables['params'])
+    weights_init_fn = functools.partial(vae.init_weights, rng=rng)
+    _, state_mesh_annotations, _ = max_utils.get_abstract_state(vae, tx, config, mesh, weights_init_fn, False)
     del variables
     qkv_sharding = PartitionSpec(None, None)
     conv_sharding = PartitionSpec(None, None, None, 'fsdp')
@@ -70,19 +72,23 @@ class VaeTest(unittest.TestCase):
     assert state_mesh_annotations.params['decoder']['mid_block']['attentions_0']['query']['kernel'] == qkv_sharding
     assert state_mesh_annotations.params['decoder']['mid_block']['attentions_0']['value']['kernel'] == qkv_sharding
 
-    vae_state, vae_state_state_mesh_shardings = max_utils.setup_initial_state(
+    _, vae_state_state_mesh_shardings = max_utils.setup_initial_state(
       vae,
       tx,
       config,
       mesh,
-      rng,
-      vae_params
+      weights_init_fn,
+      None,
+      None,
+      None,
+      False
     )
 
-    conv_sharding = PartitionSpec()
-    qkv_sharding = PartitionSpec()
+    conv_sharding = PartitionSpec(None, None, None, 'fsdp')
+    qkv_sharding = PartitionSpec(None, None)
     qkv_named_sharding = NamedSharding(mesh, qkv_sharding)
     conv_named_sharding = NamedSharding(mesh, conv_sharding)
+
     assert vae_state_state_mesh_shardings.params['decoder']['mid_block']['resnets_0']['conv1']['kernel'] == conv_named_sharding
     assert vae_state_state_mesh_shardings.params['decoder']['mid_block']['resnets_0']['conv2']['kernel'] == conv_named_sharding
     assert vae_state_state_mesh_shardings.params['decoder']['mid_block']['attentions_0']['key']['kernel'] == qkv_named_sharding
