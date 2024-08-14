@@ -258,8 +258,6 @@ def create_device_mesh(config, devices=None, logging=True):
     num_slices = 1
   num_devices_per_slice = num_devices//num_slices
   max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
-  assert len(devices) > 1, "You must have at least two devices"
-
 
   ici_parallelism = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
 
