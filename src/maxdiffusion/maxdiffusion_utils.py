@@ -216,6 +216,8 @@ def tokenize_captions(examples, caption_column, tokenizer, input_ids_key="input_
     if p_encode:
         encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
         examples[input_ids_key] = encoder_hidden_states
+        # pyarrow dataset doesn't support bf16, so cast to float32
+        examples[input_ids_key] = np.float32(examples[input_ids_key])
     else:
         examples[input_ids_key] = text_inputs.input_ids
     return examples
