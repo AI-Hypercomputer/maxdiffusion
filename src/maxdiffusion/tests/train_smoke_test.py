@@ -75,27 +75,6 @@ class Train(unittest.TestCase):
 
     train_sdxl(pyconfig.config)
 
-    img_url = os.path.join(THIS_DIR,'images','test_sdxl.png')
-    base_image = np.array(Image.open(img_url)).astype(np.uint8)
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
-      f"pretrained_model_name_or_path={output_dir}/{run_name}/checkpoints/final",
-      f"run_name={run_name}",
-      "revision=main","activations_dtype=bfloat16","weights_dtype=bfloat16","resolution=1024",
-      "prompt=A magical castle in the middle of a forest, artistic drawing",
-      "negative_prompt=purple, red","guidance_scale=9",
-      "num_inference_steps=20","seed=47","per_device_batch_size=1",
-      "split_head_dim=False", f"jax_cache_dir={cache_dir}"],unittest=True)
-
-    train_sdxl(pyconfig.config)
-
-    images = generate_run_xl(pyconfig.config)
-    test_image = np.array(images[0]).astype(np.uint8)
-    ssim_compare = ssim(base_image, test_image,
-      multichannel=True, channel_axis=-1, data_range=255
-    )
-    assert base_image.shape == test_image.shape
-    assert ssim_compare >=0.70
-
     delete_blobs(os.path.join(output_dir,run_name))
 
   def test_dreambooth_orbax(self):

@@ -34,7 +34,8 @@ from maxdiffusion import pyconfig
 from maxdiffusion.image_processor import VaeImageProcessor
 from maxdiffusion.maxdiffusion_utils import (
   get_add_time_ids,
-  rescale_noise_cfg
+  rescale_noise_cfg,
+  load_sdxllightning_unet
 )
 
 from maxdiffusion.trainers.sdxl_trainer import (
@@ -103,14 +104,6 @@ def tokenize(prompt, pipeline):
   return inputs
 
 def get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size):
-
-  # rng = checkpoint_loader.rng
-  # batch_size = checkpoint_loader.total_train_batch_size
-  # params = checkpoint_loader.params
-  # states = checkpoint_loader.train_states
-  # config = checkpoint_loader.config
-  # pipeline = checkpoint_loader.pipeline
-  # mesh = checkpoint_loader.mesh
 
   data_sharding = jax.sharding.NamedSharding(mesh,P(*config.data_sharding))
 
@@ -203,14 +196,15 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
     return image
 
 def run(config):
-
   checkpoint_loader = GenerateSDXL(config)
   pipeline, params = checkpoint_loader.load_checkpoint()
+  
+  if config.lightning_repo:
+    pipeline, params = load_sdxllightning_unet(config, pipeline, params)
+    
   unet_state, unet_state_shardings, _ = checkpoint_loader.create_unet_state(
     pipeline,
     params,
-    # after training, the inference state is created and saved for easy loading
-    # and memory reduction.
     checkpoint_item_name="inference_unet_state",
     is_training=False
   )

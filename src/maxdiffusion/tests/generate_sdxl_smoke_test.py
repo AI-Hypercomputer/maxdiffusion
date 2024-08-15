@@ -65,6 +65,19 @@ class Generate(unittest.TestCase):
     )
     assert base_image.shape == test_image.shape
     assert ssim_compare >=0.70
+  
+  def test_sdxl_lightning(self):
+    img_url = os.path.join(THIS_DIR,'images','test_lightning.png')
+    base_image = np.array(Image.open(img_url)).astype(np.uint8)
+    pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base_xl_lightning.yml'),
+      "run_name=sdxl-lightning-test"], unittest=True)
+    images = generate_run_xl(pyconfig.config)
+    test_image = np.array(images[0]).astype(np.uint8)
+    ssim_compare = ssim(base_image, test_image,
+      multichannel=True, channel_axis=-1, data_range=255
+    )
+    assert base_image.shape == test_image.shape
+    assert ssim_compare >=0.70
 
 if __name__ == '__main__':
   absltest.main()
