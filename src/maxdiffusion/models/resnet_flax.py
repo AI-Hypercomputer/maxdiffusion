@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable, Tuple, Union
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+from .conv_general import ConvGeneral
 # Not sure which initializer to use, ruff was complaining, so added an ignore
 # from jax.nn import initializers # noqa: F811
 
@@ -34,6 +35,8 @@ InitializerAxis = Union[int, Tuple[int, ...]]
 NdInitializer = Callable[
     [PRNGKey, Shape, DType, InitializerAxis, InitializerAxis], Array]
 
+#conv = nn.Conv
+conv = ConvGeneral
 class FlaxUpsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
