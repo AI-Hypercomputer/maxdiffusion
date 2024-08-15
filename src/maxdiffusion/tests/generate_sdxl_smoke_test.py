@@ -65,7 +65,7 @@ class Generate(unittest.TestCase):
     )
     assert base_image.shape == test_image.shape
     assert ssim_compare >=0.70
-  
+
   def test_sdxl_lightning(self):
     img_url = os.path.join(THIS_DIR,'images','test_lightning.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)

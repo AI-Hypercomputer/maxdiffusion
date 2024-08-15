@@ -25,7 +25,6 @@ from maxdiffusion.train_sdxl import train as train_sdxl
 from maxdiffusion.dreambooth.train_dreambooth import train as train_orbax_dreambooth
 from ..import pyconfig
 from maxdiffusion.generate import run as generate_run
-from maxdiffusion.generate_sdxl import run as generate_run_xl
 from absl.testing import absltest
 from google.cloud import storage
 from skimage.metrics import structural_similarity as ssim

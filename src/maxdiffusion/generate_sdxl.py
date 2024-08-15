@@ -198,10 +198,10 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
 def run(config):
   checkpoint_loader = GenerateSDXL(config)
   pipeline, params = checkpoint_loader.load_checkpoint()
-  
+
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
-    
+
   unet_state, unet_state_shardings, _ = checkpoint_loader.create_unet_state(
     pipeline,
     params,

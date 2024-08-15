@@ -52,7 +52,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
 
     def pre_training_steps(self):
         return super().pre_training_steps()
-    
+
     def post_training_steps(self, pipeline, params, train_states):
         return super().post_training_steps(pipeline, params, train_states)
 
