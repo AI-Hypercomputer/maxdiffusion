@@ -299,6 +299,9 @@ class ConvGeneral(Module):
       bias = None
 
     inputs, kernel, bias = promote_dtype(inputs, kernel, bias, dtype=self.dtype)
+
+    kernel = nn.with_logical_constraint(kernel,  (None, None, None, None))
+
     if self.shared_weights:
       if self.conv_general_dilated_cls is not None:
         conv_general_dilated = self.conv_general_dilated_cls()
