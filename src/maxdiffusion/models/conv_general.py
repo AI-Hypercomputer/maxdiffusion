@@ -230,48 +230,13 @@ class ConvGeneral(Module):
     dimension_numbers = _conv_dimension_numbers(inputs.shape)
     in_features = jnp.shape(inputs)[-1]
 
-    if self.shared_weights:
-      # One shared convolutional kernel for all pixels in the output.
-      assert in_features % self.feature_group_count == 0
-      kernel_shape = kernel_size + (
-        in_features // self.feature_group_count,
-        self.features,
-      )
+    # One shared convolutional kernel for all pixels in the output.
+    assert in_features % self.feature_group_count == 0
+    kernel_shape = kernel_size + (
+      in_features // self.feature_group_count,
+      self.features,
+    )
 
-    else:
-      if self.feature_group_count != 1:
-        raise NotImplementedError(
-          '`lax.conv_general_dilated_local` does not support '
-          f'`feature_group_count != 1`, got `{self.feature_group_count}`.'
-        )
-
-      # Need to know the spatial output shape of a standard convolution to
-      # create the unshared convolution kernel.
-      if self.conv_general_dilated_cls is not None:
-        conv_general_dilated = self.conv_general_dilated_cls()
-      elif self.conv_general_dilated is not None:
-        conv_general_dilated = self.conv_general_dilated
-      else:
-        conv_general_dilated = lax.conv_general_dilated
-      conv_output_shape = eval_shape(
-        lambda lhs, rhs: conv_general_dilated(  # pylint: disable=g-long-lambda
-          lhs=lhs,
-          rhs=rhs,
-          window_strides=strides,
-          padding=padding_lax,
-          dimension_numbers=dimension_numbers,
-          lhs_dilation=input_dilation,
-          rhs_dilation=kernel_dilation,
-        ),
-        inputs,
-        ShapedArray(kernel_size + (in_features, self.features), inputs.dtype),
-      ).shape
-
-      # One (unshared) convolutional kernel per each pixel in the output.
-      kernel_shape = conv_output_shape[1:-1] + (
-        np.prod(kernel_size) * in_features,
-        self.features,
-      )
 
     if self.mask is not None and self.mask.shape != kernel_shape:
       raise ValueError(
@@ -287,12 +252,8 @@ class ConvGeneral(Module):
       kernel *= self.mask
 
     if self.use_bias:
-      if self.shared_weights:
-        # One bias weight per output channel, shared between pixels.
-        bias_shape = (self.features,)
-      else:
-        # One bias weight per output entry, unshared betwen pixels.
-        bias_shape = conv_output_shape[1:]
+      # One bias weight per output channel, shared between pixels.
+      bias_shape = (self.features,)
 
       bias = self.param('bias', self.bias_init, bias_shape, self.param_dtype)
     else:
@@ -302,36 +263,23 @@ class ConvGeneral(Module):
 
     kernel = nn.with_logical_constraint(kernel,  (None, None, None, None))
 
-    if self.shared_weights:
-      if self.conv_general_dilated_cls is not None:
-        conv_general_dilated = self.conv_general_dilated_cls()
-      elif self.conv_general_dilated is not None:
-        conv_general_dilated = self.conv_general_dilated
-      else:
-        conv_general_dilated = lax.conv_general_dilated
-      y = conv_general_dilated(
-        inputs,
-        kernel,
-        strides,
-        padding_lax,
-        lhs_dilation=input_dilation,
-        rhs_dilation=kernel_dilation,
-        dimension_numbers=dimension_numbers,
-        feature_group_count=self.feature_group_count,
-        precision=self.precision,
-      )
+    if self.conv_general_dilated_cls is not None:
+      conv_general_dilated = self.conv_general_dilated_cls()
+    elif self.conv_general_dilated is not None:
+      conv_general_dilated = self.conv_general_dilated
     else:
-      y = lax.conv_general_dilated_local(
-        lhs=inputs,
-        rhs=kernel,
-        window_strides=strides,
-        padding=padding_lax,
-        filter_shape=kernel_size,
-        lhs_dilation=input_dilation,
-        rhs_dilation=kernel_dilation,
-        dimension_numbers=dimension_numbers,
-        precision=self.precision,
-      )
+      conv_general_dilated = lax.conv_general_dilated
+    y = conv_general_dilated(
+      inputs,
+      kernel,
+      strides,
+      padding_lax,
+      lhs_dilation=input_dilation,
+      rhs_dilation=kernel_dilation,
+      dimension_numbers=dimension_numbers,
+      feature_group_count=self.feature_group_count,
+      precision=self.precision,
+    )
 
     if self.use_bias:
       bias = bias.reshape((1,) * (y.ndim - bias.ndim) + bias.shape)  # type: ignore
