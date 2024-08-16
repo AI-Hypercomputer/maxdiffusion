@@ -41,7 +41,7 @@ class FlaxUpsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
     def setup(self):
-        self.conv = nn.Conv(
+        self.conv = conv(
             self.out_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
@@ -80,7 +80,7 @@ class FlaxDownsample2D(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.conv = nn.Conv(
+        self.conv = conv(
             self.out_channels,
             kernel_size=(3, 3),
             strides=(2, 2),
@@ -121,7 +121,7 @@ class FlaxResnetBlock2D(nn.Module):
 
         self.conv_shortcut = None
         if use_nin_shortcut:
-            self.conv_shortcut = nn.Conv(
+            self.conv_shortcut = conv(
                 out_channels,
                 kernel_size=(1, 1),
                 strides=(1, 1),
@@ -133,7 +133,7 @@ class FlaxResnetBlock2D(nn.Module):
             )
             )
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
-        self.conv1 = nn.Conv(
+        self.conv1 = conv(
             out_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
@@ -149,7 +149,7 @@ class FlaxResnetBlock2D(nn.Module):
            out_channels,
            dtype=self.dtype,
            )
-        self.conv2 = nn.Conv(
+        self.conv2 = conv(
             out_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
