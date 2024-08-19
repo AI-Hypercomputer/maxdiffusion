@@ -296,11 +296,6 @@ def is_torch_xla_available():
 def is_flax_available():
     return _flax_available
 
-
-def is_transformers_available():
-    return _transformers_available
-
-
 def is_inflect_available():
     return _inflect_available
 
@@ -500,7 +495,6 @@ BACKENDS_MAPPING = OrderedDict(
         ("opencv", (is_opencv_available, OPENCV_IMPORT_ERROR)),
         ("scipy", (is_scipy_available, SCIPY_IMPORT_ERROR)),
         ("torch", (is_torch_available, PYTORCH_IMPORT_ERROR)),
-        ("transformers", (is_transformers_available, TRANSFORMERS_IMPORT_ERROR)),
         ("unidecode", (is_unidecode_available, UNIDECODE_IMPORT_ERROR)),
         ("librosa", (is_librosa_available, LIBROSA_IMPORT_ERROR)),
         ("k_diffusion", (is_k_diffusion_available, K_DIFFUSION_IMPORT_ERROR)),
@@ -706,13 +700,7 @@ class _LazyModule(ModuleType):
         return value
 
     def _get_module(self, module_name: str):
-        try:
-            return importlib.import_module("." + module_name, self.__name__)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to import {self.__name__}.{module_name} because of the following error (look up to see its"
-                f" traceback):\n{e}"
-            ) from e
+        return importlib.import_module("." + module_name, self.__name__)
 
     def __reduce__(self):
         return (self.__class__, (self._name, self.__file__, self._import_structure))

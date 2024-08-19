@@ -19,6 +19,7 @@
 """ Common Max Utils needed by multiple modules"""
 import functools
 from functools import reduce
+from contextlib import nullcontext
 import json
 import yaml
 import os
@@ -31,7 +32,8 @@ import flax
 import jax
 import jax.numpy as jnp
 import optax
-from maxdiffusion import checkpointing, max_logging
+from maxdiffusion import max_logging
+from maxdiffusion.checkpointing import checkpointing_utils
 from maxdiffusion.models.attention_flax import AttentionOp
 from flax import linen as nn
 import flax.linen as nn
@@ -222,16 +224,6 @@ def walk_and_upload_blobs(config, output_dir):
       uploaded_files.add(file_to_upload)
       max_logging.log(f"File {file_to_upload} moved successfully!")
 
-def initialize_jax_distributed_system():
-  """ The best recipe to initialize the Jax Distributed System has varied over time. We keep a layer of
-      indirection in MaxText to avoid breaking the call sites unnecessarily.
-
-      Currently jax.distributed.initialize() fully works as expected!
-  """
-  max_logging.log("Attempting to initialize the jax distributed system...")
-  jax.distributed.initialize()
-  max_logging.log("Jax distributed system initialized!")
-
 def device_put_replicated(x, sharding):
   return jax.make_array_from_callback(x.shape, sharding, lambda index: x[index])
 
@@ -266,8 +258,6 @@ def create_device_mesh(config, devices=None, logging=True):
     num_slices = 1
   num_devices_per_slice = num_devices//num_slices
   max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
-  assert len(devices) > 1, "You must have at least two devices"
-
 
   ici_parallelism = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
 
@@ -295,7 +285,7 @@ def unbox_logicallypartioned_trainstate(
         else x, boxed_train_state, \
         is_leaf=lambda k: isinstance(k, flax.linen.spmd.LogicallyPartitioned))
 
-def init_train_state(model_params, model, tx, training=True):
+def init_train_state(model, tx, weights_init_fn, training=True, eval_only=False):
   """
   We pass in "static" objects like model, tx, config, as JAX compares them by
   object hash, and instantiating them inside causes pjit top-level annotations
@@ -303,27 +293,53 @@ def init_train_state(model_params, model, tx, training=True):
 
   Args: model_params, model, tx, training
   """
+  model_params = weights_init_fn(eval_only=eval_only)
   if training:
     state = train_state.TrainState.create(
-      apply_fn=model.apply,
+      apply_fn=model.apply if hasattr(model, 'apply') else model.__call__,
       params=model_params,
       tx=tx)
   else:
-    state = InferenceState(apply_fn=model.apply, params=model_params)
+    state = InferenceState(
+      apply_fn=model.apply if hasattr(model, 'apply') else model.__call__,
+      params=model_params)
   return state
 
-def get_abstract_state(model, tx, config, mesh, model_params, training=True):
+def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
   """ Get a shaped abstraction of the state (including optimizer)"""
-  abstract_state = jax.eval_shape(functools.partial(init_train_state, model=model, tx=tx, training=training), model_params=model_params)
+  init_state_partial = functools.partial(
+    init_train_state, model=model, tx=tx,weights_init_fn=weights_init_fn, training=training, eval_only=True
+  )
+  with nn_partitioning.axis_rules(config.logical_axis_rules):
+    abstract_state = jax.eval_shape(init_state_partial)
+  
   state_logical_annotations = nn.get_partition_spec(abstract_state)
-  unboxed_abstract_state = unbox_logicallypartioned_trainstate(abstract_state)
+  
+  state_mesh_shardings = nn.logical_to_mesh_sharding(
+    state_logical_annotations, mesh, config.logical_axis_rules
+  )
+
+  abstract_sharded_state = jax.jit(
+    init_state_partial, in_shardings=None, out_shardings=state_mesh_shardings
+  ).eval_shape()
+  unboxed_sharded_abstract_state = unbox_logicallypartioned_trainstate(abstract_sharded_state)
 
   # Initialization
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
     state_mesh_annotations = nn.logical_to_mesh(state_logical_annotations)
-  return unboxed_abstract_state, state_mesh_annotations
+  return unboxed_sharded_abstract_state, state_mesh_annotations, state_mesh_shardings
 
-def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_state, state_mesh_annotations, checkpoint_manager=None, training=True):
+def setup_initial_state(
+    model,
+    tx,
+    config,
+    mesh,
+    weights_init_fn,
+    model_params = None,
+    checkpoint_manager=None,
+    checkpoint_item=None,
+    training=True
+  ):
   """ We initialize the model and optimizer state, and optionally load from a
   checkpoint as necessary.
 
@@ -342,87 +358,58 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
     state: the initialized train state
     state_mesh_annotations: the mesh annotations for the train state
   """
-
+  max_logging.log(f"setup_initial_state for {checkpoint_item}")
   # Initialization
   state = None
+  unboxed_abstract_state, _, state_mesh_shardings = get_abstract_state(
+    model, tx, config, mesh, weights_init_fn, training)
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     if checkpoint_manager:
-      state, raw_params = checkpointing.load_state_if_possible(checkpoint_manager,
-                                                  config.load_parameters_path,
-                                                  config.load_from_other_directory,
-                                                  config.load_from_other_directory_step,
-                                                  unboxed_abstract_state,
-                                                  mesh,
-                                                  state_mesh_annotations)
+      state = checkpointing_utils.load_state_if_possible(checkpoint_manager,
+                                                  unboxed_abstract_state, checkpoint_item)
+      if state:
+        state = state[checkpoint_item]
+    if not state:
+      max_logging.log(f"Could not find {checkpoint_item} in orbax, creating state...")
+      # for DDP needs replication before jit state.
+      if config.ici_data_parallelism == -1 or config.dcn_data_parallelism == -1:
+        sharding = PositionalSharding(mesh.devices).replicate()
+        partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
+        model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
 
-    state_mesh_shardings = jax.tree_util.tree_map(
-        lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
-  if not state:
-    init_train_state_partial = functools.partial(init_train_state, model=model, tx=tx, training=training)
+      init_train_state_partial = functools.partial(init_train_state,
+                                                    model=model,
+                                                    tx=tx,
+                                                    weights_init_fn=weights_init_fn,
+                                                    training=training,
+                                                    eval_only=False
+                                                   )
 
-    sharding = PositionalSharding(mesh.devices).replicate()
-    partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
-    model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
-
-    with jax.transfer_guard("disallow"):
       state = jax.jit(
           init_train_state_partial,
           in_shardings=None,
           out_shardings=state_mesh_shardings
-      )(model_params=model_params)
+      )()
+      if model_params:
+        state = state.replace(params=model_params)
+      else:
+        # this should only be the case when training a new model from scratch.
+        # else, its possible a model is being loaded from a wrong dir path.
+        max_logging.log(f"model_params is None, random init weights have been loaded...")
 
   state = unbox_logicallypartioned_trainstate(state)
 
-  state_mesh_shardings = jax.tree_util.tree_map(
-    lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
   return state, state_mesh_shardings
-
-def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, training=True):
-  
-  # Needed to initialize weights on multi-host with addressable devices.
-  if config.train_new_unet:
-    unet_variables = jax.jit(pipeline.unet.init_weights, static_argnames=["eval_only"])(rng, eval_only=False)
-  else:
-    unet_variables = pipeline.unet.init_weights(rng, eval_only=True)
-
-  unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.unet, tx, config, mesh, unet_variables, training=training)
-  if config.train_new_unet:
-    unet_params = unet_variables
-  else:
-    del unet_variables
-  unet_state, unet_state_mesh_shardings = setup_initial_state(
-  pipeline.unet,
-  tx,
-  config,
-  mesh,
-  unet_params,
-  unboxed_abstract_state,
-  state_mesh_annotations,
-  training=training)
-
-  vae_state = None
-  vae_state_mesh_shardings = None
-  if vae_params:
-    vae_variables = jax.jit(pipeline.vae.init_weights)(rng)
-    unboxed_abstract_state, state_mesh_annotations = get_abstract_state(pipeline.vae, tx, config, mesh, vae_variables, training=training)
-    del vae_variables
-    vae_state, vae_state_mesh_shardings = setup_initial_state(
-        pipeline.vae,
-        tx,
-        config,
-        mesh,
-        vae_params,
-        unboxed_abstract_state,
-        state_mesh_annotations,
-        training=training
-    )
-
-  return unet_state, unet_state_mesh_shardings, vae_state, vae_state_mesh_shardings
 
 # Learning Rate Schedule
 # -----------------------------------------------------------------------------
 
-def create_learning_rate_schedule(config):
+def create_learning_rate_schedule(
+    learning_rate,
+    learning_rate_schedule_steps,
+    warmup_steps_fraction,
+    max_train_steps
+  ):
   """Creates a warmup to constant learning rate schedule:
   We take inspiration from WarmupHoldPolicy used in stable diffusion
     see https://github.com/NVIDIA/NeMo/blob/dbc8a6ee490355bfa0cb1e10b8d199dcc47482e0/nemo/core/optim/lr_scheduler.py#L142
@@ -430,10 +417,10 @@ def create_learning_rate_schedule(config):
   1) Linear warmup from 0 to [learning_rate] over steps 0 to [learning_rate_schedule_steps * warmup_steps_fraction]
   2) Constant learning rate of 0 afterwards.
   """
-  lr = config.learning_rate
+  lr = learning_rate
 
-  warmup_steps = int(config.learning_rate_schedule_steps * config.warmup_steps_fraction)
-  constant_zero_steps = config.max_train_steps - warmup_steps
+  warmup_steps = int(learning_rate_schedule_steps * warmup_steps_fraction)
+  constant_zero_steps = max_train_steps - warmup_steps
 
   warmup_schedule = optax.linear_schedule(
       init_value=0.0,
@@ -450,6 +437,14 @@ def create_learning_rate_schedule(config):
 
   return optax.join_schedules(pieces, boundaries)
 
+def create_optimizer(config, learning_rate_scheduler):
+  return optax.adamw(
+    learning_rate=learning_rate_scheduler,
+    b1=config.adam_b1,
+    b2=config.adam_b2,
+    eps=config.adam_eps,
+    weight_decay=config.adam_weight_decay
+  )
 
 def get_precision(config):
   """Get precision from config."""
@@ -551,3 +546,9 @@ def calculate_num_params_from_pytree(params):
   params_sizes = jax.tree_util.tree_map(jax.numpy.size, params)
   total_parameters = jax.tree_util.tree_reduce(lambda x, y: x + y, params_sizes)
   return total_parameters
+
+def get_global_batch_size(config):
+  return config.per_device_batch_size * jax.device_count()
+
+def maybe_initialize_jax_distributed_system(raw_keys):
+  jax.distributed.initialize()

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warnings
 from functools import partial
 from typing import Dict, List, Optional, Union
 
@@ -21,11 +20,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
-from flax.jax_utils import unreplicate
-from flax.training.common_utils import shard
 from packaging import version
-from PIL import Image
-from transformers import CLIPImageProcessor, CLIPTokenizer, FlaxCLIPTextModel
+from maxdiffusion.transformers import CLIPTokenizer, FlaxCLIPTextModel
 
 from ...models import FlaxAutoencoderKL, FlaxUNet2DConditionModel
 from ...schedulers import (
@@ -37,8 +33,6 @@ from ...schedulers import (
 from ...utils import deprecate, logging, replace_example_docstring
 from ..pipeline_flax_utils import FlaxDiffusionPipeline
 from .pipeline_output import FlaxStableDiffusionPipelineOutput
-from .safety_checker_flax import FlaxStableDiffusionSafetyChecker
-
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -99,12 +93,6 @@ class FlaxStableDiffusionPipeline(FlaxDiffusionPipeline):
             A scheduler to be used in combination with `unet` to denoise the encoded image latents. Can be one of
             [`FlaxDDIMScheduler`], [`FlaxLMSDiscreteScheduler`], [`FlaxPNDMScheduler`], or
             [`FlaxDPMSolverMultistepScheduler`].
-        safety_checker ([`FlaxStableDiffusionSafetyChecker`]):
-            Classification module that estimates whether generated images could be considered offensive or harmful.
-            Please refer to the [model card](https://huggingface.co/runwayml/stable-diffusion-v1-5) for more details
-            about a model's potential harms.
-        feature_extractor ([`~transformers.CLIPImageProcessor`]):
-            A `CLIPImageProcessor` to extract features from generated images; used as inputs to the `safety_checker`.
     """
 
     def __init__(
@@ -116,22 +104,10 @@ class FlaxStableDiffusionPipeline(FlaxDiffusionPipeline):
         scheduler: Union[
             FlaxDDIMScheduler, FlaxPNDMScheduler, FlaxLMSDiscreteScheduler, FlaxDPMSolverMultistepScheduler
         ],
-        safety_checker: FlaxStableDiffusionSafetyChecker,
-        feature_extractor: CLIPImageProcessor,
         dtype: jnp.dtype = jnp.float32,
     ):
         super().__init__()
         self.dtype = dtype
-
-        if safety_checker is None:
-            logger.warning(
-                f"You have disabled the safety checker for {self.__class__} by passing `safety_checker=None`. Ensure"
-                " that you abide to the conditions of the Stable Diffusion license and do not expose unfiltered"
-                " results in services or applications open to the public. Both the diffusers team and Hugging Face"
-                " strongly recommend to keep the safety filter enabled in all public facing circumstances, disabling"
-                " it only for use-cases that involve analyzing network behavior or auditing its results. For more"
-                " information, please have a look at https://github.com/huggingface/diffusers/pull/254 ."
-            )
 
         is_unet_version_less_0_9_0 = hasattr(unet.config, "_diffusers_version") and version.parse(
             version.parse(unet.config._diffusers_version).base_version
@@ -159,9 +135,7 @@ class FlaxStableDiffusionPipeline(FlaxDiffusionPipeline):
             text_encoder=text_encoder,
             tokenizer=tokenizer,
             unet=unet,
-            scheduler=scheduler,
-            safety_checker=safety_checker,
-            feature_extractor=feature_extractor,
+            scheduler=scheduler
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
 
@@ -177,40 +151,6 @@ class FlaxStableDiffusionPipeline(FlaxDiffusionPipeline):
             return_tensors="np",
         )
         return text_input.input_ids
-
-    def _get_has_nsfw_concepts(self, features, params):
-        has_nsfw_concepts = self.safety_checker(features, params)
-        return has_nsfw_concepts
-
-    def _run_safety_checker(self, images, safety_model_params, jit=False):
-        # safety_model_params should already be replicated when jit is True
-        pil_images = [Image.fromarray(image) for image in images]
-        features = self.feature_extractor(pil_images, return_tensors="np").pixel_values
-
-        if jit:
-            features = shard(features)
-            has_nsfw_concepts = _p_get_has_nsfw_concepts(self, features, safety_model_params)
-            has_nsfw_concepts = unshard(has_nsfw_concepts)
-            safety_model_params = unreplicate(safety_model_params)
-        else:
-            has_nsfw_concepts = self._get_has_nsfw_concepts(features, safety_model_params)
-
-        images_was_copied = False
-        for idx, has_nsfw_concept in enumerate(has_nsfw_concepts):
-            if has_nsfw_concept:
-                if not images_was_copied:
-                    images_was_copied = True
-                    images = images.copy()
-
-                images[idx] = np.zeros(images[idx].shape, dtype=np.uint8)  # black image
-
-            if any(has_nsfw_concepts):
-                warnings.warn(
-                    "Potential NSFW content was detected in one or more images. A black image will be returned"
-                    " instead. Try again with a different prompt and/or seed."
-                )
-
-        return images, has_nsfw_concepts
 
     def _generate(
         self,
@@ -404,25 +344,8 @@ class FlaxStableDiffusionPipeline(FlaxDiffusionPipeline):
                 neg_prompt_ids,
             )
 
-        if self.safety_checker is not None:
-            safety_params = params["safety_checker"]
-            images_uint8_casted = (images * 255).round().astype("uint8")
-            num_devices, batch_size = images.shape[:2]
-
-            images_uint8_casted = np.asarray(images_uint8_casted).reshape(num_devices * batch_size, height, width, 3)
-            images_uint8_casted, has_nsfw_concept = self._run_safety_checker(images_uint8_casted, safety_params, jit)
-            images = np.asarray(images)
-
-            # block images
-            if any(has_nsfw_concept):
-                for i, is_nsfw in enumerate(has_nsfw_concept):
-                    if is_nsfw:
-                        images[i] = np.asarray(images_uint8_casted[i])
-
-            images = images.reshape(num_devices, batch_size, height, width, 3)
-        else:
-            images = np.asarray(images)
-            has_nsfw_concept = False
+        images = np.asarray(images)
+        has_nsfw_concept = False
 
         if not return_dict:
             return (images, has_nsfw_concept)

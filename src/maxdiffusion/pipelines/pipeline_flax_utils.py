@@ -37,13 +37,12 @@ from ..utils import (
     BaseOutput,
     PushToHubMixin,
     http_user_agent,
-    is_transformers_available,
     logging,
 )
 
 
-if is_transformers_available():
-    from transformers import FlaxPreTrainedModel
+
+from maxdiffusion.transformers import FlaxPreTrainedModel
 
 INDEX_FILE = "diffusion_flax_model.bin"
 
@@ -57,7 +56,7 @@ LOADABLE_CLASSES = {
         "FlaxSchedulerMixin": ["save_pretrained", "from_pretrained"],
         "FlaxDiffusionPipeline": ["save_pretrained", "from_pretrained"],
     },
-    "transformers": {
+    "maxdiffusion.transformers": {
         "PreTrainedTokenizer": ["save_pretrained", "from_pretrained"],
         "PreTrainedTokenizerFast": ["save_pretrained", "from_pretrained"],
         "FlaxPreTrainedModel": ["save_pretrained", "from_pretrained"],
@@ -329,6 +328,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         flash_block_sizes = kwargs.pop("flash_block_sizes", None)
         mesh = kwargs.pop("mesh", None)
         dtype = kwargs.pop("dtype", None)
+        weights_dtype = kwargs.pop("weights_dtype", None)
         norm_num_groups = kwargs.pop("norm_num_groups", 32)
 
         # 1. Download the checkpoints and configs
@@ -379,7 +379,6 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
             )
         else:
             cached_folder = pretrained_model_name_or_path
-
         config_dict = cls.load_config(cached_folder)
 
         # 2. Load the pipeline class, if using custom module then load it from the hub
@@ -482,6 +481,11 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                 class_candidates = {c: class_obj for c in importable_classes.keys()}
             else:
                 # else we just import it from the library.
+
+                # maxdiffusion contains all models in transformers
+                # needed to run without the transformers dependency
+                if library_name == "transformers":
+                    library_name = "maxdiffusion.transformers"
                 library = importlib.import_module(library_name)
                 class_obj = import_flax_or_no_model(library, class_name)
 
@@ -515,9 +519,10 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
                         mesh=mesh,
                         norm_num_groups=norm_num_groups,
                         dtype=dtype,
+                        weights_dtype=weights_dtype
                     )
                     params[name] = loaded_params
-                elif is_transformers_available() and issubclass(class_obj, FlaxPreTrainedModel):
+                elif issubclass(class_obj, FlaxPreTrainedModel):
                     if from_pt:
                         # TODO(Suraj): Fix this in Transformers. We should be able to use `_do_init=False` here
                         loaded_sub_model = load_method(loadable_folder, from_pt=from_pt)
@@ -546,7 +551,6 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
             raise ValueError(
                 f"Pipeline {pipeline_class} expected {expected_modules}, but only {passed_modules} were passed."
             )
-
         model = pipeline_class(**init_kwargs, dtype=dtype)
         return model, params
 

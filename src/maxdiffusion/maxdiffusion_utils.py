@@ -19,10 +19,12 @@ import numpy as np
 import tensorflow as tf
 import jax
 import jax.numpy as jnp
-
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
-from maxdiffusion import max_utils
+from maxdiffusion import (
+  max_utils,
+)
+
 
 from .models.modeling_flax_pytorch_utils import convert_pytorch_state_dict_to_flax
 
@@ -83,6 +85,12 @@ def transform_images(
 
         # TODO (Juan Acevedo): do last iteration, its required for the Pyarrow dataset
         # to not break due to items being fewer than expected. Is there a better way?
+        if tensor_list[i+global_batch_size:].shape[0] != 0:
+          sample_rng, rng = jax.random.split(rng)
+          latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
+          examples[pixel_ids_key] = np.append(latents_list, latents, axis=0)
+        else:
+           examples[pixel_ids_key] = latents_list
         if tensor_list[i+global_batch_size:].shape[0] != 0:
           sample_rng, rng = jax.random.split(rng)
           latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
@@ -172,8 +180,8 @@ def get_dummy_unet_inputs(config, pipeline, batch_size):
     time_ids_channels = pipeline.unet.projection_class_embeddings_input_dim - text_embeds_dim
     time_ids_dims = time_ids_channels // pipeline.unet.addition_time_embed_dim
     added_cond_kwargs = {
-      "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=config.weights_dtype),
-      "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=config.weights_dtype),
+      "text_embeds": jnp.zeros((batch_size, text_embeds_dim), dtype=jnp.float32),
+      "time_ids": jnp.zeros((batch_size, time_ids_dims), dtype=jnp.float32),
     }
   return (latents, timesteps, encoder_hidden_states, added_cond_kwargs)
 
@@ -195,13 +203,6 @@ def calculate_unet_tflops(config, pipeline, batch_size, rngs, train):
     encoder_hidden_states=encoder_hidden_states,
     added_cond_kwargs=added_cond_kwargs) / jax.local_device_count()
 
-def encode(input_ids, text_encoder, text_encoder_params):
-  return text_encoder(
-    input_ids,
-    params=text_encoder_params,
-    train=False
-  )[0]
-
 def tokenize_captions(examples, caption_column, tokenizer, input_ids_key="input_ids", p_encode=None):
     """Tokenize captions for sd1.x,sd2.x models."""
     captions = list(examples[caption_column])
@@ -215,6 +216,8 @@ def tokenize_captions(examples, caption_column, tokenizer, input_ids_key="input_
     if p_encode:
         encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
         examples[input_ids_key] = encoder_hidden_states
+        # pyarrow dataset doesn't support bf16, so cast to float32
+        examples[input_ids_key] = np.float32(examples[input_ids_key])
     else:
         examples[input_ids_key] = text_inputs.input_ids
     return examples
@@ -241,3 +244,10 @@ def get_shaped_batch(config, pipeline):
   shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
   shaped_batch["input_ids"] = jax.ShapeDtypeStruct(batch_ids_shape, jnp.float32)
   return shaped_batch
+
+def encode(input_ids, text_encoder, text_encoder_params):
+  return text_encoder(
+    input_ids,
+    params=text_encoder_params,
+    train=False
+  )[0]

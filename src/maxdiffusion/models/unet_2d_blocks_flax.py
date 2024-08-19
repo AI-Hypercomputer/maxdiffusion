@@ -69,6 +69,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
     precision: jax.lax.Precision = None
@@ -85,6 +86,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 norm_num_groups=self.norm_num_groups,
                 precision=self.precision
             )
@@ -104,6 +106,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 norm_num_groups=self.norm_num_groups,
                 precision=self.precision
             )
@@ -113,7 +116,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
         self.attentions = attentions
 
         if self.add_downsample:
-            self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype)
+            self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
     def __call__(self, hidden_states, temb, encoder_hidden_states, deterministic=True):
         output_states = ()
@@ -154,6 +157,7 @@ class FlaxDownBlock2D(nn.Module):
     num_layers: int = 1
     add_downsample: bool = True
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     norm_num_groups: int = 32
     precision: jax.lax.Precision = None
 
@@ -168,6 +172,7 @@ class FlaxDownBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 norm_num_groups=self.norm_num_groups,
                 precision=self.precision
             )
@@ -175,7 +180,7 @@ class FlaxDownBlock2D(nn.Module):
         self.resnets = resnets
 
         if self.add_downsample:
-            self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype)
+            self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
     def __call__(self, hidden_states, temb, deterministic=True):
         output_states = ()
@@ -241,6 +246,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
     precision: jax.lax.Precision = None
@@ -258,6 +264,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 norm_num_groups=self.norm_num_groups,
                 precision=self.precision
             )
@@ -277,6 +284,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 norm_num_groups=self.norm_num_groups,
                 precision=self.precision
             )
@@ -286,7 +294,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
         self.attentions = attentions
 
         if self.add_upsample:
-            self.upsamplers_0 = FlaxUpsample2D(self.out_channels, dtype=self.dtype)
+            self.upsamplers_0 = FlaxUpsample2D(self.out_channels, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
     def __call__(self, hidden_states, res_hidden_states_tuple, temb, encoder_hidden_states, deterministic=True):
         for resnet, attn in zip(self.resnets, self.attentions):
@@ -331,6 +339,7 @@ class FlaxUpBlock2D(nn.Module):
     num_layers: int = 1
     add_upsample: bool = True
     dtype: jnp.dtype = jnp.float32
+    weights_dtype : jnp.dtype = jnp.float32
     norm_num_groups: int = 32
     precision: jax.lax.Precision = None
 
@@ -346,6 +355,7 @@ class FlaxUpBlock2D(nn.Module):
                 out_channels=self.out_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 norm_num_groups=self.norm_num_groups,
                 precision=self.precision
             )
@@ -412,6 +422,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
     flash_block_sizes: BlockSizes = None
     mesh: jax.sharding.Mesh = None
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     transformer_layers_per_block: int = 1
     norm_num_groups: int = 32
     precision: jax.lax.Precision = None
@@ -424,6 +435,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 out_channels=self.in_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 norm_num_groups=self.norm_num_groups,
                 precision=self.precision
             )
@@ -445,6 +457,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 flash_block_sizes=self.flash_block_sizes,
                 mesh=self.mesh,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 norm_num_groups=self.norm_num_groups,
                 precision=self.precision
             )
@@ -455,6 +468,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
                 out_channels=self.in_channels,
                 dropout_prob=self.dropout,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype,
                 norm_num_groups=self.norm_num_groups,
                 precision=self.precision
             )

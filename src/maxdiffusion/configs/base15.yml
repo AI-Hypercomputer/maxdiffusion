@@ -34,9 +34,9 @@ activations_dtype: 'bfloat16'
 
 # matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
 # Options are "DEFAULT", "HIGH", "HIGHEST"
+# fp32 activations and fp32 weights with HIGHEST will provide the best precision
+# at the cost of time.
 precision: "DEFAULT"
-# orbax or diffusers
-checkpoint_type: 'orbax'
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
@@ -48,6 +48,10 @@ norm_num_groups: 32
 # If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
+
+# train text_encoder
+train_text_encoder: False
+text_encoder_learning_rate: 4.25e-6
 
 # https://arxiv.org/pdf/2305.08891.pdf
 snr_gamma: -1.0
@@ -77,8 +81,6 @@ diffusion_scheduler_config: {
   timestep_spacing: ''
 }
 
-# Output directory
-# Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
 base_output_directory: ""
 
 # Parallelism
@@ -126,7 +128,7 @@ dataset_name: 'diffusers/pokemon-gpt4-captions'
 dataset_save_location: '/tmp/pokemon-gpt4-captions_sd15'
 train_data_dir: ''
 dataset_config_name: ''
-cache_dir: ''
+jax_cache_dir: ''
 image_column: 'image'
 caption_column: 'text'
 resolution: 512
@@ -155,7 +157,9 @@ max_train_samples: -1
 # max_train_steps takes priority over num_train_epochs.
 max_train_steps: 800
 seed: 0
-output_dir: 'sd-model-finetuned'
+# Output directory
+# Create a GCS bucket, e.g. my-maxdiffusion-outputs and set this to "gs://my-maxdiffusion-outputs/"
+output_dir: ''
 per_device_batch_size: 1
 
 warmup_steps_fraction: 0.0
@@ -171,7 +175,7 @@ adam_eps: 1.e-8 # A small constant applied to denominator outside of the square 
 adam_weight_decay: 1.e-2 # AdamW Weight decay
 max_grad_norm: 1.0
 
-enable_profiler: True
+enable_profiler: False
 # Skip first n steps for profiling, to omit things like compilation and to give
 # the iteration time a chance to stabilize.
 skip_first_n_steps_for_profiler: 1

@@ -126,7 +126,6 @@ _deps = [
     "tensorboard",
     "torch>=1.4",
     "torchvision",
-    "transformers>=4.25.1",
     "urllib3<=2.0.0",
     "orbax-checkpoint",
     "cloud-tpu-diagnostics",
@@ -222,7 +221,6 @@ extras["test"] = deps_list(
     "sentencepiece",
     "scipy",
     "torchvision",
-    "transformers",
 )
 extras["torch"] = deps_list("torch", "accelerate")
 

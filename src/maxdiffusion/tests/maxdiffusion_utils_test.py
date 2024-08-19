@@ -45,7 +45,7 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
       "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
       "revision=refs/pr/95","activations_dtype=bfloat16",
       'diffusion_scheduler_config={"prediction_type" : "v_prediction", '
-      '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'])
+      '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'],unittest=True)
 
     config = pyconfig.config
 
@@ -88,7 +88,7 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
       "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
       "revision=refs/pr/95","activations_dtype=bfloat16",
       'diffusion_scheduler_config={"_class_name" : "DDIMScheduler", "prediction_type" : "v_prediction", '
-      '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'])
+      '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'],unittest=True)
 
     config = pyconfig.config
     scheduler_config = scheduler.config
@@ -107,7 +107,7 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
       "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
       "revision=refs/pr/95","activations_dtype=bfloat16",
       'diffusion_scheduler_config={"_class_name" : "FlaxDDPMScheduler", "prediction_type" : "v_prediction", '
-      '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'])
+      '"rescale_zero_terminal_snr" : true, "timestep_spacing" : "trailing"}'],unittest=True)
 
     config = pyconfig.config
     scheduler_config = scheduler.config

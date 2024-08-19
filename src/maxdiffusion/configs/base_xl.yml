@@ -31,6 +31,13 @@ revision: 'refs/pr/95'
 weights_dtype: 'float32'
 # This sets the layer's dtype in the model. Ex: nn.Dense(dtype=activations_dtype)
 activations_dtype: 'bfloat16'
+
+# matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
+# Options are "DEFAULT", "HIGH", "HIGHEST"
+# fp32 activations and fp32 weights with HIGHEST will provide the best precision
+# at the cost of time.
+precision: "DEFAULT"
+
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
@@ -42,6 +49,10 @@ norm_num_groups: 32
 # If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
 # else they will be loaded from pretrained_model_name_or_path
 train_new_unet: False
+
+# train text_encoder - Currently not supported for SDXL
+train_text_encoder: False
+text_encoder_learning_rate: 4.25e-6
 
 # https://arxiv.org/pdf/2305.08891.pdf
 snr_gamma: -1.0
@@ -92,11 +103,13 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
+                      ['activation_batch', ['data','fsdp']],
+                      ['activation_heads', 'tensor'],
+                      ['activation_kv', 'tensor'],
+                      ['embed','fsdp'],
+                      ['heads', 'tensor'],
                       ['out_channels', 'fsdp'],
                       ['conv_out', 'fsdp'],
-                      ['length', 'fsdp']
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
@@ -118,7 +131,7 @@ dataset_name: 'diffusers/pokemon-gpt4-captions'
 dataset_save_location: '/tmp/pokemon-gpt4-captions_xl'
 train_data_dir: ''
 dataset_config_name: ''
-cache_dir: ''
+jax_cache_dir: ''
 image_column: 'image'
 caption_column: 'text'
 resolution: 1024
@@ -161,8 +174,9 @@ adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradient
 adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradients.
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 1.e-2 # AdamW Weight decay
+max_grad_norm: 1.0
 
-enable_profiler: True
+enable_profiler: False
 # Skip first n steps for profiling, to omit things like compilation and to give
 # the iteration time a chance to stabilize.
 skip_first_n_steps_for_profiler: 5

@@ -38,15 +38,20 @@ def validate_train_config(config):
 
   def _validate_gcs_bucket_name(bucket_name, config_var):
     assert bucket_name, f"Please set {config_var}."
-    assert len(bucket_name) > 5 and bucket_name[0:5]=='gs://', f"Erroring out, {config_var} should start with 'gs://' "
+    if 'gs://' not in bucket_name:
+      max_logging.log(f"***WARNING : It is highly recommended that your output_dir uses a gcs directory, currently your output dir is set to {bucket_name}")
 
   assert config.run_name, "Erroring out, need a real run_name"
-  _validate_gcs_bucket_name(config.base_output_directory, "base_output_directory")
+  _validate_gcs_bucket_name(config.output_dir, "output_dir")
 
   assert config.max_train_steps > 0 or config.num_train_epochs > 0, "You must set steps or learning_rate_schedule_steps to a positive interger."
 
   if config.checkpoint_every > 0 and len(config.checkpoint_dir) <= 0:
     raise AssertionError("Need to set checkpoint_dir when checkpoint_every is set.")
+
+  if config.train_text_encoder and config.cache_latents_text_encoder_outputs:
+    raise AssertionError("Cannot train text encoder and cache text encoder outputs." \
+  " Set either train_text_encoder, or cache_latents_text_encoder_outputs to False")
 
 def record_scalar_metrics(metrics, step_time_delta, per_device_tflops, lr):
   """Records scalar metrics to be written to tensorboard"""
@@ -159,6 +164,9 @@ def generate_timestep_weights(config, num_timesteps):
   weights[bias_indices] *= timestep_bias_config["multiplier"]
   weights /= weights.sum()
   return jnp.array(weights)
+
+# def save_orbax_checkpoint(unet_state, pipeline, text_encoder_state = None):
+
 
 def save_checkpoint(save_fn, params, config, output_dir):
   """

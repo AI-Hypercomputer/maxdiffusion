@@ -80,6 +80,7 @@ class FlaxUpsample2D(nn.Module):
 
     in_channels: int
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
 
@@ -89,6 +90,7 @@ class FlaxUpsample2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -123,6 +125,7 @@ class FlaxDownsample2D(nn.Module):
 
     in_channels: int
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.conv = nn.Conv(
@@ -131,6 +134,7 @@ class FlaxDownsample2D(nn.Module):
             strides=(2, 2),
             padding="VALID",
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -173,24 +177,26 @@ class FlaxResnetBlock2D(nn.Module):
     groups: int = 32
     use_nin_shortcut: bool = None
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
 
-        self.norm1 = nn.GroupNorm(num_groups=self.groups, epsilon=1e-6)
+        self.norm1 = nn.GroupNorm(num_groups=self.groups, epsilon=1e-6, dtype=self.dtype, param_dtype=self.weights_dtype)
         self.conv1 = nn.Conv(
             out_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
             )
         )
 
-        self.norm2 = nn.GroupNorm(num_groups=self.groups, epsilon=1e-6)
+        self.norm2 = nn.GroupNorm(num_groups=self.groups, epsilon=1e-6, dtype=self.dtype, param_dtype=self.weights_dtype)
         self.dropout_layer = nn.Dropout(self.dropout)
         self.conv2 = nn.Conv(
             out_channels,
@@ -198,6 +204,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -214,6 +221,7 @@ class FlaxResnetBlock2D(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                param_dtype=self.weights_dtype,
             )
 
     def __call__(self, hidden_states, deterministic=True):
@@ -260,18 +268,19 @@ class FlaxAttentionBlock(nn.Module):
     num_head_channels: int = None
     num_groups: int = 32
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.num_heads = self.channels // self.num_head_channels if self.num_head_channels is not None else 1
 
-        dense = partial(nn.Dense, self.channels, dtype=self.dtype)
+        dense = partial(nn.Dense, self.channels, dtype=self.dtype, param_dtype=self.weights_dtype)
 
         qkv_init_kernel = nn.with_logical_partitioning(
             nn.initializers.lecun_normal(),
             ('embed','heads')
         )
 
-        self.group_norm = nn.GroupNorm(num_groups=self.num_groups, epsilon=1e-6)
+        self.group_norm = nn.GroupNorm(num_groups=self.num_groups, epsilon=1e-6, dtype=self.dtype, param_dtype=self.weights_dtype)
         self.query, self.key, self.value = (
             dense(kernel_init=qkv_init_kernel),
             dense(kernel_init=qkv_init_kernel),
@@ -369,6 +378,7 @@ class FlaxDownEncoderBlock2D(nn.Module):
     resnet_groups: int = 32
     add_downsample: bool = True
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         resnets = []
@@ -381,12 +391,13 @@ class FlaxDownEncoderBlock2D(nn.Module):
                 dropout=self.dropout,
                 groups=self.resnet_groups,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype
             )
             resnets.append(res_block)
         self.resnets = resnets
 
         if self.add_downsample:
-            self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype)
+            self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
     def __call__(self, hidden_states, deterministic=True):
         for resnet in self.resnets:
@@ -425,6 +436,7 @@ class FlaxUpDecoderBlock2D(nn.Module):
     resnet_groups: int = 32
     add_upsample: bool = True
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         resnets = []
@@ -436,13 +448,14 @@ class FlaxUpDecoderBlock2D(nn.Module):
                 dropout=self.dropout,
                 groups=self.resnet_groups,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype
             )
             resnets.append(res_block)
 
         self.resnets = resnets
 
         if self.add_upsample:
-            self.upsamplers_0 = FlaxUpsample2D(self.out_channels, dtype=self.dtype)
+            self.upsamplers_0 = FlaxUpsample2D(self.out_channels, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
     def __call__(self, hidden_states, deterministic=True):
         for resnet in self.resnets:
@@ -478,6 +491,7 @@ class FlaxUNetMidBlock2D(nn.Module):
     resnet_groups: int = 32
     num_attention_heads: int = 1
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         resnet_groups = self.resnet_groups if self.resnet_groups is not None else min(self.in_channels // 4, 32)
@@ -490,6 +504,7 @@ class FlaxUNetMidBlock2D(nn.Module):
                 dropout=self.dropout,
                 groups=resnet_groups,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype
             )
         ]
 
@@ -501,6 +516,7 @@ class FlaxUNetMidBlock2D(nn.Module):
                 num_head_channels=self.num_attention_heads,
                 num_groups=resnet_groups,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype
             )
             attentions.append(attn_block)
 
@@ -510,6 +526,7 @@ class FlaxUNetMidBlock2D(nn.Module):
                 dropout=self.dropout,
                 groups=resnet_groups,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype
             )
             resnets.append(res_block)
 
@@ -568,6 +585,7 @@ class FlaxEncoder(nn.Module):
     act_fn: str = "silu"
     double_z: bool = False
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         block_out_channels = self.block_out_channels
@@ -578,6 +596,7 @@ class FlaxEncoder(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -599,6 +618,7 @@ class FlaxEncoder(nn.Module):
                 resnet_groups=self.norm_num_groups,
                 add_downsample=not is_final_block,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype
             )
             down_blocks.append(down_block)
         self.down_blocks = down_blocks
@@ -609,17 +629,19 @@ class FlaxEncoder(nn.Module):
             resnet_groups=self.norm_num_groups,
             num_attention_heads=None,
             dtype=self.dtype,
+            weights_dtype=self.weights_dtype
         )
 
         # end
         conv_out_channels = 2 * self.out_channels if self.double_z else self.out_channels
-        self.conv_norm_out = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-6)
+        self.conv_norm_out = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-6, dtype=self.dtype, param_dtype=self.weights_dtype)
         self.conv_out = nn.Conv(
             conv_out_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype
         )
 
     def __call__(self, sample, deterministic: bool = True):
@@ -683,6 +705,7 @@ class FlaxDecoder(nn.Module):
     norm_num_groups: int = 32
     act_fn: str = "silu"
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         block_out_channels = self.block_out_channels
@@ -694,6 +717,7 @@ class FlaxDecoder(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype
         )
 
         # middle
@@ -702,6 +726,7 @@ class FlaxDecoder(nn.Module):
             resnet_groups=self.norm_num_groups,
             num_attention_heads=None,
             dtype=self.dtype,
+            weights_dtype=self.weights_dtype
         )
 
         # upsampling
@@ -721,6 +746,7 @@ class FlaxDecoder(nn.Module):
                 resnet_groups=self.norm_num_groups,
                 add_upsample=not is_final_block,
                 dtype=self.dtype,
+                weights_dtype=self.weights_dtype
             )
             up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -728,13 +754,14 @@ class FlaxDecoder(nn.Module):
         self.up_blocks = up_blocks
 
         # end
-        self.conv_norm_out = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-6)
+        self.conv_norm_out = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-6, dtype=self.dtype, param_dtype=self.weights_dtype)
         self.conv_out = nn.Conv(
             self.out_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype
         )
 
     def __call__(self, sample, deterministic: bool = True):
@@ -854,6 +881,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
     sample_size: int = 32
     scaling_factor: float = 0.18215
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.encoder = FlaxEncoder(
@@ -866,6 +894,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
             norm_num_groups=self.config.norm_num_groups,
             double_z=True,
             dtype=self.dtype,
+            weights_dtype=self.weights_dtype
         )
         self.decoder = FlaxDecoder(
             in_channels=self.config.latent_channels,
@@ -876,6 +905,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
             norm_num_groups=self.config.norm_num_groups,
             act_fn=self.config.act_fn,
             dtype=self.dtype,
+            weights_dtype=self.weights_dtype
         )
         self.quant_conv = nn.Conv(
             2 * self.config.latent_channels,
@@ -883,6 +913,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
             strides=(1, 1),
             padding="VALID",
             dtype=self.dtype,
+            param_dtype=self.weights_dtype
         )
         self.post_quant_conv = nn.Conv(
             self.config.latent_channels,
@@ -890,13 +921,17 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
             strides=(1, 1),
             padding="VALID",
             dtype=self.dtype,
+            param_dtype=self.weights_dtype
             #shape is too small to shard
         )
 
     def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
         # init input tensors
         sample_shape = (1, self.in_channels, self.sample_size, self.sample_size)
-        sample = jnp.zeros(sample_shape, dtype=jnp.float32)
+        if eval_only:
+            sample = jax.ShapeDtypeStruct(sample_shape, dtype=jnp.float32)
+        else:
+            sample = jnp.zeros(sample_shape, dtype=jnp.float32)
 
         params_rng, dropout_rng, gaussian_rng = jax.random.split(rng, 3)
         rngs = {"params": params_rng, "dropout": dropout_rng, "gaussian": gaussian_rng}

@@ -126,6 +126,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     dropout: float = 0.0
     use_linear_projection: bool = False
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     flip_sin_to_cos: bool = True
     freq_shift: int = 0
     use_memory_efficient_attention: bool = False
@@ -146,9 +147,15 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         # init input tensors
         no_devices = jax.device_count()
         sample_shape = (no_devices, self.in_channels, self.sample_size, self.sample_size)
-        sample = jnp.zeros(sample_shape, dtype=jnp.float32)
-        timesteps = jnp.ones((no_devices,), dtype=jnp.int32)
-        encoder_hidden_states = jnp.zeros((no_devices, 1, self.cross_attention_dim), dtype=jnp.float32)
+
+        if eval_only:
+            sample = jax.ShapeDtypeStruct(sample_shape, dtype=jnp.bfloat16)
+            timesteps = jax.ShapeDtypeStruct((no_devices,), dtype=jnp.bfloat16)
+            encoder_hidden_states = jax.ShapeDtypeStruct((no_devices, 1, self.cross_attention_dim), dtype=jnp.bfloat16)
+        else:
+            sample = jnp.zeros(sample_shape, dtype=jnp.bfloat16)
+            timesteps = jnp.ones((no_devices,), dtype=jnp.int32)
+            encoder_hidden_states = jnp.zeros((no_devices, 1, self.cross_attention_dim), dtype=jnp.bfloat16)
 
         params_rng, dropout_rng = jax.random.split(rng)
         rngs = {"params": params_rng, "dropout": dropout_rng}
@@ -169,10 +176,17 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
             time_ids_channels = self.projection_class_embeddings_input_dim - text_embeds_dim
             time_ids_dims = time_ids_channels // self.addition_time_embed_dim
-            added_cond_kwargs = {
-                "text_embeds": jnp.zeros((no_devices, text_embeds_dim), dtype=jnp.float32),
-                "time_ids": jnp.zeros((no_devices, time_ids_dims), dtype=jnp.float32),
-            }
+            if eval_only:
+                added_cond_kwargs = {
+                    "text_embeds" : jax.ShapeDtypeStruct((no_devices, text_embeds_dim), dtype=jnp.bfloat16),
+                    "time_ids" : jax.ShapeDtypeStruct((no_devices, time_ids_dims), dtype=jnp.bfloat16)
+                }
+            else:
+                added_cond_kwargs = {
+                    "text_embeds": jnp.zeros((no_devices, text_embeds_dim), dtype=jnp.bfloat16),
+                    "time_ids": jnp.zeros((no_devices, time_ids_dims), dtype=jnp.bfloat16),
+                }
+
         if eval_only:
             return jax.eval_shape(self.init, rngs, sample, timesteps, encoder_hidden_states, added_cond_kwargs)["params"]
         else:
@@ -202,13 +216,15 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            precision=self.precision
         )
 
         # time
         self.time_proj = FlaxTimesteps(
             block_out_channels[0], flip_sin_to_cos=self.flip_sin_to_cos, freq_shift=self.config.freq_shift
         )
-        self.time_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype)
+        self.time_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
         only_cross_attention = self.only_cross_attention
         if isinstance(only_cross_attention, bool):
@@ -231,7 +247,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     f"addition_embed_type {self.addition_embed_type} requires `addition_time_embed_dim` to not be None"
                 )
             self.add_time_proj = FlaxTimesteps(self.addition_time_embed_dim, self.flip_sin_to_cos, self.freq_shift)
-            self.add_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype)
+            self.add_embedding = FlaxTimestepEmbedding(time_embed_dim, dtype=self.dtype, weights_dtype=self.weights_dtype)
         else:
             raise ValueError(f"addition_embed_type: {self.addition_embed_type} must be None or `text_time`.")
 
@@ -261,6 +277,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     flash_block_sizes=self.flash_block_sizes,
                     mesh=self.mesh,
                     dtype=self.dtype,
+                    weights_dtype=self.weights_dtype,
                     precision=self.precision
                 )
             else:
@@ -271,6 +288,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     num_layers=self.layers_per_block,
                     add_downsample=not is_final_block,
                     dtype=self.dtype,
+                    weights_dtype=self.weights_dtype,
                     precision=self.precision
                 )
 
@@ -291,6 +309,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
             dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
             precision=self.precision
         )
 
@@ -327,6 +346,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     flash_block_sizes=self.flash_block_sizes,
                     mesh=self.mesh,
                     dtype=self.dtype,
+                    weights_dtype=self.weights_dtype,
                     precision=self.precision
                 )
             else:
@@ -338,6 +358,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     add_upsample=not is_final_block,
                     dropout=self.dropout,
                     dtype=self.dtype,
+                    weights_dtype=self.weights_dtype,
                     precision=self.precision
                 )
 
@@ -346,7 +367,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         self.up_blocks = up_blocks
 
         # out
-        self.conv_norm_out = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
+        self.conv_norm_out = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
         # keep last layer in float32
         self.conv_out = nn.Conv(
             self.out_channels,
@@ -354,6 +375,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=jnp.float32,
+            param_dtype=self.weights_dtype,
             precision=self.precision
         )
 
@@ -395,7 +417,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         if not isinstance(timesteps, jnp.ndarray):
             timesteps = jnp.array([timesteps], dtype=jnp.int32)
         elif isinstance(timesteps, jnp.ndarray) and len(timesteps.shape) == 0:
-            timesteps = timesteps.astype(dtype=jnp.float32)
+            timesteps = timesteps.astype(dtype=self.dtype)
             timesteps = jnp.expand_dims(timesteps, 0)
 
         t_emb = self.time_proj(timesteps)

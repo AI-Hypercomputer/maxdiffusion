@@ -10,7 +10,6 @@ from ...utils import (
     is_k_diffusion_version,
     is_onnx_available,
     is_torch_available,
-    is_transformers_available,
     is_transformers_version,
 )
 
@@ -19,10 +18,10 @@ _dummy_objects = {}
 _additional_imports = {}
 _import_structure = {"pipeline_output": ["StableDiffusionPipelineOutput"]}
 
-if is_transformers_available() and is_flax_available():
+if is_flax_available():
     _import_structure["pipeline_output"].extend(["FlaxStableDiffusionPipelineOutput"])
 try:
-    if not (is_transformers_available() and is_torch_available()):
+    if not (is_torch_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
     from ...utils import dummy_torch_and_transformers_objects  # noqa F403
@@ -52,7 +51,7 @@ else:
     _import_structure["safety_checker"] = ["StableDiffusionSafetyChecker"]
     _import_structure["stable_unclip_image_normalizer"] = ["StableUnCLIPImageNormalizer"]
 try:
-    if not (is_transformers_available() and is_torch_available() and is_transformers_version(">=", "4.25.0")):
+    if not (is_torch_available() and is_transformers_version(">=", "4.25.0")):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
     from ...utils.dummy_torch_and_transformers_objects import StableDiffusionImageVariationPipeline
@@ -61,7 +60,7 @@ except OptionalDependencyNotAvailable:
 else:
     _import_structure["pipeline_stable_diffusion_image_variation"] = ["StableDiffusionImageVariationPipeline"]
 try:
-    if not (is_transformers_available() and is_torch_available() and is_transformers_version(">=", "4.26.0")):
+    if not (is_torch_available() and is_transformers_version(">=", "4.26.0")):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
     from ...utils.dummy_torch_and_transformers_objects import (
@@ -84,7 +83,6 @@ else:
 try:
     if not (
         is_torch_available()
-        and is_transformers_available()
         and is_k_diffusion_available()
         and is_k_diffusion_version(">=", "0.0.12")
     ):
@@ -96,7 +94,7 @@ except OptionalDependencyNotAvailable:
 else:
     _import_structure["pipeline_stable_diffusion_k_diffusion"] = ["StableDiffusionKDiffusionPipeline"]
 try:
-    if not (is_transformers_available() and is_onnx_available()):
+    if not (is_onnx_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
     from ...utils import dummy_onnx_objects  # noqa F403
@@ -112,7 +110,7 @@ else:
     _import_structure["pipeline_onnx_stable_diffusion_inpaint_legacy"] = ["OnnxStableDiffusionInpaintPipelineLegacy"]
     _import_structure["pipeline_onnx_stable_diffusion_upscale"] = ["OnnxStableDiffusionUpscalePipeline"]
 
-if is_transformers_available() and is_flax_available():
+if is_flax_available():
     from ...schedulers.scheduling_pndm_flax import PNDMSchedulerState
 
     _additional_imports.update({"PNDMSchedulerState": PNDMSchedulerState})
@@ -123,7 +121,7 @@ if is_transformers_available() and is_flax_available():
 
 if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
     try:
-        if not (is_transformers_available() and is_torch_available()):
+        if not (is_torch_available()):
             raise OptionalDependencyNotAvailable()
 
     except OptionalDependencyNotAvailable:
@@ -157,7 +155,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         from .stable_unclip_image_normalizer import StableUnCLIPImageNormalizer
 
     try:
-        if not (is_transformers_available() and is_torch_available() and is_transformers_version(">=", "4.25.0")):
+        if not (is_torch_available() and is_transformers_version(">=", "4.25.0")):
             raise OptionalDependencyNotAvailable()
     except OptionalDependencyNotAvailable:
         from ...utils.dummy_torch_and_transformers_objects import StableDiffusionImageVariationPipeline
@@ -165,7 +163,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         from .pipeline_stable_diffusion_image_variation import StableDiffusionImageVariationPipeline
 
     try:
-        if not (is_transformers_available() and is_torch_available() and is_transformers_version(">=", "4.26.0")):
+        if not (is_torch_available() and is_transformers_version(">=", "4.26.0")):
             raise OptionalDependencyNotAvailable()
     except OptionalDependencyNotAvailable:
         from ...utils.dummy_torch_and_transformers_objects import (
@@ -181,7 +179,6 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
     try:
         if not (
             is_torch_available()
-            and is_transformers_available()
             and is_k_diffusion_available()
             and is_k_diffusion_version(">=", "0.0.12")
         ):
@@ -192,7 +189,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         from .pipeline_stable_diffusion_k_diffusion import StableDiffusionKDiffusionPipeline
 
     try:
-        if not (is_transformers_available() and is_onnx_available()):
+        if not (is_onnx_available()):
             raise OptionalDependencyNotAvailable()
     except OptionalDependencyNotAvailable:
         from ...utils.dummy_onnx_objects import *
@@ -204,7 +201,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         from .pipeline_onnx_stable_diffusion_upscale import OnnxStableDiffusionUpscalePipeline
 
     try:
-        if not (is_transformers_available() and is_flax_available()):
+        if not (is_flax_available()):
             raise OptionalDependencyNotAvailable()
     except OptionalDependencyNotAvailable:
         from ...utils.dummy_flax_objects import *

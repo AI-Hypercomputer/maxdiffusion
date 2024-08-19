@@ -16,6 +16,7 @@
 
 """ Smoke test """
 import os
+import functools
 import unittest
 from absl.testing import absltest
 
@@ -44,45 +45,30 @@ class UnetTest(unittest.TestCase):
   def setUp(self):
     UnetTest.dummy_data = {}
 
-  def test_unet_config_params(self):
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_2_base.yml'),
-      "norm_num_groups=16"])
-
-    config = pyconfig.config
-    unet, _ = FlaxUNet2DConditionModel.from_pretrained(
-      config.pretrained_model_name_or_path,
-      revision=config.revision,
-      subfolder="unet",
-      dtype=jnp.bfloat16,
-      from_pt=config.from_pt,
-      norm_num_groups=config.norm_num_groups
-    )
-
-    assert unet.config.norm_num_groups == config.norm_num_groups
-
-  def test_unet21_sharding_test(self):
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base21.yml'),
-      "pretrained_model_name_or_path=stabilityai/stable-diffusion-2-1",
-      "revision=bf16","activations_dtype=bfloat16","resolution=768"])
+  def test_unet15_sharding_test(self):
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+      "activations_dtype=bfloat16","resolution=512"], unittest=True)
     config = pyconfig.config
     unet, params = FlaxUNet2DConditionModel.from_pretrained(
       config.pretrained_model_name_or_path, revision=config.revision, subfolder="unet", dtype=jnp.bfloat16, from_pt=config.from_pt
     )
     devices_array = max_utils.create_device_mesh(config)
 
+    rng = jax.random.PRNGKey(config.seed)
     mesh = Mesh(devices_array, config.mesh_axes)
     k = jax.random.key(0)
     tx = optax.adam(learning_rate=0.001)
-    latents = jnp.ones((4, 4,96,96), dtype=jnp.float32)
+    latents = jnp.ones((4, 4,64,64), dtype=jnp.float32)
     timesteps = jnp.ones((4,))
     encoder_hidden_states = jnp.ones((4, 77, 1024))
 
     variables = jax.jit(unet.init)(k, latents, timesteps, encoder_hidden_states)
-    unboxed_abstract_state, state_mesh_annotations = max_utils.get_abstract_state(unet, tx, config, mesh, variables['params'])
+    weights_init_fn = functools.partial(unet.init_weights, rng=rng)
+    _, state_mesh_annotations, _ = max_utils.get_abstract_state(unet, tx, config, mesh, weights_init_fn,False)
     del variables
     conv_sharding = PartitionSpec(None, None, None, 'fsdp')
-    qkv_sharding = PartitionSpec(None, None)
-    to_out_sharding = PartitionSpec(None, None)
+    qkv_sharding = PartitionSpec('fsdp', 'tensor')
+    to_out_sharding = PartitionSpec('tensor', 'fsdp')
     time_emb_proj_sharding = PartitionSpec()
 
     assert state_mesh_annotations.params['down_blocks_0']['resnets_0']['time_emb_proj']['kernel'] == time_emb_proj_sharding
@@ -96,11 +82,14 @@ class UnetTest(unittest.TestCase):
 
     state, state_mesh_shardings = max_utils.setup_initial_state(
       unet,
-      tx,config,
+      tx,
+      config,
       mesh,
-      params,
-      unboxed_abstract_state,
-      state_mesh_annotations
+      weights_init_fn,
+      None,
+      None,
+      None,
+      False
     )
 
     # Validate named shardings.

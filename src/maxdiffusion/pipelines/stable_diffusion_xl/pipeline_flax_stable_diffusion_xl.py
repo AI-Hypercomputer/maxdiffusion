@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Union
 import jax
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
-from transformers import CLIPTokenizer, FlaxCLIPTextModel
+from maxdiffusion.transformers import CLIPTokenizer, FlaxCLIPTextModel
 
 from maxdiffusion.utils import logging
 
@@ -55,7 +55,6 @@ class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline):
     ):
         super().__init__()
         self.dtype = dtype
-
         self.register_modules(
             vae=vae,
             text_encoder=text_encoder,

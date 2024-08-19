@@ -89,6 +89,7 @@ def run(config):
     None,
     config,
     mesh,
+    rng,
     params,
     unboxed_abstract_state,
     state_mesh_annotations,

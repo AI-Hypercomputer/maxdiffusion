@@ -53,7 +53,7 @@ class _HyperParameters():
   def __init__(self, argv: list[str], **kwargs):
     with open(argv[1], "r", encoding="utf-8") as yaml_file:
       raw_data_from_yaml = yaml.safe_load(yaml_file)
-    raw_data_from_cmd_line = self._load_kwargs(argv, **kwargs)
+    raw_data_from_cmd_line = self._load_kwargs(argv)
 
     for k in raw_data_from_cmd_line:
       if k not in raw_data_from_yaml:
@@ -86,12 +86,18 @@ class _HyperParameters():
       else:
         raw_keys[k] = raw_data_from_yaml[k]
 
+    is_unittest = kwargs.get("unittest",False)
+    if not is_unittest:
+      max_utils.maybe_initialize_jax_distributed_system(raw_keys)
+
+    if raw_keys["jax_cache_dir"]:
+      jax.config.update("jax_compilation_cache_dir", raw_keys["jax_cache_dir"])
+
     _HyperParameters.user_init(raw_keys)
     self.keys = raw_keys
 
-  def _load_kwargs(self, argv: list[str], **kwargs):
+  def _load_kwargs(self, argv: list[str]):
     args_dict = dict(a.split("=") for a in argv[2:])
-    args_dict.update(kwargs)
     return args_dict
 
   @staticmethod
@@ -116,10 +122,16 @@ class _HyperParameters():
     if raw_keys["learning_rate_schedule_steps"]==-1:
       raw_keys["learning_rate_schedule_steps"] = raw_keys["max_train_steps"]
 
+    # Orbax doesn't save the tokenizer params, instead it loads them from the pretrained_model_name_or_path
+    raw_keys["tokenizer_model_name_or_path"] = raw_keys["pretrained_model_name_or_path"]
+    if "gs://" in raw_keys["tokenizer_model_name_or_path"]:
+      raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
     if "gs://" in raw_keys["pretrained_model_name_or_path"]:
       raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
     if "gs://" in raw_keys["unet_checkpoint"]:
       raw_keys["unet_checkpoint"] = max_utils.download_blobs(raw_keys["unet_checkpoint"], "/tmp")
+    if "gs://" in raw_keys["tokenizer_model_name_or_path"]:
+      raw_keys["tokenizer_model_name_or_path"] = max_utils.download_blobs(raw_keys["tokenizer_model_name_or_path"],"/tmp")
 
 def get_num_target_devices(raw_keys):
   return len(jax.devices())

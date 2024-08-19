@@ -37,6 +37,7 @@ NdInitializer = Callable[
 class FlaxUpsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     precision: jax.lax.Precision = None
     def setup(self):
         self.conv = nn.Conv(
@@ -45,6 +46,7 @@ class FlaxUpsample2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -78,6 +80,7 @@ class FlaxUpsample2D(nn.Module):
 class FlaxDownsample2D(nn.Module):
     out_channels: int
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
     precision: jax.lax.Precision = None
 
     def setup(self):
@@ -87,6 +90,7 @@ class FlaxDownsample2D(nn.Module):
             strides=(2, 2),
             padding=((1, 1), (1, 1)),  # padding="VALID",
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -109,15 +113,16 @@ class FlaxResnetBlock2D(nn.Module):
     dropout_prob: float = 0.0
     use_nin_shortcut: bool = None
     dtype: jnp.dtype = jnp.float32
+    weights_dtype : jnp.dtype = jnp.float32
     norm_num_groups: int = 32
     precision: jax.lax.Precision = None
 
     def setup(self):
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
 
-        self.norm1 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
+        self.norm1 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
 
-        self.norm2 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5)
+        self.norm2 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
         self.dropout = nn.Dropout(self.dropout_prob)
 
         use_nin_shortcut = self.in_channels != out_channels if self.use_nin_shortcut is None else self.use_nin_shortcut
@@ -130,6 +135,7 @@ class FlaxResnetBlock2D(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
+                param_dtype=self.weights_dtype,
                 kernel_init = nn.with_logical_partitioning(
                     nn.initializers.lecun_normal(),
                     ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -143,6 +149,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -153,6 +160,7 @@ class FlaxResnetBlock2D(nn.Module):
         self.time_emb_proj = nn.Dense(
            out_channels,
            dtype=self.dtype,
+           param_dtype=self.weights_dtype,
            precision=self.precision
            )
         self.conv2 = nn.Conv(
@@ -161,6 +169,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
+            param_dtype=self.weights_dtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
