@@ -371,11 +371,11 @@ def setup_initial_state(
         state = state[checkpoint_item]
     if not state:
       max_logging.log(f"Could not find {checkpoint_item} in orbax, creating state...")
-      # for DDP needs replication before jit state.
-      if config.ici_data_parallelism == -1 or config.dcn_data_parallelism == -1:
-        sharding = PositionalSharding(mesh.devices).replicate()
-        partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
-        model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
+      # # for DDP needs replication before jit state.
+      # if mesh.shape['data'] == jax.device_count():
+      #   sharding = PositionalSharding(mesh.devices).replicate()
+      #   partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
+      #   model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
 
       init_train_state_partial = functools.partial(init_train_state,
                                                     model=model,
