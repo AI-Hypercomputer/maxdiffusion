@@ -285,7 +285,7 @@ def unbox_logicallypartioned_trainstate(
         else x, boxed_train_state, \
         is_leaf=lambda k: isinstance(k, flax.linen.spmd.LogicallyPartitioned))
 
-def init_train_state(model, tx, weights_init_fn, training=True, eval_only=False):
+def init_train_state(model, tx, weights_init_fn, params=None, training=True, eval_only=False):
   """
   We pass in "static" objects like model, tx, config, as JAX compares them by
   object hash, and instantiating them inside causes pjit top-level annotations
@@ -293,16 +293,17 @@ def init_train_state(model, tx, weights_init_fn, training=True, eval_only=False)
 
   Args: model_params, model, tx, training
   """
-  model_params = weights_init_fn(eval_only=eval_only)
+  if not params:
+    params = weights_init_fn(eval_only=eval_only)
   if training:
     state = train_state.TrainState.create(
       apply_fn=model.apply if hasattr(model, 'apply') else model.__call__,
-      params=model_params,
+      params=params,
       tx=tx)
   else:
     state = InferenceState(
       apply_fn=model.apply if hasattr(model, 'apply') else model.__call__,
-      params=model_params)
+      params=params)
   return state
 
 def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
@@ -371,16 +372,12 @@ def setup_initial_state(
         state = state[checkpoint_item]
     if not state:
       max_logging.log(f"Could not find {checkpoint_item} in orbax, creating state...")
-      # # for DDP needs replication before jit state.
-      # if mesh.shape['data'] == jax.device_count():
-      #   sharding = PositionalSharding(mesh.devices).replicate()
-      #   partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
-      #   model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
 
       init_train_state_partial = functools.partial(init_train_state,
                                                     model=model,
                                                     tx=tx,
                                                     weights_init_fn=weights_init_fn,
+                                                    params=model_params,
                                                     training=training,
                                                     eval_only=False
                                                    )
@@ -390,12 +387,6 @@ def setup_initial_state(
           in_shardings=None,
           out_shardings=state_mesh_shardings
       )()
-      if model_params:
-        state = state.replace(params=model_params)
-      else:
-        # this should only be the case when training a new model from scratch.
-        # else, its possible a model is being loaded from a wrong dir path.
-        max_logging.log(f"model_params is None, random init weights have been loaded...")
 
   state = unbox_logicallypartioned_trainstate(state)
 
