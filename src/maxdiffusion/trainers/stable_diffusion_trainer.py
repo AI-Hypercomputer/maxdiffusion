@@ -234,7 +234,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
                 train_states["unet_state"] = unet_state
                 train_states["vae_state"] = vae_state
                 train_states["text_encoder"] = text_encoder_state
-                self.save_checkpoint(step, pipeline, params, train_states, save_inference_states=False)
+                self.save_checkpoint(step, pipeline, params, train_states)
 
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
@@ -243,7 +243,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         train_states["vae_state"] = vae_state
         train_states["text_encoder"] = text_encoder_state
         # save the inference states of the last checkpoint so they can be easily loaded during gen.
-        self.save_checkpoint(step, pipeline, params, train_states, save_inference_states=True)
+        self.save_checkpoint(step, pipeline, params, train_states)
         self.checkpoint_manager.wait_until_finished()
 
 def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, pipeline, params, config):

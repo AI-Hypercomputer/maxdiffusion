@@ -230,7 +230,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
                 train_states["unet_state"] = unet_state
                 train_states["text_encoder_state"] = text_encoder_state
                 train_states["text_encoder_2_state"] = text_encoder_2_state
-                self.save_checkpoint(step, pipeline, params, train_states, save_inference_states=False)
+                self.save_checkpoint(step, pipeline, params, train_states)
 
         if self.config.write_metrics:
             write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
@@ -238,7 +238,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         train_states["unet_state"] = unet_state
         train_states["text_encoder_state"] = text_encoder_state
         train_states["text_encoder_2_state"] = text_encoder_2_state
-        self.save_checkpoint(step, pipeline, params, train_states, save_inference_states=True)
+        self.save_checkpoint(step, pipeline, params, train_states)
         self.checkpoint_manager.wait_until_finished()
 
 def _train_step(unet_state, batch, train_rng, pipeline, params, config):
