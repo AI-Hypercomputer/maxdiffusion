@@ -192,7 +192,6 @@ class BaseStableDiffusionCheckpointer(ABC):
             context = jax.default_device(jax.devices('cpu')[0])
         else:
             context = nullcontext()
-        context = nullcontext()
         with context:
             pipeline, params = pipeline_class.from_pretrained(
                 self.config.pretrained_model_name_or_path,
@@ -227,7 +226,7 @@ class BaseStableDiffusionCheckpointer(ABC):
 
         return pipeline, params
 
-    def save_checkpoint(self, train_step, pipeline, params, train_states, save_inference_states=False):
+    def save_checkpoint(self, train_step, pipeline, params, train_states):
         def config_to_json(model_or_config):
             return json.loads(model_or_config.to_json_string())
 
@@ -248,38 +247,6 @@ class BaseStableDiffusionCheckpointer(ABC):
 
         tokenizer_config = {"path" : self.config.tokenizer_model_name_or_path}
         items["tokenizer_config"] = ocp.args.JsonSave(tokenizer_config)
-
-        if save_inference_states:
-            unet_params = jax.experimental.multihost_utils.process_allgather(train_states["unet_state"].params)
-            inference_unet_state, _, _ = self.create_unet_state(
-                pipeline,
-                {"unet" : unet_params},
-                checkpoint_item_name="inference_unet_state",
-                is_training=False,
-            )
-            items["inference_unet_state"] = ocp.args.StandardSave(inference_unet_state)
-
-            if self.config.train_text_encoder:
-                text_encoder_params = jax.experimental.multihost_utils.process_allgather(train_states["text_encoder_state"].params)
-                inference_text_encoder_state, _ = self.create_text_encoder_state(
-                    pipeline,
-                    {"text_encoder" : text_encoder_params},
-                    checkpoint_item_name="inference_text_encoder_state",
-                    is_training=False)
-
-                items["inference_text_encoder_state"] = ocp.args.StandardSave(inference_text_encoder_state)
-
-                # TODO - this is broken since create_text_encoder_state will create a text_encoder init weights
-                # and not a text_encoder_2 init weights fn.
-                if hasattr(pipeline, "text_encoder_2"):
-                    text_encoder_2_params = jax.experimental.multihost_utils.process_allgather(train_states["text_encoder_2_state"].params)
-                    inference_text_encoder_2_state, _ = self.create_text_encoder_2_state(
-                        pipeline,
-                        {"text_encoder" : text_encoder_2_params},
-                        checkpoint_item_name="inference_text_encoder_2_state",
-                        is_training=False
-                    )
-                    items["inference_text_encoder_2_state"] = ocp.args.StandardSave(inference_text_encoder_2_state)
 
         self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
 

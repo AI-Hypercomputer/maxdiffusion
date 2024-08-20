@@ -30,7 +30,7 @@ from maxdiffusion import (
 )
 
 
-from maxdiffusion import pyconfig
+from maxdiffusion import pyconfig, max_utils
 from maxdiffusion.image_processor import VaeImageProcessor
 from maxdiffusion.maxdiffusion_utils import (
   get_add_time_ids,
@@ -41,6 +41,8 @@ from maxdiffusion.maxdiffusion_utils import (
 from maxdiffusion.trainers.sdxl_trainer import (
   StableDiffusionXLTrainer
 )
+
+from maxdiffusion.checkpointing.checkpointing_utils import load_params_from_path
 
 class GenerateSDXL(StableDiffusionXLTrainer):
   def __init__(self, config):
@@ -198,15 +200,32 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
 def run(config):
   checkpoint_loader = GenerateSDXL(config)
   pipeline, params = checkpoint_loader.load_checkpoint()
+  
+  weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=checkpoint_loader.rng)
+  unboxed_abstract_state, _, _ = max_utils.get_abstract_state(pipeline.unet, None, config, checkpoint_loader.mesh, weights_init_fn, False)
 
+  unet_params = load_params_from_path(
+    config,
+    checkpoint_loader.checkpoint_manager,
+    unboxed_abstract_state.params,
+    "unet_state"
+  )
+  if unet_params:
+    params["unet"] = unet_params
+  
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
 
-  unet_state, unet_state_shardings, _ = checkpoint_loader.create_unet_state(
-    pipeline,
-    params,
-    checkpoint_item_name="inference_unet_state",
-    is_training=False
+  # Don't restore the train state to save memory, just restore params
+  # and create an inference state.  
+  unet_state, unet_state_shardings = max_utils.setup_initial_state(
+    model=pipeline.unet,
+    tx=None,
+    config=config,
+    mesh=checkpoint_loader.mesh,
+    weights_init_fn=weights_init_fn,
+    model_params=params.get("unet", None),
+    training=False
   )
 
   vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(

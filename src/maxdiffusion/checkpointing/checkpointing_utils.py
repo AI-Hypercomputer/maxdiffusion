@@ -18,6 +18,7 @@
 """Create an Orbax CheckpointManager with specified (Async or not) Checkpointer."""
 
 from typing import Optional, Any
+import os
 from maxdiffusion import max_logging
 from etils import epath
 from flax.training import train_state
@@ -55,17 +56,14 @@ def create_orbax_checkpoint_manager(
     "text_encoder_config",
     "scheduler_config",
     "unet_state",
-    "inference_unet_state",
     "vae_state",
     "text_encoder_state",
-    "inference_text_encoder_state",
     "tokenizer_config"
   )
   if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
     item_names+= (
       "text_encoder_2_state",
       "text_encoder_2_config",
-      "inference_text_encoder_2_state"
     )
   
   print("item_names: ", item_names)
@@ -119,6 +117,34 @@ def load_stable_diffusion_configs(
       checkpoint_manager.restore(step,
         args=orbax.checkpoint.args.Composite(**restore_args)
       ),None)
+
+def load_params_from_path(
+  config,
+  checkpoint_manager: CheckpointManager,
+  unboxed_abstract_params,
+  checkpoint_item : str,
+  step: Optional[int] = None,
+):
+  ckptr = ocp.PyTreeCheckpointer()
+
+  if step is None:
+    step = checkpoint_manager.latest_step()
+    if step is None:
+      return None
+  
+  ckpt_path = os.path.join(config.checkpoint_dir, str(step),checkpoint_item)
+  ckpt_path = epath.Path(ckpt_path)
+
+  restore_args = ocp.checkpoint_utils.construct_restore_args(unboxed_abstract_params)
+  restored = ckptr.restore(
+    ckpt_path,
+    item={"params": unboxed_abstract_params},
+    transforms={},
+    restore_args={"params" : restore_args}
+  )
+  return restored["params"]
+
+  
 
 def load_state_if_possible(
   checkpoint_manager: CheckpointManager,

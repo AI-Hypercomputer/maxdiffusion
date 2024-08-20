@@ -359,19 +359,19 @@ def setup_initial_state(
     state: the initialized train state
     state_mesh_annotations: the mesh annotations for the train state
   """
-  max_logging.log(f"setup_initial_state for {checkpoint_item}")
   # Initialization
   state = None
   unboxed_abstract_state, _, state_mesh_shardings = get_abstract_state(
     model, tx, config, mesh, weights_init_fn, training)
   with nn_partitioning.axis_rules(config.logical_axis_rules):
-    if checkpoint_manager:
+    if checkpoint_manager and checkpoint_item:
+      max_logging.log(f"setup_initial_state for {checkpoint_item}")
       state = checkpointing_utils.load_state_if_possible(checkpoint_manager,
                                                   unboxed_abstract_state, checkpoint_item)
       if state:
         state = state[checkpoint_item]
     if not state:
-      max_logging.log(f"Could not find {checkpoint_item} in orbax, creating state...")
+      max_logging.log(f"Could not find the item in orbax, creating state...")
 
       init_train_state_partial = functools.partial(init_train_state,
                                                     model=model,
