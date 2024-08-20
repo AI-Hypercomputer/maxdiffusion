@@ -200,7 +200,7 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
 def run(config):
   checkpoint_loader = GenerateSDXL(config)
   pipeline, params = checkpoint_loader.load_checkpoint()
-  
+
   weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=checkpoint_loader.rng)
   unboxed_abstract_state, _, _ = max_utils.get_abstract_state(pipeline.unet, None, config, checkpoint_loader.mesh, weights_init_fn, False)
 
@@ -212,12 +212,12 @@ def run(config):
   )
   if unet_params:
     params["unet"] = unet_params
-  
+
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
 
   # Don't restore the train state to save memory, just restore params
-  # and create an inference state.  
+  # and create an inference state.
   unet_state, unet_state_shardings = max_utils.setup_initial_state(
     model=pipeline.unet,
     tx=None,

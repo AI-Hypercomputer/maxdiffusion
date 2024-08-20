@@ -176,9 +176,9 @@ def run(config):
     )
     if unet_params:
       params["unet"] = unet_params
-    
+
     # Don't restore the train state to save memory, just restore params
-    # and create an inference state.  
+    # and create an inference state.
     unet_state, unet_state_shardings = max_utils.setup_initial_state(
       model=pipeline.unet,
       tx=None,
