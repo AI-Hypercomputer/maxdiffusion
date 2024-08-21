@@ -118,7 +118,7 @@ class Train(unittest.TestCase):
     delete_blobs(os.path.join(output_dir,run_name))
 
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
-      f"run_name={run_name}", "checkpoint_every=256","upload_ckpts_to_gcs=True",
+      f"run_name={run_name}", "checkpoint_every=256",
       "max_train_steps=21","per_device_batch_size=8",
       f"output_dir={output_dir}", "prompt=A magical castle in the middle of a forest, artistic drawing",
       "negative_prompt=purple, red","guidance_scale=7.5",

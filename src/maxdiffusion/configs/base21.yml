@@ -146,7 +146,6 @@ enable_data_shuffling: True
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1
-upload_ckpts_to_gcs: False
 
 # Prepare image latents and text encoder outputs
 # during dataset creation to reduce memory consumption.

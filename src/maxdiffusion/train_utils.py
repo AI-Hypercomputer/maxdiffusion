@@ -165,33 +165,3 @@ def generate_timestep_weights(config, num_timesteps):
   weights /= weights.sum()
   return jnp.array(weights)
 
-# def save_orbax_checkpoint(unet_state, pipeline, text_encoder_state = None):
-
-
-def save_checkpoint(save_fn, params, config, output_dir):
-  """
-  Save checkpoint.
-
-  Args:
-    save_fn: Must be a save_pretrained fn, for example, pipeline.save_pretrained.
-    params: params to save.
-    config: pyconfig
-    output_dir: local directory path.
-  """
-  user_dir = os.path.expanduser("~")
-  local_output_dir = output_dir.replace(os.path.join(
-    config.base_output_directory,
-    config.run_name
-  ), user_dir)
-
-  save_fn(
-    local_output_dir,
-    params=params
-  )
-
-  if jax.process_index() == 0 and config.upload_ckpts_to_gcs:
-    max_utils.walk_and_upload_blobs(config, local_output_dir)
-    # delete files in output_dir to save space
-    max_logging.log(f"Deleting {local_output_dir} to save space.")
-    shutil.rmtree(local_output_dir)
-
