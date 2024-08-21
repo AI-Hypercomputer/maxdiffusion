@@ -20,6 +20,7 @@ import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
 from datasets import load_dataset, load_from_disk, Dataset
 import jax
+import functools
 
 from maxdiffusion import multihost_dataloading
 from maxdiffusion.maxdiffusion_utils import tokenize_captions, transform_images, vae_apply
@@ -35,6 +36,7 @@ from maxdiffusion.dreambooth.dreambooth_constants import (
   INSTANCE_DATASET_NAME,
   CLASS_DATASET_NAME
 )
+from transformers import CLIPTokenizer
 from PIL import Image
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
@@ -63,30 +65,50 @@ def make_laion400m_train_iterator(
   maxdiffusion/pedagogical_examples/to_tfrecords.py
   """
   feature_description = {
-    "latents" : tf.io.FixedLenFeature([], tf.string),
-    "hidden_states" : tf.io.FixedLenFeature([], tf.string)
+    "moments" : tf.io.FixedLenFeature([], tf.string),
+    "clip_embeddings" : tf.io.FixedLenFeature([], tf.string)
   }
 
   def _parse_tfrecord_fn(example):
     return tf.io.parse_single_example(example, feature_description)
 
   def prepare_sample(features):
-    latents = tf.io.parse_tensor(tnp.asarray(features["latents"]), out_type=tf.float32)
-    hidden_states = tf.io.parse_tensor(tnp.asarray(features["hidden_states"]), out_type=tf.float32)
-    return {"pixel_values" : latents, "input_ids" : hidden_states}
+    moments = tf.io.parse_tensor(tnp.asarray(features["moments"]), out_type=tf.float32)
+    captions = tf.io.parse_tensor(tnp.asarray(features["clip_embeddings"]), out_type=tf.float32)
+    return (moments, captions)
 
-  filenames = tf.io.gfile.glob(os.path.join(config.train_data_dir,"*"))
-  train_ds = (
-    tf.data.TFRecordDataset(filenames, num_parallel_reads=AUTOTUNE)
-      .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
-      .map(prepare_sample, num_parallel_calls=AUTOTUNE)
-      .shuffle(global_batch_size * 10)
-      .batch(global_batch_size // jax.process_count(), drop_remainder=True)
-      .prefetch(AUTOTUNE)
-      .repeat(-1)
+  def tokenize(moments, captions, tokenizer):
+    captions = captions.numpy().decode("utf-8")
+    input_ids = tokenizer(captions,
+      max_length=tokenizer.model_max_length,
+      padding="max_length",
+      truncation=True
+    )["input_ids"]
+    return (moments, input_ids)
+
+  def create_dict(moments, input_ids):
+    return {"moments" : moments, "clip_embeddings" : input_ids}
+
+  tokenizer = CLIPTokenizer.from_pretrained(
+    config.pretrained_model_name_or_path,
+    subfolder="tokenizer"
   )
 
-  train_ds = train_ds.shard(num_shards = jax.process_count(), index = jax.process_index())
+  partial_tokenize = functools.partial(tokenize, tokenizer=tokenizer)
+
+  num_thread=32
+  train_ds = (
+    tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True, seed=config.seed)
+      .shard(num_shards = jax.process_count(), index = jax.process_index())
+      .interleave(tf.data.TFRecordDataset, num_parallel_calls=AUTOTUNE)
+      .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
+      .map(prepare_sample, num_parallel_calls=AUTOTUNE)
+      .map(create_dict, num_parallel_calls=AUTOTUNE)
+      .shuffle(global_batch_size * 10 // jax.process_count(), seed=config.seed)
+      .batch(global_batch_size // jax.process_count(), drop_remainder=False)
+      .repeat(-1)
+      .prefetch(AUTOTUNE)
+  )
 
   train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
   return train_iter
