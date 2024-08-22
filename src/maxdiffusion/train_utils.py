@@ -14,8 +14,6 @@
  limitations under the License.
  """
 
-import os
-import shutil
 import numpy as np
 import jax
 import jax.numpy as jnp
