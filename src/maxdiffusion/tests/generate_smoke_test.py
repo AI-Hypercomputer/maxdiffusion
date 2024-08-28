@@ -1,5 +1,6 @@
 import os
 import unittest
+import pytest
 import numpy as np
 
 from ..import pyconfig
@@ -9,6 +10,7 @@ from maxdiffusion.controlnet.generate_controlnet_replicated import run as genera
 from PIL import Image
 from skimage.metrics import structural_similarity as ssim
 
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -19,6 +21,7 @@ class Generate(unittest.TestCase):
     super().setUp()
     Generate.dummy_data = {}
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_sd15_config(self):
     img_url = os.path.join(THIS_DIR,'images','test_gen_sd15.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
@@ -33,6 +36,7 @@ class Generate(unittest.TestCase):
     assert base_image.shape == test_image.shape
     assert ssim_compare >=0.70
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_sd_2_base_from_gcs(self):
     img_url = os.path.join(THIS_DIR,'images','test_2_base.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
@@ -48,6 +52,7 @@ class Generate(unittest.TestCase):
     assert base_image.shape == test_image.shape
     assert ssim_compare >=0.70
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_controlnet(self):
     img_url = os.path.join(THIS_DIR,'images','cnet_test.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)

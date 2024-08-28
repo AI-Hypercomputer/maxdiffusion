@@ -16,6 +16,7 @@
 
 """ Smoke test """
 import os
+import pytest
 import pathlib
 import shutil
 import unittest
@@ -34,6 +35,8 @@ from PIL import Image
 from maxdiffusion.train_utils import (
     validate_train_config,
 )
+
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 HOME_DIR = pathlib.Path.home()
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +58,7 @@ class Train(unittest.TestCase):
   def setUp(self):
     Train.dummy_data = {}
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_sdxl_config(self):
     output_dir="gs://maxdiffusion-github-runner-test-assets"
     run_name="sdxl_train_smoke_test"
@@ -70,12 +74,13 @@ class Train(unittest.TestCase):
       "per_device_batch_size=1",
       'timestep_bias={"strategy" : "later", "multiplier" : 2.0, "portion" : 0.25}',
       f"output_dir={output_dir}",
-      f"jax_cache_dir={cache_dir}"],unittest=True)
+      f"jax_cache_dir={cache_dir}"], unittest=True)
 
     train_sdxl(pyconfig.config)
 
     delete_blobs(os.path.join(output_dir,run_name))
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_dreambooth_orbax(self):
     num_class_images=100
     output_dir="gs://maxdiffusion-github-runner-test-assets"
@@ -100,7 +105,7 @@ class Train(unittest.TestCase):
       "weights_dtype=float32","per_device_batch_size=1","enable_profiler=False","precision=DEFAULT",
       "cache_dreambooth_dataset=False","learning_rate=4e-6",f"output_dir={output_dir}",
       f"num_class_images={num_class_images}",f"run_name={run_name}",
-      "prompt=a photo of ohwx dog", "seed=47"],unittest=True)
+      "prompt=a photo of ohwx dog", "seed=47"], unittest=True)
 
     config = pyconfig.config
     validate_train_config(config)
@@ -110,6 +115,7 @@ class Train(unittest.TestCase):
     cleanup(class_class_local_dir)
     delete_blobs(os.path.join(output_dir,run_name))
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_sd15_orbax(self):
     output_dir="gs://maxdiffusion-github-runner-test-assets"
     run_name="sd15_orbax_smoke_test"

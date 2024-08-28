@@ -88,14 +88,14 @@ After installation completes, run the training script.
 
   ```bash
   export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
+  python -m src.maxdiffusion.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
   ```
 
 - **Stable Diffusion 1.5**
 
   ```bash
   export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base15.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
+  python -m src.maxdiffusion.train src/maxdiffusion/configs/base15.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
   ```
 
   To generate images with a trained checkpoint, run:
@@ -176,7 +176,7 @@ cd maxdiffusion
 pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 pip3 install -r requirements.txt
 pip3 install .
-python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name=my_run output_dir=gs://your-bucket/"
+python -m src.maxdiffusion.train src/maxdiffusion/configs/base_2_base.yml run_name=my_run output_dir=gs://your-bucket/"
 ```
 
 # Comparison to Alternatives
