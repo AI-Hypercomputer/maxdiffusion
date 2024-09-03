@@ -22,15 +22,15 @@ from transformers import CLIPTokenizer, FlaxCLIPTextModel
 
 from maxdiffusion.utils import logging
 
-from ...models import FlaxAutoencoderKL, FlaxUNet2DConditionModel
-from ...schedulers import (
+from maxdiffusion.models import FlaxAutoencoderKL, FlaxUNet2DConditionModel
+from maxdiffusion.schedulers import (
     FlaxDDIMScheduler,
     FlaxDPMSolverMultistepScheduler,
     FlaxLMSDiscreteScheduler,
     FlaxPNDMScheduler,
 )
-from ..pipeline_flax_utils import FlaxDiffusionPipeline
-from .pipeline_output import FlaxStableDiffusionXLPipelineOutput
+from maxdiffusion.pipelines.pipeline_flax_utils import FlaxDiffusionPipeline
+from maxdiffusion.pipelines.pipeline_output import FlaxStableDiffusionXLPipelineOutput
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -52,9 +52,7 @@ class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline):
             FlaxDDIMScheduler, FlaxPNDMScheduler, FlaxLMSDiscreteScheduler, FlaxDPMSolverMultistepScheduler
         ],
         dtype: jnp.dtype = jnp.float32,
-        cache_interval: int = 1,
-        cache_layer_id: int = None,
-        cache_block_id: int = None,
+
     ):
         super().__init__()
         self.dtype = dtype

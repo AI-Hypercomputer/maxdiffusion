@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, List
 
 import flax
 import flax.linen as nn
@@ -141,6 +141,9 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     projection_class_embeddings_input_dim: Optional[int] = None
     norm_num_groups: int = 32
     precision: jax.lax.Precision = None
+    replicate_prv_feature: Optional[List[jnp.array]] = None,
+    cache_layer_id: Optional[int] = None,
+    cache_block_id: Optional[int] = None,
 
     def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
         # init input tensors
@@ -261,7 +264,9 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                     flash_block_sizes=self.flash_block_sizes,
                     mesh=self.mesh,
                     dtype=self.dtype,
-                    precision=self.precision
+                    precision=self.precision,
+                    # deepcache change
+                    exist_block_number=self.cache_block_id if i == self.cache_layer_id else None,
                 )
             else:
                 down_block = FlaxDownBlock2D(
@@ -276,23 +281,29 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
             down_blocks.append(down_block)
         self.down_blocks = down_blocks
-
+        sample = self.replicate_prv_feature
+        max_block_depth = len(self.down_blocks[cache_layer_id].attentions) if hasattr(self.down_blocks[cache_layer_id], "attentions") else len(self.down_blocks[cache_layer_id].resnets)
+        if self.cache_block_id == max_block_depth :
+            self.cache_block_id = 0
+            self.cache_layer_id += 1
+        else:
+            self.cache_block_id += 1
         # mid
-        self.mid_block = FlaxUNetMidBlock2DCrossAttn(
-            in_channels=block_out_channels[-1],
-            dropout=self.dropout,
-            num_attention_heads=num_attention_heads[-1],
-            transformer_layers_per_block=transformer_layers_per_block[-1],
-            use_linear_projection=self.use_linear_projection,
-            use_memory_efficient_attention=self.use_memory_efficient_attention,
-            split_head_dim=self.split_head_dim,
-            attention_kernel=self.attention_kernel,
-            flash_min_seq_length=self.flash_min_seq_length,
-            flash_block_sizes=self.flash_block_sizes,
-            mesh=self.mesh,
-            dtype=self.dtype,
-            precision=self.precision
-        )
+        # self.mid_block = FlaxUNetMidBlock2DCrossAttn(
+        #     in_channels=block_out_channels[-1],
+        #     dropout=self.dropout,
+        #     num_attention_heads=num_attention_heads[-1],
+        #     transformer_layers_per_block=transformer_layers_per_block[-1],
+        #     use_linear_projection=self.use_linear_projection,
+        #     use_memory_efficient_attention=self.use_memory_efficient_attention,
+        #     split_head_dim=self.split_head_dim,
+        #     attention_kernel=self.attention_kernel,
+        #     flash_min_seq_length=self.flash_min_seq_length,
+        #     flash_block_sizes=self.flash_block_sizes,
+        #     mesh=self.mesh,
+        #     dtype=self.dtype,
+        #     precision=self.precision
+        # )
 
         # up
         up_blocks = []
@@ -302,6 +313,14 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         output_channel = reversed_block_out_channels[0]
         reversed_transformer_layers_per_block = list(reversed(transformer_layers_per_block))
         for i, up_block_type in enumerate(self.up_block_types):
+            if i < len(self.up_blocks) - 1 - self.cache_layer_id:
+                continue
+
+            if i == len(self.up_blocks) - 1 - self.cache_layer_id:
+                trunc_upsample_block = self.cache_block_id + 1
+            else:
+                trunc_upsample_block = len(up_block.resnets)
+
             prev_output_channel = output_channel
             output_channel = reversed_block_out_channels[i]
             input_channel = reversed_block_out_channels[min(i + 1, len(block_out_channels) - 1)]
@@ -367,10 +386,6 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         mid_block_additional_residual=None,
         return_dict: bool = True,
         train: bool = False,
-        quick_replicate: bool = False,
-        replicate_prv_feature: Optional[List[torch.Tensor]] = None,
-        cache_layer_id: Optional[int] = None,
-        cache_block_id: Optional[int] = None,
     ) -> Union[FlaxUNet2DConditionOutput, Tuple]:
         r"""
         Args:
@@ -434,11 +449,67 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         sample = jnp.transpose(sample, (0, 2, 3, 1))
         sample = self.conv_in(sample)
 
+        # 3. down
+        down_block_res_samples = (sample,)
         if quick_replicate and replicate_prv_feature is not None:
-            self.call_if()
-        else:
-            self.call_else()
+            for d, down_block in enumerate(self.down_blocks):
+                if d > self.cache_layer_id:
+                        break
+                if isinstance(down_block, FlaxCrossAttnDownBlock2D):
+                    sample, res_samples = down_block(sample, t_emb, encoder_hidden_states, deterministic=not train, exist_block_number=self.cache_block_id if d == self.cache_layer_id else None,)
+                else:
+                    sample, res_samples = down_block(sample, t_emb, deterministic=not train, exist_block_number=cache_block_id if i == cache_layer_id else None,)
+                down_block_res_samples += res_samples
         
+        # if down_block_additional_residuals is not None:
+        #     new_down_block_res_samples = ()
+
+        #     for down_block_res_sample, down_block_additional_residual in zip(
+        #         down_block_res_samples, down_block_additional_residuals
+        #     ):
+        #         down_block_res_sample += down_block_additional_residual
+        #         new_down_block_res_samples += (down_block_res_sample,)
+
+        #     down_block_res_samples = new_down_block_res_samples
+
+        # # 4. mid
+        # sample = self.mid_block(sample, t_emb, encoder_hidden_states, deterministic=not train)
+
+        # if mid_block_additional_residual is not None:
+        #     sample += mid_block_additional_residual
+
+        # 5. up
+        sample = replicate_prv_feature
+        max_block_depth = len(self.down_blocks[cache_layer_id].attentions) if hasattr(self.down_blocks[cache_layer_id], "attentions") else len(self.down_blocks[cache_layer_id].resnets)
+        if cache_block_id == max_block_depth :
+            cache_block_id = 0
+            cache_layer_id += 1
+        else:
+            cache_block_id += 1
+        
+        prv_f = None
+        for u, up_block in enumerate(self.up_blocks):
+            res_samples = down_block_res_samples[-(self.layers_per_block + 1) :]
+            is_final_block = u == len(self.up_blocks) - 1
+            down_block_res_samples = down_block_res_samples[: -len(up_block.resnets)]
+            if not is_final_block and forward_upsample_size:
+                    upsample_size = down_block_res_samples[-1].shape[2:]
+
+            
+            if isinstance(up_block, FlaxCrossAttnUpBlock2D):
+                sample = up_block(
+                    sample,
+                    temb=t_emb,
+                    encoder_hidden_states=encoder_hidden_states,
+                    res_hidden_states_tuple=res_samples,
+                    deterministic=not train,
+                    enter_block_number=cache_block_id if u == len(self.up_blocks) - 1 - cache_layer_id else None,
+
+                )
+            else:
+                sample = up_block(sample, temb=t_emb, res_hidden_states_tuple=res_samples, deterministic=not train,                         enter_block_number=cache_block_id if u == len(self.up_blocks) - 1 - cache_layer_id else None,
+)
+
         # 6. post-process
         sample = self.conv_norm_out(sample)
         sample = nn.silu(sample)
@@ -448,59 +519,3 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             return (sample,)
 
         return FlaxUNet2DConditionOutput(sample=sample)
-    
-    def call_else(self, t_emb, encoder_hidden_states, train, down_block_additional_residuals, mid_block_additional_residual, current_record_f):
-        # 3. down
-        down_block_res_samples = (sample,)
-        for down_block in self.down_blocks:
-            if isinstance(down_block, FlaxCrossAttnDownBlock2D):
-                sample, res_samples = down_block(sample, t_emb, encoder_hidden_states, deterministic=not train)
-            else:
-                sample, res_samples = down_block(sample, t_emb, deterministic=not train)
-            down_block_res_samples += res_samples
-
-        if down_block_additional_residuals is not None:
-            new_down_block_res_samples = ()
-
-            for down_block_res_sample, down_block_additional_residual in zip(
-                down_block_res_samples, down_block_additional_residuals
-            ):
-                down_block_res_sample += down_block_additional_residual
-                new_down_block_res_samples += (down_block_res_sample,)
-
-            down_block_res_samples = new_down_block_res_samples
-
-        # 4. mid
-        sample = self.mid_block(sample, t_emb, encoder_hidden_states, deterministic=not train)
-
-        if mid_block_additional_residual is not None:
-            sample += mid_block_additional_residual
-
-        # 5. up
-        if cache_block_id is not None:
-            max_block_depth = len(self.down_blocks[cache_layer_id].attentions) if hasattr(self.down_blocks[cache_layer_id], "attentions") else len(self.down_blocks[cache_layer_id].resnets)
-            if cache_block_id == max_block_depth:
-                cache_block_id = 0
-                cache_layer_id += 1
-            else:
-                cache_block_id += 1
-        
-        for i, up_block in enumerate(self.up_blocks):
-            res_samples = down_block_res_samples[-(self.layers_per_block + 1) :]
-            down_block_res_samples = down_block_res_samples[: -(self.layers_per_block + 1)]
-            if isinstance(up_block, FlaxCrossAttnUpBlock2D):
-                sample, current_record_f = up_block(
-                    sample,
-                    temb=t_emb,
-                    encoder_hidden_states=encoder_hidden_states,
-                    res_hidden_states_tuple=res_samples,
-                    deterministic=not train,
-                )
-            else:
-                sample, current_record_f = up_block(sample, temb=t_emb, res_hidden_states_tuple=res_samples, deterministic=not train)
-            #print(cache_layer_id, current_record_f is None, i == len(self.up_blocks) - cache_layer_id - 1)
-            #print("Append prv_feature with shape:", sample.shape)
-            if cache_layer_id is not None and current_record_f is not None and i == len(self.up_blocks) - cache_layer_id - 1:
-                prv_f = current_record_f[-cache_block_id-1]
-        # return sample
-
