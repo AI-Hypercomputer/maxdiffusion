@@ -149,6 +149,7 @@ profiler_steps: 5
 # Generation parameters
 prompt: "portrait photo of muscular bearded guy in a worn mech suit, light bokeh, intricate, steel metal, elegant, sharp focus, soft lighting, vibrant colors"
 negative_prompt: "purple, red"
+do_classifier_free_guidance: False
 guidance_scale: 2
 guidance_rescale: -1
 num_inference_steps: 4
