@@ -255,10 +255,11 @@ def run(config):
       return image
 
   p_run_inference = jax.jit(
-    functools.partial(run_inference, rng=rng, config=config, batch_size=batch_size, pipeline=pipeline),
+    run_inference,
     in_shardings=(unet_state_mesh_shardings, vae_state_mesh_shardings, None),
-    out_shardings=None
-  )
+    out_shardings=None,
+    static_argnames=[3,4,5,6]
+  ).lower(unet_state, vae_state, params, rng, config, batch_size, pipeline).compile()
 
   s = time.time()
   p_run_inference(unet_state, vae_state, params).block_until_ready()

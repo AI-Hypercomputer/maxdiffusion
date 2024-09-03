@@ -435,9 +435,9 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         sample = self.conv_in(sample)
 
         if quick_replicate and replicate_prv_feature is not None:
-            self.call_if()
+            sample, prv_f = self.call_if(t_emb, encoder_hidden_states, train, down_block_additional_residuals, replicate_prv_feature)
         else:
-            self.call_else()
+            sample, prv_f = self.call_else(t_emb, encoder_hidden_states, train, down_block_additional_residuals, mid_block_additional_residual, current_record_f)
         
         # 6. post-process
         sample = self.conv_norm_out(sample)
@@ -445,9 +445,79 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         sample = self.conv_out(sample)
         sample = jnp.transpose(sample, (0, 3, 1, 2))
         if not return_dict:
-            return (sample,)
+            return (sample, prv_f,)
 
         return FlaxUNet2DConditionOutput(sample=sample)
+    
+    def call_if(self, t_emb, encoder_hidden_states, train, down_block_additional_residuals, replicate_prv_feature):
+        # 3. down
+        down_block_res_samples = (sample,)
+        for i, down_block in enumerate(self.down_blocks):
+            if i > cache_layer_id:
+                    break
+            if isinstance(down_block, FlaxCrossAttnDownBlock2D):
+                sample, res_samples = down_block(sample, t_emb, encoder_hidden_states, deterministic=not train, exist_block_number=cache_block_id if i == cache_layer_id else None)
+            else:
+                sample, res_samples = down_block(sample, t_emb, deterministic=not train)
+            down_block_res_samples += res_samples
+
+        if down_block_additional_residuals is not None:
+            new_down_block_res_samples = ()
+
+            for down_block_res_sample, down_block_additional_residual in zip(
+                down_block_res_samples, down_block_additional_residuals
+            ):
+                down_block_res_sample += down_block_additional_residual
+                new_down_block_res_samples += (down_block_res_sample,)
+
+            down_block_res_samples = new_down_block_res_samples
+
+        # 4. no middle
+        
+        # 5. up
+        sample = replicate_prv_feature
+        max_block_depth = len(self.down_blocks[cache_layer_id].attentions) if hasattr(self.down_blocks[cache_layer_id], "attentions") else len(self.down_blocks[cache_layer_id].resnets)
+        if cache_block_id == max_block_depth :
+            cache_block_id = 0
+            cache_layer_id += 1
+        else:
+            cache_block_id += 1
+        
+        for i, up_block in enumerate(self.up_blocks):
+            if i < len(self.up_blocks) - 1 - cache_layer_id:
+                continue
+
+            if i == len(self.up_blocks) - 1 - cache_layer_id:
+                trunc_upsample_block = cache_block_id + 1
+            else:
+                trunc_upsample_block = len(up_block.resnets)
+
+            # is_final_block = i == len(self.up_blocks) - 1
+
+            res_samples = down_block_res_samples[-trunc_upsample_block:]
+            down_block_res_samples = down_block_res_samples[: -trunc_upsample_block]
+            # res_samples = down_block_res_samples[-(self.layers_per_block + 1) :]
+            # down_block_res_samples = down_block_res_samples[: -(self.layers_per_block + 1)]
+            if isinstance(up_block, FlaxCrossAttnUpBlock2D):
+                sample, _ = up_block(
+                    sample,
+                    temb=t_emb,
+                    encoder_hidden_states=encoder_hidden_states,
+                    res_hidden_states_tuple=res_samples,
+                    deterministic=not train,
+                    enter_block_number=cache_block_id if i == len(self.up_blocks) - 1 - cache_layer_id else None)
+            else:
+                sample, _ = up_block(
+                    sample,
+                    temb=t_emb,
+                    res_hidden_states_tuple=res_samples,
+                    deterministic=not train, 
+                    enter_block_number=cache_block_id if i == len(self.up_blocks) - 1 - cache_layer_id else None)
+        prv_f = replicate_prv_feature
+        return sample, prv_f
+
+
+    
     
     def call_else(self, t_emb, encoder_hidden_states, train, down_block_additional_residuals, mid_block_additional_residual, current_record_f):
         # 3. down
@@ -502,5 +572,5 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             #print("Append prv_feature with shape:", sample.shape)
             if cache_layer_id is not None and current_record_f is not None and i == len(self.up_blocks) - cache_layer_id - 1:
                 prv_f = current_record_f[-cache_block_id-1]
-        # return sample
+        return sample, prv_f
 
