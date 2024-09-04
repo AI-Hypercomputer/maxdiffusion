@@ -60,6 +60,32 @@ def _form_global_array(path, array: np.ndarray, global_mesh: Mesh) -> jax.Array:
   local_device_buffers = jax.device_put(local_device_arrays, global_mesh.local_devices)
   return jax.make_array_from_single_device_arrays(global_shape, sharding, local_device_buffers)
 
+def get_data_sharded(
+   array: np.ndarray, global_mesh: Mesh
+) -> jax.Array:
+  """Splits the host loaded data equally over all devices."""
+
+  SLEEP_TIME = 10
+  MAX_DATA_LOAD_ATTEMPTS = 30
+
+  data_load_attempts = 0
+  loaded_data_success = False
+  while not loaded_data_success and data_load_attempts < MAX_DATA_LOAD_ATTEMPTS:
+    data_load_attempts += 1
+    try:
+      local_data = array
+      loaded_data_success = True
+    except tf.errors.FailedPreconditionError:
+      max_logging.log("Failed to get next data batch, retrying")
+      time.sleep(SLEEP_TIME)
+
+  # Try one last time, if this fails we will see the full stack trace.
+  if not loaded_data_success:
+    local_data = array
+
+  input_gdas = jtu.tree_map_with_path(partial(_form_global_array, global_mesh = global_mesh), local_data)
+
+  return input_gdas
 
 def get_batch_sharded_data_pipeline(
   dataset: tf.data.Dataset, global_mesh: Mesh

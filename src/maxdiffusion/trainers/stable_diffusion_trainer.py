@@ -19,6 +19,8 @@ from functools import partial
 import datetime
 import time
 import numpy as np
+import pandas as pd
+import tensorflow as tf
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
@@ -33,11 +35,17 @@ from maxdiffusion import (
     max_utils,
     max_logging
 )
+from maxdiffusion import multihost_dataloading
+from maxdiffusion.image_processor import VaeImageProcessor 
+
+from maxdiffusion.checkpointing.checkpointing_utils import load_params_from_path
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
   make_pokemon_train_iterator,
   make_laion400m_train_iterator
 )
+
+from maxdiffusion.generate import run_inference, tokenize
 
 from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 
@@ -248,6 +256,8 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         start_step = train_utils.get_first_step(train_states["unet_state"])
         _, train_rngs = jax.random.split(self.rng)
 
+        eval_checkpoints = []
+
         for step in np.arange(start_step, self.config.max_train_steps):
             example_batch = train_utils.load_next_batch(data_iterator, example_batch, self.config)
             unet_state, text_encoder_state, train_metric, train_rngs = p_train_step(
@@ -274,16 +284,136 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
                 train_states["vae_state"] = vae_state
                 train_states["text_encoder"] = text_encoder_state
                 self.save_checkpoint(step, pipeline, params, train_states)
+                eval_checkpoints.append(step)
 
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
-
-        train_states["unet_state"] = unet_state
-        train_states["vae_state"] = vae_state
-        train_states["text_encoder"] = text_encoder_state
-        # save the inference states of the last checkpoint so they can be easily loaded during gen.
-        self.save_checkpoint(step, pipeline, params, train_states)
+        
+        # if the last checkpoint was saved above in the last step, wait for it to finish.
         self.checkpoint_manager.wait_until_finished()
+
+        # for checkpoint_step in eval_checkpoints:
+        #     eval(checkpoint_step)
+
+    def eval(self, checkpoint_step, pipeline, params, train_states, state_shardings):
+
+        weights_init_fn = partial(pipeline.unet.init_weights, rng=self.rng)
+        unboxed_abstract_state, _, _ = max_utils.get_abstract_state(pipeline.unet, None, self.config, self.mesh, weights_init_fn, False)
+        unet_params = load_params_from_path(
+        self.config,
+        self.checkpoint_manager,
+        unboxed_abstract_state.params,
+        "unet_state",
+        step=checkpoint_step
+        )
+        
+        if unet_params:
+            params["unet"] = unet_params
+
+        # Don't restore the train state to save memory, just restore params
+        # and create an inference state.
+        unet_state, unet_state_shardings = max_utils.setup_initial_state(
+        model=pipeline.unet,
+        tx=None,
+        config=self.config,
+        mesh=self.mesh,
+        weights_init_fn=weights_init_fn,
+        model_params=params.get("unet", None),
+        training=False
+        )
+        train_states["unet"] = unet_state
+        state_shardings["unet_state_shardings"] = unet_state_shardings
+
+        scheduler, scheduler_state = maxdiffusion_utils.create_scheduler(self.config.inference_scheduler, pipeline.scheduler.config, self.config)
+        pipeline.scheduler = scheduler
+        params["scheduler"] = scheduler_state        
+
+        batch_size = jax.local_device_count() * self.config.per_device_batch_size
+
+        p_run_inference = jax.jit(
+            partial(run_inference,
+                    pipeline=pipeline,
+                    params=params,
+                    config=self.config,
+                    rng=self.rng,
+                    mesh=self.mesh,
+                    batch_size=batch_size),
+            in_shardings=(state_shardings,),
+            out_shardings=None
+        )
+
+        def parse_tsv_line(line):
+            # Customize this function to parse your TSV file based on your specific format
+            # For example, you can use tf.strings.split to split the line into columns
+            columns = tf.strings.split([line], sep='\t')
+            return columns
+
+        def get_list_prompt_shards_from_file(file_path, batch_size_per_process):
+            # Create a dataset using tf.data
+            dataset = tf.data.TextLineDataset(file_path)
+            dataset = dataset.map(parse_tsv_line, num_parallel_calls=tf.data.AUTOTUNE)
+            dataset = dataset.batch(batch_size_per_process)
+            dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())
+
+            # Create an iterator to iterate through the batches
+            iterator = iter(dataset)
+            batch_number = 1
+            row_shards = []
+            for batch in iterator:
+                rows_batch = []
+                for row in batch:
+                    row_tensor = row[0]
+                    rows_batch.append([row_tensor[0], row_tensor[1], row_tensor[2]])
+                row_shards.append(rows_batch)
+                
+                batch_number += 1
+            return row_shards
+
+        per_host_batch_size = jax.local_device_count() * self.config.per_device_batch_size
+        shards = get_list_prompt_shards_from_file(self.config.caption_coco_file, per_host_batch_size)
+
+        negative_prompt_ids = tokenize([""] * per_host_batch_size, pipeline.tokenizer)
+
+        os.makedirs(self.config.images_directory, exist_ok=True)
+
+        for i, shard_i in enumerate(shards):
+            df = pd.DataFrame(shard_i[:], columns=["image_id", "id", "prompt"])
+            batches = [df[i:i + per_host_batch_size] for i in range(0, len(df), per_host_batch_size)]
+
+            batch = batches[0]
+            prompt_tensors = batch["prompt"].tolist()
+            prompt = [t.numpy().decode('utf-8') for t in prompt_tensors]
+
+            prompt_ids = tokenize(prompt, pipeline.tokenizer)
+
+            image_ids_tensor = batch["image_id"]
+            img_ids = [t.numpy().decode('utf-8') for t in image_ids_tensor]
+
+            prompt_ids_sharded = multihost_dataloading.get_data_sharded(prompt_ids, self.mesh)
+            negative_prompt_ids_sharded = multihost_dataloading.get_data_sharded(negative_prompt_ids, self.mesh)
+
+            images = p_run_inference(unet_state, train_states["vae_state"], params, prompt_ids_sharded, negative_prompt_ids_sharded)
+            images = [s.data for s in images.addressable_shards]
+            
+            numpy_images = np.array(images)
+            numpy_images = np.reshape(numpy_images, (numpy_images.shape[0] * numpy_images.shape[1], numpy_images.shape[2],numpy_images.shape[3], numpy_images.shape[4]))
+            
+            ids = batch["id"].tolist()
+            msk = [ id_item!='0' for id_item in ids]
+
+            def save_process(images, images_directory, img_ids, mask=None):
+                images = VaeImageProcessor.numpy_to_pil(images)
+                if mask is not None:
+                    for i, (image, valid) in enumerate(zip(images, mask)):
+                        if valid:
+                            img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
+                            image.save(img_save_path)
+                else:
+                    for i, image, in enumerate(images):
+                            img_save_path = os.path.join(images_directory, f"image_{img_ids[i]}.png")
+                            image.save(img_save_path)  
+
+            save_process(numpy_images, self.config.images_directory, img_ids, msk)
 
 def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, pipeline, params, config):
     _, gen_dummy_rng = jax.random.split(train_rng)

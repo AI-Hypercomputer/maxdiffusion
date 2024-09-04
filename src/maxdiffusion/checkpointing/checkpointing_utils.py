@@ -125,6 +125,7 @@ def load_params_from_path(
   checkpoint_item : str,
   step: Optional[int] = None,
 ):
+  max_logging.log(f"loading params from orbax for {checkpoint_item}")
   ckptr = ocp.PyTreeCheckpointer()
 
   if step is None:

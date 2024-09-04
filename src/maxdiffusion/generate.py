@@ -33,22 +33,11 @@ from maxdiffusion import (
 from maxdiffusion.maxdiffusion_utils import rescale_noise_cfg
 from flax.linen import partitioning as nn_partitioning
 from maxdiffusion.image_processor import VaeImageProcessor
-from maxdiffusion.trainers.stable_diffusion_trainer import (
-    StableDiffusionTrainer
-)
 
 from maxdiffusion.checkpointing.checkpointing_utils import load_params_from_path
 from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
     STABLE_DIFFUSION_CHECKPOINT
 )
-
-# Just re-use the trainer since it has helper functions to generate states.
-class GenerateSD(StableDiffusionTrainer):
-    def __init__(self, config, checkpoint_type):
-        StableDiffusionTrainer.__init__(self, config, checkpoint_type)
-
-    def post_training_steps(self, pipeline, params, train_states):
-        return super().post_training_steps(pipeline, params, train_states)
 
 
 def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidance_rescale):
@@ -162,6 +151,17 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
         return image
 
 def run(config):
+
+    from maxdiffusion.trainers.stable_diffusion_trainer import (
+    StableDiffusionTrainer
+    )
+    # Just re-use the trainer since it has helper functions to generate states.
+    class GenerateSD(StableDiffusionTrainer):
+        def __init__(self, config, checkpoint_type):
+            StableDiffusionTrainer.__init__(self, config, checkpoint_type)
+
+        def post_training_steps(self, pipeline, params, train_states):
+            return super().post_training_steps(pipeline, params, train_states)
 
     checkpoint_loader = GenerateSD(config, STABLE_DIFFUSION_CHECKPOINT)
     pipeline, params = checkpoint_loader.load_checkpoint()
