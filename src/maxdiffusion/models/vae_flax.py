@@ -30,14 +30,6 @@ from .modeling_flax_utils import FlaxModelMixin
 
 from maxdiffusion import common_types
 
-AxisNames = common_types.AxisNames
-BATCH = common_types.BATCH
-LENGTH = common_types.LENGTH
-HEAD = common_types.HEAD
-KEEP_1 = common_types.KEEP_1
-KEEP_2 = common_types.KEEP_2
-CONV_OUT = common_types.CONV_OUT
-
 @flax.struct.dataclass
 class FlaxDecoderOutput(BaseOutput):
     """
@@ -91,10 +83,6 @@ class FlaxUpsample2D(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             param_dtype=self.weights_dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
         )
 
     def __call__(self, hidden_states):
@@ -105,10 +93,6 @@ class FlaxUpsample2D(nn.Module):
             method="nearest",
         )
         hidden_states = self.conv(hidden_states)
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', KEEP_2, 'out_channels')
-        )
         return hidden_states
 
 
@@ -135,20 +119,12 @@ class FlaxDownsample2D(nn.Module):
             padding="VALID",
             dtype=self.dtype,
             param_dtype=self.weights_dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
         )
 
     def __call__(self, hidden_states):
         pad = ((0, 0), (0, 1), (0, 1), (0, 0))  # pad height and width dim
         hidden_states = jnp.pad(hidden_states, pad_width=pad)
         hidden_states = self.conv(hidden_states)
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', 'keep_2', 'out_channels')
-        )
         return hidden_states
 
 
@@ -190,10 +166,6 @@ class FlaxResnetBlock2D(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             param_dtype=self.weights_dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
         )
 
         self.norm2 = nn.GroupNorm(num_groups=self.groups, epsilon=1e-6, dtype=self.dtype, param_dtype=self.weights_dtype)
@@ -205,10 +177,6 @@ class FlaxResnetBlock2D(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             param_dtype=self.weights_dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
         )
 
         use_nin_shortcut = self.in_channels != out_channels if self.use_nin_shortcut is None else self.use_nin_shortcut
@@ -229,19 +197,11 @@ class FlaxResnetBlock2D(nn.Module):
         hidden_states = self.norm1(hidden_states)
         hidden_states = nn.swish(hidden_states)
         hidden_states = self.conv1(hidden_states)
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', KEEP_2, CONV_OUT)
-        )
 
         hidden_states = self.norm2(hidden_states)
         hidden_states = nn.swish(hidden_states)
         hidden_states = self.dropout_layer(hidden_states, deterministic)
         hidden_states = self.conv2(hidden_states)
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', KEEP_2, CONV_OUT)
-        )
 
         if self.conv_shortcut is not None:
             residual = self.conv_shortcut(residual)
@@ -275,23 +235,14 @@ class FlaxAttentionBlock(nn.Module):
 
         dense = partial(nn.Dense, self.channels, dtype=self.dtype, param_dtype=self.weights_dtype)
 
-        qkv_init_kernel = nn.with_logical_partitioning(
-            nn.initializers.lecun_normal(),
-            ('embed','heads')
-        )
-
         self.group_norm = nn.GroupNorm(num_groups=self.num_groups, epsilon=1e-6, dtype=self.dtype, param_dtype=self.weights_dtype)
         self.query, self.key, self.value = (
-            dense(kernel_init=qkv_init_kernel),
-            dense(kernel_init=qkv_init_kernel),
-            dense(kernel_init=qkv_init_kernel)
+            dense(),
+            dense(),
+            dense()
         )
 
-        proj_attn_init_kernel = nn.with_logical_partitioning(
-            nn.initializers.lecun_normal(),
-            ('heads','embed')
-        )
-        self.proj_attn = dense(kernel_init=proj_attn_init_kernel)
+        self.proj_attn = dense()
 
     def transpose_for_scores(self, projection):
         new_projection_shape = projection.shape[:-1] + (self.num_heads, -1)
@@ -312,19 +263,6 @@ class FlaxAttentionBlock(nn.Module):
         query = self.query(hidden_states)
         key = self.key(hidden_states)
         value = self.value(hidden_states)
-
-        query = nn.with_logical_constraint(
-            query,
-            (BATCH, LENGTH, HEAD)
-        )
-        key = nn.with_logical_constraint(
-            key,
-            (BATCH, LENGTH, HEAD)
-        )
-        value = nn.with_logical_constraint(
-            value,
-            (BATCH, LENGTH, HEAD)
-        )
 
         # transpose
         query = self.transpose_for_scores(query)
@@ -347,7 +285,6 @@ class FlaxAttentionBlock(nn.Module):
         hidden_states = self.proj_attn(hidden_states)
         hidden_states = hidden_states.reshape((batch, height, width, channels))
         hidden_states = hidden_states + residual
-        hidden_states = nn.with_logical_constraint(hidden_states,(BATCH, LENGTH, HEAD))
         return hidden_states
 
 
@@ -597,10 +534,6 @@ class FlaxEncoder(nn.Module):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             param_dtype=self.weights_dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
         )
 
         # downsampling
@@ -958,10 +891,6 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
             latents = jnp.transpose(latents, (0, 2, 3, 1))
 
         hidden_states = self.post_quant_conv(latents)
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', 'keep_2', 'out_channels')
-        )
         hidden_states = self.decoder(hidden_states, deterministic=deterministic)
 
         hidden_states = jnp.transpose(hidden_states, (0, 3, 1, 2))
