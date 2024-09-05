@@ -77,6 +77,7 @@ def transform_images(
         for i in range(0, iters * global_batch_size, global_batch_size):
             sample_rng, rng = jax.random.split(rng)
             latents = p_vae_apply(tensor_list[i:i+global_batch_size], sample_rng)
+            latents = jax.experimental.multihost_utils.process_allgather(latents)
             latents_list.append(latents)
 
         latents_list = np.stack(latents_list)
