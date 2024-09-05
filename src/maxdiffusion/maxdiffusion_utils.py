@@ -86,15 +86,9 @@ def transform_images(
 
         # TODO (Juan Acevedo): do last iteration, its required for the Pyarrow dataset
         # to not break due to items being fewer than expected. Is there a better way?
-        if tensor_list[i+global_batch_size:].shape[0] != 0:
+        if tensor_list[i+local_batch_size:].shape[0] != 0:
           sample_rng, rng = jax.random.split(rng)
-          latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
-          examples[pixel_ids_key] = np.append(latents_list, latents, axis=0)
-        else:
-           examples[pixel_ids_key] = latents_list
-        if tensor_list[i+global_batch_size:].shape[0] != 0:
-          sample_rng, rng = jax.random.split(rng)
-          latents = p_vae_apply(tensor_list[i+global_batch_size:], sample_rng)
+          latents = p_vae_apply(tensor_list[i+local_batch_size:], sample_rng)
           examples[pixel_ids_key] = np.append(latents_list, latents, axis=0)
         else:
            examples[pixel_ids_key] = latents_list
