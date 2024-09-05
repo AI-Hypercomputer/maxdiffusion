@@ -380,11 +380,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             padding=((1, 1), (1, 1)),
             dtype=jnp.float32,
             param_dtype=self.weights_dtype,
-            precision=self.precision,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            )
+            precision=self.precision
         )
 
     def __call__(
