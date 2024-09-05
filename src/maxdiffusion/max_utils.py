@@ -354,12 +354,12 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
     partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
     model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
 
-    with jax.transfer_guard("disallow"):
-      state = jax.jit(
-          init_train_state_partial,
-          in_shardings=None,
-          out_shardings=state_mesh_shardings
-      )(model_params=model_params)
+    #with jax.transfer_guard("disallow"):
+    state = jax.jit(
+        init_train_state_partial,
+        in_shardings=None,
+        out_shardings=state_mesh_shardings
+    )(model_params=model_params)
 
   state = unbox_logicallypartioned_trainstate(state)
 
