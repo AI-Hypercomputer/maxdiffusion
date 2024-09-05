@@ -76,7 +76,7 @@ def make_laion400m_train_iterator(
     moments = tf.io.parse_tensor(tnp.asarray(features["moments"]), out_type=tf.float32)
     captions = tf.io.parse_tensor(tnp.asarray(features["clip_embeddings"]), out_type=tf.float32)
     return (moments, captions)
-
+  
   def tokenize(moments, captions, tokenizer):
     captions = captions.numpy().decode("utf-8")
     input_ids = tokenizer(captions,
@@ -112,6 +112,7 @@ def make_laion400m_train_iterator(
 
   train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
   return train_iter
+
 
 def make_pokemon_train_iterator(
     config,
