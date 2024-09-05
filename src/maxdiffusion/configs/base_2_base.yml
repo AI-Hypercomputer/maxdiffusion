@@ -139,10 +139,10 @@ ici_tensor_parallelism: 1
 
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
-dataset_name: 'diffusers/pokemon-gpt4-captions'
+dataset_name: 'laion'
 # saves transformed dataset of dataset_name.
 dataset_save_location: '/tmp/pokemon-gpt4-captions'
-train_data_dir: ''
+train_data_dir: 'gs://mlperf-traininng-ew/maxdiffusion/laion400m/tf_records_512_encoder_state_fp32'
 dataset_config_name: ''
 jax_cache_dir: ''
 image_column: 'image'
@@ -219,3 +219,6 @@ prior_loss_weight: 1.0
 num_class_images: 100
 # If true, set dataset_save_location.
 cache_dreambooth_dataset: False
+
+caption_coco_file: "gs://mlperf-exp/sd-copy/cocodata/val2014_30k_padded.tsv"
+images_directory: "/tmp/"
