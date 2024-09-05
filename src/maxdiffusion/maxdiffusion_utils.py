@@ -76,6 +76,7 @@ def transform_images(
         latents_list = []
         local_batch_size = global_batch_size // jax.device_count()
         tensor_list = jax.experimental.multihost_utils.process_allgather(tensor_list)
+        print("tensor_list.shape: ", tensor_list.shape)
         for i in range(0, iters * global_batch_size, local_batch_size):
             sample_rng, rng = jax.random.split(rng)
             latents = p_vae_apply(tensor_list[i:i+local_batch_size], sample_rng)
