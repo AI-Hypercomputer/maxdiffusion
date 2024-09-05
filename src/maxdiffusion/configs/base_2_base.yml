@@ -26,7 +26,7 @@ log_period: 10000000000  # Flushes Tensorboard
 pretrained_model_name_or_path: 'gs://jfacevedo-maxdiffusion-v5p/stable_diffusion_checkpoints/models--stabilityai--stable-diffusion-2-base'
 unet_checkpoint: ''
 revision: 'main'
-dtype: 'float32'
+dtype: 'bf16'
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
