@@ -371,7 +371,7 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
   
   # Needed to initialize weights on multi-host with addressable devices.
   if config.train_new_unet:
-    unet_variables = jax.jit(pipeline.unet.init_weights, static_argnames=["eval_only"])(rng, eval_only=False)
+    unet_variables = pipeline.unet.init_weights(rng, eval_only=False)
   else:
     unet_variables = pipeline.unet.init_weights(rng, eval_only=True)
 
