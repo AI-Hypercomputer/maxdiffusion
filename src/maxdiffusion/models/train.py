@@ -418,8 +418,8 @@ def train(config):
                 donate_argnums=(0,)
             ).lower(unet_state, dummy_batch, train_rngs)
         p_train_step = p_train_step_lower.compile()
-        host_id = jax.process_index()
-        all_host_ids = jax.experimental.multihost_utils.process_allgather(host_id)
+        #host_id = jax.process_index()
+        #all_host_ids = jax.experimental.multihost_utils.process_allgather(host_id)
 
         p_learning_rate_scheduler = jax.jit(learning_rate_scheduler).lower(0)
         p_learning_rate_scheduler = p_learning_rate_scheduler.compile()
