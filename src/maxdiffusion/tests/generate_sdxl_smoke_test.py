@@ -7,7 +7,6 @@ import numpy as np
 from ..import pyconfig
 from absl.testing import absltest
 from maxdiffusion.generate_sdxl import run as generate_run_xl
-from maxdiffusion.controlnet.generate_controlnet_sdxl_replicated import run as generate_run_sdxl_controlnet
 from PIL import Image
 from skimage.metrics import structural_similarity as ssim
 
@@ -58,6 +57,8 @@ class Generate(unittest.TestCase):
 
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_controlnet_sdxl(self):
+    from maxdiffusion.controlnet.generate_controlnet_sdxl_replicated import run as generate_run_sdxl_controlnet
+
     img_url = os.path.join(THIS_DIR,'images','cnet_test_sdxl.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
