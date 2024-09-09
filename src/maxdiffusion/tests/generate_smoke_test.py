@@ -22,10 +22,10 @@ class Generate(unittest.TestCase):
     Generate.dummy_data = {}
 
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
-  def test_sd15_config(self):
-    img_url = os.path.join(THIS_DIR,'images','test_gen_sd15.png')
+  def test_sd14_config(self):
+    img_url = os.path.join(THIS_DIR,'images','test_gen_sd14.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base14.yml'),
       "seed=47","output_dir=gs://maxdiffusion-github-runner-test-assets",
       "run_name=gen-test-15-config"],unittest=True)
     images = generate_run(pyconfig.config)
@@ -56,7 +56,7 @@ class Generate(unittest.TestCase):
   def test_controlnet(self):
     img_url = os.path.join(THIS_DIR,'images','cnet_test.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base14.yml'),
       "prompt=best quality, extremely detailed","activations_dtype=bfloat16","weights_dtype=bfloat16",
       "negative_prompt=monochrome, lowres, bad anatomy, worst quality, low quality",
       "num_inference_steps=50","seed=0","split_head_dim=False"],unittest=True)

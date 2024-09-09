@@ -16,7 +16,7 @@ limitations under the License.
 
 """
 Run ex:
-python src/maxdiffusion/pedagogical_examples/model_flop_calculation.py src/maxdiffusion/configs/base15.yml
+python src/maxdiffusion/pedagogical_examples/model_flop_calculation.py src/maxdiffusion/configs/base14.yml
 """
 
 from absl import app

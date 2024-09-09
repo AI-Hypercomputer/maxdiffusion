@@ -95,7 +95,7 @@ class Train(unittest.TestCase):
     instance_class_local_dir = max_utils.download_blobs(instance_class_gcs_dir, local_dir)
     class_class_local_dir = max_utils.download_blobs(class_class_gcs_dir, local_dir)
 
-    pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base15.yml'),
+    pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base14.yml'),
       f"instance_data_dir={instance_class_local_dir}",
       f"class_data_dir={class_class_local_dir}","instance_prompt=a photo of ohwx dog",
       "class_prompt=photo of a dog","max_train_steps=150",f"jax_cache_dir={cache_dir}",
@@ -123,7 +123,7 @@ class Train(unittest.TestCase):
 
     delete_blobs(os.path.join(output_dir,run_name))
 
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base14.yml'),
       f"run_name={run_name}", "checkpoint_every=256",
       "max_train_steps=21","per_device_batch_size=8",
       f"output_dir={output_dir}", "prompt=A magical castle in the middle of a forest, artistic drawing",
