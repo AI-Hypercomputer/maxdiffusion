@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 
-from transformers import FlaxCLIPModel, AutoProcessor
+from maxdiffusion.transformers.models.auto.processing_auto import AutoProcessor
+from maxdiffusion.transformers import FlaxCLIPModel
 
 import open_clip
 import jax

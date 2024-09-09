@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple, Union
 
 from ...configuration_utils import PretrainedConfig
 from ...dynamic_module_utils import get_class_from_dynamic_module, resolve_trust_remote_code
-from ...modeling_gguf_pytorch_utils import load_gguf_checkpoint
 from ...tokenization_utils import PreTrainedTokenizer
 from ...tokenization_utils_base import TOKENIZER_CONFIG_FILE
 from ...utils import (
@@ -845,14 +844,9 @@ class AutoTokenizer:
         # If that did not work, let's try to use the config.
         if config_tokenizer_class is None:
             if not isinstance(config, PretrainedConfig):
-                if gguf_file:
-                    gguf_path = cached_file(pretrained_model_name_or_path, gguf_file, **kwargs)
-                    config_dict = load_gguf_checkpoint(gguf_path, return_tensors=False)["config"]
-                    config = AutoConfig.for_model(**config_dict)
-                else:
-                    config = AutoConfig.from_pretrained(
-                        pretrained_model_name_or_path, trust_remote_code=trust_remote_code, **kwargs
-                    )
+                config = AutoConfig.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code, **kwargs
+                )
             config_tokenizer_class = config.tokenizer_class
             if hasattr(config, "auto_map") and "AutoTokenizer" in config.auto_map:
                 tokenizer_auto_map = config.auto_map["AutoTokenizer"]

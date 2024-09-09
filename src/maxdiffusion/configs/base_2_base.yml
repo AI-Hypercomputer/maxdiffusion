@@ -162,7 +162,7 @@ checkpoint_every: -1
 
 # Prepare image latents and text encoder outputs
 # during dataset creation to reduce memory consumption.
-cache_latents_text_encoder_outputs: True
+cache_latents_text_encoder_outputs: False
 
 
 # Training loop
@@ -222,3 +222,12 @@ cache_dreambooth_dataset: False
 
 caption_coco_file: "gs://mlperf-exp/sd-copy/cocodata/val2014_30k_padded.tsv"
 images_directory: "/tmp/"
+
+inception_weights_path: 'gs://jfacevedo-maxdiffusion-v5p/inception_checkpoints/inception_v3/inception_v3_weights_fid.pickle'
+clip_model_name_or_path: 'gs://jfacevedo-maxdiffusion-v5p/CLIP_checkpoints/models--laion--CLIP-ViT-H-14-laion2B-s32B-b79K'
+
+enable_mllog: True
+
+stat_output_directory: 'output/'
+stat_output_file: 'output/stats.npz'
+stat_coco_file: 'gs://mlperf-exp/sd-copy/cocodata/val2014_30k_stats.npz'

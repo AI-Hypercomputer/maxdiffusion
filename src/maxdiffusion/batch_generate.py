@@ -195,6 +195,8 @@ def run(config):
     from maxdiffusion.trainers.stable_diffusion_trainer import (
     StableDiffusionTrainer
     )
+    from maxdiffusion import eval
+
     # Just re-use the trainer since it has helper functions to generate states.
     class GenerateSD(StableDiffusionTrainer):
         def __init__(self, config, checkpoint_type):
@@ -335,6 +337,8 @@ def run(config):
             ids = batch["id"].tolist()
             msk = [ id_item!='0' for id_item in ids]
             save_process(numpy_images, config.images_directory, img_ids, msk)
+        checkpoint_name = f"step_num={str(checkpoint_step+1)}-samples_count={(checkpoint_step * config.per_device_batch_size * jax.device_count())}"
+        _, _ = eval.eval_scores(config, config.images_directory, checkpoint_name)
 
     return images
 

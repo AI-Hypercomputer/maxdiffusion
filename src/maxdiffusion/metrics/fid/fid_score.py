@@ -35,8 +35,7 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
         path, batch_size=batch_size, target_size=img_size, shuffle=False, interpolation="bilinear"
     )
     assert directory_iterator.samples > 0, "No images found. Make sure your images are within a subdirectory."
-
-    get_batch_fn = lambda: directory_iterator.next()[0]
+    get_batch_fn = lambda: next(directory_iterator)[0]
     num_activations = directory_iterator.samples
     num_batches = len(directory_iterator)
     dtype = 'float32'
@@ -70,7 +69,7 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
     activation_sum = jax.experimental.multihost_utils.process_allgather(activation_sum)
     activation_sum = jnp.sum(activation_sum, axis=0)
 
-    print(num_activations)
+    print("num_activations: ", num_activations)
     
     mu = activation_sum / num_activations
     sigma = sigma / num_activations
@@ -125,7 +124,6 @@ def compute_frechet_distance(mu1, mu2, sigma1, sigma2, eps=1e-6):
 
     diff = mu1 - mu2
     
-
     covmean, _ = scipy.linalg.sqrtm(sigma1.dot(sigma2), disp=False)
     if not np.isfinite(covmean).all():
         msg = (

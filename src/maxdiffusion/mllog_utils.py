@@ -12,11 +12,14 @@
  """
 
 """Utils that relevant to mllog for mlperf submission compliance."""
+from typing import Optional
 import jax
 from mlperf_logging import mllog
 import numpy as np
+import os
 
 mllogger = mllog.get_mllogger()
+mllog.config(filename="sd_worker.log", filemode='w')
 
 def train_init_start(config):
   if jax.process_index() == 0 and config.enable_mllog:
@@ -64,35 +67,170 @@ def train_init_print(config, device: str = 'tpu-v5p'):
 
     mllogger.event(mllog.constants.SEED, config.seed)
 
-def train_step_start(config, step):
+def train_step_start(config, step_num, samples_count):
   if jax.process_index() == 0 and config.enable_mllog:
     mllogger.start(
       mllog.constants.BLOCK_START,
       value="training_step",
       metadata={
-        'step_num': step,
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
       },
     )
 
-def train_step_end(config, step, loss, lr):
+def train_step_end(config, step_num, samples_count, loss, lr):
   if jax.process_index() == 0 and config.enable_mllog:
     mllogger.end(
       mllog.constants.BLOCK_STOP,
       value="training_step",
       metadata={
-        'step_num': step,
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
         'loss': loss,
         'lr': lr,
       },
     )
 
-def maybe_train_step_log(config, start_step, step, metric, train_log_interval: int = 100):
-  if step > start_step and step % train_log_interval == 0 or step == config.max_train_steps - 1 and config.enable_mllog:
+def maybe_train_step_log(config, start_step, step_num, samples_count, metric):
+  if step_num > start_step and metric:
     # convert the jax array to a numpy array for mllog JSON encoding
     loss = np.asarray(metric['scalar']['learning/loss'])
     lr = np.asarray(metric['scalar']['learning/current_learning_rate'])
 
-    train_step_end(config, step, loss, lr)
+    train_step_end(config, step_num, samples_count, loss, lr)
     # start new tracking except the last step
-    if step < config.max_train_steps - 1:
-      train_step_start(config, step)
+    if step_num < config.max_train_steps:
+      train_step_start(config, step_num, samples_count)
+
+def train_checkpoint_step_log(step_num: int):
+  if jax.process_index() == 0:
+    mllogger.event(
+      "checkpoint",
+      value=step_num,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+      },
+    )
+
+def extract_info_from_ckpt_name(model_ckpt_name: str, key: str) -> int:
+  # model_ckpt_name format:
+  #  f"{step_num=}-{samples_count=}"
+  result = -1
+  assert key in ("step_num", "samples_count")
+  try:
+    info_dict = {}
+    for key_value_str in os.path.basename(model_ckpt_name.rstrip('/')).split('-'):
+      str_key, value = key_value_str.split("=")
+      info_dict[str_key] = value
+    result = int(info_dict[key])
+  except ValueError:
+    print(f"Checkpoint {model_ckpt_name} is not splittable. Is this a mllog checkpoint?")
+    pass
+  return result
+
+def get_checkpoint_name(config, checkpoint_name=None):
+  if checkpoint_name is None:
+      checkpoint_name = config.pretrained_model_name_or_path
+  return checkpoint_name
+
+def eval_start(config, checkpoint_name=None):
+  if jax.process_index() == 0 and config.enable_mllog:
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
+    mllogger.start(
+      mllog.constants.EVAL_START,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
+      },
+    )
+
+def eval_end(config, checkpoint_name=None):
+  if jax.process_index() == 0 and config.enable_mllog:
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
+    mllogger.end(
+      mllog.constants.EVAL_STOP,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
+      },
+    )
+
+def eval_fid(config, fid: float, checkpoint_name=None):
+  if jax.process_index() == 0 and config.enable_mllog:
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
+    mllogger.event(
+      mllog.constants.EVAL_ACCURACY,
+      value=fid,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
+        "metric": "FID",
+        "ckpt_name": checkpoint_name,
+      },
+    )
+
+def eval_clip(config, clip_score: float, checkpoint_name=None):
+  if jax.process_index() == 0 and config.enable_mllog:
+    checkpoint_name = get_checkpoint_name(config, checkpoint_name)
+    step_num = extract_info_from_ckpt_name(checkpoint_name, "step_num")
+    samples_count = extract_info_from_ckpt_name(checkpoint_name, "samples_count")
+    mllogger.event(
+      mllog.constants.EVAL_ACCURACY,
+      value=clip_score,
+      metadata={
+        mllog.constants.STEP_NUM: step_num,
+        mllog.constants.SAMPLES_COUNT: samples_count,
+        "metric": "CLIP",
+        "ckpt_name": checkpoint_name,
+      },
+    )
+
+def timestamp_fid(fid: float, timestamp: int, step_num: int, samples_count: int):
+  mllogger.event(
+    mllog.constants.EVAL_ACCURACY,
+    value=fid,
+    metadata={
+      mllog.constants.STEP_NUM: step_num,
+      mllog.constants.SAMPLES_COUNT: samples_count,
+      "metric": "FID",
+    },
+    time_ms=timestamp,
+  )
+
+def timestamp_clip(clip: float, timestamp: int, step_num: int, samples_count: int):
+  mllogger.event(
+    mllog.constants.EVAL_ACCURACY,
+    value=clip,
+    metadata={
+      mllog.constants.STEP_NUM: step_num,
+      mllog.constants.SAMPLES_COUNT: samples_count,
+      "metric": "CLIP",
+    },
+    time_ms=timestamp,
+  )
+
+def timestamp_run_stop_success(timestamp: int, step_num: int, samples_count: int):
+  mllogger.end(
+    mllog.constants.RUN_STOP,
+    metadata={
+      mllog.constants.STATUS: mllog.constants.SUCCESS,
+      mllog.constants.STEP_NUM: step_num,
+      mllog.constants.SAMPLES_COUNT: samples_count,
+    },
+    time_ms=timestamp,
+  )
+
+def timestamp_run_stop_abort():
+  mllogger.end(
+    mllog.constants.RUN_STOP,
+    metadata={
+      mllog.constants.STATUS: mllog.constants.ABORTED,
+    },
+  )
