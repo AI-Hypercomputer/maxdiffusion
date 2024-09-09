@@ -77,7 +77,7 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
 
   if config.do_classifier_free_guidance:
     noise_pred = apply_classifier_free_guidance(noise_pred, guidance_scale, guidance_rescale)
-  
+
   latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
   return latents, scheduler_state, state

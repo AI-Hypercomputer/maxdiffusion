@@ -28,7 +28,6 @@ from ..configuration_utils import ConfigMixin, flax_register_to_config
 from ..utils import BaseOutput
 from .modeling_flax_utils import FlaxModelMixin
 
-from maxdiffusion import common_types
 
 @flax.struct.dataclass
 class FlaxDecoderOutput(BaseOutput):
