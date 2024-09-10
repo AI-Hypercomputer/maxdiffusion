@@ -379,12 +379,12 @@ def setup_initial_state(model, tx, config, mesh, model_params, unboxed_abstract_
     partial_device_put_replicated = functools.partial(device_put_replicated, sharding=sharding)
     model_params = jax.tree_util.tree_map(partial_device_put_replicated, model_params)
 
-    #with jax.transfer_guard("disallow"):
-    state = jax.jit(
-        init_train_state_partial,
-        in_shardings=None,
-        out_shardings=state_mesh_shardings
-    )(model_params=model_params)
+    with jax.transfer_guard("disallow"):
+      state = jax.jit(
+          init_train_state_partial,
+          in_shardings=None,
+          out_shardings=state_mesh_shardings
+      )(model_params=model_params)
 
   state = unbox_logicallypartioned_trainstate(state)
 
@@ -396,7 +396,7 @@ def get_states(mesh, tx, rng, config, pipeline, unet_params, vae_params, trainin
   
   # Needed to initialize weights on multi-host with addressable devices.
   if config.train_new_unet:
-    unet_variables = pipeline.unet.init_weights(rng, eval_only=False)
+    unet_variables = jax.jit(pipeline.unet.init_weights, static_argnames=["eval_only"])(rng, eval_only=False)
   else:
     unet_variables = pipeline.unet.init_weights(rng, eval_only=True)
 
