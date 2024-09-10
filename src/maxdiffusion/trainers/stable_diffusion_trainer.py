@@ -100,7 +100,8 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         return data_sharding
 
     def load_dataset(self, pipeline, params, train_states):
-        if self.config.dataset_name == "diffusers/pokemon-gpt4-captions":
+        # ideally : diffusers/pokemon-gpt4-captions, but if loading from gcs, make sure the folder has pokemon in the name.
+        if "pokemon" in self.config.dataset_name:
             p_encode = None
             p_vae_apply = None
             if self.config.cache_latents_text_encoder_outputs:
