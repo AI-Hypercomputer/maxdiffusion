@@ -30,7 +30,8 @@ from absl import app
 from maxdiffusion import (
   pyconfig,
   FlaxDDIMScheduler,
-  max_utils
+  max_utils,
+  maxdiffusion_utils
 )
 
 from maxdiffusion.maxdiffusion_utils import rescale_noise_cfg
@@ -265,6 +266,7 @@ def run(config):
     scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
         config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
     )
+    scheduler, scheduler_state = maxdiffusion_utils.create_scheduler(scheduler.config, config)
     pipeline.scheduler = scheduler
     params["scheduler"] = scheduler_state
 

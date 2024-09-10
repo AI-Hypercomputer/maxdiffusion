@@ -87,11 +87,11 @@ timestep_bias: {
 
 # Override parameters from checkpoints's scheduler.
 diffusion_scheduler_config: {
-  _class_name: '',
+  _class_name: 'FlaxDDIMScheduler',
   # values are v_prediction or leave empty to use scheduler's default. 
-  prediction_type: '',
+  prediction_type: 'v_prediction',
   rescale_zero_terminal_snr: False,
-  timestep_spacing: ''
+  timestep_spacing: 'trailing'
 }
 
 # Output directory
