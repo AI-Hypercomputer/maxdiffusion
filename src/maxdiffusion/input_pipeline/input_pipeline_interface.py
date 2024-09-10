@@ -36,7 +36,7 @@ from maxdiffusion.dreambooth.dreambooth_constants import (
   INSTANCE_DATASET_NAME,
   CLASS_DATASET_NAME
 )
-from transformers import CLIPTokenizer
+from maxdiffusion.transformers import CLIPTokenizer
 from PIL import Image
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
