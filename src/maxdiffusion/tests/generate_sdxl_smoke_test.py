@@ -1,20 +1,22 @@
 import os
 import unittest
+import pytest
 
 import numpy as np
 
 from ..import pyconfig
 from absl.testing import absltest
 from maxdiffusion.generate_sdxl import run as generate_run_xl
-from maxdiffusion.controlnet.generate_controlnet_sdxl_replicated import run as generate_run_sdxl_controlnet
 from PIL import Image
 from skimage.metrics import structural_similarity as ssim
 
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class Generate(unittest.TestCase):
   """Smoke test."""
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_sdxl_config(self):
     img_url = os.path.join(THIS_DIR,'images','test_sdxl.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
@@ -33,6 +35,7 @@ class Generate(unittest.TestCase):
     assert base_image.shape == test_image.shape
     assert ssim_compare >=0.80
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_sdxl_from_gcs(self):
     """Verify load weights from gcs."""
     img_url = os.path.join(THIS_DIR,'images','test_sdxl.png')
@@ -52,7 +55,10 @@ class Generate(unittest.TestCase):
     assert base_image.shape == test_image.shape
     assert ssim_compare >=0.80
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_controlnet_sdxl(self):
+    from maxdiffusion.controlnet.generate_controlnet_sdxl_replicated import run as generate_run_sdxl_controlnet
+
     img_url = os.path.join(THIS_DIR,'images','cnet_test_sdxl.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
     pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base_xl.yml'),
@@ -66,6 +72,7 @@ class Generate(unittest.TestCase):
     assert base_image.shape == test_image.shape
     assert ssim_compare >=0.70
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_sdxl_lightning(self):
     img_url = os.path.join(THIS_DIR,'images','test_lightning.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)

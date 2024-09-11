@@ -23,10 +23,11 @@ import numpy as np
 import jax
 from jax.sharding import PartitionSpec as P
 import jax.numpy as jnp
-from maxdiffusion import pyconfig
 from absl import app
 from maxdiffusion import (
+  pyconfig,
   FlaxDDIMScheduler,
+  max_utils
 )
 
 from maxdiffusion.maxdiffusion_utils import rescale_noise_cfg
@@ -36,6 +37,7 @@ from maxdiffusion.trainers.stable_diffusion_trainer import (
     StableDiffusionTrainer
 )
 
+from maxdiffusion.checkpointing.checkpointing_utils import load_params_from_path
 from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
     STABLE_DIFFUSION_CHECKPOINT
 )
@@ -164,11 +166,27 @@ def run(config):
     checkpoint_loader = GenerateSD(config, STABLE_DIFFUSION_CHECKPOINT)
     pipeline, params = checkpoint_loader.load_checkpoint()
 
-    unet_state, unet_state_shardings, _ = checkpoint_loader.create_unet_state(
-        pipeline,
-        params,
-        checkpoint_item_name="inference_unet_state",
-        is_training=False,
+    weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=checkpoint_loader.rng)
+    unboxed_abstract_state, _, _ = max_utils.get_abstract_state(pipeline.unet, None, config, checkpoint_loader.mesh, weights_init_fn, False)
+    unet_params = load_params_from_path(
+      config,
+      checkpoint_loader.checkpoint_manager,
+      unboxed_abstract_state.params,
+      "unet_state"
+    )
+    if unet_params:
+      params["unet"] = unet_params
+
+    # Don't restore the train state to save memory, just restore params
+    # and create an inference state.
+    unet_state, unet_state_shardings = max_utils.setup_initial_state(
+      model=pipeline.unet,
+      tx=None,
+      config=config,
+      mesh=checkpoint_loader.mesh,
+      weights_init_fn=weights_init_fn,
+      model_params=params.get("unet", None),
+      training=False
     )
 
     vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
@@ -178,11 +196,35 @@ def run(config):
         is_training=False
     )
 
-    text_encoder_state, text_encoder_state_shardings = checkpoint_loader.create_text_encoder_state(
-        pipeline,
-        params,
-        checkpoint_item_name="inference_text_encoder_state" if config.train_text_encoder else "text_encoder_state",
-        is_training=False
+    weights_init_fn = functools.partial(
+        pipeline.text_encoder.init_weights,
+        rng=checkpoint_loader.rng,
+        input_shape=(checkpoint_loader.total_train_batch_size, pipeline.tokenizer.model_max_length))
+    unboxed_abstract_state, _, _ = max_utils.get_abstract_state(
+      pipeline.text_encoder,
+      None,
+      config,
+      checkpoint_loader.mesh,
+      weights_init_fn,
+      False
+    )
+    text_encoder_params = load_params_from_path(
+      config,
+      checkpoint_loader.checkpoint_manager,
+      unboxed_abstract_state.params,
+      "text_encoder_state"
+    )
+    if text_encoder_params:
+        params["text_encoder"] = text_encoder_params
+
+    text_encoder_state, text_encoder_state_shardings = max_utils.setup_initial_state(
+      model=pipeline.text_encoder,
+      tx=None,
+      config=config,
+      mesh=checkpoint_loader.mesh,
+      weights_init_fn=weights_init_fn,
+      model_params=params.get("text_encoder", None),
+      training=False
     )
 
     states = {}

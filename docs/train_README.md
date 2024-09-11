@@ -28,7 +28,7 @@ In this session, we'll explain some of the core config parameters and how they a
 
 | config | model | supports |
 | ------ | ----- | -------- |
-| [base15.yml](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/configs/base15.yml) | [stable-diffusion-v1-5](https://huggingface.co/runwayml/stable-diffusion-v1-5) | training / inference
+| [base14.yml](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/configs/base14.yml) | [stable-diffusion-v1-4](CompVis/stable-diffusion-v1-4) | training / inference
 | [base_2_base.yml](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/configs/base_2_base.yml) | [stable-diffusion-2-base](https://huggingface.co/stabilityai/stable-diffusion-2-base) | training / inference
 | [base21.yml](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/configs/base21.yml) | [stable-diffusion-2-1](https://huggingface.co/stabilityai/stable-diffusion-2-1) | training / inference
 | [base_xl.yml](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/configs/base_xl.yml) | [stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | training / inference
@@ -40,10 +40,10 @@ Let's start with a simple example. After setting up your environment, create a t
 
   ```bash
   export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base15.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
+  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base14.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
   ```
 
-The job will use the predefined parameters in base15.yml and will overwrite any parameters that as passed into the cli.
+The job will use the predefined parameters in base14.yml and will overwrite any parameters that as passed into the cli.
 
 ### Changing The Base Model
 
@@ -53,7 +53,7 @@ To load Pytorch weights, set `from_pt=True` and set `revision=main`. Let's look 
 
   ```bash
   export LIBTPU_INIT_ARGS=""
-  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base15.yml run_name="my_run" output_dir="gs://your-bucket/" pretrained_model_name_or_path=runwayml/stable-diffusion-v1-5 from_pt=True revision=main
+  python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base14.yml run_name="my_run" output_dir="gs://your-bucket/" pretrained_model_name_or_path=runwayml/stable-diffusion-v1-5 from_pt=True revision=main
   ```
 
 After training, a new folder structure with weights and metrics has been created under the `output_dir` folder:
@@ -71,7 +71,7 @@ It is recommended to use a Google Cloud Storage bucket as the `output_dir`. This
 To use the trained checkpoint, then run:
 
   ```bash
-  python src/maxdiffusion/generate.py src/maxdiffusion/configs/base15.yml output_dir="gs://your-bucket/" run_name="my_run"
+  python src/maxdiffusion/generate.py src/maxdiffusion/configs/base14.yml output_dir="gs://your-bucket/" run_name="my_run"
   ```
 
 
@@ -79,7 +79,7 @@ To use the trained checkpoint, then run:
 
 MaxDiffusion models use logical axis annotations, which allows users to explore different sharding layouts without making changes to the model code. To learn more about distributed arrays and Flax partitioning, checkout JAX's [Distributed arrays and automatic parallelization](https://jax.readthedocs.io/en/latest/notebooks/Distributed_arrays_and_automatic_parallelization.html) and then FLAX's [Scale up Flax Modules on multiple devices](https://flax.readthedocs.io/en/latest/guides/parallel_training/flax_on_pjit.html#flax-and-jax-jit-scaled-up)
 
-The main [config values](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/configs/base15.yml#L74) for these are:
+The main [config values](https://github.com/google/maxdiffusion/blob/main/src/maxdiffusion/configs/base14.yml#L74) for these are:
 
 - mesh_axes
 - logical_axis_rules

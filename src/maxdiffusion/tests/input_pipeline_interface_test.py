@@ -84,7 +84,7 @@ class InputPipelineInterface(unittest.TestCase):
     class_class_local_dir = max_utils.download_blobs(class_class_gcs_dir, local_dir)
 
 
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base14.yml'),
       "cache_latents_text_encoder_outputs=True",
       "dataset_name=my_dreambooth_dataset",
       f"instance_data_dir={instance_class_local_dir}",

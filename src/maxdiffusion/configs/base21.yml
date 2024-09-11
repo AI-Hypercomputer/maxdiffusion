@@ -102,11 +102,14 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
-                      ['out_channels', 'fsdp'],
+                      ['activation_batch', ['data','fsdp']],
+                      ['activation_heads', 'tensor'],
+                      ['activation_kv', 'tensor'],
+                      ['embed','fsdp'],
+                      ['heads', 'tensor'],
+                      ['conv_batch', ['data','fsdp']],
+                      ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
-                      ['length', 'fsdp']
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
@@ -143,7 +146,6 @@ enable_data_shuffling: True
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1
-upload_ckpts_to_gcs: False
 
 # Prepare image latents and text encoder outputs
 # during dataset creation to reduce memory consumption.

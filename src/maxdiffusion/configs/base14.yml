@@ -23,7 +23,7 @@ gcs_metrics: True
 save_config_to_gcs: False
 log_period: 10000000000  # Flushes Tensorboard
 
-pretrained_model_name_or_path: 'runwayml/stable-diffusion-v1-5'
+pretrained_model_name_or_path: 'CompVis/stable-diffusion-v1-4'
 unet_checkpoint: ''
 revision: 'flax'
 
@@ -105,6 +105,7 @@ logical_axis_rules: [
                       ['activation_kv', 'tensor'],
                       ['embed','fsdp'],
                       ['heads', 'tensor'],
+                      ['conv_batch', ['data','fsdp']],
                       ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
                     ]
@@ -143,7 +144,6 @@ enable_data_shuffling: True
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1
-upload_ckpts_to_gcs: False
 
 # Prepare image latents and text encoder outputs
 # during dataset creation to reduce memory consumption.

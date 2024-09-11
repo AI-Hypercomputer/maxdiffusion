@@ -45,7 +45,7 @@ class DreamBooth(unittest.TestCase):
         """Test prior preservation function generates images."""
 
         num_class_images=16
-        pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base15.yml'),
+        pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base14.yml'),
             "class_data_dir=/tmp/class_data_dir",
             "class_prompt=a photo of a dog",
             f"num_class_images={num_class_images}"])
@@ -75,7 +75,7 @@ class DreamBooth(unittest.TestCase):
       # so setting it here.
       jax.config.update("jax_compilation_cache_dir",cache_dir)
 
-      pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base15.yml'),
+      pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base14.yml'),
             "class_data_dir=test_dreambooth", f"instance_data_dir={instance_class_local_dir}",
             f"class_data_dir={class_class_local_dir}","instance_prompt=a photo of ohwx dog",
             "class_prompt=photo of a dog","max_train_steps=150",f"cache_dir={cache_dir}",
@@ -90,7 +90,7 @@ class DreamBooth(unittest.TestCase):
       img_url = os.path.join(THIS_DIR,'images','dreambooth_test.png')
       base_image = np.array(Image.open(img_url)).astype(np.uint8)
 
-      pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base15.yml'),
+      pyconfig.initialize([None, os.path.join(THIS_DIR,'..','configs','base14.yml'),
             "prompt=a photo of a ohwx dog", "revision=main",
             f"pretrained_model_name_or_path={output_dir}/{run_name}/checkpoints/final"])
 

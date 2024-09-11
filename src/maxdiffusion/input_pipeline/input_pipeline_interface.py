@@ -97,15 +97,15 @@ def make_pokemon_train_iterator(
     global_batch_size,
     tokenize_fn,
     image_transforms_fn):
-  train_ds = load_dataset(config.dataset_name,split="train")
-
-  captions_column = config.caption_column
-  image_column = config.image_column
-  cache_latents_text_encoder_outputs = config.cache_latents_text_encoder_outputs
   dataset_save_location = config.dataset_save_location
   if os.path.isdir(dataset_save_location):
     train_ds = load_from_disk(dataset_save_location)
   else:
+    train_ds = load_dataset(config.dataset_name,split="train")
+
+    captions_column = config.caption_column
+    image_column = config.image_column
+    cache_latents_text_encoder_outputs = config.cache_latents_text_encoder_outputs
     train_ds = train_ds.map(
       function=tokenize_fn,
       batched=True,

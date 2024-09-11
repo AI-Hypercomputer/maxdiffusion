@@ -46,7 +46,7 @@ class UnetTest(unittest.TestCase):
     UnetTest.dummy_data = {}
 
   def test_unet15_sharding_test(self):
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base14.yml'),
       "activations_dtype=bfloat16","resolution=512"], unittest=True)
     config = pyconfig.config
     unet, params = FlaxUNet2DConditionModel.from_pretrained(

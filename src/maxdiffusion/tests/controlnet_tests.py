@@ -18,7 +18,7 @@ class ControlNet(unittest.TestCase):
   def test_controlnet(self):
     img_url = os.path.join(THIS_DIR,'images','cnet_test.png')
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base15.yml'),
+    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base14.yml'),
       "prompt=best quality, extremely detailed","activations_dtype=bfloat16","weights_dtype=bfloat16",
       "negative_prompt=monochrome, lowres, bad anatomy, worst quality, low quality",
       "num_inference_steps=50","seed=0","split_head_dim=False"])

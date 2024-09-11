@@ -217,7 +217,11 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
             param_dtype=self.weights_dtype,
-            precision=self.precision
+            precision=self.precision,
+            kernel_init = nn.with_logical_partitioning(
+                nn.initializers.lecun_normal(),
+                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
+            )
         )
 
         # time
@@ -451,6 +455,11 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         # 2. pre-process
         sample = jnp.transpose(sample, (0, 2, 3, 1))
         sample = self.conv_in(sample)
+
+        sample = nn.with_logical_constraint(
+            sample,
+            ('conv_batch', 'height', 'keep_2', 'out_channels')
+        )
 
         # 3. down
         down_block_res_samples = (sample,)

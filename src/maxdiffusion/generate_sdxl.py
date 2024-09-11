@@ -30,7 +30,7 @@ from maxdiffusion import (
 )
 
 
-from maxdiffusion import pyconfig
+from maxdiffusion import pyconfig, max_utils
 from maxdiffusion.image_processor import VaeImageProcessor
 from maxdiffusion.maxdiffusion_utils import (
   get_add_time_ids,
@@ -42,13 +42,19 @@ from maxdiffusion.trainers.sdxl_trainer import (
   StableDiffusionXLTrainer
 )
 
+from maxdiffusion.checkpointing.checkpointing_utils import load_params_from_path
+
 class GenerateSDXL(StableDiffusionXLTrainer):
   def __init__(self, config):
     super().__init__(config)
 
-def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale):
+def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, guidance_scale, guidance_rescale, config):
   latents, scheduler_state, state = args
-  latents_input = jnp.concatenate([latents] * 2)
+
+  if config.do_classifier_free_guidance:
+    latents_input = jnp.concatenate([latents] * 2)
+  else:
+    latents_input = latents
 
   t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
   timestep = jnp.broadcast_to(t, latents_input.shape[0])
@@ -62,12 +68,15 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
     added_cond_kwargs=added_cond_kwargs
   ).sample
 
-  noise_pred_uncond, noise_prediction_text = jnp.split(noise_pred, 2, axis=0)
-  noise_pred = noise_pred_uncond + guidance_scale * (noise_prediction_text - noise_pred_uncond)
+  def apply_classifier_free_guidance(noise_pred, guidance_scale, guidance_rescale):
+    noise_pred_uncond, noise_prediction_text = jnp.split(noise_pred, 2, axis=0)
+    noise_pred = noise_pred_uncond + guidance_scale * (noise_prediction_text - noise_pred_uncond)
+    if guidance_rescale > 0:
+      noise_pred = rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale)
+    return noise_pred
 
-  # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-  noise_pred = rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale=guidance_rescale)
-
+  if config.do_classifier_free_guidance:
+    noise_pred = apply_classifier_free_guidance(noise_pred, guidance_scale, guidance_rescale)
 
   latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
@@ -121,15 +130,26 @@ def get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size):
     "text_encoder" : states["text_encoder_state"].params,
     "text_encoder_2" : states["text_encoder_2_state"].params}
   prompt_embeds, pooled_embeds = get_embeddings(prompt_ids, pipeline, text_encoder_params)
+
   batch_size = prompt_embeds.shape[0]
-  negative_prompt_embeds, negative_pooled_embeds = get_embeddings(negative_prompt_ids, pipeline, text_encoder_params)
   add_time_ids = get_add_time_ids(
     (height, width), (0, 0), (height, width), prompt_embeds.shape[0], dtype=prompt_embeds.dtype
   )
 
-  prompt_embeds = jnp.concatenate([negative_prompt_embeds, prompt_embeds], axis=0)
-  add_text_embeds = jnp.concatenate([negative_pooled_embeds, pooled_embeds], axis=0)
-  add_time_ids = jnp.concatenate([add_time_ids, add_time_ids], axis=0)
+  if config.do_classifier_free_guidance:
+    if negative_prompt_ids is None:
+      negative_prompt_embeds = jnp.zeros_like(prompt_embeds)
+      negative_pooled_embeds = jnp.zeros_like(pooled_embeds)
+    else:
+      negative_prompt_embeds, negative_pooled_embeds = get_embeddings(negative_prompt_ids, pipeline, text_encoder_params)
+
+    prompt_embeds = jnp.concatenate([negative_prompt_embeds, prompt_embeds], axis=0)
+    add_text_embeds = jnp.concatenate([negative_pooled_embeds, pooled_embeds], axis=0)
+    add_time_ids = jnp.concatenate([add_time_ids, add_time_ids], axis=0)
+
+  else:
+    add_text_embeds = pooled_embeds
+
   # Ensure model output will be `float32` before going into the scheduler
   guidance_scale = jnp.array([guidance_scale], dtype=jnp.float32)
   guidance_rescale = jnp.array([guidance_rescale], dtype=jnp.float32)
@@ -186,7 +206,8 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
                       added_cond_kwargs=added_cond_kwargs,
                       prompt_embeds=prompt_embeds,
                       guidance_scale=guidance_scale,
-                      guidance_rescale=guidance_rescale)
+                      guidance_rescale=guidance_rescale,
+                      config=config)
   vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
 
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
@@ -199,14 +220,31 @@ def run(config):
   checkpoint_loader = GenerateSDXL(config)
   pipeline, params = checkpoint_loader.load_checkpoint()
 
+  weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=checkpoint_loader.rng)
+  unboxed_abstract_state, _, _ = max_utils.get_abstract_state(pipeline.unet, None, config, checkpoint_loader.mesh, weights_init_fn, False)
+
+  unet_params = load_params_from_path(
+    config,
+    checkpoint_loader.checkpoint_manager,
+    unboxed_abstract_state.params,
+    "unet_state"
+  )
+  if unet_params:
+    params["unet"] = unet_params
+
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
 
-  unet_state, unet_state_shardings, _ = checkpoint_loader.create_unet_state(
-    pipeline,
-    params,
-    checkpoint_item_name="inference_unet_state",
-    is_training=False
+  # Don't restore the train state to save memory, just restore params
+  # and create an inference state.
+  unet_state, unet_state_shardings = max_utils.setup_initial_state(
+    model=pipeline.unet,
+    tx=None,
+    config=config,
+    mesh=checkpoint_loader.mesh,
+    weights_init_fn=weights_init_fn,
+    model_params=params.get("unet", None),
+    training=False
   )
 
   vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
@@ -244,7 +282,7 @@ def run(config):
 
   noise_scheduler, noise_scheduler_state = FlaxEulerDiscreteScheduler.from_pretrained(
     config.pretrained_model_name_or_path,
-    revision=config.revision, subfolder="scheduler", dtype=jnp.float32
+    revision=config.revision, subfolder="scheduler", dtype=jnp.float32, timestep_spacing="trailing"
   )
 
   pipeline.scheduler = noise_scheduler
