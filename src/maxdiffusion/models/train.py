@@ -410,13 +410,14 @@ def train(config):
     my_data_sharding = {'clip_embeddings': data_sharding, 'moments': data_sharding}
     dummy_batch = get_shaped_batch(config, pipeline)
     if config.pre_compile:
+        train_rngs, gen_dummy_rng = jax.random.split(train_rngs)
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step_lower = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
                 in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
                 out_shardings=(unet_state_mesh_shardings, None, None),
                 donate_argnums=(0,)
-            ).lower(unet_state, dummy_batch, train_rngs)
+            ).lower(unet_state, dummy_batch, gen_dummy_rng)
         p_train_step = p_train_step_lower.compile()
         #host_id = jax.process_index()
         #all_host_ids = jax.experimental.multihost_utils.process_allgather(host_id)
