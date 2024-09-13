@@ -27,9 +27,9 @@ jobs:
     runs-on: ["self-hosted", "e2", "cpu"]
     steps:
     - uses: actions/checkout@v3
-    - name: build stable stack image
+    - name: build maxdiffusion jax stable stack image
       run: |
         bash docker_maxdiffusion_image_upload.sh PROJECT_ID=tpu-prod-env-multipod BASEIMAGE=us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/tpu:jax0.4.30-rev1 CLOUD_IMAGE_NAME=maxdiffusion-jax-stable-stack IMAGE_TAG=jax0.4.30-rev1 MAXDIFFUSION_REQUIREMENTS_FILE=requirements_with_jax_stable_stack.txt DELETE_LOCAL_IMAGE=true
-    - name: build nightly image
+    - name: build maxdiffusion jax nightly image
       run: |
         bash docker_maxdiffusion_image_upload.sh MODE=nightly PROJECT_ID=tpu-prod-env-multipod CLOUD_IMAGE_NAME=maxdiffusion-jax-nightly IMAGE_TAG=nightly MAXDIFFUSION_REQUIREMENTS_FILE=requirements.txt DELETE_LOCAL_IMAGE=true
