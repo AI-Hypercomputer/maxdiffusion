@@ -115,7 +115,6 @@ def processor_class_from_name(class_name: str):
     for module_name, processors in PROCESSOR_MAPPING_NAMES.items():
         if class_name in processors:
             module_name = model_type_to_module_name(module_name)
-            breakpoint()
             module = importlib.import_module(f".{module_name}", "maxdiffusion.transformers.models")
             try:
                 return getattr(module, class_name)
