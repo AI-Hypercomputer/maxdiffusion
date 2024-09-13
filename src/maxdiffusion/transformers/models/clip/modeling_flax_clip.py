@@ -606,6 +606,7 @@ class FlaxCLIPTextTransformer(nn.Module):
 class FlaxCLIPVisionTransformer(nn.Module):
     config: CLIPVisionConfig
     dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.embeddings = FlaxCLIPVisionEmbeddings(self.config, dtype=self.dtype)

@@ -108,7 +108,8 @@ logical_axis_rules: [
                       ['activation_kv', 'tensor'],
                       ['embed','fsdp'],
                       ['heads', 'tensor'],
-                      ['out_channels', 'fsdp'],
+                      ['conv_batch', ['data','fsdp']],
+                      ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
@@ -146,7 +147,6 @@ enable_data_shuffling: True
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1
-upload_ckpts_to_gcs: False
 
 # Prepare image latents and text encoder outputs
 # during dataset creation to reduce memory consumption.
@@ -185,6 +185,7 @@ profiler_steps: 10
 # Generation parameters
 prompt: "A magical castle in the middle of a forest, artistic drawing"
 negative_prompt: "purple, red"
+do_classifier_free_guidance: True
 guidance_scale: 9
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0

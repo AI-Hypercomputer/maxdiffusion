@@ -656,6 +656,10 @@ class FlaxTransformer2DModel(nn.Module):
         if self.use_linear_projection:
             self.proj_in = nn.Dense(
                 inner_dim,
+                kernel_init=nn.with_logical_partitioning(
+                    nn.initializers.lecun_normal(),
+                    ('embed','hidden')
+                ),
                 dtype=self.dtype,
                 param_dtype=self.weights_dtype,
                 precision=self.precision
@@ -693,7 +697,15 @@ class FlaxTransformer2DModel(nn.Module):
         ]
 
         if self.use_linear_projection:
-            self.proj_out = nn.Dense(inner_dim, dtype=self.dtype, param_dtype=self.weights_dtype, precision=self.precision)
+            self.proj_out = nn.Dense(
+                inner_dim,
+                kernel_init=nn.with_logical_partitioning(
+                    nn.initializers.lecun_normal(),
+                    ('hidden','embed')
+                ),
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision)
         else:
             self.proj_out = nn.Conv(
                 inner_dim,

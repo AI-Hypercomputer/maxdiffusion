@@ -247,14 +247,14 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
             if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
                 train_states["unet_state"] = unet_state
                 train_states["text_encoder_state"] = text_encoder_state
-                self.save_checkpoint(step, pipeline, params, train_states, save_inference_states=False)
+                self.save_checkpoint(step, pipeline, params, train_states)
 
         if self.config.write_metrics:
             train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
 
         train_states["unet_state"] = unet_state
         train_states["text_encoder_state"] = text_encoder_state
-        self.save_checkpoint(step, pipeline, params, train_states, save_inference_states=True)
+        self.save_checkpoint(step, pipeline, params, train_states)
         self.checkpoint_manager.wait_until_finished()
         return train_states
 

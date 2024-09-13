@@ -36,9 +36,6 @@ jobs:
     runs-on: ["self-hosted", "tpu", "${{ matrix.tpu-type }}"]
     steps:
     - uses: actions/checkout@v3
-    - name: Install Ubuntu dependencies
-      run: |
-        sudo apt-get update && sudo apt-get install ffmpeg libsm6 libxext6  -y
     - name: Install dependencies
       run: |
         pip install -e .
@@ -54,7 +51,7 @@ jobs:
         ruff check .
     - name: PyTest
       run: | 
-        HF_HUB_CACHE=/mnt/disks/github-runner-disk/ python3 -m pytest
+        HF_HUB_CACHE=/mnt/disks/github-runner-disk/ HF_HOME=/mnt/disks/github-runner-disk/ python3 -m pytest
 #  add_pull_ready:
 #    if: github.ref != 'refs/heads/main'
 #    permissions:
