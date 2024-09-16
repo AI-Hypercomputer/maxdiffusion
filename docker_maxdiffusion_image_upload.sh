@@ -21,7 +21,9 @@
 # (minutes). However, if you are simply changing local code and not updating dependencies, uploading just takes a few seconds.
 
 # Example command:
-# bash docker_maxdiffusion_image_upload.sh PROJECT_ID=tpu-prod-env-multipod BASEIMAGE=us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/tpu:jax0.4.30-rev1 CLOUD_IMAGE_NAME=maxdiffusion-jax-stable-stack IMAGE_TAG=latest MAXDIFFUSION_REQUIREMENTS_FILE=requirements_with_jax_stable_stack.txt
+# bash docker_maxdiffusion_image_upload.sh MODE=stable PROJECT_ID=tpu-prod-env-multipod BASEIMAGE=us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/tpu:jax0.4.30-rev1 CLOUD_IMAGE_NAME=maxdiffusion-jax-stable-stack IMAGE_TAG=latest MAXDIFFUSION_REQUIREMENTS_FILE=requirements_with_jax_stable_stack.txt
+
+# You need to specify a MODE {stable|nightly}, default value stable.
 
 set -e
 
@@ -33,11 +35,6 @@ for ARGUMENT in "$@"; do
     export "$KEY"="$VALUE"
     echo "$KEY"="$VALUE"
 done
-
-if [[ ! -v BASEIMAGE ]]; then
-  echo "Erroring out because BASEIMAGE is unset, please set it!"
-  exit 1
-fi
 
 if [[ ! -v PROJECT_ID ]]; then
   echo "Erroring out because PROJECT_ID is unset, please set it!"
@@ -59,6 +56,11 @@ if [[ ! -v MAXDIFFUSION_REQUIREMENTS_FILE ]]; then
   exit 1
 fi
 
+if [[ -z MODE ]]; then
+  export MODE=stable
+  echo "Default MODE=${MODE}"
+fi
+
 # Default: Don't delete local image
 DELETE_LOCAL_IMAGE="${DELETE_LOCAL_IMAGE:-false}"
 
@@ -66,25 +68,38 @@ gcloud auth configure-docker us-docker.pkg.dev --quiet
 
 COMMIT_HASH=$(git rev-parse --short HEAD)
 
-echo "Building JAX Stable Stack MaxDiffusion at commit hash ${COMMIT_HASH} . . ."  
 
 IMAGE_DATE=$(date +%Y-%m-%d)
 
-FULL_IMAGE_TAG=${IMAGE_TAG}-${IMAGE_DATE}
+IMAGE=us-docker.pkg.dev/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${IMAGE_TAG}-${IMAGE_DATE}
 
-docker build --no-cache \
-  --build-arg JAX_STABLE_STACK_BASEIMAGE=${BASEIMAGE} \
-  --build-arg COMMIT_HASH=${COMMIT_HASH} \
-  --build-arg MAXDIFFUSION_REQUIREMENTS_FILE=${MAXDIFFUSION_REQUIREMENTS_FILE} \
-  --network=host \
-  -t us-docker.pkg.dev/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${FULL_IMAGE_TAG} \
-  -f maxdiffusion_jax_stable_stack_tpu.Dockerfile .
+if [[ "${MODE}" == "nightly" ]]; then
+  echo "Building MaxDiffusion with JAX and JAXLIB nightly at commit hash ${COMMIT_HASH} . . ."  
+  docker build --no-cache \
+    --build-arg MAXDIFFUSION_REQUIREMENTS_FILE=${MAXDIFFUSION_REQUIREMENTS_FILE} \
+    --network=host \
+    -t ${IMAGE} \
+    -f maxdiffusion_tpu.Dockerfile .
+else
+  echo "Building JAX Stable Stack MaxDiffusion at commit hash ${COMMIT_HASH} . . ."  
+  if [[ ! -v BASEIMAGE ]]; then
+    echo "Erroring out because BASEIMAGE is unset, please set it!"
+    exit 1
+  fi
+  docker build --no-cache \
+    --build-arg JAX_STABLE_STACK_BASEIMAGE=${BASEIMAGE} \
+    --build-arg COMMIT_HASH=${COMMIT_HASH} \
+    --build-arg MAXDIFFUSION_REQUIREMENTS_FILE=${MAXDIFFUSION_REQUIREMENTS_FILE} \
+    --network=host \
+    -t ${IMAGE} \
+    -f maxdiffusion_jax_stable_stack_tpu.Dockerfile .
+fi
 
-docker push us-docker.pkg.dev/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${FULL_IMAGE_TAG}
+docker push ${IMAGE}
 
-echo "All done, check out your artifacts at: us-docker.pkg.dev/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${FULL_IMAGE_TAG}"
+echo "All done, check out your artifacts at: ${IMAGE}"
 
 if [ "$DELETE_LOCAL_IMAGE" == "true" ]; then
-  docker rmi us-docker.pkg.dev/${PROJECT_ID}/${CLOUD_IMAGE_NAME}/tpu:${FULL_IMAGE_TAG}
+  docker rmi ${IMAGE}
   echo "Local image deleted."
 fi
