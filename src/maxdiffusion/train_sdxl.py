@@ -16,7 +16,7 @@
 
 from typing import Sequence
 
-import jax
+#import jax
 from absl import app
 from maxdiffusion import (
     max_logging,
@@ -39,7 +39,8 @@ def main(argv: Sequence[str]) -> None:
     config = pyconfig.config
     mllog_utils.train_init_start(config)
     validate_train_config(config)
-    max_logging.log(f"Found {jax.device_count()} devices.")
+    #max_logging.log(f"Found {jax.device_count()} devices.")
     train(config)
+
 if __name__ == "__main__":
     app.run(main)

@@ -27,7 +27,7 @@ from maxdiffusion.trainers.stable_diffusion_trainer import (
     StableDiffusionTrainer
 )
 
-from maxdiffusion.input_pipeline.input_pipeline_interface import (
+from maxdiffusion.input_pipeline._hf_data_processing import (
     make_pokemon_train_iterator
 )
 
@@ -41,7 +41,7 @@ from maxdiffusion.train_utils import (
     compute_snr,
     generate_timestep_weights,
     get_first_step,
-    load_next_batch,
+#    load_next_batch,
     record_scalar_metrics,
     write_metrics
 )
@@ -49,6 +49,13 @@ from maxdiffusion.train_utils import (
 from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (
     STABLE_DIFFUSION_XL_CHECKPOINT
 )
+
+def load_next_batch(train_iter, example_batch, config):
+  """Loads the next batch. Can keep reusing the same batch for performance reasons """
+  if config.reuse_example_batch and example_batch is not None:
+    return example_batch
+  else:
+    return next(train_iter)
 
 class StableDiffusionXLTrainer(StableDiffusionTrainer):
     def __init__(self, config):
@@ -141,6 +148,8 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
 
             data_iterator = make_pokemon_train_iterator(
                 config,
+                jax.process_index(),
+                jax.process_count(),
                 mesh,
                 total_train_batch_size,
                 tokenize_fn,
@@ -191,11 +200,11 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
         max_utils.add_config_to_summary_writer(self.config, writer)
 
-        if jax.process_index() == 0:
-            max_logging.log("***** Running training *****")
-            max_logging.log(f"  Instantaneous batch size per device = {self.config.per_device_batch_size}")
-            max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.total_train_batch_size}")
-            max_logging.log(f"  Total optimization steps = {self.config.max_train_steps}")
+        # if jax.process_index() == 0:
+        #     max_logging.log("***** Running training *****")
+        #     max_logging.log(f"  Instantaneous batch size per device = {self.config.per_device_batch_size}")
+        #     max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.total_train_batch_size}")
+        #     max_logging.log(f"  Total optimization steps = {self.config.max_train_steps}")
 
         last_step_completion = datetime.datetime.now()
         local_metrics_file = open(self.config.metrics_file, 'a', encoding="utf8") if self.config.metrics_file else None
@@ -208,6 +217,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         last_profiling_step = np.clip(first_profiling_step + self.config.profiler_steps -1, first_profiling_step, self.config.max_train_steps - 1)
         start_step = get_first_step(train_states["unet_state"])
         _, train_rngs = jax.random.split(self.rng)
+        import pdb; pdb.set_trace()
 
         for step in np.arange(start_step, self.config.max_train_steps):
             example_batch = load_next_batch(data_iterator, example_batch, self.config)
@@ -239,8 +249,8 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         train_states["unet_state"] = unet_state
         train_states["text_encoder_state"] = text_encoder_state
         train_states["text_encoder_2_state"] = text_encoder_2_state
-        self.save_checkpoint(step, pipeline, params, train_states)
-        self.checkpoint_manager.wait_until_finished()
+        # self.save_checkpoint(step, pipeline, params, train_states)
+        # self.checkpoint_manager.wait_until_finished()
 
 def _train_step(unet_state, batch, train_rng, pipeline, params, config):
     _, gen_dummy_rng = jax.random.split(train_rng)

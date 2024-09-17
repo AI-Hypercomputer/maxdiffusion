@@ -131,19 +131,24 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
             state_shardings["text_encoder_2_state_shardings"] = text_encoder_2_state_mesh_shardings
 
         # Create scheduler
+        max_logging.log("Create scheduler")
         noise_scheduler, noise_scheduler_state =self.create_scheduler(pipeline, params)
         pipeline.scheduler = noise_scheduler
         params["scheduler"] = noise_scheduler_state
 
+        # Load dataset
+        max_logging.log("load dataset")
+        data_iterator = self.load_dataset(pipeline, params, train_states)
+
         # Calculate tflops
+        max_logging.log("Calculate tflops")
         per_device_tflops = self.calculate_tflops(pipeline, params)
         self.per_device_tflops = per_device_tflops
 
-        # Load dataset
-        data_iterator = self.load_dataset(pipeline, params, train_states)
-
+        max_logging.log("get_data_shardings")
         data_shardings = self.get_data_shardings()
         # Compile train_step
+        max_logging.log("compile train_step")
         p_train_step = self.compile_train_step(
             pipeline,
             params,
@@ -152,6 +157,7 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
             data_shardings
         )
         # Start training
+        max_logging.log("Start training")
         train_states = self.training_loop(p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler)
         # 6. save final checkpoint
         # Hook

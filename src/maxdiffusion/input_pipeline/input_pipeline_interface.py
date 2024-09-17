@@ -19,8 +19,12 @@ from functools import partial
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
 from datasets import load_dataset, load_from_disk, Dataset
+from datasets.distributed import split_dataset_by_node
+import grain.python as grain
 import jax
 
+from maxdiffusion.input_pipeline import _input_pipeline_utils
+from maxdiffusion import max_logging
 from maxdiffusion import multihost_dataloading
 from maxdiffusion.maxdiffusion_utils import tokenize_captions, transform_images, vae_apply
 from maxdiffusion.dreambooth.dreambooth_constants import (
@@ -98,20 +102,23 @@ def make_pokemon_train_iterator(
     tokenize_fn,
     image_transforms_fn):
   dataset_save_location = config.dataset_save_location
-  if os.path.isdir(dataset_save_location):
+  if False and os.path.isdir(dataset_save_location):
+    max_logging.log(f"Using dataset from {dataset_save_location=}")
     train_ds = load_from_disk(dataset_save_location)
   else:
-    train_ds = load_dataset(config.dataset_name,split="train")
+    max_logging.log(f"Downloading dataset from HuggingFace Hub")
+    train_ds = load_dataset(config.dataset_name,split="train", streaming=True)
 
     captions_column = config.caption_column
     image_column = config.image_column
     cache_latents_text_encoder_outputs = config.cache_latents_text_encoder_outputs
+    train_ds = train_ds.shuffle(seed=config.seed)
     train_ds = train_ds.map(
       function=tokenize_fn,
       batched=True,
       remove_columns=[captions_column],
-      num_proc=1 if cache_latents_text_encoder_outputs else 4,
-      desc="Running tokenizer on train dataset",
+      #num_proc=1 if cache_latents_text_encoder_outputs else 4,
+      #desc="Running tokenizer on train dataset",
     )
     # need to do it before load_as_tf_dataset
     # since raw images are different sizes
@@ -120,18 +127,40 @@ def make_pokemon_train_iterator(
       function=image_transforms_fn,
       batched=True,
       remove_columns=[image_column],
-      num_proc=1 if cache_latents_text_encoder_outputs else config.transform_images_num_proc,
-      desc="Transforming images",
+      #num_proc=1 if cache_latents_text_encoder_outputs else config.transform_images_num_proc,
+      #desc="Transforming images",
     )
-    train_ds.save_to_disk(dataset_save_location)
-    train_ds.cleanup_cache_files()
+    # train_ds.save_to_disk(dataset_save_location)
+    # train_ds.cleanup_cache_files()
 
-  train_ds = load_as_tf_dataset(
-    train_ds, global_batch_size, True, config
+  # train_ds = load_as_tf_dataset(
+  #   train_ds, global_batch_size, True
+  # )
+  train_ds = split_dataset_by_node(train_ds, world_size=jax.process_count(), rank=jax.process_index())
+  train_ds = train_ds.batch(batch_size=global_batch_size // jax.process_count(), drop_last_batch=True)
+  #train_ds = train_ds.with_format("np")
+  train_ds = _input_pipeline_utils.HFDataSource(train_ds,
+                                                jax.process_index(),
+                                                jax.process_count(),
+                                              )
+  dummy_index_sampler = grain.IndexSampler(
+      num_records=len(train_ds),
+      num_epochs=1,
+      shard_options=grain.ShardOptions(
+          shard_index=jax.process_index(), shard_count=jax.process_count(), drop_remainder=False
+      ),
+      shuffle=False,
+      seed=0,
   )
-  train_ds = train_ds.shard(num_shards = jax.process_count(), index = jax.process_index())
-
-  train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
+  dataloader = grain.DataLoader(
+      data_source=train_ds,
+      operations=[],
+      sampler=dummy_index_sampler,
+      worker_count=1,  # only supports one worker for now, more workers results in duplicated data
+      worker_buffer_size=1,
+      read_options=grain.ReadOptions(num_threads=1, prefetch_buffer_size=16),
+  )
+  train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(dataloader, mesh)
   return train_iter
 
 def make_dreambooth_train_iterator(

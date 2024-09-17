@@ -95,6 +95,10 @@ class _HyperParameters():
 
     _HyperParameters.user_init(raw_keys)
     self.keys = raw_keys
+    keys = [k for k in raw_keys]  # pylint: disable=unnecessary-comprehension
+    keys.sort()
+    for k in keys:
+      max_logging.log(f"Config param {k}: {raw_keys[k]}")
 
   def _load_kwargs(self, argv: list[str]):
     args_dict = dict(a.split("=") for a in argv[2:])
