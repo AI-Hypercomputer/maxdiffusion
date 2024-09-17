@@ -188,7 +188,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
 
         max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
-        max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
+        max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ.get("LIBTPU_INIT_ARGS",""), writer)
         max_utils.add_config_to_summary_writer(self.config, writer)
 
         if jax.process_index() == 0:
