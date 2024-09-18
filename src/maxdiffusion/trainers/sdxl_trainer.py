@@ -239,8 +239,8 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         train_states["unet_state"] = unet_state
         train_states["text_encoder_state"] = text_encoder_state
         train_states["text_encoder_2_state"] = text_encoder_2_state
-        self.save_checkpoint(step, pipeline, params, train_states)
-        self.checkpoint_manager.wait_until_finished()
+        # self.save_checkpoint(step, pipeline, params, train_states)
+        # self.checkpoint_manager.wait_until_finished()
 
 def _train_step(unet_state, batch, train_rng, pipeline, params, config):
     _, gen_dummy_rng = jax.random.split(train_rng)
