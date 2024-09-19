@@ -14,18 +14,12 @@ WORKDIR /deps
 
 # Copy all files from local workspace into docker container
 COPY . .
-RUN ls .
 
-ARG MAXDIFFUSION_REQUIREMENTS_FILE
-
-# Install Maxdiffusion requirements
-RUN if [ ! -z "${MAXDIFFUSION_REQUIREMENTS_FILE}" ]; then \
-        echo "Using MaxDiffusion requirements: ${MAXDIFFUSION_REQUIREMENTS_FILE}" && \
-        pip install -r /deps/${MAXDIFFUSION_REQUIREMENTS_FILE}; \
-    fi
+# Install Maxdiffusion jax stable stack requirements
+RUN pip install -r /deps/requirements_with_jax_stable_stack.txt
 
 # Install MaxDiffusion
 RUN pip install .
 
 # Run the script available in JAX-Stable-Stack base image to generate the manifest file
-RUN bash /generate_manifest.sh PREFIX=maxdiffusion COMMIT_HASH=$COMMIT_HASH
+RUN bash /jax-stable-stack/generate_manifest.sh PREFIX=maxdiffusion COMMIT_HASH=$COMMIT_HASH
