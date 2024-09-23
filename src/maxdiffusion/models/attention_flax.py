@@ -339,6 +339,82 @@ def jax_memory_efficient_attention(
 
     return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
 
+class FlaxFluxAttention(nn.Module):
+    query_dim: int
+    heads: int = 8
+    dim_head: int = 64
+    dropout: float = 0.0
+    use_memory_efficient_attention: bool = False
+    split_head_dim: bool = False
+    attention_kernel: str = "dot_product"
+    flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
+    mesh: jax.sharding.Mesh = None
+    dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
+    query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+    key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+    value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+    out_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+    precision: jax.lax.Precision = None
+
+    def setup(self):
+        if self.attention_kernel == "flash" and self.mesh is None:
+            raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
+        inner_dim = self.dim_head * self.heads
+        scale = self.dim_head**-0.5
+
+        self.attention_op = AttentionOp(
+            mesh=self.mesh,
+            attention_kernel=self.attention_kernel,
+            scale=scale,
+            heads=self.heads,
+            dim_head=self.dim_head,
+            flash_min_seq_length=self.flash_min_seq_length,
+            use_memory_efficient_attention=self.use_memory_efficient_attention,
+            split_head_dim=self.split_head_dim,
+            flash_block_sizes=self.flash_block_sizes,
+            dtype=self.dtype
+        )
+
+        qkv_init_kernel = nn.with_logical_partitioning(
+            nn.initializers.lecun_normal(),
+            ("embed","heads")
+        )
+
+        self.query = nn.Dense(
+            inner_dim,
+            kernel_init=qkv_init_kernel,
+            use_bias=False,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            name="to_q",
+            precision=self.precision
+        )
+
+        self.key = nn.Dense(
+            inner_dim,
+            kernel_init=qkv_init_kernel,
+            use_bias=False,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            name="to_k",
+            precision=self.precision
+        )
+
+        self.value = nn.Dense(
+            inner_dim,
+            kernel_init=qkv_init_kernel,
+            use_bias=False,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            name="to_v",
+            precision=self.precision
+        )
+    def __call__(self, hidden_states, encoder_hidden_states = None, attention_mask = None, image_rotary_emb = None):
+        
+
+
 class FlaxAttention(nn.Module):
     r"""
     A Flax multi-head attention module as described in: https://arxiv.org/abs/1706.03762

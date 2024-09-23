@@ -23,6 +23,7 @@ _import_structure = {}
 _import_structure["controlnet_flax"] = ["FlaxControlNetModel"]
 _import_structure["unet_2d_condition_flax"] = ["FlaxUNet2DConditionModel"]
 _import_structure["vae_flax"] = ["FlaxAutoencoderKL"]
+_import_structure["normalization_flax"] = ["FlaxAdaLayerNormZeroSingle"]
 
 
 if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
