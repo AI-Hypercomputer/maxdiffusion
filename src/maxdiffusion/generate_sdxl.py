@@ -68,15 +68,23 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
     added_cond_kwargs=added_cond_kwargs
   ).sample
 
-  def apply_classifier_free_guidance(noise_pred, guidance_scale, guidance_rescale):
+  def apply_classifier_free_guidance(noise_pred, guidance_scale):
     noise_pred_uncond, noise_prediction_text = jnp.split(noise_pred, 2, axis=0)
     noise_pred = noise_pred_uncond + guidance_scale * (noise_prediction_text - noise_pred_uncond)
-    if guidance_rescale > 0:
-      noise_pred = rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale)
-    return noise_pred
+    return noise_pred, noise_prediction_text
 
   if config.do_classifier_free_guidance:
-    noise_pred = apply_classifier_free_guidance(noise_pred, guidance_scale, guidance_rescale)
+    noise_pred, noise_prediction_text = apply_classifier_free_guidance(noise_pred, guidance_scale)
+
+  # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+  # Helps solve overexposure problem when terminal SNR approaches zero.
+  # Empirical values recomended from the paper are guidance_scale=7.5 and guidance_rescale=0.7
+  noise_pred = jax.lax.cond(
+      guidance_rescale[0] > 0,
+      lambda _: rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale),
+      lambda _: noise_pred,
+      operand=None
+  )
 
   latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 

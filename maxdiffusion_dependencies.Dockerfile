@@ -45,7 +45,7 @@ ARG JAX_VERSION
 ENV ENV_JAX_VERSION=$JAX_VERSION
 
 # Set the working directory in the container
-WORKDIR /deps
+WORKDIR /app
 
 # Copy all files from local workspace into docker container
 COPY . .
@@ -53,9 +53,6 @@ COPY . .
 RUN echo "Running command: bash setup.sh MODE=$ENV_MODE JAX_VERSION=$ENV_JAX_VERSION"
 
 RUN --mount=type=cache,target=/root/.cache/pip bash setup.sh MODE=${ENV_MODE} JAX_VERSION=${ENV_JAX_VERSION}
-
-# Install MaxDiffusion
-RUN pip install .
 
 # Cleanup
 RUN rm -rf /root/.cache/pip
