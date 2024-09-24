@@ -18,6 +18,8 @@
 """Create an Orbax CheckpointManager with specified (Async or not) Checkpointer."""
 
 from typing import Optional, Any
+import jax
+import numpy as np
 import os
 from maxdiffusion import max_logging
 from etils import epath
@@ -45,7 +47,7 @@ def create_orbax_checkpoint_manager(
   if not enable_checkpointing:
     max_logging.log("Checkpointing disabled, not creating checkpoint manager.")
     return None
-  
+
   max_logging.log("Creating checkpoing manager...")
   max_logging.log(f"checkpoint dir: {checkpoint_dir}")
   p = epath.Path(checkpoint_dir)
@@ -65,9 +67,9 @@ def create_orbax_checkpoint_manager(
       "text_encoder_2_state",
       "text_encoder_2_config",
     )
-  
+
   print("item_names: ", item_names)
-  
+
   mngr = CheckpointManager(
     p,
     item_names=item_names,
@@ -82,6 +84,7 @@ def create_orbax_checkpoint_manager(
   max_logging.log("Checkpoint manager created!")
   return mngr
 
+
 def load_stable_diffusion_configs(
   config: dict,
   checkpoint_manager: CheckpointManager,
@@ -90,7 +93,7 @@ def load_stable_diffusion_configs(
 ):
   f"""
   Loads Orbax configurations for different stable diffusion models
-  
+
   Args:
   checkpoint_manager (`orbax.checkpoint.checkpoint_manager`)
   checkpoint_type (`str`) : use sd or sdxl
@@ -112,11 +115,12 @@ def load_stable_diffusion_configs(
 
   if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
     restore_args["text_encoder_2_config"] = orbax.checkpoint.args.JsonRestore()
-  
+
   return (
       checkpoint_manager.restore(step,
         args=orbax.checkpoint.args.Composite(**restore_args)
       ),None)
+
 
 def load_params_from_path(
   config,
@@ -131,7 +135,7 @@ def load_params_from_path(
     step = checkpoint_manager.latest_step()
     if step is None:
       return None
-  
+
   ckpt_path = os.path.join(config.checkpoint_dir, str(step),checkpoint_item)
   ckpt_path = epath.Path(ckpt_path)
 
@@ -144,7 +148,32 @@ def load_params_from_path(
   )
   return restored["params"]
 
-  
+
+def _find_idx(array: np.ndarray, replica_axis_idx: int):
+  """Returns the index along given dimension that the current host belongs to."""
+  idx = None
+  for idx, val in np.ndenumerate(array):
+    if val.process_index == jax.process_index():
+      break
+  return idx[replica_axis_idx]
+
+
+def _replica_devices(device_array: np.ndarray, replica_axis_idx: int):
+  """Returns the devices from the replica that current host belongs to.
+
+  Replicas are assumed to be restricted to the first axis.
+
+  Args:
+    device_array: devices of the mesh that can be obtained by mesh.devices()
+    replica_axis_idx: axis dimension along which replica is taken
+
+  Returns:
+    devices inside the replica that current host is in
+  """
+  idx = _find_idx(device_array, replica_axis_idx)
+  replica_result = np.take(device_array, idx, axis=replica_axis_idx)
+  return np.expand_dims(replica_result, axis=replica_axis_idx)
+
 
 def load_state_if_possible(
   checkpoint_manager: CheckpointManager,
@@ -171,15 +200,57 @@ def load_state_if_possible(
     max_logging.log("no checkpoint manager, not restoring checkpoint")
     return None
   latest_step = checkpoint_manager.latest_step()
+  enable_single_replica_ckpt_restoring = True
+
+
   if latest_step is None:
     return None
-  else:
-    max_logging.log(
-      f"restoring from this run's directory latest step {latest_step}"
+
+  def map_to_pspec(data):
+    pspec = data.sharding.spec
+    mesh = data.sharding.mesh
+    if not enable_single_replica_ckpt_restoring:
+      return ocp.type_handlers.ArrayRestoreArgs(mesh=mesh, mesh_axes=pspec)
+    replica_axis_index = 0
+    replica_devices = _replica_devices(mesh.devices, replica_axis_index)
+    replica_mesh = jax.sharding.Mesh(replica_devices, mesh.axis_names)
+    single_replica_sharding = jax.sharding.NamedSharding(replica_mesh, pspec)
+
+    array_handler = ocp.type_handlers.SingleReplicaArrayHandler(
+        replica_axis_index=0,
+        broadcast_memory_limit_bytes=1024 * 1024 * 1000,  # 1000 MB limit
     )
-    try:
-      item = { checkpoint_item : orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
-      return checkpoint_manager.restore(latest_step,args=orbax.checkpoint.args.Composite(**item))
-    except:
-      max_logging.log(f"could not load {checkpoint_item} from orbax")
-      return None
+    ocp.type_handlers.register_type_handler(jax.Array, array_handler, override=True)
+
+    return ocp.type_handlers.SingleReplicaArrayRestoreArgs(
+        sharding=jax.sharding.NamedSharding(mesh, pspec),
+        single_replica_sharding=single_replica_sharding,
+        global_shape=data.shape,
+        dtype=data.dtype,
+    )
+
+  states = ['unet_state', 'vae_state', 'text_encoder_state', 'text_encoder_2_state']
+  max_logging.log(
+    f"restoring from this run's directory latest step {latest_step}"
+  )
+  # breakpoint()
+  try:
+    if not enable_single_replica_ckpt_restoring or checkpoint_item not in states:
+      item = {checkpoint_item: orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
+      return checkpoint_manager.restore(
+        latest_step,
+        args=orbax.checkpoint.args.Composite(**item))
+
+    restore_args = jax.tree_util.tree_map(
+        map_to_pspec,
+        abstract_unboxed_pre_state,
+    )
+    item = {checkpoint_item: ocp.args.PyTreeRestore(item=abstract_unboxed_pre_state, restore_args=restore_args)}
+    return checkpoint_manager.restore(
+      latest_step,
+      args=orbax.checkpoint.args.Composite(**item)
+      )
+
+  except:
+    max_logging.log(f"could not load {checkpoint_item} from orbax")
+    return None

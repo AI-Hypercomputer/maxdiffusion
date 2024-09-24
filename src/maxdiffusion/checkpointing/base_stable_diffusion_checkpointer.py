@@ -237,12 +237,17 @@ class BaseStableDiffusionCheckpointer(ABC):
             "scheduler_config" : ocp.args.JsonSave(config_to_json(pipeline.scheduler))
         }
 
-        items['unet_state'] = ocp.args.StandardSave(train_states["unet_state"])
-        items['vae_state'] = ocp.args.StandardSave(train_states["vae_state"])
-        items["text_encoder_state"] = ocp.args.StandardSave(train_states["text_encoder_state"])
+        # items['unet_state'] = ocp.args.StandardSave(train_states["unet_state"])
+        # items['vae_state'] = ocp.args.StandardSave(train_states["vae_state"])
+        # items["text_encoder_state"] = ocp.args.StandardSave(train_states["text_encoder_state"])
+
+        items['unet_state'] = ocp.args.PyTreeSave(train_states["unet_state"])
+        items['vae_state'] = ocp.args.PyTreeSave(train_states["vae_state"])
+        items["text_encoder_state"] = ocp.args.PyTreeSave(train_states["text_encoder_state"])
 
         if hasattr(pipeline, "text_encoder_2"):
             items["text_encoder_2_state"] = ocp.args.StandardSave(train_states["text_encoder_2_state"])
+            items["text_encoder_2_state"] = ocp.args.PyTreeSave(train_states["text_encoder_2_state"])
             items["text_encoder_2_config"] = ocp.args.JsonSave(config_to_json(pipeline.text_encoder_2.config))
 
         tokenizer_config = {"path" : self.config.tokenizer_model_name_or_path}
