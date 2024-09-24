@@ -40,7 +40,6 @@ MaxDiffusion supports
 # Table of Contents
 
 * [Getting Started](#getting-started)
-  * [Local Development for single host](#getting-started-local-development-for-single-host)
     * [Training](#training)
       * [Dreambooth](#dreambooth)
     * [Inference](#inference)
@@ -55,17 +54,9 @@ We recommend starting with a single TPU host and then moving to multihost.
 
 Minimum requirements: Ubuntu Version 22.04, Python 3.10 and Tensorflow >= 2.12.0.
 
-## Getting Started: Local Development for single host
-Local development is a convenient way to run MaxDiffusion on a single host. 
+## Getting Started: 
 
-1. [Create and SSH to a single-host TPU (v4-8). ](https://cloud.google.com/tpu/docs/users-guide-tpu-vm#creating_a_cloud_tpu_vm_with_gcloud)
-1. Clone MaxDiffusion in your TPU VM.
-1. Within the root directory of the MaxDiffusion `git` repo, install dependencies by running:
-```bash
-pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-pip3 install -r requirements.txt
-pip3 install .
-```
+For your first time running Maxdiffusion, we provide specific [instructions](docs/getting_started/first_run.md).
 
 ## Training
 
