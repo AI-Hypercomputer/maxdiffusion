@@ -71,7 +71,14 @@ def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidan
     noise_pred = noise_pred_uncond + guidance_scale * (noise_prediction_text - noise_pred_uncond)
 
     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-    noise_pred = rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale=guidance_rescale)
+    # Helps solve overexposure problem when terminal SNR approaches zero.
+    # Empirical values recomended from the paper are guidance_scale=7.5 and guidance_rescale=0.7
+    noise_pred = jax.lax.cond(
+      guidance_rescale[0] > 0,
+      lambda _: rescale_noise_cfg(noise_pred, noise_prediction_text, guidance_rescale),
+      lambda _: noise_pred,
+      operand=None
+    )
 
     latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     return latents, scheduler_state, state
