@@ -31,11 +31,11 @@ def get_last_n_data(metrics_file, target, n=10):
         if len(last_n_data) >= n:
           break
   return last_n_data
-      
+
 
 def test_final_loss(metrics_file, target_loss):
   target_loss = float(target_loss)
-  with open(metrics_file, 'r', encoding='utf8') as metrics:
+  with open(metrics_file, 'r', encoding='utf8') as _:
     use_last_n_data = 10
     last_n_data = get_last_n_data(metrics_file, 'learning/loss', use_last_n_data)
     avg_last_n_data = sum(last_n_data) / len(last_n_data)
