@@ -259,11 +259,18 @@ def create_device_mesh(config, devices=None, logging=True):
   num_devices_per_slice = num_devices//num_slices
   max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
 
+  multi_slice_env = num_slices > 1
+
+  dcn_parallelism = [config.dcn_data_parallelism, config.dcn_fsdp_parallelism, config.dcn_tensor_parallelism]
   ici_parallelism = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
 
   # Find possible unspecified parallelisms
   ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, 'ICI')
-  mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
+  if multi_slice_env:
+    dcn_parallelism = fill_unspecified_mesh_axes(dcn_parallelism, num_slices, 'DCN')
+    mesh = mesh_utils.create_hybrid_device_mesh(ici_parallelism, dcn_parallelism, devices)
+  else:
+    mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
 
   if logging:
     max_logging.log(f"Decided on mesh: {mesh}")
@@ -313,9 +320,9 @@ def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
   )
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     abstract_state = jax.eval_shape(init_state_partial)
-  
+
   state_logical_annotations = nn.get_partition_spec(abstract_state)
-  
+
   state_mesh_shardings = nn.logical_to_mesh_sharding(
     state_logical_annotations, mesh, config.logical_axis_rules
   )
@@ -476,7 +483,7 @@ def get_memory_allocations():
 
 
 # Taking inspiration from flax's https://flax.readthedocs.io/en/v0.5.3/_modules/flax/linen/summary.html#tabulate
-# to retrieve layer parameters and calculate 
+# to retrieve layer parameters and calculate
 def calculate_model_tflops(
     module: module_lib.Module,
     rngs: Union[PRNGKey, RNGSequences],
