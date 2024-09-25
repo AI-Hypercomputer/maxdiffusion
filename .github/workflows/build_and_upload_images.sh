@@ -21,7 +21,7 @@
 # If you want to create and push your own images you should instead use docker_build_dependency_image and
 # docker_upload_runner in the maxdiffusion root directory.
 
-# Example command: 
+# Example command:
 # bash build_and_upload_images.sh PROJECT=<project> MODE=stable CLOUD_IMAGE_NAME=${USER}_runner
 
 
