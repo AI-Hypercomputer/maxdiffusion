@@ -3,75 +3,75 @@ from ..utils import DummyObject, requires_backends
 
 
 class FlaxStableDiffusionControlNetPipeline(metaclass=DummyObject):
-    _backends = ["flax"]
+  _backends = ["flax"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["flax"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["flax"])
 
-    @classmethod
-    def from_config(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_config(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])
 
-    @classmethod
-    def from_pretrained(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_pretrained(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])
 
 
 class FlaxStableDiffusionImg2ImgPipeline(metaclass=DummyObject):
-    _backends = ["flax"]
+  _backends = ["flax"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["flax"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["flax"])
 
-    @classmethod
-    def from_config(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_config(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])
 
-    @classmethod
-    def from_pretrained(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_pretrained(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])
 
 
 class FlaxStableDiffusionInpaintPipeline(metaclass=DummyObject):
-    _backends = ["flax"]
+  _backends = ["flax"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["flax"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["flax"])
 
-    @classmethod
-    def from_config(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_config(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])
 
-    @classmethod
-    def from_pretrained(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_pretrained(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])
 
 
 class FlaxStableDiffusionPipeline(metaclass=DummyObject):
-    _backends = ["flax"]
+  _backends = ["flax"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["flax"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["flax"])
 
-    @classmethod
-    def from_config(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_config(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])
 
-    @classmethod
-    def from_pretrained(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_pretrained(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])
 
 
 class FlaxStableDiffusionXLPipeline(metaclass=DummyObject):
-    _backends = ["flax"]
+  _backends = ["flax"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["flax"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["flax"])
 
-    @classmethod
-    def from_config(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_config(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])
 
-    @classmethod
-    def from_pretrained(cls, *args, **kwargs):
-        requires_backends(cls, ["flax"])
+  @classmethod
+  def from_pretrained(cls, *args, **kwargs):
+    requires_backends(cls, ["flax"])

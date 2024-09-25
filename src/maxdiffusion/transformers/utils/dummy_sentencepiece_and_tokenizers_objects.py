@@ -6,4 +6,4 @@ SLOW_TO_FAST_CONVERTERS = None
 
 
 def convert_slow_tokenizer(*args, **kwargs):
-    requires_backends(convert_slow_tokenizer, ["sentencepiece", "tokenizers"])
+  requires_backends(convert_slow_tokenizer, ["sentencepiece", "tokenizers"])

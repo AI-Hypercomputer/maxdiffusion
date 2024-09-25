@@ -3,7 +3,7 @@ from ..utils import DummyObject, requires_backends
 
 
 class TFGPT2Tokenizer(metaclass=DummyObject):
-    _backends = ["keras_nlp"]
+  _backends = ["keras_nlp"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["keras_nlp"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["keras_nlp"])
