@@ -74,7 +74,7 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
     def calculate_tflops(self, pipeline, params):
         per_device_tflops = maxdiffusion_utils.calculate_unet_tflops(
             self.config, pipeline,
-            (2 * self.config.per_device_batch_size * jax.local_device_count()),
+            (self.config.per_device_batch_size * jax.local_device_count()),
             self.rng,
             train=True
         )

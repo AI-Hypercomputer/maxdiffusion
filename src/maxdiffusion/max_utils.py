@@ -517,7 +517,7 @@ def calculate_model_tflops(
       elif isinstance(c.module, AttentionOp):
         qk_einsum = 2 * (reduce(lambda x, y: x * y, inputs[0].shape)) * inputs[1].shape[1]
         scaling = inputs[0].shape[0] * inputs[0].shape[1] * inputs[1].shape[1]
-        softmax = reduce(lambda x, y: x * y, inputs[0].shape) * np.log(inputs[1].shape[1])
+        softmax = inputs[0].shape[0] * inputs[0].shape[1] * np.log(inputs[1].shape[1])
         att_v = 2 * (reduce(lambda x, y: x * y, inputs[0].shape)) * inputs[2].shape[1]
         # When seq_length_1 == seq_length_2 then,
         # qk_einsum + scaling + softmax + att_v == 4 * batch_size * hidden_dim * seq_length ^ 2
@@ -528,7 +528,6 @@ def calculate_model_tflops(
           * c.module.features
           * reduce(lambda x, y: x * y, c.module.kernel_size)) / reduce(lambda x, y: x * y, c.module.strides)
     visited_paths.add(c.path)
-  
   total_flops = (total_flops * 3 if train else total_flops) / 10**12
   return total_flops
 
