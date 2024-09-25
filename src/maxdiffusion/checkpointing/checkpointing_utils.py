@@ -236,11 +236,14 @@ def load_state_if_possible(
   # breakpoint()
   try:
     if not enable_single_replica_ckpt_restoring or checkpoint_item not in states:
-      item = {checkpoint_item: orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
+      # item = {checkpoint_item: orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
+      print('*************** SS PyTreeRestore *********')
+      item = {checkpoint_item: orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state)}
       return checkpoint_manager.restore(
         latest_step,
         args=orbax.checkpoint.args.Composite(**item))
 
+    print('*************** SS SINGLE REPLICA Restore *********')
     restore_args = jax.tree_util.tree_map(
         map_to_pspec,
         abstract_unboxed_pre_state,
