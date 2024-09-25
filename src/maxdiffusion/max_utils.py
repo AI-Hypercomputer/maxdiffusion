@@ -313,9 +313,9 @@ def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
   )
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     abstract_state = jax.eval_shape(init_state_partial)
-  
+
   state_logical_annotations = nn.get_partition_spec(abstract_state)
-  
+
   state_mesh_shardings = nn.logical_to_mesh_sharding(
     state_logical_annotations, mesh, config.logical_axis_rules
   )
@@ -476,7 +476,7 @@ def get_memory_allocations():
 
 
 # Taking inspiration from flax's https://flax.readthedocs.io/en/v0.5.3/_modules/flax/linen/summary.html#tabulate
-# to retrieve layer parameters and calculate 
+# to retrieve layer parameters and calculate
 def calculate_model_tflops(
     module: module_lib.Module,
     rngs: Union[PRNGKey, RNGSequences],
