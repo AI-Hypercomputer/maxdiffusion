@@ -246,7 +246,7 @@ class BaseStableDiffusionCheckpointer(ABC):
         items["text_encoder_state"] = ocp.args.PyTreeSave(train_states["text_encoder_state"])
 
         if hasattr(pipeline, "text_encoder_2"):
-            items["text_encoder_2_state"] = ocp.args.StandardSave(train_states["text_encoder_2_state"])
+            # items["text_encoder_2_state"] = ocp.args.StandardSave(train_states["text_encoder_2_state"])
             items["text_encoder_2_state"] = ocp.args.PyTreeSave(train_states["text_encoder_2_state"])
             items["text_encoder_2_config"] = ocp.args.JsonSave(config_to_json(pipeline.text_encoder_2.config))
 

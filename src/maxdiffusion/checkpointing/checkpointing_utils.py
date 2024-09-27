@@ -216,12 +216,6 @@ def load_state_if_possible(
     replica_mesh = jax.sharding.Mesh(replica_devices, mesh.axis_names)
     single_replica_sharding = jax.sharding.NamedSharding(replica_mesh, pspec)
 
-    array_handler = ocp.type_handlers.SingleReplicaArrayHandler(
-        replica_axis_index=0,
-        broadcast_memory_limit_bytes=1024 * 1024 * 1000,  # 1000 MB limit
-    )
-    ocp.type_handlers.register_type_handler(jax.Array, array_handler, override=True)
-
     return ocp.type_handlers.SingleReplicaArrayRestoreArgs(
         sharding=jax.sharding.NamedSharding(mesh, pspec),
         single_replica_sharding=single_replica_sharding,
@@ -233,27 +227,59 @@ def load_state_if_possible(
   max_logging.log(
     f"restoring from this run's directory latest step {latest_step}"
   )
-  # breakpoint()
-  try:
-    if not enable_single_replica_ckpt_restoring or checkpoint_item not in states:
-      # item = {checkpoint_item: orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
-      print('*************** SS PyTreeRestore *********')
-      item = {checkpoint_item: orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state)}
-      return checkpoint_manager.restore(
-        latest_step,
-        args=orbax.checkpoint.args.Composite(**item))
 
-    print('*************** SS SINGLE REPLICA Restore *********')
-    restore_args = jax.tree_util.tree_map(
-        map_to_pspec,
-        abstract_unboxed_pre_state,
-    )
-    item = {checkpoint_item: ocp.args.PyTreeRestore(item=abstract_unboxed_pre_state, restore_args=restore_args)}
+  if not enable_single_replica_ckpt_restoring or checkpoint_item not in states:
+    # item = {checkpoint_item: orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
+    print('*************** SS PyTreeRestore *********')
+    item = {checkpoint_item: orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state)}
     return checkpoint_manager.restore(
       latest_step,
-      args=orbax.checkpoint.args.Composite(**item)
-      )
+      args=orbax.checkpoint.args.Composite(**item))
 
-  except:
-    max_logging.log(f"could not load {checkpoint_item} from orbax")
-    return None
+  print('*************** SS SINGLE REPLICA Restore *********')
+  array_handler = ocp.type_handlers.SingleReplicaArrayHandler(
+      replica_axis_index=0,
+      broadcast_memory_limit_bytes=1024 * 1024 * 1000,  # 1000 MB limit
+  )
+  ocp.type_handlers.register_type_handler(jax.Array, array_handler, override=True)
+
+  restore_args = jax.tree_util.tree_map(
+      map_to_pspec,
+      abstract_unboxed_pre_state,
+  )
+  item = {checkpoint_item: ocp.args.PyTreeRestore(item=abstract_unboxed_pre_state, restore_args=restore_args)}
+  return checkpoint_manager.restore(
+    latest_step,
+    args=orbax.checkpoint.args.Composite(**item)
+    )
+  # breakpoint()
+  # try:
+  #   if not enable_single_replica_ckpt_restoring or checkpoint_item not in states:
+  #     # item = {checkpoint_item: orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
+  #     print('*************** SS PyTreeRestore *********')
+  #     item = {checkpoint_item: orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state)}
+  #     return checkpoint_manager.restore(
+  #       latest_step,
+  #       args=orbax.checkpoint.args.Composite(**item))
+
+  #   print('*************** SS SINGLE REPLICA Restore *********')
+  #   array_handler = ocp.type_handlers.SingleReplicaArrayHandler(
+  #       replica_axis_index=0,
+  #       broadcast_memory_limit_bytes=1024 * 1024 * 1000,  # 1000 MB limit
+  #   )
+  #   ocp.type_handlers.register_type_handler(jax.Array, array_handler, override=True)
+
+  #   restore_args = jax.tree_util.tree_map(
+  #       map_to_pspec,
+  #       abstract_unboxed_pre_state,
+  #   )
+  #   item = {checkpoint_item: ocp.args.PyTreeRestore(item=abstract_unboxed_pre_state, restore_args=restore_args)}
+  #   return checkpoint_manager.restore(
+  #     latest_step,
+  #     args=orbax.checkpoint.args.Composite(**item)
+  #     )
+
+  # except:
+  #   raise ValueError ("From SS: could not load checkpoint")
+  #   max_logging.log(f"could not load {checkpoint_item} from orbax")
+  #   return None
