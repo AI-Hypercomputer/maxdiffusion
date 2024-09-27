@@ -314,8 +314,7 @@ def train(config):
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
-    def train_step(unet_state, batch, train_rng, cache_latents_text_encoder_outputs):
-        _, gen_dummy_rng = jax.random.split(train_rng)
+    def train_step(unet_state, batch, gen_dummy_rng, cache_latents_text_encoder_outputs):
         sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
 
         def compute_loss(unet_params):
@@ -392,6 +391,11 @@ def train(config):
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
+        
+        if delay > 1:
+           loss, raw_grad = grad_fn(unet_state.params)
+           new_state = unet_state.apply_gradients(grads=prev_grad)
+
         loss, raw_grad = grad_fn(unet_state.params)
 
         if config.max_grad_norm > 0:
@@ -402,7 +406,7 @@ def train(config):
         new_state = unet_state.apply_gradients(grads=grad)
         #metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
         metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
-        return new_state, metrics, new_train_rng
+        return new_state, metrics
 
     num_model_parameters = calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
@@ -414,7 +418,7 @@ def train(config):
             p_train_step_lower = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
                 in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
-                out_shardings=(unet_state_mesh_shardings, None, None),
+                out_shardings=(unet_state_mesh_shardings, None),
                 donate_argnums=(0,)
             ).lower(unet_state, dummy_batch, train_rngs)
         p_train_step = p_train_step_lower.compile()
@@ -428,7 +432,7 @@ def train(config):
             p_train_step = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
                 in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
-                out_shardings=(unet_state_mesh_shardings, None, None),
+                out_shardings=(unet_state_mesh_shardings, None),
                 donate_argnums=(0,)
             )
     # Train!
@@ -472,9 +476,11 @@ def train(config):
     last_log_step_num = 0
     for step in np.arange(start_step, config.max_train_steps):
         example_batch = load_next_batch(data_iterator, example_batch, config)
-        unet_state, train_metric, train_rngs = p_train_step(unet_state,
+        
+        nextrng = jax.jit(jax.random.fold_in)(train_rngs, step)
+        unet_state, train_metric = p_train_step(unet_state,
                                                             example_batch,
-                                                            train_rngs)
+                                                            nextrng)
         
         step_num = step + 1
         samples_count = total_train_batch_size * step_num
