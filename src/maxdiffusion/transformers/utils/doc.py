@@ -21,19 +21,19 @@ import types
 
 
 def add_start_docstrings(*docstr):
-    def docstring_decorator(fn):
-        fn.__doc__ = "".join(docstr) + (fn.__doc__ if fn.__doc__ is not None else "")
-        return fn
+  def docstring_decorator(fn):
+    fn.__doc__ = "".join(docstr) + (fn.__doc__ if fn.__doc__ is not None else "")
+    return fn
 
-    return docstring_decorator
+  return docstring_decorator
 
 
 def add_start_docstrings_to_model_forward(*docstr):
-    def docstring_decorator(fn):
-        docstring = "".join(docstr) + (fn.__doc__ if fn.__doc__ is not None else "")
-        class_name = f"[`{fn.__qualname__.split('.')[0]}`]"
-        intro = f"   The {class_name} forward method, overrides the `__call__` special method."
-        note = r"""
+  def docstring_decorator(fn):
+    docstring = "".join(docstr) + (fn.__doc__ if fn.__doc__ is not None else "")
+    class_name = f"[`{fn.__qualname__.split('.')[0]}`]"
+    intro = f"   The {class_name} forward method, overrides the `__call__` special method."
+    note = r"""
 
     <Tip>
 
@@ -44,18 +44,18 @@ def add_start_docstrings_to_model_forward(*docstr):
     </Tip>
 """
 
-        fn.__doc__ = intro + note + docstring
-        return fn
+    fn.__doc__ = intro + note + docstring
+    return fn
 
-    return docstring_decorator
+  return docstring_decorator
 
 
 def add_end_docstrings(*docstr):
-    def docstring_decorator(fn):
-        fn.__doc__ = (fn.__doc__ if fn.__doc__ is not None else "") + "".join(docstr)
-        return fn
+  def docstring_decorator(fn):
+    fn.__doc__ = (fn.__doc__ if fn.__doc__ is not None else "") + "".join(docstr)
+    return fn
 
-    return docstring_decorator
+  return docstring_decorator
 
 
 PT_RETURN_INTRODUCTION = r"""
@@ -77,78 +77,78 @@ TF_RETURN_INTRODUCTION = r"""
 
 
 def _get_indent(t):
-    """Returns the indentation in the first line of t"""
-    search = re.search(r"^(\s*)\S", t)
-    return "" if search is None else search.groups()[0]
+  """Returns the indentation in the first line of t"""
+  search = re.search(r"^(\s*)\S", t)
+  return "" if search is None else search.groups()[0]
 
 
 def _convert_output_args_doc(output_args_doc):
-    """Convert output_args_doc to display properly."""
-    # Split output_arg_doc in blocks argument/description
-    indent = _get_indent(output_args_doc)
-    blocks = []
-    current_block = ""
-    for line in output_args_doc.split("\n"):
-        # If the indent is the same as the beginning, the line is the name of new arg.
-        if _get_indent(line) == indent:
-            if len(current_block) > 0:
-                blocks.append(current_block[:-1])
-            current_block = f"{line}\n"
-        else:
-            # Otherwise it's part of the description of the current arg.
-            # We need to remove 2 spaces to the indentation.
-            current_block += f"{line[2:]}\n"
-    blocks.append(current_block[:-1])
+  """Convert output_args_doc to display properly."""
+  # Split output_arg_doc in blocks argument/description
+  indent = _get_indent(output_args_doc)
+  blocks = []
+  current_block = ""
+  for line in output_args_doc.split("\n"):
+    # If the indent is the same as the beginning, the line is the name of new arg.
+    if _get_indent(line) == indent:
+      if len(current_block) > 0:
+        blocks.append(current_block[:-1])
+      current_block = f"{line}\n"
+    else:
+      # Otherwise it's part of the description of the current arg.
+      # We need to remove 2 spaces to the indentation.
+      current_block += f"{line[2:]}\n"
+  blocks.append(current_block[:-1])
 
-    # Format each block for proper rendering
-    for i in range(len(blocks)):
-        blocks[i] = re.sub(r"^(\s+)(\S+)(\s+)", r"\1- **\2**\3", blocks[i])
-        blocks[i] = re.sub(r":\s*\n\s*(\S)", r" -- \1", blocks[i])
+  # Format each block for proper rendering
+  for i in range(len(blocks)):
+    blocks[i] = re.sub(r"^(\s+)(\S+)(\s+)", r"\1- **\2**\3", blocks[i])
+    blocks[i] = re.sub(r":\s*\n\s*(\S)", r" -- \1", blocks[i])
 
-    return "\n".join(blocks)
+  return "\n".join(blocks)
 
 
 def _prepare_output_docstrings(output_type, config_class, min_indent=None):
-    """
-    Prepares the return part of the docstring using `output_type`.
-    """
-    output_docstring = output_type.__doc__
+  """
+  Prepares the return part of the docstring using `output_type`.
+  """
+  output_docstring = output_type.__doc__
 
-    # Remove the head of the docstring to keep the list of args only
-    lines = output_docstring.split("\n")
+  # Remove the head of the docstring to keep the list of args only
+  lines = output_docstring.split("\n")
+  i = 0
+  while i < len(lines) and re.search(r"^\s*(Args|Parameters):\s*$", lines[i]) is None:
+    i += 1
+  if i < len(lines):
+    params_docstring = "\n".join(lines[(i + 1) :])
+    params_docstring = _convert_output_args_doc(params_docstring)
+  else:
+    raise ValueError(
+        f"No `Args` or `Parameters` section is found in the docstring of `{output_type.__name__}`. Make sure it has "
+        "docstring and contain either `Args` or `Parameters`."
+    )
+
+  # Add the return introduction
+  full_output_type = f"{output_type.__module__}.{output_type.__name__}"
+  intro = TF_RETURN_INTRODUCTION if output_type.__name__.startswith("TF") else PT_RETURN_INTRODUCTION
+  intro = intro.format(full_output_type=full_output_type, config_class=config_class)
+  result = intro + params_docstring
+
+  # Apply minimum indent if necessary
+  if min_indent is not None:
+    lines = result.split("\n")
+    # Find the indent of the first nonempty line
     i = 0
-    while i < len(lines) and re.search(r"^\s*(Args|Parameters):\s*$", lines[i]) is None:
-        i += 1
-    if i < len(lines):
-        params_docstring = "\n".join(lines[(i + 1) :])
-        params_docstring = _convert_output_args_doc(params_docstring)
-    else:
-        raise ValueError(
-            f"No `Args` or `Parameters` section is found in the docstring of `{output_type.__name__}`. Make sure it has "
-            "docstring and contain either `Args` or `Parameters`."
-        )
+    while len(lines[i]) == 0:
+      i += 1
+    indent = len(_get_indent(lines[i]))
+    # If too small, add indentation to all nonempty lines
+    if indent < min_indent:
+      to_add = " " * (min_indent - indent)
+      lines = [(f"{to_add}{line}" if len(line) > 0 else line) for line in lines]
+      result = "\n".join(lines)
 
-    # Add the return introduction
-    full_output_type = f"{output_type.__module__}.{output_type.__name__}"
-    intro = TF_RETURN_INTRODUCTION if output_type.__name__.startswith("TF") else PT_RETURN_INTRODUCTION
-    intro = intro.format(full_output_type=full_output_type, config_class=config_class)
-    result = intro + params_docstring
-
-    # Apply minimum indent if necessary
-    if min_indent is not None:
-        lines = result.split("\n")
-        # Find the indent of the first nonempty line
-        i = 0
-        while len(lines[i]) == 0:
-            i += 1
-        indent = len(_get_indent(lines[i]))
-        # If too small, add indentation to all nonempty lines
-        if indent < min_indent:
-            to_add = " " * (min_indent - indent)
-            lines = [(f"{to_add}{line}" if len(line) > 0 else line) for line in lines]
-            result = "\n".join(lines)
-
-    return result
+  return result
 
 
 FAKE_MODEL_DISCLAIMER = """
@@ -1048,17 +1048,17 @@ FLAX_SAMPLE_DOCSTRINGS = {
 
 
 def filter_outputs_from_example(docstring, **kwargs):
-    """
-    Removes the lines testing an output with the doctest syntax in a code sample when it's set to `None`.
-    """
-    for key, value in kwargs.items():
-        if value is not None:
-            continue
+  """
+  Removes the lines testing an output with the doctest syntax in a code sample when it's set to `None`.
+  """
+  for key, value in kwargs.items():
+    if value is not None:
+      continue
 
-        doc_key = "{" + key + "}"
-        docstring = re.sub(rf"\n([^\n]+)\n\s+{doc_key}\n", "\n", docstring)
+    doc_key = "{" + key + "}"
+    docstring = re.sub(rf"\n([^\n]+)\n\s+{doc_key}\n", "\n", docstring)
 
-    return docstring
+  return docstring
 
 
 def add_code_sample_docstrings(
@@ -1077,114 +1077,112 @@ def add_code_sample_docstrings(
     real_checkpoint=None,
     revision=None,
 ):
-    def docstring_decorator(fn):
-        # model_class defaults to function's class if not specified otherwise
-        model_class = fn.__qualname__.split(".")[0] if model_cls is None else model_cls
+  def docstring_decorator(fn):
+    # model_class defaults to function's class if not specified otherwise
+    model_class = fn.__qualname__.split(".")[0] if model_cls is None else model_cls
 
-        if model_class[:2] == "TF":
-            sample_docstrings = TF_SAMPLE_DOCSTRINGS
-        elif model_class[:4] == "Flax":
-            sample_docstrings = FLAX_SAMPLE_DOCSTRINGS
-        else:
-            sample_docstrings = PT_SAMPLE_DOCSTRINGS
+    if model_class[:2] == "TF":
+      sample_docstrings = TF_SAMPLE_DOCSTRINGS
+    elif model_class[:4] == "Flax":
+      sample_docstrings = FLAX_SAMPLE_DOCSTRINGS
+    else:
+      sample_docstrings = PT_SAMPLE_DOCSTRINGS
 
-        # putting all kwargs for docstrings in a dict to be used
-        # with the `.format(**doc_kwargs)`. Note that string might
-        # be formatted with non-existing keys, which is fine.
-        doc_kwargs = {
-            "model_class": model_class,
-            "processor_class": processor_class,
-            "checkpoint": checkpoint,
-            "mask": mask,
-            "qa_target_start_index": qa_target_start_index,
-            "qa_target_end_index": qa_target_end_index,
-            "expected_output": expected_output,
-            "expected_loss": expected_loss,
-            "real_checkpoint": real_checkpoint,
-            "fake_checkpoint": checkpoint,
-            "true": "{true}",  # For <Tip warning={true}> syntax that conflicts with formatting.
-        }
+    # putting all kwargs for docstrings in a dict to be used
+    # with the `.format(**doc_kwargs)`. Note that string might
+    # be formatted with non-existing keys, which is fine.
+    doc_kwargs = {
+        "model_class": model_class,
+        "processor_class": processor_class,
+        "checkpoint": checkpoint,
+        "mask": mask,
+        "qa_target_start_index": qa_target_start_index,
+        "qa_target_end_index": qa_target_end_index,
+        "expected_output": expected_output,
+        "expected_loss": expected_loss,
+        "real_checkpoint": real_checkpoint,
+        "fake_checkpoint": checkpoint,
+        "true": "{true}",  # For <Tip warning={true}> syntax that conflicts with formatting.
+    }
 
-        if ("SequenceClassification" in model_class or "AudioClassification" in model_class) and modality == "audio":
-            code_sample = sample_docstrings["AudioClassification"]
-        elif "SequenceClassification" in model_class:
-            code_sample = sample_docstrings["SequenceClassification"]
-        elif "QuestionAnswering" in model_class:
-            code_sample = sample_docstrings["QuestionAnswering"]
-        elif "TokenClassification" in model_class:
-            code_sample = sample_docstrings["TokenClassification"]
-        elif "MultipleChoice" in model_class:
-            code_sample = sample_docstrings["MultipleChoice"]
-        elif "MaskedLM" in model_class or model_class in ["FlaubertWithLMHeadModel", "XLMWithLMHeadModel"]:
-            code_sample = sample_docstrings["MaskedLM"]
-        elif "LMHead" in model_class or "CausalLM" in model_class:
-            code_sample = sample_docstrings["LMHead"]
-        elif "CTC" in model_class:
-            code_sample = sample_docstrings["CTC"]
-        elif "AudioFrameClassification" in model_class:
-            code_sample = sample_docstrings["AudioFrameClassification"]
-        elif "XVector" in model_class and modality == "audio":
-            code_sample = sample_docstrings["AudioXVector"]
-        elif "Model" in model_class and modality == "audio":
-            code_sample = sample_docstrings["SpeechBaseModel"]
-        elif "Model" in model_class and modality == "vision":
-            code_sample = sample_docstrings["VisionBaseModel"]
-        elif "Model" in model_class or "Encoder" in model_class:
-            code_sample = sample_docstrings["BaseModel"]
-        elif "ImageClassification" in model_class:
-            code_sample = sample_docstrings["ImageClassification"]
-        else:
-            raise ValueError(f"Docstring can't be built for model {model_class}")
+    if ("SequenceClassification" in model_class or "AudioClassification" in model_class) and modality == "audio":
+      code_sample = sample_docstrings["AudioClassification"]
+    elif "SequenceClassification" in model_class:
+      code_sample = sample_docstrings["SequenceClassification"]
+    elif "QuestionAnswering" in model_class:
+      code_sample = sample_docstrings["QuestionAnswering"]
+    elif "TokenClassification" in model_class:
+      code_sample = sample_docstrings["TokenClassification"]
+    elif "MultipleChoice" in model_class:
+      code_sample = sample_docstrings["MultipleChoice"]
+    elif "MaskedLM" in model_class or model_class in ["FlaubertWithLMHeadModel", "XLMWithLMHeadModel"]:
+      code_sample = sample_docstrings["MaskedLM"]
+    elif "LMHead" in model_class or "CausalLM" in model_class:
+      code_sample = sample_docstrings["LMHead"]
+    elif "CTC" in model_class:
+      code_sample = sample_docstrings["CTC"]
+    elif "AudioFrameClassification" in model_class:
+      code_sample = sample_docstrings["AudioFrameClassification"]
+    elif "XVector" in model_class and modality == "audio":
+      code_sample = sample_docstrings["AudioXVector"]
+    elif "Model" in model_class and modality == "audio":
+      code_sample = sample_docstrings["SpeechBaseModel"]
+    elif "Model" in model_class and modality == "vision":
+      code_sample = sample_docstrings["VisionBaseModel"]
+    elif "Model" in model_class or "Encoder" in model_class:
+      code_sample = sample_docstrings["BaseModel"]
+    elif "ImageClassification" in model_class:
+      code_sample = sample_docstrings["ImageClassification"]
+    else:
+      raise ValueError(f"Docstring can't be built for model {model_class}")
 
-        code_sample = filter_outputs_from_example(
-            code_sample, expected_output=expected_output, expected_loss=expected_loss
+    code_sample = filter_outputs_from_example(code_sample, expected_output=expected_output, expected_loss=expected_loss)
+    if real_checkpoint is not None:
+      code_sample = FAKE_MODEL_DISCLAIMER + code_sample
+    func_doc = (fn.__doc__ or "") + "".join(docstr)
+    output_doc = "" if output_type is None else _prepare_output_docstrings(output_type, config_class)
+    built_doc = code_sample.format(**doc_kwargs)
+    if revision is not None:
+      if re.match(r"^refs/pr/\\d+", revision):
+        raise ValueError(
+            f"The provided revision '{revision}' is incorrect. It should point to"
+            " a pull request reference on the hub like 'refs/pr/6'"
         )
-        if real_checkpoint is not None:
-            code_sample = FAKE_MODEL_DISCLAIMER + code_sample
-        func_doc = (fn.__doc__ or "") + "".join(docstr)
-        output_doc = "" if output_type is None else _prepare_output_docstrings(output_type, config_class)
-        built_doc = code_sample.format(**doc_kwargs)
-        if revision is not None:
-            if re.match(r"^refs/pr/\\d+", revision):
-                raise ValueError(
-                    f"The provided revision '{revision}' is incorrect. It should point to"
-                    " a pull request reference on the hub like 'refs/pr/6'"
-                )
-            built_doc = built_doc.replace(
-                f'from_pretrained("{checkpoint}")', f'from_pretrained("{checkpoint}", revision="{revision}")'
-            )
-        fn.__doc__ = func_doc + output_doc + built_doc
-        return fn
+      built_doc = built_doc.replace(
+          f'from_pretrained("{checkpoint}")', f'from_pretrained("{checkpoint}", revision="{revision}")'
+      )
+    fn.__doc__ = func_doc + output_doc + built_doc
+    return fn
 
-    return docstring_decorator
+  return docstring_decorator
 
 
 def replace_return_docstrings(output_type=None, config_class=None):
-    def docstring_decorator(fn):
-        func_doc = fn.__doc__
-        lines = func_doc.split("\n")
-        i = 0
-        while i < len(lines) and re.search(r"^\s*Returns?:\s*$", lines[i]) is None:
-            i += 1
-        if i < len(lines):
-            indent = len(_get_indent(lines[i]))
-            lines[i] = _prepare_output_docstrings(output_type, config_class, min_indent=indent)
-            func_doc = "\n".join(lines)
-        else:
-            raise ValueError(
-                f"The function {fn} should have an empty 'Return:' or 'Returns:' in its docstring as placeholder, "
-                f"current docstring is:\n{func_doc}"
-            )
-        fn.__doc__ = func_doc
-        return fn
+  def docstring_decorator(fn):
+    func_doc = fn.__doc__
+    lines = func_doc.split("\n")
+    i = 0
+    while i < len(lines) and re.search(r"^\s*Returns?:\s*$", lines[i]) is None:
+      i += 1
+    if i < len(lines):
+      indent = len(_get_indent(lines[i]))
+      lines[i] = _prepare_output_docstrings(output_type, config_class, min_indent=indent)
+      func_doc = "\n".join(lines)
+    else:
+      raise ValueError(
+          f"The function {fn} should have an empty 'Return:' or 'Returns:' in its docstring as placeholder, "
+          f"current docstring is:\n{func_doc}"
+      )
+    fn.__doc__ = func_doc
+    return fn
 
-    return docstring_decorator
+  return docstring_decorator
 
 
 def copy_func(f):
-    """Returns a copy of a function f."""
-    # Based on http://stackoverflow.com/a/6528148/190597 (Glenn Maynard)
-    g = types.FunctionType(f.__code__, f.__globals__, name=f.__name__, argdefs=f.__defaults__, closure=f.__closure__)
-    g = functools.update_wrapper(g, f)
-    g.__kwdefaults__ = f.__kwdefaults__
-    return g
+  """Returns a copy of a function f."""
+  # Based on http://stackoverflow.com/a/6528148/190597 (Glenn Maynard)
+  g = types.FunctionType(f.__code__, f.__globals__, name=f.__name__, argdefs=f.__defaults__, closure=f.__closure__)
+  g = functools.update_wrapper(g, f)
+  g.__kwdefaults__ = f.__kwdefaults__
+  return g

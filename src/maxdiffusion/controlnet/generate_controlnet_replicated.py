@@ -26,6 +26,7 @@ from maxdiffusion import pyconfig
 from maxdiffusion.utils import load_image
 from maxdiffusion import FlaxStableDiffusionControlNetPipeline, FlaxControlNetModel
 
+
 def run(config):
 
   rng = jax.random.PRNGKey(config.seed)
@@ -39,15 +40,10 @@ def run(config):
 
   # load control net and stable diffusion v1-5
   controlnet, controlnet_params = FlaxControlNetModel.from_pretrained(
-    config.controlnet_model_name_or_path,
-    from_pt=config.controlnet_from_pt,
-    dtype=jnp.float32
+      config.controlnet_model_name_or_path, from_pt=config.controlnet_from_pt, dtype=jnp.float32
   )
   pipe, params = FlaxStableDiffusionControlNetPipeline.from_pretrained(
-    config.pretrained_model_name_or_path,
-    controlnet=controlnet,
-    revision=config.revision,
-    dtype=jnp.float32
+      config.pretrained_model_name_or_path, controlnet=controlnet, revision=config.revision, dtype=jnp.float32
   )
   params["controlnet"] = controlnet_params
 
@@ -78,9 +74,11 @@ def run(config):
   output_images[0].save("generated_image.png")
   return output_images
 
+
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   run(pyconfig.config)
+
 
 if __name__ == "__main__":
   app.run(main)

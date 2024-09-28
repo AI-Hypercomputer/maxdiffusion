@@ -20,9 +20,10 @@ from absl import app
 from typing import Sequence
 import json
 
+
 def get_last_n_data(metrics_file, target, n=10):
   last_n_data = []
-  with open(metrics_file, 'r', encoding='utf8') as file:
+  with open(metrics_file, "r", encoding="utf8") as file:
     lines = file.readlines()
     for line in lines[::-1]:
       metrics = json.loads(line)
@@ -35,24 +36,24 @@ def get_last_n_data(metrics_file, target, n=10):
 
 def test_final_loss(metrics_file, target_loss):
   target_loss = float(target_loss)
-  with open(metrics_file, 'r', encoding='utf8') as _:
+  with open(metrics_file, "r", encoding="utf8") as _:
     use_last_n_data = 10
-    last_n_data = get_last_n_data(metrics_file, 'learning/loss', use_last_n_data)
+    last_n_data = get_last_n_data(metrics_file, "learning/loss", use_last_n_data)
     avg_last_n_data = sum(last_n_data) / len(last_n_data)
     print(f"Mean of last {len(last_n_data)} losses is {avg_last_n_data}")
     print(f"Target loss is {target_loss}")
     assert avg_last_n_data < target_loss
-    print('Final loss test passed.')
+    print("Final loss test passed.")
 
 
 def main(argv: Sequence[str]) -> None:
 
   _, test_scenario, *test_vars = argv
 
-  if test_scenario == 'final_loss':
+  if test_scenario == "final_loss":
     test_final_loss(*test_vars)
   else:
-     raise ValueError(f"Unrecognized test_scenario {test_scenario}")
+    raise ValueError(f"Unrecognized test_scenario {test_scenario}")
 
 
 if __name__ == "__main__":

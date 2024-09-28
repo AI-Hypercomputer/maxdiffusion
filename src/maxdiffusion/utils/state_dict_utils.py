@@ -18,14 +18,14 @@ import enum
 
 
 class StateDictType(enum.Enum):
-    """
-    The mode to use when converting state dicts.
-    """
+  """
+  The mode to use when converting state dicts.
+  """
 
-    DIFFUSERS_OLD = "diffusers_old"
-    # KOHYA_SS = "kohya_ss" # TODO: implement this
-    PEFT = "peft"
-    DIFFUSERS = "maxdiffusion"
+  DIFFUSERS_OLD = "diffusers_old"
+  # KOHYA_SS = "kohya_ss" # TODO: implement this
+  PEFT = "peft"
+  DIFFUSERS = "maxdiffusion"
 
 
 # We need to define a proper mapping for Unet since it uses different output keys than text encoder
@@ -108,115 +108,115 @@ KEYS_TO_ALWAYS_REPLACE = {
 
 
 def convert_state_dict(state_dict, mapping):
-    r"""
-    Simply iterates over the state dict and replaces the patterns in `mapping` with the corresponding values.
+  r"""
+  Simply iterates over the state dict and replaces the patterns in `mapping` with the corresponding values.
 
-    Args:
-        state_dict (`dict[str, torch.Tensor]`):
-            The state dict to convert.
-        mapping (`dict[str, str]`):
-            The mapping to use for conversion, the mapping should be a dictionary with the following structure:
-                - key: the pattern to replace
-                - value: the pattern to replace with
+  Args:
+      state_dict (`dict[str, torch.Tensor]`):
+          The state dict to convert.
+      mapping (`dict[str, str]`):
+          The mapping to use for conversion, the mapping should be a dictionary with the following structure:
+              - key: the pattern to replace
+              - value: the pattern to replace with
 
-    Returns:
-        converted_state_dict (`dict`)
-            The converted state dict.
-    """
-    converted_state_dict = {}
-    for k, v in state_dict.items():
-        # First, filter out the keys that we always want to replace
-        for pattern in KEYS_TO_ALWAYS_REPLACE.keys():
-            if pattern in k:
-                new_pattern = KEYS_TO_ALWAYS_REPLACE[pattern]
-                k = k.replace(pattern, new_pattern)
+  Returns:
+      converted_state_dict (`dict`)
+          The converted state dict.
+  """
+  converted_state_dict = {}
+  for k, v in state_dict.items():
+    # First, filter out the keys that we always want to replace
+    for pattern in KEYS_TO_ALWAYS_REPLACE.keys():
+      if pattern in k:
+        new_pattern = KEYS_TO_ALWAYS_REPLACE[pattern]
+        k = k.replace(pattern, new_pattern)
 
-        for pattern in mapping.keys():
-            if pattern in k:
-                new_pattern = mapping[pattern]
-                k = k.replace(pattern, new_pattern)
-                break
-        converted_state_dict[k] = v
-    return converted_state_dict
+    for pattern in mapping.keys():
+      if pattern in k:
+        new_pattern = mapping[pattern]
+        k = k.replace(pattern, new_pattern)
+        break
+    converted_state_dict[k] = v
+  return converted_state_dict
 
 
 def convert_state_dict_to_peft(state_dict, original_type=None, **kwargs):
-    r"""
-    Converts a state dict to the PEFT format The state dict can be from previous diffusers format (`OLD_DIFFUSERS`), or
-    new diffusers format (`DIFFUSERS`). The method only supports the conversion from maxdiffusion old/new to PEFT for now.
+  r"""
+  Converts a state dict to the PEFT format The state dict can be from previous diffusers format (`OLD_DIFFUSERS`), or
+  new diffusers format (`DIFFUSERS`). The method only supports the conversion from maxdiffusion old/new to PEFT for now.
 
-    Args:
-        state_dict (`dict[str, torch.Tensor]`):
-            The state dict to convert.
-        original_type (`StateDictType`, *optional*):
-            The original type of the state dict, if not provided, the method will try to infer it automatically.
-    """
-    if original_type is None:
-        # Old diffusers to PEFT
-        if any("to_out_lora" in k for k in state_dict.keys()):
-            original_type = StateDictType.DIFFUSERS_OLD
-        elif any("lora_linear_layer" in k for k in state_dict.keys()):
-            original_type = StateDictType.DIFFUSERS
-        else:
-            raise ValueError("Could not automatically infer state dict type")
+  Args:
+      state_dict (`dict[str, torch.Tensor]`):
+          The state dict to convert.
+      original_type (`StateDictType`, *optional*):
+          The original type of the state dict, if not provided, the method will try to infer it automatically.
+  """
+  if original_type is None:
+    # Old diffusers to PEFT
+    if any("to_out_lora" in k for k in state_dict.keys()):
+      original_type = StateDictType.DIFFUSERS_OLD
+    elif any("lora_linear_layer" in k for k in state_dict.keys()):
+      original_type = StateDictType.DIFFUSERS
+    else:
+      raise ValueError("Could not automatically infer state dict type")
 
-    if original_type not in PEFT_STATE_DICT_MAPPINGS.keys():
-        raise ValueError(f"Original type {original_type} is not supported")
+  if original_type not in PEFT_STATE_DICT_MAPPINGS.keys():
+    raise ValueError(f"Original type {original_type} is not supported")
 
-    mapping = PEFT_STATE_DICT_MAPPINGS[original_type]
-    return convert_state_dict(state_dict, mapping)
+  mapping = PEFT_STATE_DICT_MAPPINGS[original_type]
+  return convert_state_dict(state_dict, mapping)
 
 
 def convert_state_dict_to_diffusers(state_dict, original_type=None, **kwargs):
-    r"""
-    Converts a state dict to new diffusers format. The state dict can be from previous diffusers format
-    (`OLD_DIFFUSERS`), or PEFT format (`PEFT`) or new diffusers format (`DIFFUSERS`). In the last case the method will
-    return the state dict as is.
+  r"""
+  Converts a state dict to new diffusers format. The state dict can be from previous diffusers format
+  (`OLD_DIFFUSERS`), or PEFT format (`PEFT`) or new diffusers format (`DIFFUSERS`). In the last case the method will
+  return the state dict as is.
 
-    The method only supports the conversion from maxdiffusion old, PEFT to diffusers new for now.
+  The method only supports the conversion from maxdiffusion old, PEFT to diffusers new for now.
 
-    Args:
-        state_dict (`dict[str, torch.Tensor]`):
-            The state dict to convert.
-        original_type (`StateDictType`, *optional*):
-            The original type of the state dict, if not provided, the method will try to infer it automatically.
-        kwargs (`dict`, *args*):
-            Additional arguments to pass to the method.
+  Args:
+      state_dict (`dict[str, torch.Tensor]`):
+          The state dict to convert.
+      original_type (`StateDictType`, *optional*):
+          The original type of the state dict, if not provided, the method will try to infer it automatically.
+      kwargs (`dict`, *args*):
+          Additional arguments to pass to the method.
 
-            - **adapter_name**: For example, in case of PEFT, some keys will be pre-pended
-                with the adapter name, therefore needs a special handling. By default PEFT also takes care of that in
-                `get_peft_model_state_dict` method:
-                https://github.com/huggingface/peft/blob/ba0477f2985b1ba311b83459d29895c809404e99/src/peft/utils/save_and_load.py#L92
-                but we add it here in case we don't want to rely on that method.
-    """
-    peft_adapter_name = kwargs.pop("adapter_name", None)
-    if peft_adapter_name is not None:
-        peft_adapter_name = "." + peft_adapter_name
+          - **adapter_name**: For example, in case of PEFT, some keys will be pre-pended
+              with the adapter name, therefore needs a special handling. By default PEFT also takes care of that in
+              `get_peft_model_state_dict` method:
+              https://github.com/huggingface/peft/blob/ba0477f2985b1ba311b83459d29895c809404e99/src/peft/utils/save_and_load.py#L92
+              but we add it here in case we don't want to rely on that method.
+  """
+  peft_adapter_name = kwargs.pop("adapter_name", None)
+  if peft_adapter_name is not None:
+    peft_adapter_name = "." + peft_adapter_name
+  else:
+    peft_adapter_name = ""
+
+  if original_type is None:
+    # Old diffusers to PEFT
+    if any("to_out_lora" in k for k in state_dict.keys()):
+      original_type = StateDictType.DIFFUSERS_OLD
+    elif any(f".lora_A{peft_adapter_name}.weight" in k for k in state_dict.keys()):
+      original_type = StateDictType.PEFT
+    elif any("lora_linear_layer" in k for k in state_dict.keys()):
+      # nothing to do
+      return state_dict
     else:
-        peft_adapter_name = ""
+      raise ValueError("Could not automatically infer state dict type")
 
-    if original_type is None:
-        # Old diffusers to PEFT
-        if any("to_out_lora" in k for k in state_dict.keys()):
-            original_type = StateDictType.DIFFUSERS_OLD
-        elif any(f".lora_A{peft_adapter_name}.weight" in k for k in state_dict.keys()):
-            original_type = StateDictType.PEFT
-        elif any("lora_linear_layer" in k for k in state_dict.keys()):
-            # nothing to do
-            return state_dict
-        else:
-            raise ValueError("Could not automatically infer state dict type")
+  if original_type not in DIFFUSERS_STATE_DICT_MAPPINGS.keys():
+    raise ValueError(f"Original type {original_type} is not supported")
 
-    if original_type not in DIFFUSERS_STATE_DICT_MAPPINGS.keys():
-        raise ValueError(f"Original type {original_type} is not supported")
-
-    mapping = DIFFUSERS_STATE_DICT_MAPPINGS[original_type]
-    return convert_state_dict(state_dict, mapping)
+  mapping = DIFFUSERS_STATE_DICT_MAPPINGS[original_type]
+  return convert_state_dict(state_dict, mapping)
 
 
 def convert_unet_state_dict_to_peft(state_dict):
-    r"""
-    Converts a state dict from UNet format to diffusers format - i.e. by removing some keys
-    """
-    mapping = UNET_TO_DIFFUSERS
-    return convert_state_dict(state_dict, mapping)
+  r"""
+  Converts a state dict from UNet format to diffusers format - i.e. by removing some keys
+  """
+  mapping = UNET_TO_DIFFUSERS
+  return convert_state_dict(state_dict, mapping)

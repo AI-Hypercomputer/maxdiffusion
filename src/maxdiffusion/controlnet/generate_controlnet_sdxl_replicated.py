@@ -28,8 +28,10 @@ from maxdiffusion import pyconfig
 from maxdiffusion import FlaxStableDiffusionXLControlNetPipeline, FlaxControlNetModel
 import cv2
 
+
 def create_key(seed=0):
   return jax.random.PRNGKey(seed)
+
 
 def run(config):
   rng = jax.random.PRNGKey(config.seed)
@@ -47,16 +49,11 @@ def run(config):
   image = Image.fromarray(image)
 
   controlnet, controlnet_params = FlaxControlNetModel.from_pretrained(
-    config.controlnet_model_name_or_path,
-    from_pt=config.controlnet_from_pt,
-    dtype=config.activations_dtype
+      config.controlnet_model_name_or_path, from_pt=config.controlnet_from_pt, dtype=config.activations_dtype
   )
 
   pipe, params = FlaxStableDiffusionXLControlNetPipeline.from_pretrained(
-    config.pretrained_model_name_or_path,
-    controlnet=controlnet,
-    revision=config.revision,
-    dtype=config.activations_dtype
+      config.pretrained_model_name_or_path, controlnet=controlnet, revision=config.revision, dtype=config.activations_dtype
   )
 
   scheduler_state = params.pop("scheduler")
@@ -91,9 +88,11 @@ def run(config):
   output_images[0].save("generated_image.png")
   return output_images
 
+
 def main(argv: Sequence[str]) -> None:
-    pyconfig.initialize(argv)
-    run(pyconfig.config)
+  pyconfig.initialize(argv)
+  run(pyconfig.config)
+
 
 if __name__ == "__main__":
-    app.run(main)
+  app.run(main)

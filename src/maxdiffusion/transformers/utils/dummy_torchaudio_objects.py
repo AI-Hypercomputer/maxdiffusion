@@ -3,14 +3,14 @@ from ..utils import DummyObject, requires_backends
 
 
 class MusicgenMelodyFeatureExtractor(metaclass=DummyObject):
-    _backends = ["torchaudio"]
+  _backends = ["torchaudio"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["torchaudio"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["torchaudio"])
 
 
 class MusicgenMelodyProcessor(metaclass=DummyObject):
-    _backends = ["torchaudio"]
+  _backends = ["torchaudio"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["torchaudio"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["torchaudio"])
