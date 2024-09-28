@@ -34,10 +34,10 @@ BlockSizes = splash_attention_kernel.BlockSizes
 
 AxisNames = tuple[str, ...]
 
-BATCH = 'activation_batch'
-LENGTH = 'activation_length'
-HEAD = 'activation_heads'
-D_KV = 'activation_kv'
-KEEP_1 = 'activation_keep_1'
-KEEP_2 = 'activation_keep_2'
-CONV_OUT = 'activation_conv_out_channels'
+BATCH = "activation_batch"
+LENGTH = "activation_length"
+HEAD = "activation_heads"
+D_KV = "activation_kv"
+KEEP_1 = "activation_keep_1"
+KEEP_2 = "activation_keep_2"
+CONV_OUT = "activation_conv_out_channels"

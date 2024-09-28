@@ -3,15 +3,15 @@ from ..utils import DummyObject, requires_backends
 
 
 class OnnxRuntimeModel(metaclass=DummyObject):
-    _backends = ["onnx"]
+  _backends = ["onnx"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["onnx"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["onnx"])
 
-    @classmethod
-    def from_config(cls, *args, **kwargs):
-        requires_backends(cls, ["onnx"])
+  @classmethod
+  def from_config(cls, *args, **kwargs):
+    requires_backends(cls, ["onnx"])
 
-    @classmethod
-    def from_pretrained(cls, *args, **kwargs):
-        requires_backends(cls, ["onnx"])
+  @classmethod
+  def from_pretrained(cls, *args, **kwargs):
+    requires_backends(cls, ["onnx"])

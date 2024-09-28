@@ -34,6 +34,7 @@ from jax.sharding import Mesh
 
 from maxdiffusion import max_logging
 
+
 def _build_global_shape_and_sharding(
     local_shape: tuple[int, ...], global_mesh: Mesh
 ) -> tuple[tuple[int, ...], NamedSharding]:
@@ -45,25 +46,22 @@ def _build_global_shape_and_sharding(
 
 
 def _form_global_array(path, array: np.ndarray, global_mesh: Mesh) -> jax.Array:
-  """ Put local sharded array into local devices
-  """
+  """Put local sharded array into local devices"""
   global_shape, sharding = _build_global_shape_and_sharding(np.shape(array), global_mesh)
   try:
     local_device_arrays = np.split(array, len(global_mesh.local_devices), axis=0)
   except ValueError as array_split_error:
     raise ValueError(
-      f"Unable to put to devices shape {array.shape} with "
-      f"local device count {len(global_mesh.local_devices)} "
-      f"at {jtu.keystr(path)}"
+        f"Unable to put to devices shape {array.shape} with "
+        f"local device count {len(global_mesh.local_devices)} "
+        f"at {jtu.keystr(path)}"
     ) from array_split_error
 
   local_device_buffers = jax.device_put(local_device_arrays, global_mesh.local_devices)
   return jax.make_array_from_single_device_arrays(global_shape, sharding, local_device_buffers)
 
 
-def get_batch_sharded_data_pipeline(
-  dataset: tf.data.Dataset, global_mesh: Mesh
-) -> Callable[[], jax.Array]:
+def get_batch_sharded_data_pipeline(dataset: tf.data.Dataset, global_mesh: Mesh) -> Callable[[], jax.Array]:
   """Each device loads batch_size/num_devices,
   To do this, each host first loads batch_size/num_hosts, then shards that
   equally across it's devices.
@@ -78,9 +76,7 @@ def get_batch_sharded_data_pipeline(
   return multihost_generator
 
 
-def get_next_batch_sharded(
-  local_dataset: tf.data.Dataset, global_mesh: Mesh
-) -> jax.Array:
+def get_next_batch_sharded(local_dataset: tf.data.Dataset, global_mesh: Mesh) -> jax.Array:
   """Splits the host loaded data equally over all devices."""
 
   SLEEP_TIME = 10
@@ -101,6 +97,6 @@ def get_next_batch_sharded(
   if not loaded_data_success:
     local_data = local_dataset.next()
 
-  input_gdas = jtu.tree_map_with_path(partial(_form_global_array, global_mesh = global_mesh), local_data)
+  input_gdas = jtu.tree_map_with_path(partial(_form_global_array, global_mesh=global_mesh), local_data)
 
   return input_gdas

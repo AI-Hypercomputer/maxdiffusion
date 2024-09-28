@@ -14,7 +14,7 @@
  limitations under the License.
  """
 
-'''This script is used an example of how to restore params from a orbax train_state ckpt.'''
+"""This script is used an example of how to restore params from a orbax train_state ckpt."""
 
 import os
 import functools
@@ -28,6 +28,7 @@ import orbax.checkpoint as ocp
 from maxdiffusion import pyconfig, max_utils
 from maxdiffusion.models import FlaxUNet2DConditionModel
 
+
 def run(config):
   rng = jax.random.PRNGKey(config.seed)
 
@@ -38,38 +39,36 @@ def run(config):
 
   # Load the UNET from the checkpoint
   unet, params = FlaxUNet2DConditionModel.from_pretrained(
-    config.pretrained_model_name_or_path,
-    revision=config.revision,
-    dtype=config.activations_dtype,
-    subfolder="unet",
-    split_head_dim=True
+      config.pretrained_model_name_or_path,
+      revision=config.revision,
+      dtype=config.activations_dtype,
+      subfolder="unet",
+      split_head_dim=True,
   )
 
   weights_init_fn = functools.partial(unet.init_weights, rng=rng)
-  #max_utils.get_abstract_state(unet, None, config, mesh, weights_init_fn, training=False)
+  # max_utils.get_abstract_state(unet, None, config, mesh, weights_init_fn, training=False)
 
-  unboxed_abstract_state, _, _ = max_utils.get_abstract_state(unet, None, config, mesh, weights_init_fn,False)
+  unboxed_abstract_state, _, _ = max_utils.get_abstract_state(unet, None, config, mesh, weights_init_fn, False)
   ckptr = ocp.PyTreeCheckpointer()
 
-  #ckpt_path = config.checkpoint_dir
-  ckpt_path = os.path.join(config.checkpoint_dir,"11","unet_state")
+  # ckpt_path = config.checkpoint_dir
+  ckpt_path = os.path.join(config.checkpoint_dir, "11", "unet_state")
   ckpt_path = epath.Path(ckpt_path)
-
 
   print(f"loading paramteres from : {ckpt_path}")
 
   restore_args = ocp.checkpoint_utils.construct_restore_args(unboxed_abstract_state.params)
   restored = ckptr.restore(
-    ckpt_path,
-    item={"params": unboxed_abstract_state.params},
-    transforms={},
-    restore_args={"params" : restore_args}
+      ckpt_path, item={"params": unboxed_abstract_state.params}, transforms={}, restore_args={"params": restore_args}
   )
   return restored["params"]
+
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   run(pyconfig.config)
+
 
 # Run via:
 # python src/maxdiffusion/pedagogical_examples/checkpoint_params_restore.py src/diffusers/configs/base_xl.yml

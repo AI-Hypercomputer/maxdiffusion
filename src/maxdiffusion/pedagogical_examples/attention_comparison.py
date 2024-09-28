@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from maxdiffusion.models.attention_flax import FlaxAttention
 from maxdiffusion import max_utils, pyconfig
 
+
 def make_data():
   key = jax.random.PRNGKey(0)
   query_states = jax.random.normal(key, (batch, length, heads * head_depth))
@@ -19,31 +20,32 @@ def make_data():
 
   return query_states, key_states, value_states
 
+
 def run_time_comparison():
   query_states, key_states, value_states = make_data()
 
   this_dir = os.path.dirname(os.path.abspath(__file__))
-  pyconfig.initialize([None,os.path.join(this_dir,'..','configs','base_2_base.yml')])
+  pyconfig.initialize([None, os.path.join(this_dir, "..", "configs", "base_2_base.yml")])
   config = pyconfig.config
 
   attention = FlaxAttention(
-    heads * head_depth,
-    heads,
-    head_depth,
-    split_head_dim = True,
-    attention_kernel="dot_product",
-    mesh=None,
-    dtype=jnp.bfloat16
+      heads * head_depth,
+      heads,
+      head_depth,
+      split_head_dim=True,
+      attention_kernel="dot_product",
+      mesh=None,
+      dtype=jnp.bfloat16,
   )
   key1, key2 = jax.random.split(jax.random.PRNGKey(0))
   x = jax.random.normal(key1, (batch, length, heads * head_depth))
-  params = attention.init(key2, x)['params']
+  params = attention.init(key2, x)["params"]
 
-  p_apply = jax.jit(attention.apply).lower({"params" : params}, x).compile()
+  p_apply = jax.jit(attention.apply).lower({"params": params}, x).compile()
 
   start_time = time.perf_counter()
   for _ in range(n_trials):
-    dot_attention_out = p_apply({"params" : params}, x).block_until_ready()
+    dot_attention_out = p_apply({"params": params}, x).block_until_ready()
 
   end_time = time.perf_counter()
   total_time = end_time - start_time
@@ -54,22 +56,16 @@ def run_time_comparison():
   mesh = Mesh(devices_array, config.mesh_axes)
 
   attention = FlaxAttention(
-    heads * head_depth,
-    heads,
-    head_depth,
-    split_head_dim = False,
-    attention_kernel="flash",
-    mesh=mesh,
-    dtype=jnp.bfloat16
+      heads * head_depth, heads, head_depth, split_head_dim=False, attention_kernel="flash", mesh=mesh, dtype=jnp.bfloat16
   )
 
-  params = attention.init(key2, x)['params']
+  params = attention.init(key2, x)["params"]
 
-  p_apply = jax.jit(attention.apply).lower({"params" : params}, x).compile()
+  p_apply = jax.jit(attention.apply).lower({"params": params}, x).compile()
 
   start_time = time.perf_counter()
   for _ in range(n_trials):
-    flash_attention_out = p_apply({"params" : params}, x).block_until_ready()
+    flash_attention_out = p_apply({"params": params}, x).block_until_ready()
 
   end_time = time.perf_counter()
   total_time = end_time - start_time

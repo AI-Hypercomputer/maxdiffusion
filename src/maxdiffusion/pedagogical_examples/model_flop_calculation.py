@@ -21,20 +21,19 @@ python src/maxdiffusion/pedagogical_examples/model_flop_calculation.py src/maxdi
 
 from absl import app
 from typing import (
-  Sequence,
+    Sequence,
 )
 
 import jax
 from jax.sharding import Mesh
-from maxdiffusion import (
-  FlaxStableDiffusionPipeline
-)
+from maxdiffusion import (FlaxStableDiffusionPipeline)
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import (
-  create_device_mesh,
-  get_flash_block_sizes,
+    create_device_mesh,
+    get_flash_block_sizes,
 )
 from maxdiffusion.maxdiffusion_utils import calculate_unet_tflops
+
 
 def run(config):
   rng = jax.random.PRNGKey(config.seed)
@@ -45,28 +44,28 @@ def run(config):
   mesh = Mesh(devices_array, config.mesh_axes)
   flash_block_sizes = get_flash_block_sizes(config)
   pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-    config.pretrained_model_name_or_path,revision=config.revision,
-    dtype=config.activations_dtype,
-    safety_checker=None,
-    feature_extractor=None,
-    from_pt=config.from_pt,
-    split_head_dim=config.split_head_dim,
-    norm_num_groups=config.norm_num_groups,
-    attention_kernel=config.attention,
-    flash_block_sizes=flash_block_sizes,
-    mesh=mesh,
-    )
+      config.pretrained_model_name_or_path,
+      revision=config.revision,
+      dtype=config.activations_dtype,
+      safety_checker=None,
+      feature_extractor=None,
+      from_pt=config.from_pt,
+      split_head_dim=config.split_head_dim,
+      norm_num_groups=config.norm_num_groups,
+      attention_kernel=config.attention,
+      flash_block_sizes=flash_block_sizes,
+      mesh=mesh,
+  )
 
-  total_flops = calculate_unet_tflops(config,
-                        pipeline,
-                        rng,
-                        train=True)
+  total_flops = calculate_unet_tflops(config, pipeline, rng, train=True)
 
   print("total training tflops: ", total_flops)
+
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   run(pyconfig.config)
+
 
 if __name__ == "__main__":
   app.run(main)

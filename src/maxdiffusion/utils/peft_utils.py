@@ -23,194 +23,192 @@ from .import_utils import is_peft_available, is_torch_available
 
 
 def recurse_remove_peft_layers(model):
-    if is_torch_available():
-        import torch
+  if is_torch_available():
+    import torch
 
-    r"""
+  r"""
     Recursively replace all instances of `LoraLayer` with corresponding new layers in `model`.
     """
-    from peft.tuners.lora import LoraLayer
+  from peft.tuners.lora import LoraLayer
 
-    for name, module in model.named_children():
-        if len(list(module.children())) > 0:
-            ## compound module, go inside it
-            recurse_remove_peft_layers(module)
+  for name, module in model.named_children():
+    if len(list(module.children())) > 0:
+      ## compound module, go inside it
+      recurse_remove_peft_layers(module)
 
-        module_replaced = False
+    module_replaced = False
 
-        if isinstance(module, LoraLayer) and isinstance(module, torch.nn.Linear):
-            new_module = torch.nn.Linear(module.in_features, module.out_features, bias=module.bias is not None).to(
-                module.weight.device
-            )
-            new_module.weight = module.weight
-            if module.bias is not None:
-                new_module.bias = module.bias
+    if isinstance(module, LoraLayer) and isinstance(module, torch.nn.Linear):
+      new_module = torch.nn.Linear(module.in_features, module.out_features, bias=module.bias is not None).to(
+          module.weight.device
+      )
+      new_module.weight = module.weight
+      if module.bias is not None:
+        new_module.bias = module.bias
 
-            module_replaced = True
-        elif isinstance(module, LoraLayer) and isinstance(module, torch.nn.Conv2d):
-            new_module = torch.nn.Conv2d(
-                module.in_channels,
-                module.out_channels,
-                module.kernel_size,
-                module.stride,
-                module.padding,
-                module.dilation,
-                module.groups,
-            ).to(module.weight.device)
+      module_replaced = True
+    elif isinstance(module, LoraLayer) and isinstance(module, torch.nn.Conv2d):
+      new_module = torch.nn.Conv2d(
+          module.in_channels,
+          module.out_channels,
+          module.kernel_size,
+          module.stride,
+          module.padding,
+          module.dilation,
+          module.groups,
+      ).to(module.weight.device)
 
-            new_module.weight = module.weight
-            if module.bias is not None:
-                new_module.bias = module.bias
+      new_module.weight = module.weight
+      if module.bias is not None:
+        new_module.bias = module.bias
 
-            module_replaced = True
+      module_replaced = True
 
-        if module_replaced:
-            setattr(model, name, new_module)
-            del module
+    if module_replaced:
+      setattr(model, name, new_module)
+      del module
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+      if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    return model
+  return model
 
 
 def scale_lora_layers(model, weight):
-    """
-    Adjust the weightage given to the LoRA layers of the model.
+  """
+  Adjust the weightage given to the LoRA layers of the model.
 
-    Args:
-        model (`torch.nn.Module`):
-            The model to scale.
-        weight (`float`):
-            The weight to be given to the LoRA layers.
-    """
-    from peft.tuners.tuners_utils import BaseTunerLayer
+  Args:
+      model (`torch.nn.Module`):
+          The model to scale.
+      weight (`float`):
+          The weight to be given to the LoRA layers.
+  """
+  from peft.tuners.tuners_utils import BaseTunerLayer
 
-    for module in model.modules():
-        if isinstance(module, BaseTunerLayer):
-            module.scale_layer(weight)
+  for module in model.modules():
+    if isinstance(module, BaseTunerLayer):
+      module.scale_layer(weight)
 
 
 def unscale_lora_layers(model):
-    """
-    Removes the previously passed weight given to the LoRA layers of the model.
+  """
+  Removes the previously passed weight given to the LoRA layers of the model.
 
-    Args:
-        model (`torch.nn.Module`):
-            The model to scale.
-        weight (`float`):
-            The weight to be given to the LoRA layers.
-    """
-    from peft.tuners.tuners_utils import BaseTunerLayer
+  Args:
+      model (`torch.nn.Module`):
+          The model to scale.
+      weight (`float`):
+          The weight to be given to the LoRA layers.
+  """
+  from peft.tuners.tuners_utils import BaseTunerLayer
 
-    for module in model.modules():
-        if isinstance(module, BaseTunerLayer):
-            module.unscale_layer()
+  for module in model.modules():
+    if isinstance(module, BaseTunerLayer):
+      module.unscale_layer()
 
 
 def get_peft_kwargs(rank_dict, network_alpha_dict, peft_state_dict, is_unet=True):
-    rank_pattern = {}
-    alpha_pattern = {}
-    r = lora_alpha = list(rank_dict.values())[0]
+  rank_pattern = {}
+  alpha_pattern = {}
+  r = lora_alpha = list(rank_dict.values())[0]
 
-    if len(set(rank_dict.values())) > 1:
-        # get the rank occuring the most number of times
-        r = collections.Counter(rank_dict.values()).most_common()[0][0]
+  if len(set(rank_dict.values())) > 1:
+    # get the rank occuring the most number of times
+    r = collections.Counter(rank_dict.values()).most_common()[0][0]
 
-        # for modules with rank different from the most occuring rank, add it to the `rank_pattern`
-        rank_pattern = dict(filter(lambda x: x[1] != r, rank_dict.items()))
-        rank_pattern = {k.split(".lora_B.")[0]: v for k, v in rank_pattern.items()}
+    # for modules with rank different from the most occuring rank, add it to the `rank_pattern`
+    rank_pattern = dict(filter(lambda x: x[1] != r, rank_dict.items()))
+    rank_pattern = {k.split(".lora_B.")[0]: v for k, v in rank_pattern.items()}
 
-    if network_alpha_dict is not None:
-        if len(set(network_alpha_dict.values())) > 1:
-            # get the alpha occuring the most number of times
-            lora_alpha = collections.Counter(network_alpha_dict.values()).most_common()[0][0]
+  if network_alpha_dict is not None:
+    if len(set(network_alpha_dict.values())) > 1:
+      # get the alpha occuring the most number of times
+      lora_alpha = collections.Counter(network_alpha_dict.values()).most_common()[0][0]
 
-            # for modules with alpha different from the most occuring alpha, add it to the `alpha_pattern`
-            alpha_pattern = dict(filter(lambda x: x[1] != lora_alpha, network_alpha_dict.items()))
-            if is_unet:
-                alpha_pattern = {
-                    ".".join(k.split(".lora_A.")[0].split(".")).replace(".alpha", ""): v
-                    for k, v in alpha_pattern.items()
-                }
-            else:
-                alpha_pattern = {".".join(k.split(".down.")[0].split(".")[:-1]): v for k, v in alpha_pattern.items()}
-        else:
-            lora_alpha = set(network_alpha_dict.values()).pop()
+      # for modules with alpha different from the most occuring alpha, add it to the `alpha_pattern`
+      alpha_pattern = dict(filter(lambda x: x[1] != lora_alpha, network_alpha_dict.items()))
+      if is_unet:
+        alpha_pattern = {
+            ".".join(k.split(".lora_A.")[0].split(".")).replace(".alpha", ""): v for k, v in alpha_pattern.items()
+        }
+      else:
+        alpha_pattern = {".".join(k.split(".down.")[0].split(".")[:-1]): v for k, v in alpha_pattern.items()}
+    else:
+      lora_alpha = set(network_alpha_dict.values()).pop()
 
-    # layer names without the Diffusers specific
-    target_modules = list({name.split(".lora")[0] for name in peft_state_dict.keys()})
+  # layer names without the Diffusers specific
+  target_modules = list({name.split(".lora")[0] for name in peft_state_dict.keys()})
 
-    lora_config_kwargs = {
-        "r": r,
-        "lora_alpha": lora_alpha,
-        "rank_pattern": rank_pattern,
-        "alpha_pattern": alpha_pattern,
-        "target_modules": target_modules,
-    }
-    return lora_config_kwargs
+  lora_config_kwargs = {
+      "r": r,
+      "lora_alpha": lora_alpha,
+      "rank_pattern": rank_pattern,
+      "alpha_pattern": alpha_pattern,
+      "target_modules": target_modules,
+  }
+  return lora_config_kwargs
 
 
 def get_adapter_name(model):
-    from peft.tuners.tuners_utils import BaseTunerLayer
+  from peft.tuners.tuners_utils import BaseTunerLayer
 
-    for module in model.modules():
-        if isinstance(module, BaseTunerLayer):
-            return f"default_{len(module.r)}"
-    return "default_0"
+  for module in model.modules():
+    if isinstance(module, BaseTunerLayer):
+      return f"default_{len(module.r)}"
+  return "default_0"
 
 
 def set_adapter_layers(model, enabled=True):
-    from peft.tuners.tuners_utils import BaseTunerLayer
+  from peft.tuners.tuners_utils import BaseTunerLayer
 
-    for module in model.modules():
-        if isinstance(module, BaseTunerLayer):
-            # The recent version of PEFT needs to call `enable_adapters` instead
-            if hasattr(module, "enable_adapters"):
-                module.enable_adapters(enabled=enabled)
-            else:
-                module.disable_adapters = not enabled
+  for module in model.modules():
+    if isinstance(module, BaseTunerLayer):
+      # The recent version of PEFT needs to call `enable_adapters` instead
+      if hasattr(module, "enable_adapters"):
+        module.enable_adapters(enabled=enabled)
+      else:
+        module.disable_adapters = not enabled
 
 
 def set_weights_and_activate_adapters(model, adapter_names, weights):
-    from peft.tuners.tuners_utils import BaseTunerLayer
+  from peft.tuners.tuners_utils import BaseTunerLayer
 
-    # iterate over each adapter, make it active and set the corresponding scaling weight
-    for adapter_name, weight in zip(adapter_names, weights):
-        for module in model.modules():
-            if isinstance(module, BaseTunerLayer):
-                # For backward compatbility with previous PEFT versions
-                if hasattr(module, "set_adapter"):
-                    module.set_adapter(adapter_name)
-                else:
-                    module.active_adapter = adapter_name
-                module.scale_layer(weight)
-
-    # set multiple active adapters
+  # iterate over each adapter, make it active and set the corresponding scaling weight
+  for adapter_name, weight in zip(adapter_names, weights):
     for module in model.modules():
-        if isinstance(module, BaseTunerLayer):
-            # For backward compatbility with previous PEFT versions
-            if hasattr(module, "set_adapter"):
-                module.set_adapter(adapter_names)
-            else:
-                module.active_adapter = adapter_names
+      if isinstance(module, BaseTunerLayer):
+        # For backward compatbility with previous PEFT versions
+        if hasattr(module, "set_adapter"):
+          module.set_adapter(adapter_name)
+        else:
+          module.active_adapter = adapter_name
+        module.scale_layer(weight)
+
+  # set multiple active adapters
+  for module in model.modules():
+    if isinstance(module, BaseTunerLayer):
+      # For backward compatbility with previous PEFT versions
+      if hasattr(module, "set_adapter"):
+        module.set_adapter(adapter_names)
+      else:
+        module.active_adapter = adapter_names
 
 
 def check_peft_version(min_version: str) -> None:
-    r"""
-    Checks if the version of PEFT is compatible.
+  r"""
+  Checks if the version of PEFT is compatible.
 
-    Args:
-        version (`str`):
-            The version of PEFT to check against.
-    """
-    if not is_peft_available():
-        raise ValueError("PEFT is not installed. Please install it with `pip install peft`")
+  Args:
+      version (`str`):
+          The version of PEFT to check against.
+  """
+  if not is_peft_available():
+    raise ValueError("PEFT is not installed. Please install it with `pip install peft`")
 
-    is_peft_version_compatible = version.parse(importlib.metadata.version("peft")) > version.parse(min_version)
+  is_peft_version_compatible = version.parse(importlib.metadata.version("peft")) > version.parse(min_version)
 
-    if not is_peft_version_compatible:
-        raise ValueError(
-            f"The version of PEFT you are using is not compatible, please use a version that is greater"
-            f" than {min_version}"
-        )
+  if not is_peft_version_compatible:
+    raise ValueError(
+        f"The version of PEFT you are using is not compatible, please use a version that is greater" f" than {min_version}"
+    )

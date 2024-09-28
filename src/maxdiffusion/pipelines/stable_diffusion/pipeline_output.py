@@ -23,16 +23,16 @@ from ...utils import BaseOutput
 
 @flax.struct.dataclass
 class FlaxStableDiffusionPipelineOutput(BaseOutput):
-    """
-    Output class for Flax-based Stable Diffusion pipelines.
+  """
+  Output class for Flax-based Stable Diffusion pipelines.
 
-    Args:
-        images (`np.ndarray`):
-            Denoised images of array shape of `(batch_size, height, width, num_channels)`.
-        nsfw_content_detected (`List[bool]`):
-            List indicating whether the corresponding generated image contains "not-safe-for-work" (nsfw) content
-            or `None` if safety checking could not be performed.
-    """
+  Args:
+      images (`np.ndarray`):
+          Denoised images of array shape of `(batch_size, height, width, num_channels)`.
+      nsfw_content_detected (`List[bool]`):
+          List indicating whether the corresponding generated image contains "not-safe-for-work" (nsfw) content
+          or `None` if safety checking could not be performed.
+  """
 
-    images: np.ndarray
-    nsfw_content_detected: List[bool]
+  images: np.ndarray
+  nsfw_content_detected: List[bool]
