@@ -178,10 +178,18 @@ MaxDiffusion started as a fork of [Diffusers](https://github.com/huggingface/dif
 
 Whether you are forking MaxDiffusion for your own needs or intending to contribute back to the community, a full suite of tests can be found in `tests` and `src/maxdiffusion/tests`.
 
-To run unit tests and lint, simply run:
+To run unit tests, simply run:
 ```
 python -m pytest
-ruff check --fix .
 ```
+
+This project uses `pylint` and `pyink` to enforce code style. Before submitting a pull request, please ensure your code passes these checks by running:
+
+```
+bash code_style.sh
+```
+
+This script will automatically format your code with `pyink` and help you identify any remaining style issues.
+
 
 The full suite of -end-to end tests is in `tests` and `src/maxdiffusion/tests`. We run them with a nightly cadance.
