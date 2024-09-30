@@ -21,15 +21,15 @@
 - **`2024/8/1`**: Orbax is the new default checkpointer for Stable Diffusion 1.X, 2.x. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
 - **`2024/7/20`**: Dreambooth training for Stable Diffusion 1.x,2.x is now supported.
 
-# Overview 
+# Overview
 
 MaxDiffusion is a collection of reference implementations of various latent diffusion models written in pure Python/Jax that run on XLA devices including Cloud TPUs and GPUs. MaxDiffusion aims to be a launching off point for ambitious Diffusion projects both in research and production. We encourage you to start by experimenting with MaxDiffusion out of the box and then fork and modify MaxDiffusion to meet your needs.
 
 The goal of this project is to provide reference implementations for latent diffusion models that help developers get started with training, tuning, and serving solutions on XLA devices including Cloud TPUs and GPUs. We started with Stable Diffusion inference on TPUs, but welcome code contributions to grow.
 
-MaxDiffusion supports 
+MaxDiffusion supports
 * Stable Diffusion 2 base (training and inference)
-* Stable Diffusion 2.1 (training and inference) 
+* Stable Diffusion 2.1 (training and inference)
 * Stable Diffusion XL (training and inference).
 * Stable Diffusion Lightning (inference).
 * ControlNet inference (Stable Diffusion 1.4 & SDXL).
@@ -40,7 +40,6 @@ MaxDiffusion supports
 # Table of Contents
 
 * [Getting Started](#getting-started)
-  * [Local Development for single host](#getting-started-local-development-for-single-host)
     * [Training](#training)
       * [Dreambooth](#dreambooth)
     * [Inference](#inference)
@@ -55,17 +54,9 @@ We recommend starting with a single TPU host and then moving to multihost.
 
 Minimum requirements: Ubuntu Version 22.04, Python 3.10 and Tensorflow >= 2.12.0.
 
-## Getting Started: Local Development for single host
-Local development is a convenient way to run MaxDiffusion on a single host. 
+## Getting Started:
 
-1. [Create and SSH to a single-host TPU (v4-8). ](https://cloud.google.com/tpu/docs/users-guide-tpu-vm#creating_a_cloud_tpu_vm_with_gcloud)
-1. Clone MaxDiffusion in your TPU VM.
-1. Within the root directory of the MaxDiffusion `git` repo, install dependencies by running:
-```bash
-pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-pip3 install -r requirements.txt
-pip3 install .
-```
+For your first time running Maxdiffusion, we provide specific [instructions](docs/getting_started/first_run.md).
 
 ## Training
 
@@ -124,7 +115,7 @@ To generate images, run the following command:
   ```
 
   Single host pmap version:
-  
+
   ```bash
   python -m src.maxdiffusion.generate_sdxl_replicated
   ```
@@ -161,7 +152,7 @@ To generate images, run the following command:
     ```bash
     python src/maxdiffusion/controlnet/generate_controlnet_sdxl_replicated.py
     ```
-  
+
 
 ## Getting Started: Multihost development
 Multihost training for Stable Diffusion 2 base can be run using the following command:
@@ -181,7 +172,7 @@ python -m src.maxdiffusion.train src/maxdiffusion/configs/base_2_base.yml run_na
 
 # Comparison to Alternatives
 
-MaxDiffusion started as a fork of [Diffusers](https://github.com/huggingface/diffusers), a Hugging Face diffusion library written in Python, Pytorch and Jax. MaxDiffusion is compatible with Hugging Face Jax models. MaxDiffusion is more complex and was designed to run distributed across TPU Pods. 
+MaxDiffusion started as a fork of [Diffusers](https://github.com/huggingface/diffusers), a Hugging Face diffusion library written in Python, Pytorch and Jax. MaxDiffusion is compatible with Hugging Face Jax models. MaxDiffusion is more complex and was designed to run distributed across TPU Pods.
 
 # Development
 

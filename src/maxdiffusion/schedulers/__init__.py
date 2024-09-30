@@ -31,58 +31,59 @@ _import_structure = {}
 
 
 try:
-    if not is_flax_available():
-        raise OptionalDependencyNotAvailable()
+  if not is_flax_available():
+    raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
-    from ..utils import dummy_flax_objects  # noqa F403
+  from ..utils import dummy_flax_objects  # noqa F403
 
-    _dummy_modules.update(get_objects_from_module(dummy_flax_objects))
+  _dummy_modules.update(get_objects_from_module(dummy_flax_objects))
 
 else:
-    _import_structure["scheduling_ddim_flax"] = ["FlaxDDIMScheduler"]
-    _import_structure["scheduling_euler_discrete_flax"] = ["FlaxEulerDiscreteScheduler"]
-    _import_structure["scheduling_ddpm_flax"] = ["FlaxDDPMScheduler"]
-    _import_structure["scheduling_dpmsolver_multistep_flax"] = ["FlaxDPMSolverMultistepScheduler"]
-    _import_structure["scheduling_euler_discrete_flax"] = ["FlaxEulerDiscreteScheduler"]
-    _import_structure["scheduling_karras_ve_flax"] = ["FlaxKarrasVeScheduler"]
-    _import_structure["scheduling_lms_discrete_flax"] = ["FlaxLMSDiscreteScheduler"]
-    _import_structure["scheduling_pndm_flax"] = ["FlaxPNDMScheduler"]
-    _import_structure["scheduling_sde_ve_flax"] = ["FlaxScoreSdeVeScheduler"]
-    _import_structure["scheduling_utils_flax"] = [
-        "FlaxKarrasDiffusionSchedulers",
-        "FlaxSchedulerMixin",
-        "FlaxSchedulerOutput",
-        "broadcast_to_shape_from_left",
-    ]
+  _import_structure["scheduling_ddim_flax"] = ["FlaxDDIMScheduler"]
+  _import_structure["scheduling_euler_discrete_flax"] = ["FlaxEulerDiscreteScheduler"]
+  _import_structure["scheduling_ddpm_flax"] = ["FlaxDDPMScheduler"]
+  _import_structure["scheduling_dpmsolver_multistep_flax"] = ["FlaxDPMSolverMultistepScheduler"]
+  _import_structure["scheduling_euler_discrete_flax"] = ["FlaxEulerDiscreteScheduler"]
+  _import_structure["scheduling_karras_ve_flax"] = ["FlaxKarrasVeScheduler"]
+  _import_structure["scheduling_lms_discrete_flax"] = ["FlaxLMSDiscreteScheduler"]
+  _import_structure["scheduling_pndm_flax"] = ["FlaxPNDMScheduler"]
+  _import_structure["scheduling_sde_ve_flax"] = ["FlaxScoreSdeVeScheduler"]
+  _import_structure["scheduling_utils_flax"] = [
+      "FlaxKarrasDiffusionSchedulers",
+      "FlaxSchedulerMixin",
+      "FlaxSchedulerOutput",
+      "broadcast_to_shape_from_left",
+  ]
 
 
 if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
-    from ..utils import OptionalDependencyNotAvailable, is_flax_available
-    try:
-        if not is_flax_available():
-            raise OptionalDependencyNotAvailable()
-    except OptionalDependencyNotAvailable:
-        from ..utils.dummy_flax_objects import *  # noqa F403
-    else:
-        from .scheduling_ddim_flax import FlaxDDIMScheduler
-        from .scheduling_ddpm_flax import FlaxDDPMScheduler
-        from .scheduling_dpmsolver_multistep_flax import FlaxDPMSolverMultistepScheduler
-        from .scheduling_euler_discrete_flax import FlaxEulerDiscreteScheduler
-        from .scheduling_karras_ve_flax import FlaxKarrasVeScheduler
-        from .scheduling_lms_discrete_flax import FlaxLMSDiscreteScheduler
-        from .scheduling_pndm_flax import FlaxPNDMScheduler
-        from .scheduling_sde_ve_flax import FlaxScoreSdeVeScheduler
-        from .scheduling_utils_flax import (
-            FlaxKarrasDiffusionSchedulers,
-            FlaxSchedulerMixin,
-            FlaxSchedulerOutput,
-            broadcast_to_shape_from_left,
-        )
+  from ..utils import OptionalDependencyNotAvailable, is_flax_available
+
+  try:
+    if not is_flax_available():
+      raise OptionalDependencyNotAvailable()
+  except OptionalDependencyNotAvailable:
+    from ..utils.dummy_flax_objects import *  # noqa F403
+  else:
+    from .scheduling_ddim_flax import FlaxDDIMScheduler
+    from .scheduling_ddpm_flax import FlaxDDPMScheduler
+    from .scheduling_dpmsolver_multistep_flax import FlaxDPMSolverMultistepScheduler
+    from .scheduling_euler_discrete_flax import FlaxEulerDiscreteScheduler
+    from .scheduling_karras_ve_flax import FlaxKarrasVeScheduler
+    from .scheduling_lms_discrete_flax import FlaxLMSDiscreteScheduler
+    from .scheduling_pndm_flax import FlaxPNDMScheduler
+    from .scheduling_sde_ve_flax import FlaxScoreSdeVeScheduler
+    from .scheduling_utils_flax import (
+        FlaxKarrasDiffusionSchedulers,
+        FlaxSchedulerMixin,
+        FlaxSchedulerOutput,
+        broadcast_to_shape_from_left,
+    )
 
 
 else:
-    import sys
+  import sys
 
-    sys.modules[__name__] = _LazyModule(__name__, globals()["__file__"], _import_structure, module_spec=__spec__)
-    for name, value in _dummy_modules.items():
-        setattr(sys.modules[__name__], name, value)
+  sys.modules[__name__] = _LazyModule(__name__, globals()["__file__"], _import_structure, module_spec=__spec__)
+  for name, value in _dummy_modules.items():
+    setattr(sys.modules[__name__], name, value)

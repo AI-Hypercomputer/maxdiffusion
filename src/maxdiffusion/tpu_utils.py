@@ -16,6 +16,7 @@
 
 import jax
 
+
 def print_device_memory_info(devices):
   if not isinstance(devices, list):
     devices = [devices]
@@ -29,18 +30,15 @@ def print_device_memory_info(devices):
     jax.debug.print("\tdevice_kind: {x}", x=device_kind)
     jax.debug.print("\tplatform: {x}", x=platform)
     for key in memory_stats.keys():
-      jax.debug.print("\t{x} : {y}",x=key, y=memory_stats[key])
+      jax.debug.print("\t{x} : {y}", x=key, y=memory_stats[key])
+
 
 def print_array_info(array, name):
-  print("**** name: ",name)
+  print("**** name: ", name)
   jax.debug.print("dtype: {x}", x=array.dtype)
   jax.debug.print("shape: {x}", x=array.shape)
   jax.debug.print("is fully replicated: {x}", x=array.is_fully_replicated)
   num_devices = jax.device_count()
   for device_idx in num_devices:
-    jax.debug.print("shape on device {x} : {y}",
-                    x=device_idx,
-                    y=array.device_buffers[0].shape)
-    jax.debug.print("size on device {x} : {y}",
-                    x=device_idx,
-                    y=array.device_buffers[device_idx].size / array.size)
+    jax.debug.print("shape on device {x} : {y}", x=device_idx, y=array.device_buffers[0].shape)
+    jax.debug.print("size on device {x} : {y}", x=device_idx, y=array.device_buffers[device_idx].size / array.size)

@@ -22,8 +22,8 @@ from absl.testing import absltest
 
 import jax
 import jax.numpy as jnp
-from ..import max_utils
-from ..import pyconfig
+from .. import max_utils
+from .. import pyconfig
 from maxdiffusion import FlaxUNet2DConditionModel
 from flax.training import train_state
 import optax
@@ -33,24 +33,30 @@ from flax import traverse_util
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
 def init_fn(params, model, optimizer):
-  state = train_state.TrainState.create(
-    apply_fn=model.apply,
-    params=params,
-    tx=optimizer)
+  state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
   return state
+
 
 class UnetTest(unittest.TestCase):
   """Test Unet sharding"""
+
   def setUp(self):
     UnetTest.dummy_data = {}
 
   def test_unet15_sharding_test(self):
-    pyconfig.initialize([None,os.path.join(THIS_DIR,'..','configs','base14.yml'),
-      "activations_dtype=bfloat16","resolution=512"], unittest=True)
+    pyconfig.initialize(
+        [None, os.path.join(THIS_DIR, "..", "configs", "base14.yml"), "activations_dtype=bfloat16", "resolution=512"],
+        unittest=True,
+    )
     config = pyconfig.config
     unet, params = FlaxUNet2DConditionModel.from_pretrained(
-      config.pretrained_model_name_or_path, revision=config.revision, subfolder="unet", dtype=jnp.bfloat16, from_pt=config.from_pt
+        config.pretrained_model_name_or_path,
+        revision=config.revision,
+        subfolder="unet",
+        dtype=jnp.bfloat16,
+        from_pt=config.from_pt,
     )
     devices_array = max_utils.create_device_mesh(config)
 
@@ -58,38 +64,42 @@ class UnetTest(unittest.TestCase):
     mesh = Mesh(devices_array, config.mesh_axes)
     k = jax.random.key(0)
     tx = optax.adam(learning_rate=0.001)
-    latents = jnp.ones((4, 4,64,64), dtype=jnp.float32)
+    latents = jnp.ones((4, 4, 64, 64), dtype=jnp.float32)
     timesteps = jnp.ones((4,))
     encoder_hidden_states = jnp.ones((4, 77, 1024))
 
     variables = jax.jit(unet.init)(k, latents, timesteps, encoder_hidden_states)
     weights_init_fn = functools.partial(unet.init_weights, rng=rng)
-    _, state_mesh_annotations, _ = max_utils.get_abstract_state(unet, tx, config, mesh, weights_init_fn,False)
+    _, state_mesh_annotations, _ = max_utils.get_abstract_state(unet, tx, config, mesh, weights_init_fn, False)
     del variables
-    conv_sharding = PartitionSpec(None, None, None, 'fsdp')
-    qkv_sharding = PartitionSpec('fsdp', 'tensor')
-    to_out_sharding = PartitionSpec('tensor', 'fsdp')
+    conv_sharding = PartitionSpec(None, None, None, "fsdp")
+    qkv_sharding = PartitionSpec("fsdp", "tensor")
+    to_out_sharding = PartitionSpec("tensor", "fsdp")
     time_emb_proj_sharding = PartitionSpec()
 
-    assert state_mesh_annotations.params['down_blocks_0']['resnets_0']['time_emb_proj']['kernel'] == time_emb_proj_sharding
-    assert state_mesh_annotations.params['down_blocks_0']['downsamplers_0']['conv']['kernel'] == conv_sharding
-    assert state_mesh_annotations.params['down_blocks_0']['resnets_0']['conv1']['kernel'] == conv_sharding
-    assert state_mesh_annotations.params['down_blocks_0']['resnets_0']['conv2']['kernel'] == conv_sharding
-    assert state_mesh_annotations.params['down_blocks_1']['attentions_1']['transformer_blocks_0']['attn1']['to_q']['kernel'] == qkv_sharding
-    assert state_mesh_annotations.params['down_blocks_1']['attentions_1']['transformer_blocks_0']['attn1']['to_k']['kernel'] == qkv_sharding
-    assert state_mesh_annotations.params['down_blocks_1']['attentions_1']['transformer_blocks_0']['attn1']['to_v']['kernel'] == qkv_sharding
-    assert state_mesh_annotations.params['down_blocks_1']['attentions_1']['transformer_blocks_0']['attn1']['to_out_0']['kernel'] == to_out_sharding
+    assert state_mesh_annotations.params["down_blocks_0"]["resnets_0"]["time_emb_proj"]["kernel"] == time_emb_proj_sharding
+    assert state_mesh_annotations.params["down_blocks_0"]["downsamplers_0"]["conv"]["kernel"] == conv_sharding
+    assert state_mesh_annotations.params["down_blocks_0"]["resnets_0"]["conv1"]["kernel"] == conv_sharding
+    assert state_mesh_annotations.params["down_blocks_0"]["resnets_0"]["conv2"]["kernel"] == conv_sharding
+    assert (
+        state_mesh_annotations.params["down_blocks_1"]["attentions_1"]["transformer_blocks_0"]["attn1"]["to_q"]["kernel"]
+        == qkv_sharding
+    )
+    assert (
+        state_mesh_annotations.params["down_blocks_1"]["attentions_1"]["transformer_blocks_0"]["attn1"]["to_k"]["kernel"]
+        == qkv_sharding
+    )
+    assert (
+        state_mesh_annotations.params["down_blocks_1"]["attentions_1"]["transformer_blocks_0"]["attn1"]["to_v"]["kernel"]
+        == qkv_sharding
+    )
+    assert (
+        state_mesh_annotations.params["down_blocks_1"]["attentions_1"]["transformer_blocks_0"]["attn1"]["to_out_0"]["kernel"]
+        == to_out_sharding
+    )
 
     state, state_mesh_shardings = max_utils.setup_initial_state(
-      unet,
-      tx,
-      config,
-      mesh,
-      weights_init_fn,
-      None,
-      None,
-      None,
-      False
+        unet, tx, config, mesh, weights_init_fn, None, None, None, False
     )
 
     # Validate named shardings.
@@ -98,25 +108,41 @@ class UnetTest(unittest.TestCase):
     to_out_named_sharding = NamedSharding(mesh, to_out_sharding)
     time_emb_proj_named_sharding = NamedSharding(mesh, time_emb_proj_sharding)
 
-    assert state_mesh_shardings.params['down_blocks_0']['resnets_0']['time_emb_proj']['kernel'] == time_emb_proj_named_sharding
-    assert state_mesh_shardings.params['down_blocks_0']['downsamplers_0']['conv']['kernel'] == conv_named_sharding
-    assert state_mesh_shardings.params['down_blocks_0']['resnets_0']['conv1']['kernel'] == conv_named_sharding
-    assert state_mesh_shardings.params['down_blocks_0']['resnets_0']['conv2']['kernel'] == conv_named_sharding
-    assert state_mesh_shardings.params['down_blocks_1']['attentions_1']['transformer_blocks_0']['attn1']['to_q']['kernel'] == qkv_named_sharding
-    assert state_mesh_shardings.params['down_blocks_1']['attentions_1']['transformer_blocks_0']['attn1']['to_k']['kernel'] == qkv_named_sharding
-    assert state_mesh_shardings.params['down_blocks_1']['attentions_1']['transformer_blocks_0']['attn1']['to_v']['kernel'] == qkv_named_sharding
-    assert state_mesh_shardings.params['down_blocks_1']['attentions_1']['transformer_blocks_0']['attn1']['to_out_0']['kernel'] == to_out_named_sharding
+    assert (
+        state_mesh_shardings.params["down_blocks_0"]["resnets_0"]["time_emb_proj"]["kernel"] == time_emb_proj_named_sharding
+    )
+    assert state_mesh_shardings.params["down_blocks_0"]["downsamplers_0"]["conv"]["kernel"] == conv_named_sharding
+    assert state_mesh_shardings.params["down_blocks_0"]["resnets_0"]["conv1"]["kernel"] == conv_named_sharding
+    assert state_mesh_shardings.params["down_blocks_0"]["resnets_0"]["conv2"]["kernel"] == conv_named_sharding
+    assert (
+        state_mesh_shardings.params["down_blocks_1"]["attentions_1"]["transformer_blocks_0"]["attn1"]["to_q"]["kernel"]
+        == qkv_named_sharding
+    )
+    assert (
+        state_mesh_shardings.params["down_blocks_1"]["attentions_1"]["transformer_blocks_0"]["attn1"]["to_k"]["kernel"]
+        == qkv_named_sharding
+    )
+    assert (
+        state_mesh_shardings.params["down_blocks_1"]["attentions_1"]["transformer_blocks_0"]["attn1"]["to_v"]["kernel"]
+        == qkv_named_sharding
+    )
+    assert (
+        state_mesh_shardings.params["down_blocks_1"]["attentions_1"]["transformer_blocks_0"]["attn1"]["to_out_0"]["kernel"]
+        == to_out_named_sharding
+    )
 
     # Validate weights are sharded and distributed across devices.
-    flat_params = traverse_util.flatten_dict(state.params, sep='/')
-    sized_params = jax.tree_util.tree_map(lambda x: x.addressable_shards[0].data.size/x.size, flat_params)
-    assert sized_params['down_blocks_0/resnets_0/time_emb_proj/kernel'] == 1.
-    assert sized_params['down_blocks_0/downsamplers_0/conv/kernel'] == 1.
-    assert sized_params['down_blocks_0/resnets_0/conv1/kernel'] == 1.
-    assert sized_params['down_blocks_0/resnets_0/conv2/kernel'] == 1.
-    assert sized_params['down_blocks_1/attentions_1/transformer_blocks_0/attn1/to_k/kernel'] == 1.
-    assert sized_params['down_blocks_1/attentions_1/transformer_blocks_0/attn1/to_q/kernel'] == 1.
-    assert sized_params['down_blocks_1/attentions_1/transformer_blocks_0/attn1/to_v/kernel'] == 1.
-    assert sized_params['down_blocks_1/attentions_1/transformer_blocks_0/attn1/to_out_0/kernel'] == 1.
-if __name__ == '__main__':
+    flat_params = traverse_util.flatten_dict(state.params, sep="/")
+    sized_params = jax.tree_util.tree_map(lambda x: x.addressable_shards[0].data.size / x.size, flat_params)
+    assert sized_params["down_blocks_0/resnets_0/time_emb_proj/kernel"] == 1.0
+    assert sized_params["down_blocks_0/downsamplers_0/conv/kernel"] == 1.0
+    assert sized_params["down_blocks_0/resnets_0/conv1/kernel"] == 1.0
+    assert sized_params["down_blocks_0/resnets_0/conv2/kernel"] == 1.0
+    assert sized_params["down_blocks_1/attentions_1/transformer_blocks_0/attn1/to_k/kernel"] == 1.0
+    assert sized_params["down_blocks_1/attentions_1/transformer_blocks_0/attn1/to_q/kernel"] == 1.0
+    assert sized_params["down_blocks_1/attentions_1/transformer_blocks_0/attn1/to_v/kernel"] == 1.0
+    assert sized_params["down_blocks_1/attentions_1/transformer_blocks_0/attn1/to_out_0/kernel"] == 1.0
+
+
+if __name__ == "__main__":
   absltest.main()

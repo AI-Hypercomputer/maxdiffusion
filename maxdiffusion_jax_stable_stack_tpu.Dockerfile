@@ -7,25 +7,16 @@ ARG COMMIT_HASH
 
 ENV COMMIT_HASH=$COMMIT_HASH
 
-RUN mkdir -p /deps
+RUN mkdir -p /app
 
 # Set the working directory in the container
-WORKDIR /deps
+WORKDIR /app
 
 # Copy all files from local workspace into docker container
 COPY . .
-RUN ls .
 
-ARG MAXDIFFUSION_REQUIREMENTS_FILE
-
-# Install Maxdiffusion requirements
-RUN if [ ! -z "${MAXDIFFUSION_REQUIREMENTS_FILE}" ]; then \
-        echo "Using MaxDiffusion requirements: ${MAXDIFFUSION_REQUIREMENTS_FILE}" && \
-        pip install -r /deps/${MAXDIFFUSION_REQUIREMENTS_FILE}; \
-    fi
-
-# Install MaxDiffusion
-RUN pip install .
+# Install Maxdiffusion jax stable stack requirements
+RUN pip install -r /app/requirements_with_jax_stable_stack.txt
 
 # Run the script available in JAX-Stable-Stack base image to generate the manifest file
-RUN bash /generate_manifest.sh PREFIX=maxdiffusion COMMIT_HASH=$COMMIT_HASH
+RUN bash /jax-stable-stack/generate_manifest.sh PREFIX=maxdiffusion COMMIT_HASH=$COMMIT_HASH

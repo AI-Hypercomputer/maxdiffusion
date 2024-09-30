@@ -25,16 +25,10 @@ from absl import app
 import jax
 from jax.sharding import Mesh
 
-from maxdiffusion import (
-    FlaxStableDiffusionXLPipeline,
-    max_logging,
-    pyconfig
-)
+from maxdiffusion import (FlaxStableDiffusionXLPipeline, max_logging, pyconfig)
 
-from maxdiffusion.max_utils import (
-  create_device_mesh,
-  get_flash_block_sizes
-)
+from maxdiffusion.max_utils import (create_device_mesh, get_flash_block_sizes)
+
 
 def run(config):
   # Setup Mesh
@@ -44,25 +38,25 @@ def run(config):
   flash_block_sizes = get_flash_block_sizes(config)
 
   pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-    config.pretrained_model_name_or_path,
-    revision=config.revision,
-    dtype=config.activations_dtype,
-    split_head_dim=config.split_head_dim,
-    norm_num_groups=config.norm_num_groups,
-    attention_kernel=config.attention,
-    flash_block_sizes=flash_block_sizes,
-    mesh=mesh
+      config.pretrained_model_name_or_path,
+      revision=config.revision,
+      dtype=config.activations_dtype,
+      split_head_dim=config.split_head_dim,
+      norm_num_groups=config.norm_num_groups,
+      attention_kernel=config.attention,
+      flash_block_sizes=flash_block_sizes,
+      mesh=mesh,
   )
 
-  pipeline.save_pretrained(
-    config.output_dir,
-    params
-  )
+  pipeline.save_pretrained(config.output_dir, params)
+
 
 def main(argv: Sequence[str]) -> None:
   max_logging.log(f"Found {jax.device_count()} devices.")
   pyconfig.initialize(argv)
   config = pyconfig.config
   run(config)
+
+
 if __name__ == "__main__":
   app.run(main)

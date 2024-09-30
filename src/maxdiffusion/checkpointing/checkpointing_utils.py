@@ -30,13 +30,14 @@ from orbax.checkpoint.checkpoint_manager import CheckpointManager, CheckpointMan
 STABLE_DIFFUSION_CHECKPOINT = "STABLE_DIFFUSION_CHECKPOINT"
 STABLE_DIFFUSION_XL_CHECKPOINT = "STABLE_DIFUSSION_XL_CHECKPOINT"
 
+
 def create_orbax_checkpoint_manager(
-  checkpoint_dir: str,
-  enable_checkpointing: bool,
-  save_interval_steps,
-  checkpoint_type: str,
-  use_async: bool = True,
-  orbax_logger: Optional[abstract_logger.AbstractLogger] = None
+    checkpoint_dir: str,
+    enable_checkpointing: bool,
+    save_interval_steps,
+    checkpoint_type: str,
+    use_async: bool = True,
+    orbax_logger: Optional[abstract_logger.AbstractLogger] = None,
 ):
   """
   Returns specified Orbax (async or not) CheckpointManager or None if checkpointing is disabled.
@@ -45,48 +46,47 @@ def create_orbax_checkpoint_manager(
   if not enable_checkpointing:
     max_logging.log("Checkpointing disabled, not creating checkpoint manager.")
     return None
-  
+
   max_logging.log("Creating checkpoing manager...")
   max_logging.log(f"checkpoint dir: {checkpoint_dir}")
   p = epath.Path(checkpoint_dir)
 
   item_names = (
-    "unet_config",
-    "vae_config",
-    "text_encoder_config",
-    "scheduler_config",
-    "unet_state",
-    "vae_state",
-    "text_encoder_state",
-    "tokenizer_config"
+      "unet_config",
+      "vae_config",
+      "text_encoder_config",
+      "scheduler_config",
+      "unet_state",
+      "vae_state",
+      "text_encoder_state",
+      "tokenizer_config",
   )
   if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
-    item_names+= (
-      "text_encoder_2_state",
-      "text_encoder_2_config",
+    item_names += (
+        "text_encoder_2_state",
+        "text_encoder_2_config",
     )
-  
+
   print("item_names: ", item_names)
-  
+
   mngr = CheckpointManager(
-    p,
-    item_names=item_names,
-    options=CheckpointManagerOptions(
-      create=True,
-      save_interval_steps=save_interval_steps,
-      enable_async_checkpointing=use_async
-    ),
-    logger=orbax_logger
+      p,
+      item_names=item_names,
+      options=CheckpointManagerOptions(
+          create=True, save_interval_steps=save_interval_steps, enable_async_checkpointing=use_async
+      ),
+      logger=orbax_logger,
   )
 
   max_logging.log("Checkpoint manager created!")
   return mngr
 
+
 def load_stable_diffusion_configs(
-  config: dict,
-  checkpoint_manager: CheckpointManager,
-  checkpoint_type: str,
-  step: Optional[int] = None,
+    config: dict,
+    checkpoint_manager: CheckpointManager,
+    checkpoint_type: str,
+    step: Optional[int] = None,
 ):
   f"""
   Loads Orbax configurations for different stable diffusion models
@@ -103,27 +103,25 @@ def load_stable_diffusion_configs(
       return None
 
   restore_args = {
-    "unet_config" : orbax.checkpoint.args.JsonRestore(),
-    "vae_config" : orbax.checkpoint.args.JsonRestore(),
-    "text_encoder_config" : orbax.checkpoint.args.JsonRestore(),
-    "scheduler_config" : orbax.checkpoint.args.JsonRestore(),
-    "tokenizer_config" : orbax.checkpoint.args.JsonRestore()
+      "unet_config": orbax.checkpoint.args.JsonRestore(),
+      "vae_config": orbax.checkpoint.args.JsonRestore(),
+      "text_encoder_config": orbax.checkpoint.args.JsonRestore(),
+      "scheduler_config": orbax.checkpoint.args.JsonRestore(),
+      "tokenizer_config": orbax.checkpoint.args.JsonRestore(),
   }
 
   if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
     restore_args["text_encoder_2_config"] = orbax.checkpoint.args.JsonRestore()
-  
-  return (
-      checkpoint_manager.restore(step,
-        args=orbax.checkpoint.args.Composite(**restore_args)
-      ),None)
+
+  return (checkpoint_manager.restore(step, args=orbax.checkpoint.args.Composite(**restore_args)), None)
+
 
 def load_params_from_path(
-  config,
-  checkpoint_manager: CheckpointManager,
-  unboxed_abstract_params,
-  checkpoint_item : str,
-  step: Optional[int] = None,
+    config,
+    checkpoint_manager: CheckpointManager,
+    unboxed_abstract_params,
+    checkpoint_item: str,
+    step: Optional[int] = None,
 ):
   ckptr = ocp.PyTreeCheckpointer()
 
@@ -131,25 +129,19 @@ def load_params_from_path(
     step = checkpoint_manager.latest_step()
     if step is None:
       return None
-  
-  ckpt_path = os.path.join(config.checkpoint_dir, str(step),checkpoint_item)
+
+  ckpt_path = os.path.join(config.checkpoint_dir, str(step), checkpoint_item)
   ckpt_path = epath.Path(ckpt_path)
 
   restore_args = ocp.checkpoint_utils.construct_restore_args(unboxed_abstract_params)
   restored = ckptr.restore(
-    ckpt_path,
-    item={"params": unboxed_abstract_params},
-    transforms={},
-    restore_args={"params" : restore_args}
+      ckpt_path, item={"params": unboxed_abstract_params}, transforms={}, restore_args={"params": restore_args}
   )
   return restored["params"]
 
-  
 
 def load_state_if_possible(
-  checkpoint_manager: CheckpointManager,
-  abstract_unboxed_pre_state: train_state.TrainState,
-  checkpoint_item: str
+    checkpoint_manager: CheckpointManager, abstract_unboxed_pre_state: train_state.TrainState, checkpoint_item: str
 ):
   """Loads TrainState as possible from the inputs.
 
@@ -174,12 +166,10 @@ def load_state_if_possible(
   if latest_step is None:
     return None
   else:
-    max_logging.log(
-      f"restoring from this run's directory latest step {latest_step}"
-    )
+    max_logging.log(f"restoring from this run's directory latest step {latest_step}")
     try:
-      item = { checkpoint_item : orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
-      return checkpoint_manager.restore(latest_step,args=orbax.checkpoint.args.Composite(**item))
+      item = {checkpoint_item: orbax.checkpoint.args.StandardRestore(item=abstract_unboxed_pre_state)}
+      return checkpoint_manager.restore(latest_step, args=orbax.checkpoint.args.Composite(**item))
     except:
       max_logging.log(f"could not load {checkpoint_item} from orbax")
       return None

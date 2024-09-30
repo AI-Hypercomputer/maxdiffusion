@@ -37,36 +37,22 @@ RUN pip install gcsfs
 # Install google-cloud-storage
 RUN pip install google-cloud-storage
 
-# Install jax-nightly
-RUN pip install --pre -U jax -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
+# Args
+ARG MODE
+ENV ENV_MODE=$MODE
 
-# Install jaxlib-nightly
-RUN pip install --pre -U jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
-
-# Install libtpu-nightly
-RUN pip install libtpu-nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html -U --pre
-
-# Installing nightly tensorboard plugin profile
-RUN pip install tbp-nightly --upgrade
-
+ARG JAX_VERSION
+ENV ENV_JAX_VERSION=$JAX_VERSION
 
 # Set the working directory in the container
-WORKDIR /deps
+WORKDIR /app
 
 # Copy all files from local workspace into docker container
 COPY . .
-RUN ls .
 
-ARG MAXDIFFUSION_REQUIREMENTS_FILE
+RUN echo "Running command: bash setup.sh MODE=$ENV_MODE JAX_VERSION=$ENV_JAX_VERSION"
 
-# Install Maxdiffusion requirements
-RUN if [ ! -z "${MAXDIFFUSION_REQUIREMENTS_FILE}" ]; then \
-        echo "Using MaxDiffusion requirements: ${MAXDIFFUSION_REQUIREMENTS_FILE}" && \
-        pip install -r /deps/${MAXDIFFUSION_REQUIREMENTS_FILE}; \
-    fi
-
-# Install MaxDiffusion
-RUN pip install .
+RUN --mount=type=cache,target=/root/.cache/pip bash setup.sh MODE=${ENV_MODE} JAX_VERSION=${ENV_JAX_VERSION}
 
 # Cleanup
 RUN rm -rf /root/.cache/pip

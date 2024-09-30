@@ -3,14 +3,14 @@ from ..utils import DummyObject, requires_backends
 
 
 class Pop2PianoFeatureExtractor(metaclass=DummyObject):
-    _backends = ["music"]
+  _backends = ["music"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["music"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["music"])
 
 
 class Pop2PianoTokenizer(metaclass=DummyObject):
-    _backends = ["music"]
+  _backends = ["music"]
 
-    def __init__(self, *args, **kwargs):
-        requires_backends(self, ["music"])
+  def __init__(self, *args, **kwargs):
+    requires_backends(self, ["music"])

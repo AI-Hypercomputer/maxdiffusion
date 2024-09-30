@@ -31,176 +31,154 @@ Activation = Callable[..., Array]
 # Parameter initializers.
 Initializer = Callable[[PRNGKey, Shape, DType], Array]
 InitializerAxis = Union[int, Tuple[int, ...]]
-NdInitializer = Callable[
-    [PRNGKey, Shape, DType, InitializerAxis, InitializerAxis], Array]
+NdInitializer = Callable[[PRNGKey, Shape, DType, InitializerAxis, InitializerAxis], Array]
+
 
 class FlaxUpsample2D(nn.Module):
-    out_channels: int
-    dtype: jnp.dtype = jnp.float32
-    weights_dtype: jnp.dtype = jnp.float32
-    precision: jax.lax.Precision = None
-    def setup(self):
-        self.conv = nn.Conv(
-            self.out_channels,
-            kernel_size=(3, 3),
-            strides=(1, 1),
-            padding=((1, 1), (1, 1)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            ),
-            precision=self.precision
-        )
+  out_channels: int
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  precision: jax.lax.Precision = None
 
-    @nn.compact
-    def __call__(self, hidden_states):
-        batch, height, width, channels = hidden_states.shape
-        hidden_states = jax.image.resize(
-            hidden_states,
-            shape=(batch, height * 2, width * 2, channels),
-            method="nearest",
-            precision=self.precision
-        )
+  def setup(self):
+    self.conv = nn.Conv(
+        self.out_channels,
+        kernel_size=(3, 3),
+        strides=(1, 1),
+        padding=((1, 1), (1, 1)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        kernel_init=nn.with_logical_partitioning(
+            nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
+        ),
+        precision=self.precision,
+    )
 
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', 'keep_2', 'out_channels')
-        )
+  @nn.compact
+  def __call__(self, hidden_states):
+    batch, height, width, channels = hidden_states.shape
+    hidden_states = jax.image.resize(
+        hidden_states, shape=(batch, height * 2, width * 2, channels), method="nearest", precision=self.precision
+    )
 
-        hidden_states = self.conv(hidden_states)
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', 'keep_2', 'out_channels')
-        )
-        return hidden_states
+    hidden_states = nn.with_logical_constraint(hidden_states, ("conv_batch", "height", "keep_2", "out_channels"))
+
+    hidden_states = self.conv(hidden_states)
+    hidden_states = nn.with_logical_constraint(hidden_states, ("conv_batch", "height", "keep_2", "out_channels"))
+    return hidden_states
 
 
 class FlaxDownsample2D(nn.Module):
-    out_channels: int
-    dtype: jnp.dtype = jnp.float32
-    weights_dtype: jnp.dtype = jnp.float32
-    precision: jax.lax.Precision = None
+  out_channels: int
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  precision: jax.lax.Precision = None
 
-    def setup(self):
-        self.conv = nn.Conv(
-            self.out_channels,
-            kernel_size=(3, 3),
-            strides=(2, 2),
-            padding=((1, 1), (1, 1)),  # padding="VALID",
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            ),
-            precision=self.precision
-        )
-    @nn.compact
-    def __call__(self, hidden_states):
-        hidden_states = self.conv(hidden_states)
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', 'keep_2', 'out_channels')
-        )
-        return hidden_states
+  def setup(self):
+    self.conv = nn.Conv(
+        self.out_channels,
+        kernel_size=(3, 3),
+        strides=(2, 2),
+        padding=((1, 1), (1, 1)),  # padding="VALID",
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        kernel_init=nn.with_logical_partitioning(
+            nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
+        ),
+        precision=self.precision,
+    )
+
+  @nn.compact
+  def __call__(self, hidden_states):
+    hidden_states = self.conv(hidden_states)
+    hidden_states = nn.with_logical_constraint(hidden_states, ("conv_batch", "height", "keep_2", "out_channels"))
+    return hidden_states
 
 
 class FlaxResnetBlock2D(nn.Module):
-    in_channels: int
-    out_channels: int = None
-    dropout_prob: float = 0.0
-    use_nin_shortcut: bool = None
-    dtype: jnp.dtype = jnp.float32
-    weights_dtype : jnp.dtype = jnp.float32
-    norm_num_groups: int = 32
-    precision: jax.lax.Precision = None
+  in_channels: int
+  out_channels: int = None
+  dropout_prob: float = 0.0
+  use_nin_shortcut: bool = None
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  norm_num_groups: int = 32
+  precision: jax.lax.Precision = None
 
-    def setup(self):
-        out_channels = self.in_channels if self.out_channels is None else self.out_channels
+  def setup(self):
+    out_channels = self.in_channels if self.out_channels is None else self.out_channels
 
-        self.norm1 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
+    self.norm1 = nn.GroupNorm(
+        num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype
+    )
 
-        self.norm2 = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
-        self.dropout = nn.Dropout(self.dropout_prob)
+    self.norm2 = nn.GroupNorm(
+        num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype
+    )
+    self.dropout = nn.Dropout(self.dropout_prob)
 
-        use_nin_shortcut = self.in_channels != out_channels if self.use_nin_shortcut is None else self.use_nin_shortcut
+    use_nin_shortcut = self.in_channels != out_channels if self.use_nin_shortcut is None else self.use_nin_shortcut
 
-        self.conv_shortcut = None
-        if use_nin_shortcut:
-            self.conv_shortcut = nn.Conv(
-                out_channels,
-                kernel_size=(1, 1),
-                strides=(1, 1),
-                padding="VALID",
-                dtype=self.dtype,
-                param_dtype=self.weights_dtype,
-                kernel_init = nn.with_logical_partitioning(
-                    nn.initializers.lecun_normal(),
-                    ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-                ),
-                precision=self.precision
-            )
-        out_channels = self.in_channels if self.out_channels is None else self.out_channels
-        self.conv1 = nn.Conv(
-            out_channels,
-            kernel_size=(3, 3),
-            strides=(1, 1),
-            padding=((1, 1), (1, 1)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            ),
-            precision=self.precision
-        )
+    self.conv_shortcut = None
+    if use_nin_shortcut:
+      self.conv_shortcut = nn.Conv(
+          out_channels,
+          kernel_size=(1, 1),
+          strides=(1, 1),
+          padding="VALID",
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          kernel_init=nn.with_logical_partitioning(
+              nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
+          ),
+          precision=self.precision,
+      )
+    out_channels = self.in_channels if self.out_channels is None else self.out_channels
+    self.conv1 = nn.Conv(
+        out_channels,
+        kernel_size=(3, 3),
+        strides=(1, 1),
+        padding=((1, 1), (1, 1)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        kernel_init=nn.with_logical_partitioning(
+            nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
+        ),
+        precision=self.precision,
+    )
 
-        self.time_emb_proj = nn.Dense(
-           out_channels,
-           dtype=self.dtype,
-           param_dtype=self.weights_dtype,
-           precision=self.precision
-           )
-        self.conv2 = nn.Conv(
-            out_channels,
-            kernel_size=(3, 3),
-            strides=(1, 1),
-            padding=((1, 1), (1, 1)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            kernel_init = nn.with_logical_partitioning(
-                nn.initializers.lecun_normal(),
-                ('keep_1', 'keep_2', 'conv_in', 'conv_out')
-            ),
-            precision=self.precision
-        )
+    self.time_emb_proj = nn.Dense(out_channels, dtype=self.dtype, param_dtype=self.weights_dtype, precision=self.precision)
+    self.conv2 = nn.Conv(
+        out_channels,
+        kernel_size=(3, 3),
+        strides=(1, 1),
+        padding=((1, 1), (1, 1)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        kernel_init=nn.with_logical_partitioning(
+            nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
+        ),
+        precision=self.precision,
+    )
 
-    def __call__(self, hidden_states, temb, deterministic=True):
-        residual = hidden_states
-        hidden_states = self.norm1(hidden_states)
-        hidden_states = nn.swish(hidden_states)
-        hidden_states = self.conv1(hidden_states)
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', 'keep_2', 'out_channels')
-        )
+  def __call__(self, hidden_states, temb, deterministic=True):
+    residual = hidden_states
+    hidden_states = self.norm1(hidden_states)
+    hidden_states = nn.swish(hidden_states)
+    hidden_states = self.conv1(hidden_states)
+    hidden_states = nn.with_logical_constraint(hidden_states, ("conv_batch", "height", "keep_2", "out_channels"))
 
-        temb = self.time_emb_proj(nn.swish(temb))
-        temb = jnp.expand_dims(jnp.expand_dims(temb, 1), 1)
-        hidden_states = hidden_states + temb
+    temb = self.time_emb_proj(nn.swish(temb))
+    temb = jnp.expand_dims(jnp.expand_dims(temb, 1), 1)
+    hidden_states = hidden_states + temb
 
-        hidden_states = self.norm2(hidden_states)
-        hidden_states = nn.swish(hidden_states)
-        hidden_states = self.dropout(hidden_states, deterministic)
-        hidden_states = self.conv2(hidden_states)
-        hidden_states = nn.with_logical_constraint(
-            hidden_states,
-            ('conv_batch', 'height', 'keep_2', 'out_channels')
-        )
+    hidden_states = self.norm2(hidden_states)
+    hidden_states = nn.swish(hidden_states)
+    hidden_states = self.dropout(hidden_states, deterministic)
+    hidden_states = self.conv2(hidden_states)
+    hidden_states = nn.with_logical_constraint(hidden_states, ("conv_batch", "height", "keep_2", "out_channels"))
 
-        if self.conv_shortcut is not None:
-            residual = self.conv_shortcut(residual)
+    if self.conv_shortcut is not None:
+      residual = self.conv_shortcut(residual)
 
-        return hidden_states + residual
+    return hidden_states + residual
