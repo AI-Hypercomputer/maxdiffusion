@@ -19,12 +19,28 @@
 from typing import Any, Dict, Optional, Tuple, Union
 import jax
 import jax.numpy as jnp
+import flax
 import flax.linen as nn
+from ...configuration_utils import ConfigMixin
+from ..modeling_flax_utils import FlaxModelMixin
 from ..normalization_flax import AdaLayerNormZeroSingle, AdaLayerNormContinuous
 from ..attention_flax import FlaxAttention
 from ..embeddings_flax import FluxPosEmbed, CombinedTimestepGuidanceTextProjEmbeddings, CombinedTimestepTextProjEmbeddings
 from ...common_types import BlockSizes
 from ... import max_logging
+from ...utils import BaseOutput
+
+@flax.struct.dataclass
+class Transformer2DModelOutput(BaseOutput):
+  """
+  The output of [`FluxTransformer2DModel`].
+
+  Args:
+  sample (`jnp.ndarray` of shape `(batch_size, num_channels, height, width)`):
+    The hidden states output conditioned on `encoder_hidden_states` input. Output of last layer of model.
+  """
+
+  sample: jnp.ndarray
 
 class FluxTransformerBlock(nn.Module):
     r"""
@@ -178,7 +194,26 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
         self.tranformer_blocks = nn.scan(
             FluxTransformerBlock,
-
+            variable_axes={"params" : 0},
+            split_rngs={"params" : True},
+            in_axes=(
+              nn.broadcast,
+              nn.broadcast,
+              nn.broadcast,
+              nn.broadcast, 
+            ),
+            length=self.num_layers
+        )(
+            dim=self.dim,
+            num_attention_heads=self.num_attention_heads,
+            attention_head_dim=self.attention_head_dim,
+            attention_kernel=self.attention_kernel,
+            flash_min_seq_length=self.flash_min_seq_length,
+            flash_block_sizes=self.flash_block_sizes,
+            mesh=self.mesh,
+            dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
+            precision=self.precision
         )
 
         self.single_tranformer_blocks = nn.scan(
@@ -224,7 +259,9 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       img_ids,
       txt_ids,
       guidance,
-      joint_attention_kwargs = None,):
+      return_dict: bool = True,
+      train: bool = False,
+    ):
       
       hidden_states = self.x_embedder(hidden_states)
 
@@ -256,6 +293,29 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       ids = jnp.concatenate((txt_ids, img_ids), axis=0)
       image_rotary_emb = self.pos_embed(ids)
 
-      jax.lax.fori_loop(0, )
+      encoder_hidden_states, hidden_states = self.tranformer_blocks(
+        hidden_states=hidden_states,
+        encoder_hidden_states=encoder_hidden_states,
+        temb=temb,
+        image_rotary_emb=image_rotary_emb
+      )
+
+      hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], dim=1)
+
+      hidden_states = self.single_tranformer_blocks(
+        hidden_states=hidden_states,
+        temb=temb,
+        image_rotary_emb=image_rotary_emb
+      )
+
+      hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
+
+      hidden_states = self.norm_out(hidden_states, temb)
+      output = self.proj_out(hidden_states)
+
+      if not return_dict:
+        return (output,)
+     
+      return Transformer2DModelOutput(sample=output)
 
 
