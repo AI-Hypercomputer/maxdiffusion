@@ -54,7 +54,7 @@ class BaseStableDiffusionCheckpointer(ABC):
     self.rng = jax.random.PRNGKey(self.config.seed)
     devices_array = max_utils.create_device_mesh(config)
     self.mesh = Mesh(devices_array, self.config.mesh_axes)
-    self.total_train_batch_size = max_utils.get_global_batch_size(self.config)
+    self.total_train_batch_size = self.config.total_train_batch_size
 
     self.checkpoint_manager = create_orbax_checkpoint_manager(
         self.config.checkpoint_dir, enable_checkpointing=True, save_interval_steps=1, checkpoint_type=checkpoint_type
