@@ -28,7 +28,7 @@ from maxdiffusion.trainers.base_stable_diffusion_trainer import BaseStableDiffus
 
 from maxdiffusion import (FlaxDDPMScheduler, maxdiffusion_utils, train_utils, max_utils, max_logging)
 
-from maxdiffusion.input_pipeline.input_pipeline_interface import (make_pokemon_train_iterator, make_laion400m_train_iterator)
+from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
 
 
 from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (STABLE_DIFFUSION_CHECKPOINT)
@@ -53,7 +53,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
     """
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
     total_train_batch_size = self.total_train_batch_size
-    if config.cache_latents_text_encoder_outputs:
+    if config.dataset_type == "tf" and config.cache_latents_text_encoder_outputs:
       batch_image_shape = (
           total_train_batch_size,
           4,
@@ -89,41 +89,45 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
     return data_sharding
 
   def load_dataset(self, pipeline, params, train_states):
-    # ideally : diffusers/pokemon-gpt4-captions, but if loading from gcs, make sure the folder has pokemon in the name.
-    if "pokemon" in self.config.dataset_name:
-      p_encode = None
-      p_vae_apply = None
-      if self.config.cache_latents_text_encoder_outputs:
-        p_encode = jax.jit(
-            partial(
-                maxdiffusion_utils.encode,
-                text_encoder=pipeline.text_encoder,
-                text_encoder_params=train_states["text_encoder_state"].params,
-            )
-        )
-        p_vae_apply = jax.jit(
-            partial(maxdiffusion_utils.vae_apply, vae=pipeline.vae, vae_params=train_states["vae_state"].params)
-        )
-      tokenize_fn = partial(
-          maxdiffusion_utils.tokenize_captions,
-          caption_column=self.config.caption_column,
-          tokenizer=pipeline.tokenizer,
-          p_encode=p_encode,
+    p_encode = None
+    p_vae_apply = None
+    rng = None
+    if self.config.dataset_type == "tf" and self.config.cache_latents_text_encoder_outputs:
+      p_encode = jax.jit(
+          partial(
+              maxdiffusion_utils.encode,
+              text_encoder=pipeline.text_encoder,
+              text_encoder_params=train_states["text_encoder_state"].params,
+          )
       )
-      image_transforms_fn = partial(
-          maxdiffusion_utils.transform_images,
-          image_column=self.config.image_column,
-          image_resolution=self.config.resolution,
-          rng=self.rng,
-          global_batch_size=self.total_train_batch_size,
-          p_vae_apply=p_vae_apply,
+      p_vae_apply = jax.jit(
+          partial(maxdiffusion_utils.vae_apply, vae=pipeline.vae, vae_params=train_states["vae_state"].params)
       )
-      data_iterator = make_pokemon_train_iterator(
-          self.config, self.mesh, self.total_train_batch_size, tokenize_fn, image_transforms_fn
-      )
-    else:
-      data_iterator = make_laion400m_train_iterator(self.config, self.mesh, self.total_train_batch_size)
+      rng = self.rng
 
+    tokenize_fn = partial(
+        maxdiffusion_utils.tokenize_captions,
+        caption_column=self.config.caption_column,
+        tokenizer=pipeline.tokenizer,
+        p_encode=p_encode,
+    )
+    image_transforms_fn = partial(
+        maxdiffusion_utils.transform_images,
+        image_column=self.config.image_column,
+        image_resolution=self.config.resolution,
+        rng=rng,
+        global_batch_size=self.total_train_batch_size,
+        p_vae_apply=p_vae_apply,
+    )
+    data_iterator = make_data_iterator(
+        self.config,
+        jax.process_index(),
+        jax.process_count(),
+        self.mesh,
+        self.total_train_batch_size,
+        tokenize_fn=tokenize_fn,
+        image_transforms_fn=image_transforms_fn,
+    )
     return data_iterator
 
   def compile_train_step(self, pipeline, params, train_states, state_shardings, data_shardings):
@@ -185,10 +189,15 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
     _, train_rngs = jax.random.split(self.rng)
 
     for step in np.arange(start_step, self.config.max_train_steps):
+      if self.config.enable_profiler and step == first_profiling_step:
+        max_utils.activate_profiler(self.config)
+
       example_batch = train_utils.load_next_batch(data_iterator, example_batch, self.config)
-      unet_state, text_encoder_state, train_metric, train_rngs = p_train_step(
-          unet_state, vae_state, text_encoder_state, example_batch, train_rngs
-      )
+
+      with jax.profiler.StepTraceAnnotation("train", step_num=step):
+        unet_state, text_encoder_state, train_metric, train_rngs = p_train_step(
+            unet_state, vae_state, text_encoder_state, example_batch, train_rngs
+        )
       samples_count = self.total_train_batch_size * (step + 1)
       new_time = datetime.datetime.now()
 
@@ -198,10 +207,6 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
       if self.config.write_metrics:
         train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
       last_step_completion = new_time
-      if step == first_profiling_step:
-        max_utils.activate_profiler(self.config)
-      if step == last_profiling_step:
-        max_utils.deactivate_profiler(self.config)
 
       if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
         train_states["unet_state"] = unet_state
@@ -209,14 +214,19 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         train_states["text_encoder"] = text_encoder_state
         self.save_checkpoint(step, pipeline, params, train_states)
 
+      if self.config.enable_profiler and step == last_profiling_step:
+        max_utils.deactivate_profiler(self.config)
+
     if self.config.write_metrics:
-      train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
+      train_utils.write_metrics(
+          writer, local_metrics_file, running_gcs_metrics, train_metric, self.config.max_train_steps - 1, self.config
+      )
 
     train_states["unet_state"] = unet_state
     train_states["vae_state"] = vae_state
     train_states["text_encoder"] = text_encoder_state
     # save the inference states of the last checkpoint so they can be easily loaded during gen.
-    self.save_checkpoint(step, pipeline, params, train_states)
+    self.save_checkpoint(self.config.max_train_steps - 1, pipeline, params, train_states)
     self.checkpoint_manager.wait_until_finished()
 
 
@@ -231,7 +241,7 @@ def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, pip
 
   def compute_loss(state_params):
 
-    if config.cache_latents_text_encoder_outputs:
+    if config.dataset_type == "tf" and config.cache_latents_text_encoder_outputs:
       latents = batch["pixel_values"]
       encoder_hidden_states = batch["input_ids"]
     else:
@@ -250,7 +260,9 @@ def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, pip
             batch["input_ids"], pipeline.text_encoder, state_params["text_encoder"]
         )
       else:
-        encoder_hidden_states = maxdiffusion_utils.encode(batch["input_ids"], pipeline.text_encoder, params["text_encoder"])
+        encoder_hidden_states = maxdiffusion_utils.encode(
+            batch["input_ids"], pipeline.text_encoder, text_encoder_state.params
+        )
 
     # Sample noise that we'll add to the latents
     noise_rng, timestep_rng = jax.random.split(sample_rng)

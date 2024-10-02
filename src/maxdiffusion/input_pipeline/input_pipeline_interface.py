@@ -17,10 +17,11 @@
 import os
 from functools import partial
 import tensorflow as tf
-import tensorflow.experimental.numpy as tnp
-from datasets import load_dataset, load_from_disk, Dataset
+from datasets import load_from_disk, Dataset
 import jax
 
+from maxdiffusion.input_pipeline import _hf_data_processing
+from maxdiffusion.input_pipeline import _tfds_data_processing
 from maxdiffusion import multihost_dataloading
 from maxdiffusion.maxdiffusion_utils import tokenize_captions, transform_images, vae_apply
 from maxdiffusion.dreambooth.dreambooth_constants import (
@@ -40,95 +41,46 @@ from PIL import Image
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
 
-# taken from https://github.com/huggingface/transformers/blob/abbffc4525566a48a9733639797c812301218b83/examples/tensorflow/contrastive-image-text/run_clip.py#L225
-def load_as_tf_dataset(dataset, batch_size, shuffle, config):
-  dataset = dataset.with_format("tensorflow")[:]
-  tf_dataset = tf.data.Dataset.from_tensor_slices(dataset)
-
-  if shuffle:
-    tf_dataset = tf_dataset.shuffle(len(tf_dataset))
-  tf_dataset = tf_dataset.batch(batch_size // jax.process_count(), drop_remainder=True)
-  tf_dataset = tf_dataset.prefetch(tf.data.experimental.AUTOTUNE)
-  tf_dataset = tf_dataset.repeat(-1)
-
-  return tf_dataset
-
-
-# TODO - https://github.com/google/array_record/blob/main/beam/examples/example_gcs_conversion.py
-def make_laion400m_train_iterator(
+def make_data_iterator(
     config,
+    dataloading_host_index,
+    dataloading_host_count,
     mesh,
     global_batch_size,
+    tokenize_fn=None,
+    image_transforms_fn=None,
 ):
-  """Iterator for Laion dataset.
-  To see how to prepare this dataset, look at
-  maxdiffusion/pedagogical_examples/to_tfrecords.py
-  """
-  feature_description = {
-      "latents": tf.io.FixedLenFeature([], tf.string),
-      "hidden_states": tf.io.FixedLenFeature([], tf.string),
-  }
-
-  def _parse_tfrecord_fn(example):
-    return tf.io.parse_single_example(example, feature_description)
-
-  def prepare_sample(features):
-    latents = tf.io.parse_tensor(tnp.asarray(features["latents"]), out_type=tf.float32)
-    hidden_states = tf.io.parse_tensor(tnp.asarray(features["hidden_states"]), out_type=tf.float32)
-    return {"pixel_values": latents, "input_ids": hidden_states}
-
-  filenames = tf.io.gfile.glob(os.path.join(config.train_data_dir, "*"))
-  train_ds = (
-      tf.data.TFRecordDataset(filenames, num_parallel_reads=AUTOTUNE)
-      .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
-      .map(prepare_sample, num_parallel_calls=AUTOTUNE)
-      .shuffle(global_batch_size * 10)
-      .batch(global_batch_size // jax.process_count(), drop_remainder=True)
-      .prefetch(AUTOTUNE)
-      .repeat(-1)
-  )
-
-  train_ds = train_ds.shard(num_shards=jax.process_count(), index=jax.process_index())
-
-  train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
-  return train_iter
-
-
-def make_pokemon_train_iterator(config, mesh, global_batch_size, tokenize_fn, image_transforms_fn):
-  dataset_save_location = config.dataset_save_location
-  if os.path.isdir(dataset_save_location):
-    train_ds = load_from_disk(dataset_save_location)
+  """Make data iterator for SD1, 2, XL, dataset_types in (hf, tf, tfrecord)"""
+  if config.dataset_type == "hf":
+    return _hf_data_processing.make_hf_streaming_iterator(
+        config,
+        dataloading_host_index,
+        dataloading_host_count,
+        mesh,
+        global_batch_size,
+        tokenize_fn=tokenize_fn,
+        image_transforms_fn=image_transforms_fn,
+    )
+  elif config.dataset_type == "tf":
+    return _tfds_data_processing.make_tf_iterator(
+        config,
+        dataloading_host_index,
+        dataloading_host_count,
+        mesh,
+        global_batch_size,
+        tokenize_fn=tokenize_fn,
+        image_transforms_fn=image_transforms_fn,
+    )
+  elif config.dataset_type == "tfrecord":
+    return _tfds_data_processing.make_tfrecord_iterator(
+        config,
+        dataloading_host_index,
+        dataloading_host_count,
+        mesh,
+        global_batch_size,
+    )
   else:
-    train_ds = load_dataset(config.dataset_name, split="train")
-
-    captions_column = config.caption_column
-    image_column = config.image_column
-    cache_latents_text_encoder_outputs = config.cache_latents_text_encoder_outputs
-    train_ds = train_ds.map(
-        function=tokenize_fn,
-        batched=True,
-        remove_columns=[captions_column],
-        num_proc=1 if cache_latents_text_encoder_outputs else 4,
-        desc="Running tokenizer on train dataset",
-    )
-    # need to do it before load_as_tf_dataset
-    # since raw images are different sizes
-    # will break from_tensor_slices
-    train_ds = train_ds.map(
-        function=image_transforms_fn,
-        batched=True,
-        remove_columns=[image_column],
-        num_proc=1 if cache_latents_text_encoder_outputs else config.transform_images_num_proc,
-        desc="Transforming images",
-    )
-    train_ds.save_to_disk(dataset_save_location)
-    train_ds.cleanup_cache_files()
-
-  train_ds = load_as_tf_dataset(train_ds, global_batch_size, True, config)
-  train_ds = train_ds.shard(num_shards=jax.process_count(), index=jax.process_index())
-
-  train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
-  return train_iter
+    assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be in (tf, tfrecord, hf)"
 
 
 def make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenizer, vae, vae_params):
@@ -230,10 +182,12 @@ def make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenizer, v
       instance_train_ds.save_to_disk(instance_dataset_full_path)
       class_train_ds.save_to_disk(class_dataset_full_path)
 
-  instance_train_ds = load_as_tf_dataset(instance_train_ds, global_batch_size, True, config)
-  class_train_ds = load_as_tf_dataset(class_train_ds, global_batch_size, True, config)
+  instance_train_ds = _tfds_data_processing.load_as_tf_dataset(
+      instance_train_ds, global_batch_size, True, jax.process_count()
+  )
+  class_train_ds = _tfds_data_processing.load_as_tf_dataset(class_train_ds, global_batch_size, True, jax.process_count())
   train_ds = tf.data.Dataset.zip((instance_train_ds, class_train_ds))
   train_ds = train_ds.shard(num_shards=jax.process_count(), index=jax.process_index())
 
-  train_iter = multihost_dataloading.get_batch_sharded_data_pipeline(train_ds, mesh)
+  train_iter = multihost_dataloading.MultiHostDataLoadIterator(train_ds, mesh)
   return train_iter

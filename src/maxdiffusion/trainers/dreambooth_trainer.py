@@ -74,7 +74,7 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
 
   def get_shaped_batch(self, config, pipeline):
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-    total_train_batch_size = config.per_device_batch_size * jax.device_count()
+    total_train_batch_size = config.total_train_batch_size
     batch_image_shape = (
         total_train_batch_size,
         4,
