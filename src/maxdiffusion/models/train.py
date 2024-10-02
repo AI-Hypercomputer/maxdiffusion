@@ -314,7 +314,7 @@ def train(config):
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
-    def train_step(unet_state, batch, gen_dummy_rng, cache_latents_text_encoder_outputs):
+    def train_step(unet_state, batch, gen_dummy_rng, prev_grad, cache_latents_text_encoder_outputs):
         sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
 
         def compute_loss(unet_params):
@@ -392,9 +392,6 @@ def train(config):
 
         grad_fn = jax.value_and_grad(compute_loss)
         
-        if delay > 1:
-           loss, raw_grad = grad_fn(unet_state.params)
-           new_state = unet_state.apply_gradients(grads=prev_grad)
 
         loss, raw_grad = grad_fn(unet_state.params)
 
@@ -403,22 +400,30 @@ def train(config):
         else:
             grad = raw_grad
 
-        new_state = unet_state.apply_gradients(grads=grad)
+        if delay > 1:
+            new_state = unet_state.apply_gradients(grads=prev_grad)
+            prev_grad = grad
+        else:
+            new_state = unet_state.apply_gradients(grads=grad)
+            
         #metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
         metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
-        return new_state, metrics
+        return new_state, metrics, prev_grad
 
     num_model_parameters = calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
 
     my_data_sharding = {'clip_embeddings': data_sharding, 'moments': data_sharding}
     dummy_batch = get_shaped_batch(config, pipeline)
+    dummy_gradient =   
+    state_mesh_shardings = jax.tree_map(
+    lambda p: jax.sharding.NamedSharding(mesh, p), state_mesh_annotations)
     if config.pre_compile:
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step_lower = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
-                out_shardings=(unet_state_mesh_shardings, None),
+                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None, gradient_sharding),
+                out_shardings=(unet_state_mesh_shardings, None, gradient_sharding),
                 donate_argnums=(0,)
             ).lower(unet_state, dummy_batch, train_rngs)
         p_train_step = p_train_step_lower.compile()
