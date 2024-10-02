@@ -394,6 +394,8 @@ def train(config):
         grad_fn = jax.value_and_grad(compute_loss)
         loss, raw_grad = grad_fn(unet_state.params)
 
+        raw_grad = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), raw_grad)
+
         if config.max_grad_norm > 0:
             grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(raw_grad, unet_state, None)
         else:
