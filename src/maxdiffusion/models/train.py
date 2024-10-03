@@ -52,6 +52,7 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
 )
 from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 from maxdiffusion.maxdiffusion_utils import calculate_unet_tflops
+from maxdiffusion.models.optmizer_offload import update
 
 TOTAL_TRAIN_SAMPLES = 6513144
 TOTAL_EVAL_SAMPLES = 30000
@@ -314,11 +315,19 @@ def train(config):
     # Initialize our training
     _, train_rngs = jax.random.split(rng)
 
-    def train_step(unet_state, batch, train_rng, cache_latents_text_encoder_outputs):
+    def train_step(unet_state, batch, train_rng, prev_grad, cache_latents_text_encoder_outputs):
         _, gen_dummy_rng = jax.random.split(train_rng)
         sample_rng, new_train_rng = jax.random.split(gen_dummy_rng)
+        offload = True
+        # first do update
+        if config.max_grad_norm > 0:
+            grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(prev_grad, unet_state, None)
+        else:
+            grad = prev_grad
 
-        def compute_loss(unet_params):
+        new_state = unet_state.apply_gradients(grads=grad)
+
+        def compute_loss(unet_params, batch):
             
             if cache_latents_text_encoder_outputs:
                raise Exception(f"caching latents and text encoder outputs is not supported")
@@ -391,20 +400,36 @@ def train(config):
 
             return loss
 
-        grad_fn = jax.value_and_grad(compute_loss)
-        loss, raw_grad = grad_fn(unet_state.params)
+        @functools.partial(jax.jit, out_shardings=(None, param_sharding))
+        def loss_grad(params, data):
+            cast_params = cast_dtype_from_to(params, np.float32, jnp.bfloat16)
+              if offload:
+                    cast_params = jax.device_put(
+                        cast_params, with_memory_kind(param_sharding, 'device')
+                    )
+                else:
+                    cast_params = params
+                loss, grads = jax.value_and_grad(compute_loss)(
+                    cast_params, data
+                )
+                if offload:
+                    grads = jax.device_put(
+                        grads, with_memory_kind(param_sharding, 'pinned_host')
+                    )
+                return loss, grads
 
-        raw_grad = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), raw_grad)
+        loss, raw_grad = loss_grad(new_state.params, batch)
 
-        if config.max_grad_norm > 0:
-            grad, _ = optax.clip_by_global_norm(config.max_grad_norm).update(raw_grad, unet_state, None)
-        else:
-            grad = raw_grad
+        #raw_grad = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), raw_grad)
+        if offload:
+            raw_grad = jax.device_put(
+                raw_grad, with_memory_kind(param_sharding, 'pinned_host')
+            )
 
-        new_state = unet_state.apply_gradients(grads=grad)
+        #unet_state = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), unet_state)
         #metrics = {'scalar' : {'learning/loss' : loss, 'learning/grad_norm' : max_utils.l2norm_pytree(grad)}, 'scalars': {}}
         metrics = {'scalar' : {'learning/loss' : loss}, 'scalars': {}}
-        return new_state, metrics, new_train_rng
+        return new_state, metrics, new_train_rng, raw_grad
 
     num_model_parameters = calculate_num_params_from_pytree(unet_state.params)
     max_logging.log(f"number parameters: {num_model_parameters/10**9:.3f} billion")
@@ -415,13 +440,13 @@ def train(config):
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step_lower = jax.jit(
                 partial(train_step, cache_latents_text_encoder_outputs=config.cache_latents_text_encoder_outputs),
-                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None),
-                out_shardings=(unet_state_mesh_shardings, None, None),
+                in_shardings=(unet_state_mesh_shardings, my_data_sharding, None, unet_state_mesh_shardings),
+                out_shardings=(unet_state_mesh_shardings, None, None, unet_state_mesh_shardings),
                 donate_argnums=(0,)
-            ).lower(unet_state, dummy_batch, train_rngs)
+            ).lower(unet_state, dummy_batch, train_rngs, grad)
         p_train_step = p_train_step_lower.compile()
-        host_id = jax.process_index()
-        all_host_ids = jax.experimental.multihost_utils.process_allgather(host_id)
+        #host_id = jax.process_index()
+        #all_host_ids = jax.experimental.multihost_utils.process_allgather(host_id)
 
         p_learning_rate_scheduler = jax.jit(learning_rate_scheduler).lower(0)
         p_learning_rate_scheduler = p_learning_rate_scheduler.compile()
