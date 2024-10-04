@@ -899,7 +899,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
             kernel_size=(1, 1),
             strides=(1, 1),
             padding="VALID",
-            dtype=self.dtype
+            dtype=self.dtype,
             # shape is too small to shard
             param_dtype=self.dtype,
         )
