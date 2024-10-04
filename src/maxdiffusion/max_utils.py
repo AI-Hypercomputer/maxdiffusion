@@ -386,7 +386,12 @@ def setup_initial_state(
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     if checkpoint_manager and checkpoint_item:
       max_logging.log(f"setup_initial_state for {checkpoint_item}")
-      state = checkpointing_utils.load_state_if_possible(checkpoint_manager, unboxed_abstract_state, checkpoint_item)
+      state = checkpointing_utils.load_state_if_possible(
+          checkpoint_manager,
+          unboxed_abstract_state,
+          checkpoint_item,
+          config.enable_single_replica_ckpt_restoring,
+      )
       if state:
         state = state[checkpoint_item]
     if not state:
