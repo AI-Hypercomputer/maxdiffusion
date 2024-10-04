@@ -106,6 +106,7 @@ class FlaxResnetBlock2D(nn.Module):
     dropout_prob: float = 0.0
     use_nin_shortcut: bool = None
     dtype: jnp.dtype = jnp.float32
+    pdtype: jnp.dtype = jnp.float32
     norm_num_groups: int = 32
 
     def setup(self):
@@ -126,7 +127,6 @@ class FlaxResnetBlock2D(nn.Module):
                 strides=(1, 1),
                 padding="VALID",
                 dtype=self.dtype,
-                param_dtype=self.dtype,
                 kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -139,7 +139,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
-            param_dtype=self.dtype,
+            param_dtype=self.pdtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
@@ -149,7 +149,6 @@ class FlaxResnetBlock2D(nn.Module):
         self.time_emb_proj = nn.Dense(
            out_channels,
            dtype=self.dtype,
-           param_dtype=self.dtype,
            )
         self.conv2 = nn.Conv(
             out_channels,
@@ -157,7 +156,7 @@ class FlaxResnetBlock2D(nn.Module):
             strides=(1, 1),
             padding=((1, 1), (1, 1)),
             dtype=self.dtype,
-            param_dtype=self.dtype,
+            param_dtype=self.pdtype,
             kernel_init = nn.with_logical_partitioning(
                 nn.initializers.lecun_normal(),
                 ('keep_1', 'keep_2', 'conv_in', 'conv_out')
