@@ -140,11 +140,21 @@ ici_tensor_parallelism: 1
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
 dataset_name: 'diffusers/pokemon-gpt4-captions'
-# saves transformed dataset of dataset_name.
+train_split: 'train'
+dataset_type: 'tf'
+cache_latents_text_encoder_outputs: True
+# cache_latents_text_encoder_outputs only apply to dataset_type="tf",
+# only apply to small dataset that fits in memory
+# prepare image latents and text encoder outputs
+# Reduce memory consumption and reduce step time during training
+# transformed dataset is saved at dataset_save_location
 dataset_save_location: '/tmp/pokemon-gpt4-captions'
 train_data_dir: ''
 dataset_config_name: ''
 jax_cache_dir: ''
+hf_data_dir: ''
+hf_train_files: ''
+hf_access_token: ''
 image_column: 'image'
 caption_column: 'text'
 resolution: 512
@@ -161,11 +171,6 @@ enable_data_shuffling: True
 checkpoint_every: -1
 # enables one replica to read the ckpt then broadcast to the rest
 enable_single_replica_ckpt_restoring: False
-
-# Prepare image latents and text encoder outputs
-# during dataset creation to reduce memory consumption.
-cache_latents_text_encoder_outputs: True
-
 
 # Training loop
 learning_rate: 1.e-7
