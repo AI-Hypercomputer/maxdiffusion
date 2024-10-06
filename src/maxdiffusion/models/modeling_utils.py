@@ -99,6 +99,11 @@ def get_parameter_dtype(parameter: torch.nn.Module):
     first_tuple = next(gen)
     return first_tuple[1].dtype
 
+# def load_lora_state_dict(cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs):
+#   """
+#   Load LoRA 
+#   """
+
 
 def load_state_dict(checkpoint_file: Union[str, os.PathLike], variant: Optional[str] = None):
   """
