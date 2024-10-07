@@ -25,7 +25,12 @@ from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin
 from ..normalization_flax import AdaLayerNormZeroSingle, AdaLayerNormContinuous
 from ..attention_flax import FlaxAttention
-from ..embeddings_flax import FluxPosEmbed, CombinedTimestepGuidanceTextProjEmbeddings, CombinedTimestepTextProjEmbeddings
+from ..embeddings_flax import (
+  FluxPosEmbed,
+  CombinedTimestepGuidanceTextProjEmbeddings,
+  CombinedTimestepTextProjEmbeddings,
+  AdaLayerNormZero
+)
 from ...common_types import BlockSizes
 from ... import max_logging
 from ...utils import BaseOutput
@@ -40,32 +45,7 @@ class Transformer2DModelOutput(BaseOutput):
     The hidden states output conditioned on `encoder_hidden_states` input. Output of last layer of model.
   """
 
-  sample: jnp.ndarray
-
-class FluxTransformerBlock(nn.Module):
-    r"""
-    A Transformer block following the MMDiT architecture, introduced in Stable Diffusion 3.
-
-    Reference: https://arxiv.org/abs/2403.03206
-
-    Parameters:
-        dim (`int`): The number of channels in the input and output.
-        num_attention_heads (`int`): The number of heads to use for multi-head attention.
-        attention_head_dim (`int`): The number of channels in each head.
-        context_pre_only (`bool`): Boolean to determine if we should add some blocks associated with the
-            processing of `context` conditions.
-    """
-    dim: int
-    num_attention_heads: int
-    attention_head_dim: int
-    qk_norm: str ="rms_norm"
-    eps: int = 1e-6
-    flash_min_seq_length: int = 4096
-    flash_block_sizes: BlockSizes = None
-    mesh: jax.sharding.Mesh = None
-    dtype: jnp.dtype = jnp.float32
-    weights_dtype: jnp.dtype = jnp.float32
-    precision: jax.lax.Precision = None
+  sample: jnp.ndarray      
 
 class FluxSingleTransformerBlock(nn.Module):
     r"""
@@ -93,33 +73,165 @@ class FluxSingleTransformerBlock(nn.Module):
     precision: jax.lax.Precision = None
 
     def setup(self):
-        super.__init__()
-        self.mlp_hidden_dim = int(self.dim * self.mlp_ratio)
+      super.__init__()
+      self.mlp_hidden_dim = int(self.dim * self.mlp_ratio)
 
-        self.norm = AdaLayerNormZeroSingle(self.dim)
-        self.proj_mlp = nn.Dense(self.mlp_hidden_dim)
-        self.act_mlp = nn.GELU
-        self.proj_out = nn.Dense(self.dim)
-        self.attn = FlaxAttention(
-            query_dim=self.dim,
-            heads=self.num_attention_heads,
-            dim_head=self.attention_head_dim,
-
-
-        )
+      self.norm = AdaLayerNormZeroSingle(
+        self.dim,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision
+      )
+      
+      self.proj_mlp = nn.Dense(
+        self.mlp_hidden_dim,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision
+      )
+      
+      self.act_mlp = nn.GELU
+      self.proj_out = nn.Dense(
+        self.dim,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision
+      )
+      # TODO - need to make flux attention
+      # self.attn = FlaxAttention(
+      #     query_dim=self.dim,
+      #     heads=self.num_attention_heads,
+      #     dim_head=self.attention_head_dim,
+      # )
+      self.attn = TODO
     
     def __call__(self, hidden_states, temb, image_rotary_emb=None):
-        residual = hidden_states
-        norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
-        mlp_hidden_states = self.act_mlp(self.proj_mlp(norm_hidden_states))
+      residual = hidden_states
+      norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
+      mlp_hidden_states = self.act_mlp(self.proj_mlp(norm_hidden_states))
 
-        attn_output = self.attn(
-            hidden_states=norm_hidden_states,
-            image_rotary_emb=image_rotary_emb
-        )
+      attn_output = self.attn(
+          hidden_states=norm_hidden_states,
+          image_rotary_emb=image_rotary_emb
+      )
 
-        hidden_states = jnp.concatenate([attn_output, mlp_hidden_states], axis=2)
-        gate = jnp.expand_dims(x, axis=1)
+      hidden_states = jnp.concatenate([attn_output, mlp_hidden_states], axis=-1)
+      gate = jnp.expand_dims(gate, axis=-2)
+      hidden_states = gate * self.proj_out(hidden_states)
+      hidden_states = residual + hidden_states
+      if hidden_states.dtype == jnp.float16 or hidden_states.dtype == jnp.bfloat16:
+        hidden_states = jnp.clip(hidden_states, -65504, 65504)
+      
+      return hidden_states
+
+class FluxTransformerBlock(nn.Module):
+    r"""
+    A Transformer block following the MMDiT architecture, introduced in Stable Diffusion 3.
+
+    Reference: https://arxiv.org/abs/2403.03206
+
+    Parameters:
+        dim (`int`): The number of channels in the input and output.
+        num_attention_heads (`int`): The number of heads to use for multi-head attention.
+        attention_head_dim (`int`): The number of channels in each head.
+        context_pre_only (`bool`): Boolean to determine if we should add some blocks associated with the
+            processing of `context` conditions.
+    """
+    dim: int
+    num_attention_heads: int
+    attention_head_dim: int
+    qk_norm: str ="rms_norm"
+    eps: int = 1e-6
+    flash_min_seq_length: int = 4096
+    flash_block_sizes: BlockSizes = None
+    mesh: jax.sharding.Mesh = None
+    dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
+    precision: jax.lax.Precision = None
+  
+    def setup(self):
+      
+      self.norm1 = AdaLayerNormZero(
+        self.dim,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision
+      )
+      self.norm1_context = AdaLayerNormZero(
+        self.dim,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision
+      )
+
+      self.attn = TODO
+
+      self.norm2 = nn.LayerNorm(
+        self.dim,
+        use_bias=False,
+        use_scale=False,
+        eps=1e-6,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision
+      )
+      self.ff = FeedForward # TODO
+
+      self.norm2_context = nn.LayerNorm(
+        self.dim,
+        use_bias=False,
+        use_scale=False,
+        eps=1e-6,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision
+      )
+      self.ff_context = Feedfoward # TODO
+
+      # let chunk size default to None
+      self._chunk_size = None
+      self._chunk_dim = 0
+    
+    def __call__(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb = None):
+      norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(hidden_states, emb=temb)
+
+      norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.norm1_context(
+        encoder_hidden_states, emb=temb
+      )
+
+      # Attention.
+      attn_output, context_attn_output = self.attn(
+        hidden_states=norm_hidden_states,
+        encoder_hidden_states=norm_encoder_hidden_states,
+        image_rotary_emb=image_rotary_emb,
+      )
+
+      # Process attention outputs for the `hidden_states`.
+      attn_output = gate_msa.expand_dims(1) * attn_output
+      hidden_states = hidden_states + attn_output
+
+      norm_hidden_states = self.norm2(hidden_states)
+      norm_hidden_states = norm_hidden_states * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+
+      ff_output = self.ff(norm_hidden_states)
+      ff_output = gate_mlp.expand_dims(1) * ff_output
+
+      hidden_states = hidden_states + ff_output
+
+      # Process attention outputs for the `encoder_hidden_states`.
+
+      context_attn_output = c_gate_msa.expand_dims(1) * context_attn_output
+      encoder_hidden_states = encoder_hidden_states + context_attn_output
+
+      norm_encoder_hidden_states = self.norm2_context(encoder_hidden_states)
+      norm_encoder_hidden_states = norm_encoder_hidden_states * (1 + c_scale_mlp[:, None]) + c_shift_mlp[:, None]
+
+      context_ff_output = self.ff_context(norm_encoder_hidden_states)
+      encoder_hidden_states = encoder_hidden_states + c_gate_mlp.expand_dims(1) * context_ff_output
+      if encoder_hidden_states.dtype == jnp.float16 or encoder_hidden_states.dtype == jnp.bfloat16:
+        encoder_hidden_states = encoder_hidden_states.clip(-65504, 65504)
+      
+      return encoder_hidden_states, hidden_states
 
 class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     r"""
@@ -165,69 +277,45 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     precision: jax.lax.Precision = None
 
     def setup(self):
-        self.out_channels = self.in_channels
-        self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
+      self.out_channels = self.in_channels
+      self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
 
-        self.pos_embed = FluxPosEmbed(theta=10000, axes_dim=self.axes_dims_rope)
+      self.pos_embed = FluxPosEmbed(theta=10000, axes_dim=self.axes_dims_rope)
 
-        text_time_guidance_cls = (
-            CombinedTimestepGuidanceTextProjEmbeddings if self.guidance_embeds else CombinedTimestepTextProjEmbeddings
-        )
-        self.time_text_embed = text_time_guidance_cls(
-            embedding_dim=self.inner_dim,
-            pooled_projection_dim=self.config.pooled_projection_dim,
-            dtype=self.dtype,
-            weights_dtype=self.weights_dtype,
-            precision=self.precision
-        )
-        self.context_embedder = nn.Dense(
-            self.inner_dim,
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision)
-        self.x_embedder = nn.Dense(
-            self.inner_dim,
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision
-        )
+      text_time_guidance_cls = (
+          CombinedTimestepGuidanceTextProjEmbeddings if self.guidance_embeds else CombinedTimestepTextProjEmbeddings
+      )
+      self.time_text_embed = text_time_guidance_cls(
+          embedding_dim=self.inner_dim,
+          pooled_projection_dim=self.config.pooled_projection_dim,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+          precision=self.precision
+      )
+      self.context_embedder = nn.Dense(
+          self.inner_dim,
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          precision=self.precision)
+      self.x_embedder = nn.Dense(
+          self.inner_dim,
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          precision=self.precision
+      )
 
-        self.tranformer_blocks = nn.scan(
-            FluxTransformerBlock,
-            variable_axes={"params" : 0},
-            split_rngs={"params" : True},
-            in_axes=(
-              nn.broadcast,
-              nn.broadcast,
-              nn.broadcast,
-              nn.broadcast, 
-            ),
-            length=self.num_layers
-        )(
-            dim=self.dim,
-            num_attention_heads=self.num_attention_heads,
-            attention_head_dim=self.attention_head_dim,
-            attention_kernel=self.attention_kernel,
-            flash_min_seq_length=self.flash_min_seq_length,
-            flash_block_sizes=self.flash_block_sizes,
-            mesh=self.mesh,
-            dtype=self.dtype,
-            weights_dtype=self.weights_dtype,
-            precision=self.precision
-        )
-
-        self.single_tranformer_blocks = nn.scan(
-            FluxSingleTransformerBlock,
-            variable_axes={"params" : 0},
-            split_rngs={"params" : True},
-            in_axes=(
-                nn.broadcast,
-                nn.broadcast,
-                nn.broadcast,
-                nn.broadcast
-            ),
-            length=self.num_single_layers
-        )(
+      self.tranformer_blocks = nn.scan(
+          FluxTransformerBlock,
+          variable_axes={"params" : 0},
+          split_rngs={"params" : True},
+          in_axes=(
+            nn.broadcast,
+            nn.broadcast,
+            nn.broadcast,
+            nn.broadcast, 
+          ),
+          length=self.num_layers
+      )(
           dim=self.dim,
           num_attention_heads=self.num_attention_heads,
           attention_head_dim=self.attention_head_dim,
@@ -238,17 +326,41 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
           precision=self.precision
-        )
+      )
 
-        self.norm_out = AdaLayerNormContinuous(
-          self.inner_dim,
-          elementwise_affine=False,
-          eps=1e-6,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-          precision=self.precision)
-        
-        self.proj_out = nn.Dense(self.patch_size**2 * self.out_channels, use_bias=True)
+      self.single_tranformer_blocks = nn.scan(
+          FluxSingleTransformerBlock,
+          variable_axes={"params" : 0},
+          split_rngs={"params" : True},
+          in_axes=(
+              nn.broadcast,
+              nn.broadcast,
+              nn.broadcast,
+              nn.broadcast
+          ),
+          length=self.num_single_layers
+      )(
+        dim=self.dim,
+        num_attention_heads=self.num_attention_heads,
+        attention_head_dim=self.attention_head_dim,
+        attention_kernel=self.attention_kernel,
+        flash_min_seq_length=self.flash_min_seq_length,
+        flash_block_sizes=self.flash_block_sizes,
+        mesh=self.mesh,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision
+      )
+
+      self.norm_out = AdaLayerNormContinuous(
+        self.inner_dim,
+        elementwise_affine=False,
+        eps=1e-6,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision)
+      
+      self.proj_out = nn.Dense(self.patch_size**2 * self.out_channels, use_bias=True)
     
     def __call__(
       self,

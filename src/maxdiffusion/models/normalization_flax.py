@@ -37,6 +37,56 @@ class AdaLayerNormContinuous(nn.Module):
         x *= (1 + scale[:, None, :]) + shift[:, None, :]
         return x
 
+class AdaLayerNormZero(nn.Module):
+    r"""
+    Norm layer adaptive layer norm zero (adaLN-Zero).
+
+    Parameters:
+        embedding_dim (`int`): The size of each embedding vector.
+        num_embeddings (`int`): The size of the embeddings dictionary.
+    """
+    embedding_dim: int
+    norm_type: str = "layer_norm"
+    bias: bool = True
+    dtype: jnp.dtype = jnp.float32
+    weights_dtype: jnp.dtype = jnp.float32
+    precision: jax.lax.Precision = None
+    
+    @nn.compact
+    def __call__(self, x, emb):
+        emb = nn.Dense(
+            6 * self.embedding_dim,
+            use_bias=self.bias,
+            use_scale=False,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            precision=self.precision
+        )(nn.silu(emb))
+
+        (shift_msa,
+         scale_msa,
+         gate_msa,
+         shift_mlp,
+         scale_mlp,
+         gate_mlp) = jnp.split(emb, 6, axis=-1)
+
+        if self.norm_type == "layer_norm":
+            x = nn.LayerNorm(
+                epsilon=1e-6,
+                use_bias=False,
+                use_scale=False,
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision
+            )(x)
+        else:
+            raise ValueError(
+                f"Unsupported `norm_type` ({self.norm_type}) provided. Supported ones are: 'layer_norm'."
+            )
+
+        x = x * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
+
 class AdaLayerNormZeroSingle(nn.Module):
     r"""
     Norm layer adaptive layer norm zero (adaLN-Zero).
@@ -61,10 +111,17 @@ class AdaLayerNormZeroSingle(nn.Module):
               dtype=self.dtype,
               param_dtype=self.weights_dtype,
               precision=self.precision
-            )(emb)
+        )(emb)
         shift_msa, scale_msa, gate_msa = jnp.split(emb, 3, axis=1)
         if self.norm_type == "layer_norm":
-            x = nn.LayerNorm(epsilon=1e-6, use_bias=False, use_scale=False)(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+            x = nn.LayerNorm(
+                epsilon=1e-6,
+                use_bias=False,
+                use_scale=False,
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision
+            )(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
         else:
             raise ValueError(
                 f"Unsupported `norm_type` ({self.norm_type}) provided. Supported ones are: 'layer_norm'."
