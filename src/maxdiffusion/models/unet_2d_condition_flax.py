@@ -105,6 +105,10 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
           Overrides default block sizes for flash attention.
       mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
           jax mesh is required if attention is set to flash.
+      lora_rank (`int`, *optional*, defaults to 0):
+          The dimension of the LoRA update matrices.
+      lora_network_alpha(`float`, *optional*, defaults to None)
+          Equivalent to `alpha` but it's usage is specific to Kohya (A1111) style LoRAs.
   """
 
   sample_size: int = 32
@@ -142,6 +146,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
   projection_class_embeddings_input_dim: Optional[int] = None
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
+  lora_rank: Optional[int] = 0
+  lora_network_alpha: Optional[float] = None
 
   def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
     # init input tensors
@@ -280,6 +286,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             dtype=self.dtype,
             weights_dtype=self.weights_dtype,
             precision=self.precision,
+            lora_rank=self.lora_rank,
+            lora_network_alpha=self.lora_network_alpha
         )
       else:
         down_block = FlaxDownBlock2D(
@@ -312,6 +320,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
+        lora_rank=self.lora_rank,
+        lora_network_alpha=self.lora_network_alpha
     )
 
     # up
@@ -349,6 +359,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             dtype=self.dtype,
             weights_dtype=self.weights_dtype,
             precision=self.precision,
+            lora_rank=self.lora_rank,
+            lora_network_alpha=self.lora_network_alpha
         )
       else:
         up_block = FlaxUpBlock2D(
@@ -392,6 +404,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
       mid_block_additional_residual=None,
       return_dict: bool = True,
       train: bool = False,
+      cross_attention_kwargs: Optional[Union[Dict, FrozenDict]] = None,
   ) -> Union[FlaxUNet2DConditionOutput, Tuple]:
     r"""
     Args:
@@ -410,6 +423,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             plain tuple.
         train (`bool`, *optional*, defaults to `False`):
             Use deterministic functions and disable dropout when not training.
+        cross_attention_kwargs: (`dict`, *optional*):
+            A kwargs dictionary that if specified is passed along to FlaxAttention.
 
     Returns:
         [`~models.unet_2d_condition_flax.FlaxUNet2DConditionOutput`] or `tuple`:
@@ -461,7 +476,13 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     down_block_res_samples = (sample,)
     for down_block in self.down_blocks:
       if isinstance(down_block, FlaxCrossAttnDownBlock2D):
-        sample, res_samples = down_block(sample, t_emb, encoder_hidden_states, deterministic=not train)
+        sample, res_samples = down_block(
+          sample,
+          t_emb,
+          encoder_hidden_states,
+          deterministic=not train,
+          cross_attention_kwargs=cross_attention_kwargs
+        )
       else:
         sample, res_samples = down_block(sample, t_emb, deterministic=not train)
       down_block_res_samples += res_samples
@@ -478,7 +499,13 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
       down_block_res_samples = new_down_block_res_samples
 
     # 4. mid
-    sample = self.mid_block(sample, t_emb, encoder_hidden_states, deterministic=not train)
+    sample = self.mid_block(
+      sample,
+      t_emb,
+      encoder_hidden_states,
+      deterministic=not train,
+      cross_attention_kwargs=cross_attention_kwargs
+    )
 
     if mid_block_additional_residual is not None:
       sample += mid_block_additional_residual
@@ -494,6 +521,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             encoder_hidden_states=encoder_hidden_states,
             res_hidden_states_tuple=res_samples,
             deterministic=not train,
+            cross_attention_kwargs=cross_attention_kwargs
         )
       else:
         sample = up_block(sample, temb=t_emb, res_hidden_states_tuple=res_samples, deterministic=not train)

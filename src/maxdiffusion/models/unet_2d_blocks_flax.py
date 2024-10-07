@@ -54,6 +54,10 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
           jax mesh is required if attention is set to flash.
       dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
           Parameters `dtype`
+      lora_rank (`int`, *optional*, defaults to 0):
+            The dimension of the LoRA update matrices.
+      lora_network_alpha(`float`, *optional*, defaults to None)
+          Equivalent to `alpha` but it's usage is specific to Kohya (A1111) style LoRAs.
   """
 
   in_channels: int
@@ -75,6 +79,8 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
   transformer_layers_per_block: int = 1
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
+  lora_rank: int = 0
+  lora_network_alpha: float = None
 
   def setup(self):
     resnets = []
@@ -90,7 +96,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
           norm_num_groups=self.norm_num_groups,
-          precision=self.precision,
+          precision=self.precision
       )
       resnets.append(res_block)
 
@@ -111,6 +117,8 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
           weights_dtype=self.weights_dtype,
           norm_num_groups=self.norm_num_groups,
           precision=self.precision,
+          lora_rank=self.lora_rank,
+          lora_network_alpha=self.lora_network_alpha
       )
       attentions.append(attn_block)
 
@@ -120,12 +128,13 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
     if self.add_downsample:
       self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
-  def __call__(self, hidden_states, temb, encoder_hidden_states, deterministic=True):
+  def __call__(self, hidden_states, temb, encoder_hidden_states, deterministic=True, cross_attention_kwargs=None):
     output_states = ()
 
     for resnet, attn in zip(self.resnets, self.attentions):
       hidden_states = resnet(hidden_states, temb, deterministic=deterministic)
-      hidden_states = attn(hidden_states, encoder_hidden_states, deterministic=deterministic)
+      hidden_states = attn(hidden_states, encoder_hidden_states, deterministic=deterministic,
+                           cross_attention_kwargs=cross_attention_kwargs)
       output_states += (hidden_states,)
 
     if self.add_downsample:
@@ -232,6 +241,10 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
           jax mesh is required if attention is set to flash.
       dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
           Parameters `dtype`
+      lora_rank (`int`, *optional*, defaults to 0):
+            The dimension of the LoRA update matrices.
+      lora_network_alpha(`float`, *optional*, defaults to None)
+          Equivalent to `alpha` but it's usage is specific to Kohya (A1111) style LoRAs.
   """
 
   in_channels: int
@@ -254,6 +267,8 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
   transformer_layers_per_block: int = 1
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
+  lora_rank: int = 0
+  lora_network_alpha: float = None
 
   def setup(self):
     resnets = []
@@ -291,6 +306,8 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
           weights_dtype=self.weights_dtype,
           norm_num_groups=self.norm_num_groups,
           precision=self.precision,
+          lora_rank=self.lora_rank,
+          lora_network_alpha=self.lora_network_alpha
       )
       attentions.append(attn_block)
 
@@ -300,7 +317,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
     if self.add_upsample:
       self.upsamplers_0 = FlaxUpsample2D(self.out_channels, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
-  def __call__(self, hidden_states, res_hidden_states_tuple, temb, encoder_hidden_states, deterministic=True):
+  def __call__(self, hidden_states, res_hidden_states_tuple, temb, encoder_hidden_states, deterministic=True, cross_attention_kwargs=None):
     for resnet, attn in zip(self.resnets, self.attentions):
       # pop res hidden states
       res_hidden_states = res_hidden_states_tuple[-1]
@@ -308,7 +325,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
       hidden_states = jnp.concatenate((hidden_states, res_hidden_states), axis=-1)
 
       hidden_states = resnet(hidden_states, temb, deterministic=deterministic)
-      hidden_states = attn(hidden_states, encoder_hidden_states, deterministic=deterministic)
+      hidden_states = attn(hidden_states, encoder_hidden_states, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs)
 
     if self.add_upsample:
       hidden_states = self.upsamplers_0(hidden_states)
@@ -414,6 +431,10 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
           jax mesh is required if attention is set to flash.
       dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
           Parameters `dtype`
+      lora_rank (`int`, *optional*, defaults to 0):
+          The dimension of the LoRA update matrices.
+      lora_network_alpha(`float`, *optional*, defaults to None)
+          Equivalent to `alpha` but it's usage is specific to Kohya (A1111) style LoRAs.
   """
 
   in_channels: int
@@ -432,6 +453,8 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
   transformer_layers_per_block: int = 1
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
+  lora_rank: int = 0
+  lora_network_alpha: float = None
 
   def setup(self):
     # there is always at least one resnet
@@ -466,6 +489,8 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
           weights_dtype=self.weights_dtype,
           norm_num_groups=self.norm_num_groups,
           precision=self.precision,
+          lora_rank=self.lora_rank,
+          lora_network_alpha=self.lora_network_alpha
       )
       attentions.append(attn_block)
 
@@ -483,10 +508,15 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
     self.resnets = resnets
     self.attentions = attentions
 
-  def __call__(self, hidden_states, temb, encoder_hidden_states, deterministic=True):
+  def __call__(self, hidden_states, temb, encoder_hidden_states, deterministic=True, cross_attention_kwargs=None):
     hidden_states = self.resnets[0](hidden_states, temb)
     for attn, resnet in zip(self.attentions, self.resnets[1:]):
-      hidden_states = attn(hidden_states, encoder_hidden_states, deterministic=deterministic)
+      hidden_states = attn(
+        hidden_states,
+        encoder_hidden_states,
+        deterministic=deterministic,
+        cross_attention_kwargs=cross_attention_kwargs
+      )
       hidden_states = resnet(hidden_states, temb, deterministic=deterministic)
 
     return hidden_states
