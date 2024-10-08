@@ -55,7 +55,7 @@ text_encoder_learning_rate: 4.25e-6
 # Override parameters from checkpoints's scheduler.
 diffusion_scheduler_config: {
   _class_name: 'DDIMScheduler',
-  # values are v_prediction or leave empty to use scheduler's default. 
+  # values are v_prediction or leave empty to use scheduler's default.
   prediction_type: '',
   rescale_zero_terminal_snr: False,
   timestep_spacing: 'trailing'
@@ -69,12 +69,12 @@ base_output_directory: ""
 mesh_axes: ['data', 'fsdp', 'tensor']
 
 # batch : batch dimension of data and activations
-# hidden : 
+# hidden :
 # embed : attention qkv dense layer hidden dim named as embed
 # heads : attention head dim = num_heads * head_dim
 # length : attention sequence length
-# temb_in : dense.shape[0] of resnet dense before conv 
-# out_c : dense.shape[1] of resnet dense before conv 
+# temb_in : dense.shape[0] of resnet dense before conv
+# out_c : dense.shape[1] of resnet dense before conv
 # out_channels : conv.shape[-1] activation
 # keep_1 : conv.shape[0] weight
 # keep_2 : conv.shape[1] weight
@@ -116,6 +116,9 @@ resolution: 1024
 center_crop: False
 random_flip: False
 
+# enables one replica to read the ckpt then broadcast to the rest
+enable_single_replica_ckpt_restoring: False
+
 # Training loop
 learning_rate: 4.e-7
 scale_lr: False
@@ -130,7 +133,7 @@ per_device_batch_size: 2
 warmup_steps_fraction: 0.0
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
 
-# However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before 
+# However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before
 # dropping fully down. Or you may choose a shorter schedule, where the unspecified steps will have a learning rate of 0.
 
 # AdamW optimizer parameters

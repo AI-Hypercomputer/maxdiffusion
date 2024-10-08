@@ -67,7 +67,7 @@ timestep_bias: {
   begin: 0,
   # when using strategy=range, the final step (inclusive) to bias.
   end: 1000,
-  # portion of timesteps to bias. 
+  # portion of timesteps to bias.
   # 0.5 will bias one half of the timesteps. Value of strategy determines
   # whether the biased portions are in the earlier or later timesteps.
   portion: 0.25
@@ -76,7 +76,7 @@ timestep_bias: {
 # Override parameters from checkpoints's scheduler.
 diffusion_scheduler_config: {
   _class_name: '',
-  # values are v_prediction or leave empty to use scheduler's default. 
+  # values are v_prediction or leave empty to use scheduler's default.
   prediction_type: '',
   rescale_zero_terminal_snr: False,
   timestep_spacing: ''
@@ -90,12 +90,12 @@ base_output_directory: ""
 mesh_axes: ['data', 'fsdp', 'tensor']
 
 # batch : batch dimension of data and activations
-# hidden : 
+# hidden :
 # embed : attention qkv dense layer hidden dim named as embed
 # heads : attention head dim = num_heads * head_dim
 # length : attention sequence length
-# temb_in : dense.shape[0] of resnet dense before conv 
-# out_c : dense.shape[1] of resnet dense before conv 
+# temb_in : dense.shape[0] of resnet dense before conv
+# out_c : dense.shape[1] of resnet dense before conv
 # out_channels : conv.shape[-1] activation
 # keep_1 : conv.shape[0] weight
 # keep_2 : conv.shape[1] weight
@@ -147,6 +147,8 @@ enable_data_shuffling: True
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1
+# enables one replica to read the ckpt then broadcast to the rest
+enable_single_replica_ckpt_restoring: False
 
 # Prepare image latents and text encoder outputs
 # during dataset creation to reduce memory consumption.
@@ -166,7 +168,7 @@ per_device_batch_size: 2
 warmup_steps_fraction: 0.0
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
 
-# However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before 
+# However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before
 # dropping fully down. Or you may choose a shorter schedule, where the unspecified steps will have a learning rate of 0.
 
 # AdamW optimizer parameters
