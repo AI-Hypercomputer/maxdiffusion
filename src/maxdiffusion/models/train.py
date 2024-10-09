@@ -423,6 +423,9 @@ def train(config):
 
         p_learning_rate_scheduler = jax.jit(learning_rate_scheduler).lower(0)
         p_learning_rate_scheduler = p_learning_rate_scheduler.compile()
+
+        host_id = jax.process_index()
+        all_host_ids = jax.experimental.multihost_utils.process_allgather(host_id)     
     else:
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
             p_train_step = jax.jit(
