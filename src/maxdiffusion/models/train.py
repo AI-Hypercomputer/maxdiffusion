@@ -519,7 +519,7 @@ def train(config):
                     lr = np.asarray(p_learning_rate_scheduler(step))
                     mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, loss, lr)
 
-        if step != 0 and samples_count % config.checkpoint_every == 0:
+        if step != 0 and samples_count % config.checkpoint_every == 0 and loss < 0.35:
             checkpoint_name = f"{step_num=}-{samples_count=}"
             if config.eval_at_checkpoint:
                 eval_at_checkpoint(config,
