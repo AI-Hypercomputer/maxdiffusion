@@ -506,14 +506,15 @@ def train(config):
 
                     mllog_utils.maybe_train_step_log(config, start_step, _buffered_step_num, _buffered_sample_count, loss, lr)
                 write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
+                
+                last_step_completion = new_time
+                last_log_step_num = step_num        
             else:
                 if jax.process_index() == 0:
                     # convert the jax array to a numpy array for mllog JSON encoding
                     loss = np.asarray(loss)
                     lr = np.asarray(p_learning_rate_scheduler(step))
                     mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, loss, lr)
-            last_step_completion = new_time
-            last_log_step_num = step_num
 
         if step != 0 and samples_count % config.checkpoint_every == 0:
             checkpoint_name = f"{step_num=}-{samples_count=}"
@@ -542,8 +543,13 @@ def train(config):
         # log the last metrics_period
         if jax.process_index() == 0:
             max_logging.log(f"Training loop finished, log metrics of step {_buffered_step}")
-        mllog_utils.maybe_train_step_log(config, start_step, config.max_train_steps, config.max_train_steps*total_train_batch_size, _buffered_metrics)
+            # convert the jax array to a numpy array for mllog JSON encoding
+            loss = np.asarray(_buffered_metrics['scalar']['learning/loss'])
+            lr = np.asarray(_buffered_metrics['scalar']['learning/current_learning_rate'])
+
+        mllog_utils.maybe_train_step_log(config, start_step, config.max_train_steps, config.max_train_steps*total_train_batch_size, loss, lr)
         write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, config.max_train_steps - config.metrics_period, config)
+    
     totaltime = time.time() - start_time
     steptime = totaltime / (config.max_train_steps - start_step) * 1000
     max_logging.log(f"Total time for {config.max_train_steps} steps: {totaltime} s. Avg step time: {steptime} ms")
