@@ -91,11 +91,8 @@ def train_step_end(config, step_num, samples_count, loss, lr):
       },
     )
 
-def maybe_train_step_log(config, start_step, step_num, samples_count, metric):
-  if step_num > start_step and metric:
-    # convert the jax array to a numpy array for mllog JSON encoding
-    loss = np.asarray(metric['scalar']['learning/loss'])
-    lr = np.asarray(metric['scalar']['learning/current_learning_rate'])
+def maybe_train_step_log(config, start_step, step_num, samples_count, loss, lr):
+  if step_num > start_step:
 
     train_step_end(config, step_num, samples_count, loss, lr)
     # start new tracking except the last step
