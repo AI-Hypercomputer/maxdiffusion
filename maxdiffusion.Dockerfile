@@ -17,14 +17,12 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python
 # Set environment variables for Google Cloud SDK and Python 3.10
 ENV PATH="/usr/local/google-cloud-sdk/bin:/usr/local/bin/python3.10:${PATH}"
 
-RUN git clone -b mlperf_4 https://github.com/google/maxdiffusion.git
+RUN git clone -b mlperf_4.1 https://github.com/google/maxdiffusion.git
+RUN pip install -U --pre jax[tpu] --no-cache-dir  -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+RUN pip install libtpu-nightly==0.1.dev20241009   -f https://storage.googleapis.com/libtpu-releases/index.html
+RUN pip install git+https://github.com/google/jax
 
 WORKDIR maxdiffusion
 RUN pip install -r requirements.txt
-
-RUN pip install  --no-cache-dir  jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-RUN pip install -U --pre jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
-RUN pip install git+https://github.com/google/jax
-RUN pip install git+https://github.com/mlperf/logging.git
 
 RUN pip install .
