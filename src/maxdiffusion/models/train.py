@@ -503,10 +503,11 @@ def train(config):
                 _buffered_sample_count = total_train_batch_size * _buffered_step_num
                 if jax.process_index() == 0:
                     max_logging.log(f"At step {step}, log metrics of step {_buffered_step}")
-                    loss = np.asarray(loss)
-                    lr = np.asarray(p_learning_rate_scheduler(step))
+                    if _buffered_metrics is not None:
+                        loss = np.asarray(_buffered_metrics['scalar']['learning/loss'])
+                        lr = np.asarray(_buffered_metrics['scalar']['learning/current_learning_rate'])
 
-                    mllog_utils.maybe_train_step_log(config, start_step, _buffered_step_num, _buffered_sample_count, loss, lr)
+                        mllog_utils.maybe_train_step_log(config, start_step, _buffered_step_num, _buffered_sample_count, loss, lr)
                 write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, config)
                 
                 last_step_completion = new_time
