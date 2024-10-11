@@ -89,6 +89,7 @@ def make_laion400m_train_iterator(
 
   partial_tokenize = functools.partial(tokenize, tokenizer=tokenizer)
 
+  per_host_batch = global_batch_size // jax.process_count()
   num_thread=32
   train_ds = (
     tf.data.Dataset.list_files(os.path.join(config.train_data_dir,"*"), shuffle=True, seed=config.seed)
@@ -97,8 +98,8 @@ def make_laion400m_train_iterator(
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
       .map(create_dict, num_parallel_calls=AUTOTUNE)
-      .shuffle(4 * global_batch_size // jax.process_count() , seed=config.seed)
-      .batch(global_batch_size // jax.process_count(), drop_remainder=False)
+      .shuffle(per_host_batch , seed=config.seed)
+      .batch(per_host_batch, drop_remainder=False)
       .repeat(-1)
       .prefetch(AUTOTUNE)
   )
