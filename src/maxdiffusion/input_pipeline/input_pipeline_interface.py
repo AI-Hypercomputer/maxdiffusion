@@ -97,7 +97,7 @@ def make_laion400m_train_iterator(
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
       .map(create_dict, num_parallel_calls=AUTOTUNE)
-      .shuffle(4 * global_batch_size // // jax.process_count() , seed=config.seed)
+      .shuffle(4 * global_batch_size // jax.process_count() , seed=config.seed)
       .batch(global_batch_size // jax.process_count(), drop_remainder=False)
       .repeat(-1)
       .prefetch(AUTOTUNE)
