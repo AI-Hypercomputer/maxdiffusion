@@ -188,7 +188,7 @@ profiler_steps: 10
 prompt: "A magical castle in the middle of a forest, artistic drawing"
 negative_prompt: "purple, red"
 do_classifier_free_guidance: True
-guidance_scale: 9
+guidance_scale: 9.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 20

@@ -93,7 +93,6 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
 
   @classmethod
   def _get_lora_layer(cls, module_path, module, rank):
-    # TODO - here we create either Linear or Conv layers
     is_conv = any('conv' in str_ for str_ in module_path)
     if is_conv:
       lora_module = LoRAConv2DLayer(
@@ -102,6 +101,9 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
         kernel_size=module.kernel_size,
         strides=module.strides,
         padding=module.padding,
+        input_dilation=module.input_dilation,
+        kernel_dilation=module.kernel_dilation,
+        feature_group_count=module.feature_group_count,
         dtype=module.dtype,
         weights_dtype=module.param_dtype,
         precision=module.precision,
@@ -127,7 +129,6 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     tmp = []
     for layer_lora in params_keys:
       if 'lora' in layer_lora:
-        print(layer_lora)
         new_layer_lora = layer_lora[:layer_lora.index('lora')]
         if new_layer_lora not in tmp:
           tmp.append(new_layer_lora)
@@ -137,7 +138,6 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       if context.method_name == '__call__':
         module_path = context.module.path
         if module_path in params_keys:
-          print(f"module_path: {module_path}")
           lora_layer = cls._get_lora_layer(module_path, context.module, rank)
           return lora_layer(h, *args, **kwargs)
       return h

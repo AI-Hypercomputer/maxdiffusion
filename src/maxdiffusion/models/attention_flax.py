@@ -373,8 +373,6 @@ class FlaxAttention(nn.Module):
   value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
   out_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
   precision: jax.lax.Precision = None
-  lora_rank: int = 0
-  lora_network_alpha: float = None
 
   def setup(self):
 
@@ -438,48 +436,6 @@ class FlaxAttention(nn.Module):
     )
     self.dropout_layer = nn.Dropout(rate=self.dropout)
 
-    if self.lora_rank > 0:
-      self.to_q_lora = LoRALinearLayer(
-        in_features=inner_dim,
-        out_features=inner_dim,
-        rank=self.lora_rank,
-        network_alpha=self.lora_network_alpha,
-        mesh=self.mesh,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision
-      )
-      self.to_k_lora = LoRALinearLayer(
-        in_features=inner_dim,
-        out_features=inner_dim,
-        rank=self.lora_rank,
-        network_alpha=self.lora_network_alpha,
-        mesh=self.mesh,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision
-      )
-      self.to_v_lora = LoRALinearLayer(
-        in_features=inner_dim,
-        out_features=inner_dim,
-        rank=self.lora_rank,
-        network_alpha=self.lora_network_alpha,
-        mesh=self.mesh,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision
-      )
-      self.to_out_lora = LoRALinearLayer(
-        in_features=inner_dim,
-        out_features=inner_dim,
-        rank=self.lora_rank,
-        network_alpha=self.lora_network_alpha,
-        mesh=self.mesh,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision
-      )
-
   def __call__(self, hidden_states, context=None, deterministic=True, cross_attention_kwargs=None):
     context = hidden_states if context is None else context
     query_proj = self.query(hidden_states)
@@ -490,15 +446,9 @@ class FlaxAttention(nn.Module):
     key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
     value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
 
-    if self.lora_rank > 0:
-      lora_scale = cross_attention_kwargs.get("scale", 0.0)
-      query_proj = query_proj + self.to_q_lora(hidden_states, lora_scale)
-      key_proj = key_proj + self.to_k_lora(context, lora_scale)
-      value_proj = value_proj + self.to_v_lora(context, lora_scale)
-
     hidden_states = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
-    hidden_states = self.proj_attn(hidden_states) + 0 if self.lora_rank <=0 else self.to_out_lora(hidden_states, lora_scale)
+    hidden_states = self.proj_attn(hidden_states)
     hidden_states = nn.with_logical_constraint(hidden_states, (BATCH, LENGTH, HEAD))
     return self.dropout_layer(hidden_states, deterministic=deterministic)
 
@@ -550,8 +500,6 @@ class FlaxBasicTransformerBlock(nn.Module):
   flash_block_sizes: BlockSizes = None
   mesh: jax.sharding.Mesh = None
   precision: jax.lax.Precision = None
-  lora_rank: int = 0
-  lora_network_alpha: float = None
 
   def setup(self):
     # self attention (or cross_attention if only_cross_attention is True)
@@ -568,9 +516,7 @@ class FlaxBasicTransformerBlock(nn.Module):
         mesh=self.mesh,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
-        precision=self.precision,
-        lora_rank=self.lora_rank,
-        lora_network_alpha=self.lora_network_alpha
+        precision=self.precision
     )
     # cross attention
     self.attn2 = FlaxAttention(
@@ -586,9 +532,7 @@ class FlaxBasicTransformerBlock(nn.Module):
         mesh=self.mesh,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
-        precision=self.precision,
-        lora_rank=self.lora_rank,
-        lora_network_alpha=self.lora_network_alpha
+        precision=self.precision
     )
     self.ff = FlaxFeedForward(
         dim=self.dim, dropout=self.dropout, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
@@ -689,8 +633,6 @@ class FlaxTransformer2DModel(nn.Module):
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
   hidden_state_axis_names: AxisNames = (BATCH, LENGTH, D_KV)
-  lora_rank: int = 0
-  lora_network_alpha: float = None
 
   def setup(self):
     self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
@@ -735,9 +677,7 @@ class FlaxTransformer2DModel(nn.Module):
             flash_min_seq_length=self.flash_min_seq_length,
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
-            precision=self.precision,
-            lora_rank=self.lora_rank,
-            lora_network_alpha=self.lora_network_alpha
+            precision=self.precision
         )
         for _ in range(self.depth)
     ]

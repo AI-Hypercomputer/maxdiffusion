@@ -105,10 +105,6 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
           Overrides default block sizes for flash attention.
       mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
           jax mesh is required if attention is set to flash.
-      lora_rank (`int`, *optional*, defaults to 0):
-          The dimension of the LoRA update matrices.
-      lora_network_alpha(`float`, *optional*, defaults to None)
-          Equivalent to `alpha` but it's usage is specific to Kohya (A1111) style LoRAs.
   """
 
   sample_size: int = 32
@@ -146,8 +142,6 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
   projection_class_embeddings_input_dim: Optional[int] = None
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
-  lora_rank: Optional[int] = 0
-  lora_network_alpha: Optional[float] = None
 
   def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
     # init input tensors
@@ -285,9 +279,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             mesh=self.mesh,
             dtype=self.dtype,
             weights_dtype=self.weights_dtype,
-            precision=self.precision,
-            lora_rank=self.lora_rank,
-            lora_network_alpha=self.lora_network_alpha
+            precision=self.precision
         )
       else:
         down_block = FlaxDownBlock2D(
@@ -320,8 +312,6 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
-        lora_rank=self.lora_rank,
-        lora_network_alpha=self.lora_network_alpha
     )
 
     # up
@@ -358,9 +348,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             mesh=self.mesh,
             dtype=self.dtype,
             weights_dtype=self.weights_dtype,
-            precision=self.precision,
-            lora_rank=self.lora_rank,
-            lora_network_alpha=self.lora_network_alpha
+            precision=self.precision
         )
       else:
         up_block = FlaxUpBlock2D(

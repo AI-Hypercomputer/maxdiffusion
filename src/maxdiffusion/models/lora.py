@@ -83,6 +83,9 @@ class LoRAConv2DLayer(nn.Module):
   kernel_size: Union[int, Tuple[int, int]] = (1,1)
   strides: Union[int, Tuple[int, int]] = (1, 1)
   padding: Union[int, Tuple[int, int], str] = 0
+  input_dilation: int = 1
+  kernel_dilation: int = 1
+  feature_group_count: int = 1
   network_alpha: Optional[float] = None
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
@@ -95,6 +98,9 @@ class LoRAConv2DLayer(nn.Module):
       kernel_size=self.kernel_size,
       strides=self.strides,
       padding=self.padding,
+      input_dilation=self.input_dilation,
+      kernel_dilation=self.kernel_dilation,
+      feature_group_count=self.feature_group_count,
       use_bias=False,
       dtype=self.dtype,
       param_dtype=self.weights_dtype,

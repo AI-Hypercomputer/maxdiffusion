@@ -360,7 +360,15 @@ def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
 
 
 def setup_initial_state(
-    model, tx, config, mesh, weights_init_fn, model_params=None, checkpoint_manager=None, checkpoint_item=None, training=True
+    model,
+    tx,
+    config,
+    mesh,
+    weights_init_fn,
+    model_params=None,
+    checkpoint_manager=None,
+    checkpoint_item=None,
+    training=True
 ):
   """We initialize the model and optimizer state, and optionally load from a
   checkpoint as necessary.
@@ -396,7 +404,6 @@ def setup_initial_state(
         state = state[checkpoint_item]
     if not state:
       max_logging.log(f"Could not find the item in orbax, creating state...")
-
       init_train_state_partial = functools.partial(
           init_train_state,
           model=model,
@@ -407,7 +414,11 @@ def setup_initial_state(
           eval_only=False,
       )
 
-      state = jax.jit(init_train_state_partial, in_shardings=None, out_shardings=state_mesh_shardings)()
+      state = jax.jit(
+        init_train_state_partial,
+        in_shardings=None,
+        out_shardings=state_mesh_shardings
+      )()
 
   state = unbox_logicallypartioned_trainstate(state)
 

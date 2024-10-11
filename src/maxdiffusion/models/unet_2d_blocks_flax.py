@@ -54,10 +54,6 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
           jax mesh is required if attention is set to flash.
       dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
           Parameters `dtype`
-      lora_rank (`int`, *optional*, defaults to 0):
-            The dimension of the LoRA update matrices.
-      lora_network_alpha(`float`, *optional*, defaults to None)
-          Equivalent to `alpha` but it's usage is specific to Kohya (A1111) style LoRAs.
   """
 
   in_channels: int
@@ -79,8 +75,6 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
   transformer_layers_per_block: int = 1
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
-  lora_rank: int = 0
-  lora_network_alpha: float = None
 
   def setup(self):
     resnets = []
@@ -116,9 +110,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
           norm_num_groups=self.norm_num_groups,
-          precision=self.precision,
-          lora_rank=self.lora_rank,
-          lora_network_alpha=self.lora_network_alpha
+          precision=self.precision
       )
       attentions.append(attn_block)
 
@@ -128,7 +120,7 @@ class FlaxCrossAttnDownBlock2D(nn.Module):
     if self.add_downsample:
       self.downsamplers_0 = FlaxDownsample2D(self.out_channels, dtype=self.dtype, weights_dtype=self.weights_dtype)
 
-  def __call__(self, hidden_states, temb, encoder_hidden_states, deterministic=True, cross_attention_kwargs=None):
+  def __call__(self, hidden_states, temb, encoder_hidden_states, deterministic=True, cross_attention_kwargs={}):
     output_states = ()
 
     for resnet, attn in zip(self.resnets, self.attentions):
@@ -241,10 +233,6 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
           jax mesh is required if attention is set to flash.
       dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
           Parameters `dtype`
-      lora_rank (`int`, *optional*, defaults to 0):
-            The dimension of the LoRA update matrices.
-      lora_network_alpha(`float`, *optional*, defaults to None)
-          Equivalent to `alpha` but it's usage is specific to Kohya (A1111) style LoRAs.
   """
 
   in_channels: int
@@ -267,8 +255,6 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
   transformer_layers_per_block: int = 1
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
-  lora_rank: int = 0
-  lora_network_alpha: float = None
 
   def setup(self):
     resnets = []
@@ -305,9 +291,7 @@ class FlaxCrossAttnUpBlock2D(nn.Module):
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
           norm_num_groups=self.norm_num_groups,
-          precision=self.precision,
-          lora_rank=self.lora_rank,
-          lora_network_alpha=self.lora_network_alpha
+          precision=self.precision
       )
       attentions.append(attn_block)
 
@@ -431,10 +415,6 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
           jax mesh is required if attention is set to flash.
       dtype (:obj:`jnp.dtype`, *optional*, defaults to jnp.float32):
           Parameters `dtype`
-      lora_rank (`int`, *optional*, defaults to 0):
-          The dimension of the LoRA update matrices.
-      lora_network_alpha(`float`, *optional*, defaults to None)
-          Equivalent to `alpha` but it's usage is specific to Kohya (A1111) style LoRAs.
   """
 
   in_channels: int
@@ -453,8 +433,6 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
   transformer_layers_per_block: int = 1
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
-  lora_rank: int = 0
-  lora_network_alpha: float = None
 
   def setup(self):
     # there is always at least one resnet
@@ -488,9 +466,7 @@ class FlaxUNetMidBlock2DCrossAttn(nn.Module):
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
           norm_num_groups=self.norm_num_groups,
-          precision=self.precision,
-          lora_rank=self.lora_rank,
-          lora_network_alpha=self.lora_network_alpha
+          precision=self.precision
       )
       attentions.append(attn_block)
 
