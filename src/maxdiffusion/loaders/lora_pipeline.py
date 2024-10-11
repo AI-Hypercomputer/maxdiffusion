@@ -14,11 +14,14 @@
 
 from typing import Union, Dict
 import jax.numpy as jnp
+from flax.core.frozen_dict import unfreeze
 from .lora_base import LoRABaseMixin
+from ..models.lora import LoRALinearLayer, LoRAConv2DLayer
 from .lora_conversion_utils import (
   _convert_non_diffusers_lora_to_diffusers,
   _maybe_map_sgm_blocks_to_diffusers,  
 )
+from ..models.modeling_flax_pytorch_utils import convert_lora_pytorch_state_dict_to_flax
 from huggingface_hub.utils import validate_hf_hub_args
 
 TEXT_ENCODER_NAME = "text_encoder"
@@ -29,7 +32,21 @@ LORA_WEIGHT_NAME = "pytorch_lora_weights.bin"
 LORA_WEIGHT_NAME_SAFE = "pytorch_lora_weights.safetensors"
 
 class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
-  def load_lora_weights(self, pretrained_model_name_or_path_or_dict: Union[str, Dict[str, jnp.ndarray]], adapter_name=None, **kwargs):
+  r"""
+  Load LoRA layers into Stable Diffusion [`UNet2DConditionModel`] and
+  [`CLIPTextModel`](https://huggingface.co/docs/transformers/model_doc/clip#transformers.CLIPTextModel).
+  """
+
+  _lora_lodable_modules = ["unet", "text_encoder"]
+  unet_name = UNET_NAME
+  text_encoder_name = TEXT_ENCODER_NAME
+
+  def load_lora_weights(
+      self,
+      pretrained_model_name_or_path_or_dict: Union[str, Dict[str, jnp.ndarray]],
+      params,
+      adapter_name=None,
+      **kwargs):
     """
     Load LoRA weights specified in `pretrained_model_name_or_path_or_dict` into `self.unet` and
     `self.text_encoder`.
@@ -64,13 +81,67 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     if not is_correct_format:
       raise ValueError("Invalid LoRA checkpoint.")
     
-    self.load_lora_into_unet(
+    unet_lora_params, rank = self.load_lora_into_unet(
       state_dict,
       network_alphas=network_alphas,
       unet=getattr(self, self.unet_name) if not hasattr(self, "unet") else self.unet,
+      params=params,
       adapter_name=adapter_name,
       _pipeline=self,
     )
+    return unfreeze(unet_lora_params), rank
+
+  @classmethod
+  def _get_lora_layer(cls, module_path, module, rank):
+    # TODO - here we create either Linear or Conv layers
+    is_conv = any('conv' in str_ for str_ in module_path)
+    if is_conv:
+      lora_module = LoRAConv2DLayer(
+        out_features=module.features,
+        rank=rank,
+        kernel_size=module.kernel_size,
+        strides=module.strides,
+        padding=module.padding,
+        dtype=module.dtype,
+        weights_dtype=module.param_dtype,
+        precision=module.precision,
+        name="lora"
+        )
+    else:
+      lora_module = LoRALinearLayer(
+        out_features=module.features,
+        rank=rank,
+        dtype=module.dtype,
+        weights_dtype=module.param_dtype,
+        precision=module.precision,
+        name="lora"
+      )
+    return lora_module
+
+  @classmethod
+  def make_lora_interceptor(
+    cls,
+    params_keys,
+    rank
+  ):
+    tmp = []
+    for layer_lora in params_keys:
+      if 'lora' in layer_lora:
+        print(layer_lora)
+        new_layer_lora = layer_lora[:layer_lora.index('lora')]
+        if new_layer_lora not in tmp:
+          tmp.append(new_layer_lora)
+    params_keys = tmp
+    def _intercept(next_fn, args, kwargs, context):
+      h = next_fn(*args, **kwargs)
+      if context.method_name == '__call__':
+        module_path = context.module.path
+        if module_path in params_keys:
+          print(f"module_path: {module_path}")
+          lora_layer = cls._get_lora_layer(module_path, context.module, rank)
+          return lora_layer(h, *args, **kwargs)
+      return h
+    return _intercept
   
   @classmethod
   @validate_hf_hub_args
@@ -131,12 +202,13 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     force_download = kwargs.pop("force_download", False)
     proxies = kwargs.pop("proxies", None)
     local_files_only = kwargs.pop("local_files_only", None)
-    token = kwargs.pop("token", None)
+    use_auth_token = kwargs.pop("use_auth_token", None)
     revision = kwargs.pop("revision", None)
     subfolder = kwargs.pop("subfolder", None)
     weight_name = kwargs.pop("weight_name", None)
     unet_config = kwargs.pop("unet_config", None)
     use_safetensors = kwargs.pop("use_safetensors", None)
+    resume_download = kwargs.pop("resume_download", False)
 
     allow_pickle = False
     if use_safetensors is None:
@@ -155,8 +227,9 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       local_files_only=local_files_only,
       cache_dir=cache_dir,
       force_download=force_download,
+      resume_download=resume_download,
       proxies=proxies,
-      token=token,
+      use_auth_token=use_auth_token,
       revision=revision,
       subfolder=subfolder,
       user_agent=user_agent,
@@ -182,7 +255,15 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     return state_dict, network_alphas
 
   @classmethod
-  def load_lora_into_unet(cls, state_dict, network_alphas, unet, adapter_name=None, _pipeline=None):
+  def load_lora_into_unet(
+    cls,
+    state_dict,
+    network_alphas,
+    unet,
+    params,
+    adapter_name=None,
+    _pipeline=None
+    ):
     """
     This will load the LoRA layers specified in `state_dict` into `unet`.
 
@@ -205,6 +286,5 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     only_text_encoder = all(key.startswith(cls.text_encoder_name) for key in keys)
     if not only_text_encoder:
       # Load the layers corresponding to Unet.
-      unet_params, rank = convert_lora_pytorch_state_dict_to_flax(state_dict, unet_params)
-      unet_config["lora_rank"] = rank
-      unet_model = FlaxUNet2DConditionModel.from_config(unet_config)
+      unet_lora_params, rank = convert_lora_pytorch_state_dict_to_flax(state_dict, params["unet"])
+    return unet_lora_params, rank

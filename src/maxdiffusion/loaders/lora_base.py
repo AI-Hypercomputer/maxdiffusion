@@ -35,12 +35,13 @@ class LoRABaseMixin:
     local_files_only,
     cache_dir,
     force_download,
+    resume_download,
     proxies,
-    token,
+    use_auth_token,
     revision,
     subfolder,
     user_agent,
-    allow_pickle,
+    allow_pickle
   ):
     from .lora_pipeline import LORA_WEIGHT_NAME, LORA_WEIGHT_NAME_SAFE
 
@@ -65,12 +66,13 @@ class LoRABaseMixin:
               weights_name=weight_name or LORA_WEIGHT_NAME_SAFE,
               cache_dir=cache_dir,
               force_download=force_download,
+              resume_download=resume_download,
               proxies=proxies,
               local_files_only=local_files_only,
-              token=token,
+              use_auth_token=use_auth_token,
               revision=revision,
               subfolder=subfolder,
-              user_agent=user_agent,
+              user_agent=user_agent
             )
             state_dict = safetensors.torch.load_file(model_file, device="cpu")
         except (IOError, safetensors.SafetensorError) as e:
@@ -86,17 +88,18 @@ class LoRABaseMixin:
               pretrained_model_name_or_path_or_dict, file_extension=".bin", local_files_only=local_files_only
             )
           model_file = _get_model_file(
-            pretrained_model_name_or_path_or_dict,
-            weights_name=weight_name or LORA_WEIGHT_NAME,
-            cache_dir=cache_dir,
-            force_download=force_download,
-            proxies=proxies,
-            local_files_only=local_files_only,
-            token=token,
-            revision=revision,
-            subfolder=subfolder,
-            user_agent=user_agent,
-          )
+              pretrained_model_name_or_path_or_dict,
+              weights_name=weight_name or LORA_WEIGHT_NAME_SAFE,
+              cache_dir=cache_dir,
+              force_download=force_download,
+              resume_download=resume_download,
+              proxies=proxies,
+              local_files_only=local_files_only,
+              use_auth_token=use_auth_token,
+              revision=revision,
+              subfolder=subfolder,
+              user_agent=user_agent
+            )
           state_dict = load_state_dict(model_file)
       else:
         state_dict = pretrained_model_name_or_path_or_dict

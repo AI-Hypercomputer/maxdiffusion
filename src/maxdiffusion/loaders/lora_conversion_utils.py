@@ -14,11 +14,9 @@
 
 import re
 
+from .. import max_logging
+
 import torch
-
-from ..utils import is_peft_version, logging
-
-logger = logging.get_logger(__name__)
 
 def _maybe_map_sgm_blocks_to_diffusers(state_dict, unet_config, delimiter="_", block_slice_pos=5):
     # 1. get all state_dict_keys
@@ -146,10 +144,9 @@ def _convert_non_diffusers_lora_to_diffusers(state_dict, unet_name="unet", text_
     dora_present_in_te = any("dora_scale" in k and ("lora_te_" in k or "lora_te1_" in k) for k in state_dict)
     dora_present_in_te2 = any("dora_scale" in k and "lora_te2_" in k for k in state_dict)
     if dora_present_in_unet or dora_present_in_te or dora_present_in_te2:
-        if is_peft_version("<", "0.9.0"):
-            raise ValueError(
-                "You need `peft` 0.9.0 at least to use DoRA-enabled LoRAs. Please upgrade your installation of `peft`."
-            )
+      raise ValueError(
+          "DoRA is not currently supported"
+      )
 
     # Iterate over all LoRA weights.
     all_lora_keys = list(state_dict.keys())
@@ -214,7 +211,7 @@ def _convert_non_diffusers_lora_to_diffusers(state_dict, unet_name="unet", text_
     if len(state_dict) > 0:
         raise ValueError(f"The following keys have not been correctly renamed: \n\n {', '.join(state_dict.keys())}")
 
-    logger.info("Non-diffusers checkpoint detected.")
+    max_logging.log("Non-diffusers checkpoint detected.")
 
     # Construct final state dict.
     unet_state_dict = {f"{unet_name}.{module_name}": params for module_name, params in unet_state_dict.items()}
@@ -395,7 +392,7 @@ def _convert_kohya_flux_lora_to_diffusers(state_dict):
                     )
                 i += dims[j]
             if is_sparse:
-                logger.info(f"weight is sparse: {sds_key}")
+                max_logging.log(f"weight is sparse: {sds_key}")
 
         # make ai-toolkit weight
         ait_down_keys = [k + ".lora_A.weight" for k in ait_keys]
@@ -515,7 +512,7 @@ def _convert_kohya_flux_lora_to_diffusers(state_dict):
             )
 
         if len(sds_sd) > 0:
-            logger.warning(f"Unsuppored keys for ai-toolkit: {sds_sd.keys()}")
+            max_logging.log(f"Unsuppored keys for ai-toolkit: {sds_sd.keys()}")
 
         return ait_sd
 

@@ -55,11 +55,6 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
         ("to_k", "key"),
         ("to_v", "value"),
         ("to_q", "query"),
-        ("to_k_lora", "to_k_lora"),
-        ("to_k_lora", "to_k_lora"),
-        ("to_q_lora", "to_q_lora"),
-        ("to_v_lora", "to_v_lora"),
-        ("to_out_lora", "to_out_lora")
     ):
       if pt_tuple_key[-2] == rename_from:
         weight_name = pt_tuple_key[-1]
@@ -119,19 +114,38 @@ def create_flax_params_from_pytorch_state(pt_state_dict, flax_state_dict, is_lor
     for pt_key, pt_tensor in pt_state_dict.items():
         renamed_pt_key = rename_key(pt_key)
         pt_tuple_key = tuple(renamed_pt_key.split("."))
+        flax_key_list = [*pt_tuple_key]
+        for rename_from, rename_to in (
+          ("to_k_lora", ("to_k", "lora")),
+          ("to_q_lora", ("to_q", "lora")),
+          ("to_v_lora", ("to_v", "lora")),
+          ("to_out_lora", ("to_out_0", "lora")),
+          ("weight", "kernel")
+        ):
+          # for readability
+          tmp = []
+          for s in flax_key_list:
+            if s == rename_from:
+              if type(rename_to) is tuple:
+                for s_in_tuple in rename_to:
+                  tmp.append(s_in_tuple)
+              else:
+                tmp.append(rename_to)
+            else:
+              tmp.append(s)
+          flax_key_list = tmp
 
-        # Correctly rename weight parameters
-        flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, flax_state_dict)
-        
+        flax_tensor = pt_tensor
+
         if is_lora:
             if "lora.up" in renamed_pt_key:
                 rank = pt_tensor.shape[1]
             
-            flax_key_list = list(flax_key)
-            flax_key_list.remove("processor")
-            flax_key_list.remove("unet")
-            flax_key = tuple(flax_key_list)
-
+        if "processor" in flax_key_list:
+          flax_key_list.remove("processor")
+        if "unet" in flax_key_list:
+          flax_key_list.remove("unet")
+        flax_key = tuple(flax_key_list)
 
         if flax_key in flax_state_dict:
             if flax_tensor.shape != flax_state_dict[flax_key].shape:
@@ -139,7 +153,6 @@ def create_flax_params_from_pytorch_state(pt_state_dict, flax_state_dict, is_lor
                     f"PyTorch checkpoint seems to be incorrect. Weight {pt_key} was expected to be of shape "
                     f"{flax_state_dict[flax_key].shape}, but is {flax_tensor.shape}."
                 )
-
         # also add unexpected weight so that warning is thrown
         flax_state_dict[flax_key] = jnp.asarray(flax_tensor)
     
@@ -147,11 +160,11 @@ def create_flax_params_from_pytorch_state(pt_state_dict, flax_state_dict, is_lor
 
 def convert_lora_pytorch_state_dict_to_flax(pt_state_dict, unet_params):
     # Step 1: Convert pytorch tensor to numpy
-    pt_state_dict = {k: v.numpy() for k, v in pt_state_dict.items()}
+    # sometimes we load weights in bf16 and numpy doesn't support it
+    pt_state_dict = {k: v.float().numpy() for k, v in pt_state_dict.items()}
 
     unet_params = flatten_dict(unfreeze(unet_params))
     flax_state_dict, rank = create_flax_params_from_pytorch_state(pt_state_dict, unet_params,is_lora=True)
-
     return freeze(unflatten_dict(flax_state_dict)), rank
 
 def convert_pytorch_state_dict_to_flax(pt_state_dict, flax_model, init_key=42):
