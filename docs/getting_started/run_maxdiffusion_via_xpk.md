@@ -80,6 +80,15 @@ after which log out and log back in to the machine.
 
     **Important Note:** The JAX Stable Stack is currently in the experimental phase. We encourage you to try it out and provide feedback.
 
+
+    #### Run MaxDiffusion on GPU
+    Default device is TPU. To run MaxDiffusion on GPU, please explicitly specify GPU When building docker image. 
+
+    ```shell
+    # Default will pick base image. 
+    bash docker_build_dependency_image.sh DEVICE=gpu 
+    ```
+
 3. After building the dependency image `maxdiffusion_base_image`, xpk can handle updates to the working directory when running `xpk workload create` and using `--base-docker-image`.
 
     See details on docker images in xpk here: https://github.com/google/xpk/blob/main/README.md#how-to-add-docker-images-to-a-xpk-workload

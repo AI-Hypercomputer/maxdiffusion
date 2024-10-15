@@ -7,10 +7,10 @@ ARG COMMIT_HASH
 
 ENV COMMIT_HASH=$COMMIT_HASH
 
-RUN mkdir -p /app
+RUN mkdir -p /deps
 
 # Set the working directory in the container
-WORKDIR /app
+WORKDIR /deps
 
 # Copy all files from local workspace into docker container
 COPY . .
