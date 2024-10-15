@@ -16,7 +16,7 @@ from typing import Union, Dict
 import jax.numpy as jnp
 from flax.core.frozen_dict import unfreeze
 from .lora_base import LoRABaseMixin
-from ..models.lora import LoRALinearLayer, LoRAConv2DLayer
+from ..models.lora import LoRALinearLayer, LoRAConv2DLayer, BaseLoRALayer
 from .lora_conversion_utils import (
   _convert_non_diffusers_lora_to_diffusers,
   _maybe_map_sgm_blocks_to_diffusers,  
@@ -134,10 +134,17 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
           tmp.append(new_layer_lora)
     params_keys = tmp
     def _intercept(next_fn, args, kwargs, context):
+      mod = context.module
+      while mod is not None:
+        if isinstance(mod, BaseLoRALayer):
+          return next_fn(*args, **kwargs)
+        mod = mod.parent
       h = next_fn(*args, **kwargs)
       if context.method_name == '__call__':
         module_path = context.module.path
         if module_path in params_keys:
+          print(h)
+          print(module_path)
           lora_layer = cls._get_lora_layer(module_path, context.module, rank)
           return lora_layer(h, *args, **kwargs)
       return h
