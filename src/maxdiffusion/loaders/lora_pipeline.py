@@ -76,7 +76,6 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       pretrained_model_name_or_path_or_dict = pretrained_model_name_or_path_or_dict.copy()
 
     state_dict, network_alphas = self.lora_state_dict(pretrained_model_name_or_path_or_dict, **kwargs)
-
     is_correct_format = all("lora" in key or "dora_scale" in key for key in state_dict.keys())
     if not is_correct_format:
       raise ValueError("Invalid LoRA checkpoint.")

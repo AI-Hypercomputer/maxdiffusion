@@ -114,28 +114,35 @@ def create_flax_params_from_pytorch_state(pt_state_dict, flax_state_dict, is_lor
     for pt_key, pt_tensor in pt_state_dict.items():
         renamed_pt_key = rename_key(pt_key)
         pt_tuple_key = tuple(renamed_pt_key.split("."))
-        flax_key_list = [*pt_tuple_key]
-        for rename_from, rename_to in (
-          ("to_k_lora", ("to_k", "lora")),
-          ("to_q_lora", ("to_q", "lora")),
-          ("to_v_lora", ("to_v", "lora")),
-          ("to_out_lora", ("to_out_0", "lora")),
-          ("weight", "kernel")
-        ):
-          # for readability
-          tmp = []
-          for s in flax_key_list:
-            if s == rename_from:
-              if type(rename_to) is tuple:
-                for s_in_tuple in rename_to:
-                  tmp.append(s_in_tuple)
+        #breakpoint()
+        # conv
+        if pt_tuple_key[-1] == "weight" and pt_tensor.ndim == 4:
+          pt_tensor = pt_tensor.transpose(2, 3, 1, 0)
+          pt_tuple_key = pt_tuple_key[:-1] + ("kernel",)
+          flax_key_list = [*pt_tuple_key]
+          flax_tensor = pt_tensor
+        else:
+          flax_key_list = [*pt_tuple_key]
+          for rename_from, rename_to in (
+            ("to_k_lora", ("to_k", "lora")),
+            ("to_q_lora", ("to_q", "lora")),
+            ("to_v_lora", ("to_v", "lora")),
+            ("to_out_lora", ("to_out_0", "lora")),
+            ("weight", "kernel")
+          ):
+            tmp = []
+            for s in flax_key_list:
+              if s == rename_from:
+                if type(rename_to) is tuple:
+                  for s_in_tuple in rename_to:
+                    tmp.append(s_in_tuple)
+                else:
+                  tmp.append(rename_to)
               else:
-                tmp.append(rename_to)
-            else:
-              tmp.append(s)
-          flax_key_list = tmp
+                tmp.append(s)
+            flax_key_list = tmp
 
-        flax_tensor = pt_tensor
+          flax_tensor = pt_tensor.T
 
         if is_lora:
             if "lora.up" in renamed_pt_key:
@@ -164,7 +171,7 @@ def convert_lora_pytorch_state_dict_to_flax(pt_state_dict, unet_params):
     pt_state_dict = {k: v.float().numpy() for k, v in pt_state_dict.items()}
 
     unet_params = flatten_dict(unfreeze(unet_params))
-    flax_state_dict, rank = create_flax_params_from_pytorch_state(pt_state_dict, unet_params,is_lora=True)
+    flax_state_dict, rank = create_flax_params_from_pytorch_state(pt_state_dict, unet_params, is_lora=True)
     return freeze(unflatten_dict(flax_state_dict)), rank
 
 def convert_pytorch_state_dict_to_flax(pt_state_dict, flax_model, init_key=42):
