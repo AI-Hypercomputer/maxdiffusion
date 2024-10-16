@@ -31,6 +31,52 @@ TRANSFORMER_NAME = "transformer"
 LORA_WEIGHT_NAME = "pytorch_lora_weights.bin"
 LORA_WEIGHT_NAME_SAFE = "pytorch_lora_weights.safetensors"
 
+# class StableDiffusionXLLoraLoaderMixin(LoRABaseMixin):
+#   r"""
+#   Load LoRA layers into Stable Diffusion XL
+#   """
+
+#   _lora_loadable_modules = ["unet", "text_encoder", "text_encoder_2"]
+#   unet_name = UNET_NAME
+#   text_encoder_name = TEXT_ENCODER_NAME
+
+#   def load_lora_weights(
+#     self,
+#     pretrained_model_name_or_path_or_dict: Union[str, Dict[str, jnp.ndarray]],
+#     adapter_name = None,
+#     **kwargs,):
+#     """
+#     Load LoRA weights specified in `pretrained_model_name_or_path_or_dict` into `self.unet` and
+#     `self.text_encoder`.
+
+#     All kwargs are forwarded to `self.lora_state_dict`.
+
+#     See [`~loaders.StableDiffusionLoraLoaderMixin.lora_state_dict`] for more details on how the state dict is
+#     loaded.
+
+#     See [`~loaders.StableDiffusionLoraLoaderMixin.load_lora_into_unet`] for more details on how the state dict is
+#     loaded into `self.unet`.
+
+#     See [`~loaders.StableDiffusionLoraLoaderMixin.load_lora_into_text_encoder`] for more details on how the state
+#     dict is loaded into `self.text_encoder`.
+
+#     Parameters:
+#         pretrained_model_name_or_path_or_dict (`str` or `os.PathLike` or `dict`):
+#             See [`~loaders.StableDiffusionLoraLoaderMixin.lora_state_dict`].
+#         kwargs (`dict`, *optional*):
+#             See [`~loaders.StableDiffusionLoraLoaderMixin.lora_state_dict`].
+#         adapter_name (`str`, *optional*):
+#             Adapter name to be used for referencing the loaded adapter model. If not specified, it will use
+#             `default_{i}` where i is the total number of adapters being loaded.
+#     """
+
+#     # if a dict is passed, copy it instead of modifying it inplace
+#     if isinstance(pretrained_model_name_or_path_or_dict, dict):
+#       pretrained_model_name_or_path_or_dict = pretrained_model_name_or_path_or_dict.copy()
+
+#     self.    
+
+
 class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
   r"""
   Load LoRA layers into Stable Diffusion [`UNet2DConditionModel`] and
@@ -80,15 +126,14 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     if not is_correct_format:
       raise ValueError("Invalid LoRA checkpoint.")
     
-    unet_lora_params, rank = self.load_lora_into_unet(
+    params, rank = self.load_lora_into_unet(
       state_dict,
       network_alphas=network_alphas,
-      unet=getattr(self, self.unet_name) if not hasattr(self, "unet") else self.unet,
       params=params,
       adapter_name=adapter_name,
       _pipeline=self,
     )
-    return unfreeze(unet_lora_params), rank
+    return params, rank
 
   @classmethod
   def _get_lora_layer(cls, module_path, module, rank):
@@ -142,8 +187,6 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       if context.method_name == '__call__':
         module_path = context.module.path
         if module_path in params_keys:
-          print(h)
-          print(module_path)
           lora_layer = cls._get_lora_layer(module_path, context.module, rank)
           return lora_layer(h, *args, **kwargs)
       return h
@@ -265,7 +308,6 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     cls,
     state_dict,
     network_alphas,
-    unet,
     params,
     adapter_name=None,
     _pipeline=None
@@ -288,9 +330,6 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
             Adapter name to be used for referencing the loaded adapter model. If not specified, it will use
             `default_{i}` where i is the total number of adapters being loaded.
     """
-    keys = list(state_dict.keys())
-    only_text_encoder = all(key.startswith(cls.text_encoder_name) for key in keys)
-    if not only_text_encoder:
-      # Load the layers corresponding to Unet.
-      unet_lora_params, rank = convert_lora_pytorch_state_dict_to_flax(state_dict, params["unet"])
-    return unet_lora_params, rank
+    # Load the layers corresponding to Unet.
+    params, rank = convert_lora_pytorch_state_dict_to_flax(state_dict, params)
+    return params, rank
