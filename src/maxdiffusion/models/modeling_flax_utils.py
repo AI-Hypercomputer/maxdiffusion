@@ -34,6 +34,7 @@ from ..utils import (
     FLAX_WEIGHTS_NAME,
     HUGGINGFACE_CO_RESOLVE_ENDPOINT,
     WEIGHTS_NAME,
+    SAFETENSORS_WEIGHTS_NAME,
     PushToHubMixin,
     logging,
 )
@@ -331,9 +332,12 @@ class FlaxModelMixin(PushToHubMixin):
     )
     if os.path.isdir(pretrained_path_with_subfolder):
       if from_pt:
-        if not os.path.isfile(os.path.join(pretrained_path_with_subfolder, WEIGHTS_NAME)):
+        if os.path.isfile(os.path.join(pretrained_path_with_subfolder, WEIGHTS_NAME)):
+          model_file = os.path.join(pretrained_path_with_subfolder, WEIGHTS_NAME)
+        elif os.path.isfile(os.path.join(pretrained_path_with_subfolder, SAFETENSORS_WEIGHTS_NAME)):
+          model_file = os.path.join(pretrained_path_with_subfolder, SAFETENSORS_WEIGHTS_NAME)
+        else:
           raise EnvironmentError(f"Error no file named {WEIGHTS_NAME} found in directory {pretrained_path_with_subfolder} ")
-        model_file = os.path.join(pretrained_path_with_subfolder, WEIGHTS_NAME)
       elif os.path.isfile(os.path.join(pretrained_path_with_subfolder, FLAX_WEIGHTS_NAME)):
         # Load from a Flax checkpoint
         model_file = os.path.join(pretrained_path_with_subfolder, FLAX_WEIGHTS_NAME)
