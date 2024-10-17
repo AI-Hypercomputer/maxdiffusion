@@ -31,8 +31,7 @@ from jax.sharding import Mesh
 from .. import pyconfig
 from .. import max_utils
 from maxdiffusion.input_pipeline.input_pipeline_interface import (
-    make_laion400m_train_iterator,
-    make_pokemon_train_iterator,
+    make_data_iterator,
     make_dreambooth_train_iterator,
 )
 
@@ -42,8 +41,7 @@ from PIL import Image
 
 from maxdiffusion import (FlaxStableDiffusionPipeline, FlaxStableDiffusionXLPipeline)
 from maxdiffusion.models import FlaxAutoencoderKL
-from maxdiffusion.maxdiffusion_utils import (encode, tokenize_captions)
-from maxdiffusion.trainers.sdxl_trainer import (encode_xl, tokenize_captions_xl)
+from maxdiffusion.maxdiffusion_utils import (encode, tokenize_captions, encode_xl, tokenize_captions_xl)
 
 from maxdiffusion.maxdiffusion_utils import vae_apply, transform_images
 
@@ -109,7 +107,7 @@ class InputPipelineInterface(unittest.TestCase):
         config, mesh, global_batch_size, pipeline.tokenizer, pipeline.vae, params["vae"]
     )
 
-    data = train_iterator()
+    data = next(train_iterator)
     device_count = jax.device_count()
 
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
@@ -135,13 +133,115 @@ class InputPipelineInterface(unittest.TestCase):
     cleanup(instance_class_local_dir)
     cleanup(class_class_local_dir)
 
-  def test_make_pokemon_iterator_cache(self):
+  def test_make_pokemon_hf_iterator(self):
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_2_base.yml"),
+            "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-2-base",
+            "dataset_name=diffusers/pokemon-gpt4-captions",
+            "from_pt=False",
+            "dataset_type=hf",
+        ],
+        unittest=True,
+    )
+    config = pyconfig.config
+
+    global_batch_size = config.per_device_batch_size * jax.device_count()
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+        config.pretrained_model_name_or_path,
+        revision=config.revision,
+        dtype=config.activations_dtype,
+        safety_checker=None,
+        feature_extractor=None,
+        from_pt=config.from_pt,
+    )
+    p_encode = None
+    p_vae_apply = None
+    rng = None
+    tokenize_fn = partial(
+        tokenize_captions, caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode
+    )
+    image_transforms_fn = partial(
+        transform_images,
+        image_column=config.image_column,
+        image_resolution=config.resolution,
+        rng=rng,
+        global_batch_size=global_batch_size,
+        p_vae_apply=p_vae_apply,
+    )
+
+    train_iterator = make_data_iterator(
+        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+    )
+    data = next(train_iterator)
+    device_count = jax.device_count()
+
+    assert data["input_ids"].shape == (device_count, 77)
+    assert data["pixel_values"].shape == (device_count, 3, config.resolution, config.resolution)
+
+  def test_make_pokemon_hf_iterator_sdxl(self):
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_xl.yml"),
+            "pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0",
+            "per_device_batch_size=1",
+            "dataset_name=diffusers/pokemon-gpt4-captions",
+            "dataset_type=hf",
+        ],
+        unittest=True,
+    )
+    config = pyconfig.config
+
+    global_batch_size = config.per_device_batch_size * jax.device_count()
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+    pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+        config.pretrained_model_name_or_path,
+        revision=config.revision,
+        dtype=config.activations_dtype,
+        safety_checker=None,
+        feature_extractor=None,
+        from_pt=config.from_pt,
+    )
+    p_encode = None
+    p_vae_apply = None
+    rng = None
+    tokenize_fn = partial(
+        tokenize_captions_xl,
+        caption_column=config.caption_column,
+        tokenizers=[pipeline.tokenizer, pipeline.tokenizer_2],
+        p_encode=p_encode,
+    )
+    image_transforms_fn = partial(
+        transform_images,
+        image_column=config.image_column,
+        image_resolution=config.resolution,
+        rng=rng,
+        global_batch_size=global_batch_size,
+        p_vae_apply=p_vae_apply,
+    )
+
+    train_iterator = make_data_iterator(
+        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+    )
+    data = next(train_iterator)
+    device_count = jax.device_count()
+
+    assert data["input_ids"].shape == (device_count, 2, 77)
+    assert data["pixel_values"].shape == (device_count, 3, config.resolution, config.resolution)
+
+  def test_make_pokemon_tf_iterator_cache(self):
     pyconfig.initialize(
         [
             None,
             os.path.join(THIS_DIR, "..", "configs", "base_2_base.yml"),
             "cache_latents_text_encoder_outputs=True",
             "dataset_name=diffusers/pokemon-gpt4-captions",
+            "dataset_type=tf",
         ],
         unittest=True,
     )
@@ -178,8 +278,10 @@ class InputPipelineInterface(unittest.TestCase):
         p_vae_apply=p_vae_apply,
     )
 
-    train_iterator = make_pokemon_train_iterator(config, mesh, global_batch_size, tokenize_fn, image_transforms_fn)
-    data = train_iterator()
+    train_iterator = make_data_iterator(
+        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+    )
+    data = next(train_iterator)
     device_count = jax.device_count()
 
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
@@ -202,6 +304,7 @@ class InputPipelineInterface(unittest.TestCase):
             "tokenize_captions_num_proc=1",
             "transform_images_num_proc=1",
             "dataset_name=diffusers/pokemon-gpt4-captions",
+            "dataset_type=tf",
         ],
         unittest=True,
     )
@@ -238,8 +341,10 @@ class InputPipelineInterface(unittest.TestCase):
         p_vae_apply=p_vae_apply,
     )
 
-    train_iterator = make_pokemon_train_iterator(config, mesh, global_batch_size, tokenize_fn, image_transforms_fn)
-    data = train_iterator()
+    train_iterator = make_data_iterator(
+        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+    )
+    data = next(train_iterator)
     device_count = jax.device_count()
 
     encoder_hidden_states = data["input_ids"]
@@ -255,6 +360,7 @@ class InputPipelineInterface(unittest.TestCase):
             "cache_latents_text_encoder_outputs=True",
             "per_device_batch_size=1",
             "dataset_name=diffusers/pokemon-gpt4-captions",
+            "dataset_type=tf",
         ],
         unittest=True,
     )
@@ -300,8 +406,10 @@ class InputPipelineInterface(unittest.TestCase):
         p_vae_apply=p_vae_apply,
     )
 
-    train_iterator = make_pokemon_train_iterator(config, mesh, global_batch_size, tokenize_fn, image_transforms_fn)
-    data = train_iterator()
+    train_iterator = make_data_iterator(
+        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+    )
+    data = next(train_iterator)
     device_count = jax.device_count()
 
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
@@ -317,13 +425,14 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
     )
 
-  def test_make_laion_iterator(self):
+  def test_make_laion_tfrecord_iterator(self):
     pyconfig.initialize(
         [
             None,
             os.path.join(THIS_DIR, "..", "configs", "base_2_base.yml"),
             "cache_latents_text_encoder_outputs=True",
             "train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/processed/laion400m_tfrec",
+            "dataset_type=tfrecord",
         ],
         unittest=True,
     )
@@ -341,12 +450,8 @@ class InputPipelineInterface(unittest.TestCase):
         from_pt=config.from_pt,
     )
 
-    train_iterator = make_laion400m_train_iterator(
-        config,
-        mesh,
-        global_batch_size,
-    )
-    data = train_iterator()
+    train_iterator = make_data_iterator(config, jax.process_index(), jax.process_count(), mesh, global_batch_size)
+    data = next(train_iterator)
     device_count = jax.device_count()
 
     vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)

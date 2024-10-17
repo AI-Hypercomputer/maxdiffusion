@@ -31,7 +31,7 @@ def load_next_batch(train_iter, example_batch, config):
   if config.reuse_example_batch and example_batch is not None:
     return example_batch
   else:
-    return train_iter()
+    return next(train_iter)
 
 
 def validate_train_config(config):
