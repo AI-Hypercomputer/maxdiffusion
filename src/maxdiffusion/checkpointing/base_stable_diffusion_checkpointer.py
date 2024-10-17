@@ -196,21 +196,20 @@ class BaseStableDiffusionCheckpointer(ABC):
           precision=precision,
       )
 
-    if len(self.config.unet_checkpoint) > 0:
-      unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
-          self.config.unet_checkpoint,
-          split_head_dim=self.config.split_head_dim,
-          norm_num_groups=self.config.norm_num_groups,
-          attention_kernel=self.config.attention,
-          flash_block_sizes=flash_block_sizes,
-          dtype=self.activations_dtype,
-          weights_dtype=self.weights_dtype,
-          mesh=self.mesh,
-      )
-      params["unet"] = unet_params
-      pipeline.unet = unet
-    params = jax.tree_util.tree_map(lambda x: x.astype(self.config.weights_dtype), params)
-
+      if len(self.config.unet_checkpoint) > 0:
+        unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
+            self.config.unet_checkpoint,
+            split_head_dim=self.config.split_head_dim,
+            norm_num_groups=self.config.norm_num_groups,
+            attention_kernel=self.config.attention,
+            flash_block_sizes=flash_block_sizes,
+            dtype=self.activations_dtype,
+            weights_dtype=self.weights_dtype,
+            mesh=self.mesh,
+        )
+        params["unet"] = unet_params
+        pipeline.unet = unet
+      params = jax.tree_util.tree_map(lambda x: x.astype(self.config.weights_dtype), params)
     return pipeline, params
 
   def save_checkpoint(self, train_step, pipeline, params, train_states):
