@@ -36,7 +36,7 @@ class LoRALinearLayer(nn.Module, BaseLoRALayer):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
-  axis_names=('embed', 'heads') #default for qkv and to_out, set it otherwise.
+  lora_scale: float = 1.0
 
   @nn.compact
   def __call__(self, h, hidden_states):
@@ -47,10 +47,6 @@ class LoRALinearLayer(nn.Module, BaseLoRALayer):
       features=self.rank,
       use_bias=False,
       kernel_init=nn.initializers.kaiming_uniform(),
-      # kernel_init=nn.with_logical_partitioning(
-      #   nn.initializers.kaiming_uniform(),
-      #   self.axis_names
-      # ),
       dtype=self.dtype,
       param_dtype=self.weights_dtype,
       precision=self.precision,
@@ -60,10 +56,6 @@ class LoRALinearLayer(nn.Module, BaseLoRALayer):
       features=self.out_features,
       use_bias=False,
       kernel_init=nn.initializers.zeros_init(),
-      # kernel_init=nn.with_logical_partitioning(
-      #   nn.initializers.zeros_init(),
-      #   self.axis_names
-      # ),
       dtype=self.dtype,
       param_dtype=self.weights_dtype,
       precision=self.precision,
@@ -72,54 +64,7 @@ class LoRALinearLayer(nn.Module, BaseLoRALayer):
     if self.network_alpha:
       up_hidden_states *= self.network_alpha / self.rank
     
-    return h + up_hidden_states
-
-# class LoRAConv2DLayer(nn.Module):
-#   """
-#   Implements LoRA Conv layer
-#   """
-#   out_features: int
-#   rank: int = 4
-#   kernel_size: Union[int, Tuple[int, int]] = (1,1)
-#   strides: Union[int, Tuple[int, int]] = (1, 1)
-#   padding: Union[int, Tuple[int, int], str] = 0
-#   input_dilation: int = 1
-#   kernel_dilation: int = 1
-#   feature_group_count: int = 1
-#   network_alpha: Optional[float] = None
-#   dtype: jnp.dtype = jnp.float32
-#   weights_dtype: jnp.dtype = jnp.float32
-#   precision: jax.lax.Precision = None
-
-#   @nn.compact
-#   def __call__(self, h, hidden_states): 
-#     breakpoint()
-#     print("out_features: ", self.out_features)
-#     print("h.shape: ", h.shape)
-#     print("hidden_states.shape: ", hidden_states.shape)
-#     lora_a = self.param('down', nn.initializers.kaiming_uniform(), (hidden_states.shape[-1], self.rank))
-#     lora_b = self.param('up', jax.nn.initializers.zeros, (self.rank, self.out_features))
-
-#     # Compute LoRA contribution
-#     lora_out = hidden_states @ lora_a @ lora_b
-#     if self.network_alpha:
-#       lora_out = lora_out * (self.lora / self.rank)
-#     print("lora_out: ", lora_out)
-#     return h + jax.lax.conv_general_dilated(
-#         lora_out,
-#         lora_out,
-#         window_strides=self.strides,
-#         padding=self.padding,
-#         dimension_numbers=('NHWC', 'HWIO', 'NHWC'),
-#     )
-    # return h + nn.Conv(
-    #   features=self.out_features,
-    #   kernel_size=self.kernel_size,
-    #   strides=self.strides,
-    #   padding=self.padding,
-    #   dtype=self.dtype,
-    #   param_dtype=self.weights_dtype,
-    # )(lora_out)
+    return h + (up_hidden_states * self.lora_scale)
 
 class LoRAConv2DLayer(nn.Module, BaseLoRALayer):
   """
@@ -137,6 +82,7 @@ class LoRAConv2DLayer(nn.Module, BaseLoRALayer):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
+  lora_scale: float = 1.0
 
   @nn.compact
   def __call__(self, h, hidden_states):
@@ -152,10 +98,6 @@ class LoRAConv2DLayer(nn.Module, BaseLoRALayer):
       dtype=self.dtype,
       param_dtype=self.weights_dtype,
       kernel_init=nn.initializers.kaiming_uniform(),
-      # kernel_init=nn.with_logical_partitioning(
-      #   nn.initializers.kaiming_uniform(),,
-      #   ("keep_1", "keep_2", "conv_in", "conv_out")
-      # ),
       precision=self.precision,
       name="down"
     )(hidden_states)
@@ -168,10 +110,6 @@ class LoRAConv2DLayer(nn.Module, BaseLoRALayer):
       dtype=self.dtype,
       param_dtype=self.weights_dtype,
       kernel_init=nn.initializers.zeros_init(),
-      # kernel_init=nn.with_logical_partitioning(
-      #   nn.initializers.zeros_init(),
-      #   ("keep_1", "keep_2", "conv_in", "conv_out")
-      # ),
       precision=self.precision,
       name="up"
     )(down_hidden_states)
@@ -179,4 +117,4 @@ class LoRAConv2DLayer(nn.Module, BaseLoRALayer):
     if self.network_alpha:
       up_hidden_states *= self.network_alpha / self.rank
     
-    return  h + up_hidden_states
+    return  h + (up_hidden_states * self.lora_scale)

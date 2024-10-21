@@ -206,6 +206,24 @@ lightning_repo: ""
 # Empty or "sdxl_lightning_4step_unet.safetensors" to enable lightning.
 lightning_ckpt: ""
 
+# LoRA parameters
+# Values are lists to support multiple LoRA loading during inference in the future.
+lora_config: {
+  lora_model_name_or_path: [],
+  weight_name: [],
+  adapter_name: [],
+  scale: [],
+  from_pt: []
+}
+# Ex with values:
+# lora_config : {
+#   lora_model_name_or_path: ["ByteDance/Hyper-SD"],
+#   weight_name: ["Hyper-SDXL-2steps-lora.safetensors"],
+#   adapter_name: ["hyper-sdxl"],
+#   scale: [0.7],
+#   from_pt: [True]
+# }
+
 enable_mllog: False
 
 #controlnet

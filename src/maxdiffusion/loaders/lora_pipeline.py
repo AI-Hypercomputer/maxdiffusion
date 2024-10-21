@@ -13,8 +13,8 @@
 # limitations under the License.
 
 from typing import Union, Dict
+import flax
 import jax.numpy as jnp
-from flax.core.frozen_dict import unfreeze
 from .lora_base import LoRABaseMixin
 from ..models.lora import LoRALinearLayer, LoRAConv2DLayer, BaseLoRALayer
 from .lora_conversion_utils import (
@@ -80,7 +80,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     if not is_correct_format:
       raise ValueError("Invalid LoRA checkpoint.")
     
-    params, rank, network_alphas = self.load_lora_into_unet(
+    params, rank, network_alphas = self.load_lora(
       state_dict,
       network_alphas=network_alphas,
       params=params,
@@ -136,11 +136,14 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
   @classmethod
   def make_lora_interceptor(
     cls,
-    params_keys,
+    params,
     rank,
     network_alphas
   ):
-    params_keys, network_alphas = cls.rename_for_interceptor(params_keys, network_alphas)
+    # Only unet interceptor supported for now.
+    unet_lora_keys = flax.traverse_util.flatten_dict(params["unet"]).keys()
+    unet_lora_keys, network_alphas = cls.rename_for_interceptor(unet_lora_keys, network_alphas)
+    
     def _intercept(next_fn, args, kwargs, context):
       mod = context.module
       while mod is not None:
@@ -150,7 +153,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       h = next_fn(*args, **kwargs)
       if context.method_name == '__call__':
         module_path = context.module.path
-        if module_path in params_keys:
+        if module_path in unet_lora_keys:
           lora_layer = cls._get_lora_layer(module_path, context.module, rank, network_alphas)
           return lora_layer(h, *args, **kwargs)
       return h
@@ -268,7 +271,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     return state_dict, network_alphas
 
   @classmethod
-  def load_lora_into_unet(
+  def load_lora(
     cls,
     state_dict,
     network_alphas,
