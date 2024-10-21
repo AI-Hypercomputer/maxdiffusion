@@ -558,6 +558,26 @@ def calculate_num_params_from_pytree(params):
 def get_global_batch_size(per_device_batch_size):
   return per_device_batch_size * jax.device_count()
 
+def is_gpu_backend(raw_keys):
+  """Determine whether Maxdiffusion is intended to run on a GPU backend."""
+  return raw_keys["hardware"] == "gpu"
+
+def initialize_jax_for_gpu():
+  """Jax distribute initialize for GPUs."""
+  if os.environ.get("JAX_COORDINATOR_IP") is not None:
+    coordinator_ip = str(os.getenv("JAX_COORDINATOR_IP"))
+    coordinator_port = str(os.getenv("JAX_COORDINATOR_PORT"))
+    jax.distributed.initialize(
+        coordinator_address=f"{coordinator_ip}:{coordinator_port}",
+        num_processes=int(os.getenv("NNODES")),
+        process_id=int(os.getenv("NODE_RANK")),
+    )
+    max_logging.log(f"JAX global devices: {jax.devices()}")
 
 def maybe_initialize_jax_distributed_system(raw_keys):
-  jax.distributed.initialize()
+  if is_gpu_backend(raw_keys):
+    max_logging.log("Attempting to initialize the jax distributed system for GPU backend...")
+      initialize_jax_for_gpu()
+    max_logging.log("Jax distributed system initialized on GPU!")
+  else:
+    jax.distributed.initialize()

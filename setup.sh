@@ -15,11 +15,10 @@
 # limitations under the License.
 
 # Description:
-# bash setup.sh MODE={stable,nightly}
+# bash setup.sh MODE={stable,nightly,pinned} DEVICE={tpu,gpu}
 
 # You need to specify a MODE, default value stable.
 # For MODE=stable you may additionally specify JAX_VERSION, e.g. JAX_VERSION=0.4.33
-
 # Enable "exit immediately if any command fails" option
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -29,6 +28,11 @@ for ARGUMENT in "$@"; do
   IFS='=' read -r KEY VALUE <<< "$ARGUMENT"
   export "$KEY"="$VALUE"
 done
+
+# Default device is TPU
+if [[ -z "$DEVICE" ]]; then
+  export DEVICE="tpu"
+fi
 
 # Unset JAX_VERSION if set to "NONE"
 if [[ $JAX_VERSION == NONE ]]; then
@@ -42,7 +46,17 @@ if [[ -n $JAX_VERSION && ! ($MODE == "stable" || -z $MODE) ]]; then
 fi
 
 # Install JAX and JAXlib based on the specified mode
-if [[ "$MODE" == "stable" || ! -v MODE ]]; then
+if [[ "$MODE" == "pinned" ]]; then
+  if [[ "$DEVICE" != "gpu" ]]; then
+    echo "pinned mode is supported for GPU builds only."
+    exit 1
+  fi
+  echo "Installing pinned jax, jaxlib for NVIDIA gpu."
+  pip3 install "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html -c constraints_gpu.txt
+  pip3 install "transformer-engine==1.5.0+297459b" \
+    --extra-index-url https://us-python.pkg.dev/gce-ai-infra/maxtext-build-support-packages/simple/ \
+    -c constraints_gpu.txt
+elif [[ "$MODE" == "stable" || ! -v MODE ]]; then
   # Stable mode
   echo "Installing stable jax, jaxlib for tpu"
   if [[ -n "$JAX_VERSION" ]]; then

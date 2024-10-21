@@ -50,6 +50,7 @@ if [[ -z ${DEVICE} ]]; then
   export DEVICE=tpu
   echo "Default DEVICE=${DEVICE}"
 fi
+echo "DEVICE=${DEVICE}"
 
 if [[ -z ${JAX_VERSION+x} ]] ; then
   export JAX_VERSION=NONE
@@ -61,6 +62,11 @@ COMMIT_HASH=$(git rev-parse --short HEAD)
 echo "Building MaxDiffusion with MODE=${MODE} at commit hash ${COMMIT_HASH} . . ."
 
 if [[ ${DEVICE} == "gpu" ]]; then
+  if [[ ${MODE} == "pinned" ]]; then
+    export BASEIMAGE=ghcr.io/nvidia/jax:base-2024-10-17
+  else
+    export BASEIMAGE=ghcr.io/nvidia/jax:base
+  fi
   docker build --network host --build-arg MODE=${MODE} --build-arg JAX_VERSION=$JAX_VERSION --build-arg DEVICE=$DEVICE --build-arg BASEIMAGE=$BASEIMAGE -f ./maxdiffusion_gpu_dependencies.Dockerfile -t ${LOCAL_IMAGE_NAME} .
 else 
   if [[ "${MODE}" == "stable_stack" ]]; then
