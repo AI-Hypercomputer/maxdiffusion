@@ -31,52 +31,6 @@ TRANSFORMER_NAME = "transformer"
 LORA_WEIGHT_NAME = "pytorch_lora_weights.bin"
 LORA_WEIGHT_NAME_SAFE = "pytorch_lora_weights.safetensors"
 
-# class StableDiffusionXLLoraLoaderMixin(LoRABaseMixin):
-#   r"""
-#   Load LoRA layers into Stable Diffusion XL
-#   """
-
-#   _lora_loadable_modules = ["unet", "text_encoder", "text_encoder_2"]
-#   unet_name = UNET_NAME
-#   text_encoder_name = TEXT_ENCODER_NAME
-
-#   def load_lora_weights(
-#     self,
-#     pretrained_model_name_or_path_or_dict: Union[str, Dict[str, jnp.ndarray]],
-#     adapter_name = None,
-#     **kwargs,):
-#     """
-#     Load LoRA weights specified in `pretrained_model_name_or_path_or_dict` into `self.unet` and
-#     `self.text_encoder`.
-
-#     All kwargs are forwarded to `self.lora_state_dict`.
-
-#     See [`~loaders.StableDiffusionLoraLoaderMixin.lora_state_dict`] for more details on how the state dict is
-#     loaded.
-
-#     See [`~loaders.StableDiffusionLoraLoaderMixin.load_lora_into_unet`] for more details on how the state dict is
-#     loaded into `self.unet`.
-
-#     See [`~loaders.StableDiffusionLoraLoaderMixin.load_lora_into_text_encoder`] for more details on how the state
-#     dict is loaded into `self.text_encoder`.
-
-#     Parameters:
-#         pretrained_model_name_or_path_or_dict (`str` or `os.PathLike` or `dict`):
-#             See [`~loaders.StableDiffusionLoraLoaderMixin.lora_state_dict`].
-#         kwargs (`dict`, *optional*):
-#             See [`~loaders.StableDiffusionLoraLoaderMixin.lora_state_dict`].
-#         adapter_name (`str`, *optional*):
-#             Adapter name to be used for referencing the loaded adapter model. If not specified, it will use
-#             `default_{i}` where i is the total number of adapters being loaded.
-#     """
-
-#     # if a dict is passed, copy it instead of modifying it inplace
-#     if isinstance(pretrained_model_name_or_path_or_dict, dict):
-#       pretrained_model_name_or_path_or_dict = pretrained_model_name_or_path_or_dict.copy()
-
-#     self.    
-
-
 class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
   r"""
   Load LoRA layers into Stable Diffusion [`UNet2DConditionModel`] and
@@ -126,22 +80,24 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     if not is_correct_format:
       raise ValueError("Invalid LoRA checkpoint.")
     
-    params, rank = self.load_lora_into_unet(
+    params, rank, network_alphas = self.load_lora_into_unet(
       state_dict,
       network_alphas=network_alphas,
       params=params,
       adapter_name=adapter_name,
       _pipeline=self,
     )
-    return params, rank
+    return params, rank, network_alphas
 
   @classmethod
-  def _get_lora_layer(cls, module_path, module, rank):
+  def _get_lora_layer(cls, module_path, module, rank, network_alphas):
     is_conv = any('conv' in str_ for str_ in module_path)
+    network_alpha = network_alphas.get(module_path, None)
     if is_conv:
       lora_module = LoRAConv2DLayer(
         out_features=module.features,
         rank=rank,
+        network_alpha=network_alpha,
         kernel_size=module.kernel_size,
         strides=module.strides,
         padding=module.padding,
@@ -157,6 +113,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       lora_module = LoRALinearLayer(
         out_features=module.features,
         rank=rank,
+        network_alpha=network_alpha,
         dtype=module.dtype,
         weights_dtype=module.param_dtype,
         precision=module.precision,
@@ -164,19 +121,26 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       )
     return lora_module
 
+  def rename_for_interceptor(params_keys, network_alphas):
+    new_params_keys = []
+    for layer_lora in params_keys:
+      if 'lora' in layer_lora:
+        new_layer_lora = layer_lora[:layer_lora.index('lora')]
+        if new_layer_lora not in new_params_keys:
+          new_params_keys.append(new_layer_lora)
+          network_alpha = network_alphas[layer_lora]
+          del network_alphas[layer_lora]
+          network_alphas[new_layer_lora] = network_alpha
+    return new_params_keys, network_alphas
+
   @classmethod
   def make_lora_interceptor(
     cls,
     params_keys,
-    rank
+    rank,
+    network_alphas
   ):
-    tmp = []
-    for layer_lora in params_keys:
-      if 'lora' in layer_lora:
-        new_layer_lora = layer_lora[:layer_lora.index('lora')]
-        if new_layer_lora not in tmp:
-          tmp.append(new_layer_lora)
-    params_keys = tmp
+    params_keys, network_alphas = cls.rename_for_interceptor(params_keys, network_alphas)
     def _intercept(next_fn, args, kwargs, context):
       mod = context.module
       while mod is not None:
@@ -187,7 +151,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       if context.method_name == '__call__':
         module_path = context.module.path
         if module_path in params_keys:
-          lora_layer = cls._get_lora_layer(module_path, context.module, rank)
+          lora_layer = cls._get_lora_layer(module_path, context.module, rank, network_alphas)
           return lora_layer(h, *args, **kwargs)
       return h
     return _intercept
@@ -331,5 +295,5 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
             `default_{i}` where i is the total number of adapters being loaded.
     """
     # Load the layers corresponding to Unet.
-    params, rank = convert_lora_pytorch_state_dict_to_flax(state_dict, params)
-    return params, rank
+    params, rank, network_alphas = convert_lora_pytorch_state_dict_to_flax(state_dict, params, network_alphas)
+    return params, rank, network_alphas

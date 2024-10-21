@@ -23,7 +23,6 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
 from .. import common_types, max_logging
-from .lora import LoRALinearLayer
 
 Array = common_types.Array
 Mesh = common_types.Mesh
