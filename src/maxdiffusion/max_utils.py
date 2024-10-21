@@ -577,7 +577,7 @@ def initialize_jax_for_gpu():
 def maybe_initialize_jax_distributed_system(raw_keys):
   if is_gpu_backend(raw_keys):
     max_logging.log("Attempting to initialize the jax distributed system for GPU backend...")
-      initialize_jax_for_gpu()
+    initialize_jax_for_gpu()
     max_logging.log("Jax distributed system initialized on GPU!")
   else:
     jax.distributed.initialize()
