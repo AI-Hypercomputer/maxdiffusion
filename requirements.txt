@@ -1,5 +1,6 @@
 jax>=0.4.30
 jaxlib>=0.4.30
+grain-nightly
 google-cloud-storage==2.17.0
 absl-py
 datasets
@@ -22,6 +23,6 @@ tensorflow>=2.17.0
 tensorflow-datasets>=4.9.6
 ruff>=0.1.5,<=0.2
 git+https://github.com/mlperf/logging.git
-opencv-python==4.10.0.84
+opencv-python-headless==4.10.0.84
 orbax-checkpoint>=0.5.20
 tokenizers==0.20.0

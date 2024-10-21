@@ -50,7 +50,13 @@ def vae_apply(images, sample_rng, vae, vae_params):
 
 
 def transform_images(
-    examples, image_column, image_resolution, rng, global_batch_size, pixel_ids_key="pixel_values", p_vae_apply=None
+    examples,
+    image_column,
+    image_resolution,
+    rng=None,
+    global_batch_size=None,
+    pixel_ids_key="pixel_values",
+    p_vae_apply=None,
 ):
   """Preprocess images to latents."""
   images = list(examples[image_column])
@@ -210,7 +216,9 @@ def calculate_unet_tflops(config, pipeline, batch_size, rngs, train):
 def tokenize_captions(examples, caption_column, tokenizer, input_ids_key="input_ids", p_encode=None):
   """Tokenize captions for sd1.x,sd2.x models."""
   captions = list(examples[caption_column])
-  text_inputs = tokenizer(captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True)
+  text_inputs = tokenizer(
+      captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="np"
+  )
 
   if p_encode:
     encoder_hidden_states = p_encode(np.stack(text_inputs.input_ids))
@@ -222,13 +230,32 @@ def tokenize_captions(examples, caption_column, tokenizer, input_ids_key="input_
   return examples
 
 
+def tokenize_captions_xl(examples, caption_column, tokenizers, p_encode=None):
+  inputs = []
+  captions = list(examples[caption_column])
+  for _tokenizer in tokenizers:
+    text_inputs = _tokenizer(
+        captions, padding="max_length", max_length=_tokenizer.model_max_length, truncation=True, return_tensors="np"
+    )
+    inputs.append(text_inputs.input_ids)
+  inputs = np.stack(inputs, axis=1)
+
+  if p_encode:
+    prompt_embeds, text_embeds = p_encode(inputs)
+    # pyarrow dataset doesn't support bf16, so cast to float32.
+    examples["prompt_embeds"] = np.float32(prompt_embeds)
+    examples["text_embeds"] = np.float32(text_embeds)
+  examples["input_ids"] = inputs
+  return examples
+
+
 def get_shaped_batch(config, pipeline):
   """Return the shape of the batch - this is what eval_shape would return for the
   output of create_data_iterator_with_tokenizer, but eval_shape doesn't work, see b/306901078.
   This function works with sd1.x and 2.x.
   """
   vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-  total_train_batch_size = config.per_device_batch_size * jax.device_count()
+  total_train_batch_size = config.total_train_batch_size
   if config.cache_latents_text_encoder_outputs:
     batch_image_shape = (
         total_train_batch_size,
@@ -253,3 +280,18 @@ def get_shaped_batch(config, pipeline):
 
 def encode(input_ids, text_encoder, text_encoder_params):
   return text_encoder(input_ids, params=text_encoder_params, train=False)[0]
+
+
+def encode_xl(input_ids, text_encoders, text_encoder_params):
+  te_1_inputs = input_ids[:, 0, :]
+  te_2_inputs = input_ids[:, 1, :]
+
+  prompt_embeds = text_encoders[0](te_1_inputs, params=text_encoder_params[0], output_hidden_states=True)
+  prompt_embeds = prompt_embeds["hidden_states"][-2]
+
+  prompt_embeds_2_out = text_encoders[1](te_2_inputs, params=text_encoder_params[1], output_hidden_states=True)
+  prompt_embeds_2 = prompt_embeds_2_out["hidden_states"][-2]
+  text_embeds = prompt_embeds_2_out["text_embeds"]
+  prompt_embeds = jnp.concatenate([prompt_embeds, prompt_embeds_2], axis=-1)
+
+  return prompt_embeds, text_embeds

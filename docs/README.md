@@ -15,3 +15,7 @@ This folder contains documentation for getting started with and using MaxDiffusi
 ## Training
 
 * **[Common Training Guide](train_README.md)** -  Provides a comprehensive guide to training MaxDiffusion models, including script usage, configuration options, and sharding strategies. 
+
+## Data Input
+
+* **[Common Data Input Guide](data_README.md)** -  Provides a comprehensive guide to data input pipelines.

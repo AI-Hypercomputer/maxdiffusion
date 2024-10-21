@@ -103,9 +103,11 @@ class _HyperParameters:
 
     _HyperParameters.user_init(raw_keys)
     self.keys = raw_keys
+    for k in sorted(raw_keys.keys()):
+      max_logging.log(f"Config param {k}: {raw_keys[k]}")
 
   def _load_kwargs(self, argv: list[str]):
-    args_dict = dict(a.split("=") for a in argv[2:])
+    args_dict = dict(a.split("=", 1) for a in argv[2:])
     return args_dict
 
   @staticmethod
@@ -143,6 +145,11 @@ class _HyperParameters:
     if "gs://" in raw_keys["dataset_name"]:
       raw_keys["dataset_name"] = max_utils.download_blobs(raw_keys["dataset_name"], raw_keys["dataset_save_location"])
       raw_keys["dataset_save_location"] = raw_keys["dataset_name"]
+
+    if "hf_train_files" in raw_keys and not raw_keys["hf_train_files"]:
+      raw_keys["hf_train_files"] = None
+
+    raw_keys["total_train_batch_size"] = max_utils.get_global_batch_size(raw_keys["per_device_batch_size"])
 
 
 def get_num_target_devices(raw_keys):

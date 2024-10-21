@@ -54,7 +54,7 @@ class BaseStableDiffusionCheckpointer(ABC):
     self.rng = jax.random.PRNGKey(self.config.seed)
     devices_array = max_utils.create_device_mesh(config)
     self.mesh = Mesh(devices_array, self.config.mesh_axes)
-    self.total_train_batch_size = max_utils.get_global_batch_size(self.config)
+    self.total_train_batch_size = self.config.total_train_batch_size
 
     self.checkpoint_manager = create_orbax_checkpoint_manager(
         self.config.checkpoint_dir, enable_checkpointing=True, save_interval_steps=1, checkpoint_type=checkpoint_type
@@ -196,21 +196,20 @@ class BaseStableDiffusionCheckpointer(ABC):
           precision=precision,
       )
 
-    if len(self.config.unet_checkpoint) > 0:
-      unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
-          self.config.unet_checkpoint,
-          split_head_dim=self.config.split_head_dim,
-          norm_num_groups=self.config.norm_num_groups,
-          attention_kernel=self.config.attention,
-          flash_block_sizes=flash_block_sizes,
-          dtype=self.activations_dtype,
-          weights_dtype=self.weights_dtype,
-          mesh=self.mesh,
-      )
-      params["unet"] = unet_params
-      pipeline.unet = unet
-    params = jax.tree_util.tree_map(lambda x: x.astype(self.config.weights_dtype), params)
-
+      if len(self.config.unet_checkpoint) > 0:
+        unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
+            self.config.unet_checkpoint,
+            split_head_dim=self.config.split_head_dim,
+            norm_num_groups=self.config.norm_num_groups,
+            attention_kernel=self.config.attention,
+            flash_block_sizes=flash_block_sizes,
+            dtype=self.activations_dtype,
+            weights_dtype=self.weights_dtype,
+            mesh=self.mesh,
+        )
+        params["unet"] = unet_params
+        pipeline.unet = unet
+      params = jax.tree_util.tree_map(lambda x: x.astype(self.config.weights_dtype), params)
     return pipeline, params
 
   def save_checkpoint(self, train_step, pipeline, params, train_states):
