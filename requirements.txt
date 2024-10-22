@@ -25,3 +25,4 @@ git+https://github.com/mlperf/logging.git
 opencv-python==4.10.0.84
 orbax-checkpoint>=0.5.20
 tokenizers==0.20.0
+huggingface_hub==0.24.7
