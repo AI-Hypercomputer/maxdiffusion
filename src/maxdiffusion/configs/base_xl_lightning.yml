@@ -56,7 +56,7 @@ text_encoder_learning_rate: 4.25e-6
 diffusion_scheduler_config: {
   _class_name: 'DDIMScheduler',
   # values are v_prediction or leave empty to use scheduler's default.
-  prediction_type: '',
+  prediction_type: 'epsilon',
   rescale_zero_terminal_snr: False,
   timestep_spacing: 'trailing'
 }
@@ -153,7 +153,7 @@ profiler_steps: 5
 prompt: "portrait photo of muscular bearded guy in a worn mech suit, light bokeh, intricate, steel metal, elegant, sharp focus, soft lighting, vibrant colors"
 negative_prompt: "purple, red"
 do_classifier_free_guidance: False
-guidance_scale: 2
+guidance_scale: 2.0
 guidance_rescale: -1
 num_inference_steps: 4
 
