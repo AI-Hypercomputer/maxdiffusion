@@ -81,6 +81,9 @@ diffusion_scheduler_config: {
   timestep_spacing: ''
 }
 
+# Hardware
+hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
+
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
 base_output_directory: ""

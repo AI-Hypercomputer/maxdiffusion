@@ -15,11 +15,10 @@
 # limitations under the License.
 
 # Description:
-# bash setup.sh MODE={stable,nightly}
+# bash setup.sh MODE={stable,nightly,pinned} DEVICE={tpu,gpu}
 
 # You need to specify a MODE, default value stable.
 # For MODE=stable you may additionally specify JAX_VERSION, e.g. JAX_VERSION=0.4.33
-
 # Enable "exit immediately if any command fails" option
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -29,6 +28,11 @@ for ARGUMENT in "$@"; do
   IFS='=' read -r KEY VALUE <<< "$ARGUMENT"
   export "$KEY"="$VALUE"
 done
+
+# Default device is TPU
+if [[ -z "$DEVICE" ]]; then
+  export DEVICE="tpu"
+fi
 
 # Unset JAX_VERSION if set to "NONE"
 if [[ $JAX_VERSION == NONE ]]; then
@@ -42,26 +46,61 @@ if [[ -n $JAX_VERSION && ! ($MODE == "stable" || -z $MODE) ]]; then
 fi
 
 # Install JAX and JAXlib based on the specified mode
-if [[ "$MODE" == "stable" || ! -v MODE ]]; then
-  # Stable mode
-  echo "Installing stable jax, jaxlib for tpu"
-  if [[ -n "$JAX_VERSION" ]]; then
-    echo "Installing stable jax, jaxlib, libtpu version ${JAX_VERSION}"
-    pip3 install "jax[tpu]==${JAX_VERSION}" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-  else
-    echo "Installing stable jax, jaxlib, libtpu
- for tpu"
-    pip3 install 'jax[tpu]>0.4' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+if [[ "$MODE" == "pinned" ]]; then
+  if [[ "$DEVICE" != "gpu" ]]; then
+    echo "pinned mode is supported for GPU builds only."
+    exit 1
   fi
+  echo "Installing pinned jax, jaxlib for NVIDIA gpu."
+  pip3 install "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html -c constraints_gpu.txt
+  pip3 install "transformer-engine==1.5.0+297459b" \
+    --extra-index-url https://us-python.pkg.dev/gce-ai-infra/maxtext-build-support-packages/simple/ \
+    -c constraints_gpu.txt
+elif [[ "$MODE" == "stable" || ! -v MODE ]]; then
+  # Stable mode
+  if [[ $DEVICE == "tpu" ]]; then 
+    echo "Installing stable jax, jaxlib for tpu"
+    if [[ -n "$JAX_VERSION" ]]; then
+      echo "Installing stable jax, jaxlib, libtpu version ${JAX_VERSION}"
+      pip3 install "jax[tpu]==${JAX_VERSION}" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+    else
+      echo "Installing stable jax, jaxlib, libtpu
+  for tpu"
+      pip3 install 'jax[tpu]>0.4' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+    fi
+  elif [[ $DEVICE == "gpu " ]]; then
+      echo "Installing stable jax, jaxlib for NVIDIA gpu"
+    if [[ -n "$JAX_VERSION" ]]; then
+        echo "Installing stable jax, jaxlib ${JAX_VERSION}"
+        pip3 install -U "jax[cuda12]==${JAX_VERSION}" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    else
+        echo "Installing stable jax, jaxlib, libtpu for NVIDIA gpu"
+        pip3 install "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    fi
+    export NVTE_FRAMEWORK=jax
+    pip3 install git+https://github.com/NVIDIA/TransformerEngine.git@stable
+  fi
+
 elif [[ $MODE == "nightly" ]]; then
   # Nightly mode
-  echo "Installing jax-nightly,jaxlib-nightly"
-  # Install jax-nightly
-  pip3 install --pre -U jax -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
-  # Install jaxlib-nightly
-  pip3 install --pre -U jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
-  # Install libtpu-nightly
-  pip3 install --pre -U libtpu-nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html 
+  if [[ $DEVICE == "gpu" ]]; then
+      echo "Installing jax-nightly, jaxlib-nightly"
+      # Install jax-nightly
+      pip install -U --pre jax jaxlib jax-cuda12-plugin[with_cuda] jax-cuda12-pjrt -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
+      # Install Transformer Engine
+      export NVTE_FRAMEWORK=jax
+      pip3 install git+https://github.com/NVIDIA/TransformerEngine.git@stable
+  elif [[ $DEVICE == "tpu" ]]; then 
+    echo "Installing jax-nightly,jaxlib-nightly"
+    # Install jax-nightly
+    pip3 install --pre -U jax -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
+    # Install jaxlib-nightly
+    pip3 install --pre -U jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
+    # Install libtpu-nightly
+    pip3 install --pre -U libtpu-nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html 
+  fi
+  echo "Installing nightly tensorboard plugin profile"
+  pip3 install tbp-nightly --upgrade
 else
   echo -e "\n\nError: You can only set MODE to [stable,nightly].\n\n"
   exit 1
