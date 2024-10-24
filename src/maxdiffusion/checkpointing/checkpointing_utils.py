@@ -40,7 +40,7 @@ def create_orbax_checkpoint_manager(
     enable_checkpointing: bool,
     save_interval_steps,
     checkpoint_type: str,
-    use_async: bool = True,
+    use_async: bool = False,
     orbax_logger: Optional[abstract_logger.AbstractLogger] = None,
 ):
   """

@@ -53,9 +53,6 @@ if [[ "$MODE" == "pinned" ]]; then
   fi
   echo "Installing pinned jax, jaxlib for NVIDIA gpu."
   pip3 install "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html -c constraints_gpu.txt
-  pip3 install "transformer-engine==1.5.0+297459b" \
-    --extra-index-url https://us-python.pkg.dev/gce-ai-infra/maxtext-build-support-packages/simple/ \
-    -c constraints_gpu.txt
 elif [[ "$MODE" == "stable" || ! -v MODE ]]; then
   # Stable mode
   if [[ $DEVICE == "tpu" ]]; then 
@@ -89,7 +86,6 @@ elif [[ $MODE == "nightly" ]]; then
       pip install -U --pre jax jaxlib jax-cuda12-plugin[with_cuda] jax-cuda12-pjrt -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
       # Install Transformer Engine
       export NVTE_FRAMEWORK=jax
-      pip3 install git+https://github.com/NVIDIA/TransformerEngine.git@stable
   elif [[ $DEVICE == "tpu" ]]; then 
     echo "Installing jax-nightly,jaxlib-nightly"
     # Install jax-nightly
