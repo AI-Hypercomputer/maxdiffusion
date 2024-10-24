@@ -451,6 +451,7 @@ class FlaxAttention(nn.Module):
     hidden_states = nn.with_logical_constraint(hidden_states, (BATCH, LENGTH, HEAD))
     return self.dropout_layer(hidden_states, deterministic=deterministic)
 
+
 class FlaxBasicTransformerBlock(nn.Module):
   r"""
   A Flax transformer block layer with `GLU` (Gated Linear Unit) activation function as described in:
@@ -515,7 +516,7 @@ class FlaxBasicTransformerBlock(nn.Module):
         mesh=self.mesh,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
-        precision=self.precision
+        precision=self.precision,
     )
     # cross attention
     self.attn2 = FlaxAttention(
@@ -531,7 +532,7 @@ class FlaxBasicTransformerBlock(nn.Module):
         mesh=self.mesh,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
-        precision=self.precision
+        precision=self.precision,
     )
     self.ff = FlaxFeedForward(
         dim=self.dim, dropout=self.dropout, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
@@ -546,16 +547,11 @@ class FlaxBasicTransformerBlock(nn.Module):
     residual = hidden_states
     if self.only_cross_attention:
       hidden_states = self.attn1(
-        self.norm1(hidden_states),
-        context,
-        deterministic=deterministic,
-        cross_attention_kwargs=cross_attention_kwargs
+          self.norm1(hidden_states), context, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
       )
     else:
       hidden_states = self.attn1(
-        self.norm1(hidden_states),
-        deterministic=deterministic,
-        cross_attention_kwargs=cross_attention_kwargs
+          self.norm1(hidden_states), deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
       )
 
     hidden_states = hidden_states + residual
@@ -563,10 +559,7 @@ class FlaxBasicTransformerBlock(nn.Module):
     # cross attention
     residual = hidden_states
     hidden_states = self.attn2(
-      self.norm2(hidden_states),
-      context,
-      deterministic=deterministic,
-      cross_attention_kwargs=cross_attention_kwargs
+        self.norm2(hidden_states), context, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
     )
     hidden_states = hidden_states + residual
 
@@ -676,7 +669,7 @@ class FlaxTransformer2DModel(nn.Module):
             flash_min_seq_length=self.flash_min_seq_length,
             flash_block_sizes=self.flash_block_sizes,
             mesh=self.mesh,
-            precision=self.precision
+            precision=self.precision,
         )
         for _ in range(self.depth)
     ]
@@ -716,10 +709,7 @@ class FlaxTransformer2DModel(nn.Module):
 
     for transformer_block in self.transformer_blocks:
       hidden_states = transformer_block(
-        hidden_states,
-        context,
-        deterministic=deterministic,
-        cross_attention_kwargs=cross_attention_kwargs
+          hidden_states, context, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
       )
 
     if self.use_linear_projection:

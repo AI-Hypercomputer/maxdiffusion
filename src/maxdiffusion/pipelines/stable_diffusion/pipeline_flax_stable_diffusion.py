@@ -30,9 +30,7 @@ from ...schedulers import (
     FlaxLMSDiscreteScheduler,
     FlaxPNDMScheduler,
 )
-from ...loaders import (
-  StableDiffusionLoraLoaderMixin
-)
+from ...loaders import (StableDiffusionLoraLoaderMixin)
 from ...utils import deprecate, logging, replace_example_docstring
 from ..pipeline_flax_utils import FlaxDiffusionPipeline
 from .pipeline_output import FlaxStableDiffusionPipelineOutput

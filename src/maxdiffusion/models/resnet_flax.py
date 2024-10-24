@@ -147,12 +147,7 @@ class FlaxResnetBlock2D(nn.Module):
         precision=self.precision,
     )
 
-    self.time_emb_proj = nn.Dense(
-      out_channels,
-      dtype=self.dtype,
-      param_dtype=self.weights_dtype,
-      precision=self.precision
-    )
+    self.time_emb_proj = nn.Dense(out_channels, dtype=self.dtype, param_dtype=self.weights_dtype, precision=self.precision)
 
     self.conv2 = nn.Conv(
         out_channels,
@@ -176,7 +171,7 @@ class FlaxResnetBlock2D(nn.Module):
     hidden_states = nn.with_logical_constraint(hidden_states, ("conv_batch", "height", "keep_2", "out_channels"))
     temb = nn.swish(temb)
     temb = self.time_emb_proj(temb)
-    
+
     temb = jnp.expand_dims(jnp.expand_dims(temb, 1), 1)
 
     hidden_states = hidden_states + temb

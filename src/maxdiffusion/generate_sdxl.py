@@ -29,11 +29,11 @@ from flax.linen import partitioning as nn_partitioning
 from maxdiffusion import pyconfig, max_utils
 from maxdiffusion.image_processor import VaeImageProcessor
 from maxdiffusion.maxdiffusion_utils import (
-  get_add_time_ids,
-  rescale_noise_cfg,
-  load_sdxllightning_unet,
-  maybe_load_lora,
-  create_scheduler
+    get_add_time_ids,
+    rescale_noise_cfg,
+    load_sdxllightning_unet,
+    maybe_load_lora,
+    create_scheduler,
 )
 
 from maxdiffusion.trainers.sdxl_trainer import (StableDiffusionXLTrainer)
@@ -84,11 +84,7 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
         lambda _: noise_pred,
         operand=None,
     )
-  latents, scheduler_state = pipeline.scheduler.step(
-    scheduler_state,
-    noise_pred,
-    t,
-    latents).to_tuple()
+  latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
   return latents, scheduler_state, state
 
@@ -234,7 +230,7 @@ def run(config):
   )
   if unet_params:
     params["unet"] = unet_params
-  
+
   # maybe load lora and create interceptor
   params, lora_interceptor = maybe_load_lora(config, pipeline, params)
 

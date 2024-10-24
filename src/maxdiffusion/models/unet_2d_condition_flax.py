@@ -279,7 +279,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             mesh=self.mesh,
             dtype=self.dtype,
             weights_dtype=self.weights_dtype,
-            precision=self.precision
+            precision=self.precision,
         )
       else:
         down_block = FlaxDownBlock2D(
@@ -348,7 +348,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             mesh=self.mesh,
             dtype=self.dtype,
             weights_dtype=self.weights_dtype,
-            precision=self.precision
+            precision=self.precision,
         )
       else:
         up_block = FlaxUpBlock2D(
@@ -465,11 +465,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     for down_block in self.down_blocks:
       if isinstance(down_block, FlaxCrossAttnDownBlock2D):
         sample, res_samples = down_block(
-          sample,
-          t_emb,
-          encoder_hidden_states,
-          deterministic=not train,
-          cross_attention_kwargs=cross_attention_kwargs
+            sample, t_emb, encoder_hidden_states, deterministic=not train, cross_attention_kwargs=cross_attention_kwargs
         )
       else:
         sample, res_samples = down_block(sample, t_emb, deterministic=not train)
@@ -488,11 +484,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     # 4. mid
     sample = self.mid_block(
-      sample,
-      t_emb,
-      encoder_hidden_states,
-      deterministic=not train,
-      cross_attention_kwargs=cross_attention_kwargs
+        sample, t_emb, encoder_hidden_states, deterministic=not train, cross_attention_kwargs=cross_attention_kwargs
     )
 
     if mid_block_additional_residual is not None:
@@ -509,7 +501,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             encoder_hidden_states=encoder_hidden_states,
             res_hidden_states_tuple=res_samples,
             deterministic=not train,
-            cross_attention_kwargs=cross_attention_kwargs
+            cross_attention_kwargs=cross_attention_kwargs,
         )
       else:
         sample = up_block(sample, temb=t_emb, res_hidden_states_tuple=res_samples, deterministic=not train)

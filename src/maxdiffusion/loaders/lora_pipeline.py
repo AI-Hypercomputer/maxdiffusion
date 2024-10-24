@@ -18,8 +18,8 @@ import jax.numpy as jnp
 from .lora_base import LoRABaseMixin
 from ..models.lora import LoRALinearLayer, LoRAConv2DLayer, BaseLoRALayer
 from .lora_conversion_utils import (
-  _convert_non_diffusers_lora_to_diffusers,
-  _maybe_map_sgm_blocks_to_diffusers,  
+    _convert_non_diffusers_lora_to_diffusers,
+    _maybe_map_sgm_blocks_to_diffusers,
 )
 from ..models.modeling_flax_pytorch_utils import convert_lora_pytorch_state_dict_to_flax
 from huggingface_hub.utils import validate_hf_hub_args
@@ -30,6 +30,7 @@ TRANSFORMER_NAME = "transformer"
 
 LORA_WEIGHT_NAME = "pytorch_lora_weights.bin"
 LORA_WEIGHT_NAME_SAFE = "pytorch_lora_weights.safetensors"
+
 
 class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
   r"""
@@ -42,11 +43,8 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
   text_encoder_name = TEXT_ENCODER_NAME
 
   def load_lora_weights(
-      self,
-      pretrained_model_name_or_path_or_dict: Union[str, Dict[str, jnp.ndarray]],
-      params,
-      adapter_name=None,
-      **kwargs):
+      self, pretrained_model_name_or_path_or_dict: Union[str, Dict[str, jnp.ndarray]], params, adapter_name=None, **kwargs
+  ):
     """
     Load LoRA weights specified in `pretrained_model_name_or_path_or_dict` into `self.unet` and
     `self.text_encoder`.
@@ -79,53 +77,53 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     is_correct_format = all("lora" in key or "dora_scale" in key for key in state_dict.keys())
     if not is_correct_format:
       raise ValueError("Invalid LoRA checkpoint.")
-    
+
     params, rank, network_alphas = self.load_lora(
-      state_dict,
-      network_alphas=network_alphas,
-      params=params,
-      adapter_name=adapter_name,
-      _pipeline=self,
+        state_dict,
+        network_alphas=network_alphas,
+        params=params,
+        adapter_name=adapter_name,
+        _pipeline=self,
     )
     return params, rank, network_alphas
 
   @classmethod
   def _get_lora_layer(cls, module_path, module, rank, network_alphas):
-    is_conv = any('conv' in str_ for str_ in module_path)
+    is_conv = any("conv" in str_ for str_ in module_path)
     network_alpha = network_alphas.get(module_path, None)
     if is_conv:
       lora_module = LoRAConv2DLayer(
-        out_features=module.features,
-        rank=rank,
-        network_alpha=network_alpha,
-        kernel_size=module.kernel_size,
-        strides=module.strides,
-        padding=module.padding,
-        input_dilation=module.input_dilation,
-        kernel_dilation=module.kernel_dilation,
-        feature_group_count=module.feature_group_count,
-        dtype=module.dtype,
-        weights_dtype=module.param_dtype,
-        precision=module.precision,
-        name="lora"
-        )
+          out_features=module.features,
+          rank=rank,
+          network_alpha=network_alpha,
+          kernel_size=module.kernel_size,
+          strides=module.strides,
+          padding=module.padding,
+          input_dilation=module.input_dilation,
+          kernel_dilation=module.kernel_dilation,
+          feature_group_count=module.feature_group_count,
+          dtype=module.dtype,
+          weights_dtype=module.param_dtype,
+          precision=module.precision,
+          name="lora",
+      )
     else:
       lora_module = LoRALinearLayer(
-        out_features=module.features,
-        rank=rank,
-        network_alpha=network_alpha,
-        dtype=module.dtype,
-        weights_dtype=module.param_dtype,
-        precision=module.precision,
-        name="lora"
+          out_features=module.features,
+          rank=rank,
+          network_alpha=network_alpha,
+          dtype=module.dtype,
+          weights_dtype=module.param_dtype,
+          precision=module.precision,
+          name="lora",
       )
     return lora_module
 
   def rename_for_interceptor(params_keys, network_alphas):
     new_params_keys = []
     for layer_lora in params_keys:
-      if 'lora' in layer_lora:
-        new_layer_lora = layer_lora[:layer_lora.index('lora')]
+      if "lora" in layer_lora:
+        new_layer_lora = layer_lora[: layer_lora.index("lora")]
         if new_layer_lora not in new_params_keys:
           new_params_keys.append(new_layer_lora)
           network_alpha = network_alphas[layer_lora]
@@ -134,16 +132,11 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     return new_params_keys, network_alphas
 
   @classmethod
-  def make_lora_interceptor(
-    cls,
-    params,
-    rank,
-    network_alphas
-  ):
+  def make_lora_interceptor(cls, params, rank, network_alphas):
     # Only unet interceptor supported for now.
     unet_lora_keys = flax.traverse_util.flatten_dict(params["unet"]).keys()
     unet_lora_keys, network_alphas = cls.rename_for_interceptor(unet_lora_keys, network_alphas)
-    
+
     def _intercept(next_fn, args, kwargs, context):
       mod = context.module
       while mod is not None:
@@ -151,21 +144,18 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
           return next_fn(*args, **kwargs)
         mod = mod.parent
       h = next_fn(*args, **kwargs)
-      if context.method_name == '__call__':
+      if context.method_name == "__call__":
         module_path = context.module.path
         if module_path in unet_lora_keys:
           lora_layer = cls._get_lora_layer(module_path, context.module, rank, network_alphas)
           return lora_layer(h, *args, **kwargs)
       return h
+
     return _intercept
-  
+
   @classmethod
   @validate_hf_hub_args
-  def lora_state_dict(
-    cls,
-    pretrained_model_name_or_path: str,
-    **kwargs
-  ):
+  def lora_state_dict(cls, pretrained_model_name_or_path: str, **kwargs):
     r"""
     Return state dict for lora weights and the network alphas.
 
@@ -230,55 +220,43 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     if use_safetensors is None:
       use_safetensors = True
       allow_pickle = True
-    
+
     user_agent = {
-      "file_type": "attn_procs_weights",
-      "framework": "pytorch",
+        "file_type": "attn_procs_weights",
+        "framework": "pytorch",
     }
 
     state_dict = cls._fetch_state_dict(
-      pretrained_model_name_or_path_or_dict=pretrained_model_name_or_path,
-      weight_name=weight_name,
-      use_safetensors=use_safetensors,
-      local_files_only=local_files_only,
-      cache_dir=cache_dir,
-      force_download=force_download,
-      resume_download=resume_download,
-      proxies=proxies,
-      use_auth_token=use_auth_token,
-      revision=revision,
-      subfolder=subfolder,
-      user_agent=user_agent,
-      allow_pickle=allow_pickle,
+        pretrained_model_name_or_path_or_dict=pretrained_model_name_or_path,
+        weight_name=weight_name,
+        use_safetensors=use_safetensors,
+        local_files_only=local_files_only,
+        cache_dir=cache_dir,
+        force_download=force_download,
+        resume_download=resume_download,
+        proxies=proxies,
+        use_auth_token=use_auth_token,
+        revision=revision,
+        subfolder=subfolder,
+        user_agent=user_agent,
+        allow_pickle=allow_pickle,
     )
 
     network_alphas = None
     if all(
-      (
-        k.startswith("lora_te_")
-        or k.startswith("lora_unet_")
-        or k.startswith("lora_te1_")
-        or k.startswith("lora_te2_")
-      )
-      for k in state_dict.keys()
+        (k.startswith("lora_te_") or k.startswith("lora_unet_") or k.startswith("lora_te1_") or k.startswith("lora_te2_"))
+        for k in state_dict.keys()
     ):
       # Map SDXL blocks correctly.
       if unet_config is not None:
         # use unet config to remap block numbers
         state_dict = _maybe_map_sgm_blocks_to_diffusers(state_dict, unet_config)
       state_dict, network_alphas = _convert_non_diffusers_lora_to_diffusers(state_dict)
-    
+
     return state_dict, network_alphas
 
   @classmethod
-  def load_lora(
-    cls,
-    state_dict,
-    network_alphas,
-    params,
-    adapter_name=None,
-    _pipeline=None
-    ):
+  def load_lora(cls, state_dict, network_alphas, params, adapter_name=None, _pipeline=None):
     """
     This will load the LoRA layers specified in `state_dict` into `unet`.
 
