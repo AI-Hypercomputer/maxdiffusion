@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 from flax.linen import Partitioned
 from flax.traverse_util import flatten_dict, unflatten_dict
-from flax.core.frozen_dict import unfreeze, freeze
+from flax.core.frozen_dict import unfreeze
 from jax.random import PRNGKey
 
 from ..utils import logging

@@ -44,7 +44,7 @@ class LoRABaseMixin:
       user_agent,
       allow_pickle,
   ):
-    from .lora_pipeline import LORA_WEIGHT_NAME, LORA_WEIGHT_NAME_SAFE
+    from .lora_pipeline import LORA_WEIGHT_NAME_SAFE
 
     model_file = None
     if not isinstance(pretrained_model_name_or_path_or_dict, dict):

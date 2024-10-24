@@ -163,7 +163,6 @@ class FlaxResnetBlock2D(nn.Module):
     )
 
   def __call__(self, hidden_states, temb, deterministic=True, cross_attention_kwargs={}):
-    lora_scale = cross_attention_kwargs.get("scale", 0.0)
     residual = hidden_states
     hidden_states = self.norm1(hidden_states)
     hidden_states = nn.swish(hidden_states)
