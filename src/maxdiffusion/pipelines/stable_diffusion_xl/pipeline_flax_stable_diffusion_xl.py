@@ -29,6 +29,7 @@ from ...schedulers import (
     FlaxLMSDiscreteScheduler,
     FlaxPNDMScheduler,
 )
+from ...loaders import (StableDiffusionLoraLoaderMixin)
 from ..pipeline_flax_utils import FlaxDiffusionPipeline
 from .pipeline_output import FlaxStableDiffusionXLPipelineOutput
 
@@ -39,7 +40,7 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 DEBUG = False
 
 
-class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline):
+class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline, StableDiffusionLoraLoaderMixin):
 
   def __init__(
       self,

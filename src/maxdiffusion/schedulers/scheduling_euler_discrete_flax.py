@@ -222,7 +222,6 @@ class FlaxEulerDiscreteScheduler(FlaxSchedulerMixin, ConfigMixin):
     step_index = step_index[0]
 
     sigma = state.sigmas[step_index]
-
     # 1. compute predicted original sample (x_0) from sigma-scaled predicted noise
     if self.config.prediction_type == "epsilon":
       pred_original_sample = sample - sigma * model_output

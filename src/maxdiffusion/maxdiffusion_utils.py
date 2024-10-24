@@ -39,6 +39,27 @@ def load_sdxllightning_unet(config, pipeline, params):
   return pipeline, params
 
 
+def maybe_load_lora(config, pipeline, params):
+
+  def _noop_interceptor(next_fn, args, kwargs, context):
+    return next_fn(*args, **kwargs)
+
+  lora_config = config.lora_config
+  interceptor = _noop_interceptor
+  if len(lora_config["lora_model_name_or_path"]) > 0:
+    # For now only first lora supported. In the future, they will be merged
+    # before being loaded.
+    params, rank, network_alphas = pipeline.load_lora_weights(
+        lora_config["lora_model_name_or_path"][0],
+        weight_name=lora_config["weight_name"][0],
+        params=params,
+        adapter_name=lora_config["adapter_name"][0],
+    )
+    interceptor = pipeline.make_lora_interceptor(params, rank, network_alphas)
+
+  return params, interceptor
+
+
 def vae_apply(images, sample_rng, vae, vae_params):
   """Apply vae encoder to images."""
   vae_outputs = vae.apply({"params": vae_params}, images, deterministic=True, method=vae.encode)

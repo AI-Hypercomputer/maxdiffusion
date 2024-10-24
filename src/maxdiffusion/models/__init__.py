@@ -30,6 +30,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
   from .controlnet_flax import FlaxControlNetModel
   from .unet_2d_condition_flax import FlaxUNet2DConditionModel
   from .vae_flax import FlaxAutoencoderKL
+  from .lora import *
 
 else:
   import sys
