@@ -397,8 +397,7 @@ def setup_initial_state(
     if not state:
       max_logging.log(f"Could not find the item in orbax, creating state...")
 
-      init_train_state_partial = functools.partial(
-          init_train_state,
+      state = init_train_state(
           model=model,
           tx=tx,
           weights_init_fn=weights_init_fn,
@@ -406,8 +405,6 @@ def setup_initial_state(
           training=training,
           eval_only=False,
       )
-
-      state = jax.jit(init_train_state_partial, in_shardings=None, out_shardings=state_mesh_shardings)()
 
   state = unbox_logicallypartioned_trainstate(state)
 
