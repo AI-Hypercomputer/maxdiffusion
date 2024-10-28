@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # Description:
-# bash setup.sh MODE={stable,nightly,pinned} DEVICE={tpu,gpu}
+# bash setup.sh MODE={stable,nightly} DEVICE={tpu,gpu}
 
 # You need to specify a MODE, default value stable.
 # For MODE=stable you may additionally specify JAX_VERSION, e.g. JAX_VERSION=0.4.33
@@ -46,16 +46,7 @@ if [[ -n $JAX_VERSION && ! ($MODE == "stable" || -z $MODE) ]]; then
 fi
 
 # Install JAX and JAXlib based on the specified mode
-if [[ "$MODE" == "pinned" ]]; then
-  if [[ "$DEVICE" != "gpu" ]]; then
-    echo "pinned mode is supported for GPU builds only."
-    exit 1
-  fi
-  echo "Installing pinned jax, jaxlib for NVIDIA gpu."
-  pip3 install "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html -c constraints_gpu.txt \
-    --extra-index-url https://us-python.pkg.dev/gce-ai-infra/maxtext-build-support-packages/simple/ \
-    -c constraints_gpu.txt
-elif [[ "$MODE" == "stable" || ! -v MODE ]]; then
+if [[ "$MODE" == "stable" || ! -v MODE ]]; then
   # Stable mode
   if [[ $DEVICE == "tpu" ]]; then 
     echo "Installing stable jax, jaxlib for tpu"
@@ -67,7 +58,7 @@ elif [[ "$MODE" == "stable" || ! -v MODE ]]; then
   for tpu"
       pip3 install 'jax[tpu]>0.4' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
     fi
-  elif [[ $DEVICE == "gpu " ]]; then
+  elif [[ $DEVICE == "gpu" ]]; then
       echo "Installing stable jax, jaxlib for NVIDIA gpu"
     if [[ -n "$JAX_VERSION" ]]; then
         echo "Installing stable jax, jaxlib ${JAX_VERSION}"
