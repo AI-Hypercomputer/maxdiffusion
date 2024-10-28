@@ -52,8 +52,7 @@ if [[ "$MODE" == "pinned" ]]; then
     exit 1
   fi
   echo "Installing pinned jax, jaxlib for NVIDIA gpu."
-  pip3 install "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html -c constraints_gpu.txt
-  pip3 install "transformer-engine==1.5.0+297459b" \
+  pip3 install "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html -c constraints_gpu.txt \
     --extra-index-url https://us-python.pkg.dev/gce-ai-infra/maxtext-build-support-packages/simple/ \
     -c constraints_gpu.txt
 elif [[ "$MODE" == "stable" || ! -v MODE ]]; then
