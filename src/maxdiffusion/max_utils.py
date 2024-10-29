@@ -150,27 +150,6 @@ def add_text_to_summary_writer(key, value, summary_writer):
     summary_writer.add_text(key, value)
 
 
-def write_metrics_for_gcs(metrics, step, config, running_metrics):
-  """Writes metrics to gcs"""
-  metrics_dict_step = _prepare_metrics_for_json(metrics, step, config.run_name)
-  running_metrics.append(metrics_dict_step)
-  if (step + 1) % config.log_period == 0 or step == config.max_train_steps - 1:
-    start_step = (step // config.log_period) * config.log_period
-    metrics_filename = f"metrics_step_{start_step:06}_to_step_{step:06}.txt"
-    with open(metrics_filename, "w", encoding="utf8") as metrics_for_gcs:
-      for metrics_step in running_metrics:
-        metrics_for_gcs.write(str(json.dumps(metrics_step)) + "\n")
-
-    metrics_for_gcs.close()
-    gcs_filename = os.path.join(config.metrics_dir, metrics_filename)
-    command = ["gsutil", "mv", metrics_filename, gcs_filename]
-    max_logging.log(f"Moving file {metrics_filename} to GCS...")
-    subprocess.run(command, check=True, capture_output=True)
-    max_logging.log(f"File {metrics_filename} moved successfully!")
-    running_metrics = []  # reset running_metrics to empty list
-  return running_metrics
-
-
 def write_config_raw_keys_for_gcs(raw_keys):
   """Writes config raw keys to GCS"""
   if not raw_keys["save_config_to_gcs"] or jax.process_index() != 0:
@@ -286,8 +265,16 @@ def create_device_mesh(config, devices=None, logging=True):
 
   multi_slice_env = num_slices > 1
 
-  dcn_parallelism = [config.dcn_data_parallelism, config.dcn_fsdp_parallelism, config.dcn_tensor_parallelism]
-  ici_parallelism = [config.ici_data_parallelism, config.ici_fsdp_parallelism, config.ici_tensor_parallelism]
+  dcn_parallelism = [
+      config.dcn_data_parallelism,
+      config.dcn_fsdp_parallelism,
+      config.dcn_tensor_parallelism,
+  ]
+  ici_parallelism = [
+      config.ici_data_parallelism,
+      config.ici_fsdp_parallelism,
+      config.ici_tensor_parallelism,
+  ]
 
   # Find possible unspecified parallelisms
   ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, "ICI")
@@ -313,7 +300,7 @@ def unbox_logicallypartioned_trainstate(boxed_train_state: train_state.TrainStat
     a TrainState where all all LogicallyPartitioned leaves have been unboxed.
   """
   return jax.tree_util.tree_map(
-      lambda x: x.unbox() if isinstance(x, flax.linen.spmd.LogicallyPartitioned) else x,
+      lambda x: (x.unbox() if isinstance(x, flax.linen.spmd.LogicallyPartitioned) else x),
       boxed_train_state,
       is_leaf=lambda k: isinstance(k, flax.linen.spmd.LogicallyPartitioned),
   )
@@ -331,17 +318,27 @@ def init_train_state(model, tx, weights_init_fn, params=None, training=True, eva
     params = weights_init_fn(eval_only=eval_only)
   if training:
     state = train_state.TrainState.create(
-        apply_fn=model.apply if hasattr(model, "apply") else model.__call__, params=params, tx=tx
+        apply_fn=model.apply if hasattr(model, "apply") else model.__call__,
+        params=params,
+        tx=tx,
     )
   else:
-    state = InferenceState(apply_fn=model.apply if hasattr(model, "apply") else model.__call__, params=params)
+    state = InferenceState(
+        apply_fn=model.apply if hasattr(model, "apply") else model.__call__,
+        params=params,
+    )
   return state
 
 
 def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
   """Get a shaped abstraction of the state (including optimizer)"""
   init_state_partial = functools.partial(
-      init_train_state, model=model, tx=tx, weights_init_fn=weights_init_fn, training=training, eval_only=True
+      init_train_state,
+      model=model,
+      tx=tx,
+      weights_init_fn=weights_init_fn,
+      training=training,
+      eval_only=True,
   )
   with nn_partitioning.axis_rules(config.logical_axis_rules):
     abstract_state = jax.eval_shape(init_state_partial)
@@ -360,7 +357,15 @@ def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
 
 
 def setup_initial_state(
-    model, tx, config, mesh, weights_init_fn, model_params=None, checkpoint_manager=None, checkpoint_item=None, training=True
+    model,
+    tx,
+    config,
+    mesh,
+    weights_init_fn,
+    model_params=None,
+    checkpoint_manager=None,
+    checkpoint_item=None,
+    training=True,
 ):
   """We initialize the model and optimizer state, and optionally load from a
   checkpoint as necessary.
@@ -407,7 +412,11 @@ def setup_initial_state(
           eval_only=False,
       )
 
-      state = jax.jit(init_train_state_partial, in_shardings=None, out_shardings=state_mesh_shardings)()
+      state = jax.jit(
+          init_train_state_partial,
+          in_shardings=None,
+          out_shardings=state_mesh_shardings,
+      )()
 
   state = unbox_logicallypartioned_trainstate(state)
 
@@ -559,5 +568,28 @@ def get_global_batch_size(per_device_batch_size):
   return per_device_batch_size * jax.device_count()
 
 
+def is_gpu_backend(raw_keys):
+  """Determine whether Maxdiffusion is intended to run on a GPU backend."""
+  return raw_keys["hardware"] == "gpu"
+
+
+def initialize_jax_for_gpu():
+  """Jax distribute initialize for GPUs."""
+  if os.environ.get("JAX_COORDINATOR_IP") is not None:
+    coordinator_ip = str(os.getenv("JAX_COORDINATOR_IP"))
+    coordinator_port = str(os.getenv("JAX_COORDINATOR_PORT"))
+    jax.distributed.initialize(
+        coordinator_address=f"{coordinator_ip}:{coordinator_port}",
+        num_processes=int(os.getenv("NNODES")),
+        process_id=int(os.getenv("NODE_RANK")),
+    )
+    max_logging.log(f"JAX global devices: {jax.devices()}")
+
+
 def maybe_initialize_jax_distributed_system(raw_keys):
-  jax.distributed.initialize()
+  if is_gpu_backend(raw_keys):
+    max_logging.log("Attempting to initialize the jax distributed system for GPU backend...")
+    initialize_jax_for_gpu()
+    max_logging.log("Jax distributed system initialized on GPU!")
+  else:
+    jax.distributed.initialize()

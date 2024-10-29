@@ -46,6 +46,12 @@ if [[ -z ${MODE} ]]; then
   echo "Default MODE=${MODE}"
 fi
 
+if [[ -z ${DEVICE} ]]; then
+  export DEVICE=tpu
+  echo "Default DEVICE=${DEVICE}"
+fi
+echo "DEVICE=${DEVICE}"
+
 if [[ -z ${JAX_VERSION+x} ]] ; then
   export JAX_VERSION=NONE
   echo "Default JAX_VERSION=${JAX_VERSION}"
@@ -55,22 +61,31 @@ COMMIT_HASH=$(git rev-parse --short HEAD)
 
 echo "Building MaxDiffusion with MODE=${MODE} at commit hash ${COMMIT_HASH} . . ."
 
-if [[ "${MODE}" == "stable_stack" ]]; then
-  if [[ ! -v BASEIMAGE ]]; then
-    echo "Erroring out because BASEIMAGE is unset, please set it!"
-    exit 1
+if [[ ${DEVICE} == "gpu" ]]; then
+  if [[ ${MODE} == "pinned" ]]; then
+    export BASEIMAGE=ghcr.io/nvidia/jax:base-2024-10-17
+  else
+    export BASEIMAGE=ghcr.io/nvidia/jax:base
   fi
-  docker build --no-cache \
-    --build-arg JAX_STABLE_STACK_BASEIMAGE=${BASEIMAGE} \
-    --build-arg COMMIT_HASH=${COMMIT_HASH} \
-    --network=host \
-    -t ${LOCAL_IMAGE_NAME} \
-    -f maxdiffusion_jax_stable_stack_tpu.Dockerfile .
-else
-  docker build --no-cache \
-    --network=host \
-    --build-arg MODE=${MODE} \
-    --build-arg JAX_VERSION=${JAX_VERSION} \
-    -t ${LOCAL_IMAGE_NAME} \
-    -f maxdiffusion_dependencies.Dockerfile .
+  docker build --network host --build-arg MODE=${MODE} --build-arg JAX_VERSION=$JAX_VERSION --build-arg DEVICE=$DEVICE --build-arg BASEIMAGE=$BASEIMAGE -f ./maxdiffusion_gpu_dependencies.Dockerfile -t ${LOCAL_IMAGE_NAME} .
+else 
+  if [[ "${MODE}" == "stable_stack" ]]; then
+    if [[ ! -v BASEIMAGE ]]; then
+      echo "Erroring out because BASEIMAGE is unset, please set it!"
+      exit 1
+    fi
+    docker build --no-cache \
+      --build-arg JAX_STABLE_STACK_BASEIMAGE=${BASEIMAGE} \
+      --build-arg COMMIT_HASH=${COMMIT_HASH} \
+      --network=host \
+      -t ${LOCAL_IMAGE_NAME} \
+      -f maxdiffusion_jax_stable_stack_tpu.Dockerfile .
+  else
+    docker build --no-cache \
+      --network=host \
+      --build-arg MODE=${MODE} \
+      --build-arg JAX_VERSION=${JAX_VERSION} \
+      -t ${LOCAL_IMAGE_NAME} \
+      -f maxdiffusion_dependencies.Dockerfile .
+  fi
 fi

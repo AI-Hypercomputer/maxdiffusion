@@ -81,6 +81,9 @@ diffusion_scheduler_config: {
   timestep_spacing: ''
 }
 
+# Hardware
+hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
+
 base_output_directory: ""
 
 # Parallelism
