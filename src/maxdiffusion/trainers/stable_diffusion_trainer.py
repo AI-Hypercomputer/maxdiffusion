@@ -29,7 +29,7 @@ from maxdiffusion.trainers.base_stable_diffusion_trainer import BaseStableDiffus
 from maxdiffusion import (FlaxDDPMScheduler, maxdiffusion_utils, train_utils, max_utils, max_logging)
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
-
+from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 
 from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (STABLE_DIFFUSION_CHECKPOINT)
 
@@ -61,6 +61,19 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
           config.resolution // vae_scale_factor,
       )
       # bs, encoder_input, seq_length
+      batch_ids_shape = (
+          total_train_batch_size,
+          pipeline.text_encoder.config.max_position_embeddings,
+          pipeline.text_encoder.config.hidden_size,
+      )
+      input_ids_dtype = jnp.float32
+    elif config.dataset_type in ("tfrecord", "grain"):
+      batch_image_shape = (
+          total_train_batch_size,
+          config.resolution // vae_scale_factor,
+          config.resolution // vae_scale_factor,
+          8,
+      )
       batch_ids_shape = (
           total_train_batch_size,
           pipeline.text_encoder.config.max_position_embeddings,
@@ -240,9 +253,13 @@ def _train_step(unet_state, vae_state, text_encoder_state, batch, train_rng, pip
     state_params = {"unet": unet_state.params}
 
   def compute_loss(state_params):
-
     if config.dataset_type == "tf" and config.cache_latents_text_encoder_outputs:
       latents = batch["pixel_values"]
+      encoder_hidden_states = batch["input_ids"]
+    elif config.dataset_type in ("tfrecord", "grain"):
+      latents = FlaxDiagonalGaussianDistribution(batch["pixel_values"]).sample(sample_rng)
+      latents = jnp.transpose(latents, (0, 3, 1, 2))
+      latents = latents * pipeline.vae.config.scaling_factor
       encoder_hidden_states = batch["input_ids"]
     else:
       # Convert images to latent space

@@ -155,6 +155,8 @@ jax_cache_dir: ''
 hf_data_dir: ''
 hf_train_files: ''
 hf_access_token: ''
+grain_train_files: ''
+grain_worker_count: 4
 image_column: 'image'
 caption_column: 'text'
 resolution: 512
