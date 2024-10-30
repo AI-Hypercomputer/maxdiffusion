@@ -23,6 +23,16 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
+(sudo bash || bash) <<'EOF'
+apt update && \
+apt install -y numactl lsb-release gnupg curl net-tools iproute2 procps lsof git ethtool && \
+export GCSFUSE_REPO=gcsfuse-`lsb_release -c -s`
+echo "deb https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | tee /etc/apt/sources.list.d/gcsfuse.list
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+apt update -y && apt -y install gcsfuse
+rm -rf /var/lib/apt/lists/*
+EOF
+
 # Set environment variables from command line arguments
 for ARGUMENT in "$@"; do
   IFS='=' read -r KEY VALUE <<< "$ARGUMENT"

@@ -21,6 +21,7 @@ from datasets import load_from_disk, Dataset
 import jax
 
 from maxdiffusion.input_pipeline import _hf_data_processing
+from maxdiffusion.input_pipeline import _grain_data_processing
 from maxdiffusion.input_pipeline import _tfds_data_processing
 from maxdiffusion import multihost_dataloading
 from maxdiffusion.maxdiffusion_utils import tokenize_captions, transform_images, vae_apply
@@ -61,6 +62,14 @@ def make_data_iterator(
         tokenize_fn=tokenize_fn,
         image_transforms_fn=image_transforms_fn,
     )
+  elif config.dataset_type == "grain":
+    return _grain_data_processing.make_grain_iterator(
+        config,
+        dataloading_host_index,
+        dataloading_host_count,
+        mesh,
+        global_batch_size,
+    )
   elif config.dataset_type == "tf":
     return _tfds_data_processing.make_tf_iterator(
         config,
@@ -80,7 +89,7 @@ def make_data_iterator(
         global_batch_size,
     )
   else:
-    assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be in (tf, tfrecord, hf)"
+    assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be in (tf, tfrecord, hf, grain)"
 
 
 def make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenizer, vae, vae_params):
