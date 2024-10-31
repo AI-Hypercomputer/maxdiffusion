@@ -87,30 +87,29 @@ def make_tfrecord_iterator(
   maxdiffusion/pedagogical_examples/to_tfrecords.py
   """
   feature_description = {
-      "latents": tf.io.FixedLenFeature([], tf.string),
-      "hidden_states": tf.io.FixedLenFeature([], tf.string),
+      "moments": tf.io.FixedLenFeature([], tf.string),
+      "clip_embeddings": tf.io.FixedLenFeature([], tf.string),
   }
 
   def _parse_tfrecord_fn(example):
     return tf.io.parse_single_example(example, feature_description)
 
   def prepare_sample(features):
-    latents = tf.io.parse_tensor(tnp.asarray(features["latents"]), out_type=tf.float32)
-    hidden_states = tf.io.parse_tensor(tnp.asarray(features["hidden_states"]), out_type=tf.float32)
-    return {"pixel_values": latents, "input_ids": hidden_states}
+    moments = tf.io.parse_tensor(tnp.asarray(features["moments"]), out_type=tf.float32)
+    clip_embeddings = tf.io.parse_tensor(tnp.asarray(features["clip_embeddings"]), out_type=tf.float32)
+    return {"pixel_values": moments, "input_ids": clip_embeddings}
 
   filenames = tf.io.gfile.glob(os.path.join(config.train_data_dir, "*"))
   train_ds = (
       tf.data.TFRecordDataset(filenames, num_parallel_reads=AUTOTUNE)
+      .shard(num_shards=dataloading_host_count, index=dataloading_host_index)
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
       .map(prepare_sample, num_parallel_calls=AUTOTUNE)
       .shuffle(global_batch_size * 10)
       .batch(global_batch_size // dataloading_host_count, drop_remainder=True)
-      .prefetch(AUTOTUNE)
       .repeat(-1)
+      .prefetch(AUTOTUNE)
   )
-
-  train_ds = train_ds.shard(num_shards=dataloading_host_count, index=dataloading_host_index)
 
   train_iter = multihost_dataloading.MultiHostDataLoadIterator(train_ds, mesh)
   return train_iter

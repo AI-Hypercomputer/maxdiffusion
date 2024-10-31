@@ -45,7 +45,7 @@ ARG JAX_VERSION
 ENV ENV_JAX_VERSION=$JAX_VERSION
 
 # Set the working directory in the container
-WORKDIR /app
+WORKDIR /deps
 
 # Copy all files from local workspace into docker container
 COPY . .

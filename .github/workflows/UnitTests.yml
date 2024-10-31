@@ -39,10 +39,9 @@ jobs:
     - name: Install dependencies
       run: |
         pip install -e .
-        pip install -U -r requirements.txt
-        export PATH=$PATH:$HOME/.local/bin
         pip uninstall jax jaxlib libtpu-nightly libtpu -y
-        pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+        bash setup.sh MODE=stable
+        export PATH=$PATH:$HOME/.local/bin
         pip install ruff
         pip install isort
         pip install pytest

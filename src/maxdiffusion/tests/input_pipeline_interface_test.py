@@ -18,6 +18,7 @@ import os
 from functools import partial
 import pathlib
 import shutil
+import subprocess
 import unittest
 from absl.testing import absltest
 
@@ -425,13 +426,68 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
     )
 
+  def test_make_laion_grain_iterator(self):
+    try:
+      subprocess.check_output(
+          [
+              "bash",
+              "setup_gcsfuse.sh",
+              "DATASET_GCS_BUCKET=maxdiffusion-github-runner-test-assets",
+              "MOUNT_PATH=/tmp/gcsfuse",
+          ],
+          stderr=subprocess.STDOUT,
+      )
+    except subprocess.CalledProcessError as e:
+      raise ValueError(f"setup_gcsfuse failed with error: {e.output}") from e
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_2_base.yml"),
+            "grain_train_files=/tmp/gcsfuse/datasets/array-record/laion400m/tf_records_512_encoder_state_fp32/*.arrayrecord",
+            "dataset_type=grain",
+        ],
+        unittest=True,
+    )
+    config = pyconfig.config
+    global_batch_size = config.per_device_batch_size * jax.device_count()
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+
+    pipeline, _ = FlaxStableDiffusionPipeline.from_pretrained(
+        config.pretrained_model_name_or_path,
+        revision=config.revision,
+        dtype=config.activations_dtype,
+        safety_checker=None,
+        feature_extractor=None,
+        from_pt=config.from_pt,
+    )
+
+    train_iterator = make_data_iterator(config, jax.process_index(), jax.process_count(), mesh, global_batch_size)
+    data = next(train_iterator)
+    device_count = jax.device_count()
+
+    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+    encoder_hidden_states = data["input_ids"]
+
+    # TODO - laion dataset was prepared with an extra dim.
+    # need to preprocess the dataset with dim removed.
+    if len(encoder_hidden_states.shape) == 4:
+      encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
+
+    assert encoder_hidden_states.shape == (device_count, 77, 1024)
+    assert data["pixel_values"].shape == (
+        config.total_train_batch_size,
+        config.resolution // vae_scale_factor,
+        config.resolution // vae_scale_factor,
+        8,
+    )
+
   def test_make_laion_tfrecord_iterator(self):
     pyconfig.initialize(
         [
             None,
             os.path.join(THIS_DIR, "..", "configs", "base_2_base.yml"),
-            "cache_latents_text_encoder_outputs=True",
-            "train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/processed/laion400m_tfrec",
+            "train_data_dir=gs://jfacevedo-maxdiffusion/laion400m/raw_data/tf_records_512_encoder_state_fp32",
             "dataset_type=tfrecord",
         ],
         unittest=True,
@@ -464,10 +520,10 @@ class InputPipelineInterface(unittest.TestCase):
 
     assert encoder_hidden_states.shape == (device_count, 77, 1024)
     assert data["pixel_values"].shape == (
-        device_count,
-        pipeline.unet.config.in_channels,
+        config.total_train_batch_size,
         config.resolution // vae_scale_factor,
         config.resolution // vae_scale_factor,
+        8,
     )
 
   def test_tfrecord(self):

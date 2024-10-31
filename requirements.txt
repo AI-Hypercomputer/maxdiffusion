@@ -27,3 +27,5 @@ opencv-python-headless==4.10.0.84
 orbax-checkpoint>=0.5.20
 tokenizers==0.20.0
 huggingface_hub==0.24.7
+
+huggingface_hub==0.24.7
