@@ -401,7 +401,6 @@ def setup_initial_state(
         state = state[checkpoint_item]
     if not state:
       max_logging.log(f"Could not find the item in orbax, creating state...")
-
       init_train_state_partial = functools.partial(
           init_train_state,
           model=model,

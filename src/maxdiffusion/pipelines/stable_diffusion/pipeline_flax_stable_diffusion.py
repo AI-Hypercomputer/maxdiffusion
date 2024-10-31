@@ -30,6 +30,7 @@ from ...schedulers import (
     FlaxLMSDiscreteScheduler,
     FlaxPNDMScheduler,
 )
+from ...loaders import (StableDiffusionLoraLoaderMixin)
 from ...utils import deprecate, logging, replace_example_docstring
 from ..pipeline_flax_utils import FlaxDiffusionPipeline
 from .pipeline_output import FlaxStableDiffusionPipelineOutput
@@ -73,7 +74,7 @@ EXAMPLE_DOC_STRING = """
 """
 
 
-class FlaxStableDiffusionPipeline(FlaxDiffusionPipeline):
+class FlaxStableDiffusionPipeline(FlaxDiffusionPipeline, StableDiffusionLoraLoaderMixin):
   r"""
   Flax-based pipeline for text-to-image generation using Stable Diffusion.
 

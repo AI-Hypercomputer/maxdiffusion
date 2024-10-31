@@ -56,7 +56,7 @@ text_encoder_learning_rate: 4.25e-6
 diffusion_scheduler_config: {
   _class_name: 'DDIMScheduler',
   # values are v_prediction or leave empty to use scheduler's default.
-  prediction_type: '',
+  prediction_type: 'epsilon',
   rescale_zero_terminal_snr: False,
   timestep_spacing: 'trailing'
 }
@@ -156,7 +156,7 @@ profiler_steps: 5
 prompt: "portrait photo of muscular bearded guy in a worn mech suit, light bokeh, intricate, steel metal, elegant, sharp focus, soft lighting, vibrant colors"
 negative_prompt: "purple, red"
 do_classifier_free_guidance: False
-guidance_scale: 2
+guidance_scale: 2.0
 guidance_rescale: -1
 num_inference_steps: 4
 
@@ -164,5 +164,23 @@ num_inference_steps: 4
 lightning_from_pt: True
 lightning_repo: "ByteDance/SDXL-Lightning"
 lightning_ckpt: "sdxl_lightning_4step_unet.safetensors"
+
+# LoRA parameters
+# Values are lists to support multiple LoRA loading during inference in the future.
+lora_config: {
+  lora_model_name_or_path: [],
+  weight_name: [],
+  adapter_name: [],
+  scale: [],
+  from_pt: []
+}
+# Ex with values:
+# lora_config : {
+#   lora_model_name_or_path: ["ByteDance/Hyper-SD"],
+#   weight_name: ["Hyper-SDXL-2steps-lora.safetensors"],
+#   adapter_name: ["hyper-sdxl"],
+#   scale: [0.7],
+#   from_pt: [True]
+# }
 
 enable_mllog: False

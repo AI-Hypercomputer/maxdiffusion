@@ -435,7 +435,7 @@ class FlaxAttention(nn.Module):
     )
     self.dropout_layer = nn.Dropout(rate=self.dropout)
 
-  def __call__(self, hidden_states, context=None, deterministic=True):
+  def __call__(self, hidden_states, context=None, deterministic=True, cross_attention_kwargs=None):
     context = hidden_states if context is None else context
     query_proj = self.query(hidden_states)
     key_proj = self.key(context)
@@ -542,18 +542,25 @@ class FlaxBasicTransformerBlock(nn.Module):
     self.norm3 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
     self.dropout_layer = nn.Dropout(rate=self.dropout)
 
-  def __call__(self, hidden_states, context, deterministic=True):
+  def __call__(self, hidden_states, context, deterministic=True, cross_attention_kwargs=None):
     # self attention
     residual = hidden_states
     if self.only_cross_attention:
-      hidden_states = self.attn1(self.norm1(hidden_states), context, deterministic=deterministic)
+      hidden_states = self.attn1(
+          self.norm1(hidden_states), context, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
+      )
     else:
-      hidden_states = self.attn1(self.norm1(hidden_states), deterministic=deterministic)
+      hidden_states = self.attn1(
+          self.norm1(hidden_states), deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
+      )
+
     hidden_states = hidden_states + residual
 
     # cross attention
     residual = hidden_states
-    hidden_states = self.attn2(self.norm2(hidden_states), context, deterministic=deterministic)
+    hidden_states = self.attn2(
+        self.norm2(hidden_states), context, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
+    )
     hidden_states = hidden_states + residual
 
     # feed forward
@@ -689,7 +696,7 @@ class FlaxTransformer2DModel(nn.Module):
 
     self.dropout_layer = nn.Dropout(rate=self.dropout)
 
-  def __call__(self, hidden_states, context, deterministic=True):
+  def __call__(self, hidden_states, context, deterministic=True, cross_attention_kwargs=None):
     batch, height, width, channels = hidden_states.shape
     residual = hidden_states
     hidden_states = self.norm(hidden_states)
@@ -701,7 +708,9 @@ class FlaxTransformer2DModel(nn.Module):
       hidden_states = hidden_states.reshape(batch, height * width, channels)
 
     for transformer_block in self.transformer_blocks:
-      hidden_states = transformer_block(hidden_states, context, deterministic=deterministic)
+      hidden_states = transformer_block(
+          hidden_states, context, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
+      )
 
     if self.use_linear_projection:
       hidden_states = self.proj_out(hidden_states)

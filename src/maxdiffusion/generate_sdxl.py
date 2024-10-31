@@ -23,16 +23,18 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
+import flax.linen as nn
 from flax.linen import partitioning as nn_partitioning
-
-from maxdiffusion import (
-    FlaxEulerDiscreteScheduler,
-)
-
 
 from maxdiffusion import pyconfig, max_utils
 from maxdiffusion.image_processor import VaeImageProcessor
-from maxdiffusion.maxdiffusion_utils import (get_add_time_ids, rescale_noise_cfg, load_sdxllightning_unet)
+from maxdiffusion.maxdiffusion_utils import (
+    get_add_time_ids,
+    rescale_noise_cfg,
+    load_sdxllightning_unet,
+    maybe_load_lora,
+    create_scheduler,
+)
 
 from maxdiffusion.trainers.sdxl_trainer import (StableDiffusionXLTrainer)
 
@@ -82,7 +84,6 @@ def loop_body(step, args, model, pipeline, added_cond_kwargs, prompt_embeds, gui
         lambda _: noise_pred,
         operand=None,
     )
-
   latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
   return latents, scheduler_state, state
@@ -217,6 +218,8 @@ def run(config):
   checkpoint_loader = GenerateSDXL(config)
   pipeline, params = checkpoint_loader.load_checkpoint()
 
+  noise_scheduler, noise_scheduler_state = create_scheduler(pipeline.scheduler.config, config)
+
   weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=checkpoint_loader.rng)
   unboxed_abstract_state, _, _ = max_utils.get_abstract_state(
       pipeline.unet, None, config, checkpoint_loader.mesh, weights_init_fn, False
@@ -228,20 +231,24 @@ def run(config):
   if unet_params:
     params["unet"] = unet_params
 
+  # maybe load lora and create interceptor
+  params, lora_interceptor = maybe_load_lora(config, pipeline, params)
+
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
 
-  # Don't restore the train state to save memory, just restore params
+  # Don't restore the full train state, instead, just restore params
   # and create an inference state.
-  unet_state, unet_state_shardings = max_utils.setup_initial_state(
-      model=pipeline.unet,
-      tx=None,
-      config=config,
-      mesh=checkpoint_loader.mesh,
-      weights_init_fn=weights_init_fn,
-      model_params=params.get("unet", None),
-      training=False,
-  )
+  with nn.intercept_methods(lora_interceptor):
+    unet_state, unet_state_shardings = max_utils.setup_initial_state(
+        model=pipeline.unet,
+        tx=None,
+        config=config,
+        mesh=checkpoint_loader.mesh,
+        weights_init_fn=weights_init_fn,
+        model_params=params.get("unet", None),
+        training=False,
+    )
 
   vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
       pipeline, params, checkpoint_item_name="vae_state", is_training=False
@@ -267,14 +274,6 @@ def run(config):
   states["text_encoder_state"] = text_encoder_state
   states["text_encoder_2_state"] = text_encoder_2_state
 
-  noise_scheduler, noise_scheduler_state = FlaxEulerDiscreteScheduler.from_pretrained(
-      config.pretrained_model_name_or_path,
-      revision=config.revision,
-      subfolder="scheduler",
-      dtype=jnp.float32,
-      timestep_spacing="trailing",
-  )
-
   pipeline.scheduler = noise_scheduler
   params["scheduler"] = noise_scheduler_state
 
@@ -293,10 +292,12 @@ def run(config):
   )
 
   s = time.time()
-  p_run_inference(states).block_until_ready()
+  with nn.intercept_methods(lora_interceptor):
+    p_run_inference(states).block_until_ready()
   print("compile time: ", (time.time() - s))
   s = time.time()
-  images = p_run_inference(states).block_until_ready()
+  with nn.intercept_methods(lora_interceptor):
+    images = p_run_inference(states).block_until_ready()
   print("inference time: ", (time.time() - s))
   images = jax.experimental.multihost_utils.process_allgather(images)
   numpy_images = np.array(images)

@@ -75,11 +75,10 @@ timestep_bias: {
 
 # Override parameters from checkpoints's scheduler.
 diffusion_scheduler_config: {
-  _class_name: '',
-  # values are v_prediction or leave empty to use scheduler's default.
-  prediction_type: '',
+  _class_name: 'FlaxEulerDiscreteScheduler',
+  prediction_type: 'epsilon',
   rescale_zero_terminal_snr: False,
-  timestep_spacing: ''
+  timestep_spacing: 'trailing'
 }
 
 # Output directory
@@ -197,7 +196,7 @@ profiler_steps: 10
 prompt: "A magical castle in the middle of a forest, artistic drawing"
 negative_prompt: "purple, red"
 do_classifier_free_guidance: True
-guidance_scale: 9
+guidance_scale: 9.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 20
@@ -208,6 +207,24 @@ lightning_from_pt: True
 lightning_repo: ""
 # Empty or "sdxl_lightning_4step_unet.safetensors" to enable lightning.
 lightning_ckpt: ""
+
+# LoRA parameters
+# Values are lists to support multiple LoRA loading during inference in the future.
+lora_config: {
+  lora_model_name_or_path: [],
+  weight_name: [],
+  adapter_name: [],
+  scale: [],
+  from_pt: []
+}
+# Ex with values:
+# lora_config : {
+#   lora_model_name_or_path: ["ByteDance/Hyper-SD"],
+#   weight_name: ["Hyper-SDXL-2steps-lora.safetensors"],
+#   adapter_name: ["hyper-sdxl"],
+#   scale: [0.7],
+#   from_pt: [True]
+# }
 
 enable_mllog: False
 
