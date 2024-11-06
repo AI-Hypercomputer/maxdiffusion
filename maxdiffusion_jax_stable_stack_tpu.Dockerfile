@@ -16,7 +16,7 @@ WORKDIR /deps
 COPY . .
 
 # Install Maxdiffusion jax stable stack requirements
-RUN pip install -r /app/requirements_with_jax_stable_stack.txt
+RUN pip install -r /deps/requirements_with_jax_stable_stack.txt
 
 # Run the script available in JAX-Stable-Stack base image to generate the manifest file
 RUN bash /jax-stable-stack/generate_manifest.sh PREFIX=maxdiffusion COMMIT_HASH=$COMMIT_HASH
