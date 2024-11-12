@@ -15,6 +15,7 @@
  """
 
 import os
+import sys
 from functools import partial
 import datetime
 import time
@@ -211,7 +212,6 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         unet_state, text_encoder_state, train_metric, train_rngs = p_train_step(
             unet_state, vae_state, text_encoder_state, example_batch, train_rngs
         )
-      samples_count = self.total_train_batch_size * (step + 1)
       new_time = datetime.datetime.now()
 
       train_utils.record_scalar_metrics(
@@ -221,11 +221,15 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
         train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
       last_step_completion = new_time
 
-      if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
+      if step != 0 and self.config.checkpoint_every != -1 and step % self.config.checkpoint_every == 0:
         train_states["unet_state"] = unet_state
         train_states["vae_state"] = vae_state
         train_states["text_encoder"] = text_encoder_state
-        self.save_checkpoint(step, pipeline, params, train_states)
+        self.save_checkpoint(step, pipeline, params, train_states, data_iterator)
+
+      if self.checkpoint_manager.reached_preemption(step):
+        self.checkpoint_manager.wait_until_finished()
+        sys.exit()
 
       if self.config.enable_profiler and step == last_profiling_step:
         max_utils.deactivate_profiler(self.config)
@@ -239,7 +243,7 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
     train_states["vae_state"] = vae_state
     train_states["text_encoder"] = text_encoder_state
     # save the inference states of the last checkpoint so they can be easily loaded during gen.
-    self.save_checkpoint(self.config.max_train_steps - 1, pipeline, params, train_states)
+    self.save_checkpoint(self.config.max_train_steps - 1, pipeline, params, train_states, data_iterator)
     self.checkpoint_manager.wait_until_finished()
 
 

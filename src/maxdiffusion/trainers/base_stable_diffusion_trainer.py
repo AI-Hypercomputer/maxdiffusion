@@ -128,6 +128,8 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
 
     # Load dataset
     data_iterator = self.load_dataset(pipeline, params, train_states)
+    if self.config.dataset_type == "grain":
+      data_iterator = self.restore_data_iterator_state(data_iterator)
 
     data_shardings = self.get_data_shardings()
     # Compile train_step
