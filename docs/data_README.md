@@ -6,7 +6,8 @@ Currently MaxDiffusion supports 3 data input pipelines, controlled by the flag `
 | -------- | ---------------- | --------------- | ----------------------- |
 | HuggingFace (hf) | datasets in HuggingFace Hub or local/Cloud Storage | Formats supported in HF Hub: parquet, arrow, json, csv, txt | data are not loaded in memory but streamed from the saved location, good for big dataset | 
 | tf | dataset will be downaloaded form HuggingFace Hub to disk | Formats supported in HF Hub: parquet, arrow, json, csv, txt | Will read the whole dataset into memory, works for small dataset |
-| tfrecord | local/Cloud Storage | tfrecord | data are not loaded in memory but streamed from the saved location, good for big dataset |
+| tfrecord | local/Cloud Storage | TFRecord | data are not loaded in memory but streamed from the saved location, good for big dataset |
+| Grain | local/Cloud Storage | ArrayRecord (or any random access format) | data are not loaded in memory but streamed from the saved location, good for big dataset, supports global shuffle and data iterator checkpoint for determinism (see details in [doc](https://github.com/AI-Hypercomputer/maxtext/blob/main/getting_started/Data_Input_Pipeline.md#grain-pipeline---for-determinism)) |
 
 ## Usage examples
 
@@ -43,6 +44,12 @@ cache_latents_text_encoder_outputs: True
 ```
 dataset_type: tfrecord
 train_data_dir: gs://<bucket>/<folder>  # will use all TFRecord files under the directory
+```
+
+### Grain (dataset_type=grain)
+```
+dataset_type: grain
+grain_train_files: gs://<bucket>/<folder>/*.arrayrecord  # match the file pattern
 ```
 
 ## Best Practice

@@ -40,6 +40,7 @@ def create_orbax_checkpoint_manager(
     enable_checkpointing: bool,
     save_interval_steps,
     checkpoint_type: str,
+    dataset_type: str = "tf",
     use_async: bool = True,
     orbax_logger: Optional[abstract_logger.AbstractLogger] = None,
 ):
@@ -70,6 +71,8 @@ def create_orbax_checkpoint_manager(
         "text_encoder_2_state",
         "text_encoder_2_config",
     )
+  if dataset_type == "grain":
+    item_names += ("iter",)
 
   print("item_names: ", item_names)
 

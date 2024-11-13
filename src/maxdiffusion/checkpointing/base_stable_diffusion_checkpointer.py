@@ -22,6 +22,7 @@ import functools
 import jax
 from jax.sharding import Mesh
 import orbax.checkpoint as ocp
+import grain.python as grain
 from maxdiffusion import (
     max_utils,
     FlaxStableDiffusionPipeline,
@@ -57,7 +58,11 @@ class BaseStableDiffusionCheckpointer(ABC):
     self.total_train_batch_size = self.config.total_train_batch_size
 
     self.checkpoint_manager = create_orbax_checkpoint_manager(
-        self.config.checkpoint_dir, enable_checkpointing=True, save_interval_steps=1, checkpoint_type=checkpoint_type
+        self.config.checkpoint_dir,
+        enable_checkpointing=True,
+        save_interval_steps=1,
+        checkpoint_type=checkpoint_type,
+        dataset_type=config.dataset_type,
     )
 
   def _create_optimizer(self, config, learning_rate):
@@ -157,6 +162,22 @@ class BaseStableDiffusionCheckpointer(ABC):
         training=is_training,
     )
 
+  def restore_data_iterator_state(self, data_iterator):
+    if (
+        self.config.dataset_type == "grain"
+        and data_iterator is not None
+        and (self.checkpoint_manager.directory / str(self.checkpoint_manager.latest_step()) / "iter").exists()
+    ):
+      max_logging.log("Restoring data iterator from checkpoint")
+      restored = self.checkpoint_manager.restore(
+          self.checkpoint_manager.latest_step(),
+          args=ocp.args.Composite(iter=grain.PyGrainCheckpointRestore(data_iterator.local_iterator)),
+      )
+      data_iterator.local_iterator = restored["iter"]
+    else:
+      max_logging.log("data iterator checkpoint not found")
+    return data_iterator
+
   def _get_pipeline_class(self):
     if self.checkpoint_type == STABLE_DIFFUSION_CHECKPOINT:
       pipeline_class = FlaxStableDiffusionPipeline
@@ -212,7 +233,7 @@ class BaseStableDiffusionCheckpointer(ABC):
       params = jax.tree_util.tree_map(lambda x: x.astype(self.config.weights_dtype), params)
     return pipeline, params
 
-  def save_checkpoint(self, train_step, pipeline, params, train_states):
+  def save_checkpoint(self, train_step, pipeline, params, train_states, data_iterator=None):
     def config_to_json(model_or_config):
       return json.loads(model_or_config.to_json_string())
 
@@ -233,7 +254,8 @@ class BaseStableDiffusionCheckpointer(ABC):
 
     tokenizer_config = {"path": self.config.tokenizer_model_name_or_path}
     items["tokenizer_config"] = ocp.args.JsonSave(tokenizer_config)
-
+    if self.config.dataset_type == "grain":
+      items["iter"] = grain.PyGrainCheckpointSave(data_iterator.local_iterator)
     self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
 
   def load_params(self, step=None):
