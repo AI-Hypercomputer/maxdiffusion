@@ -110,6 +110,7 @@ ici_tensor_parallelism: 1
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
 dataset_name: ''
+dataset_type: 'tf'
 train_data_dir: ''
 dataset_config_name: ''
 jax_cache_dir: ''
