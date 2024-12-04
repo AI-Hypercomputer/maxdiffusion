@@ -110,4 +110,4 @@ fi
 pip3 install -U -r requirements.txt
 
 # Install maxdiffusion
-pip3 install -e -U .
+pip3 install -U .
