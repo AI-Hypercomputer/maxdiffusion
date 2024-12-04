@@ -108,3 +108,6 @@ fi
 
 # Install dependencies from requirements.txt
 pip3 install -U -r requirements.txt
+
+# Install maxdiffusion
+pip3 install -U .

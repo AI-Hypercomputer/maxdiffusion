@@ -121,7 +121,7 @@ def write_metrics_for_gcs(metrics, step, config, running_metrics):
   """Writes metrics to gcs"""
   metrics_dict_step = _prepare_metrics_for_json(metrics, step, config.run_name)
   running_metrics.append(metrics_dict_step)
-  if (step + 1) % config.log_period == 0 or step == config.steps - 1:
+  if (step + 1) % config.log_period == 0 or step == config.max_train_steps - 1:
     start_step = (step // config.log_period) * config.log_period
     metrics_filename = f"metrics_step_{start_step:06}_to_step_{step:06}.txt"
     with open(metrics_filename, "w", encoding="utf8") as metrics_for_gcs:
