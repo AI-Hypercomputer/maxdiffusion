@@ -12,9 +12,7 @@ multiple hosts.
 1. Clone MaxDiffusion in your TPU VM.
 1. Within the root directory of the MaxDiffusion `git` repo, install dependencies by running:
 ```bash
-pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-pip3 install -r requirements.txt
-pip3 install .
+bash setup.sh MODE=stable
 ```
 
 ## Getting Starting: Multihost development

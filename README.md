@@ -188,7 +188,7 @@ MaxDiffusion started as a fork of [Diffusers](https://github.com/huggingface/dif
 
 Whether you are forking MaxDiffusion for your own needs or intending to contribute back to the community, a full suite of tests can be found in `tests` and `src/maxdiffusion/tests`.
 
-To run unit tests, you'll need to [install gcsfuse](https://cloud.google.com/storage/docs/cloud-storage-fuse/install) then simply run:
+To run unit tests simply run:
 ```
 python -m pytest
 ```
