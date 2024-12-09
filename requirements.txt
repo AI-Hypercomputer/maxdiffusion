@@ -4,7 +4,7 @@ grain-nightly
 google-cloud-storage==2.17.0
 absl-py
 datasets
-flax==0.8.5
+flax>=0.10.2
 optax>=0.2.3
 torch>=2.3.1
 torchvision>=0.18.1
@@ -26,6 +26,4 @@ git+https://github.com/mlperf/logging.git
 opencv-python-headless==4.10.0.84
 orbax-checkpoint>=0.5.20
 tokenizers==0.20.0
-huggingface_hub==0.24.7
-
 huggingface_hub==0.24.7
