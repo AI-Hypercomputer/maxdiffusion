@@ -54,6 +54,7 @@ def maybe_load_lora(config, pipeline, params):
         weight_name=lora_config["weight_name"][0],
         params=params,
         adapter_name=lora_config["adapter_name"][0],
+        unet_config=pipeline.unet.config
     )
     interceptor = pipeline.make_lora_interceptor(params, rank, network_alphas)
 
