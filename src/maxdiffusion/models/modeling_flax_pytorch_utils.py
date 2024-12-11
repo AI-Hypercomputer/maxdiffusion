@@ -139,7 +139,7 @@ def create_flax_params_from_pytorch_state(
     network_alpha_value = get_network_alpha_value(pt_key, network_alphas)
 
     # rename text encoders fc1 lora layers.
-    pt_key = pt_key.replace("lora_linear_layer","lora")
+    pt_key = pt_key.replace("lora_linear_layer", "lora")
 
     # only rename the unet keys, text encoders are already correct.
     if "unet" in pt_key:
@@ -157,20 +157,20 @@ def create_flax_params_from_pytorch_state(
       flax_key_list = [*pt_tuple_key]
       if "text_encoder" in pt_tuple_key or "text_encoder_2" in pt_tuple_key:
         rename_from_to = (
-          ("to_k_lora", ("k_proj", "lora")),
-          ("to_q_lora", ("q_proj", "lora")),
-          ("to_v_lora", ("v_proj", "lora")),
-          ("to_out_lora", ("out_proj", "lora")),
-          ("weight", "kernel"),
+            ("to_k_lora", ("k_proj", "lora")),
+            ("to_q_lora", ("q_proj", "lora")),
+            ("to_v_lora", ("v_proj", "lora")),
+            ("to_out_lora", ("out_proj", "lora")),
+            ("weight", "kernel"),
         )
       # the unet
-      else:  
+      else:
         rename_from_to = (
-          ("to_k_lora", ("to_k", "lora")),
-          ("to_q_lora", ("to_q", "lora")),
-          ("to_v_lora", ("to_v", "lora")),
-          ("to_out_lora", ("to_out_0", "lora")),
-          ("weight", "kernel"),
+            ("to_k_lora", ("to_k", "lora")),
+            ("to_q_lora", ("to_q", "lora")),
+            ("to_v_lora", ("to_v", "lora")),
+            ("to_out_lora", ("to_out_0", "lora")),
+            ("weight", "kernel"),
         )
       for rename_from, rename_to in rename_from_to:
         tmp = []

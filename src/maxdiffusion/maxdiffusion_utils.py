@@ -49,12 +49,13 @@ def maybe_load_lora(config, pipeline, params):
   if len(lora_config["lora_model_name_or_path"]) > 0:
     # For now only first lora supported. In the future, they will be merged
     # before being loaded.
+    # TODO - merge LoRAs here.
     params, rank, network_alphas = pipeline.load_lora_weights(
         lora_config["lora_model_name_or_path"][0],
         weight_name=lora_config["weight_name"][0],
         params=params,
         adapter_name=lora_config["adapter_name"][0],
-        unet_config=pipeline.unet.config
+        unet_config=pipeline.unet.config,
     )
     interceptor = pipeline.make_lora_interceptor(params, rank, network_alphas)
 

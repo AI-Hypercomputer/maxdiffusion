@@ -135,7 +135,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
   def make_lora_interceptor(cls, params, rank, network_alphas):
     # Only unet interceptor supported for now.
     network_alphas_for_interceptor = {}
-    
+
     unet_lora_keys = flax.traverse_util.flatten_dict(params["unet"]).keys()
     lora_keys, unet_alphas = cls.rename_for_interceptor(unet_lora_keys, network_alphas)
     network_alphas_for_interceptor.update(unet_alphas)
@@ -150,7 +150,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       text_encoder_2_keys, text_encoder_2_alphas = cls.rename_for_interceptor(text_encoder_2_keys, network_alphas)
       lora_keys.extend(text_encoder_2_keys)
       network_alphas_for_interceptor.update(text_encoder_2_alphas)
-    
+
     def _intercept(next_fn, args, kwargs, context):
       mod = context.module
       while mod is not None:
