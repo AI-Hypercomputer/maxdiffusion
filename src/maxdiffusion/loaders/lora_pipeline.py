@@ -121,21 +121,35 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
 
   def rename_for_interceptor(params_keys, network_alphas):
     new_params_keys = []
+    new_network_alphas = {}
     for layer_lora in params_keys:
       if "lora" in layer_lora:
         new_layer_lora = layer_lora[: layer_lora.index("lora")]
         if new_layer_lora not in new_params_keys:
           new_params_keys.append(new_layer_lora)
           network_alpha = network_alphas[layer_lora]
-          del network_alphas[layer_lora]
-          network_alphas[new_layer_lora] = network_alpha
-    return new_params_keys, network_alphas
+          new_network_alphas[new_layer_lora] = network_alpha
+    return new_params_keys, new_network_alphas
 
   @classmethod
   def make_lora_interceptor(cls, params, rank, network_alphas):
     # Only unet interceptor supported for now.
+    network_alphas_for_interceptor = {}
+
     unet_lora_keys = flax.traverse_util.flatten_dict(params["unet"]).keys()
-    unet_lora_keys, network_alphas = cls.rename_for_interceptor(unet_lora_keys, network_alphas)
+    lora_keys, unet_alphas = cls.rename_for_interceptor(unet_lora_keys, network_alphas)
+    network_alphas_for_interceptor.update(unet_alphas)
+
+    text_encoder_keys = flax.traverse_util.flatten_dict(params["text_encoder"]).keys()
+    text_encoder_keys, text_encoder_alphas = cls.rename_for_interceptor(text_encoder_keys, network_alphas)
+    lora_keys.extend(text_encoder_keys)
+    network_alphas_for_interceptor.update(text_encoder_alphas)
+
+    if "text_encoder_2" in params.keys():
+      text_encoder_2_keys = flax.traverse_util.flatten_dict(params["text_encoder_2"]).keys()
+      text_encoder_2_keys, text_encoder_2_alphas = cls.rename_for_interceptor(text_encoder_2_keys, network_alphas)
+      lora_keys.extend(text_encoder_2_keys)
+      network_alphas_for_interceptor.update(text_encoder_2_alphas)
 
     def _intercept(next_fn, args, kwargs, context):
       mod = context.module
@@ -146,8 +160,8 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       h = next_fn(*args, **kwargs)
       if context.method_name == "__call__":
         module_path = context.module.path
-        if module_path in unet_lora_keys:
-          lora_layer = cls._get_lora_layer(module_path, context.module, rank, network_alphas)
+        if module_path in lora_keys:
+          lora_layer = cls._get_lora_layer(module_path, context.module, rank, network_alphas_for_interceptor)
           return lora_layer(h, *args, **kwargs)
       return h
 
