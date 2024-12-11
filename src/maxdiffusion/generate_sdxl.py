@@ -225,6 +225,7 @@ def run(config):
       pipeline.unet, None, config, checkpoint_loader.mesh, weights_init_fn, False
   )
 
+  # load unet params from orbax checkpoint
   unet_params = load_params_from_path(
       config, checkpoint_loader.checkpoint_manager, unboxed_abstract_state.params, "unet_state"
   )
@@ -253,14 +254,14 @@ def run(config):
   vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
       pipeline, params, checkpoint_item_name="vae_state", is_training=False
   )
-  text_encoder_state, text_encoder_state_shardings = checkpoint_loader.create_text_encoder_state(
-      pipeline, params, checkpoint_item_name="text_encoder_state", is_training=False
-  )
+  with nn.intercept_methods(lora_interceptor):
+    text_encoder_state, text_encoder_state_shardings = checkpoint_loader.create_text_encoder_state(
+        pipeline, params, checkpoint_item_name="text_encoder_state", is_training=False
+    )
 
-  text_encoder_2_state, text_encoder_2_state_shardings = checkpoint_loader.create_text_encoder_2_state(
-      pipeline, params, checkpoint_item_name="text_encoder_2_state", is_training=False
-  )
-
+    text_encoder_2_state, text_encoder_2_state_shardings = checkpoint_loader.create_text_encoder_2_state(
+        pipeline, params, checkpoint_item_name="text_encoder_2_state", is_training=False
+    )
   states = {}
   state_shardings = {}
 
