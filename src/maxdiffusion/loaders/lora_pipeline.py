@@ -88,7 +88,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     return params, rank, network_alphas
 
   @classmethod
-  def _get_lora_layer(cls, module_path, module, rank, network_alphas):
+  def _get_lora_layer(cls, module_path, module, rank, network_alphas, adapter_name):
     is_conv = any("conv" in str_ for str_ in module_path)
     network_alpha = network_alphas.get(module_path, None)
     if is_conv:
@@ -105,7 +105,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
           dtype=module.dtype,
           weights_dtype=module.param_dtype,
           precision=module.precision,
-          name="lora",
+          name=f"lora-{adapter_name}",
       )
     else:
       lora_module = LoRALinearLayer(
@@ -115,7 +115,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
           dtype=module.dtype,
           weights_dtype=module.param_dtype,
           precision=module.precision,
-          name="lora",
+          name=f"lora-{adapter_name}",
       )
     return lora_module
 
@@ -123,8 +123,10 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     new_params_keys = []
     new_network_alphas = {}
     for layer_lora in params_keys:
-      if "lora" in layer_lora:
-        new_layer_lora = layer_lora[: layer_lora.index("lora")]
+      is_there_lora = [word.startswith("lora") for word in layer_lora]
+      if any(is_there_lora):
+        lora_index = [i for i, x in enumerate(is_there_lora) if x]
+        new_layer_lora = layer_lora[: lora_index[0]]
         if new_layer_lora not in new_params_keys:
           new_params_keys.append(new_layer_lora)
           network_alpha = network_alphas[layer_lora]
@@ -132,7 +134,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     return new_params_keys, new_network_alphas
 
   @classmethod
-  def make_lora_interceptor(cls, params, rank, network_alphas):
+  def make_lora_interceptor(cls, params, rank, network_alphas, adapter_name):
     # Only unet interceptor supported for now.
     network_alphas_for_interceptor = {}
 
@@ -144,7 +146,6 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     text_encoder_keys, text_encoder_alphas = cls.rename_for_interceptor(text_encoder_keys, network_alphas)
     lora_keys.extend(text_encoder_keys)
     network_alphas_for_interceptor.update(text_encoder_alphas)
-
     if "text_encoder_2" in params.keys():
       text_encoder_2_keys = flax.traverse_util.flatten_dict(params["text_encoder_2"]).keys()
       text_encoder_2_keys, text_encoder_2_alphas = cls.rename_for_interceptor(text_encoder_2_keys, network_alphas)
@@ -161,7 +162,7 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       if context.method_name == "__call__":
         module_path = context.module.path
         if module_path in lora_keys:
-          lora_layer = cls._get_lora_layer(module_path, context.module, rank, network_alphas_for_interceptor)
+          lora_layer = cls._get_lora_layer(module_path, context.module, rank, network_alphas_for_interceptor, adapter_name)
           return lora_layer(h, *args, **kwargs)
       return h
 
@@ -290,5 +291,5 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
             `default_{i}` where i is the total number of adapters being loaded.
     """
     # Load the layers corresponding to Unet.
-    params, rank, network_alphas = convert_lora_pytorch_state_dict_to_flax(state_dict, params, network_alphas)
+    params, rank, network_alphas = convert_lora_pytorch_state_dict_to_flax(state_dict, params, network_alphas, adapter_name)
     return params, rank, network_alphas

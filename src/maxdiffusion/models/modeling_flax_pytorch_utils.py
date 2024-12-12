@@ -130,7 +130,7 @@ def get_network_alpha_value(pt_key, network_alphas):
 
 
 def create_flax_params_from_pytorch_state(
-    pt_state_dict, unet_state_dict, text_encoder_state_dict, text_encoder_2_state_dict, network_alphas, is_lora=False
+    pt_state_dict, unet_state_dict, text_encoder_state_dict, text_encoder_2_state_dict, network_alphas, adapter_name, is_lora=False
 ):
   rank = None
   renamed_network_alphas = {}
@@ -157,19 +157,21 @@ def create_flax_params_from_pytorch_state(
       flax_key_list = [*pt_tuple_key]
       if "text_encoder" in pt_tuple_key or "text_encoder_2" in pt_tuple_key:
         rename_from_to = (
-            ("to_k_lora", ("k_proj", "lora")),
-            ("to_q_lora", ("q_proj", "lora")),
-            ("to_v_lora", ("v_proj", "lora")),
-            ("to_out_lora", ("out_proj", "lora")),
+            ("to_k_lora", ("k_proj", f"lora-{adapter_name}")),
+            ("to_q_lora", ("q_proj", f"lora-{adapter_name}")),
+            ("to_v_lora", ("v_proj", f"lora-{adapter_name}")),
+            ("to_out_lora", ("out_proj", f"lora-{adapter_name}")),
+            ("lora", f"lora-{adapter_name}"),
             ("weight", "kernel"),
         )
       # the unet
       else:
         rename_from_to = (
-            ("to_k_lora", ("to_k", "lora")),
-            ("to_q_lora", ("to_q", "lora")),
-            ("to_v_lora", ("to_v", "lora")),
-            ("to_out_lora", ("to_out_0", "lora")),
+            ("to_k_lora", ("to_k", f"lora-{adapter_name}")),
+            ("to_q_lora", ("to_q", f"lora-{adapter_name}")),
+            ("to_v_lora", ("to_v", f"lora-{adapter_name}")),
+            ("to_out_lora", ("to_out_0", f"lora-{adapter_name}")),
+            ("lora", f"lora-{adapter_name}"),
             ("weight", "kernel"),
         )
       for rename_from, rename_to in rename_from_to:
@@ -206,11 +208,10 @@ def create_flax_params_from_pytorch_state(
 
     if network_alpha_value >= 0:
       renamed_network_alphas[tuple(flax_key_list)] = network_alpha_value
-
   return unet_state_dict, text_encoder_state_dict, text_encoder_2_state_dict, rank, renamed_network_alphas
 
 
-def convert_lora_pytorch_state_dict_to_flax(pt_state_dict, params, network_alphas):
+def convert_lora_pytorch_state_dict_to_flax(pt_state_dict, params, network_alphas, adapter_name):
   # Step 1: Convert pytorch tensor to numpy
   # sometimes we load weights in bf16 and numpy doesn't support it
   pt_state_dict = {k: v.float().numpy() for k, v in pt_state_dict.items()}
@@ -223,7 +224,7 @@ def convert_lora_pytorch_state_dict_to_flax(pt_state_dict, params, network_alpha
     text_encoder_2_params = None
   (unet_state_dict, text_encoder_state_dict, text_encoder_2_state_dict, rank, network_alphas) = (
       create_flax_params_from_pytorch_state(
-          pt_state_dict, unet_params, text_encoder_params, text_encoder_2_params, network_alphas, is_lora=True
+          pt_state_dict, unet_params, text_encoder_params, text_encoder_2_params, network_alphas, adapter_name, is_lora=True
       )
   )
   params["unet"] = unflatten_dict(unet_state_dict)
