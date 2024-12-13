@@ -51,7 +51,7 @@ def maybe_load_lora(config, pipeline, params):
     # before being loaded.
     # TODO - merge LoRAs here.
     interceptors = []
-    for i in range (len(lora_config["lora_model_name_or_path"])):
+    for i in range(len(lora_config["lora_model_name_or_path"])):
       params, rank, network_alphas = pipeline.load_lora_weights(
           lora_config["lora_model_name_or_path"][i],
           weight_name=lora_config["weight_name"][i],

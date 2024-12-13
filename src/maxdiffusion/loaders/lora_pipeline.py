@@ -147,7 +147,9 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     network_alphas_for_interceptor.update(text_encoder_alphas)
     if "text_encoder_2" in params.keys():
       text_encoder_2_keys = flax.traverse_util.flatten_dict(params["text_encoder_2"]).keys()
-      text_encoder_2_keys, text_encoder_2_alphas = cls.rename_for_interceptor(text_encoder_2_keys, network_alphas, adapter_name)
+      text_encoder_2_keys, text_encoder_2_alphas = cls.rename_for_interceptor(
+          text_encoder_2_keys, network_alphas, adapter_name
+      )
       lora_keys.extend(text_encoder_2_keys)
       network_alphas_for_interceptor.update(text_encoder_2_alphas)
 

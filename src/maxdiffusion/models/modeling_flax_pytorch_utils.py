@@ -130,7 +130,13 @@ def get_network_alpha_value(pt_key, network_alphas):
 
 
 def create_flax_params_from_pytorch_state(
-    pt_state_dict, unet_state_dict, text_encoder_state_dict, text_encoder_2_state_dict, network_alphas, adapter_name, is_lora=False
+    pt_state_dict,
+    unet_state_dict,
+    text_encoder_state_dict,
+    text_encoder_2_state_dict,
+    network_alphas,
+    adapter_name,
+    is_lora=False,
 ):
   rank = None
   renamed_network_alphas = {}

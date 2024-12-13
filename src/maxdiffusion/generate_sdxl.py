@@ -236,13 +236,11 @@ def run(config):
   # maybe load lora and create interceptor
   params, lora_interceptors = maybe_load_lora(config, pipeline, params)
 
-
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
 
   # Don't restore the full train state, instead, just restore params
   # and create an inference state.
-  #with nn.intercept_methods(lora_interceptor):
   with ExitStack() as stack:
     _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
     unet_state, unet_state_shardings = max_utils.setup_initial_state(
