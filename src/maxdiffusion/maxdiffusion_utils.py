@@ -45,21 +45,24 @@ def maybe_load_lora(config, pipeline, params):
     return next_fn(*args, **kwargs)
 
   lora_config = config.lora_config
-  interceptor = _noop_interceptor
+  interceptors = [_noop_interceptor]
   if len(lora_config["lora_model_name_or_path"]) > 0:
     # For now only first lora supported. In the future, they will be merged
     # before being loaded.
     # TODO - merge LoRAs here.
-    params, rank, network_alphas = pipeline.load_lora_weights(
-        lora_config["lora_model_name_or_path"][0],
-        weight_name=lora_config["weight_name"][0],
-        params=params,
-        adapter_name=lora_config["adapter_name"][0],
-        unet_config=pipeline.unet.config,
-    )
-    interceptor = pipeline.make_lora_interceptor(params, rank, network_alphas, lora_config["adapter_name"][0])
+    interceptors = []
+    for i in range (len(lora_config["lora_model_name_or_path"])):
+      params, rank, network_alphas = pipeline.load_lora_weights(
+          lora_config["lora_model_name_or_path"][i],
+          weight_name=lora_config["weight_name"][i],
+          params=params,
+          adapter_name=lora_config["adapter_name"][i],
+          unet_config=pipeline.unet.config,
+      )
+      interceptor = pipeline.make_lora_interceptor(params, rank, network_alphas, lora_config["adapter_name"][i])
+      interceptors.append(interceptor)
 
-  return params, interceptor
+  return params, interceptors
 
 
 def vae_apply(images, sample_rng, vae, vae_params):

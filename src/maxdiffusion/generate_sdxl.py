@@ -16,6 +16,7 @@
 
 import functools
 from absl import app
+from contextlib import ExitStack
 from typing import Sequence
 import time
 
@@ -233,14 +234,17 @@ def run(config):
     params["unet"] = unet_params
 
   # maybe load lora and create interceptor
-  params, lora_interceptor = maybe_load_lora(config, pipeline, params)
+  params, lora_interceptors = maybe_load_lora(config, pipeline, params)
+
 
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
 
   # Don't restore the full train state, instead, just restore params
   # and create an inference state.
-  with nn.intercept_methods(lora_interceptor):
+  #with nn.intercept_methods(lora_interceptor):
+  with ExitStack() as stack:
+    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
     unet_state, unet_state_shardings = max_utils.setup_initial_state(
         model=pipeline.unet,
         tx=None,
@@ -254,7 +258,8 @@ def run(config):
   vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
       pipeline, params, checkpoint_item_name="vae_state", is_training=False
   )
-  with nn.intercept_methods(lora_interceptor):
+  with ExitStack() as stack:
+    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
     text_encoder_state, text_encoder_state_shardings = checkpoint_loader.create_text_encoder_state(
         pipeline, params, checkpoint_item_name="text_encoder_state", is_training=False
     )
@@ -293,11 +298,13 @@ def run(config):
   )
 
   s = time.time()
-  with nn.intercept_methods(lora_interceptor):
+  with ExitStack() as stack:
+    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
     p_run_inference(states).block_until_ready()
   print("compile time: ", (time.time() - s))
   s = time.time()
-  with nn.intercept_methods(lora_interceptor):
+  with ExitStack() as stack:
+    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
     images = p_run_inference(states).block_until_ready()
   print("inference time: ", (time.time() - s))
   images = jax.experimental.multihost_utils.process_allgather(images)

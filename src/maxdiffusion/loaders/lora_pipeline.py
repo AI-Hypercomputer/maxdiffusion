@@ -119,14 +119,13 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
       )
     return lora_module
 
-  def rename_for_interceptor(params_keys, network_alphas):
+  def rename_for_interceptor(params_keys, network_alphas, adapter_name):
     new_params_keys = []
     new_network_alphas = {}
+    lora_name = f"lora-{adapter_name}"
     for layer_lora in params_keys:
-      is_there_lora = [word.startswith("lora") for word in layer_lora]
-      if any(is_there_lora):
-        lora_index = [i for i, x in enumerate(is_there_lora) if x]
-        new_layer_lora = layer_lora[: lora_index[0]]
+      if lora_name in layer_lora:
+        new_layer_lora = layer_lora[: layer_lora.index(lora_name)]
         if new_layer_lora not in new_params_keys:
           new_params_keys.append(new_layer_lora)
           network_alpha = network_alphas[layer_lora]
@@ -139,16 +138,16 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
     network_alphas_for_interceptor = {}
 
     unet_lora_keys = flax.traverse_util.flatten_dict(params["unet"]).keys()
-    lora_keys, unet_alphas = cls.rename_for_interceptor(unet_lora_keys, network_alphas)
+    lora_keys, unet_alphas = cls.rename_for_interceptor(unet_lora_keys, network_alphas, adapter_name)
     network_alphas_for_interceptor.update(unet_alphas)
 
     text_encoder_keys = flax.traverse_util.flatten_dict(params["text_encoder"]).keys()
-    text_encoder_keys, text_encoder_alphas = cls.rename_for_interceptor(text_encoder_keys, network_alphas)
+    text_encoder_keys, text_encoder_alphas = cls.rename_for_interceptor(text_encoder_keys, network_alphas, adapter_name)
     lora_keys.extend(text_encoder_keys)
     network_alphas_for_interceptor.update(text_encoder_alphas)
     if "text_encoder_2" in params.keys():
       text_encoder_2_keys = flax.traverse_util.flatten_dict(params["text_encoder_2"]).keys()
-      text_encoder_2_keys, text_encoder_2_alphas = cls.rename_for_interceptor(text_encoder_2_keys, network_alphas)
+      text_encoder_2_keys, text_encoder_2_alphas = cls.rename_for_interceptor(text_encoder_2_keys, network_alphas, adapter_name)
       lora_keys.extend(text_encoder_2_keys)
       network_alphas_for_interceptor.update(text_encoder_2_alphas)
 
