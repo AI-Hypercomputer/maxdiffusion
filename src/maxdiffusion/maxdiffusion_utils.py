@@ -47,9 +47,6 @@ def maybe_load_lora(config, pipeline, params):
   lora_config = config.lora_config
   interceptors = [_noop_interceptor]
   if len(lora_config["lora_model_name_or_path"]) > 0:
-    # For now only first lora supported. In the future, they will be merged
-    # before being loaded.
-    # TODO - merge LoRAs here.
     interceptors = []
     for i in range(len(lora_config["lora_model_name_or_path"])):
       params, rank, network_alphas = pipeline.load_lora_weights(

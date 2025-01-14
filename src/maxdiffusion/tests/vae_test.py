@@ -23,6 +23,8 @@ from PIL import Image
 import jax
 import jax.numpy as jnp
 from maxdiffusion import FlaxAutoencoderKL
+from maxdiffusion.image_processor import VaeImageProcessor
+from skimage.metrics import structural_similarity as ssim
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -36,8 +38,12 @@ class VaeTest(unittest.TestCase):
     
     img_url = os.path.join(THIS_DIR, "images", "test_hyper_sdxl.png")
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
-    base_image = np.expand_dims(base_image, 0)
-    base_image = np.transpose(base_image, (0, 3, 1, 2)) # (1, 3, 1024, 1024), BCWH
+    img_min = np.min(base_image)
+    img_max = np.max(base_image)
+    image = (base_image - img_min) / (img_max - img_min)
+    image = 2.0 * image - 1.0
+    image = np.expand_dims(image, 0)
+    image = np.transpose(image, (0, 3, 1, 2)) # (1, 3, 1024, 1024), BCWH
     
     vae, vae_params = FlaxAutoencoderKL.from_pretrained(
       "black-forest-labs/FLUX.1-dev",
@@ -47,8 +53,22 @@ class VaeTest(unittest.TestCase):
       dtype="bfloat16"
     )
 
-    encoded_image = vae.apply({"params" : vae_params}, base_image, deterministic=True, method=vae.encode)
+    encoded_image = vae.apply({"params" : vae_params}, image, deterministic=True, method=vae.encode)
     latents = encoded_image[0].sample(jax.random.key(0))
     latents = jnp.transpose(latents, (0, 3, 1, 2))
 
+    latents = (latents - vae.config.shift_factor) * vae.config.scaling_factor
+
     assert latents.shape == (1, 16, 128, 128)
+
+    # decode back
+    latents = (latents / vae.config.scaling_factor) + vae.config.shift_factor
+    image = vae.apply({"params" : vae_params}, latents, deterministic=True, method=vae.decode).sample[0]
+    image = np.array(image)
+    image = (image * 0.5 + 0.5).clip(0, 1)
+    image = np.transpose(image, (1, 2, 0))
+    image = np.uint8(image * 255)
+    ssim_compare = ssim(base_image, image, multichannel=True, channel_axis=-1, data_range=255)
+    assert ssim_compare >= 0.90
+
+
