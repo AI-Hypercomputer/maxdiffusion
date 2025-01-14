@@ -1,0 +1,54 @@
+"""
+ Copyright 2025 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+      https://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ """
+
+import os
+import unittest
+from absl.testing import absltest
+
+import numpy as np
+from PIL import Image
+import jax
+import jax.numpy as jnp
+from maxdiffusion import FlaxAutoencoderKL
+
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+class VaeTest(unittest.TestCase):
+  """Test Vae"""
+
+  def setUp(self):
+    VaeTest.dummy_data = {}
+  
+  def test_flux_vae(self):
+    
+    img_url = os.path.join(THIS_DIR, "images", "test_hyper_sdxl.png")
+    base_image = np.array(Image.open(img_url)).astype(np.uint8)
+    base_image = np.expand_dims(base_image, 0)
+    base_image = np.transpose(base_image, (0, 3, 1, 2)) # (1, 3, 1024, 1024), BCWH
+    
+    vae, vae_params = FlaxAutoencoderKL.from_pretrained(
+      "black-forest-labs/FLUX.1-dev",
+      subfolder="vae",
+      from_pt=True,
+      use_safetensors=True,
+      dtype="bfloat16"
+    )
+
+    encoded_image = vae.apply({"params" : vae_params}, base_image, deterministic=True, method=vae.encode)
+    latents = encoded_image[0].sample(jax.random.key(0))
+    latents = jnp.transpose(latents, (0, 3, 1, 2))
+
+    assert latents.shape == (1, 16, 128, 128)

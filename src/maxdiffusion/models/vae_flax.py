@@ -824,6 +824,8 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
   scaling_factor: float = 0.18215
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
+  use_quant_conv: bool = True
+  use_post_quant_conv: bool = True
 
   def setup(self):
     self.encoder = FlaxEncoder(
@@ -849,23 +851,25 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
     )
-    self.quant_conv = nn.Conv(
-        2 * self.config.latent_channels,
-        kernel_size=(1, 1),
-        strides=(1, 1),
-        padding="VALID",
-        dtype=self.dtype,
-        param_dtype=self.weights_dtype,
-    )
-    self.post_quant_conv = nn.Conv(
-        self.config.latent_channels,
-        kernel_size=(1, 1),
-        strides=(1, 1),
-        padding="VALID",
-        dtype=self.dtype,
-        param_dtype=self.weights_dtype,
-        # shape is too small to shard
-    )
+    if self.use_quant_conv:
+      self.quant_conv = nn.Conv(
+          2 * self.config.latent_channels,
+          kernel_size=(1, 1),
+          strides=(1, 1),
+          padding="VALID",
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+      )
+    if self.use_post_quant_conv:
+      self.post_quant_conv = nn.Conv(
+          self.config.latent_channels,
+          kernel_size=(1, 1),
+          strides=(1, 1),
+          padding="VALID",
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          # shape is too small to shard
+      )
 
   def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
     # init input tensors
@@ -887,8 +891,10 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
     sample = jnp.transpose(sample, (0, 2, 3, 1))
 
     hidden_states = self.encoder(sample, deterministic=deterministic)
-    moments = self.quant_conv(hidden_states)
-    posterior = FlaxDiagonalGaussianDistribution(moments)
+    moments = None
+    if self.use_quant_conv:
+      moments = self.quant_conv(hidden_states)
+    posterior = FlaxDiagonalGaussianDistribution(moments if moments else hidden_states)
 
     if not return_dict:
       return (posterior,)
@@ -899,7 +905,9 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
     if latents.shape[-1] != self.config.latent_channels:
       latents = jnp.transpose(latents, (0, 2, 3, 1))
 
-    hidden_states = self.post_quant_conv(latents)
+    hidden_states = latents
+    if self.use_quant_conv:
+      hidden_states = self.post_quant_conv(latents)
     hidden_states = self.decoder(hidden_states, deterministic=deterministic)
 
     hidden_states = jnp.transpose(hidden_states, (0, 3, 1, 2))

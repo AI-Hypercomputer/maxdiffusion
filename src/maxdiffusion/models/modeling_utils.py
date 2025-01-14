@@ -108,7 +108,8 @@ def load_state_dict(checkpoint_file: Union[str, os.PathLike], variant: Optional[
     if os.path.basename(checkpoint_file) == _add_variant(WEIGHTS_NAME, variant):
       return torch.load(checkpoint_file, map_location="cpu")
     else:
-      return safetensors.torch.load_file(checkpoint_file, device="cpu")
+      from safetensors import torch as safetensors_torch
+      return safetensors_torch.load_file(checkpoint_file, device="cpu")
   except Exception as e:
     try:
       with open(checkpoint_file) as f:
