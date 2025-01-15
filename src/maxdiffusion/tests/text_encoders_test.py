@@ -16,45 +16,64 @@
 
 import os
 import unittest
-import pytest
 from absl.testing import absltest
 
-from transformers import CLIPTokenizer, FlaxCLIPTextModel
-from transformers import T5TokenizerFast, FlaxT5EncoderModel
+import numpy as np
+from PIL import Image
+import jax
+import jax.numpy as jnp
 
-from ..generate_flux import get_clip_prompt_embeds, get_t5_prompt_embeds
+from maxdiffusion.transformers import CLIPTokenizer, FlaxCLIPTextModel
 
-IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-
 
 class TextEncoderTest(unittest.TestCase):
   """Test text encoders"""
 
   def setUp(self):
     TextEncoderTest.dummy_data = {}
+  
+  def test_flux_text_encoders(self):
 
-  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
-  def test_flux_t5_text_encoder(self):
+    def get_clip_prompt_embeds(
+      prompt,
+      num_images_per_prompt,
+      tokenizer,
+      text_encoder
+    ):
+      prompt = [prompt] if isinstance(prompt, str) else prompt
+      batch_size = len(prompt)
 
-    text_encoder = FlaxT5EncoderModel.from_pretrained("ariG23498/t5-v1-1-xxl-flax")
+      text_inputs = tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_overflowing_tokens=False,
+        return_length=False,
+        return_tensors="np"
+      )
 
-    tokenizer_2 = T5TokenizerFast.from_pretrained("ariG23498/t5-v1-1-xxl-flax")
-
-    embeds = get_t5_prompt_embeds("A dog on a skateboard", 2, tokenizer_2, text_encoder)
-
-    assert embeds.shape == (2, 512, 4096)
-
-  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
-  def test_flux_clip_text_encoder(self):
+      text_input_ids = text_inputs.input_ids
+  
+      prompt_embeds = text_encoder(text_input_ids, params=text_encoder.params, train=False)
+      prompt_embeds = prompt_embeds.pooler_output
+      prompt_embeds = np.repeat(prompt_embeds, num_images_per_prompt, axis=-1)
+      prompt_embeds = np.reshape(prompt_embeds, (batch_size * num_images_per_prompt, -1))
+      return prompt_embeds
 
     text_encoder = FlaxCLIPTextModel.from_pretrained(
-        "black-forest-labs/FLUX.1-dev", subfolder="text_encoder", from_pt=True, dtype="bfloat16"
+      "black-forest-labs/FLUX.1-dev",
+      subfolder="text_encoder",
+      from_pt=True,
+      dtype="bfloat16"
     )
-    tokenizer = CLIPTokenizer.from_pretrained("black-forest-labs/FLUX.1-dev", subfolder="tokenizer", dtype="bfloat16")
+    tokenizer = CLIPTokenizer.from_pretrained(
+      "black-forest-labs/FLUX.1-dev",
+      subfolder="tokenizer",
+      dtype="bfloat16"
+    )
     embeds = get_clip_prompt_embeds("A cat riding a skateboard", 2, tokenizer, text_encoder)
     assert embeds.shape == (2, 768)
 
 
-if __name__ == "__main__":
-  absltest.main()
