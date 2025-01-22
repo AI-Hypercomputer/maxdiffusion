@@ -41,7 +41,7 @@ from ..utils import (
 )
 
 
-from maxdiffusion.transformers import FlaxPreTrainedModel
+from transformers import FlaxPreTrainedModel
 
 INDEX_FILE = "diffusion_flax_model.bin"
 
@@ -55,7 +55,7 @@ LOADABLE_CLASSES = {
         "FlaxSchedulerMixin": ["save_pretrained", "from_pretrained"],
         "FlaxDiffusionPipeline": ["save_pretrained", "from_pretrained"],
     },
-    "maxdiffusion.transformers": {
+    "transformers": {
         "PreTrainedTokenizer": ["save_pretrained", "from_pretrained"],
         "PreTrainedTokenizerFast": ["save_pretrained", "from_pretrained"],
         "FlaxPreTrainedModel": ["save_pretrained", "from_pretrained"],
@@ -476,10 +476,6 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
       else:
         # else we just import it from the library.
 
-        # maxdiffusion contains all models in transformers
-        # needed to run without the transformers dependency
-        if library_name == "transformers":
-          library_name = "maxdiffusion.transformers"
         library = importlib.import_module(library_name)
         class_obj = import_flax_or_no_model(library, class_name)
 

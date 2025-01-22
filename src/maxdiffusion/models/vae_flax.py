@@ -891,10 +891,10 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
     sample = jnp.transpose(sample, (0, 2, 3, 1))
 
     hidden_states = self.encoder(sample, deterministic=deterministic)
-    moments = None
+    moments = hidden_states
     if self.use_quant_conv:
       moments = self.quant_conv(hidden_states)
-    posterior = FlaxDiagonalGaussianDistribution(moments if moments else hidden_states)
+    posterior = FlaxDiagonalGaussianDistribution(moments)
 
     if not return_dict:
       return (posterior,)

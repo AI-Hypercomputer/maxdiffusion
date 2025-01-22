@@ -32,7 +32,7 @@ from maxdiffusion import (
     max_logging,
 )
 
-from maxdiffusion.transformers import (CLIPTokenizer, FlaxCLIPTextModel, CLIPTextConfig, FlaxCLIPTextModelWithProjection)
+from transformers import (CLIPTokenizer, FlaxCLIPTextModel, CLIPTextConfig, FlaxCLIPTextModelWithProjection)
 
 from maxdiffusion.checkpointing.checkpointing_utils import (
     create_orbax_checkpoint_manager,
@@ -302,7 +302,9 @@ class BaseStableDiffusionCheckpointer(ABC):
           tokenizer_path = os.path.join(tokenizer_path, "tokenizer")
         tokenizer_path = max_utils.download_blobs(tokenizer_path, "/tmp")
       tokenizer = CLIPTokenizer.from_pretrained(
-          tokenizer_path, subfolder="tokenizer", dtype=self.config.activations_dtype, weights_dtype=self.config.weights_dtype
+          tokenizer_path,
+          subfolder="tokenizer",
+          dtype=self.config.activations_dtype,
       )
 
       te_pretrained_config = CLIPTextConfig(**model_configs[0]["text_encoder_config"])
@@ -310,7 +312,6 @@ class BaseStableDiffusionCheckpointer(ABC):
           te_pretrained_config,
           seed=self.config.seed,
           dtype=self.config.activations_dtype,
-          weights_dtype=self.config.weights_dtype,
           _do_init=False,
       )
 
@@ -329,7 +330,10 @@ class BaseStableDiffusionCheckpointer(ABC):
       if self.checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
         te_pretrained_2_config = CLIPTextConfig(**model_configs[0]["text_encoder_2_config"])
         text_encoder_2 = FlaxCLIPTextModelWithProjection(
-            te_pretrained_2_config, seed=self.config.seed, dtype=self.config.activations_dtype, _do_init=False
+            te_pretrained_2_config,
+            seed=self.config.seed,
+            dtype=self.config.activations_dtype,
+            _do_init=False
         )
         pipeline_kwargs["text_encoder_2"] = text_encoder_2
         # both tokenizers in sdxl are the same.
