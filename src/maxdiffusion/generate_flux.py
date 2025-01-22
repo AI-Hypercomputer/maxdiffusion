@@ -33,7 +33,7 @@ from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTran
 
 from maxdiffusion import pyconfig
 
-def prepare_latent_image_ids():
+def prepare_latent_image_ids(height, width):
   latent_image_ids = jnp.zeros((height, width, 3))
   latent_image_ids = latent_image_ids.at[..., 1].set(
     latent_image_ids[..., 1] + jnp.arange(height)[:, None]
@@ -72,10 +72,11 @@ def prepare_latents(
   dtype: jnp.dtype,
   rng: Array
 ):
+
   # VAE applies 8x compression on images but we must also account for packing which
   # requires latent height and width to be divisibly by 2.
   height = 2 * (height // (vae_scale_factor * 2))
-  width = 2 * (height // (vae_scale_factor * 2))
+  width = 2 * (width // (vae_scale_factor * 2))
 
   shape = (batch_size, num_channels_latents, height, width)
 
@@ -83,8 +84,9 @@ def prepare_latents(
   # pack latents
   latents = pack_latents(latents, batch_size, num_channels_latents, height, width)
 
-  latent_image_ids = prepare_latent_image_ids()
-  breakpoint()
+  latent_image_ids = prepare_latent_image_ids(height // 2, width // 2)
+
+  return latents, latent_image_ids
 
 def get_clip_prompt_embeds(
   prompt: Union[str, List[str]],
@@ -200,9 +202,12 @@ def run(config):
 
   # LOAD UNET
 
-  transformer = FluxTransformer2DModel.from_config(config.pretrained_model_name_or_path, subfolder="transformer")
+  transformer = FluxTransformer2DModel.from_config(
+    config.pretrained_model_name_or_path,
+    subfolder="transformer"
+  )
+  
   num_channels_latents = transformer.in_channels // 4
-
   latents, latent_image_ids = prepare_latents(
     batch_size=per_host_number_of_images,
     num_channels_latents=num_channels_latents,
@@ -213,17 +218,17 @@ def run(config):
     rng=rng
   )
 
-  load_flow_model("flux-dev", "cpu")
+  #load_flow_model("flux-dev", "cpu")
 
-  transformer, params = FluxTransformer2DModel.from_pretrained(
-    config.pretrained_model_name_or_path,
-    subfolder="text_encoder_2",
-    from_pt=True,
-    dtype=config.weights_dtype
-  )
+  # transformer, params = FluxTransformer2DModel.from_pretrained(
+  #   config.pretrained_model_name_or_path,
+  #   subfolder="text_encoder_2",
+  #   from_pt=True,
+  #   dtype=config.weights_dtype
+  # )
 
 
-  # Initialize text encoders
+  # LOAD TEXT ENCODERS - t5 on cpu
   clip_text_encoder = FlaxCLIPTextModel.from_pretrained(
     config.pretrained_model_name_or_path,
     subfolder="text_encoder",
@@ -254,6 +259,18 @@ def run(config):
     t5_tokenizer=t5_tokenizer,
     t5_text_encoder=t5_encoder_pt,
   )
+
+  transformer_params = transformer.init(
+    {"params" : rng},
+    img=latents,
+    img_ids=latent_image_ids,
+    txt=prompt_embeds,
+    txt_ids=text_ids,
+    timesteps=[1.0],
+    y=pooled_prompt_embeds
+  )["params"]
+  breakpoint()
+
 
 
 def main(argv: Sequence[str]) -> None:
