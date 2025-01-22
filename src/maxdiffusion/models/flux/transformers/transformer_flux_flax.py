@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import flax.linen as nn 
 from chex import Array
 
-from ..modules.layers import timestep_embedding, MLPEmbedder
+from ..modules.layers import timestep_embedding, MLPEmbedder, EmbedND, DoubleStreamBlock
 from ...modeling_flax_utils import FlaxModelMixin
 from ....configuration_utils import ConfigMixin, flax_register_to_config
 from ....common_types import BlockSizes
@@ -51,62 +51,19 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   num_attention_heads: int = 24
   joint_attention_dim: int = 4096
   pooled_projection_dim: int = 768
+  mlp_ratio: int = 4
+  qkv_bias: bool = True
   guidance_embeds: bool = False
   axes_dims_rope: Tuple[int] = (16, 56, 56)
   flash_min_seq_length: int = 4096
   flash_block_sizes: BlockSizes = None
+  attention_kernel: str = "dot_product"
   mesh: jax.sharding.Mesh = None
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
-
-  def setup(self):
-    self.out_channels = self.in_channels
-    self.inner_dim = self.num_attention_heads * self.attention_head_dim
-
-    self.img_in = nn.Dense(
-      self.inner_dim,
-      dtype=self.dtype,
-      param_dtype=self.weights_dtype,
-      precision=self.precision,
-      kernel_init=nn.with_logical_partitioning(
-        nn.initializers.lecun_normal(),
-        ("embed", "heads")
-      )
-    )
-
-    self.time_in = MLPEmbedder(
-      hidden_dim=self.inner_dim,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision
-    ) 
-
-    self.vector_in = MLPEmbedder(
-      hidden_dim=self.inner_dim,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision
-    )
-
-    self.guidance_in = (
-      MLPEmbedder(
-        hidden_dim=self.inner_dim,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision
-        )
-      if self.guidance_embeds
-      else Identity()
-    )
-
-    self.txt_in = nn.Dense(
-      self.inner_dim,
-      dtype=self.dtype,
-      param_dtype=self.weights_dtype,
-      precision=self.precision
-    )
   
+  @nn.compact
   def __call__(
     self,
     img: Array,
@@ -119,8 +76,29 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     return_dict: bool = True,
     train: bool = False):
 
-    img = self.img_in(img)
-    vec = self.time_in(timestep_embedding(timesteps, 256))
+    out_channels = self.in_channels
+    inner_dim = self.num_attention_heads * self.attention_head_dim
+    pe_dim = inner_dim // self.num_attention_heads
+
+    #img = self.img_in(img)
+    img = nn.Dense(
+      inner_dim,
+      dtype=self.dtype,
+      param_dtype=self.weights_dtype,
+      precision=self.precision,
+      kernel_init=nn.with_logical_partitioning(
+        nn.initializers.lecun_normal(),
+        ("embed", "heads")
+      )
+    )(img)
+
+    #vec = self.time_in(timestep_embedding(timesteps, 256))
+    vec = MLPEmbedder(
+      hidden_dim=inner_dim,
+      dtype=self.dtype,
+      weights_dtype=self.weights_dtype,
+      precision=self.precision
+    )(timestep_embedding(timesteps, 256))
 
     if self.guidance_embeds:
       if guidance is None:
@@ -128,7 +106,74 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           "Didn't get guidance strength for guidance distrilled model."
         )
       
-      vec = vec + self.guidance_in(timestep_embedding(guidance, 256))
+      #vec = vec + self.guidance_in(timestep_embedding(guidance, 256))
+      vec = vec + MLPEmbedder(
+        hidden_dim=inner_dim,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision
+      )(timestep_embedding(guidance, 256))
     
-    vec = vec + self.vector_in(y)
-    txt = self.txt_in(txt)
+    #vec = vec + self.vector_in(y)
+    vec = vec + MLPEmbedder(
+      hidden_dim=inner_dim,
+      dtype=self.dtype,
+      weights_dtype=self.weights_dtype,
+      precision=self.precision
+    )(y)
+
+    #txt = self.txt_in(txt)
+    txt = nn.Dense(
+      inner_dim,
+      dtype=self.dtype,
+      param_dtype=self.weights_dtype,
+      precision=self.precision
+    )(txt)
+
+    ids = jnp.concatenate((txt_ids, img_ids), axis=1)
+
+    #pe_embedder
+    pe = EmbedND(
+      dim=pe_dim,
+      theta=10000,
+      axoes_dim=self.axes_dims_rope
+    )(ids)
+
+    img, text = nn.scan(
+      DoubleStreamBlock,
+      variable_broadcast='params',
+      in_axes=0, out_axes=0,
+      split_rngs={'params' : False}
+    )(
+      hidden_size=self.hidden_size,
+      num_heads=self.num_attention_heads,
+      mlp_ratio=self.mlp_ratio,
+      attention_head_dim=self.attention_head_dim,
+      flash_min_seq_length=self.flash_min_seq_length,
+      flash_block_sizes=self.flash_block_sizes,
+      mesh=self.mesh,
+      dtype=self.dtype,
+      weights_dtype=self.weights_dtype,
+      precision=self.precision,
+      qkv_bias=self.qkv_bias,
+      attention_kernel=self.attention_kernel,
+      
+    )(img=img, txt=txt, vec=vec, pe=pe)
+
+    return img, text
+
+    # img = jnp.concatenate((txt, img), axis=1)
+
+    # img = nn.scan(
+    #   SingleStreamBlock,
+    #   variable_broadcast='params',
+    #   in_axes=0, out_axes=0,
+    #   split_rngs={'params' : False}
+    # )(img, vec=vec, pe=pe)
+
+    # img = img[:, txt.shape[1] :, ...]
+
+    # img = LastLayer(
+
+    # )(img, vec) # (N, T, patch_size ** 2 * out_channels)
+    # return img
