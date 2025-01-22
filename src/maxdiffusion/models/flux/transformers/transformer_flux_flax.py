@@ -92,7 +92,6 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       )
     )(img)
 
-    #vec = self.time_in(timestep_embedding(timesteps, 256))
     vec = MLPEmbedder(
       hidden_dim=inner_dim,
       dtype=self.dtype,
@@ -106,7 +105,6 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           "Didn't get guidance strength for guidance distrilled model."
         )
       
-      #vec = vec + self.guidance_in(timestep_embedding(guidance, 256))
       vec = vec + MLPEmbedder(
         hidden_dim=inner_dim,
         dtype=self.dtype,
@@ -114,7 +112,6 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         precision=self.precision
       )(timestep_embedding(guidance, 256))
     
-    #vec = vec + self.vector_in(y)
     vec = vec + MLPEmbedder(
       hidden_dim=inner_dim,
       dtype=self.dtype,
@@ -122,7 +119,6 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       precision=self.precision
     )(y)
 
-    #txt = self.txt_in(txt)
     txt = nn.Dense(
       inner_dim,
       dtype=self.dtype,
@@ -136,16 +132,11 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     pe = EmbedND(
       dim=pe_dim,
       theta=10000,
-      axoes_dim=self.axes_dims_rope
+      axes_dim=self.axes_dims_rope
     )(ids)
 
-    img, text = nn.scan(
-      DoubleStreamBlock,
-      variable_broadcast='params',
-      in_axes=0, out_axes=0,
-      split_rngs={'params' : False}
-    )(
-      hidden_size=self.hidden_size,
+    img, text = DoubleStreamBlock(
+      hidden_size=inner_dim,
       num_heads=self.num_attention_heads,
       mlp_ratio=self.mlp_ratio,
       attention_head_dim=self.attention_head_dim,
@@ -157,8 +148,29 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       precision=self.precision,
       qkv_bias=self.qkv_bias,
       attention_kernel=self.attention_kernel,
-      
     )(img=img, txt=txt, vec=vec, pe=pe)
+
+    # img, text = nn.scan(
+    #   DoubleStreamBlock,
+    #   variable_broadcast='params',
+    #   in_axes=0, out_axes=0,
+    #   split_rngs={'params' : False},
+    #   length=self.num_layers
+    # )(
+    #   hidden_size=inner_dim,
+    #   num_heads=self.num_attention_heads,
+    #   mlp_ratio=self.mlp_ratio,
+    #   attention_head_dim=self.attention_head_dim,
+    #   flash_min_seq_length=self.flash_min_seq_length,
+    #   flash_block_sizes=self.flash_block_sizes,
+    #   mesh=self.mesh,
+    #   dtype=self.dtype,
+    #   weights_dtype=self.weights_dtype,
+    #   precision=self.precision,
+    #   qkv_bias=self.qkv_bias,
+    #   attention_kernel=self.attention_kernel,
+
+    # )(img=img, txt=txt, vec=vec, pe=pe)
 
     return img, text
 

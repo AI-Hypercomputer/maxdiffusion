@@ -85,6 +85,7 @@ def prepare_latents(
   latents = pack_latents(latents, batch_size, num_channels_latents, height, width)
 
   latent_image_ids = prepare_latent_image_ids(height // 2, width // 2)
+  latent_image_ids = jnp.tile(latent_image_ids, (batch_size, 1, 1))
 
   return latents, latent_image_ids
 
@@ -179,7 +180,7 @@ def encode_prompt(
   )
   prompt_embeds = jnp.asarray(prompt_embeds.detach().numpy())
 
-  text_ids = jnp.zeros((prompt_embeds.shape[1], 3)).astype(jnp.bfloat16)
+  text_ids = jnp.zeros((prompt_embeds.shape[0], prompt_embeds.shape[1], 3)).astype(jnp.bfloat16)
   return prompt_embeds, pooled_prompt_embeds, text_ids
 
 def run(config):
@@ -187,7 +188,7 @@ def run(config):
 
   rng = jax.random.PRNGKey(config.seed)
 
-  per_host_number_of_images = config.per_device_batch_size * jax.local_device_count()
+  per_host_number_of_images = 1#config.per_device_batch_size * jax.local_device_count()
 
   # LOAD VAE
 
@@ -258,15 +259,38 @@ def run(config):
     clip_text_encoder=clip_text_encoder,
     t5_tokenizer=t5_tokenizer,
     t5_text_encoder=t5_encoder_pt,
+    num_images_per_prompt=per_host_number_of_images
   )
 
+  def validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds):
+    print("latents.shape: ", latents.shape)
+    print("latent_image_ids.shape: ", latent_image_ids.shape)
+    print("text_ids.shape: ", text_ids.shape)
+    print("prompt_embeds: ", prompt_embeds.shape)
+    print("timesteps.shape: ", timesteps.shape)
+    print("guidance.shape: ", guidance.shape)
+    print("pooled_prompt_embeds.shape: ", pooled_prompt_embeds.shape)
+  
+  timesteps = jnp.asarray([1.0], dtype=jnp.bfloat16)
+  guidance = jnp.asarray([3.5], dtype=jnp.bfloat16)
+  validate_inputs(
+    latents,
+    latent_image_ids,
+    prompt_embeds,
+    text_ids,
+    timesteps,
+    guidance,
+    pooled_prompt_embeds
+  )
+  
   transformer_params = transformer.init(
     {"params" : rng},
     img=latents,
     img_ids=latent_image_ids,
     txt=prompt_embeds,
     txt_ids=text_ids,
-    timesteps=[1.0],
+    timesteps=timesteps,
+    guidance=guidance,
     y=pooled_prompt_embeds
   )["params"]
   breakpoint()

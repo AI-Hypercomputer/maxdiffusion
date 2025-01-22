@@ -81,7 +81,6 @@ def timestep_embedding(
     Returns:
         timestep embeddings.
     """
-    breakpoint()
     t = time_factor * t
     half = dim // 2
 
@@ -188,7 +187,7 @@ class DoubleStreamBlock(nn.Module):
 
   @nn.compact
   def __call__(self, img: Array, txt: Array, vec: Array, pe: Array) -> tuple[Array, Array]:
-    
+
     mlp_hidden_dim = int(self.hidden_size * self.mlp_ratio)
     
     img_mod1, img_mod2 = Modulation(
@@ -267,7 +266,7 @@ class DoubleStreamBlock(nn.Module):
     q = jnp.concatenate((txt_q, img_q), axis=2)
     k = jnp.concatenate((txt_k, img_k), axis=2)
     v = jnp.concatenate((txt_v, img_v), axis=2)
-
+    
     attn = AttentionOp(
       mesh=self.mesh,
       attention_kernel=self.attention_kernel,
@@ -279,7 +278,7 @@ class DoubleStreamBlock(nn.Module):
       split_head_dim=True,
       flash_block_sizes=self.flash_block_sizes,
       dtype=self.dtype
-    )(q, k, v)
+    ).apply_attention(q, k, v)
 
     txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
 
