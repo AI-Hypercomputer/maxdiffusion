@@ -18,12 +18,10 @@ import os
 import unittest
 from absl.testing import absltest
 
-import numpy as np
-from PIL import Image
-import jax
-import jax.numpy as jnp
+from transformers import CLIPTokenizer, FlaxCLIPTextModel
+from transformers import T5TokenizerFast, T5EncoderModel
 
-from maxdiffusion.transformers import CLIPTokenizer, FlaxCLIPTextModel
+from ..generate_flux import get_clip_prompt_embeds, get_t5_prompt_embeds
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -33,34 +31,23 @@ class TextEncoderTest(unittest.TestCase):
   def setUp(self):
     TextEncoderTest.dummy_data = {}
   
-  def test_flux_text_encoders(self):
+  def test_flux_t5_text_encoder(self):
 
-    def get_clip_prompt_embeds(
-      prompt,
-      num_images_per_prompt,
-      tokenizer,
-      text_encoder
-    ):
-      prompt = [prompt] if isinstance(prompt, str) else prompt
-      batch_size = len(prompt)
+    text_encoder_2_pt = T5EncoderModel.from_pretrained(
+      "black-forest-labs/FLUX.1-dev",
+      subfolder="text_encoder_2",
+    )
 
-      text_inputs = tokenizer(
-        prompt,
-        padding="max_length",
-        max_length=tokenizer.model_max_length,
-        truncation=True,
-        return_overflowing_tokens=False,
-        return_length=False,
-        return_tensors="np"
-      )
+    tokenizer_2 = T5TokenizerFast.from_pretrained(
+      "black-forest-labs/FLUX.1-dev",
+      subfolder="tokenizer_2",
+    )
 
-      text_input_ids = text_inputs.input_ids
-  
-      prompt_embeds = text_encoder(text_input_ids, params=text_encoder.params, train=False)
-      prompt_embeds = prompt_embeds.pooler_output
-      prompt_embeds = np.repeat(prompt_embeds, num_images_per_prompt, axis=-1)
-      prompt_embeds = np.reshape(prompt_embeds, (batch_size * num_images_per_prompt, -1))
-      return prompt_embeds
+    embeds = get_t5_prompt_embeds("A dog on a skateboard", 2, tokenizer_2, text_encoder_2_pt)
+
+    assert embeds.shape == (2, 512, 4096)
+
+  def test_flux_clip_text_encoder(self):
 
     text_encoder = FlaxCLIPTextModel.from_pretrained(
       "black-forest-labs/FLUX.1-dev",
