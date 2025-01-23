@@ -36,6 +36,15 @@ def rope(pos: Array, dim: int, theta: int) -> Array:
   out = rearrange(out, "b n d (i j) -> b n d i j", i=2, j=2)
   return out.astype(jnp.float32)
 
+def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
+  xq_ = xq.astype(jnp.float32).reshape(*xq.shape[:-1], -1, 1, 2)
+  xk_ = xk.astype(jnp.float32).reshape(*xk.shape[:-1], -1, 1, 2)
+  xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
+  xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
+  return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(
+      xk.dtype
+  )
+
 class QKNorm(nn.Module):
   dtype: DTypeLike = jnp.bfloat16
   weights_dtype: DTypeLike = jnp.bfloat16
@@ -120,7 +129,8 @@ class MLPEmbedder(nn.Module):
       kernel_init=nn.with_logical_partitioning(
         nn.initializers.lecun_normal(),
         ("embed", "heads")
-      )
+      ),
+      name="in_layer"
     )(x)
     x = nn.silu(x)
     x = nn.Dense(
@@ -132,7 +142,8 @@ class MLPEmbedder(nn.Module):
       kernel_init=nn.with_logical_partitioning(
         nn.initializers.lecun_normal(),
         ("heads", "embed")
-      )
+      ),
+      name="out_layer"
     )(x)
 
     return x
@@ -164,6 +175,7 @@ class Modulation(nn.Module):
         ("embed", "heads")
       )
     )(nn.silu(vec))
+
     out = jnp.split(lin[:, None, :], multiplier, axis=-1)
 
     return (
@@ -186,7 +198,7 @@ class DoubleStreamBlock(nn.Module):
   attention_kernel: str = "dot_product"
 
   @nn.compact
-  def __call__(self, img: Array, txt: Array, vec: Array, pe: Array) -> tuple[Array, Array]:
+  def __call__(self, img: Array, txt: Array, vec: Array, pe: Array):
 
     mlp_hidden_dim = int(self.hidden_size * self.mlp_ratio)
     
@@ -266,7 +278,8 @@ class DoubleStreamBlock(nn.Module):
     q = jnp.concatenate((txt_q, img_q), axis=2)
     k = jnp.concatenate((txt_k, img_k), axis=2)
     v = jnp.concatenate((txt_v, img_v), axis=2)
-    
+    q, k = apply_rope(q, k, pe)
+
     attn = AttentionOp(
       mesh=self.mesh,
       attention_kernel=self.attention_kernel,
@@ -372,5 +385,4 @@ class DoubleStreamBlock(nn.Module):
       )(txt) + txt_mod2.shift
     )
 
-    return img, txt
-    
+    return img, txt, None
