@@ -30,6 +30,51 @@ class Identity(nn.Module):
   def __call__(self, x: Array) -> Array:
     return x
 
+def scan_double_block_layers(
+  inner_dim,
+  num_heads,
+  mlp_ratio,
+  attention_head_dim,
+  flash_min_seq_length,
+  flash_block_sizes,
+  mesh,
+  dtype,
+  weights_dtype,
+  precision,
+  qkv_bias,
+  attention_kernel: str,
+  num_layers: int):
+
+  scan_fn = nn.scan(
+    DoubleStreamBlock,
+    variable_broadcast='params',
+    in_axes=(
+      nn.broadcast,
+      nn.broadcast,
+      nn.broadcast,
+      nn.broadcast
+    ),
+    out_axes=(
+      nn.broadcast,
+      nn.broadcast,
+    ),
+    split_rngs={'params' : False},
+    length=num_layers
+  )
+  return scan_fn(
+    hidden_size=inner_dim,
+    num_heads=num_heads,
+    mlp_ratio=mlp_ratio,
+    attention_head_dim=attention_head_dim,
+    flash_min_seq_length=flash_min_seq_length,
+    flash_block_sizes=flash_block_sizes,
+    mesh=mesh,
+    dtype=dtype,
+    weights_dtype=weights_dtype,
+    precision=precision,
+    qkv_bias=qkv_bias,
+    attention_kernel=attention_kernel)
+
 class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   r"""
     The Tranformer model introduced in Flux.
@@ -80,7 +125,6 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     inner_dim = self.num_attention_heads * self.attention_head_dim
     pe_dim = inner_dim // self.num_attention_heads
 
-    #img = self.img_in(img)
     img = nn.Dense(
       inner_dim,
       dtype=self.dtype,
@@ -89,14 +133,16 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       kernel_init=nn.with_logical_partitioning(
         nn.initializers.lecun_normal(),
         ("embed", "heads")
-      )
+      ),
+      name="img_in"
     )(img)
 
     vec = MLPEmbedder(
       hidden_dim=inner_dim,
       dtype=self.dtype,
       weights_dtype=self.weights_dtype,
-      precision=self.precision
+      precision=self.precision,
+      name="time_in"
     )(timestep_embedding(timesteps, 256))
 
     if self.guidance_embeds:
@@ -109,21 +155,28 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         hidden_dim=inner_dim,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
-        precision=self.precision
+        precision=self.precision,
+        name="guidance_in"
       )(timestep_embedding(guidance, 256))
     
     vec = vec + MLPEmbedder(
       hidden_dim=inner_dim,
       dtype=self.dtype,
       weights_dtype=self.weights_dtype,
-      precision=self.precision
+      precision=self.precision,
+      name="vector_in"
     )(y)
 
     txt = nn.Dense(
       inner_dim,
       dtype=self.dtype,
       param_dtype=self.weights_dtype,
-      precision=self.precision
+      precision=self.precision,
+      kernel_init=nn.with_logical_partitioning(
+        nn.initializers.lecun_normal(),
+        ("embed", "heads")
+      ),
+      name="text_in"
     )(txt)
 
     ids = jnp.concatenate((txt_ids, img_ids), axis=1)
@@ -135,28 +188,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       axes_dim=self.axes_dims_rope
     )(ids)
 
-    img, text = DoubleStreamBlock(
-      hidden_size=inner_dim,
-      num_heads=self.num_attention_heads,
-      mlp_ratio=self.mlp_ratio,
-      attention_head_dim=self.attention_head_dim,
-      flash_min_seq_length=self.flash_min_seq_length,
-      flash_block_sizes=self.flash_block_sizes,
-      mesh=self.mesh,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision,
-      qkv_bias=self.qkv_bias,
-      attention_kernel=self.attention_kernel,
-    )(img=img, txt=txt, vec=vec, pe=pe)
-
-    # img, text = nn.scan(
-    #   DoubleStreamBlock,
-    #   variable_broadcast='params',
-    #   in_axes=0, out_axes=0,
-    #   split_rngs={'params' : False},
-    #   length=self.num_layers
-    # )(
+    # img, text = DoubleStreamBlock(
     #   hidden_size=inner_dim,
     #   num_heads=self.num_attention_heads,
     #   mlp_ratio=self.mlp_ratio,
@@ -169,10 +201,42 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     #   precision=self.precision,
     #   qkv_bias=self.qkv_bias,
     #   attention_kernel=self.attention_kernel,
-
+    #   name="double_blocks_0"
     # )(img=img, txt=txt, vec=vec, pe=pe)
 
-    return img, text
+    # img, text = DoubleStreamBlock(
+    #   hidden_size=inner_dim,
+    #   num_heads=self.num_attention_heads,
+    #   mlp_ratio=self.mlp_ratio,
+    #   attention_head_dim=self.attention_head_dim,
+    #   flash_min_seq_length=self.flash_min_seq_length,
+    #   flash_block_sizes=self.flash_block_sizes,
+    #   mesh=self.mesh,
+    #   dtype=self.dtype,
+    #   weights_dtype=self.weights_dtype,
+    #   precision=self.precision,
+    #   qkv_bias=self.qkv_bias,
+    #   attention_kernel=self.attention_kernel,
+    #   name="double_blocks_1"
+    # )(img=img, txt=txt, vec=vec, pe=pe)
+
+    img, txt, _ = scan_double_block_layers(
+      inner_dim=inner_dim,
+      num_heads=self.num_attention_heads,
+      mlp_ratio=self.mlp_ratio,
+      attention_head_dim=self.attention_head_dim,
+      flash_min_seq_length=self.flash_min_seq_length,
+      flash_block_sizes=self.flash_block_sizes,
+      mesh=self.mesh,
+      dtype=self.dtype,
+      weights_dtype=self.weights_dtype,
+      precision=self.precision,
+      qkv_bias=self.qkv_bias,
+      attention_kernel=self.attention_kernel,
+      num_layers=self.num_layers
+    )(img, txt, vec, pe)
+
+    return img, txt
 
     # img = jnp.concatenate((txt, img), axis=1)
 
