@@ -21,7 +21,13 @@ import jax.numpy as jnp
 import flax.linen as nn 
 from chex import Array
 
-from ..modules.layers import timestep_embedding, MLPEmbedder, EmbedND, DoubleStreamBlock
+from ..modules.layers import (
+  timestep_embedding,
+  MLPEmbedder,
+  EmbedND,
+  DoubleStreamBlock,
+  SingleStreamBlock
+)
 from ...modeling_flax_utils import FlaxModelMixin
 from ....configuration_utils import ConfigMixin, flax_register_to_config
 from ....common_types import BlockSizes
@@ -51,13 +57,9 @@ def scan_double_block_layers(
     in_axes=(
       nn.broadcast,
       nn.broadcast,
-      nn.broadcast,
       nn.broadcast
     ),
-    out_axes=(
-      nn.broadcast,
-      nn.broadcast,
-    ),
+    out_axes=nn.broadcast,
     split_rngs={'params' : False},
     length=num_layers
   )
@@ -187,8 +189,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       theta=10000,
       axes_dim=self.axes_dims_rope
     )(ids)
-
-    # img, text = DoubleStreamBlock(
+    # breakpoint()
+    # img, txt = DoubleStreamBlock(
     #   hidden_size=inner_dim,
     #   num_heads=self.num_attention_heads,
     #   mlp_ratio=self.mlp_ratio,
@@ -203,8 +205,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     #   attention_kernel=self.attention_kernel,
     #   name="double_blocks_0"
     # )(img=img, txt=txt, vec=vec, pe=pe)
-
-    # img, text = DoubleStreamBlock(
+    # breakpoint()
+    # img, txt = DoubleStreamBlock(
     #   hidden_size=inner_dim,
     #   num_heads=self.num_attention_heads,
     #   mlp_ratio=self.mlp_ratio,
@@ -219,8 +221,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     #   attention_kernel=self.attention_kernel,
     #   name="double_blocks_1"
     # )(img=img, txt=txt, vec=vec, pe=pe)
-
-    img, txt, _ = scan_double_block_layers(
+    # breakpoint()
+    img, txt = scan_double_block_layers(
       inner_dim=inner_dim,
       num_heads=self.num_attention_heads,
       mlp_ratio=self.mlp_ratio,
@@ -235,6 +237,23 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       attention_kernel=self.attention_kernel,
       num_layers=self.num_layers
     )(img, txt, vec, pe)
+
+    # SingleStreamBlock(
+    #   hidden_size=inner_dim,
+    #   num_heads=self.num_attention_heads,
+    #   mlp_ratio=self.mlp_ratio,
+    #   attention_head_dim=self.attention_head_dim,
+    #   flash_min_seq_length=self.flash_min_seq_length,
+    #   flash_block_sizes=self.flash_block_sizes,
+    #   mesh=self.mesh,
+    #   dtype=self.dtype,
+    #   weights_dtype=self.weights_dtype,
+    #   precision=self.precision,
+    #   attention_kernel=self.attention_kernel
+    # )(img, vec, pe)
+
+    img = img[:, txt.shape[1] :, ...]
+
 
     return img, txt
 
