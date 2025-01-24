@@ -183,6 +183,87 @@ class Modulation(nn.Module):
       ModulationOut(*out[3:] if self.double else None)
     )
 
+class SingleStreamBlock(nn.Module):
+  hidden_size: int
+  num_heads: int
+  mlp_ratio: float
+  qk_scale: float | None = None
+  attention_head_dim: int = 128
+  flash_min_seq_length: int = 4096
+  flash_block_sizes: BlockSizes = None
+  mesh: jax.sharding.Mesh = None
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  precision: jax.lax.Precision = None
+  attention_kernel: str = "dot_product"
+
+  @nn.compact
+  def __call__(self, x: Array, vec: Array, pe: Array) -> Array:
+    mlp_hidden_dim = int(self.hidden_size * self.mlp_ratio)
+
+    mod, _ = Modulation(
+      self.hidden_size,
+      double=False,
+      dtype=self.dtype,
+      weights_dtype=self.weights_dtype,
+      precision=self.precision
+    )(vec)
+    x_mod = (1 + mod.scale) * nn.LayerNorm(
+      self.hidden_size,
+      use_scale=False,
+      use_bias=False,
+      epsilon=1e-6,
+      dtype=self.dtype,
+      param_dtype=self.weights_dtype
+    )(x) + mod.shift
+
+    x_mod = nn.Dense(
+      self.hidden_size * 3 + mlp_hidden_dim,
+      dtype=self.dtype,
+      param_dtype=self.weights_dtype,
+      precision=self.precision,
+      kernel_init=nn.with_logical_partitioning(
+        nn.initializers.lecun_normal(),
+        ("embed", "heads")
+      ),
+      name="linear1"
+    )(x_mod)
+
+    qkv, mlp = jnp.split(x_mod, [3 * self.hidden_size], axis=-1)
+    q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+    q, k = QKNorm(
+      dtype=self.dtype,
+      weights_dtype=self.weights_dtype
+    )(q, k, v)
+
+    q, k = apply_rope(q, k, pe)
+    #compute attention
+    attn = AttentionOp(
+      mesh=self.mesh,
+      attention_kernel=self.attention_kernel,
+      scale=self.attention_head_dim**-0.5,
+      heads=self.num_heads,
+      dim_head=self.attention_head_dim,
+      flash_min_seq_length=self.flash_min_seq_length,
+      use_memory_efficient_attention=False,
+      split_head_dim=True,
+      flash_block_sizes=self.flash_block_sizes,
+      dtype=self.dtype
+    ).apply_attention(q, k, v)
+
+    output = nn.Dense(
+      self.hidden_size,
+      dtype=self.dtype,
+      param_dtype=self.weights_dtype,
+      precision=self.precision,
+      kernel_init=nn.with_logical_partitioning(
+        nn.initializers.lecun_normal(),
+        ("embed", "heads")
+      ),
+      name="linear2"
+    )(jnp.concatenate((attn, nn.genu(mlp)), 2))
+    return x + mod.gate * output    
+
 class DoubleStreamBlock(nn.Module):
   hidden_size: int
   num_heads: int
@@ -385,4 +466,4 @@ class DoubleStreamBlock(nn.Module):
       )(txt) + txt_mod2.shift
     )
 
-    return img, txt, None
+    return img, txt
