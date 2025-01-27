@@ -55,6 +55,10 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
         ("to_k", "key"),
         ("to_v", "value"),
         ("to_q", "query"),
+        ("e_proj", "e_proj"),
+        ("i_proj", "i_proj"),
+        ("e_qkv", "e_qkv"),
+        ("i_qkv", "i_qkv"),
     ):
       if pt_tuple_key[-2] == rename_from:
         weight_name = pt_tuple_key[-1]
@@ -255,6 +259,33 @@ def convert_pytorch_state_dict_to_flax(pt_state_dict, flax_model, init_key=42):
   # Need to change some parameters name to match Flax names
   for pt_key, pt_tensor in pt_state_dict.items():
     renamed_pt_key = rename_key(pt_key)
+
+    if "FluxTransformer2DModel" == flax_model.__class__.__name__:
+      if "double_blocks" in renamed_pt_key:
+        renamed_pt_key = renamed_pt_key.replace("double_blocks_", "double_blocks.layers_")
+        renamed_pt_key = renamed_pt_key.replace("img_mlp_", "img_mlp.layers_")
+        renamed_pt_key = renamed_pt_key.replace("txt_mlp_", "txt_mlp.layers_")
+        renamed_pt_key = renamed_pt_key.replace("img_mod", "img_norm1")
+        renamed_pt_key = renamed_pt_key.replace("txt_mod", "txt_norm1")
+        renamed_pt_key = renamed_pt_key.replace("img_attn.qkv", "attn.i_qkv")
+        renamed_pt_key = renamed_pt_key.replace("img_attn.proj", "attn.i_proj")
+        renamed_pt_key = renamed_pt_key.replace("txt_attn.qkv", "attn.e_qkv")
+        renamed_pt_key = renamed_pt_key.replace("txt_attn.proj", "attn.e_proj")
+
+        renamed_pt_key = renamed_pt_key.replace("img_attn.norm", "attn")
+        renamed_pt_key = renamed_pt_key.replace("txt_attn.norm.key_norm", "attn.encoder_key_norm")
+        renamed_pt_key = renamed_pt_key.replace("txt_attn.norm.query_norm", "attn.encoder_query_norm")
+      elif "single_blocks" in renamed_pt_key:
+        renamed_pt_key = renamed_pt_key.replace("single_blocks_", "single_blocks.layers_")
+        renamed_pt_key = renamed_pt_key.replace("modulation", "norm")
+        renamed_pt_key = renamed_pt_key.replace("norm.key_norm", "attn.key_norm")
+        renamed_pt_key = renamed_pt_key.replace("norm.query_norm", "attn.query_norm")
+      elif "vector_in" in renamed_pt_key or "time_in" in renamed_pt_key:
+        renamed_pt_key = renamed_pt_key.replace("vector_in", "time_text_embed.PixArtAlphaTextProjection_0")
+        renamed_pt_key = renamed_pt_key.replace("time_in", "time_text_embed.FlaxTimestepEmbedding_0")
+      elif "final_layer" in renamed_pt_key:
+        renamed_pt_key = renamed_pt_key.replace("final_layer.linear", "proj_out")
+        renamed_pt_key = renamed_pt_key.replace("final_layer.adaLN_modulation_1", "norm_out.Dense_0")
     pt_tuple_key = tuple(renamed_pt_key.split("."))
 
     # Correctly rename weight parameters

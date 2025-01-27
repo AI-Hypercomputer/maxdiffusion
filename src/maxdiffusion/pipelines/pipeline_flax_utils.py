@@ -41,7 +41,7 @@ from ..utils import (
 )
 
 
-from maxdiffusion.transformers import FlaxPreTrainedModel
+from transformers import FlaxPreTrainedModel
 
 INDEX_FILE = "diffusion_flax_model.bin"
 

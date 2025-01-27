@@ -36,8 +36,21 @@ AxisNames = tuple[str, ...]
 
 BATCH = "activation_batch"
 LENGTH = "activation_length"
+EMBED = "activation_embed"
 HEAD = "activation_heads"
+KV_BATCH = "activation_kv_batch"
+KV_HEAD = "activation_kv_heads"
+KV_HEAD_DIM = "activation_kv_head_dim"
 D_KV = "activation_kv"
 KEEP_1 = "activation_keep_1"
 KEEP_2 = "activation_keep_2"
 CONV_OUT = "activation_conv_out_channels"
+
+# needed for flash attention
+MODEL_MODE_AUTOREGRESSIVE = "autoregressive"
+MODEL_MODE_PREFILL = "prefill"
+MODEL_MODE_TRAIN = "train"
+
+# A large negative mask value is used for masking to ensure that the
+# softmax function assigns an extremely low probability to the masked positions.
+DEFAULT_MASK_VALUE = -0.7 * float(jnp.finfo(jnp.dtype("float32")).max)

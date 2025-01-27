@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Dict, Optional, Union
 from urllib import request
 
-from huggingface_hub import HfFolder, cached_download, hf_hub_download, model_info
+from huggingface_hub import HfFolder, hf_hub_download, model_info
 from packaging import version
 
 from .. import __version__

@@ -35,7 +35,7 @@ from maxdiffusion import (
 from maxdiffusion.transformers import (CLIPTokenizer, FlaxCLIPTextModel, CLIPTextConfig, FlaxCLIPTextModelWithProjection)
 
 from maxdiffusion.checkpointing.checkpointing_utils import (
-    create_orbax_checkpoint_manager,
+    create_stable_diffusion_orbax_checkpoint_manager,
     load_stable_diffusion_configs,
 )
 
@@ -43,6 +43,7 @@ STABLE_DIFFUSION_CHECKPOINT = "STABLE_DIFFUSION_CHECKPOINT"
 STABLE_DIFFUSION_XL_CHECKPOINT = "STABLE_DIFUSSION_XL_CHECKPOINT"
 _CHECKPOINT_FORMAT_DIFFUSERS = "CHECKPOINT_FORMAT_DIFFUSERS"
 _CHECKPOINT_FORMAT_ORBAX = "CHECKPOINT_FORMAT_ORBAX"
+JFLUX_CHECKPOINT = "JFLUX_CHECKPOINT"
 
 
 class BaseStableDiffusionCheckpointer(ABC):
@@ -57,16 +58,11 @@ class BaseStableDiffusionCheckpointer(ABC):
     self.mesh = Mesh(devices_array, self.config.mesh_axes)
     self.total_train_batch_size = self.config.total_train_batch_size
 
-    self.checkpoint_manager = create_orbax_checkpoint_manager(
-        self.config.checkpoint_dir,
-        enable_checkpointing=True,
-        save_interval_steps=1,
-        checkpoint_type=checkpoint_type,
-        dataset_type=config.dataset_type,
+    self.checkpoint_manager = create_stable_diffusion_orbax_checkpoint_manager(
+        self.config.checkpoint_dir, enable_checkpointing=True, save_interval_steps=1, checkpoint_type=checkpoint_type
     )
 
   def _create_optimizer(self, config, learning_rate):
-
     learning_rate_scheduler = max_utils.create_learning_rate_schedule(
         learning_rate, config.learning_rate_schedule_steps, config.warmup_steps_fraction, config.max_train_steps
     )
@@ -74,7 +70,6 @@ class BaseStableDiffusionCheckpointer(ABC):
     return tx, learning_rate_scheduler
 
   def create_unet_state(self, pipeline, params, checkpoint_item_name, is_training):
-
     tx, learning_rate_scheduler = None, None
     if is_training:
       learning_rate = self.config.learning_rate
@@ -96,7 +91,6 @@ class BaseStableDiffusionCheckpointer(ABC):
     return unet_state, state_mesh_shardings, learning_rate_scheduler
 
   def create_vae_state(self, pipeline, params, checkpoint_item_name, is_training=False):
-
     # Currently VAE training is not supported.
     weights_init_fn = functools.partial(pipeline.vae.init_weights, rng=self.rng)
     return max_utils.setup_initial_state(
@@ -112,7 +106,6 @@ class BaseStableDiffusionCheckpointer(ABC):
     )
 
   def create_text_encoder_state(self, pipeline, params, checkpoint_item_name, is_training):
-
     tx = None
     if is_training:
       learning_rate = self.config.text_encoder_learning_rate
@@ -259,11 +252,9 @@ class BaseStableDiffusionCheckpointer(ABC):
     self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
 
   def load_params(self, step=None):
-
     self.checkpoint_format = _CHECKPOINT_FORMAT_ORBAX
 
   def load_checkpoint(self, step=None, scheduler_class=None):
-
     pipeline_class = self._get_pipeline_class()
 
     self.checkpoint_format = _CHECKPOINT_FORMAT_ORBAX

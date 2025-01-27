@@ -17,6 +17,7 @@ from typing import Optional, Tuple, Union
 
 import flax
 import jax.numpy as jnp
+from .. import max_logging
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from .scheduling_utils_flax import (
@@ -100,6 +101,7 @@ class FlaxEulerDiscreteScheduler(FlaxSchedulerMixin, ConfigMixin):
     self.dtype = dtype
 
   def create_state(self, common: Optional[CommonSchedulerState] = None) -> EulerDiscreteSchedulerState:
+    max_logging.log("Creating EulerDiscreteSchedulerState")
     if common is None:
       common = CommonSchedulerState.create(self)
 
@@ -144,7 +146,7 @@ class FlaxEulerDiscreteScheduler(FlaxSchedulerMixin, ConfigMixin):
     return sample
 
   def set_timesteps(
-      self, state: EulerDiscreteSchedulerState, num_inference_steps: int, shape: Tuple = ()
+      self, state: EulerDiscreteSchedulerState, num_inference_steps: int, timestep_spacing: str = "", shape: Tuple = ()
   ) -> EulerDiscreteSchedulerState:
     """
     Sets the timesteps used for the diffusion chain. Supporting function to be run before inference.
@@ -155,20 +157,29 @@ class FlaxEulerDiscreteScheduler(FlaxSchedulerMixin, ConfigMixin):
         num_inference_steps (`int`):
             the number of diffusion steps used when generating samples with a pre-trained model.
     """
+    if timestep_spacing == "":
+      timestep_spacing = self.config.timestep_spacing
 
-    if self.config.timestep_spacing == "linspace":
+    max_logging.log(f"Setting timesteps for {num_inference_steps} steps")
+    if timestep_spacing == "linspace":
+      max_logging.log("Using linspace timestep spacing")
       timesteps = jnp.linspace(self.config.num_train_timesteps - 1, 0, num_inference_steps, dtype=self.dtype)
-    elif self.config.timestep_spacing == "leading":
+    elif timestep_spacing == "leading":
+      max_logging.log("Using leading timestep spacing")
       step_ratio = self.config.num_train_timesteps // num_inference_steps
       timesteps = (jnp.arange(0, num_inference_steps) * step_ratio).round()[::-1].copy().astype(float)
       timesteps += 1
-    elif self.config.timestep_spacing == "trailing":
+    elif timestep_spacing == "trailing":
+      max_logging.log("Using trailing timestep spacing")
       step_ratio = self.config.num_train_timesteps / num_inference_steps
       timesteps = (jnp.arange(self.config.num_train_timesteps, 0, -step_ratio)).round()
       timesteps -= 1
+    elif timestep_spacing == "flux":
+      max_logging.log("Using flux timestep spacing")
+      timesteps = jnp.linspace(1, 0, num_inference_steps + 1)
     else:
       raise ValueError(
-          f"timestep_spacing must be one of ['linspace', 'leading', 'trailing'], got {self.config.timestep_spacing}"
+          f"timestep_spacing must be one of ['linspace', 'leading', 'trailing', 'flux'], got {self.config.timestep_spacing}"
       )
 
     sigmas = ((1 - state.common.alphas_cumprod) / state.common.alphas_cumprod) ** 0.5
@@ -250,7 +261,14 @@ class FlaxEulerDiscreteScheduler(FlaxSchedulerMixin, ConfigMixin):
       original_samples: jnp.ndarray,
       noise: jnp.ndarray,
       timesteps: jnp.ndarray,
+      flux: bool = False,
   ) -> jnp.ndarray:
+    if flux:
+      t = state.timesteps[timesteps]
+      t = t[:, None, None]
+      noisy_samples = t * noise + (1 - t) * original_samples
+      return noisy_samples
+
     sigma = state.sigmas[timesteps].flatten()
     sigma = broadcast_to_shape_from_left(sigma, noise.shape)
 

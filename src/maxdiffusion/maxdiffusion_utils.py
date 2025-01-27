@@ -24,6 +24,7 @@ from safetensors.torch import load_file
 from maxdiffusion import (
     max_utils,
 )
+from einops import repeat
 
 
 from .models.modeling_flax_pytorch_utils import convert_pytorch_state_dict_to_flax
@@ -234,6 +235,65 @@ def calculate_unet_tflops(config, pipeline, batch_size, rngs, train):
           timesteps=timesteps,
           encoder_hidden_states=encoder_hidden_states,
           added_cond_kwargs=added_cond_kwargs,
+      )
+      / jax.local_device_count()
+  )
+
+
+def get_dummy_flux_inputs(config, pipeline, batch_size):
+  """Returns randomly initialized flux inputs."""
+  scale_factor = 16
+  img_input_shape = (
+      batch_size,
+      pipeline.flux.in_channels,
+      2 * config.resolution // scale_factor,
+      2 * config.resolution // scale_factor,
+  )
+
+  latents = jax.random.normal(jax.random.PRNGKey(0), shape=img_input_shape, dtype=config.weights_dtype)
+
+  latents, latents_ids, guidance_vec = pipeline.prepare_img_ids(latents, 4.0)
+
+  timesteps = jnp.ones((batch_size,), dtype=config.weights_dtype)
+  t5_hidden_states_shape = (
+      batch_size,
+      pipeline.t5.max_length,
+      4096,
+  )
+  t5_hidden_states = jnp.zeros(t5_hidden_states_shape, dtype=config.weights_dtype)
+  t5_ids = jnp.zeros((batch_size, t5_hidden_states.shape[1], 3), dtype=config.weights_dtype)
+
+  clip_hidden_states_shape = (
+      batch_size,
+      768,
+  )
+  clip_hidden_states = jnp.zeros(clip_hidden_states_shape, dtype=config.weights_dtype)
+
+  return (latents, timesteps, latents_ids, guidance_vec, t5_hidden_states, t5_ids, clip_hidden_states)
+
+
+def calculate_flux_tflops(config, pipeline, batch_size, rngs, train):
+  """
+  Calculates jflux tflops.
+  batch_size should be per_device_batch_size * jax.local_device_count() or attention's shard_map won't
+  cache the compilation when flash is enabled.
+  """
+
+  (latents, timesteps, latents_ids, guidance_vec, t5_hidden_states, t5_ids, clip_hidden_states) = get_dummy_flux_inputs(
+      config, pipeline, batch_size
+  )
+  return (
+      max_utils.calculate_model_tflops(
+          pipeline.flux,
+          rngs,
+          train,
+          hidden_states=latents,
+          img_ids=latents_ids,
+          encoder_hidden_states=t5_hidden_states,
+          txt_ids=t5_ids,
+          pooled_projections=clip_hidden_states,
+          timestep=timesteps,
+          guidance=guidance_vec,
       )
       / jax.local_device_count()
   )

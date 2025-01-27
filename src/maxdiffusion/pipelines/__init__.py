@@ -32,7 +32,13 @@ from ..utils import (
 
 # These modules contain pipelines from multiple libraries/frameworks
 _dummy_objects = {}
-_import_structure = {"stable_diffusion": [], "stable_diffusion_xl": [], "latent_diffusion": [], "controlnet": []}
+_import_structure = {
+    "stable_diffusion": [],
+    "stable_diffusion_xl": [],
+    "latent_diffusion": [],
+    "controlnet": [],
+    "jflux": [],
+}
 
 try:
   if not is_onnx_available():
@@ -94,8 +100,12 @@ else:
           "FlaxStableDiffusionXLPipeline",
       ]
   )
+  _import_structure["jflux"].extend(
+      [
+          "JfluxPipeline",
+      ]
+  )
 if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
-
   try:
     if not is_onnx_available():
       raise OptionalDependencyNotAvailable()
@@ -140,6 +150,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         FlaxStableDiffusionPipeline,
     )
     from .stable_diffusion_xl import FlaxStableDiffusionXLPipeline
+    from .jflux import JfluxPipeline
 
   try:
     if not (is_torch_available() and is_note_seq_available()):

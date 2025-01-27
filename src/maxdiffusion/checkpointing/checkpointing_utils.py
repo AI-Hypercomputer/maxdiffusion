@@ -38,11 +38,12 @@ STABLE_DIFFUSION_XL_CHECKPOINT = "STABLE_DIFUSSION_XL_CHECKPOINT"
 def create_orbax_checkpoint_manager(
     checkpoint_dir: str,
     enable_checkpointing: bool,
-    save_interval_steps,
+    save_interval_steps: int,
     checkpoint_type: str,
     dataset_type: str = "tf",
     use_async: bool = True,
     orbax_logger: Optional[abstract_logger.AbstractLogger] = None,
+    item_names=None,
 ):
   """
   Returns specified Orbax (async or not) CheckpointManager or None if checkpointing is disabled.
@@ -56,6 +57,29 @@ def create_orbax_checkpoint_manager(
   max_logging.log(f"checkpoint dir: {checkpoint_dir}")
   p = epath.Path(checkpoint_dir)
 
+  print("item_names: ", item_names)
+
+  mngr = CheckpointManager(
+      p,
+      item_names=item_names,
+      options=CheckpointManagerOptions(
+          create=True, save_interval_steps=save_interval_steps, enable_async_checkpointing=use_async
+      ),
+      logger=orbax_logger,
+  )
+
+  max_logging.log("Checkpoint manager created!")
+  return mngr
+
+
+def create_stable_diffusion_orbax_checkpoint_manager(
+    checkpoint_dir: str,
+    enable_checkpointing: bool,
+    save_interval_steps: int,
+    checkpoint_type: str,
+    use_async: bool = True,
+    orbax_logger: Optional[abstract_logger.AbstractLogger] = None,
+):
   item_names = (
       "unet_config",
       "vae_config",
@@ -74,6 +98,8 @@ def create_orbax_checkpoint_manager(
   if dataset_type == "grain":
     item_names += ("iter",)
 
+  if override_item_names is not None:
+    item_names = override_item_names
   print("item_names: ", item_names)
 
   mngr = CheckpointManager(
@@ -84,9 +110,9 @@ def create_orbax_checkpoint_manager(
       ),
       logger=orbax_logger,
   )
-
-  max_logging.log("Checkpoint manager created!")
-  return mngr
+  return create_orbax_checkpoint_manager(
+      checkpoint_dir, enable_checkpointing, save_interval_steps, use_async, orbax_logger, item_names
+  )
 
 
 def load_stable_diffusion_configs(
@@ -204,11 +230,10 @@ def load_state_if_possible(
   if latest_step is None:
     return None
   else:
-    max_logging.log(f"restoring from this run's directory latest step {latest_step}")
     try:
-      if not enable_single_replica_ckpt_restoring:
-        item = {checkpoint_item: orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state)}
-        return checkpoint_manager.restore(latest_step, args=orbax.checkpoint.args.Composite(**item))
+      max_logging.log(
+          f"restoring from this run's directory latest step {latest_step}"
+      )
 
       def map_to_pspec(data):
         pspec = data.sharding.spec
@@ -227,18 +252,20 @@ def load_state_if_possible(
             dtype=data.dtype,
         )
 
-      array_handler = ocp.type_handlers.SingleReplicaArrayHandler(
-          replica_axis_index=0,
-          broadcast_memory_limit_bytes=1024 * 1024 * 1000,  # 1000 MB limit
-      )
-      ocp.type_handlers.register_type_handler(jax.Array, array_handler, override=True)
+      if enable_single_replica_ckpt_restoring:
+        array_handler = ocp.type_handlers.SingleReplicaArrayHandler(
+            replica_axis_index=0,
+            broadcast_memory_limit_bytes=1024 * 1024 * 1000,  # 1000 MB limit
+        )
+        ocp.type_handlers.register_type_handler(jax.Array, array_handler, override=True)
 
       restore_args = jax.tree_util.tree_map(
           map_to_pspec,
           abstract_unboxed_pre_state,
       )
+
       item = {checkpoint_item: ocp.args.PyTreeRestore(item=abstract_unboxed_pre_state, restore_args=restore_args)}
       return checkpoint_manager.restore(latest_step, args=orbax.checkpoint.args.Composite(**item))
-    except:
-      max_logging.log(f"could not load {checkpoint_item} from orbax")
+    except Exception as e:
+      max_logging.log(f"could not load {checkpoint_item} from orbax: {e}")
       return None

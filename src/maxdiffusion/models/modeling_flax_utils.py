@@ -298,6 +298,7 @@ class FlaxModelMixin(PushToHubMixin):
     use_auth_token = kwargs.pop("use_auth_token", None)
     revision = kwargs.pop("revision", None)
     subfolder = kwargs.pop("subfolder", None)
+    filename = kwargs.pop("filename", None)
 
     user_agent = {
         "maxdiffusion": __version__,
@@ -309,6 +310,7 @@ class FlaxModelMixin(PushToHubMixin):
       cls.mesh = kwargs["mesh"]
 
     # Load config if we don't provide one
+    unused_kwargs = kwargs
     if config is None:
       config, unused_kwargs = cls.load_config(
           pretrained_model_name_or_path,
@@ -323,7 +325,6 @@ class FlaxModelMixin(PushToHubMixin):
           subfolder=subfolder,
           **kwargs,
       )
-
     model, model_kwargs = cls.from_config(config, dtype=dtype, return_unused_kwargs=True, **unused_kwargs)
 
     # Load model
@@ -353,10 +354,12 @@ class FlaxModelMixin(PushToHubMixin):
             f"{pretrained_path_with_subfolder}."
         )
     else:
+      if filename is None:
+        filename = FLAX_WEIGHTS_NAME if not from_pt else WEIGHTS_NAME
       try:
         model_file = hf_hub_download(
             pretrained_model_name_or_path,
-            filename=FLAX_WEIGHTS_NAME if not from_pt else WEIGHTS_NAME,
+            filename=filename,
             cache_dir=cache_dir,
             force_download=force_download,
             proxies=proxies,
@@ -364,7 +367,7 @@ class FlaxModelMixin(PushToHubMixin):
             local_files_only=local_files_only,
             use_auth_token=use_auth_token,
             user_agent=user_agent,
-            subfolder=subfolder,
+            subfolder=subfolder if not ".safetensors" in filename else None,
             revision=revision,
         )
 

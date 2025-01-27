@@ -409,6 +409,7 @@ else:
           "FlaxStableDiffusionInpaintPipeline",
           "FlaxStableDiffusionPipeline",
           "FlaxStableDiffusionXLPipeline",
+          "JfluxPipeline",
       ]
   )
 
@@ -478,6 +479,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         FlaxStableDiffusionInpaintPipeline,
         FlaxStableDiffusionPipeline,
         FlaxStableDiffusionXLPipeline,
+        JfluxPipeline,
     )
 
   try:
