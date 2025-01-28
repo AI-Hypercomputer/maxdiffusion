@@ -34,8 +34,28 @@ import re
 from glob import iglob
 
 
+def get_device_type():
+  """Returns the type of JAX device being used.
+
+  Returns:
+    str: "gpu", "tpu", or "cpu"
+  """
+  try:
+    device_kind = jax.devices()[0].device_kind
+    if "tpu" in device_kind.lower():
+      return "tpu"
+    elif "amd" in device_kind.lower():
+      return "rocm"
+    elif "nvidia" in device_kind.lower():
+      return "cuda"
+    else:
+      return "cpu"
+  except IndexError:
+    return "cpu"  # No devices found, likely using CPU
+
+
 def run(config):
-  device_type = jflux_checkpointer.get_device_type()
+  device_type = get_device_type()
   max_logging.log(f"Using {device_type} device")
 
   output_dir = "output"

@@ -269,12 +269,13 @@ def convert_pytorch_state_dict_to_flax(pt_state_dict, flax_model, init_key=42):
         renamed_pt_key = renamed_pt_key.replace("txt_mod", "txt_norm1")
         renamed_pt_key = renamed_pt_key.replace("img_attn.qkv", "attn.i_qkv")
         renamed_pt_key = renamed_pt_key.replace("img_attn.proj", "attn.i_proj")
+        renamed_pt_key = renamed_pt_key.replace("img_attn.norm", "attn")
         renamed_pt_key = renamed_pt_key.replace("txt_attn.qkv", "attn.e_qkv")
         renamed_pt_key = renamed_pt_key.replace("txt_attn.proj", "attn.e_proj")
-
-        renamed_pt_key = renamed_pt_key.replace("img_attn.norm", "attn")
         renamed_pt_key = renamed_pt_key.replace("txt_attn.norm.key_norm", "attn.encoder_key_norm")
         renamed_pt_key = renamed_pt_key.replace("txt_attn.norm.query_norm", "attn.encoder_query_norm")
+      elif("guidance_in" in renamed_pt_key):
+        renamed_pt_key = renamed_pt_key.replace("guidance_in", "time_text_embed.FlaxTimestepEmbedding_1")
       elif "single_blocks" in renamed_pt_key:
         renamed_pt_key = renamed_pt_key.replace("single_blocks_", "single_blocks.layers_")
         renamed_pt_key = renamed_pt_key.replace("modulation", "norm")

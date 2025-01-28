@@ -33,26 +33,6 @@ from maxdiffusion.checkpointing.checkpointing_utils import (
 )
 
 
-def get_device_type():
-  """Returns the type of JAX device being used.
-
-  Returns:
-    str: "gpu", "tpu", or "cpu"
-  """
-  try:
-    device_kind = jax.devices()[0].device_kind
-    if "tpu" in device_kind.lower():
-      return "tpu"
-    elif "amd" in device_kind.lower():
-      return "rocm"
-    elif "nvidia" in device_kind.lower():
-      return "cuda"
-    else:
-      return "cpu"
-  except IndexError:
-    return "cpu"  # No devices found, likely using CPU
-
-
 class JfluxCheckpointer(ABC):
   flux_state_item_name = "flux_state"
   config_item_name = "config"
