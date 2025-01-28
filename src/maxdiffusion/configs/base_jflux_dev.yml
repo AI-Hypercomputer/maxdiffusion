@@ -13,9 +13,9 @@
 # limitations under the License.
 
 # This sentinel is a reminder to choose a real run name.
-run_name: 'jflux'
+run_name: 'jflux-dev'
 
-model_name: "flux-schnell"
+model_name: "flux-dev"
 metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
 # If true save metrics such as loss and TFLOPS to GCS in {base_output_directory}/{run_name}/metrics/
 write_metrics: True
@@ -25,7 +25,7 @@ save_config_to_gcs: False
 log_period: 100
 save_interval_steps: -1
 
-pretrained_model_name_or_path: 'black-forest-labs/FLUX.1-schnell'
+pretrained_model_name_or_path: 'black-forest-labs/FLUX.1-dev'
 checkpoint_path: ""
 checkpoint_step: -1
 # This will convert the weights to this dtype.
@@ -170,7 +170,7 @@ cache_latents_text_encoder_outputs: True
 # prepare image latents and text encoder outputs
 # Reduce memory consumption and reduce step time during training
 # transformed dataset is saved at dataset_save_location
-dataset_save_location: '/tmp/pokemon-gpt4-captions_xl'
+dataset_save_location: '/tmp/pokemon-gpt4-captions_dev'
 train_data_dir: ''
 dataset_config_name: ''
 jax_cache_dir: '/dev/shm/jax'
