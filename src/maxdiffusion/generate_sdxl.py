@@ -306,6 +306,8 @@ def run(config):
     images = p_run_inference(states).block_until_ready()
   print("inference time: ", (time.time() - s))
   images = jax.experimental.multihost_utils.process_allgather(images)
+  if len(images.shape) == 5:
+    images = jnp.squeeze(images)
   numpy_images = np.array(images)
   images = VaeImageProcessor.numpy_to_pil(numpy_images)
   for i, image in enumerate(images):
