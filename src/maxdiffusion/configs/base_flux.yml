@@ -24,6 +24,9 @@ save_config_to_gcs: False
 log_period: 100
 
 pretrained_model_name_or_path: 'black-forest-labs/FLUX.1-dev'
+clip_model_name_or_path: 'ariG23498/clip-vit-large-patch14-text-flax'
+t5xxl_model_name_or_path: 'ariG23498/t5-v1-1-xxl-flax'
+
 unet_checkpoint: ''
 revision: 'refs/pr/95'
 # This will convert the weights to this dtype.
@@ -41,7 +44,7 @@ precision: "DEFAULT"
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
-attention: 'dot_product' # Supported attention: dot_product, flash
+attention: 'flash' # Supported attention: dot_product, flash
 flash_block_sizes: {}
 # GroupNorm groups
 norm_num_groups: 32
@@ -171,7 +174,7 @@ max_train_steps: 200
 num_train_epochs: 1
 seed: 0
 output_dir: 'sdxl-model-finetuned'
-per_device_batch_size: 2
+per_device_batch_size: 1
 
 warmup_steps_fraction: 0.0
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
