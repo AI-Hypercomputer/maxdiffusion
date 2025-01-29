@@ -16,6 +16,7 @@
 
 from typing import Dict, Optional, Tuple, Union
 
+from einops import repeat, rearrange
 import jax
 import jax.numpy as jnp
 import flax.linen as nn 
@@ -26,7 +27,8 @@ from ..modules.layers import (
   MLPEmbedder,
   EmbedND,
   DoubleStreamBlock,
-  SingleStreamBlock
+  SingleStreamBlock,
+  LastLayer
 )
 from ...modeling_flax_utils import FlaxModelMixin
 from ....configuration_utils import ConfigMixin, flax_register_to_config
@@ -205,9 +207,46 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     #   attention_kernel=self.attention_kernel,
     #   name="double_blocks_0"
     # )(img=img, txt=txt, vec=vec, pe=pe)
+    # # breakpoint()
+    for _ in range(self.num_layers):
+      img, txt = DoubleStreamBlock(
+        hidden_size=inner_dim,
+        num_heads=self.num_attention_heads,
+        mlp_ratio=self.mlp_ratio,
+        attention_head_dim=self.attention_head_dim,
+        flash_min_seq_length=self.flash_min_seq_length,
+        flash_block_sizes=self.flash_block_sizes,
+        mesh=self.mesh,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision,
+        qkv_bias=self.qkv_bias,
+        attention_kernel=self.attention_kernel,
+      )(img=img, txt=txt, vec=vec, pe=pe)
+    # img, txt = nn.Sequential(
+    #   [
+    #     *[
+    #       DoubleStreamBlock(
+    #         hidden_size=inner_dim,
+    #         num_heads=self.num_attention_heads,
+    #         mlp_ratio=self.mlp_ratio,
+    #         attention_head_dim=self.attention_head_dim,
+    #         flash_min_seq_length=self.flash_min_seq_length,
+    #         flash_block_sizes=self.flash_block_sizes,
+    #         mesh=self.mesh,
+    #         dtype=self.dtype,
+    #         weights_dtype=self.weights_dtype,
+    #         precision=self.precision,
+    #         qkv_bias=self.qkv_bias,
+    #         attention_kernel=self.attention_kernel,
+    #       )(img=img, txt=txt, vec=vec, pe=pe)
+    #       for _ in range(2)
+    #     ]
+    #   ]
+    # )
     # breakpoint()
-    # img, txt = DoubleStreamBlock(
-    #   hidden_size=inner_dim,
+    # img, txt = scan_double_block_layers(
+    #   inner_dim=inner_dim,
     #   num_heads=self.num_attention_heads,
     #   mlp_ratio=self.mlp_ratio,
     #   attention_head_dim=self.attention_head_dim,
@@ -219,56 +258,101 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     #   precision=self.precision,
     #   qkv_bias=self.qkv_bias,
     #   attention_kernel=self.attention_kernel,
-    #   name="double_blocks_1"
-    # )(img=img, txt=txt, vec=vec, pe=pe)
-    # breakpoint()
-    img, txt = scan_double_block_layers(
-      inner_dim=inner_dim,
-      num_heads=self.num_attention_heads,
-      mlp_ratio=self.mlp_ratio,
-      attention_head_dim=self.attention_head_dim,
-      flash_min_seq_length=self.flash_min_seq_length,
-      flash_block_sizes=self.flash_block_sizes,
-      mesh=self.mesh,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision,
-      qkv_bias=self.qkv_bias,
-      attention_kernel=self.attention_kernel,
-      num_layers=self.num_layers
-    )(img, txt, vec, pe)
-
-    # SingleStreamBlock(
-    #   hidden_size=inner_dim,
-    #   num_heads=self.num_attention_heads,
-    #   mlp_ratio=self.mlp_ratio,
-    #   attention_head_dim=self.attention_head_dim,
-    #   flash_min_seq_length=self.flash_min_seq_length,
-    #   flash_block_sizes=self.flash_block_sizes,
-    #   mesh=self.mesh,
-    #   dtype=self.dtype,
-    #   weights_dtype=self.weights_dtype,
-    #   precision=self.precision,
-    #   attention_kernel=self.attention_kernel
-    # )(img, vec, pe)
+    #   num_layers=self.num_layers
+    # )(img, txt, vec, pe)
+    img = jnp.concatenate((txt, img), axis=1)
+    for _ in range(self.num_single_layers):
+      img, SingleStreamBlock(
+        hidden_size=inner_dim,
+        num_heads=self.num_attention_heads,
+        mlp_ratio=self.mlp_ratio,
+        attention_head_dim=self.attention_head_dim,
+        flash_min_seq_length=self.flash_min_seq_length,
+        flash_block_sizes=self.flash_block_sizes,
+        mesh=self.mesh,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision,
+        attention_kernel=self.attention_kernel
+      )(img, vec, pe)
 
     img = img[:, txt.shape[1] :, ...]
 
+    LastLayer(
+      hidden_size=inner_dim,
+      patch_size=1,
+      out_channels=out_channels,
+      dtype=self.dtype,
+      weights_dtype=self.weights_dtype,
+      precision=self.precision,
+      name="final_layer"
+    )
 
-    return img, txt
+    return img
+  
+  def init_weights(self, rngs, eval_only=True):
+    scale_factor = 16
+    resolution = 1024
+    num_devices = len(jax.devices())
+    batch_size = 1 * num_devices
+    batch_image_shape = (
+        batch_size,
+        16,  # 16 to match jflux.get_noise
+        2 * resolution // scale_factor,
+        2 * resolution // scale_factor,
+    )
+    # bs, encoder_input, seq_length
+    text_shape = (
+        batch_size,
+        256,
+        4096,  # Sequence length of text encoder, how to get this programmatically?
+    )
+    text_ids_shape = (
+        batch_size,
+        256,
+        3,  # Hardcoded to match jflux.prepare
+    )
+    vec_shape = (
+        batch_size,
+        768,  # Sequence length of clip, how to get this programmatically?
+    )
+    img = jnp.zeros(batch_image_shape, dtype=self.dtype)
+    bs, c, h, w = img.shape
+    img = rearrange(img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
+    img_ids = jnp.zeros((h // 2, w // 2, 3), dtype=self.dtype)
+    img_ids = img_ids.at[..., 1].set(jnp.arange(h // 2)[:, None])
+    img_ids = img_ids.at[..., 2].set(jnp.arange(w // 2)[None, :])
+    img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
 
-    # img = jnp.concatenate((txt, img), axis=1)
+    txt = jnp.zeros(text_shape, dtype=self.dtype)
+    txt_ids = jnp.zeros(text_ids_shape, dtype=self.dtype)
 
-    # img = nn.scan(
-    #   SingleStreamBlock,
-    #   variable_broadcast='params',
-    #   in_axes=0, out_axes=0,
-    #   split_rngs={'params' : False}
-    # )(img, vec=vec, pe=pe)
+    t_vec = jnp.full(bs, 0, dtype=self.dtype)
 
-    # img = img[:, txt.shape[1] :, ...]
+    vec = jnp.zeros(vec_shape, dtype=self.dtype)
 
-    # img = LastLayer(
+    guidance_vec = jnp.full(bs, 4.0, dtype=self.dtype)
 
-    # )(img, vec) # (N, T, patch_size ** 2 * out_channels)
-    # return img
+    if eval_only:
+      return jax.eval_shape(
+          self.init,
+          rngs,
+          img=img,
+          img_ids=img_ids,
+          txt=txt,
+          txt_ids=txt_ids,
+          y=vec,
+          timesteps=t_vec,
+          guidance=guidance_vec,
+      )["params"]
+    else:
+      return self.init(
+          rngs,
+          hidden_states=img,
+          img_ids=img_ids,
+          encoder_hidden_states=txt,
+          txt_ids=txt_ids,
+          y=vec,
+          timestep=t_vec,
+          guidance=guidance_vec,
+      )["params"]

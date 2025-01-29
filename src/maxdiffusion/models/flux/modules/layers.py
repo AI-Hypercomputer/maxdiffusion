@@ -177,10 +177,9 @@ class Modulation(nn.Module):
     )(nn.silu(vec))
 
     out = jnp.split(lin[:, None, :], multiplier, axis=-1)
-
     return (
       ModulationOut(*out[:3]),
-      ModulationOut(*out[3:] if self.double else None)
+      ModulationOut(*out[3:]) if self.double else None
     )
 
 class SingleStreamBlock(nn.Module):
@@ -209,7 +208,6 @@ class SingleStreamBlock(nn.Module):
       precision=self.precision
     )(vec)
     x_mod = (1 + mod.scale) * nn.LayerNorm(
-      self.hidden_size,
       use_scale=False,
       use_bias=False,
       epsilon=1e-6,
@@ -261,7 +259,7 @@ class SingleStreamBlock(nn.Module):
         ("embed", "heads")
       ),
       name="linear2"
-    )(jnp.concatenate((attn, nn.genu(mlp)), 2))
+    )(jnp.concatenate((attn, nn.gelu(mlp)), 2))
     return x + mod.gate * output    
 
 class DoubleStreamBlock(nn.Module):
@@ -279,7 +277,7 @@ class DoubleStreamBlock(nn.Module):
   attention_kernel: str = "dot_product"
 
   @nn.compact
-  def __call__(self, img: Array, txt: Array, vec: Array, pe: Array):
+  def __call__(self, img: Array, txt: Array, vec: Array, pe: Array) -> tuple[Array, Array]:
 
     mlp_hidden_dim = int(self.hidden_size * self.mlp_ratio)
     
@@ -422,7 +420,7 @@ class DoubleStreamBlock(nn.Module):
     )
     
     # calculate the txt blocks
-    txt = txt + txt_mod1.gate * nn.Dense(
+    txt_proj = nn.Dense(
       self.hidden_size,
       use_bias=True,
       dtype=self.dtype,
@@ -433,6 +431,8 @@ class DoubleStreamBlock(nn.Module):
         ("heads", "embed")
       ),
     )(txt_attn)
+    txt = txt + txt_mod1.gate * txt_proj
+
     txt = txt + txt_mod2.gate * nn.Sequential(
       [
         nn.Dense(
@@ -467,3 +467,53 @@ class DoubleStreamBlock(nn.Module):
     )
 
     return img, txt
+
+class LastLayer(nn.Module):
+  hidden_size: int
+  patch_size: int
+  out_channels: int
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  precision: jax.lax.Precision = None
+
+  @nn.compact
+  def __call__(self, x: Array, vec: Array) -> Array:
+    shift, scale = jnp.split(
+      nn.Sequential(
+        [
+          nn.silu,
+          nn.Dense(
+            2 * self.hidden_size,
+            use_bias=True,
+            param_dtype=self.weights_dtype,
+            dtype=self.dtype,
+            precision=self.precision,
+            kernel_init=nn.with_logical_partitioning(
+              nn.initializers.lecun_normal(),
+              ("embed", "heads")
+            )
+          )
+        ]
+      )(vec), 2, axis=1
+    )
+    norm_final = nn.LayerNorm(
+      epsilon=1e-6,
+      use_scale=False,
+      use_bias=False,
+      param_dtype=self.weights_dtype,
+      name="norm_final"
+    )(x)
+    x = (1 + scale[:, None, :]) * norm_final + shift[:, None, :]
+    x = nn.Dense(
+      self.patch_size * self.patch_size * self.out_channels,
+      use_bias=True,
+      param_dtype=self.weights_dtype,
+            dtype=self.dtype,
+            precision=self.precision,
+      kernel_init=nn.with_logical_partitioning(
+        nn.initializers.lecun_normal(),
+        ("heads", "embed")
+      ),
+      name="linear"
+    )
+    return x

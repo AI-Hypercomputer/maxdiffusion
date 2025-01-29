@@ -16,22 +16,30 @@
 
 from typing import Any, Callable, Dict, List, Optional, Union, Sequence
 from absl import app
-
+import functools
 import numpy as np
 import jax
+from jax.sharding import Mesh, PositionalSharding
 import jax.numpy as jnp
 from chex import Array
 from transformers import (
   CLIPTokenizer,
   FlaxCLIPTextModel,
   T5TokenizerFast,
-  T5EncoderModel
+  T5EncoderModel,
+  FlaxT5EncoderModel
 )
 
 from maxdiffusion import FlaxAutoencoderKL
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
-
 from maxdiffusion import pyconfig
+from max_utils import (
+  device_put_replicated,
+  get_memory_allocations,
+  create_device_mesh,
+  get_flash_block_sizes,
+  get_precision
+)
 
 def prepare_latent_image_ids(height, width):
   latent_image_ids = jnp.zeros((height, width, 3))
@@ -133,19 +141,17 @@ def get_t5_prompt_embeds(
     truncation=True,
     return_length=False,
     return_overflowing_tokens=False,
-    return_tensors="pt"
+    return_tensors="np"
   )
   text_input_ids = text_inputs.input_ids
-
   prompt_embeds = text_encoder(text_input_ids, output_hidden_states=False)[0]
   dtype = text_encoder.dtype
-  prompt_embeds = prompt_embeds.to(dtype=dtype)
+  prompt_embeds = prompt_embeds.astype(dtype)
 
   _, seq_len, _ = prompt_embeds.shape
-
   # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
-  prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
-  prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
+  prompt_embeds = jnp.tile(prompt_embeds, (1, num_images_per_prompt, 1))
+  prompt_embeds = jnp.reshape(prompt_embeds, (batch_size * num_images_per_prompt, seq_len, -1))
 
   return prompt_embeds
 
@@ -178,7 +184,6 @@ def encode_prompt(
     tokenizer=t5_tokenizer,
     text_encoder=t5_text_encoder
   )
-  prompt_embeds = jnp.asarray(prompt_embeds.detach().numpy())
 
   text_ids = jnp.zeros((prompt_embeds.shape[0], prompt_embeds.shape[1], 3)).astype(jnp.bfloat16)
   return prompt_embeds, pooled_prompt_embeds, text_ids
@@ -186,7 +191,9 @@ def encode_prompt(
 def run(config):
   from maxdiffusion.models.flux.util import load_flow_model
 
-  rng = jax.random.PRNGKey(config.seed)
+  rng = jax.random.key(config.seed)
+  devices_array = create_device_mesh(config)
+  mesh = Mesh(devices_array, config.mesh_axes)
 
   per_host_number_of_images = 1#config.per_device_batch_size * jax.local_device_count()
 
@@ -201,11 +208,18 @@ def run(config):
   )
   vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
 
-  # LOAD UNET
-
+  # LOAD TRANSFORMER
+  flash_block_sizes = get_flash_block_sizes(config)
   transformer = FluxTransformer2DModel.from_config(
     config.pretrained_model_name_or_path,
-    subfolder="transformer"
+    subfolder="transformer",
+    mesh=mesh,
+    split_head_dim=config.split_head_dim,
+    attention_kernel=config.attention,
+    flash_block_sizes=flash_block_sizes,
+    dtype=config.activations_dtype,
+    weights_dtype=config.weights_dtype,
+    precision=get_precision(config)
   )
   
   num_channels_latents = transformer.in_channels // 4
@@ -242,15 +256,21 @@ def run(config):
     dtype=config.weights_dtype
   )
 
-  t5_encoder_pt = T5EncoderModel.from_pretrained(
-    config.pretrained_model_name_or_path,
-    subfolder="text_encoder_2",
+  t5_encoder = FlaxT5EncoderModel.from_pretrained(
+    config.clip_model_name_or_path,
+    dtype=config.weights_dtype
   )
-
   t5_tokenizer = T5TokenizerFast.from_pretrained(
     config.pretrained_model_name_or_path,
     subfolder="tokenizer_2",
   )
+
+  encoders_sharding = PositionalSharding(devices_array).replicate()
+  partial_device_put_replicated = functools.partial(device_put_replicated, sharding=encoders_sharding)
+  clip_text_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), clip_text_encoder.params)
+  clip_text_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, clip_text_encoder.params)
+  t5_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), t5_encoder.params)
+  t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, t5_encoder.params)
 
   prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
     prompt=config.prompt,
@@ -258,18 +278,18 @@ def run(config):
     clip_tokenizer=clip_tokenizer,
     clip_text_encoder=clip_text_encoder,
     t5_tokenizer=t5_tokenizer,
-    t5_text_encoder=t5_encoder_pt,
+    t5_text_encoder=t5_encoder,
     num_images_per_prompt=per_host_number_of_images
   )
 
   def validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds):
-    print("latents.shape: ", latents.shape)
-    print("latent_image_ids.shape: ", latent_image_ids.shape)
-    print("text_ids.shape: ", text_ids.shape)
-    print("prompt_embeds: ", prompt_embeds.shape)
-    print("timesteps.shape: ", timesteps.shape)
-    print("guidance.shape: ", guidance.shape)
-    print("pooled_prompt_embeds.shape: ", pooled_prompt_embeds.shape)
+    print("latents.shape: ", latents.shape, latents.dtype)
+    print("latent_image_ids.shape: ", latent_image_ids.shape, latent_image_ids.dtype)
+    print("text_ids.shape: ", text_ids.shape, text_ids.dtype)
+    print("prompt_embeds: ", prompt_embeds.shape, prompt_embeds.dtype)
+    print("timesteps.shape: ", timesteps.shape, timesteps.dtype)
+    print("guidance.shape: ", guidance.shape, guidance.dtype)
+    print("pooled_prompt_embeds.shape: ", pooled_prompt_embeds.shape, pooled_prompt_embeds.dtype)
   
   timesteps = jnp.asarray([1.0], dtype=jnp.bfloat16)
   guidance = jnp.asarray([3.5], dtype=jnp.bfloat16)
@@ -282,17 +302,19 @@ def run(config):
     guidance,
     pooled_prompt_embeds
   )
-  
-  transformer_params = transformer.init(
-    {"params" : rng},
-    img=latents,
-    img_ids=latent_image_ids,
-    txt=prompt_embeds,
-    txt_ids=text_ids,
-    timesteps=timesteps,
-    guidance=guidance,
-    y=pooled_prompt_embeds
-  )["params"]
+  get_memory_allocations()
+  transformer_params = transformer.init_weights(rng, True)
+  # transformer_params = transformer.init(
+  #   {"params" : rng},
+  #   img=latents,
+  #   img_ids=latent_image_ids,
+  #   txt=prompt_embeds,
+  #   txt_ids=text_ids,
+  #   timesteps=timesteps,
+  #   guidance=guidance,
+  #   y=pooled_prompt_embeds
+  # )["params"]
+  get_memory_allocations()
   breakpoint()
 
 
