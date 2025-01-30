@@ -53,11 +53,13 @@ class QKNorm(nn.Module):
   def __call__(self, q: Array, k: Array, v: Array) -> tuple[Array, Array]:
     q = nn.RMSNorm(
       dtype=self.dtype,
-      param_dtype=self.weights_dtype
+      param_dtype=self.weights_dtype,
+      name="query_norm"
     )(q)
     k = nn.RMSNorm(
       dtype=self.dtype,
-      param_dtype=self.weights_dtype
+      param_dtype=self.weights_dtype,
+      name="key_norm"
     )(k)
     return q, k
 
@@ -173,7 +175,8 @@ class Modulation(nn.Module):
       kernel_init=nn.with_logical_partitioning(
         nn.initializers.lecun_normal(),
         ("embed", "heads")
-      )
+      ),
+      name="lin"
     )(nn.silu(vec))
 
     out = jnp.split(lin[:, None, :], multiplier, axis=-1)
@@ -205,14 +208,16 @@ class SingleStreamBlock(nn.Module):
       double=False,
       dtype=self.dtype,
       weights_dtype=self.weights_dtype,
-      precision=self.precision
+      precision=self.precision,
+      name="modulation"
     )(vec)
     x_mod = (1 + mod.scale) * nn.LayerNorm(
       use_scale=False,
       use_bias=False,
       epsilon=1e-6,
       dtype=self.dtype,
-      param_dtype=self.weights_dtype
+      param_dtype=self.weights_dtype,
+      name="pre_norm"
     )(x) + mod.shift
 
     x_mod = nn.Dense(
@@ -231,7 +236,8 @@ class SingleStreamBlock(nn.Module):
     q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
     q, k = QKNorm(
       dtype=self.dtype,
-      weights_dtype=self.weights_dtype
+      weights_dtype=self.weights_dtype,
+      name="norm"
     )(q, k, v)
 
     q, k = apply_rope(q, k, pe)
@@ -286,7 +292,8 @@ class DoubleStreamBlock(nn.Module):
       double=True,
       dtype=self.dtype,
       weights_dtype=self.weights_dtype,
-      precision=self.precision
+      precision=self.precision,
+      name="img_mod"
     )(vec)
 
     txt_mod1, txt_mod2 = Modulation(
@@ -294,7 +301,8 @@ class DoubleStreamBlock(nn.Module):
       double=True,
       dtype=self.dtype,
       weights_dtype=self.weights_dtype,
-      precision=self.precision
+      precision=self.precision,
+      name="txt_mod"
     )(vec)
 
     # prepare image for attention
@@ -303,7 +311,8 @@ class DoubleStreamBlock(nn.Module):
       use_bias=False,
       epsilon=1e-6,
       dtype=self.dtype,
-      param_dtype=self.weights_dtype
+      param_dtype=self.weights_dtype,
+      name="img_norm1"
     )(img)
     img_modulated = (1 + img_mod1.scale) * img_modulated + img_mod1.shift
     img_qkv = nn.Dense(
@@ -315,14 +324,16 @@ class DoubleStreamBlock(nn.Module):
       kernel_init=nn.with_logical_partitioning(
         nn.initializers.lecun_normal(),
         ("embed", "heads")
-      )
+      ),
+      name="img_attn_qkv"
     )(img_modulated)
     img_q, img_k, img_v = rearrange(
       img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads
     )
     img_q, img_k = QKNorm(
       dtype=self.dtype,
-      weights_dtype=self.weights_dtype
+      weights_dtype=self.weights_dtype,
+      name="img_attn_norm"
     )(img_q, img_k, img_v)
 
     # prepare text for attention
@@ -331,7 +342,8 @@ class DoubleStreamBlock(nn.Module):
       use_bias=False,
       epsilon=1e-6,
       dtype=self.dtype,
-      param_dtype=self.weights_dtype
+      param_dtype=self.weights_dtype,
+      name="txt_norm1"
     )(txt)
     txt_modulated = (1 + txt_mod1.scale) * txt_modulated + txt_mod1.shift
     txt_qkv = nn.Dense(
@@ -343,14 +355,16 @@ class DoubleStreamBlock(nn.Module):
       kernel_init=nn.with_logical_partitioning(
         nn.initializers.lecun_normal(),
         ("embed", "heads")
-      )
+      ),
+      name="txt_attn_qkv"
     )(txt_modulated)
     txt_q, txt_k, txt_v = rearrange(
       txt_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads
     )
     txt_q, txt_k = QKNorm(
       dtype=self.dtype,
-      weights_dtype=self.weights_dtype
+      weights_dtype=self.weights_dtype,
+      name="txt_attn_norm"
     )(txt_q, txt_k, txt_v)
 
     # run actual attention
@@ -385,6 +399,7 @@ class DoubleStreamBlock(nn.Module):
         nn.initializers.lecun_normal(),
         ("heads", "embed")
       ),
+      name="img_attn_proj"
     )(img_attn)
     img = img + img_mod2.gate * nn.Sequential(
       [
@@ -397,7 +412,8 @@ class DoubleStreamBlock(nn.Module):
           kernel_init=nn.with_logical_partitioning(
             nn.initializers.lecun_normal(),
             ("embed", "heads")
-          )
+          ),
+          name="img_mlp_0"
         ),
         nn.gelu,
         nn.Dense(
@@ -408,14 +424,16 @@ class DoubleStreamBlock(nn.Module):
           kernel_init=nn.with_logical_partitioning(
             nn.initializers.lecun_normal(),
             ("heads", "embed")
-          )
-        )
-      ]
+          ),
+          name="img_mlp_2"
+        ),
+      ],
     )(
       (1 + img_mod2.scale) * nn.LayerNorm(
         use_scale=False,
         use_bias=False,
-        param_dtype=self.weights_dtype
+        param_dtype=self.weights_dtype,
+        name="img_norm2"
       )(img) + img_mod2.shift
     )
     
@@ -430,6 +448,7 @@ class DoubleStreamBlock(nn.Module):
         nn.initializers.lecun_normal(),
         ("heads", "embed")
       ),
+      name="txt_attn_proj"
     )(txt_attn)
     txt = txt + txt_mod1.gate * txt_proj
 
@@ -444,7 +463,8 @@ class DoubleStreamBlock(nn.Module):
           kernel_init=nn.with_logical_partitioning(
             nn.initializers.lecun_normal(),
             ("embed", "heads")
-          )
+          ),
+          name="txt_mlp_0"
         ),
         nn.gelu,
         nn.Dense(
@@ -455,14 +475,16 @@ class DoubleStreamBlock(nn.Module):
           kernel_init=nn.with_logical_partitioning(
             nn.initializers.lecun_normal(),
             ("heads", "embed")
-          )
-        )
-      ]
+          ),
+          name="txt_mlp_2"
+        ),
+      ],
     )(
       (1 + txt_mod2.scale) * nn.LayerNorm(
         use_scale=False,
         use_bias=False,
-        param_dtype=self.weights_dtype
+        param_dtype=self.weights_dtype,
+        name="txt_norm2"
       )(txt) + txt_mod2.shift
     )
 
@@ -491,8 +513,9 @@ class LastLayer(nn.Module):
             kernel_init=nn.with_logical_partitioning(
               nn.initializers.lecun_normal(),
               ("embed", "heads")
-            )
-          )
+            ),
+            name="adaLN_modulation_1"
+          ),
         ]
       )(vec), 2, axis=1
     )
@@ -515,5 +538,5 @@ class LastLayer(nn.Module):
         ("heads", "embed")
       ),
       name="linear"
-    )
+    )(x)
     return x

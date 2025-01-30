@@ -180,7 +180,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         nn.initializers.lecun_normal(),
         ("embed", "heads")
       ),
-      name="text_in"
+      name="txt_in"
     )(txt)
 
     ids = jnp.concatenate((txt_ids, img_ids), axis=1)
@@ -208,7 +208,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     #   name="double_blocks_0"
     # )(img=img, txt=txt, vec=vec, pe=pe)
     # # breakpoint()
-    for _ in range(self.num_layers):
+    for i in range(self.num_layers):
       img, txt = DoubleStreamBlock(
         hidden_size=inner_dim,
         num_heads=self.num_attention_heads,
@@ -222,6 +222,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         precision=self.precision,
         qkv_bias=self.qkv_bias,
         attention_kernel=self.attention_kernel,
+        name=f"double_blocks_{i}"
       )(img=img, txt=txt, vec=vec, pe=pe)
     # img, txt = nn.Sequential(
     #   [
@@ -261,7 +262,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     #   num_layers=self.num_layers
     # )(img, txt, vec, pe)
     img = jnp.concatenate((txt, img), axis=1)
-    for _ in range(self.num_single_layers):
+    for i in range(self.num_single_layers):
       img, SingleStreamBlock(
         hidden_size=inner_dim,
         num_heads=self.num_attention_heads,
@@ -273,12 +274,13 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
-        attention_kernel=self.attention_kernel
+        attention_kernel=self.attention_kernel,
+        name=f"single_blocks_{i}"
       )(img, vec, pe)
 
     img = img[:, txt.shape[1] :, ...]
 
-    LastLayer(
+    img = LastLayer(
       hidden_size=inner_dim,
       patch_size=1,
       out_channels=out_channels,
@@ -286,14 +288,14 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       weights_dtype=self.weights_dtype,
       precision=self.precision,
       name="final_layer"
-    )
+    )(img, vec)
 
     return img
   
-  def init_weights(self, rngs, eval_only=True):
+  def init_weights(self, rngs, max_sequence_length, eval_only=True):
     scale_factor = 16
     resolution = 1024
-    num_devices = len(jax.devices())
+    num_devices = jax.local_device_count()
     batch_size = 1 * num_devices
     batch_image_shape = (
         batch_size,
@@ -304,12 +306,12 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     # bs, encoder_input, seq_length
     text_shape = (
         batch_size,
-        256,
+        max_sequence_length,
         4096,  # Sequence length of text encoder, how to get this programmatically?
     )
     text_ids_shape = (
         batch_size,
-        256,
+        max_sequence_length,
         3,  # Hardcoded to match jflux.prepare
     )
     vec_shape = (
@@ -348,11 +350,11 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     else:
       return self.init(
           rngs,
-          hidden_states=img,
+          img=img,
           img_ids=img_ids,
-          encoder_hidden_states=txt,
+          txt=txt,
           txt_ids=txt_ids,
           y=vec,
-          timestep=t_vec,
+          timesteps=t_vec,
           guidance=guidance_vec,
       )["params"]
