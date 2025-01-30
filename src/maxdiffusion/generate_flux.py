@@ -17,11 +17,14 @@
 from typing import Any, Callable, Dict, List, Optional, Union, Sequence
 from absl import app
 import functools
+import math
 import numpy as np
 import jax
 from jax.sharding import Mesh, PositionalSharding, PartitionSpec as P
 import jax.numpy as jnp
 from chex import Array
+from einops import rearrange
+from flax.linen import partitioning as nn_partitioning
 from transformers import (
   CLIPTokenizer,
   FlaxCLIPTextModel,
@@ -42,6 +45,51 @@ from max_utils import (
   setup_initial_state
 )
 
+def unpack(x: Array, height: int, width: int) -> Array:
+    return rearrange(
+      x,
+      "b (h w) (c ph pw) -> b c (h ph) (w pw)",
+      h=math.ceil(height / 16),
+      w=math.ceil(width / 16),
+      ph=2,
+      pw=2,
+    )
+
+def vae_decode(latents, vae, state, config):
+  img = unpack(x=latents, height=config.resolution, width=config.resolution)
+  img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample[0]
+  breakpoint()
+  return img
+
+def loop_body(
+  step,
+  args,
+  transformer,
+  latent_image_ids,
+  prompt_embeds,
+  txt_ids,
+  vec,
+  guidance_vec,
+):
+  latents, state, c_ts, p_ts = args
+  latents_dtype = latents.dtype
+  t_curr = c_ts[step]
+  t_prev = p_ts[step]
+  t_vec = jnp.full((latents.shape[0], ), t_curr, dtype=latents.dtype)
+  pred = transformer.apply(
+    {"params" : state.params},
+    img=latents,
+    img_ids=latent_image_ids,
+    txt=prompt_embeds,
+    txt_ids=txt_ids,
+    timesteps=t_vec,
+    guidance=guidance_vec,
+    y=vec
+  )
+  latents = latents + (t_prev - t_curr) * pred
+  latents = jnp.array(latents, dtype=latents_dtype)
+  return latents, state, c_ts, p_ts
+
 def prepare_latent_image_ids(height, width):
   latent_image_ids = jnp.zeros((height, width, 3))
   latent_image_ids = latent_image_ids.at[..., 1].set(
@@ -58,6 +106,45 @@ def prepare_latent_image_ids(height, width):
   )
 
   return latent_image_ids.astype(jnp.bfloat16)
+
+def run_inference(
+  states,
+  transformer,
+  vae,
+  config,
+  mesh,
+  latents,
+  latent_image_ids,
+  prompt_embeds,
+  txt_ids,
+  vec,
+  guidance_vec,
+):
+  timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
+  c_ts = timesteps[:-1]
+  p_ts = timesteps[1:]
+
+  transformer_state = states["transformer"]
+  vae_state = states["vae"]
+
+  loop_body_p = functools.partial(
+    loop_body,
+    transformer=transformer,
+    latent_image_ids=latent_image_ids,
+    prompt_embeds=prompt_embeds,
+    txt_ids=txt_ids,
+    vec=vec,
+    guidance_vec=guidance_vec,
+  )
+
+  vae_decode_p = functools.partial(vae_decode, vae=vae, state=vae_state, config=config)
+
+  with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+    latents, _, _, _ = jax.lax.fori_loop(0, config.num_inference_steps, loop_body_p, (latents, transformer_state, c_ts, p_ts))
+  image = vae_decode_p(latents)
+  breakpoint()
+  return image
+
 
 def pack_latents(
   latents: Array,
@@ -207,6 +294,18 @@ def run(config):
     use_safetensors=True,
     dtype="bfloat16"
   )
+
+  weights_init_fn = functools.partial(vae.init_weights, rng=rng)
+  vae_state, vae_state_shardings = setup_initial_state(
+    model=vae,
+    tx=None,
+    config=config,
+    mesh=mesh,
+    weights_init_fn=weights_init_fn,
+    model_params=vae_params,
+    training=False,
+  )
+
   vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
 
   # LOAD TRANSFORMER
@@ -283,7 +382,7 @@ def run(config):
     print("pooled_prompt_embeds.shape: ", pooled_prompt_embeds.shape, pooled_prompt_embeds.dtype)
   
   timesteps = jnp.asarray([1.0] * global_batch_size, dtype=jnp.bfloat16)
-  guidance = jnp.asarray([3.5] * global_batch_size, dtype=jnp.bfloat16)
+  guidance = jnp.asarray([config.guidance_scale] * global_batch_size, dtype=jnp.bfloat16)
   validate_inputs(
     latents,
     latent_image_ids,
@@ -321,34 +420,69 @@ def run(config):
     config=config,
     mesh=mesh,
     weights_init_fn=weights_init_fn,
-    model_params=transformer_params,
+    #model_params=transformer_params,
+    model_params=None,
     training=False
   )
-  #transformer_state = transformer_state.replace(params=transformer_params)
+  transformer_state = transformer_state.replace(params=transformer_params)
   get_memory_allocations()
-  def run_inference(state, transformer):
-    img = transformer.apply(
-      {"params" : state.params},
-      img=latents,
-      img_ids=latent_image_ids,
-      txt=prompt_embeds,
-      txt_ids=text_ids,
-      timesteps=timesteps,
-      guidance=guidance,
-      y=pooled_prompt_embeds
-    )
-    return img
+
+  states = {}
+  state_shardings = {}
+
+  state_shardings["transformer"] = transformer_state_shardings
+  state_shardings["vae"] = vae_state_shardings
+
+  states["transformer"] = transformer_state
+  states["vae"] = vae_state
 
   p_run_inference = jax.jit(
     functools.partial(
       run_inference,
-      transformer=transformer
+      transformer=transformer,
+      vae=vae,
+      config=config,
+      mesh=mesh,
+      latents=latents,
+      latent_image_ids=latent_image_ids,
+      prompt_embeds=prompt_embeds,
+      txt_ids=text_ids,
+      vec=pooled_prompt_embeds,
+      guidance_vec=guidance,
     ),
-    in_shardings=(transformer_state_shardings,),
-    out_shardings=None
+    in_shardings=(state_shardings,),
+    out_shardings=None,
   )
 
+  img = p_run_inference(states)
+
+
+
+
+  # def run_inference(state, transformer):
+  #   img = transformer.apply(
+  #     {"params" : state.params},
+  #     img=latents,
+  #     img_ids=latent_image_ids,
+  #     txt=prompt_embeds,
+  #     txt_ids=text_ids,
+  #     timesteps=timesteps,
+  #     guidance=guidance,
+  #     y=pooled_prompt_embeds
+  #   )
+  #   return img
+
+  # p_run_inference = jax.jit(
+  #   functools.partial(
+  #     run_inference,
+  #     transformer=transformer,
+  #   ),
+  #   in_shardings=(transformer_state_shardings,),
+  #   out_shardings=None
+  # )
+
   img = p_run_inference(transformer_state)
+  breakpoint()
   print("img.shape: ", img.shape)
 
 
