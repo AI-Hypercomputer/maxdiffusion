@@ -18,7 +18,9 @@ from typing import Any, Callable, Dict, List, Optional, Union, Sequence
 from absl import app
 import functools
 import math
+import time
 import numpy as np
+from PIL import Image
 import jax
 from jax.sharding import Mesh, PositionalSharding, PartitionSpec as P
 import jax.numpy as jnp
@@ -33,9 +35,8 @@ from transformers import (
   FlaxT5EncoderModel
 )
 
-from maxdiffusion import FlaxAutoencoderKL
+from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
-from maxdiffusion import pyconfig
 from max_utils import (
   device_put_replicated,
   get_memory_allocations,
@@ -57,8 +58,8 @@ def unpack(x: Array, height: int, width: int) -> Array:
 
 def vae_decode(latents, vae, state, config):
   img = unpack(x=latents, height=config.resolution, width=config.resolution)
-  img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample[0]
-  breakpoint()
+  img = img / vae.config.scaling_factor + vae.config.shift_factor
+  img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample
   return img
 
 def loop_body(
@@ -107,6 +108,19 @@ def prepare_latent_image_ids(height, width):
 
   return latent_image_ids.astype(jnp.bfloat16)
 
+def time_shift(mu: float, sigma: float, t: Array):
+  return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
+
+def get_lin_function(
+  x1: float = 256,
+  y1: float = 0.5,
+  x2: float = 4096,
+  y2: float = 1.15
+) -> Callable[[float], float]:
+  m = (y2 - y1) / (x2 - x1)
+  b = y1 - m * x1
+  return lambda x: m * x + b
+
 def run_inference(
   states,
   transformer,
@@ -120,9 +134,17 @@ def run_inference(
   vec,
   guidance_vec,
 ):
+  
   timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
+  # shifting the schedule to favor high timesteps for higher signal images
+  if config.time_shift:
+    # estimate mu based on linear estimation between two points
+    lin_function = get_lin_function(y1=config.base_shift, y2=config.max_shift)
+    mu = lin_function(latents.shape[1])
+    timesteps = time_shift(mu, 1.0, timesteps).tolist()
   c_ts = timesteps[:-1]
   p_ts = timesteps[1:]
+
 
   transformer_state = states["transformer"]
   vae_state = states["vae"]
@@ -142,7 +164,6 @@ def run_inference(
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
     latents, _, _, _ = jax.lax.fori_loop(0, config.num_inference_steps, loop_body_p, (latents, transformer_state, c_ts, p_ts))
   image = vae_decode_p(latents)
-  breakpoint()
   return image
 
 
@@ -383,6 +404,10 @@ def run(config):
   
   timesteps = jnp.asarray([1.0] * global_batch_size, dtype=jnp.bfloat16)
   guidance = jnp.asarray([config.guidance_scale] * global_batch_size, dtype=jnp.bfloat16)
+  
+  # TODO - remove this later and figure out why t5x is returning wrong shape
+  prompt_embeds = jnp.ones((global_batch_size, 512, 4096))
+  
   validate_inputs(
     latents,
     latent_image_ids,
@@ -393,8 +418,7 @@ def run(config):
     pooled_prompt_embeds
   )
 
-  # TODO - remove this later and figure out why t5x is returning wrong shape
-  prompt_embeds = jnp.ones((global_batch_size, 512, 4096))
+  
 
   # move inputs to device and shard
   data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
@@ -420,11 +444,11 @@ def run(config):
     config=config,
     mesh=mesh,
     weights_init_fn=weights_init_fn,
-    #model_params=transformer_params,
-    model_params=None,
+    model_params=transformer_params,
+    #model_params=None,
     training=False
   )
-  transformer_state = transformer_state.replace(params=transformer_params)
+  #transformer_state = transformer_state.replace(params=transformer_params)
   get_memory_allocations()
 
   states = {}
@@ -453,37 +477,27 @@ def run(config):
     in_shardings=(state_shardings,),
     out_shardings=None,
   )
+  t0 = time.perf_counter()
+  p_run_inference(states).block_until_ready()
+  t1 = time.perf_counter()
+  max_logging.log(f"Compile time: {t1 - t0:.1f}s.")
 
-  img = p_run_inference(states)
+  t0 = time.perf_counter()
+  imgs = p_run_inference(states).block_until_ready()
+  t1 = time.perf_counter()
+  max_logging.log(f"Inference time: {t1 - t0:.1f}s.")
 
-
-
-
-  # def run_inference(state, transformer):
-  #   img = transformer.apply(
-  #     {"params" : state.params},
-  #     img=latents,
-  #     img_ids=latent_image_ids,
-  #     txt=prompt_embeds,
-  #     txt_ids=text_ids,
-  #     timesteps=timesteps,
-  #     guidance=guidance,
-  #     y=pooled_prompt_embeds
-  #   )
-  #   return img
-
-  # p_run_inference = jax.jit(
-  #   functools.partial(
-  #     run_inference,
-  #     transformer=transformer,
-  #   ),
-  #   in_shardings=(transformer_state_shardings,),
-  #   out_shardings=None
-  # )
-
-  img = p_run_inference(transformer_state)
-  breakpoint()
-  print("img.shape: ", img.shape)
+  t0 = time.perf_counter()
+  imgs = p_run_inference(states).block_until_ready()
+  imgs = jax.experimental.multihost_utils.process_allgather(imgs, tiled=True)
+  t1 = time.perf_counter()
+  max_logging.log(f"Inference time: {t1 - t0:.1f}s.")
+  imgs = np.array(imgs)
+  imgs = (imgs * 0.5 + 0.5).clip(0, 1)
+  imgs = np.transpose(imgs, (0, 2, 3, 1))
+  imgs = np.uint8(imgs * 255)
+  for i, image in enumerate(imgs):
+    Image.fromarray(image).save(f"flux_{i}.png")
 
 
 def main(argv: Sequence[str]) -> None:

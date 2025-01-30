@@ -27,6 +27,12 @@ pretrained_model_name_or_path: 'black-forest-labs/FLUX.1-dev'
 clip_model_name_or_path: 'ariG23498/clip-vit-large-patch14-text-flax'
 t5xxl_model_name_or_path: 'ariG23498/t5-v1-1-xxl-flax'
 
+# Flux params
+max_sequence_length: 256
+time_shift: False
+base_shift: 0.5
+max_shift: 1.15
+
 unet_checkpoint: ''
 revision: 'refs/pr/95'
 # This will convert the weights to this dtype.
