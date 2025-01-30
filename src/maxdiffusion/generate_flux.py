@@ -30,9 +30,9 @@ from flax.linen import partitioning as nn_partitioning
 from transformers import (
   CLIPTokenizer,
   FlaxCLIPTextModel,
-  T5TokenizerFast,
   T5EncoderModel,
-  FlaxT5EncoderModel
+  FlaxT5EncoderModel,
+  AutoTokenizer
 )
 
 from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging
@@ -235,7 +235,7 @@ def get_clip_prompt_embeds(
 def get_t5_prompt_embeds(
   prompt: Union[str, List[str]],
   num_images_per_prompt: int,
-  tokenizer: T5TokenizerFast,
+  tokenizer: AutoTokenizer,
   text_encoder: T5EncoderModel,
   max_sequence_length: int = 512
 ):
@@ -245,18 +245,20 @@ def get_t5_prompt_embeds(
 
   text_inputs = tokenizer(
     prompt,
-    padding="max_length",
-    max_length=max_sequence_length,
     truncation=True,
+    max_length=max_sequence_length,
     return_length=False,
     return_overflowing_tokens=False,
+    padding="max_length",
     return_tensors="np"
   )
   text_input_ids = text_inputs.input_ids
-  prompt_embeds = text_encoder(text_input_ids, output_hidden_states=False)[0]
+  prompt_embeds = text_encoder(
+    text_input_ids,
+    attention_mask=None,
+    output_hidden_states=False)["last_hidden_state"]
   dtype = text_encoder.dtype
   prompt_embeds = prompt_embeds.astype(dtype)
-
   _, seq_len, _ = prompt_embeds.shape
   # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
   prompt_embeds = jnp.tile(prompt_embeds, (1, num_images_per_prompt, 1))
@@ -270,7 +272,7 @@ def encode_prompt(
   prompt_2: Union[str, List[str]],
   clip_tokenizer: CLIPTokenizer,
   clip_text_encoder: FlaxCLIPTextModel,
-  t5_tokenizer: T5TokenizerFast,
+  t5_tokenizer: AutoTokenizer,
   t5_text_encoder: T5EncoderModel,
   num_images_per_prompt: int = 1,
   max_sequence_length: int = 512
@@ -368,13 +370,10 @@ def run(config):
   )
 
   t5_encoder = FlaxT5EncoderModel.from_pretrained(
-    config.clip_model_name_or_path,
+    config.t5xxl_model_name_or_path,
     dtype=config.weights_dtype
   )
-  t5_tokenizer = T5TokenizerFast.from_pretrained(
-    config.pretrained_model_name_or_path,
-    subfolder="tokenizer_2",
-  )
+  t5_tokenizer = AutoTokenizer.from_pretrained(config.t5xxl_model_name_or_path, max_length=config.max_sequence_length, use_fast=True)
 
   encoders_sharding = PositionalSharding(devices_array).replicate()
   partial_device_put_replicated = functools.partial(device_put_replicated, sharding=encoders_sharding)
@@ -405,9 +404,6 @@ def run(config):
   timesteps = jnp.asarray([1.0] * global_batch_size, dtype=jnp.bfloat16)
   guidance = jnp.asarray([config.guidance_scale] * global_batch_size, dtype=jnp.bfloat16)
   
-  # TODO - remove this later and figure out why t5x is returning wrong shape
-  prompt_embeds = jnp.ones((global_batch_size, 512, 4096))
-  
   validate_inputs(
     latents,
     latent_image_ids,
@@ -418,8 +414,6 @@ def run(config):
     pooled_prompt_embeds
   )
 
-  
-
   # move inputs to device and shard
   data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
   latents = jax.device_put(latents, data_sharding)
@@ -429,6 +423,10 @@ def run(config):
   timesteps = jax.device_put(timesteps, data_sharding)
   guidance = jax.device_put(guidance, data_sharding)
   pooled_prompt_embeds = jax.device_put(pooled_prompt_embeds, data_sharding)
+
+  if config.offload_encoders:
+    cpus = jax.devices("cpu")
+    t5_encoder.params = jax.device_put(t5_encoder.params, device=cpus[0])
 
   get_memory_allocations()
   # evaluate shapes
@@ -444,11 +442,11 @@ def run(config):
     config=config,
     mesh=mesh,
     weights_init_fn=weights_init_fn,
-    model_params=transformer_params,
-    #model_params=None,
+    model_params=None,
     training=False
   )
-  #transformer_state = transformer_state.replace(params=transformer_params)
+  transformer_state = transformer_state.replace(params=transformer_params)
+  transformer_state = jax.device_put(transformer_state, transformer_state_shardings)
   get_memory_allocations()
 
   states = {}

@@ -32,6 +32,8 @@ max_sequence_length: 256
 time_shift: False
 base_shift: 0.5
 max_shift: 1.15
+# offloads t5 encoder after text encoding to save memory.
+offload_encoders: True
 
 unet_checkpoint: ''
 revision: 'refs/pr/95'

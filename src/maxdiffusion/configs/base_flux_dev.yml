@@ -32,6 +32,8 @@ max_sequence_length: 512
 time_shift: False
 base_shift: 0.5
 max_shift: 1.15
+# offloads t5 encoder after text encoding to save memory.
+offload_encoders: True
 
 
 unet_checkpoint: ''
@@ -210,7 +212,7 @@ do_classifier_free_guidance: True
 guidance_scale: 3.5
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
-num_inference_steps: 20
+num_inference_steps: 50
 
 # SDXL Lightning parameters
 lightning_from_pt: True
