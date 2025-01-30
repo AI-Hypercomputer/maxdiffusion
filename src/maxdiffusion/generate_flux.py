@@ -38,7 +38,8 @@ from max_utils import (
   get_memory_allocations,
   create_device_mesh,
   get_flash_block_sizes,
-  get_precision
+  get_precision,
+  setup_initial_state
 )
 
 def prepare_latent_image_ids(height, width):
@@ -195,7 +196,7 @@ def run(config):
   devices_array = create_device_mesh(config)
   mesh = Mesh(devices_array, config.mesh_axes)
 
-  per_host_number_of_images = 1#config.per_device_batch_size * jax.local_device_count()
+  per_host_number_of_images = config.per_device_batch_size * jax.local_device_count()
 
   # LOAD VAE
 
@@ -232,16 +233,6 @@ def run(config):
     vae_scale_factor=vae_scale_factor,
     rng=rng
   )
-
-  #load_flow_model("flux-dev", "cpu")
-
-  # transformer, params = FluxTransformer2DModel.from_pretrained(
-  #   config.pretrained_model_name_or_path,
-  #   subfolder="text_encoder_2",
-  #   from_pt=True,
-  #   dtype=config.weights_dtype
-  # )
-
 
   # LOAD TEXT ENCODERS - t5 on cpu
   clip_text_encoder = FlaxCLIPTextModel.from_pretrained(
@@ -303,17 +294,35 @@ def run(config):
     pooled_prompt_embeds
   )
   get_memory_allocations()
-  transformer_params = transformer.init_weights(rng, True)
-  # transformer_params = transformer.init(
-  #   {"params" : rng},
-  #   img=latents,
-  #   img_ids=latent_image_ids,
-  #   txt=prompt_embeds,
-  #   txt_ids=text_ids,
-  #   timesteps=timesteps,
-  #   guidance=guidance,
-  #   y=pooled_prompt_embeds
-  # )["params"]
+  # evaluate shapes
+  transformer_eval_params = transformer.init_weights(rngs=rng, max_sequence_length=512, eval_only=True)
+  
+  # loads pretrained weights
+  transformer_params = load_flow_model("flux-dev", transformer_eval_params, "cpu")
+  get_memory_allocations()
+  # create transformer state
+  weights_init_fn = functools.partial(transformer.init_weights, rngs=rng, max_sequence_length=512, eval_only=False)
+  transformer_state, transformer_state_shardings = setup_initial_state(
+    model=transformer,
+    tx=None,
+    config=config,
+    mesh=mesh,
+    weights_init_fn=weights_init_fn,
+    model_params=None,
+    training=False
+  )
+  breakpoint()
+  transformer_state = transformer_state.replace(params=transformer_params)
+  img = transformer.apply(
+    {"params" : transformer_state.params},
+    img=latents,
+    img_ids=latent_image_ids,
+    txt=prompt_embeds,
+    txt_ids=text_ids,
+    timesteps=timesteps,
+    guidance=guidance,
+    y=pooled_prompt_embeds
+  )
   get_memory_allocations()
   breakpoint()
 
