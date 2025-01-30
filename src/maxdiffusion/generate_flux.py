@@ -19,7 +19,7 @@ from absl import app
 import functools
 import numpy as np
 import jax
-from jax.sharding import Mesh, PositionalSharding
+from jax.sharding import Mesh, PositionalSharding, PartitionSpec as P
 import jax.numpy as jnp
 from chex import Array
 from transformers import (
@@ -196,7 +196,7 @@ def run(config):
   devices_array = create_device_mesh(config)
   mesh = Mesh(devices_array, config.mesh_axes)
 
-  per_host_number_of_images = config.per_device_batch_size * jax.local_device_count()
+  global_batch_size = config.per_device_batch_size * jax.local_device_count()
 
   # LOAD VAE
 
@@ -225,7 +225,7 @@ def run(config):
   
   num_channels_latents = transformer.in_channels // 4
   latents, latent_image_ids = prepare_latents(
-    batch_size=per_host_number_of_images,
+    batch_size=global_batch_size,
     num_channels_latents=num_channels_latents,
     height=config.resolution,
     width=config.resolution,
@@ -270,7 +270,7 @@ def run(config):
     clip_text_encoder=clip_text_encoder,
     t5_tokenizer=t5_tokenizer,
     t5_text_encoder=t5_encoder,
-    num_images_per_prompt=per_host_number_of_images
+    num_images_per_prompt=global_batch_size
   )
 
   def validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds):
@@ -282,8 +282,8 @@ def run(config):
     print("guidance.shape: ", guidance.shape, guidance.dtype)
     print("pooled_prompt_embeds.shape: ", pooled_prompt_embeds.shape, pooled_prompt_embeds.dtype)
   
-  timesteps = jnp.asarray([1.0], dtype=jnp.bfloat16)
-  guidance = jnp.asarray([3.5], dtype=jnp.bfloat16)
+  timesteps = jnp.asarray([1.0] * global_batch_size, dtype=jnp.bfloat16)
+  guidance = jnp.asarray([3.5] * global_batch_size, dtype=jnp.bfloat16)
   validate_inputs(
     latents,
     latent_image_ids,
@@ -293,13 +293,26 @@ def run(config):
     guidance,
     pooled_prompt_embeds
   )
+
+  # TODO - remove this later and figure out why t5x is returning wrong shape
+  prompt_embeds = jnp.ones((global_batch_size, 512, 4096))
+
+  # move inputs to device and shard
+  data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
+  latents = jax.device_put(latents, data_sharding)
+  latent_image_ids = jax.device_put(latent_image_ids, data_sharding)
+  prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
+  text_ids = jax.device_put(text_ids, data_sharding)
+  timesteps = jax.device_put(timesteps, data_sharding)
+  guidance = jax.device_put(guidance, data_sharding)
+  pooled_prompt_embeds = jax.device_put(pooled_prompt_embeds, data_sharding)
+
   get_memory_allocations()
   # evaluate shapes
   transformer_eval_params = transformer.init_weights(rngs=rng, max_sequence_length=512, eval_only=True)
   
   # loads pretrained weights
   transformer_params = load_flow_model("flux-dev", transformer_eval_params, "cpu")
-  get_memory_allocations()
   # create transformer state
   weights_init_fn = functools.partial(transformer.init_weights, rngs=rng, max_sequence_length=512, eval_only=False)
   transformer_state, transformer_state_shardings = setup_initial_state(
@@ -308,24 +321,35 @@ def run(config):
     config=config,
     mesh=mesh,
     weights_init_fn=weights_init_fn,
-    model_params=None,
+    model_params=transformer_params,
     training=False
   )
-  breakpoint()
-  transformer_state = transformer_state.replace(params=transformer_params)
-  img = transformer.apply(
-    {"params" : transformer_state.params},
-    img=latents,
-    img_ids=latent_image_ids,
-    txt=prompt_embeds,
-    txt_ids=text_ids,
-    timesteps=timesteps,
-    guidance=guidance,
-    y=pooled_prompt_embeds
-  )
+  #transformer_state = transformer_state.replace(params=transformer_params)
   get_memory_allocations()
-  breakpoint()
+  def run_inference(state, transformer):
+    img = transformer.apply(
+      {"params" : state.params},
+      img=latents,
+      img_ids=latent_image_ids,
+      txt=prompt_embeds,
+      txt_ids=text_ids,
+      timesteps=timesteps,
+      guidance=guidance,
+      y=pooled_prompt_embeds
+    )
+    return img
 
+  p_run_inference = jax.jit(
+    functools.partial(
+      run_inference,
+      transformer=transformer
+    ),
+    in_shardings=(transformer_state_shardings,),
+    out_shardings=None
+  )
+
+  img = p_run_inference(transformer_state)
+  print("img.shape: ", img.shape)
 
 
 def main(argv: Sequence[str]) -> None:
