@@ -154,14 +154,17 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         raise ValueError(
           "Didn't get guidance strength for guidance distrilled model."
         )
-      
-      vec = vec + MLPEmbedder(
+      guidance_in = MLPEmbedder(
         hidden_dim=inner_dim,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
         name="guidance_in"
       )(timestep_embedding(guidance, 256))
+    else:
+      guidance_in = Identity(timestep_embedding(guidance, 256))
+
+      vec = vec + guidance_in
     
     vec = vec + MLPEmbedder(
       hidden_dim=inner_dim,
