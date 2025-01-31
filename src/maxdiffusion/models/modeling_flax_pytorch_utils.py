@@ -55,6 +55,10 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
         ("to_k", "key"),
         ("to_v", "value"),
         ("to_q", "query"),
+        ("txt_attn_proj", "txt_attn_proj"),
+        ("img_attn_proj", "img_attn_proj"),
+        ("txt_attn_qkv", "txt_attn_qkv"),
+        ("img_attn_qkv", "img_attn_qkv"),
     ):
       if pt_tuple_key[-2] == rename_from:
         weight_name = pt_tuple_key[-1]
