@@ -18,9 +18,6 @@ from maxdiffusion.models.modeling_flax_pytorch_utils import (
 )
 from maxdiffusion import max_logging
 
-# from jflux.model import Flux, FluxParams
-from .port import port_flux
-
 @dataclass
 class FluxParams:
     in_channels: int
@@ -42,7 +39,7 @@ def torch2jax(torch_tensor: torch.Tensor) -> Array:
     is_bfloat16 = torch_tensor.dtype == torch.bfloat16
     if is_bfloat16:
         # upcast the tensor to fp32
-        torch_tensor = torch_tensor.to(dtype=torch.float32)
+        torch_tensor = torch_tensor.float()
 
     if torch.device.type != "cpu":
         torch_tensor = torch_tensor.to("cpu")

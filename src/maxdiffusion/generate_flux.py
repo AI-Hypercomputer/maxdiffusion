@@ -55,7 +55,7 @@ def unpack(x: Array, height: int, width: int) -> Array:
       ph=2,
       pw=2,
     )
-
+from einops import rearrange
 def vae_decode(latents, vae, state, config):
   img = unpack(x=latents, height=config.resolution, width=config.resolution)
   img = img / vae.config.scaling_factor + vae.config.shift_factor
@@ -87,6 +87,8 @@ def loop_body(
     guidance=guidance_vec,
     y=vec
   )
+  jax.debug.print("*****pred max: {x}", x=np.max(pred))
+  jax.debug.print("*****pred min: {x}", x=np.min(pred))
   latents = latents + (t_prev - t_curr) * pred
   latents = jnp.array(latents, dtype=latents_dtype)
   return latents, state, c_ts, p_ts
@@ -144,6 +146,8 @@ def run_inference(
     timesteps = time_shift(mu, 1.0, timesteps).tolist()
   c_ts = timesteps[:-1]
   p_ts = timesteps[1:]
+  # jax.debug.print("c_ts: {x}", x=c_ts)
+  # jax.debug.print("p_ts: {x}", x=p_ts)
 
 
   transformer_state = states["transformer"]
@@ -162,7 +166,7 @@ def run_inference(
   vae_decode_p = functools.partial(vae_decode, vae=vae, state=vae_state, config=config)
 
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-    latents, _, _, _ = jax.lax.fori_loop(0, config.num_inference_steps, loop_body_p, (latents, transformer_state, c_ts, p_ts))
+    latents, _, _, _ = jax.lax.fori_loop(0, len(timesteps) - 1, loop_body_p, (latents, transformer_state, c_ts, p_ts))
   image = vae_decode_p(latents)
   return image
 
@@ -293,7 +297,8 @@ def encode_prompt(
     prompt=prompt_2,
     num_images_per_prompt=num_images_per_prompt,
     tokenizer=t5_tokenizer,
-    text_encoder=t5_text_encoder
+    text_encoder=t5_text_encoder,
+    max_sequence_length=max_sequence_length
   )
 
   text_ids = jnp.zeros((prompt_embeds.shape[0], prompt_embeds.shape[1], 3)).astype(jnp.bfloat16)
@@ -356,7 +361,7 @@ def run(config):
     rng=rng
   )
 
-  # LOAD TEXT ENCODERS - t5 on cpu
+  # LOAD TEXT ENCODERS
   clip_text_encoder = FlaxCLIPTextModel.from_pretrained(
     config.pretrained_model_name_or_path,
     subfolder="text_encoder",
@@ -389,7 +394,8 @@ def run(config):
     clip_text_encoder=clip_text_encoder,
     t5_tokenizer=t5_tokenizer,
     t5_text_encoder=t5_encoder,
-    num_images_per_prompt=global_batch_size
+    num_images_per_prompt=global_batch_size,
+    max_sequence_length=config.max_sequence_length
   )
 
   def validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds):
@@ -430,12 +436,12 @@ def run(config):
 
   get_memory_allocations()
   # evaluate shapes
-  transformer_eval_params = transformer.init_weights(rngs=rng, max_sequence_length=512, eval_only=True)
+  transformer_eval_params = transformer.init_weights(rngs=rng, max_sequence_length=config.max_sequence_length, eval_only=True)
   
   # loads pretrained weights
-  transformer_params = load_flow_model("flux-dev", transformer_eval_params, "cpu")
+  transformer_params = load_flow_model(config.flux_name, transformer_eval_params, "cpu")
   # create transformer state
-  weights_init_fn = functools.partial(transformer.init_weights, rngs=rng, max_sequence_length=512, eval_only=False)
+  weights_init_fn = functools.partial(transformer.init_weights, rngs=rng, max_sequence_length=config.max_sequence_length, eval_only=False)
   transformer_state, transformer_state_shardings = setup_initial_state(
     model=transformer,
     tx=None,

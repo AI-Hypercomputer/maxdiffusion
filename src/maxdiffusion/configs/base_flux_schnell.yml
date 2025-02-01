@@ -23,11 +23,12 @@ gcs_metrics: False
 save_config_to_gcs: False
 log_period: 100
 
-pretrained_model_name_or_path: 'black-forest-labs/FLUX.1-dev'
+pretrained_model_name_or_path: 'black-forest-labs/FLUX.1-schnell'
 clip_model_name_or_path: 'ariG23498/clip-vit-large-patch14-text-flax'
 t5xxl_model_name_or_path: 'ariG23498/t5-v1-1-xxl-flax'
 
 # Flux params
+flux_name: "flux-schnell"
 max_sequence_length: 256
 time_shift: False
 base_shift: 0.5
@@ -208,10 +209,10 @@ prompt: "A magical castle in the middle of a forest, artistic drawing"
 prompt_2: "A magical castle in the middle of a forest, artistic drawing"
 negative_prompt: "purple, red"
 do_classifier_free_guidance: True
-guidance_scale: 3.5
+guidance_scale: 0.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
-num_inference_steps: 20
+num_inference_steps: 4
 
 # SDXL Lightning parameters
 lightning_from_pt: True
