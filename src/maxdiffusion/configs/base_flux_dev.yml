@@ -28,6 +28,7 @@ clip_model_name_or_path: 'ariG23498/clip-vit-large-patch14-text-flax'
 t5xxl_model_name_or_path: 'ariG23498/t5-v1-1-xxl-flax'
 
 # Flux params
+flux_name: "flux-dev"
 max_sequence_length: 512
 time_shift: False
 base_shift: 0.5

@@ -17,6 +17,7 @@
 from typing import Dict, Optional, Tuple, Union
 
 from einops import repeat, rearrange
+import numpy as np
 import jax
 import jax.numpy as jnp
 import flax.linen as nn 
@@ -28,7 +29,8 @@ from ..modules.layers import (
   EmbedND,
   DoubleStreamBlock,
   SingleStreamBlock,
-  LastLayer
+  LastLayer,
+  PixArtAlphaTextProjection
 )
 from ...modeling_flax_utils import FlaxModelMixin
 from ....configuration_utils import ConfigMixin, flax_register_to_config
@@ -129,6 +131,9 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     inner_dim = self.num_attention_heads * self.attention_head_dim
     pe_dim = inner_dim // self.num_attention_heads
 
+    jax.debug.print("pooled_projections value min: {x}", x=np.min(y))
+    jax.debug.print("pooled_projections value max: {x}", x=np.max(y))
+
     img = nn.Dense(
       inner_dim,
       dtype=self.dtype,
@@ -140,39 +145,57 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       ),
       name="img_in"
     )(img)
-
+    jax.debug.print("img.min: {x}", x=np.min(img))
+    jax.debug.print("img.max: {x}", x=np.max(img))
+    timestep = timestep_embedding(timesteps, 256)
+    jax.debug.print("timestep.min: {x}", x=np.min(timestep))
+    jax.debug.print("timestep.max: {x}", x=np.max(timestep))
     vec = MLPEmbedder(
       hidden_dim=inner_dim,
       dtype=self.dtype,
       weights_dtype=self.weights_dtype,
       precision=self.precision,
       name="time_in"
-    )(timestep_embedding(timesteps, 256))
-
+    )(timestep)
+    jax.debug.print("timestep.vec min: {x}", x=np.min(vec))
+    jax.debug.print("timestep.vec max: {x}", x=np.max(vec))
+    print(f"guidance_embeds? {self.guidance_embeds}")
     if self.guidance_embeds:
       if guidance is None:
         raise ValueError(
           "Didn't get guidance strength for guidance distrilled model."
         )
+      guidance_in = timestep_embedding(guidance, 256)
+
+      jax.debug.print("guidance_in.min: {x}", x=np.min(guidance_in))
+      jax.debug.print("guidance_in.max: {x}", x=np.max(guidance_in))
       guidance_in = MLPEmbedder(
         hidden_dim=inner_dim,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
         name="guidance_in"
-      )(timestep_embedding(guidance, 256))
-    else:
-      guidance_in = Identity(timestep_embedding(guidance, 256))
-
+      )(guidance_in)
+      jax.debug.print("guidance.vec min: {x}", x=np.min(guidance_in))
+      jax.debug.print("guidance.vec max: {x}", x=np.max(guidance_in))
       vec = vec + guidance_in
-    
-    vec = vec + MLPEmbedder(
+      jax.debug.print("timestep_guidance.vec min: {x}", x=np.min(vec))
+      jax.debug.print("timestep_guidance.vec max: {x}", x=np.max(vec))
+    # else:
+    #   guidance_in = Identity()(timestep_embedding(guidance, 256))
+
+    pooled_projections = PixArtAlphaTextProjection(
       hidden_dim=inner_dim,
       dtype=self.dtype,
       weights_dtype=self.weights_dtype,
       precision=self.precision,
       name="vector_in"
     )(y)
+    jax.debug.print("pooled_projections.min: {x}", x=np.min(pooled_projections))
+    jax.debug.print("pooled_projections.max: {x}", x=np.max(pooled_projections))
+    vec = vec + pooled_projections
+    jax.debug.print("temb.min: {x}", x=np.min(vec))
+    jax.debug.print("temb.max: {x}", x=np.max(vec))
 
     txt = nn.Dense(
       inner_dim,
@@ -185,7 +208,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       ),
       name="txt_in"
     )(txt)
-
+    jax.debug.print("txt.min: {x}", x=np.min(txt))
+    jax.debug.print("txt.max: {x}", x=np.max(txt))
     ids = jnp.concatenate((txt_ids, img_ids), axis=1)
 
     #pe_embedder
@@ -194,7 +218,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       theta=10000,
       axes_dim=self.axes_dims_rope
     )(ids)
-    # breakpoint()
+    jax.debug.print("pe.min: {x}", x=np.min(pe))
+    jax.debug.print("pe.max: {x}", x=np.max(pe))
     # img, txt = DoubleStreamBlock(
     #   hidden_size=inner_dim,
     #   num_heads=self.num_attention_heads,

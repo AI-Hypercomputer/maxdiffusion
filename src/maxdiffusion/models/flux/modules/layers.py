@@ -111,7 +111,49 @@ def timestep_embedding(
         embedding = embedding.astype(t.dtype)
 
     return embedding
+import numpy as np
+class PixArtAlphaTextProjection(nn.Module):
+  hidden_dim: int
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  precision: jax.lax.Precision = None
+  
+  @nn.compact
+  def __call__(self, x: Array) -> Array:
 
+    hidden_states = nn.Dense(
+      self.hidden_dim,
+      use_bias=True,
+      dtype=self.dtype,
+      param_dtype=self.weights_dtype,
+      precision=self.precision,
+      kernel_init=nn.with_logical_partitioning(
+        nn.initializers.lecun_normal(),
+        ("embed", "heads")
+      ),
+      name="in_layer"
+    )(x)
+    jax.debug.print("PixArtAlphaTextProjection, in_layer min: {x}", x=np.min(hidden_states))
+    jax.debug.print("PixArtAlphaTextProjection, in_layer max: {x}", x=np.max(hidden_states))
+    hidden_states = nn.swish(hidden_states)
+    jax.debug.print("PixArtAlphaTextProjection, act min: {x}", x=np.min(hidden_states))
+    jax.debug.print("PixArtAlphaTextProjection, act max: {x}", x=np.max(hidden_states))
+    hidden_states = nn.Dense(
+      self.hidden_dim,
+      use_bias=True,
+      dtype=self.dtype,
+      param_dtype=self.weights_dtype,
+      precision=self.precision,
+      kernel_init=nn.with_logical_partitioning(
+        nn.initializers.lecun_normal(),
+        ("heads", "embed")
+      ),
+      name="out_layer"
+    )(hidden_states)
+    jax.debug.print("PixArtAlphaTextProjection, out min: {x}", x=np.min(hidden_states))
+    jax.debug.print("PixArtAlphaTextProjection, out max: {x}", x=np.max(hidden_states))
+
+    return hidden_states
 
 class MLPEmbedder(nn.Module):
   hidden_dim: int
