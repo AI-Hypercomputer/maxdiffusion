@@ -14,86 +14,341 @@
  limitations under the License.
  """
 
-from typing import Dict, Optional, Tuple, Union
+"""This script is used an example of how to shard the UNET on TPU."""
 
-from einops import repeat, rearrange
-import numpy as np
+from typing import Any, Dict, Optional, Tuple, Union
 import jax
+import math
 import jax.numpy as jnp
-import flax.linen as nn 
-from chex import Array
-
-from ..modules.layers import (
-  timestep_embedding,
-  MLPEmbedder,
-  EmbedND,
-  DoubleStreamBlock,
-  SingleStreamBlock,
-  LastLayer,
-  PixArtAlphaTextProjection
-)
-from ...modeling_flax_utils import FlaxModelMixin
+import flax
+import flax.linen as nn
+from jax.random import PRNGKey
+from einops import repeat, rearrange
 from ....configuration_utils import ConfigMixin, flax_register_to_config
+from ...modeling_flax_utils import FlaxModelMixin
+from ...normalization_flax import AdaLayerNormZeroSingle, AdaLayerNormContinuous, AdaLayerNormZero
+from ...attention_flax import FlaxFluxAttention
+from ...embeddings_flax import (FluxPosEmbed, CombinedTimestepGuidanceTextProjEmbeddings, CombinedTimestepTextProjEmbeddings)
+from .... import common_types
 from ....common_types import BlockSizes
+from .... import max_logging
+from ....utils import BaseOutput
+from dataclasses import dataclass
 
-class Identity(nn.Module):
-  def __call__(self, x: Array) -> Array:
-    return x
+AxisNames = common_types.AxisNames
+BATCH = common_types.BATCH
+LENGTH = common_types.LENGTH
+HEAD = common_types.HEAD
+D_KV = common_types.D_KV
 
-def scan_double_block_layers(
-  inner_dim,
-  num_heads,
-  mlp_ratio,
-  attention_head_dim,
-  flash_min_seq_length,
-  flash_block_sizes,
-  mesh,
-  dtype,
-  weights_dtype,
-  precision,
-  qkv_bias,
-  attention_kernel: str,
-  num_layers: int):
 
-  scan_fn = nn.scan(
-    DoubleStreamBlock,
-    variable_broadcast='params',
-    in_axes=(
-      nn.broadcast,
-      nn.broadcast,
-      nn.broadcast
-    ),
-    out_axes=nn.broadcast,
-    split_rngs={'params' : False},
-    length=num_layers
-  )
-  return scan_fn(
-    hidden_size=inner_dim,
-    num_heads=num_heads,
-    mlp_ratio=mlp_ratio,
-    attention_head_dim=attention_head_dim,
-    flash_min_seq_length=flash_min_seq_length,
-    flash_block_sizes=flash_block_sizes,
-    mesh=mesh,
-    dtype=dtype,
-    weights_dtype=weights_dtype,
-    precision=precision,
-    qkv_bias=qkv_bias,
-    attention_kernel=attention_kernel)
+@dataclass
+class FluxParams:
+  in_channels: int
+  vec_in_dim: int
+  context_in_dim: int
+  hidden_size: int
+  mlp_ratio: float
+  num_heads: int
+  depth: int
+  depth_single_blocks: int
+  axes_dim: list[int]
+  theta: int
+  qkv_bias: bool
+  guidance_embed: bool
+  param_dtype: jnp.bfloat16
+  rngs: jax.random.PRNGKey
 
+
+@flax.struct.dataclass
+class Transformer2DModelOutput(BaseOutput):
+  """
+  The output of [`FluxTransformer2DModel`].
+
+  Args:
+  sample (`jnp.ndarray` of shape `(batch_size, num_channels, height, width)`):
+    The hidden states output conditioned on `encoder_hidden_states` input. Output of last layer of model.
+  """
+
+  sample: jnp.ndarray
+
+
+class FluxSingleTransformerBlock(nn.Module):
+  r"""
+  A Transformer block following the MMDiT architecture, introduced in Stable Diffusion 3.
+
+  Reference: https://arxiv.org/abs/2403.03206
+
+  Parameters:
+      dim (`int`): The number of channels in the input and output.
+      num_attention_heads (`int`): The number of heads to use for multi-head attention.
+      attention_head_dim (`int`): The number of channels in each head.
+      context_pre_only (`bool`): Boolean to determine if we should add some blocks associated with the
+          processing of `context` conditions.
+  """
+
+  dim: int
+  num_attention_heads: int
+  attention_head_dim: int
+  mlp_ratio: int = 4.0
+  attention_kernel: str = "dot_product"
+  flash_min_seq_length: int = 4096
+  flash_block_sizes: BlockSizes = None
+  mesh: jax.sharding.Mesh = None
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  precision: jax.lax.Precision = None
+
+  def setup(self):
+    self.mlp_hidden_dim = int(self.dim * self.mlp_ratio)
+
+    self.norm = AdaLayerNormZeroSingle(
+        self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
+    )
+
+    self.linear1 = nn.Dense(
+        self.dim * 3 + self.mlp_hidden_dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
+
+    self.mlp_act = nn.gelu
+    self.linear2 = nn.Dense(
+        self.dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("embed",)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
+    self.attn = FlaxFluxAttention(
+        query_dim=self.dim,
+        heads=self.num_attention_heads,
+        dim_head=self.attention_head_dim,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        attention_kernel=self.attention_kernel,
+        mesh=self.mesh,
+        flash_block_sizes=self.flash_block_sizes
+    )
+
+  def __call__(self, hidden_states, temb, image_rotary_emb=None):
+    residual = hidden_states
+    norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
+    qkv, mlp = jnp.split(self.linear1(norm_hidden_states), [3 * self.dim], axis=-1)
+    mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
+    qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
+
+    B, L = hidden_states.shape[:2]
+    H, D, K = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3), 3
+    qkv_proj = qkv.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
+    q, k, v = qkv_proj
+
+    q = self.attn.query_norm(q)
+    k = self.attn.key_norm(k)
+
+    if image_rotary_emb is not None:
+      # since this function returns image_rotary_emb and passes it between layers,
+      # we do not want to modify it
+      image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+      q, k = self.attn.apply_rope(q, k, image_rotary_emb_reordered)
+
+    q = q.transpose(0, 2, 1, 3).reshape(q.shape[0], q.shape[2], -1)
+    k = k.transpose(0, 2, 1, 3).reshape(k.shape[0], k.shape[2], -1)
+    v = v.transpose(0, 2, 1, 3).reshape(v.shape[0], v.shape[2], -1)
+
+    attn_output = self.attn.attention_op.apply_attention(q, k, v)
+
+    attn_mlp = jnp.concatenate([attn_output, self.mlp_act(mlp)], axis=2)
+    attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
+    hidden_states = self.linear2(attn_mlp)
+    hidden_states = gate * hidden_states
+    hidden_states = residual + hidden_states
+    if hidden_states.dtype == jnp.float16 or hidden_states.dtype == jnp.bfloat16:
+      hidden_states = jnp.clip(hidden_states, -65504, 65504)
+
+    return hidden_states, temb, image_rotary_emb
+
+
+class FluxTransformerBlock(nn.Module):
+  r"""
+  A Transformer block following the MMDiT architecture, introduced in Stable Diffusion 3.
+
+  Reference: https://arxiv.org/abs/2403.03206
+
+  Parameters:
+      dim (`int`): The number of channels in the input and output.
+      num_attention_heads (`int`): The number of heads to use for multi-head attention.
+      attention_head_dim (`int`): The number of channels in each head.
+      context_pre_only (`bool`): Boolean to determine if we should add some blocks associated with the
+          processing of `context` conditions.
+  """
+
+  dim: int
+  num_attention_heads: int
+  attention_head_dim: int
+  qk_norm: str = "rms_norm"
+  eps: int = 1e-6
+  flash_min_seq_length: int = 4096
+  flash_block_sizes: BlockSizes = None
+  mesh: jax.sharding.Mesh = None
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  precision: jax.lax.Precision = None
+  mlp_ratio: float = 4.0
+  qkv_bias: bool = False
+  attention_kernel: str = "dot_product"
+
+  def setup(self):
+
+    self.img_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
+    self.txt_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
+
+    self.attn = FlaxFluxAttention(
+        query_dim=self.dim,
+        heads=self.num_attention_heads,
+        dim_head=self.attention_head_dim,
+        qkv_bias=self.qkv_bias,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        attention_kernel=self.attention_kernel,
+        mesh=self.mesh,
+        flash_block_sizes=self.flash_block_sizes
+    )
+
+    self.img_norm2 = nn.LayerNorm(
+        use_bias=False,
+        use_scale=False,
+        epsilon=self.eps,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+    )
+    self.img_mlp = nn.Sequential(
+        [
+            nn.Dense(
+                int(self.dim * self.mlp_ratio),
+                use_bias=True,
+                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision,
+            ),
+            nn.gelu,
+            nn.Dense(
+                self.dim,
+                use_bias=True,
+                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision,
+            ),
+        ]
+    )
+
+    self.txt_norm2 = nn.LayerNorm(
+        use_bias=False,
+        use_scale=False,
+        epsilon=self.eps,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+    )
+    self.txt_mlp = nn.Sequential(
+        [
+            nn.Dense(
+                int(self.dim * self.mlp_ratio),
+                use_bias=True,
+                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision,
+            ),
+            nn.gelu,
+            nn.Dense(
+                self.dim,
+                use_bias=True,
+                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision,
+            ),
+        ]
+    )
+
+    # let chunk size default to None
+    self._chunk_size = None
+    self._chunk_dim = 0
+
+  def __call__(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb=None):
+    norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.img_norm1(hidden_states, emb=temb)
+
+    norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.txt_norm1(
+        encoder_hidden_states, emb=temb
+    )
+
+    # Attention.
+    attn_output, context_attn_output = self.attn(
+        hidden_states=norm_hidden_states,
+        encoder_hidden_states=norm_encoder_hidden_states,
+        image_rotary_emb=image_rotary_emb,
+    )
+
+    attn_output = gate_msa * attn_output
+    hidden_states = hidden_states + attn_output
+    norm_hidden_states = self.img_norm2(hidden_states)
+    norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
+
+    ff_output = self.img_mlp(norm_hidden_states)
+    ff_output = gate_mlp * ff_output
+
+    hidden_states = hidden_states + ff_output
+    # Process attention outputs for the `encoder_hidden_states`.
+    context_attn_output = c_gate_msa * context_attn_output
+    encoder_hidden_states = encoder_hidden_states + context_attn_output
+
+    norm_encoder_hidden_states = self.txt_norm2(encoder_hidden_states)
+    norm_encoder_hidden_states = norm_encoder_hidden_states * (1 + c_scale_mlp) + c_shift_mlp
+
+    context_ff_output = self.txt_mlp(norm_encoder_hidden_states)
+    encoder_hidden_states = encoder_hidden_states + c_gate_mlp * context_ff_output
+    if encoder_hidden_states.dtype == jnp.float16 or encoder_hidden_states.dtype == jnp.bfloat16:
+      encoder_hidden_states = encoder_hidden_states.clip(-65504, 65504)
+    return hidden_states, encoder_hidden_states, temb, image_rotary_emb
+
+
+@flax_register_to_config
 class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   r"""
-    The Tranformer model introduced in Flux.
+  The Tranformer model introduced in Flux.
 
-    Reference: https://blackforestlabs.ai/announcing-black-forest-labs/
+  Reference: https://blackforestlabs.ai/announcing-black-forest-labs/
 
-    This model inherits from [`FlaxModelMixin`]. Check the superclass documentation for it's generic methods
-    implemented for all models (such as downloading or saving).
+  This model inherits from [`FlaxModelMixin`]. Check the superclass documentation for it's generic methods
+  implemented for all models (such as downloading or saving).
 
-    This model is also a Flax Linen [flax.linen.Module](https://flax.readthedocs.io/en/latest/flax.linen.html#module)
-    subclass. Use it as a regular Flax Linen module and refer to the Flax documentation for all matters related to its
-    general usage and behavior.
+  This model is also a Flax Linen [flax.linen.Module](https://flax.readthedocs.io/en/latest/flax.linen.html#module)
+  subclass. Use it as a regular Flax Linen module and refer to the Flax documentation for all matters related to its
+  general usage and behavior.
+
+  Parameters:
+      patch_size (`int`): Patch size to turn the input data into small patches.
+      in_channels (`int`, *optional*, defaults to 16): The number of channels in the input.
+      num_layers (`int`, *optional*, defaults to 18): The number of layers of MMDiT blocks to use.
+      num_single_layers (`int`, *optional*, defaults to 18): The number of layers of single DiT blocks to use.
+      attention_head_dim (`int`, *optional*, defaults to 64): The number of channels in each head.
+      num_attention_heads (`int`, *optional*, defaults to 18): The number of heads to use for multi-head attention.
+      joint_attention_dim (`int`, *optional*): The number of `encoder_hidden_states` dimensions to use.
+      pooled_projection_dim (`int`): Number of dimensions to use when projecting the `pooled_projections`.
+      guidance_embeds (`bool`, defaults to False): Whether to use guidance embeddings.
+
   """
+
   patch_size: int = 1
   in_channels: int = 64
   num_layers: int = 19
@@ -102,228 +357,206 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   num_attention_heads: int = 24
   joint_attention_dim: int = 4096
   pooled_projection_dim: int = 768
-  mlp_ratio: int = 4
-  qkv_bias: bool = True
   guidance_embeds: bool = False
   axes_dims_rope: Tuple[int] = (16, 56, 56)
   flash_min_seq_length: int = 4096
   flash_block_sizes: BlockSizes = None
-  attention_kernel: str = "dot_product"
   mesh: jax.sharding.Mesh = None
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
-  
-  @nn.compact
+  mlp_ratio: float = 4.0
+  qkv_bias: bool = True
+  theta: int = 1000
+  attention_kernel: str = "dot_product"
+  eps = 1e-6
+
+  def setup(self):
+    self.out_channels = self.in_channels
+    self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
+
+    self.pe_embedder = FluxPosEmbed(theta=self.theta, axes_dim=self.axes_dims_rope, dtype=self.dtype)
+
+    text_time_guidance_cls = (
+        CombinedTimestepGuidanceTextProjEmbeddings if self.guidance_embeds else CombinedTimestepTextProjEmbeddings
+    )
+
+    self.time_text_embed = text_time_guidance_cls(
+        embedding_dim=self.inner_dim,
+        pooled_projection_dim=self.pooled_projection_dim,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
+    self.txt_in = nn.Dense(
+        self.inner_dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), (None, "mlp")),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
+    self.img_in = nn.Dense(
+        self.inner_dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), (None, "mlp")),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
+
+    self.double_blocks = nn.Sequential(
+        [
+            *[
+                FluxTransformerBlock(
+                    dim=self.inner_dim,
+                    num_attention_heads=self.num_attention_heads,
+                    attention_head_dim=self.attention_head_dim,
+                    attention_kernel=self.attention_kernel,
+                    flash_min_seq_length=self.flash_min_seq_length,
+                    flash_block_sizes=self.flash_block_sizes,
+                    mesh=self.mesh,
+                    dtype=self.dtype,
+                    weights_dtype=self.weights_dtype,
+                    precision=self.precision,
+                    mlp_ratio=self.mlp_ratio,
+                    qkv_bias=self.qkv_bias,
+                )
+                for _ in range(self.num_layers)
+            ]
+        ]
+    )
+
+    self.single_blocks = nn.Sequential(
+        [
+            *[
+                FluxSingleTransformerBlock(
+                    dim=self.inner_dim,
+                    num_attention_heads=self.num_attention_heads,
+                    attention_head_dim=self.attention_head_dim,
+                    attention_kernel=self.attention_kernel,
+                    flash_min_seq_length=self.flash_min_seq_length,
+                    flash_block_sizes=self.flash_block_sizes,
+                    mesh=self.mesh,
+                    dtype=self.dtype,
+                    weights_dtype=self.weights_dtype,
+                    precision=self.precision,
+                    mlp_ratio=self.mlp_ratio,
+                )
+                for _ in range(self.num_single_layers)
+            ]
+        ]
+    )
+
+    self.norm_out = AdaLayerNormContinuous(
+        self.inner_dim,
+        elementwise_affine=False,
+        eps=self.eps,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
+
+    self.proj_out = nn.Dense(
+        self.patch_size**2 * self.out_channels,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", None)),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+        use_bias=True,
+    )
+
+  def timestep_embedding(self, t: jax.Array, dim: int, max_period=10000, time_factor: float = 1000.0) -> jax.Array:
+    """
+    Generate timestep embeddings.
+
+    Args:
+        t: a 1-D Tensor of N indices, one per batch element.
+            These may be fractional.
+        dim: the dimension of the output.
+        max_period: controls the minimum frequency of the embeddings.
+        time_factor: Tensor of positional embeddings.
+
+    Returns:
+        timestep embeddings.
+    """
+    t = time_factor * t
+    half = dim // 2
+
+    freqs = jnp.exp(-math.log(max_period) * jnp.arange(start=0, stop=half, dtype=jnp.bfloat16) / half).astype(dtype=t.dtype)
+
+    args = t[:, None].astype(jnp.bfloat16) * freqs[None]
+    embedding = jnp.concatenate([jnp.cos(args), jnp.sin(args)], axis=-1)
+
+    if dim % 2:
+      embedding = jnp.concatenate([embedding, jnp.zeros_like(embedding[:, :1])], axis=-1)
+
+    if jnp.issubdtype(t.dtype, jnp.floating):
+      embedding = embedding.astype(t.dtype)
+
+    return embedding
+
   def __call__(
-    self,
-    img: Array,
-    img_ids: Array,
-    txt: Array,
-    txt_ids: Array,
-    timesteps: Array,
-    y: Array,
-    guidance: Array | None = None,
-    return_dict: bool = True,
-    train: bool = False):
-
-    out_channels = self.in_channels
-    inner_dim = self.num_attention_heads * self.attention_head_dim
-    pe_dim = inner_dim // self.num_attention_heads
-
-    jax.debug.print("pooled_projections value min: {x}", x=np.min(y))
-    jax.debug.print("pooled_projections value max: {x}", x=np.max(y))
-
-    img = nn.Dense(
-      inner_dim,
-      dtype=self.dtype,
-      param_dtype=self.weights_dtype,
-      precision=self.precision,
-      kernel_init=nn.with_logical_partitioning(
-        nn.initializers.lecun_normal(),
-        ("embed", "heads")
-      ),
-      name="img_in"
-    )(img)
-    jax.debug.print("img.min: {x}", x=np.min(img))
-    jax.debug.print("img.max: {x}", x=np.max(img))
-    timestep = timestep_embedding(timesteps, 256)
-    jax.debug.print("timestep.min: {x}", x=np.min(timestep))
-    jax.debug.print("timestep.max: {x}", x=np.max(timestep))
-    vec = MLPEmbedder(
-      hidden_dim=inner_dim,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision,
-      name="time_in"
-    )(timestep)
-    jax.debug.print("timestep.vec min: {x}", x=np.min(vec))
-    jax.debug.print("timestep.vec max: {x}", x=np.max(vec))
-    print(f"guidance_embeds? {self.guidance_embeds}")
+      self,
+      hidden_states,
+      encoder_hidden_states,
+      pooled_projections,
+      timestep,
+      img_ids,
+      txt_ids,
+      guidance,
+      return_dict: bool = True,
+      train: bool = False,
+  ):
+    hidden_states = self.img_in(hidden_states)
+    timestep = self.timestep_embedding(timestep, 256)
     if self.guidance_embeds:
-      if guidance is None:
-        raise ValueError(
-          "Didn't get guidance strength for guidance distrilled model."
-        )
-      guidance_in = timestep_embedding(guidance, 256)
+      guidance = self.timestep_embedding(guidance, 256)
+    else:
+      guidance = None
+    temb = (
+        self.time_text_embed(timestep, pooled_projections)
+        if guidance is None
+        else self.time_text_embed(timestep, guidance, pooled_projections)
+    )
+    encoder_hidden_states = self.txt_in(encoder_hidden_states)
+    if txt_ids.ndim == 3:
+      txt_ids = txt_ids[0]
+    if img_ids.ndim == 3:
+      img_ids = img_ids[0]
 
-      jax.debug.print("guidance_in.min: {x}", x=np.min(guidance_in))
-      jax.debug.print("guidance_in.max: {x}", x=np.max(guidance_in))
-      guidance_in = MLPEmbedder(
-        hidden_dim=inner_dim,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision,
-        name="guidance_in"
-      )(guidance_in)
-      jax.debug.print("guidance.vec min: {x}", x=np.min(guidance_in))
-      jax.debug.print("guidance.vec max: {x}", x=np.max(guidance_in))
-      vec = vec + guidance_in
-      jax.debug.print("timestep_guidance.vec min: {x}", x=np.min(vec))
-      jax.debug.print("timestep_guidance.vec max: {x}", x=np.max(vec))
-    # else:
-    #   guidance_in = Identity()(timestep_embedding(guidance, 256))
+    ids = jnp.concatenate((txt_ids, img_ids), axis=0)
+    ids = nn.with_logical_constraint(ids, ("activation_batch", None))
+    image_rotary_emb = self.pe_embedder(ids)
+    image_rotary_emb = nn.with_logical_constraint(image_rotary_emb, ("activation_batch", "activation_embed"))
 
-    pooled_projections = PixArtAlphaTextProjection(
-      hidden_dim=inner_dim,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision,
-      name="vector_in"
-    )(y)
-    jax.debug.print("pooled_projections.min: {x}", x=np.min(pooled_projections))
-    jax.debug.print("pooled_projections.max: {x}", x=np.max(pooled_projections))
-    vec = vec + pooled_projections
-    jax.debug.print("temb.min: {x}", x=np.min(vec))
-    jax.debug.print("temb.max: {x}", x=np.max(vec))
+    hidden_states, encoder_hidden_states, temb, image_rotary_emb = self.double_blocks(
+        hidden_states=hidden_states,
+        encoder_hidden_states=encoder_hidden_states,
+        temb=temb,
+        image_rotary_emb=image_rotary_emb,
+    )
+    hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
+    hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
 
-    txt = nn.Dense(
-      inner_dim,
-      dtype=self.dtype,
-      param_dtype=self.weights_dtype,
-      precision=self.precision,
-      kernel_init=nn.with_logical_partitioning(
-        nn.initializers.lecun_normal(),
-        ("embed", "heads")
-      ),
-      name="txt_in"
-    )(txt)
-    jax.debug.print("txt.min: {x}", x=np.min(txt))
-    jax.debug.print("txt.max: {x}", x=np.max(txt))
-    ids = jnp.concatenate((txt_ids, img_ids), axis=1)
+    hidden_states, temb, image_rotary_emb = self.single_blocks(
+        hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb
+    )
+    hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
-    #pe_embedder
-    pe = EmbedND(
-      dim=pe_dim,
-      theta=10000,
-      axes_dim=self.axes_dims_rope
-    )(ids)
-    jax.debug.print("pe.min: {x}", x=np.min(pe))
-    jax.debug.print("pe.max: {x}", x=np.max(pe))
-    # img, txt = DoubleStreamBlock(
-    #   hidden_size=inner_dim,
-    #   num_heads=self.num_attention_heads,
-    #   mlp_ratio=self.mlp_ratio,
-    #   attention_head_dim=self.attention_head_dim,
-    #   flash_min_seq_length=self.flash_min_seq_length,
-    #   flash_block_sizes=self.flash_block_sizes,
-    #   mesh=self.mesh,
-    #   dtype=self.dtype,
-    #   weights_dtype=self.weights_dtype,
-    #   precision=self.precision,
-    #   qkv_bias=self.qkv_bias,
-    #   attention_kernel=self.attention_kernel,
-    #   name="double_blocks_0"
-    # )(img=img, txt=txt, vec=vec, pe=pe)
-    # # breakpoint()
-    for i in range(self.num_layers):
-      img, txt = DoubleStreamBlock(
-        hidden_size=inner_dim,
-        num_heads=self.num_attention_heads,
-        mlp_ratio=self.mlp_ratio,
-        attention_head_dim=self.attention_head_dim,
-        flash_min_seq_length=self.flash_min_seq_length,
-        flash_block_sizes=self.flash_block_sizes,
-        mesh=self.mesh,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision,
-        qkv_bias=self.qkv_bias,
-        attention_kernel=self.attention_kernel,
-        name=f"double_blocks_{i}"
-      )(img=img, txt=txt, vec=vec, pe=pe)
-    # img, txt = nn.Sequential(
-    #   [
-    #     *[
-    #       DoubleStreamBlock(
-    #         hidden_size=inner_dim,
-    #         num_heads=self.num_attention_heads,
-    #         mlp_ratio=self.mlp_ratio,
-    #         attention_head_dim=self.attention_head_dim,
-    #         flash_min_seq_length=self.flash_min_seq_length,
-    #         flash_block_sizes=self.flash_block_sizes,
-    #         mesh=self.mesh,
-    #         dtype=self.dtype,
-    #         weights_dtype=self.weights_dtype,
-    #         precision=self.precision,
-    #         qkv_bias=self.qkv_bias,
-    #         attention_kernel=self.attention_kernel,
-    #       )(img=img, txt=txt, vec=vec, pe=pe)
-    #       for _ in range(2)
-    #     ]
-    #   ]
-    # )
-    # breakpoint()
-    # img, txt = scan_double_block_layers(
-    #   inner_dim=inner_dim,
-    #   num_heads=self.num_attention_heads,
-    #   mlp_ratio=self.mlp_ratio,
-    #   attention_head_dim=self.attention_head_dim,
-    #   flash_min_seq_length=self.flash_min_seq_length,
-    #   flash_block_sizes=self.flash_block_sizes,
-    #   mesh=self.mesh,
-    #   dtype=self.dtype,
-    #   weights_dtype=self.weights_dtype,
-    #   precision=self.precision,
-    #   qkv_bias=self.qkv_bias,
-    #   attention_kernel=self.attention_kernel,
-    #   num_layers=self.num_layers
-    # )(img, txt, vec, pe)
-    img = jnp.concatenate((txt, img), axis=1)
-    for i in range(self.num_single_layers):
-      img, SingleStreamBlock(
-        hidden_size=inner_dim,
-        num_heads=self.num_attention_heads,
-        mlp_ratio=self.mlp_ratio,
-        attention_head_dim=self.attention_head_dim,
-        flash_min_seq_length=self.flash_min_seq_length,
-        flash_block_sizes=self.flash_block_sizes,
-        mesh=self.mesh,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision,
-        attention_kernel=self.attention_kernel,
-        name=f"single_blocks_{i}"
-      )(img, vec, pe)
+    hidden_states = self.norm_out(hidden_states, temb)
+    output = self.proj_out(hidden_states)
 
-    img = img[:, txt.shape[1] :, ...]
+    if not return_dict:
+      return (output,)
 
-    img = LastLayer(
-      hidden_size=inner_dim,
-      patch_size=1,
-      out_channels=out_channels,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision,
-      name="final_layer"
-    )(img, vec)
+    return Transformer2DModelOutput(sample=output)
 
-    return img
-  
   def init_weights(self, rngs, max_sequence_length, eval_only=True):
     scale_factor = 16
     resolution = 1024
-    num_devices = jax.local_device_count()
+    num_devices = len(jax.devices())
     batch_size = 1 * num_devices
     batch_image_shape = (
         batch_size,
@@ -367,22 +600,22 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       return jax.eval_shape(
           self.init,
           rngs,
-          img=img,
+          hidden_states=img,
           img_ids=img_ids,
-          txt=txt,
+          encoder_hidden_states=txt,
           txt_ids=txt_ids,
-          y=vec,
-          timesteps=t_vec,
+          pooled_projections=vec,
+          timestep=t_vec,
           guidance=guidance_vec,
       )["params"]
     else:
       return self.init(
           rngs,
-          img=img,
+          hidden_states=img,
           img_ids=img_ids,
-          txt=txt,
+          encoder_hidden_states=txt,
           txt_ids=txt_ids,
-          y=vec,
-          timesteps=t_vec,
+          pooled_projections=vec,
+          timestep=t_vec,
           guidance=guidance_vec,
       )["params"]

@@ -36,6 +36,7 @@ AxisNames = tuple[str, ...]
 
 BATCH = "activation_batch"
 LENGTH = "activation_length"
+EMBED = "activation_embed"
 HEAD = "activation_heads"
 D_KV = "activation_kv"
 KEEP_1 = "activation_keep_1"

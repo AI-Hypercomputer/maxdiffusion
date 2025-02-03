@@ -21,7 +21,7 @@ import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
-
+from einops import rearrange
 from .. import common_types, max_logging
 
 Array = common_types.Array
@@ -35,6 +35,7 @@ BATCH = common_types.BATCH
 LENGTH = common_types.LENGTH
 HEAD = common_types.HEAD
 D_KV = common_types.D_KV
+EMBED = common_types.EMBED
 
 
 class AttentionOp(nn.Module):
@@ -63,7 +64,6 @@ class AttentionOp(nn.Module):
   def apply_attention(self, query: Array, key: Array, value: Array):
     """Routes to different attention kernels."""
     self.check_attention_inputs(query, key, value)
-
     can_use_flash_attention = (
         query.shape[1] >= self.flash_min_seq_length
         and key.shape[1] >= self.flash_min_seq_length
@@ -111,8 +111,7 @@ class AttentionOp(nn.Module):
             block_q_dq=min(512, query.shape[2]),
             block_kv_dq=min(512, query.shape[2]),
         )
-
-      masks = [splash_attention_mask.FullMask(_shape=(query.shape[2], query.shape[2])) for i in range(query.shape[1])]
+      masks = [splash_attention_mask.FullMask(_shape=(query.shape[2], query.shape[2])) for _ in range(query.shape[1])]
       multi_head_mask = splash_attention_mask.MultiHeadMask(masks=masks)
       splash_kernel = splash_attention_kernel.make_splash_mha(
           mask=multi_head_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
@@ -323,6 +322,177 @@ def jax_memory_efficient_attention(
 
   return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
 
+class FlaxFluxAttention(nn.Module):
+  query_dim: int
+  heads: int = 8
+  dim_head: int = 64
+  dropout: float = 0.0
+  use_memory_efficient_attention: bool = False
+  split_head_dim: bool = False
+  attention_kernel: str = "dot_product"
+  flash_min_seq_length: int = 4096
+  flash_block_sizes: BlockSizes = None
+  mesh: jax.sharding.Mesh = None
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+  key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+  value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+  out_axis_names: AxisNames = (BATCH, LENGTH, EMBED)
+  precision: jax.lax.Precision = None
+  qkv_bias: bool = False
+
+  def setup(self):
+    if self.attention_kernel in {"flash", "cudnn_flash_te"} and self.mesh is None:
+      raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
+    inner_dim = self.dim_head * self.heads
+    scale = self.dim_head**-0.5
+
+    self.attention_op = AttentionOp(
+        mesh=self.mesh,
+        attention_kernel=self.attention_kernel,
+        scale=scale,
+        heads=self.heads,
+        dim_head=self.dim_head,
+        flash_min_seq_length=self.flash_min_seq_length,
+        use_memory_efficient_attention=self.use_memory_efficient_attention,
+        split_head_dim=self.split_head_dim,
+        flash_block_sizes=self.flash_block_sizes,
+        dtype=self.dtype,
+        float32_qk_product=False,
+    )
+
+    kernel_axes = ("embed", "heads")
+    qkv_init_kernel = nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes)
+
+    self.qkv = nn.Dense(
+        inner_dim * 3,
+        kernel_init=qkv_init_kernel,
+        use_bias=self.qkv_bias,
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        name="i_qkv",
+        precision=self.precision,
+    )
+
+    self.encoder_qkv = nn.Dense(
+        inner_dim * 3,
+        kernel_init=qkv_init_kernel,
+        use_bias=self.qkv_bias,
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        name="e_qkv",
+        precision=self.precision,
+    )
+
+    self.proj_attn = nn.Dense(
+        self.query_dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes),
+        use_bias=True,
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        name="i_proj",
+        precision=self.precision,
+    )
+
+    self.encoder_proj_attn = nn.Dense(
+        self.query_dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes),
+        use_bias=True,
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        name="e_proj",
+        precision=self.precision,
+    )
+
+    self.query_norm = nn.RMSNorm(
+        dtype=self.dtype,
+        scale_init=nn.with_logical_partitioning(nn.initializers.ones, ("heads",)),
+        param_dtype=self.weights_dtype,
+    )
+    self.key_norm = nn.RMSNorm(
+        dtype=self.dtype,
+        scale_init=nn.with_logical_partitioning(nn.initializers.ones, ("heads",)),
+        param_dtype=self.weights_dtype,
+    )
+
+    self.encoder_query_norm = nn.RMSNorm(
+        dtype=self.dtype,
+        scale_init=nn.with_logical_partitioning(nn.initializers.ones, ("heads",)),
+        param_dtype=self.weights_dtype,
+    )
+    self.encoder_key_norm = nn.RMSNorm(
+        dtype=self.dtype,
+        scale_init=nn.with_logical_partitioning(nn.initializers.ones, ("heads",)),
+        param_dtype=self.weights_dtype,
+    )
+
+  def apply_rope(self, xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
+    xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)
+    xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)
+
+    xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
+    xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
+
+    return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
+
+  def __call__(self, hidden_states, encoder_hidden_states=None, attention_mask=None, image_rotary_emb=None):
+
+    qkv_proj = self.qkv(hidden_states)
+    B, L = hidden_states.shape[:2]
+    H, D, K = self.heads, qkv_proj.shape[-1] // (self.heads * 3), 3
+    qkv_proj = qkv_proj.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
+    query_proj, key_proj, value_proj = qkv_proj
+
+    query_proj = self.query_norm(query_proj)
+
+    key_proj = self.key_norm(key_proj)
+
+    if encoder_hidden_states is not None:
+
+      encoder_qkv_proj = self.encoder_qkv(encoder_hidden_states)
+      B, L = encoder_hidden_states.shape[:2]
+      H, D, K = self.heads, encoder_qkv_proj.shape[-1] // (self.heads * 3), 3
+      encoder_qkv_proj = encoder_qkv_proj.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
+      encoder_query_proj, encoder_key_proj, encoder_value_proj = encoder_qkv_proj
+
+      encoder_query_proj = self.encoder_query_norm(encoder_query_proj)
+
+      encoder_key_proj = self.encoder_key_norm(encoder_key_proj)
+
+      query_proj = jnp.concatenate((encoder_query_proj, query_proj), axis=2)
+      key_proj = jnp.concatenate((encoder_key_proj, key_proj), axis=2)
+      value_proj = jnp.concatenate((encoder_value_proj, value_proj), axis=2)
+
+      query_proj = nn.with_logical_constraint(query_proj, self.query_axis_names)
+      key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
+      value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
+
+    image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+    query_proj, key_proj = self.apply_rope(query_proj, key_proj, image_rotary_emb)
+
+    query_proj = query_proj.transpose(0, 2, 1, 3).reshape(query_proj.shape[0], query_proj.shape[2], -1)
+    key_proj = key_proj.transpose(0, 2, 1, 3).reshape(key_proj.shape[0], key_proj.shape[2], -1)
+    value_proj = value_proj.transpose(0, 2, 1, 3).reshape(value_proj.shape[0], value_proj.shape[2], -1)
+
+    attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+    context_attn_output = None
+
+    if encoder_hidden_states is not None:
+      context_attn_output, attn_output = (
+          attn_output[:, : encoder_hidden_states.shape[1]],
+          attn_output[:, encoder_hidden_states.shape[1] :],
+      )
+
+      attn_output = self.proj_attn(attn_output)
+
+      context_attn_output = self.encoder_proj_attn(context_attn_output)
+
+    return attn_output, context_attn_output
 
 class FlaxAttention(nn.Module):
   r"""
