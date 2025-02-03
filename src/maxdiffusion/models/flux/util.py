@@ -173,6 +173,8 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
                 renamed_pt_key = renamed_pt_key.replace("txt_attn.norm.query_norm", "attn.encoder_query_norm")
               elif("guidance_in" in renamed_pt_key):
                 renamed_pt_key = renamed_pt_key.replace("guidance_in", "time_text_embed.FlaxTimestepEmbedding_1")
+                renamed_pt_key = renamed_pt_key.replace("in_layer", "linear_1")
+                renamed_pt_key = renamed_pt_key.replace("out_layer", "linear_2")
               elif "single_blocks" in renamed_pt_key:
                 renamed_pt_key = renamed_pt_key.replace("single_blocks_", "single_blocks.layers_")
                 renamed_pt_key = renamed_pt_key.replace("modulation", "norm")
