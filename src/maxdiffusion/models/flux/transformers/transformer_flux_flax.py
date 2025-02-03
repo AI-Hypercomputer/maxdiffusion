@@ -14,15 +14,12 @@
  limitations under the License.
  """
 
-"""This script is used an example of how to shard the UNET on TPU."""
-
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Tuple
 import jax
 import math
 import jax.numpy as jnp
 import flax
 import flax.linen as nn
-from jax.random import PRNGKey
 from einops import repeat, rearrange
 from ....configuration_utils import ConfigMixin, flax_register_to_config
 from ...modeling_flax_utils import FlaxModelMixin
@@ -40,25 +37,6 @@ BATCH = common_types.BATCH
 LENGTH = common_types.LENGTH
 HEAD = common_types.HEAD
 D_KV = common_types.D_KV
-
-
-@dataclass
-class FluxParams:
-  in_channels: int
-  vec_in_dim: int
-  context_in_dim: int
-  hidden_size: int
-  mlp_ratio: float
-  num_heads: int
-  depth: int
-  depth_single_blocks: int
-  axes_dim: list[int]
-  theta: int
-  qkv_bias: bool
-  guidance_embed: bool
-  param_dtype: jnp.bfloat16
-  rngs: jax.random.PRNGKey
-
 
 @flax.struct.dataclass
 class Transformer2DModelOutput(BaseOutput):
@@ -580,7 +558,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         768,  # Sequence length of clip, how to get this programmatically?
     )
     img = jnp.zeros(batch_image_shape, dtype=self.dtype)
-    bs, c, h, w = img.shape
+    bs, _, h, w = img.shape
     img = rearrange(img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
     img_ids = jnp.zeros((h // 2, w // 2, 3), dtype=self.dtype)
     img_ids = img_ids.at[..., 1].set(jnp.arange(h // 2)[:, None])
