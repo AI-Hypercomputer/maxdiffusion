@@ -79,16 +79,14 @@ def loop_body(
   t_vec = jnp.full((latents.shape[0], ), t_curr, dtype=latents.dtype)
   pred = transformer.apply(
     {"params" : state.params},
-    img=latents,
+    hidden_states=latents,
     img_ids=latent_image_ids,
-    txt=prompt_embeds,
+    encoder_hidden_states=prompt_embeds,
     txt_ids=txt_ids,
-    timesteps=t_vec,
+    timestep=t_vec,
     guidance=guidance_vec,
-    y=vec
-  )
-  jax.debug.print("*****pred max: {x}", x=np.max(pred))
-  jax.debug.print("*****pred min: {x}", x=np.min(pred))
+    pooled_projections=vec
+  ).sample
   latents = latents + (t_prev - t_curr) * pred
   latents = jnp.array(latents, dtype=latents_dtype)
   return latents, state, c_ts, p_ts
