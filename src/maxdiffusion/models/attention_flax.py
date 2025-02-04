@@ -322,6 +322,7 @@ def jax_memory_efficient_attention(
 
   return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
 
+
 class FlaxFluxAttention(nn.Module):
   query_dim: int
   heads: int = 8
@@ -493,6 +494,7 @@ class FlaxFluxAttention(nn.Module):
       context_attn_output = self.encoder_proj_attn(context_attn_output)
 
     return attn_output, context_attn_output
+
 
 class FlaxAttention(nn.Module):
   r"""
