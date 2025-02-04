@@ -38,6 +38,7 @@ LENGTH = common_types.LENGTH
 HEAD = common_types.HEAD
 D_KV = common_types.D_KV
 
+
 @flax.struct.dataclass
 class Transformer2DModelOutput(BaseOutput):
   """
@@ -110,7 +111,7 @@ class FluxSingleTransformerBlock(nn.Module):
         weights_dtype=self.weights_dtype,
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
-        flash_block_sizes=self.flash_block_sizes
+        flash_block_sizes=self.flash_block_sizes,
     )
 
   def __call__(self, hidden_states, temb, image_rotary_emb=None):
@@ -194,7 +195,7 @@ class FluxTransformerBlock(nn.Module):
         weights_dtype=self.weights_dtype,
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
-        flash_block_sizes=self.flash_block_sizes
+        flash_block_sizes=self.flash_block_sizes,
     )
 
     self.img_norm2 = nn.LayerNorm(
@@ -386,18 +387,18 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     double_blocks = []
     for _ in range(self.num_layers):
       double_block = FluxTransformerBlock(
-        dim=self.inner_dim,
-        num_attention_heads=self.num_attention_heads,
-        attention_head_dim=self.attention_head_dim,
-        attention_kernel=self.attention_kernel,
-        flash_min_seq_length=self.flash_min_seq_length,
-        flash_block_sizes=self.flash_block_sizes,
-        mesh=self.mesh,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision,
-        mlp_ratio=self.mlp_ratio,
-        qkv_bias=self.qkv_bias,
+          dim=self.inner_dim,
+          num_attention_heads=self.num_attention_heads,
+          attention_head_dim=self.attention_head_dim,
+          attention_kernel=self.attention_kernel,
+          flash_min_seq_length=self.flash_min_seq_length,
+          flash_block_sizes=self.flash_block_sizes,
+          mesh=self.mesh,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+          precision=self.precision,
+          mlp_ratio=self.mlp_ratio,
+          qkv_bias=self.qkv_bias,
       )
       double_blocks.append(double_block)
     self.double_blocks = double_blocks
@@ -405,20 +406,20 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     single_blocks = []
     for _ in range(self.num_single_layers):
       single_block = FluxSingleTransformerBlock(
-        dim=self.inner_dim,
-        num_attention_heads=self.num_attention_heads,
-        attention_head_dim=self.attention_head_dim,
-        attention_kernel=self.attention_kernel,
-        flash_min_seq_length=self.flash_min_seq_length,
-        flash_block_sizes=self.flash_block_sizes,
-        mesh=self.mesh,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision,
-        mlp_ratio=self.mlp_ratio,
+          dim=self.inner_dim,
+          num_attention_heads=self.num_attention_heads,
+          attention_head_dim=self.attention_head_dim,
+          attention_kernel=self.attention_kernel,
+          flash_min_seq_length=self.flash_min_seq_length,
+          flash_block_sizes=self.flash_block_sizes,
+          mesh=self.mesh,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+          precision=self.precision,
+          mlp_ratio=self.mlp_ratio,
       )
       single_blocks.append(single_block)
-    
+
     self.single_blocks = single_blocks
 
     self.norm_out = AdaLayerNormContinuous(

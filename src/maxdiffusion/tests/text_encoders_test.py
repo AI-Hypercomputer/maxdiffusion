@@ -25,22 +25,23 @@ from ..generate_flux import get_clip_prompt_embeds, get_t5_prompt_embeds
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
 class TextEncoderTest(unittest.TestCase):
   """Test text encoders"""
 
   def setUp(self):
     TextEncoderTest.dummy_data = {}
-  
+
   def test_flux_t5_text_encoder(self):
 
     text_encoder_2_pt = T5EncoderModel.from_pretrained(
-      "black-forest-labs/FLUX.1-dev",
-      subfolder="text_encoder_2",
+        "black-forest-labs/FLUX.1-dev",
+        subfolder="text_encoder_2",
     )
 
     tokenizer_2 = T5TokenizerFast.from_pretrained(
-      "black-forest-labs/FLUX.1-dev",
-      subfolder="tokenizer_2",
+        "black-forest-labs/FLUX.1-dev",
+        subfolder="tokenizer_2",
     )
 
     embeds = get_t5_prompt_embeds("A dog on a skateboard", 2, tokenizer_2, text_encoder_2_pt)
@@ -50,17 +51,8 @@ class TextEncoderTest(unittest.TestCase):
   def test_flux_clip_text_encoder(self):
 
     text_encoder = FlaxCLIPTextModel.from_pretrained(
-      "black-forest-labs/FLUX.1-dev",
-      subfolder="text_encoder",
-      from_pt=True,
-      dtype="bfloat16"
+        "black-forest-labs/FLUX.1-dev", subfolder="text_encoder", from_pt=True, dtype="bfloat16"
     )
-    tokenizer = CLIPTokenizer.from_pretrained(
-      "black-forest-labs/FLUX.1-dev",
-      subfolder="tokenizer",
-      dtype="bfloat16"
-    )
+    tokenizer = CLIPTokenizer.from_pretrained("black-forest-labs/FLUX.1-dev", subfolder="tokenizer", dtype="bfloat16")
     embeds = get_clip_prompt_embeds("A cat riding a skateboard", 2, tokenizer, text_encoder)
     assert embeds.shape == (2, 768)
-
-

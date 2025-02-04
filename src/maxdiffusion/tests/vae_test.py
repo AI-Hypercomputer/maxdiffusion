@@ -28,14 +28,15 @@ from skimage.metrics import structural_similarity as ssim
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
 class VaeTest(unittest.TestCase):
   """Test Vae"""
 
   def setUp(self):
     VaeTest.dummy_data = {}
-  
+
   def test_flux_vae(self):
-    
+
     img_url = os.path.join(THIS_DIR, "images", "test_hyper_sdxl.png")
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
     img_min = np.min(base_image)
@@ -43,17 +44,13 @@ class VaeTest(unittest.TestCase):
     image = (base_image - img_min) / (img_max - img_min)
     image = 2.0 * image - 1.0
     image = np.expand_dims(image, 0)
-    image = np.transpose(image, (0, 3, 1, 2)) # (1, 3, 1024, 1024), BCWH
-    
+    image = np.transpose(image, (0, 3, 1, 2))  # (1, 3, 1024, 1024), BCWH
+
     vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-      "black-forest-labs/FLUX.1-dev",
-      subfolder="vae",
-      from_pt=True,
-      use_safetensors=True,
-      dtype="bfloat16"
+        "black-forest-labs/FLUX.1-dev", subfolder="vae", from_pt=True, use_safetensors=True, dtype="bfloat16"
     )
 
-    encoded_image = vae.apply({"params" : vae_params}, image, deterministic=True, method=vae.encode)
+    encoded_image = vae.apply({"params": vae_params}, image, deterministic=True, method=vae.encode)
     latents = encoded_image[0].sample(jax.random.key(0))
     latents = jnp.transpose(latents, (0, 3, 1, 2))
 
@@ -63,12 +60,10 @@ class VaeTest(unittest.TestCase):
 
     # decode back
     latents = (latents / vae.config.scaling_factor) + vae.config.shift_factor
-    image = vae.apply({"params" : vae_params}, latents, deterministic=True, method=vae.decode).sample[0]
+    image = vae.apply({"params": vae_params}, latents, deterministic=True, method=vae.decode).sample[0]
     image = np.array(image)
     image = (image * 0.5 + 0.5).clip(0, 1)
     image = np.transpose(image, (1, 2, 0))
     image = np.uint8(image * 255)
     ssim_compare = ssim(base_image, image, multichannel=True, channel_axis=-1, data_range=255)
     assert ssim_compare >= 0.90
-
-

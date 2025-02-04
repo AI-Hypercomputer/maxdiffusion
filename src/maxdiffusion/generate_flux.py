@@ -27,114 +27,107 @@ import jax.numpy as jnp
 from chex import Array
 from einops import rearrange
 from flax.linen import partitioning as nn_partitioning
-from transformers import (
-  CLIPTokenizer,
-  FlaxCLIPTextModel,
-  T5EncoderModel,
-  FlaxT5EncoderModel,
-  AutoTokenizer
-)
+from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
 
 from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
 from max_utils import (
-  device_put_replicated,
-  get_memory_allocations,
-  create_device_mesh,
-  get_flash_block_sizes,
-  get_precision,
-  setup_initial_state
+    device_put_replicated,
+    get_memory_allocations,
+    create_device_mesh,
+    get_flash_block_sizes,
+    get_precision,
+    setup_initial_state,
 )
 
+
 def unpack(x: Array, height: int, width: int) -> Array:
-    return rearrange(
+  return rearrange(
       x,
       "b (h w) (c ph pw) -> b c (h ph) (w pw)",
       h=math.ceil(height / 16),
       w=math.ceil(width / 16),
       ph=2,
       pw=2,
-    )
+  )
+
+
 from einops import rearrange
+
+
 def vae_decode(latents, vae, state, config):
   img = unpack(x=latents, height=config.resolution, width=config.resolution)
   img = img / vae.config.scaling_factor + vae.config.shift_factor
   img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample
   return img
 
+
 def loop_body(
-  step,
-  args,
-  transformer,
-  latent_image_ids,
-  prompt_embeds,
-  txt_ids,
-  vec,
-  guidance_vec,
+    step,
+    args,
+    transformer,
+    latent_image_ids,
+    prompt_embeds,
+    txt_ids,
+    vec,
+    guidance_vec,
 ):
   latents, state, c_ts, p_ts = args
   latents_dtype = latents.dtype
   t_curr = c_ts[step]
   t_prev = p_ts[step]
-  t_vec = jnp.full((latents.shape[0], ), t_curr, dtype=latents.dtype)
+  t_vec = jnp.full((latents.shape[0],), t_curr, dtype=latents.dtype)
   pred = transformer.apply(
-    {"params" : state.params},
-    hidden_states=latents,
-    img_ids=latent_image_ids,
-    encoder_hidden_states=prompt_embeds,
-    txt_ids=txt_ids,
-    timestep=t_vec,
-    guidance=guidance_vec,
-    pooled_projections=vec
+      {"params": state.params},
+      hidden_states=latents,
+      img_ids=latent_image_ids,
+      encoder_hidden_states=prompt_embeds,
+      txt_ids=txt_ids,
+      timestep=t_vec,
+      guidance=guidance_vec,
+      pooled_projections=vec,
   ).sample
   latents = latents + (t_prev - t_curr) * pred
   latents = jnp.array(latents, dtype=latents_dtype)
   return latents, state, c_ts, p_ts
 
+
 def prepare_latent_image_ids(height, width):
   latent_image_ids = jnp.zeros((height, width, 3))
-  latent_image_ids = latent_image_ids.at[..., 1].set(
-    latent_image_ids[..., 1] + jnp.arange(height)[:, None]
-  )
-  latent_image_ids = latent_image_ids.at[..., 2].set(
-    latent_image_ids[..., 2] + jnp.arange(width)[None, :]
-  )
+  latent_image_ids = latent_image_ids.at[..., 1].set(latent_image_ids[..., 1] + jnp.arange(height)[:, None])
+  latent_image_ids = latent_image_ids.at[..., 2].set(latent_image_ids[..., 2] + jnp.arange(width)[None, :])
 
   latent_image_id_height, latent_image_id_width, latent_image_id_channels = latent_image_ids.shape
 
-  latent_image_ids = latent_image_ids.reshape(
-    latent_image_id_height * latent_image_id_width, latent_image_id_channels
-  )
+  latent_image_ids = latent_image_ids.reshape(latent_image_id_height * latent_image_id_width, latent_image_id_channels)
 
   return latent_image_ids.astype(jnp.bfloat16)
+
 
 def time_shift(mu: float, sigma: float, t: Array):
   return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
 
-def get_lin_function(
-  x1: float = 256,
-  y1: float = 0.5,
-  x2: float = 4096,
-  y2: float = 1.15
-) -> Callable[[float], float]:
+
+def get_lin_function(x1: float = 256, y1: float = 0.5, x2: float = 4096, y2: float = 1.15) -> Callable[[float], float]:
   m = (y2 - y1) / (x2 - x1)
   b = y1 - m * x1
   return lambda x: m * x + b
 
+
 def run_inference(
-  states,
-  transformer,
-  vae,
-  config,
-  mesh,
-  latents,
-  latent_image_ids,
-  prompt_embeds,
-  txt_ids,
-  vec,
-  guidance_vec,
+    states,
+    transformer,
+    vae,
+    config,
+    mesh,
+    latents,
+    latent_image_ids,
+    prompt_embeds,
+    txt_ids,
+    vec,
+    guidance_vec,
 ):
-  
+
   timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
   # shifting the schedule to favor high timesteps for higher signal images
   if config.time_shift:
@@ -147,18 +140,17 @@ def run_inference(
   # jax.debug.print("c_ts: {x}", x=c_ts)
   # jax.debug.print("p_ts: {x}", x=p_ts)
 
-
   transformer_state = states["transformer"]
   vae_state = states["vae"]
 
   loop_body_p = functools.partial(
-    loop_body,
-    transformer=transformer,
-    latent_image_ids=latent_image_ids,
-    prompt_embeds=prompt_embeds,
-    txt_ids=txt_ids,
-    vec=vec,
-    guidance_vec=guidance_vec,
+      loop_body,
+      transformer=transformer,
+      latent_image_ids=latent_image_ids,
+      prompt_embeds=prompt_embeds,
+      txt_ids=txt_ids,
+      vec=vec,
+      guidance_vec=guidance_vec,
   )
 
   vae_decode_p = functools.partial(vae_decode, vae=vae, state=vae_state, config=config)
@@ -170,11 +162,11 @@ def run_inference(
 
 
 def pack_latents(
-  latents: Array,
-  batch_size: int,
-  num_channels_latents: int,
-  height: int,
-  width: int,
+    latents: Array,
+    batch_size: int,
+    num_channels_latents: int,
+    height: int,
+    width: int,
 ):
   latents = jnp.reshape(latents, (batch_size, num_channels_latents, height // 2, 2, width // 2, 2))
   latents = jnp.permute_dims(latents, (0, 2, 4, 1, 3, 5))
@@ -182,14 +174,9 @@ def pack_latents(
 
   return latents
 
+
 def prepare_latents(
-  batch_size: int,
-  num_channels_latents: int,
-  height: int,
-  width: int,
-  vae_scale_factor: int,
-  dtype: jnp.dtype,
-  rng: Array
+    batch_size: int, num_channels_latents: int, height: int, width: int, vae_scale_factor: int, dtype: jnp.dtype, rng: Array
 ):
 
   # VAE applies 8x compression on images but we must also account for packing which
@@ -208,22 +195,20 @@ def prepare_latents(
 
   return latents, latent_image_ids
 
+
 def get_clip_prompt_embeds(
-  prompt: Union[str, List[str]],
-  num_images_per_prompt : int,
-  tokenizer: CLIPTokenizer,
-  text_encoder : FlaxCLIPTextModel
+    prompt: Union[str, List[str]], num_images_per_prompt: int, tokenizer: CLIPTokenizer, text_encoder: FlaxCLIPTextModel
 ):
   prompt = [prompt] if isinstance(prompt, str) else prompt
   batch_size = len(prompt)
   text_inputs = tokenizer(
-    prompt,
-    padding="max_length",
-    max_length=tokenizer.model_max_length,
-    truncation=True,
-    return_overflowing_tokens=False,
-    return_length=False,
-    return_tensors="np"
+      prompt,
+      padding="max_length",
+      max_length=tokenizer.model_max_length,
+      truncation=True,
+      return_overflowing_tokens=False,
+      return_length=False,
+      return_tensors="np",
   )
 
   text_input_ids = text_inputs.input_ids
@@ -234,31 +219,29 @@ def get_clip_prompt_embeds(
   prompt_embeds = np.reshape(prompt_embeds, (batch_size * num_images_per_prompt, -1))
   return prompt_embeds
 
+
 def get_t5_prompt_embeds(
-  prompt: Union[str, List[str]],
-  num_images_per_prompt: int,
-  tokenizer: AutoTokenizer,
-  text_encoder: T5EncoderModel,
-  max_sequence_length: int = 512
+    prompt: Union[str, List[str]],
+    num_images_per_prompt: int,
+    tokenizer: AutoTokenizer,
+    text_encoder: T5EncoderModel,
+    max_sequence_length: int = 512,
 ):
 
   prompt = [prompt] if isinstance(prompt, str) else prompt
   batch_size = len(prompt)
 
   text_inputs = tokenizer(
-    prompt,
-    truncation=True,
-    max_length=max_sequence_length,
-    return_length=False,
-    return_overflowing_tokens=False,
-    padding="max_length",
-    return_tensors="np"
+      prompt,
+      truncation=True,
+      max_length=max_sequence_length,
+      return_length=False,
+      return_overflowing_tokens=False,
+      padding="max_length",
+      return_tensors="np",
   )
   text_input_ids = text_inputs.input_ids
-  prompt_embeds = text_encoder(
-    text_input_ids,
-    attention_mask=None,
-    output_hidden_states=False)["last_hidden_state"]
+  prompt_embeds = text_encoder(text_input_ids, attention_mask=None, output_hidden_states=False)["last_hidden_state"]
   dtype = text_encoder.dtype
   prompt_embeds = prompt_embeds.astype(dtype)
   _, seq_len, _ = prompt_embeds.shape
@@ -270,37 +253,35 @@ def get_t5_prompt_embeds(
 
 
 def encode_prompt(
-  prompt: Union[str, List[str]],
-  prompt_2: Union[str, List[str]],
-  clip_tokenizer: CLIPTokenizer,
-  clip_text_encoder: FlaxCLIPTextModel,
-  t5_tokenizer: AutoTokenizer,
-  t5_text_encoder: T5EncoderModel,
-  num_images_per_prompt: int = 1,
-  max_sequence_length: int = 512
+    prompt: Union[str, List[str]],
+    prompt_2: Union[str, List[str]],
+    clip_tokenizer: CLIPTokenizer,
+    clip_text_encoder: FlaxCLIPTextModel,
+    t5_tokenizer: AutoTokenizer,
+    t5_text_encoder: T5EncoderModel,
+    num_images_per_prompt: int = 1,
+    max_sequence_length: int = 512,
 ):
-  
+
   prompt = [prompt] if isinstance(prompt, str) else prompt
   prompt_2 = prompt or prompt_2
   prompt_2 = [prompt_2] if isinstance(prompt_2, str) else prompt_2
 
   pooled_prompt_embeds = get_clip_prompt_embeds(
-    prompt=prompt,
-    num_images_per_prompt=num_images_per_prompt,
-    tokenizer=clip_tokenizer,
-    text_encoder=clip_text_encoder
+      prompt=prompt, num_images_per_prompt=num_images_per_prompt, tokenizer=clip_tokenizer, text_encoder=clip_text_encoder
   )
 
   prompt_embeds = get_t5_prompt_embeds(
-    prompt=prompt_2,
-    num_images_per_prompt=num_images_per_prompt,
-    tokenizer=t5_tokenizer,
-    text_encoder=t5_text_encoder,
-    max_sequence_length=max_sequence_length
+      prompt=prompt_2,
+      num_images_per_prompt=num_images_per_prompt,
+      tokenizer=t5_tokenizer,
+      text_encoder=t5_text_encoder,
+      max_sequence_length=max_sequence_length,
   )
 
   text_ids = jnp.zeros((prompt_embeds.shape[0], prompt_embeds.shape[1], 3)).astype(jnp.bfloat16)
   return prompt_embeds, pooled_prompt_embeds, text_ids
+
 
 def run(config):
   from maxdiffusion.models.flux.util import load_flow_model
@@ -314,22 +295,18 @@ def run(config):
   # LOAD VAE
 
   vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-    config.pretrained_model_name_or_path,
-    subfolder="vae",
-    from_pt=True,
-    use_safetensors=True,
-    dtype="bfloat16"
+      config.pretrained_model_name_or_path, subfolder="vae", from_pt=True, use_safetensors=True, dtype="bfloat16"
   )
 
   weights_init_fn = functools.partial(vae.init_weights, rng=rng)
   vae_state, vae_state_shardings = setup_initial_state(
-    model=vae,
-    tx=None,
-    config=config,
-    mesh=mesh,
-    weights_init_fn=weights_init_fn,
-    model_params=vae_params,
-    training=False,
+      model=vae,
+      tx=None,
+      config=config,
+      mesh=mesh,
+      weights_init_fn=weights_init_fn,
+      model_params=vae_params,
+      training=False,
   )
 
   vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
@@ -337,46 +314,40 @@ def run(config):
   # LOAD TRANSFORMER
   flash_block_sizes = get_flash_block_sizes(config)
   transformer = FluxTransformer2DModel.from_config(
-    config.pretrained_model_name_or_path,
-    subfolder="transformer",
-    mesh=mesh,
-    split_head_dim=config.split_head_dim,
-    attention_kernel=config.attention,
-    flash_block_sizes=flash_block_sizes,
-    dtype=config.activations_dtype,
-    weights_dtype=config.weights_dtype,
-    precision=get_precision(config)
+      config.pretrained_model_name_or_path,
+      subfolder="transformer",
+      mesh=mesh,
+      split_head_dim=config.split_head_dim,
+      attention_kernel=config.attention,
+      flash_block_sizes=flash_block_sizes,
+      dtype=config.activations_dtype,
+      weights_dtype=config.weights_dtype,
+      precision=get_precision(config),
   )
-  
+
   num_channels_latents = transformer.in_channels // 4
   latents, latent_image_ids = prepare_latents(
-    batch_size=global_batch_size,
-    num_channels_latents=num_channels_latents,
-    height=config.resolution,
-    width=config.resolution,
-    dtype=jnp.bfloat16,
-    vae_scale_factor=vae_scale_factor,
-    rng=rng
+      batch_size=global_batch_size,
+      num_channels_latents=num_channels_latents,
+      height=config.resolution,
+      width=config.resolution,
+      dtype=jnp.bfloat16,
+      vae_scale_factor=vae_scale_factor,
+      rng=rng,
   )
 
   # LOAD TEXT ENCODERS
   clip_text_encoder = FlaxCLIPTextModel.from_pretrained(
-    config.pretrained_model_name_or_path,
-    subfolder="text_encoder",
-    from_pt=True,
-    dtype=config.weights_dtype
+      config.pretrained_model_name_or_path, subfolder="text_encoder", from_pt=True, dtype=config.weights_dtype
   )
   clip_tokenizer = CLIPTokenizer.from_pretrained(
-    config.pretrained_model_name_or_path,
-    subfolder="tokenizer",
-    dtype=config.weights_dtype
+      config.pretrained_model_name_or_path, subfolder="tokenizer", dtype=config.weights_dtype
   )
 
-  t5_encoder = FlaxT5EncoderModel.from_pretrained(
-    config.t5xxl_model_name_or_path,
-    dtype=config.weights_dtype
+  t5_encoder = FlaxT5EncoderModel.from_pretrained(config.t5xxl_model_name_or_path, dtype=config.weights_dtype)
+  t5_tokenizer = AutoTokenizer.from_pretrained(
+      config.t5xxl_model_name_or_path, max_length=config.max_sequence_length, use_fast=True
   )
-  t5_tokenizer = AutoTokenizer.from_pretrained(config.t5xxl_model_name_or_path, max_length=config.max_sequence_length, use_fast=True)
 
   encoders_sharding = PositionalSharding(devices_array).replicate()
   partial_device_put_replicated = functools.partial(device_put_replicated, sharding=encoders_sharding)
@@ -386,14 +357,14 @@ def run(config):
   t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, t5_encoder.params)
 
   prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
-    prompt=config.prompt,
-    prompt_2=config.prompt_2,
-    clip_tokenizer=clip_tokenizer,
-    clip_text_encoder=clip_text_encoder,
-    t5_tokenizer=t5_tokenizer,
-    t5_text_encoder=t5_encoder,
-    num_images_per_prompt=global_batch_size,
-    max_sequence_length=config.max_sequence_length
+      prompt=config.prompt,
+      prompt_2=config.prompt_2,
+      clip_tokenizer=clip_tokenizer,
+      clip_text_encoder=clip_text_encoder,
+      t5_tokenizer=t5_tokenizer,
+      t5_text_encoder=t5_encoder,
+      num_images_per_prompt=global_batch_size,
+      max_sequence_length=config.max_sequence_length,
   )
 
   def validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds):
@@ -404,19 +375,11 @@ def run(config):
     print("timesteps.shape: ", timesteps.shape, timesteps.dtype)
     print("guidance.shape: ", guidance.shape, guidance.dtype)
     print("pooled_prompt_embeds.shape: ", pooled_prompt_embeds.shape, pooled_prompt_embeds.dtype)
-  
+
   timesteps = jnp.asarray([1.0] * global_batch_size, dtype=jnp.bfloat16)
   guidance = jnp.asarray([config.guidance_scale] * global_batch_size, dtype=jnp.bfloat16)
-  
-  validate_inputs(
-    latents,
-    latent_image_ids,
-    prompt_embeds,
-    text_ids,
-    timesteps,
-    guidance,
-    pooled_prompt_embeds
-  )
+
+  validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
 
   # move inputs to device and shard
   data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
@@ -434,20 +397,24 @@ def run(config):
 
   get_memory_allocations()
   # evaluate shapes
-  transformer_eval_params = transformer.init_weights(rngs=rng, max_sequence_length=config.max_sequence_length, eval_only=True)
-  
+  transformer_eval_params = transformer.init_weights(
+      rngs=rng, max_sequence_length=config.max_sequence_length, eval_only=True
+  )
+
   # loads pretrained weights
   transformer_params = load_flow_model(config.flux_name, transformer_eval_params, "cpu")
   # create transformer state
-  weights_init_fn = functools.partial(transformer.init_weights, rngs=rng, max_sequence_length=config.max_sequence_length, eval_only=False)
+  weights_init_fn = functools.partial(
+      transformer.init_weights, rngs=rng, max_sequence_length=config.max_sequence_length, eval_only=False
+  )
   transformer_state, transformer_state_shardings = setup_initial_state(
-    model=transformer,
-    tx=None,
-    config=config,
-    mesh=mesh,
-    weights_init_fn=weights_init_fn,
-    model_params=None,
-    training=False
+      model=transformer,
+      tx=None,
+      config=config,
+      mesh=mesh,
+      weights_init_fn=weights_init_fn,
+      model_params=None,
+      training=False,
   )
   transformer_state = transformer_state.replace(params=transformer_params)
   transformer_state = jax.device_put(transformer_state, transformer_state_shardings)
@@ -463,21 +430,21 @@ def run(config):
   states["vae"] = vae_state
 
   p_run_inference = jax.jit(
-    functools.partial(
-      run_inference,
-      transformer=transformer,
-      vae=vae,
-      config=config,
-      mesh=mesh,
-      latents=latents,
-      latent_image_ids=latent_image_ids,
-      prompt_embeds=prompt_embeds,
-      txt_ids=text_ids,
-      vec=pooled_prompt_embeds,
-      guidance_vec=guidance,
-    ),
-    in_shardings=(state_shardings,),
-    out_shardings=None,
+      functools.partial(
+          run_inference,
+          transformer=transformer,
+          vae=vae,
+          config=config,
+          mesh=mesh,
+          latents=latents,
+          latent_image_ids=latent_image_ids,
+          prompt_embeds=prompt_embeds,
+          txt_ids=text_ids,
+          vec=pooled_prompt_embeds,
+          guidance_vec=guidance,
+      ),
+      in_shardings=(state_shardings,),
+      out_shardings=None,
   )
   t0 = time.perf_counter()
   p_run_inference(states).block_until_ready()

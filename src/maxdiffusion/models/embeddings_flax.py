@@ -56,6 +56,7 @@ def get_sinusoidal_embeddings(
   signal = jnp.reshape(signal, [jnp.shape(timesteps)[0], embedding_dim])
   return signal
 
+
 class FlaxTimestepEmbedding(nn.Module):
   r"""
   Time step Embedding Module. Learns embeddings for input time steps.
@@ -73,14 +74,9 @@ class FlaxTimestepEmbedding(nn.Module):
 
   @nn.compact
   def __call__(self, temb):
-    temb = nn.Dense(self.time_embed_dim,
-                    dtype=self.dtype,
-                    param_dtype=self.weights_dtype,
-                    name="linear_1")(temb)
+    temb = nn.Dense(self.time_embed_dim, dtype=self.dtype, param_dtype=self.weights_dtype, name="linear_1")(temb)
     temb = nn.silu(temb)
-    temb = nn.Dense(self.time_embed_dim,
-                    dtype=self.dtype,
-                    param_dtype=self.weights_dtype, name="linear_2")(temb)
+    temb = nn.Dense(self.time_embed_dim, dtype=self.dtype, param_dtype=self.weights_dtype, name="linear_2")(temb)
     return temb
 
 
@@ -103,6 +99,7 @@ class FlaxTimesteps(nn.Module):
         timesteps, embedding_dim=self.dim, flip_sin_to_cos=self.flip_sin_to_cos, freq_shift=self.freq_shift
     )
 
+
 def get_1d_rotary_pos_embed(
     dim: int, pos: Union[jnp.array, int], theta: float = 10000.0, linear_factor=1.0, ntk_factor=1.0, freqs_dtype=jnp.float32
 ):
@@ -122,6 +119,7 @@ def get_1d_rotary_pos_embed(
   out = jnp.stack([freqs_cos, -freqs_sin, freqs_sin, freqs_cos], axis=-1)
 
   return out
+
 
 class PixArtAlphaTextProjection(nn.Module):
   """
@@ -239,36 +237,3 @@ class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
     conditioning = time_guidance_emb + pooled_projections
 
     return conditioning
-
-
-# class HFEmbedder(nnx.Module):
-
-#   def __init__(self, version: str, max_length: int, **hf_kwargs):
-#     super().__init__()
-#     self.is_clip = version.split("/")[1].startswith("clip")
-#     self.max_length = max_length
-#     self.output_key = "pooler_output" if self.is_clip else "last_hidden_state"
-
-#     if self.is_clip:
-#       self.tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(version, max_length=max_length, use_fast=True)
-#       self.hf_module: FlaxCLIPTextModel = FlaxCLIPTextModel.from_pretrained(version, **hf_kwargs)
-#     else:
-#       self.tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(version, max_length=max_length, use_fast=True)
-#       self.hf_module: FlaxT5EncoderModel = FlaxT5EncoderModel.from_pretrained(version, **hf_kwargs)
-
-#   def __call__(self, text: list[str]):
-#     batch_encoding = self.tokenizer(
-#         text,
-#         truncation=True,
-#         max_length=self.max_length,
-#         return_length=False,
-#         return_overflowing_tokens=False,
-#         padding="max_length",
-#         return_tensors="np",
-#     )
-#     outputs = self.hf_module(
-#         input_ids=batch_encoding["input_ids"],
-#         attention_mask=None,
-#         output_hidden_states=False,
-#     )
-#     return outputs[self.output_key]
