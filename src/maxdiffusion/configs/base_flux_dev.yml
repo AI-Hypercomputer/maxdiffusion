@@ -55,7 +55,19 @@ precision: "DEFAULT"
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash
+
 flash_block_sizes: {}
+# Use the following flash_block_sizes on v6e (Trillium) due to larger vmem.
+# flash_block_sizes: {
+#   "block_q" : 1536,
+#   "block_kv_compute" : 1536,
+#   "block_kv" : 1536,
+#   "block_q_dkv" : 1536,
+#   "block_kv_dkv" : 1536,
+#   "block_kv_dkv_compute" : 1536,
+#   "block_q_dq" : 1536,
+#   "block_kv_dq" : 1536
+# }
 # GroupNorm groups
 norm_num_groups: 32
 
@@ -137,8 +149,8 @@ data_sharding: [['data', 'fsdp', 'tensor']]
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: -1
 dcn_tensor_parallelism: 1
-ici_data_parallelism: 1
-ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_data_parallelism: -1
+ici_fsdp_parallelism: 1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
 # Dataset
