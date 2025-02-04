@@ -305,7 +305,7 @@ def run(config):
     _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
     images = p_run_inference(states).block_until_ready()
   print("inference time: ", (time.time() - s))
-  images = jax.experimental.multihost_utils.process_allgather(images)
+  images = jax.experimental.multihost_utils.process_allgather(images, tiled=True)
   numpy_images = np.array(images)
   images = VaeImageProcessor.numpy_to_pil(numpy_images)
   for i, image in enumerate(images):
