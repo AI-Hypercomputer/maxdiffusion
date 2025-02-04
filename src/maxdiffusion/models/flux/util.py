@@ -159,7 +159,6 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
             for pt_key, tensor in tensors.items():
               renamed_pt_key = rename_key(pt_key)
               if "double_blocks" in renamed_pt_key:
-                renamed_pt_key = renamed_pt_key.replace("double_blocks_", "double_blocks.layers_")
                 renamed_pt_key = renamed_pt_key.replace("img_mlp_", "img_mlp.layers_")
                 renamed_pt_key = renamed_pt_key.replace("txt_mlp_", "txt_mlp.layers_")
                 renamed_pt_key = renamed_pt_key.replace("img_mod", "img_norm1")
@@ -176,7 +175,6 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
                 renamed_pt_key = renamed_pt_key.replace("in_layer", "linear_1")
                 renamed_pt_key = renamed_pt_key.replace("out_layer", "linear_2")
               elif "single_blocks" in renamed_pt_key:
-                renamed_pt_key = renamed_pt_key.replace("single_blocks_", "single_blocks.layers_")
                 renamed_pt_key = renamed_pt_key.replace("modulation", "norm")
                 renamed_pt_key = renamed_pt_key.replace("norm.key_norm", "attn.key_norm")
                 renamed_pt_key = renamed_pt_key.replace("norm.query_norm", "attn.query_norm")
@@ -188,7 +186,6 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
               elif "final_layer" in renamed_pt_key:
                 renamed_pt_key = renamed_pt_key.replace("final_layer.linear", "proj_out")
                 renamed_pt_key = renamed_pt_key.replace("final_layer.adaLN_modulation_1", "norm_out.Dense_0")
-
               pt_tuple_key = tuple(renamed_pt_key.split("."))
               flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, eval_shapes)
               flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)

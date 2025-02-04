@@ -383,48 +383,43 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         precision=self.precision,
     )
 
-    self.double_blocks = nn.Sequential(
-        [
-            *[
-                FluxTransformerBlock(
-                    dim=self.inner_dim,
-                    num_attention_heads=self.num_attention_heads,
-                    attention_head_dim=self.attention_head_dim,
-                    attention_kernel=self.attention_kernel,
-                    flash_min_seq_length=self.flash_min_seq_length,
-                    flash_block_sizes=self.flash_block_sizes,
-                    mesh=self.mesh,
-                    dtype=self.dtype,
-                    weights_dtype=self.weights_dtype,
-                    precision=self.precision,
-                    mlp_ratio=self.mlp_ratio,
-                    qkv_bias=self.qkv_bias,
-                )
-                for _ in range(self.num_layers)
-            ]
-        ]
-    )
+    double_blocks = []
+    for _ in range(self.num_layers):
+      double_block = FluxTransformerBlock(
+        dim=self.inner_dim,
+        num_attention_heads=self.num_attention_heads,
+        attention_head_dim=self.attention_head_dim,
+        attention_kernel=self.attention_kernel,
+        flash_min_seq_length=self.flash_min_seq_length,
+        flash_block_sizes=self.flash_block_sizes,
+        mesh=self.mesh,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision,
+        mlp_ratio=self.mlp_ratio,
+        qkv_bias=self.qkv_bias,
+      )
+      double_blocks.append(double_block)
+    self.double_blocks = double_blocks
 
-    self.single_blocks = nn.Sequential(
-        [
-            *[
-                FluxSingleTransformerBlock(
-                    dim=self.inner_dim,
-                    num_attention_heads=self.num_attention_heads,
-                    attention_head_dim=self.attention_head_dim,
-                    attention_kernel=self.attention_kernel,
-                    flash_min_seq_length=self.flash_min_seq_length,
-                    flash_block_sizes=self.flash_block_sizes,
-                    mesh=self.mesh,
-                    dtype=self.dtype,
-                    weights_dtype=self.weights_dtype,
-                    precision=self.precision,
-                    mlp_ratio=self.mlp_ratio,
-                )
-                for _ in range(self.num_single_layers)
-            ]
-        ]
-    )
+    single_blocks = []
+    for _ in range(self.num_single_layers):
+      single_block = FluxSingleTransformerBlock(
+        dim=self.inner_dim,
+        num_attention_heads=self.num_attention_heads,
+        attention_head_dim=self.attention_head_dim,
+        attention_kernel=self.attention_kernel,
+        flash_min_seq_length=self.flash_min_seq_length,
+        flash_block_sizes=self.flash_block_sizes,
+        mesh=self.mesh,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision,
+        mlp_ratio=self.mlp_ratio,
+      )
+      single_blocks.append(single_block)
+    
+    self.single_blocks = single_blocks
 
     self.norm_out = AdaLayerNormContinuous(
         self.inner_dim,
@@ -509,18 +504,19 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     image_rotary_emb = self.pe_embedder(ids)
     image_rotary_emb = nn.with_logical_constraint(image_rotary_emb, ("activation_batch", "activation_embed"))
 
-    hidden_states, encoder_hidden_states, temb, image_rotary_emb = self.double_blocks(
-        hidden_states=hidden_states,
-        encoder_hidden_states=encoder_hidden_states,
-        temb=temb,
-        image_rotary_emb=image_rotary_emb,
-    )
+    for double_block in self.double_blocks:
+      hidden_states, encoder_hidden_states, temb, image_rotary_emb = double_block(
+          hidden_states=hidden_states,
+          encoder_hidden_states=encoder_hidden_states,
+          temb=temb,
+          image_rotary_emb=image_rotary_emb,
+      )
     hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
     hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
-
-    hidden_states, temb, image_rotary_emb = self.single_blocks(
-        hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb
-    )
+    for single_block in self.single_blocks:
+      hidden_states, temb, image_rotary_emb = single_block(
+          hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb
+      )
     hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
     hidden_states = self.norm_out(hidden_states, temb)

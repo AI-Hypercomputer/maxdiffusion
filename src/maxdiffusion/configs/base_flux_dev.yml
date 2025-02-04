@@ -55,16 +55,7 @@ precision: "DEFAULT"
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash
-flash_block_sizes: {
-  "block_q" : 128,
-  "block_kv" : 128,
-  "block_kv_compute" : 128,
-  "block_q_dkv" : 128,
-  "block_kv_dkv" : 128,
-  "block_kv_dkv_compute" : 128,
-  "block_q_dq" : 128,
-  "block_kv_dq" : 128
-}
+flash_block_sizes: {}
 # GroupNorm groups
 norm_num_groups: 32
 
