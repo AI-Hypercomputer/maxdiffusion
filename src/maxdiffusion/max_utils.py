@@ -46,7 +46,10 @@ from flax.typing import (
 from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
 from jax.experimental import mesh_utils
-from transformers import (FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel)
+from transformers import (
+  FlaxCLIPTextModel,
+  FlaxCLIPTextPreTrainedModel
+)
 from flax import struct
 from typing import (
     Callable,
