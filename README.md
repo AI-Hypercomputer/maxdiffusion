@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2025/02/08**: Flux schnell & dev inference.
 - **`2024/12/12`**: Load multiple LoRAs for inference.
 - **`2024/10/22`**: LoRA support for Hyper SDXL.
 - **`2024/8/1`**: Orbax is the new default checkpointer. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
@@ -46,6 +47,7 @@ MaxDiffusion supports
     * [Training](#training)
       * [Dreambooth](#dreambooth)
     * [Inference](#inference)
+      * [Flux](#flux) 
       * [Hyper-SD XL LoRA](#hyper-sdxl-lora)
       * [Load Multiple LoRA](#load-multiple-lora)
       * [SDXL Lightning](#sdxl-lightning)
@@ -132,6 +134,39 @@ To generate images, run the following command:
 - **Stable Diffusion 2.1**
   ```bash
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
+  ```
+  ## Flux
+
+  First make sure you have permissions to access the Flux repos in Huggingface.
+
+  Expected results on 1024 x 1024 images with flash attention and bfloat16:
+
+  | Model | Accelerator | Sharding Strategy | Batch Size | Steps | time (secs) |
+  | --- | --- | --- | --- | --- | --- |
+  | Flux-dev | v4-8 | DDP | 4 | 28 | 23 |
+  | Flux-schnell | v4-8 | DDP | 4 | 4 | 2.2 |
+  | Flux-dev | v6e-4 | DDP | 4 | 28 | 5.5 |
+  | Flux-schnell | v6e-4 | DDP | 4 | 4 | 0.8 |
+  | Flux-schnell | v6e-4 | FSDP | 4 | 4 | 1.2 |
+
+  Schnell:
+
+  ```bash
+  python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1
+  ```
+
+  Dev:
+
+  ```bash
+  python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1
+  ```
+
+  If you are using a TPU v6e (Trillium), you can use optimized flash block sizes for faster inference. Uncomment Flux-dev [config](src/maxdiffusion/configs/base_flux_dev.yml#60) and Flux-schnell [config](src/maxdiffusion/configs/base_flux_schnell.yml#68)
+
+  To keep text encoders, vae and transformer on HBM memory at all times, the following command shards the model across devices. 
+
+  ```bash
+  python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
   ```
 
   ## Hyper SDXL LoRA
