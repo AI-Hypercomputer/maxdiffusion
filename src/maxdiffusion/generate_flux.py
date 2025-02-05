@@ -31,7 +31,7 @@ from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, Flax
 
 from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
-from max_utils import (
+from maxdiffusion.max_utils import (
     device_put_replicated,
     get_memory_allocations,
     create_device_mesh,
@@ -50,9 +50,6 @@ def unpack(x: Array, height: int, width: int) -> Array:
       ph=2,
       pw=2,
   )
-
-
-from einops import rearrange
 
 
 def vae_decode(latents, vae, state, config):

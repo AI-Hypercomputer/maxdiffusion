@@ -163,6 +163,8 @@ def create_flax_params_from_pytorch_state(
       pt_tuple_key = pt_tuple_key[:-1] + ("kernel",)
       flax_key_list = [*pt_tuple_key]
       flax_tensor = pt_tensor
+      if "lora" in flax_key_list:
+        flax_key_list[flax_key_list.index("lora")] = f"lora-{adapter_name}"
     else:
       flax_key_list = [*pt_tuple_key]
       if "text_encoder" in pt_tuple_key or "text_encoder_2" in pt_tuple_key:

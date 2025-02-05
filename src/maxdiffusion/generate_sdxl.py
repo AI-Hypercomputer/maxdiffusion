@@ -249,9 +249,11 @@ def run(config):
         config=config,
         mesh=checkpoint_loader.mesh,
         weights_init_fn=weights_init_fn,
-        model_params=params.get("unet", None),
+        model_params=None,
         training=False,
     )
+    unet_state = unet_state.replace(params=params.get("unet", None))
+    unet_state = jax.device_put(unet_state, unet_state_shardings)
 
   vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
       pipeline, params, checkpoint_item_name="vae_state", is_training=False
