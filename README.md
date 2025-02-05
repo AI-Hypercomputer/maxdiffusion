@@ -17,7 +17,7 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
-- **`2025/02/08**: Flux schnell & dev inference.
+- **`2025/02/08`**: Flux schnell & dev inference.
 - **`2024/12/12`**: Load multiple LoRAs for inference.
 - **`2024/10/22`**: LoRA support for Hyper SDXL.
 - **`2024/8/1`**: Orbax is the new default checkpointer. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
