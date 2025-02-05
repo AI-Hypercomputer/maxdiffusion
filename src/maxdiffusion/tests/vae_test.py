@@ -16,6 +16,7 @@
 
 import os
 import unittest
+import pytest
 from absl.testing import absltest
 
 import numpy as np
@@ -27,6 +28,7 @@ from maxdiffusion.image_processor import VaeImageProcessor
 from skimage.metrics import structural_similarity as ssim
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 
 class VaeTest(unittest.TestCase):
@@ -35,6 +37,7 @@ class VaeTest(unittest.TestCase):
   def setUp(self):
     VaeTest.dummy_data = {}
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_flux_vae(self):
 
     img_url = os.path.join(THIS_DIR, "images", "test_hyper_sdxl.png")
@@ -67,3 +70,7 @@ class VaeTest(unittest.TestCase):
     image = np.uint8(image * 255)
     ssim_compare = ssim(base_image, image, multichannel=True, channel_axis=-1, data_range=255)
     assert ssim_compare >= 0.90
+
+
+if __name__ == "__main__":
+  absltest.main()
