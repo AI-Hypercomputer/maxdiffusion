@@ -24,7 +24,6 @@ from PIL import Image
 import jax
 import jax.numpy as jnp
 from maxdiffusion import FlaxAutoencoderKL
-from maxdiffusion.image_processor import VaeImageProcessor
 from skimage.metrics import structural_similarity as ssim
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))

@@ -28,9 +28,7 @@ from ...attention_flax import FlaxFluxAttention
 from ...embeddings_flax import (FluxPosEmbed, CombinedTimestepGuidanceTextProjEmbeddings, CombinedTimestepTextProjEmbeddings)
 from .... import common_types
 from ....common_types import BlockSizes
-from .... import max_logging
 from ....utils import BaseOutput
-from dataclasses import dataclass
 
 AxisNames = common_types.AxisNames
 BATCH = common_types.BATCH

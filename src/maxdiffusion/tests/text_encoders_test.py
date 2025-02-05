@@ -17,7 +17,6 @@
 import os
 import unittest
 import pytest
-import jax.numpy as jnp
 from absl.testing import absltest
 
 from transformers import CLIPTokenizer, FlaxCLIPTextModel
