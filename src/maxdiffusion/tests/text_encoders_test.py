@@ -16,13 +16,16 @@
 
 import os
 import unittest
+import pytest
+import jax.numpy as jnp
 from absl.testing import absltest
 
 from transformers import CLIPTokenizer, FlaxCLIPTextModel
-from transformers import T5TokenizerFast, T5EncoderModel
+from transformers import T5TokenizerFast, FlaxT5EncoderModel
 
 from ..generate_flux import get_clip_prompt_embeds, get_t5_prompt_embeds
 
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -32,22 +35,18 @@ class TextEncoderTest(unittest.TestCase):
   def setUp(self):
     TextEncoderTest.dummy_data = {}
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_flux_t5_text_encoder(self):
 
-    text_encoder_2_pt = T5EncoderModel.from_pretrained(
-        "black-forest-labs/FLUX.1-dev",
-        subfolder="text_encoder_2",
-    )
+    text_encoder = FlaxT5EncoderModel.from_pretrained("ariG23498/t5-v1-1-xxl-flax")
 
-    tokenizer_2 = T5TokenizerFast.from_pretrained(
-        "black-forest-labs/FLUX.1-dev",
-        subfolder="tokenizer_2",
-    )
+    tokenizer_2 = T5TokenizerFast.from_pretrained("ariG23498/t5-v1-1-xxl-flax")
 
-    embeds = get_t5_prompt_embeds("A dog on a skateboard", 2, tokenizer_2, text_encoder_2_pt)
+    embeds = get_t5_prompt_embeds("A dog on a skateboard", 2, tokenizer_2, text_encoder)
 
     assert embeds.shape == (2, 512, 4096)
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_flux_clip_text_encoder(self):
 
     text_encoder = FlaxCLIPTextModel.from_pretrained(
@@ -56,3 +55,7 @@ class TextEncoderTest(unittest.TestCase):
     tokenizer = CLIPTokenizer.from_pretrained("black-forest-labs/FLUX.1-dev", subfolder="tokenizer", dtype="bfloat16")
     embeds = get_clip_prompt_embeds("A cat riding a skateboard", 2, tokenizer, text_encoder)
     assert embeds.shape == (2, 768)
+
+
+if __name__ == "__main__":
+  absltest.main()
