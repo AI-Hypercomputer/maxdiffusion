@@ -127,7 +127,7 @@ def validate_flax_state_dict(expected_pytree: dict, new_pytree: dict):
     if key in new_pytree.keys():
       try:
         expected_pytree_shape = expected_pytree[key].shape
-      except:
+      except Exception:
         expected_pytree_shape = expected_pytree[key].value.shape
       if expected_pytree_shape != new_pytree[key].shape:
         max_logging.log(
