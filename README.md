@@ -44,18 +44,22 @@ MaxDiffusion supports
 
 # Table of Contents
 
-* [Getting Started](#getting-started)
-    * [Training](#training)
-      * [Dreambooth](#dreambooth)
-    * [Inference](#inference)
-      * [Flux](#flux)
-        * [Flux LoRA](#flux-lora)
-      * [Hyper-SD XL LoRA](#hyper-sdxl-lora)
-      * [Load Multiple LoRA](#load-multiple-lora)
-      * [SDXL Lightning](#sdxl-lightning)
-      * [ControlNet](#controlnet)
-* [Comparison To Alternatives](#comparison-to-alternatives)
-* [Development](#development)
+- [What's new?](#whats-new)
+- [Overview](#overview)
+- [Table of Contents](#table-of-contents)
+- [Getting Started](#getting-started)
+  - [Getting Started:](#getting-started-1)
+  - [Training](#training)
+  - [Dreambooth](#dreambooth)
+  - [Inference](#inference)
+  - [Flux](#flux)
+  - [Hyper SDXL LoRA](#hyper-sdxl-lora)
+  - [Load Multiple LoRA](#load-multiple-lora)
+  - [SDXL Lightning](#sdxl-lightning)
+  - [ControlNet](#controlnet)
+  - [Getting Started: Multihost development](#getting-started-multihost-development)
+- [Comparison to Alternatives](#comparison-to-alternatives)
+- [Development](#development)
 
 # Getting Started
 
