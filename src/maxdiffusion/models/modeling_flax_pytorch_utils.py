@@ -222,6 +222,51 @@ def create_flax_params_from_pytorch_state(
       renamed_network_alphas[tuple(flax_key_list)] = network_alpha_value
   return unet_state_dict, text_encoder_state_dict, text_encoder_2_state_dict, rank, renamed_network_alphas
 
+def convert_flux_lora_pytorch_state_dict_to_flax(config, pt_state_dict, params, adapter_name):
+  pt_state_dict = {k: v.float().numpy() for k, v in pt_state_dict.items()}
+  transformer_params = flatten_dict(unfreeze(params["transformer"]))
+  network_alphas = {}
+  rank = None
+  for pt_key, tensor in pt_state_dict.items():
+    renamed_pt_key = rename_key(pt_key)
+    print("renamed_pt_key:", renamed_pt_key)
+    renamed_pt_key = renamed_pt_key.replace("lora_unet_", "")
+    renamed_pt_key = renamed_pt_key.replace("lora_down", f"lora-{adapter_name}.down")
+    renamed_pt_key = renamed_pt_key.replace("lora_up", f"lora-{adapter_name}.up")
+
+    if "double_blocks" in renamed_pt_key:
+      renamed_pt_key = renamed_pt_key.replace("_img_attn_proj", ".attn.i_proj")
+      renamed_pt_key = renamed_pt_key.replace("_img_attn_qkv", ".attn.i_qkv")
+      renamed_pt_key = renamed_pt_key.replace("_img_mlp_0", ".img_mlp.layers_0")
+      renamed_pt_key = renamed_pt_key.replace("_img_mlp_2", ".img_mlp.layers_2")
+      renamed_pt_key = renamed_pt_key.replace("_img_mod_lin", ".img_norm1.lin")
+      renamed_pt_key = renamed_pt_key.replace("_txt_attn_proj", ".attn.e_proj")
+      renamed_pt_key = renamed_pt_key.replace("_txt_attn_qkv", ".attn.e_qkv")
+      renamed_pt_key = renamed_pt_key.replace("_txt_mlp_0", ".txt_mlp.layers_0")
+      renamed_pt_key = renamed_pt_key.replace("_txt_mlp_2", ".txt_mlp.layers_2")
+      renamed_pt_key = renamed_pt_key.replace("_txt_mod_lin", ".txt_norm1.lin")
+    elif "single_blocks" in renamed_pt_key:
+      renamed_pt_key = renamed_pt_key.replace("_linear1", ".linear1")
+      renamed_pt_key = renamed_pt_key.replace("_linear2", ".linear2")
+      renamed_pt_key = renamed_pt_key.replace("_modulation_lin", ".norm.lin")
+    
+    renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
+    
+    pt_tuple_key = tuple(renamed_pt_key.split("."))
+    if "alpha" in pt_tuple_key:
+      pt_tuple_key = pt_tuple_key[:-1] + (f"lora-{adapter_name}", 'down', 'kernel')
+      network_alphas[tuple([*pt_tuple_key])] = tensor.item()
+      pt_tuple_key = pt_tuple_key[:-1] + (f"lora-{adapter_name}", 'up', 'kernel')
+      network_alphas[tuple([*pt_tuple_key])] = tensor.item()
+    else:
+      if pt_tuple_key[-2] == "up":
+        rank = tensor.shape[1]
+      transformer_params[tuple([*pt_tuple_key])] = jnp.asarray(tensor.T, dtype=config.weights_dtype)
+  
+  params["transformer"] = unflatten_dict(transformer_params)
+
+  return params, rank, network_alphas
+
 
 def convert_flux_lora_pytorch_state_dict_to_flax(config, pt_state_dict, params, adapter_name):
   pt_state_dict = {k: v.float().numpy() for k, v in pt_state_dict.items()}

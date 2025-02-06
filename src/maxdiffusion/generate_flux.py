@@ -16,6 +16,7 @@
 
 from typing import Callable, List, Union, Sequence
 from absl import app
+from contextlib import ExitStack
 import functools
 import math
 import time
@@ -24,6 +25,7 @@ from PIL import Image
 import jax
 from jax.sharding import Mesh, PositionalSharding, PartitionSpec as P
 import jax.numpy as jnp
+import flax.linen as nn
 from chex import Array
 from einops import rearrange
 from flax.linen import partitioning as nn_partitioning
@@ -39,6 +41,28 @@ from maxdiffusion.max_utils import (
     get_precision,
     setup_initial_state,
 )
+from maxdiffusion.loaders.flux_lora_pipeline import FluxLoraLoaderMixin
+
+def maybe_load_flux_lora(config, lora_loader, params):
+  def _noop_interceptor(next_fn, args, kwargs, context):
+    return next_fn(*args, **kwargs)
+
+  lora_config = config.lora_config
+  interceptors= [_noop_interceptor]
+  if len(lora_config["lora_model_name_or_path"]) > 0:
+    interceptors = []
+    for i in range(len(lora_config["lora_model_name_or_path"])):
+      params, rank, network_alphas = lora_loader.load_lora_weights(
+        config,
+        lora_config["lora_model_name_or_path"][i],
+        weight_name=lora_config["weight_name"][i],
+        params=params,
+        adapter_name=lora_config["adapter_name"][i],
+      )
+      interceptor = lora_loader.make_lora_interceptor(params, rank, network_alphas, lora_config["adapter_name"][i])
+      interceptors.append(interceptor)
+
+  return params, interceptors
 
 
 def unpack(x: Array, height: int, width: int) -> Array:
@@ -400,21 +424,29 @@ def run(config):
 
   # loads pretrained weights
   transformer_params = load_flow_model(config.flux_name, transformer_eval_params, "cpu")
+  params = {}
+  params["transformer"] = transformer_params
+  # maybe load lora and create interceptor
+  lora_loader = FluxLoraLoaderMixin()
+  params, lora_interceptors = maybe_load_flux_lora(config, lora_loader, params)
+  transformer_params = params["transformer"]
   # create transformer state
   weights_init_fn = functools.partial(
       transformer.init_weights, rngs=rng, max_sequence_length=config.max_sequence_length, eval_only=False
   )
-  transformer_state, transformer_state_shardings = setup_initial_state(
-      model=transformer,
-      tx=None,
-      config=config,
-      mesh=mesh,
-      weights_init_fn=weights_init_fn,
-      model_params=None,
-      training=False,
-  )
-  transformer_state = transformer_state.replace(params=transformer_params)
-  transformer_state = jax.device_put(transformer_state, transformer_state_shardings)
+  with ExitStack() as stack:
+    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+    transformer_state, transformer_state_shardings = setup_initial_state(
+        model=transformer,
+        tx=None,
+        config=config,
+        mesh=mesh,
+        weights_init_fn=weights_init_fn,
+        model_params=None,
+        training=False,
+    )
+    transformer_state = transformer_state.replace(params=transformer_params)
+    transformer_state = jax.device_put(transformer_state, transformer_state_shardings)
   get_memory_allocations()
 
   states = {}
@@ -444,17 +476,23 @@ def run(config):
       out_shardings=None,
   )
   t0 = time.perf_counter()
-  p_run_inference(states).block_until_ready()
+  with ExitStack() as stack:
+    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+    p_run_inference(states).block_until_ready()
   t1 = time.perf_counter()
   max_logging.log(f"Compile time: {t1 - t0:.1f}s.")
 
   t0 = time.perf_counter()
-  imgs = p_run_inference(states).block_until_ready()
+  with ExitStack() as stack, jax.profiler.trace("/home/jfacevedo/trace/"):
+    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+    imgs = p_run_inference(states).block_until_ready()
   t1 = time.perf_counter()
   max_logging.log(f"Inference time: {t1 - t0:.1f}s.")
 
   t0 = time.perf_counter()
-  imgs = p_run_inference(states).block_until_ready()
+  with ExitStack() as stack:
+    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+    imgs = p_run_inference(states).block_until_ready()
   imgs = jax.experimental.multihost_utils.process_allgather(imgs, tiled=True)
   t1 = time.perf_counter()
   max_logging.log(f"Inference time: {t1 - t0:.1f}s.")
