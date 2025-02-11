@@ -123,7 +123,7 @@ diffusion_scheduler_config: {
 base_output_directory: ""
 
 # Hardware
-hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
+hardware: 'gpu' # Supported hardware types are 'tpu', 'gpu'
 
 # Parallelism
 mesh_axes: ['data', 'fsdp', 'tensor']
@@ -238,7 +238,7 @@ do_classifier_free_guidance: True
 guidance_scale: 0.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
-num_inference_steps: 4
+num_inference_steps: 50
 
 # SDXL Lightning parameters
 lightning_from_pt: True
