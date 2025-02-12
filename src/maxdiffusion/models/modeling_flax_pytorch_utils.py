@@ -55,6 +55,10 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
         ("to_k", "key"),
         ("to_v", "value"),
         ("to_q", "query"),
+        ("txt_attn_proj", "txt_attn_proj"),
+        ("img_attn_proj", "img_attn_proj"),
+        ("txt_attn_qkv", "txt_attn_qkv"),
+        ("img_attn_qkv", "img_attn_qkv"),
     ):
       if pt_tuple_key[-2] == rename_from:
         weight_name = pt_tuple_key[-1]
@@ -159,6 +163,8 @@ def create_flax_params_from_pytorch_state(
       pt_tuple_key = pt_tuple_key[:-1] + ("kernel",)
       flax_key_list = [*pt_tuple_key]
       flax_tensor = pt_tensor
+      if "lora" in flax_key_list:
+        flax_key_list[flax_key_list.index("lora")] = f"lora-{adapter_name}"
     else:
       flax_key_list = [*pt_tuple_key]
       if "text_encoder" in pt_tuple_key or "text_encoder_2" in pt_tuple_key:
@@ -243,7 +249,7 @@ def convert_lora_pytorch_state_dict_to_flax(pt_state_dict, params, network_alpha
 
 def convert_pytorch_state_dict_to_flax(pt_state_dict, flax_model, init_key=42):
   # Step 1: Convert pytorch tensor to numpy
-  pt_state_dict = {k: v.numpy() for k, v in pt_state_dict.items()}
+  pt_state_dict = {k: v.float().numpy() for k, v in pt_state_dict.items()}
 
   # Step 2: Since the model is stateless, run eval_shape to get the pytree structure
   random_flax_params = flax_model.init_weights(PRNGKey(init_key), eval_only=True)

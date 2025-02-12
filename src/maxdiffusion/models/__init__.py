@@ -31,6 +31,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
   from .unet_2d_condition_flax import FlaxUNet2DConditionModel
   from .vae_flax import FlaxAutoencoderKL
   from .lora import *
+  from .flux.transformers.transformer_flux_flax import FluxTransformer2DModel
 
 else:
   import sys
