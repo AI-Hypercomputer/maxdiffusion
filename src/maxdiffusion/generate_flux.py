@@ -77,7 +77,7 @@ def unpack(x: Array, height: int, width: int) -> Array:
 
 
 def vae_decode(latents, vae, state, config):
-  img = unpack(x=latents.astype(jnp.float32), height=config.resolution, width=config.resolution)
+  img = unpack(x=latents, height=config.resolution, width=config.resolution)
   img = img / vae.config.scaling_factor + vae.config.shift_factor
   img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample
   return img
@@ -135,19 +135,7 @@ def get_lin_function(x1: float = 256, y1: float = 0.5, x2: float = 4096, y2: flo
 
 
 def run_inference(
-    states,
-    transformer,
-    vae,
-    config,
-    mesh,
-    latents,
-    latent_image_ids,
-    prompt_embeds,
-    txt_ids,
-    vec,
-    guidance_vec,
-    c_ts,
-    p_ts
+    states, transformer, vae, config, mesh, latents, latent_image_ids, prompt_embeds, txt_ids, vec, guidance_vec, c_ts, p_ts
 ):
 
   transformer_state = states["transformer"]
@@ -468,7 +456,7 @@ def run(config):
           vec=pooled_prompt_embeds,
           guidance_vec=guidance,
           c_ts=c_ts,
-          p_ts=p_ts
+          p_ts=p_ts,
       ),
       in_shardings=(state_shardings,),
       out_shardings=None,
