@@ -30,7 +30,7 @@ t5xxl_model_name_or_path: 'ariG23498/t5-v1-1-xxl-flax'
 # Flux params
 flux_name: "flux-dev"
 max_sequence_length: 512
-time_shift: False
+time_shift: True
 base_shift: 0.5
 max_shift: 1.15
 # offloads t5 encoder after text encoding to save memory.
