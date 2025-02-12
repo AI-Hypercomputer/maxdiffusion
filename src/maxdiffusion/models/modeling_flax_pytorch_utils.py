@@ -229,12 +229,21 @@ def convert_flux_lora_pytorch_state_dict_to_flax(config, pt_state_dict, params, 
   rank = None
   for pt_key, tensor in pt_state_dict.items():
     renamed_pt_key = rename_key(pt_key)
-    print("renamed_pt_key:", renamed_pt_key)
     renamed_pt_key = renamed_pt_key.replace("lora_unet_", "")
     renamed_pt_key = renamed_pt_key.replace("lora_down", f"lora-{adapter_name}.down")
     renamed_pt_key = renamed_pt_key.replace("lora_up", f"lora-{adapter_name}.up")
 
     if "double_blocks" in renamed_pt_key:
+      renamed_pt_key = renamed_pt_key.replace("double_blocks.", "double_blocks_")
+      renamed_pt_key = renamed_pt_key.replace("processor.proj_lora1.down", f"attn.i_proj.lora-{adapter_name}.down")
+      renamed_pt_key = renamed_pt_key.replace("processor.proj_lora1.up", f"attn.i_proj.lora-{adapter_name}.up")
+      renamed_pt_key = renamed_pt_key.replace("processor.proj_lora2.down", f"attn.e_proj.lora-{adapter_name}.down")
+      renamed_pt_key = renamed_pt_key.replace("processor.proj_lora2.up", f"attn.e_proj.lora-{adapter_name}.up")
+      renamed_pt_key = renamed_pt_key.replace("processor.qkv_lora1.down", f"attn.i_qkv.lora-{adapter_name}.down")
+      renamed_pt_key = renamed_pt_key.replace("processor.qkv_lora1.up", f"attn.i_qkv.lora-{adapter_name}.up")
+      renamed_pt_key = renamed_pt_key.replace("processor.qkv_lora2.down", f"attn.e_qkv.lora-{adapter_name}.down")
+      renamed_pt_key = renamed_pt_key.replace("processor.qkv_lora2.up", f"attn.e_qkv.lora-{adapter_name}.up")
+      
       renamed_pt_key = renamed_pt_key.replace("_img_attn_proj", ".attn.i_proj")
       renamed_pt_key = renamed_pt_key.replace("_img_attn_qkv", ".attn.i_qkv")
       renamed_pt_key = renamed_pt_key.replace("_img_mlp_0", ".img_mlp.layers_0")
