@@ -77,7 +77,7 @@ def unpack(x: Array, height: int, width: int) -> Array:
 
 
 def vae_decode(latents, vae, state, config):
-  img = unpack(x=latents, height=config.resolution, width=config.resolution)
+  img = unpack(x=latents.astype(jnp.float32), height=config.resolution, width=config.resolution)
   img = img / vae.config.scaling_factor + vae.config.shift_factor
   img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample
   return img
@@ -115,13 +115,12 @@ def loop_body(
 
 def prepare_latent_image_ids(height, width):
   latent_image_ids = jnp.zeros((height, width, 3))
-  latent_image_ids = latent_image_ids.at[..., 1].set(latent_image_ids[..., 1] + jnp.arange(height)[:, None])
-  latent_image_ids = latent_image_ids.at[..., 2].set(latent_image_ids[..., 2] + jnp.arange(width)[None, :])
+  latent_image_ids = latent_image_ids.at[..., 1].set(jnp.arange(height)[:, None])
+  latent_image_ids = latent_image_ids.at[..., 2].set(jnp.arange(width)[None, :])
 
   latent_image_id_height, latent_image_id_width, latent_image_id_channels = latent_image_ids.shape
 
   latent_image_ids = latent_image_ids.reshape(latent_image_id_height * latent_image_id_width, latent_image_id_channels)
-
   return latent_image_ids.astype(jnp.bfloat16)
 
 
@@ -147,19 +146,9 @@ def run_inference(
     txt_ids,
     vec,
     guidance_vec,
+    c_ts,
+    p_ts
 ):
-
-  timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
-  # shifting the schedule to favor high timesteps for higher signal images
-  if config.time_shift:
-    # estimate mu based on linear estimation between two points
-    lin_function = get_lin_function(y1=config.base_shift, y2=config.max_shift)
-    mu = lin_function(latents.shape[1])
-    timesteps = time_shift(mu, 1.0, timesteps).tolist()
-  c_ts = timesteps[:-1]
-  p_ts = timesteps[1:]
-  # jax.debug.print("c_ts: {x}", x=c_ts)
-  # jax.debug.print("p_ts: {x}", x=p_ts)
 
   transformer_state = states["transformer"]
   vae_state = states["vae"]
@@ -173,11 +162,10 @@ def run_inference(
       vec=vec,
       guidance_vec=guidance_vec,
   )
-
   vae_decode_p = functools.partial(vae_decode, vae=vae, state=vae_state, config=config)
 
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-    latents, _, _, _ = jax.lax.fori_loop(0, len(timesteps) - 1, loop_body_p, (latents, transformer_state, c_ts, p_ts))
+    latents, _, _, _ = jax.lax.fori_loop(0, len(c_ts), loop_body_p, (latents, transformer_state, c_ts, p_ts))
   image = vae_decode_p(latents)
   return image
 
@@ -236,8 +224,7 @@ def get_clip_prompt_embeds(
 
   prompt_embeds = text_encoder(text_input_ids, params=text_encoder.params, train=False)
   prompt_embeds = prompt_embeds.pooler_output
-  prompt_embeds = np.repeat(prompt_embeds, num_images_per_prompt, axis=-1)
-  prompt_embeds = np.reshape(prompt_embeds, (batch_size * num_images_per_prompt, -1))
+  prompt_embeds = jnp.tile(prompt_embeds, (batch_size * num_images_per_prompt, 1))
   return prompt_embeds
 
 
@@ -300,7 +287,7 @@ def encode_prompt(
       max_sequence_length=max_sequence_length,
   )
 
-  text_ids = jnp.zeros((prompt_embeds.shape[0], prompt_embeds.shape[1], 3)).astype(jnp.bfloat16)
+  text_ids = jnp.zeros((prompt_embeds.shape[1], 3)).astype(jnp.bfloat16)
   return prompt_embeds, pooled_prompt_embeds, text_ids
 
 
@@ -397,18 +384,14 @@ def run(config):
     print("guidance.shape: ", guidance.shape, guidance.dtype)
     print("pooled_prompt_embeds.shape: ", pooled_prompt_embeds.shape, pooled_prompt_embeds.dtype)
 
-  timesteps = jnp.asarray([1.0] * global_batch_size, dtype=jnp.bfloat16)
   guidance = jnp.asarray([config.guidance_scale] * global_batch_size, dtype=jnp.bfloat16)
-
-  validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
 
   # move inputs to device and shard
   data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
   latents = jax.device_put(latents, data_sharding)
-  latent_image_ids = jax.device_put(latent_image_ids, data_sharding)
+  latent_image_ids = jax.device_put(latent_image_ids)
   prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
-  text_ids = jax.device_put(text_ids, data_sharding)
-  timesteps = jax.device_put(timesteps, data_sharding)
+  text_ids = jax.device_put(text_ids)
   guidance = jax.device_put(guidance, data_sharding)
   pooled_prompt_embeds = jax.device_put(pooled_prompt_embeds, data_sharding)
 
@@ -458,6 +441,19 @@ def run(config):
   states["transformer"] = transformer_state
   states["vae"] = vae_state
 
+  # Setup timesteps
+  timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
+  # shifting the schedule to favor high timesteps for higher signal images
+  if config.time_shift:
+    # estimate mu based on linear estimation between two points
+    lin_function = get_lin_function(x1=config.max_sequence_length, y1=config.base_shift, y2=config.max_shift)
+    mu = lin_function(latents.shape[1])
+    timesteps = time_shift(mu, 1.0, timesteps)
+  c_ts = timesteps[:-1]
+  p_ts = timesteps[1:]
+
+  validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
+
   p_run_inference = jax.jit(
       functools.partial(
           run_inference,
@@ -471,6 +467,8 @@ def run(config):
           txt_ids=text_ids,
           vec=pooled_prompt_embeds,
           guidance_vec=guidance,
+          c_ts=c_ts,
+          p_ts=p_ts
       ),
       in_shardings=(state_shardings,),
       out_shardings=None,

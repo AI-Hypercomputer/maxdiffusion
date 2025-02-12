@@ -53,7 +53,7 @@ class FluxLoraLoaderMixin(LoRABaseMixin):
         new_layer_lora = layer_lora[: layer_lora.index(lora_name)]
         if new_layer_lora not in new_params_keys:
           new_params_keys.append(new_layer_lora)
-          network_alpha = network_alphas[layer_lora]
+          network_alpha = network_alphas.get(layer_lora, None)
           new_network_alphas[new_layer_lora] = network_alpha
     return new_params_keys, new_network_alphas
 
