@@ -13,3 +13,4 @@
 # limitations under the License.
 
 from .lora_pipeline import StableDiffusionLoraLoaderMixin
+from .flux_lora_pipeline import FluxLoraLoaderMixin
