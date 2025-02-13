@@ -144,7 +144,7 @@ class FluxSingleTransformerBlock(nn.Module):
     hidden_states = self.linear2(attn_mlp)
     hidden_states = gate * hidden_states
     hidden_states = residual + hidden_states
-    if hidden_states.dtype == jnp.float16 or hidden_states.dtype == jnp.bfloat16:
+    if hidden_states.dtype == jnp.float16:
       hidden_states = jnp.clip(hidden_states, -65504, 65504)
 
     return hidden_states, temb, image_rotary_emb
@@ -294,7 +294,7 @@ class FluxTransformerBlock(nn.Module):
 
     context_ff_output = self.txt_mlp(norm_encoder_hidden_states)
     encoder_hidden_states = encoder_hidden_states + c_gate_mlp * context_ff_output
-    if encoder_hidden_states.dtype == jnp.float16 or encoder_hidden_states.dtype == jnp.bfloat16:
+    if encoder_hidden_states.dtype == jnp.float16:
       encoder_hidden_states = encoder_hidden_states.clip(-65504, 65504)
     return hidden_states, encoder_hidden_states, temb, image_rotary_emb
 

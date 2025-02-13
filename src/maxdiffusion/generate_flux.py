@@ -43,25 +43,25 @@ from maxdiffusion.max_utils import (
 )
 from maxdiffusion.loaders.flux_lora_pipeline import FluxLoraLoaderMixin
 
+
 def maybe_load_flux_lora(config, lora_loader, params):
   def _noop_interceptor(next_fn, args, kwargs, context):
     return next_fn(*args, **kwargs)
 
   lora_config = config.lora_config
-  interceptors= [_noop_interceptor]
+  interceptors = [_noop_interceptor]
   if len(lora_config["lora_model_name_or_path"]) > 0:
     interceptors = []
     for i in range(len(lora_config["lora_model_name_or_path"])):
       params, rank, network_alphas = lora_loader.load_lora_weights(
-        config,
-        lora_config["lora_model_name_or_path"][i],
-        weight_name=lora_config["weight_name"][i],
-        params=params,
-        adapter_name=lora_config["adapter_name"][i],
+          config,
+          lora_config["lora_model_name_or_path"][i],
+          weight_name=lora_config["weight_name"][i],
+          params=params,
+          adapter_name=lora_config["adapter_name"][i],
       )
       interceptor = lora_loader.make_lora_interceptor(params, rank, network_alphas, lora_config["adapter_name"][i])
       interceptors.append(interceptor)
-
   return params, interceptors
 
 
@@ -488,6 +488,8 @@ def run(config):
   imgs = np.uint8(imgs * 255)
   for i, image in enumerate(imgs):
     Image.fromarray(image).save(f"flux_{i}.png")
+
+  return imgs
 
 
 def main(argv: Sequence[str]) -> None:
