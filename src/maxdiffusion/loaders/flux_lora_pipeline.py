@@ -16,11 +16,9 @@ from typing import Union, Dict
 from .lora_base import LoRABaseMixin
 from ..models.lora import LoRALinearLayer, BaseLoRALayer
 import jax.numpy as jnp
-from flax.traverse_util import flatten_dict, unflatten_dict
-from flax.core.frozen_dict import unfreeze
+from flax.traverse_util import flatten_dict
 from ..models.modeling_flax_pytorch_utils import convert_flux_lora_pytorch_state_dict_to_flax
 from huggingface_hub.utils import validate_hf_hub_args
-from maxdiffusion.models.modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor)
 
 
 class FluxLoraLoaderMixin(LoRABaseMixin):
@@ -109,7 +107,6 @@ class FluxLoraLoaderMixin(LoRABaseMixin):
     revision = kwargs.pop("revision", None)
     subfolder = kwargs.pop("subfolder", None)
     weight_name = kwargs.pop("weight_name", None)
-    unet_config = kwargs.pop("unet_config", None)
     use_safetensors = kwargs.pop("use_safetensors", None)
     resume_download = kwargs.pop("resume_download", False)
 

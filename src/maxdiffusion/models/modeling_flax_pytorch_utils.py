@@ -265,13 +265,13 @@ def convert_flux_lora_pytorch_state_dict_to_flax(config, pt_state_dict, params, 
     pt_tuple_key = tuple(renamed_pt_key.split("."))
     if "alpha" in pt_tuple_key:
       pt_tuple_key = pt_tuple_key[:-1] + (f"lora-{adapter_name}", "down", "kernel")
-      network_alphas[tuple([*pt_tuple_key])] = tensor.item()
+      network_alphas[tuple([*pt_tuple_key])] = tensor.item()  # noqa: C409
       pt_tuple_key = pt_tuple_key[:-1] + (f"lora-{adapter_name}", "up", "kernel")
-      network_alphas[tuple([*pt_tuple_key])] = tensor.item()
+      network_alphas[tuple([*pt_tuple_key])] = tensor.item()  # noqa: C409
     else:
       if pt_tuple_key[-2] == "up":
         rank = tensor.shape[1]
-      transformer_params[tuple([*pt_tuple_key])] = jnp.asarray(tensor.T, dtype=config.weights_dtype)
+      transformer_params[tuple([*pt_tuple_key])] = jnp.asarray(tensor.T, dtype=config.weights_dtype)  # noqa: C409
 
   params["transformer"] = unflatten_dict(transformer_params)
 
