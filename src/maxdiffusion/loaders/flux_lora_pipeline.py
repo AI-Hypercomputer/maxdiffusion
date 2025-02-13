@@ -21,25 +21,27 @@ from flax.core.frozen_dict import unfreeze
 from ..models.modeling_flax_pytorch_utils import convert_flux_lora_pytorch_state_dict_to_flax
 from huggingface_hub.utils import validate_hf_hub_args
 from maxdiffusion.models.modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor)
+
+
 class FluxLoraLoaderMixin(LoRABaseMixin):
 
   _lora_lodable_modules = ["transformer", "text_encoder"]
-  
+
   def load_lora_weights(
       self,
       config,
       pretrained_model_name_or_path_or_dict: Union[str, Dict[str, jnp.ndarray]],
       params,
       adapter_name=None,
-      **kwargs
+      **kwargs,
   ):
     state_dict = self.lora_state_dict(pretrained_model_name_or_path_or_dict, **kwargs)
 
     params, rank, network_alphas = self.load_lora(
-      config, 
-      state_dict,
-      params=params,
-      adapter_name=adapter_name,
+        config,
+        state_dict,
+        params=params,
+        adapter_name=adapter_name,
     )
 
     return params, rank, network_alphas
@@ -64,7 +66,7 @@ class FluxLoraLoaderMixin(LoRABaseMixin):
     transformer_keys = flatten_dict(params["transformer"]).keys()
     lora_keys, transformer_alphas = cls.rename_for_interceptor(transformer_keys, network_alphas, adapter_name)
     network_alphas_for_interceptor.update(transformer_alphas)
-  
+
     def _intercept(next_fn, args, kwargs, context):
       mod = context.module
       while mod is not None:
@@ -138,7 +140,7 @@ class FluxLoraLoaderMixin(LoRABaseMixin):
     )
 
     return state_dict
-  
+
   @classmethod
   def load_lora(cls, config, state_dict, params, adapter_name=None):
     params, rank, network_alphas = convert_flux_lora_pytorch_state_dict_to_flax(config, state_dict, params, adapter_name)

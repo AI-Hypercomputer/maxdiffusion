@@ -17,7 +17,8 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
-- **`2025/02/08**: Flux schnell & dev inference.
+- **`2025/02/12`**: Flux LoRA for inference.
+- **`2025/02/08`**: Flux schnell & dev inference.
 - **`2024/12/12`**: Load multiple LoRAs for inference.
 - **`2024/10/22`**: LoRA support for Hyper SDXL.
 - **`2024/8/1`**: Orbax is the new default checkpointer. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
@@ -47,7 +48,8 @@ MaxDiffusion supports
     * [Training](#training)
       * [Dreambooth](#dreambooth)
     * [Inference](#inference)
-      * [Flux](#flux) 
+      * [Flux](#flux)
+        * [Flux LoRA](#flux-lora)
       * [Hyper-SD XL LoRA](#hyper-sdxl-lora)
       * [Load Multiple LoRA](#load-multiple-lora)
       * [SDXL Lightning](#sdxl-lightning)
@@ -168,6 +170,24 @@ To generate images, run the following command:
   ```bash
   python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
   ```
+
+    ## Flux LoRA
+
+    Disclaimer: not all LoRA formats have been tested. If there is a specific LoRA that doesn't load, please let us know.
+
+    Tested with [Amateur Photography](https://civitai.com/models/652699/amateur-photography-flux-dev) and [XLabs-AI](https://huggingface.co/XLabs-AI/flux-lora-collection/tree/main) LoRA collection.
+
+    First download the LoRA file to a local directory, for example, `/home/jfacevedo/anime_lora.safetensors`. Then run as follows:
+
+    ```bash
+    python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 ici_data_parallelism=1 ici_fsdp_parallelism=-1 split_head_dim=True lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/anime_lora.safetensors"], "weight_name" : ["anime_lora.safetensors"], "adapter_name" : ["anime"], "scale": [0.8], "from_pt": ["true"]}'
+    ```
+
+    Loading multiple LoRAs is supported as follows:
+
+    ```bash
+    python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 ici_data_parallelism=1 ici_fsdp_parallelism=-1 split_head_dim=True lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/anime_lora.safetensors", "/home/jfacevedo/amateurphoto-v6-forcu.safetensors"], "weight_name" : ["anime_lora.safetensors","amateurphoto-v6-forcu.safetensors"], "adapter_name" : ["anime","realistic"], "scale": [0.6, 0.6], "from_pt": ["true","true"]}'
+    ```
 
   ## Hyper SDXL LoRA
 
