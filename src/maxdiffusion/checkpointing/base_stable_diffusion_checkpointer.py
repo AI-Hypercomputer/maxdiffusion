@@ -275,6 +275,7 @@ class BaseStableDiffusionCheckpointer(ABC):
       )
 
       tokenizer_path = model_configs[0]["tokenizer_config"]["path"]
+      max_logging.log(f"YYY tokenizer_path {tokenizer_path}")
       if "gs://" in tokenizer_path:
         if "tokenizer" not in tokenizer_path:
           tokenizer_path = os.path.join(tokenizer_path, "tokenizer")

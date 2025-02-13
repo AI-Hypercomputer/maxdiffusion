@@ -366,8 +366,10 @@ def cached_file(
 
   path_or_repo_id = str(path_or_repo_id)
   full_filename = os.path.join(subfolder, filename)
+  print(f"YYY path_or_repo_id {path_or_repo_id}")
   if os.path.isdir(path_or_repo_id):
     resolved_file = os.path.join(os.path.join(path_or_repo_id, subfolder), filename)
+    print(f"YYY resolved_file {resolved_file}")
     if not os.path.isfile(resolved_file):
       if _raise_exceptions_for_missing_entries:
         raise EnvironmentError(

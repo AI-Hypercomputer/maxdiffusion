@@ -84,6 +84,7 @@ from distutils.core import Command
 
 from setuptools import find_packages, setup
 
+print(f"Running setup.py now!")
 
 # IMPORTANT:
 # 1. all dependencies should be listed here with their version requirements if any
@@ -130,7 +131,8 @@ _deps = [
     "orbax-checkpoint",
     "cloud-tpu-diagnostics",
     "tensorboardx",
-    "tensorboard-plugin-profile"
+    "tensorboard-plugin-profile",
+    "grain-nightly",
 ]
 
 # this is a lookup table with items like:
@@ -242,6 +244,7 @@ install_requires = [
     deps["requests"],
     deps["safetensors"],
     deps["Pillow"],
+    deps["grain-nightly"]
 ]
 
 setup(

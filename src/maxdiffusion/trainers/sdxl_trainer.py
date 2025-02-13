@@ -81,8 +81,14 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
       batch_image_shape = (total_train_batch_size, 3, self.config.resolution, self.config.resolution)
 
     input_ids_shape = (total_train_batch_size, 2, pipeline.text_encoder.config.max_position_embeddings)
-    shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32)
-    shaped_batch["input_ids"] = jax.ShapeDtypeStruct(input_ids_shape, jnp.int32)
+    shaped_batch["pixel_values"] = jax.ShapeDtypeStruct(batch_image_shape, jnp.float32,             sharding=jax.sharding.NamedSharding(
+                mesh=self.mesh,
+                spec=P('data', None, None, None)
+            ))
+    shaped_batch["input_ids"] = jax.ShapeDtypeStruct(input_ids_shape, jnp.int32,             sharding=jax.sharding.NamedSharding(
+                mesh=self.mesh,
+                spec=P('data', None, None)
+            ))
     return shaped_batch
 
   def get_data_shardings(self):
@@ -168,6 +174,11 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
       max_logging.log("Precompiling...")
       s = time.time()
       dummy_batch = self.get_shaped_batch(self.config, pipeline)
+      # _unet_state = train_states["unet_state"]
+      # _vae_state = train_states['unet_state']
+      
+      # No sharding 
+      # max_logging.log(f"YYY Input data sharding: dummy_batch {dummy_batch.sharding} train_states unet_state {_unet_state.sharding} train_states vae_state {_vae_state}")
       p_train_step = p_train_step.lower(
           train_states["unet_state"],
           train_states["vae_state"],
@@ -213,6 +224,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     start_step = get_first_step(train_states["unet_state"])
     _, train_rngs = jax.random.split(self.rng)
 
+    train_metric = None
     for step in np.arange(start_step, self.config.max_train_steps):
       if self.config.enable_profiler and step == first_profiling_step:
         max_utils.activate_profiler(self.config)
@@ -245,6 +257,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         max_utils.deactivate_profiler(self.config)
 
     if self.config.write_metrics:
+      jax.block_until_ready(train_metric)
       write_metrics(
           writer, local_metrics_file, running_gcs_metrics, train_metric, self.config.max_train_steps - 1, self.config
       )
@@ -252,7 +265,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     train_states["unet_state"] = unet_state
     train_states["text_encoder_state"] = text_encoder_state
     train_states["text_encoder_2_state"] = text_encoder_2_state
-    self.save_checkpoint(self.config.max_train_steps - 1, pipeline, params, train_states)
+    # self.save_checkpoint(self.config.max_train_steps - 1, pipeline, params, train_states)
     self.checkpoint_manager.wait_until_finished()
 
 

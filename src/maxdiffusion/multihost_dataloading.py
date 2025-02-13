@@ -84,7 +84,8 @@ def get_next_batch_sharded(local_dataset: Iterator, global_mesh: Mesh) -> jax.Ar
     local_data = local_dataset.next()
 
   input_gdas = jtu.tree_map_with_path(partial(_form_global_array, global_mesh=global_mesh), local_data)
-
+  # no attribute of sharding
+  # max_logging.log(f"YYY input_gdas {input_gdas.sharding}")
   return input_gdas
 
 

@@ -1,0 +1,1 @@
+bash docker_upload_runner.sh CLOUD_IMAGE_NAME=us-west1-docker.pkg.dev/supercomputer-testing/lancewang/maxdiffusion-1023

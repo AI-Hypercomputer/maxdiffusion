@@ -177,6 +177,7 @@ def parse_gcs_bucket_and_prefix(destination_gcs_name):
 
 def download_blobs(source_gcs_folder, local_destination):
   """Downloads a folder to a local location"""
+  max_logging.log(f'Downloading from {source_gcs_folder} to {local_destination}')
   bucket_name, prefix_name = parse_gcs_bucket_and_prefix(source_gcs_folder)
   storage_client = storage.Client()
   bucket = storage_client.get_bucket(bucket_name)
@@ -261,7 +262,7 @@ def create_device_mesh(config, devices=None, logging=True):
   except:
     num_slices = 1
   num_devices_per_slice = num_devices // num_slices
-  max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
+  max_logging.log(f"YYY Devices: {devices} (num_devices: {num_devices}) num_slices: {num_slices}")
 
   multi_slice_env = num_slices > 1
 
@@ -327,6 +328,11 @@ def init_train_state(model, tx, weights_init_fn, params=None, training=True, eva
         apply_fn=model.apply if hasattr(model, "apply") else model.__call__,
         params=params,
     )
+  max_logging.log(f"YYY init_train_state output state apply_fn is {state.apply_fn}")
+  
+  for k,v in jax.tree_util.tree_leaves(state.params):
+       max_logging.log(f"YYY  init_train_state output state param key {k} value {v.shape}")
+
   return state
 
 
@@ -353,6 +359,17 @@ def get_abstract_state(model, tx, config, mesh, weights_init_fn, training=True):
   # Initialization
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
     state_mesh_annotations = nn.logical_to_mesh(state_logical_annotations)
+
+  max_logging.log(f"YYY state_mesh_shardings {state_mesh_shardings}")
+  # max_logging.log(f"YYY state_mesh_shardings.params {state_mesh_shardings.params}")
+  
+  # Below has issue
+  # max_logging.log(f"YYY state_mesh_shardings.tx {state_mesh_shardings.tx}")
+  # max_logging.log(f"YYY state_mesh_shardings.opt_state {state_mesh_shardings.opt_state}")
+  # max_logging.log(f"YYY mesh {mesh} abstract_state {abstract_state}")
+  # max_logging.log(f"YYY state_logical_annotations {state_logical_annotations}")
+  # max_logging.log(f"YYY config.logical_axis_rules {config.logical_axis_rules}")
+
   return unboxed_sharded_abstract_state, state_mesh_annotations, state_mesh_shardings
 
 
@@ -412,11 +429,19 @@ def setup_initial_state(
           eval_only=False,
       )
 
+      max_logging.log(f"YYY model: {model}")
       state = jax.jit(
           init_train_state_partial,
           in_shardings=None,
           out_shardings=state_mesh_shardings,
       )()
+      
+      # solution 1, temp, completely remove jit
+      # state = init_train_state_partial()
+      
+      # solution 2, just remove sharding
+      # state_jit = init_train_state_partial
+      # state = state_jit() # failing here, segmentation fault
 
   state = unbox_logicallypartioned_trainstate(state)
 
