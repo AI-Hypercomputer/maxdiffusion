@@ -22,7 +22,6 @@ def download_blob(gcs_file, local_file):
   gcs_dir_arr = gcs_file.replace("gs://", "").split("/")
   storage_client = storage.Client()
   bucket = storage_client.get_bucket(gcs_dir_arr[0])
-  blob_loc = "/".join(gcs_dir_arr[1:])
   blob = bucket.blob("/".join(gcs_dir_arr[1:]))
   blob.download_to_filename(local_file)
 
