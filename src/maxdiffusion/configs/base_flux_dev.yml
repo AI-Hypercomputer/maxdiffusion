@@ -54,7 +54,7 @@ precision: "DEFAULT"
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash
+attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
 
 flash_block_sizes: {}
 # Use the following flash_block_sizes on v6e (Trillium) due to larger vmem.
@@ -197,7 +197,7 @@ max_train_steps: 200
 num_train_epochs: 1
 seed: 0
 output_dir: 'sdxl-model-finetuned'
-per_device_batch_size: 1
+per_device_batch_size: 8
 
 warmup_steps_fraction: 0.0
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.

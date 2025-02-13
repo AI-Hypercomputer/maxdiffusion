@@ -53,6 +53,7 @@ MaxDiffusion supports
   - [Dreambooth](#dreambooth)
   - [Inference](#inference)
   - [Flux](#flux)
+    - [Flash Attention for GPU:](#flash-attention-for-gpu)
   - [Hyper SDXL LoRA](#hyper-sdxl-lora)
   - [Load Multiple LoRA](#load-multiple-lora)
   - [SDXL Lightning](#sdxl-lightning)
@@ -174,6 +175,9 @@ To generate images, run the following command:
   ```bash
   python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
   ```
+
+  ### Flash Attention for GPU:
+  Flash Attention for GPU is supported via TransformerEngine, make sure it is installed and then specify attention=cudnn_flash_te when running the above commands.
 
     ## Flux LoRA
 

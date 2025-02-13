@@ -53,9 +53,19 @@ precision: "DEFAULT"
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash
-flash_block_sizes: {}
-# Use the following flash_block_sizes on v6e (Trillium) due to larger vmem.
+attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
+flash_block_sizes: {
+  "block_q" : 256,
+  "block_kv_compute" : 256,
+  "block_kv" : 256,
+  "block_q_dkv" : 256,
+  "block_kv_dkv" : 256,
+  "block_kv_dkv_compute" : 256,
+  "block_q_dq" : 256,
+  "block_kv_dq" : 256
+}
+
+# Use the following flash_block_sizes on v6e (Trillium).
 # flash_block_sizes: {
 #   "block_q" : 1536,
 #   "block_kv_compute" : 1536,

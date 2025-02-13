@@ -52,6 +52,24 @@ class AttentionOp(nn.Module):
   flash_block_sizes: BlockSizes = None
   dtype: DType = jnp.float32
 
+  def setup(self):
+    if self.attention_kernel == "cudnn_flash_te":
+      from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
+      self.dpa_layer = DotProductAttention(
+        head_dim=self.dim_head,
+        num_attention_heads=self.heads,
+        num_gqa_groups=self.heads,
+        attn_mask_type="no_mask",  # 'no_mask', 'padding', 'causal', or 'padding_causal'
+        attn_bias_type="NO_BIAS",  # 'no_bias', 'pre_scale_bias' or 'post_scale_bias'
+        # attention_dropout=self.dropout_rate,
+        dropout_rng_name="aqt",
+        dtype=self.dtype,
+        # float32_logits=self.float32_logits,
+        qkv_layout="BSHD_BSHD_BSHD",  # 'BS3HD', 'BSHD_BS2HD' or 'BSHD_BSHD_BSHD'
+        scale_factor=self.scale,
+        transpose_batch_sequence=False,
+      )
+
   def check_attention_inputs(self, query: Array, key: Array, value: Array) -> None:
     """Check attention inputs."""
 
@@ -64,16 +82,22 @@ class AttentionOp(nn.Module):
   def apply_attention(self, query: Array, key: Array, value: Array):
     """Routes to different attention kernels."""
     self.check_attention_inputs(query, key, value)
-    can_use_flash_attention = (
-        query.shape[1] >= self.flash_min_seq_length
-        and key.shape[1] >= self.flash_min_seq_length
-        and value.shape[1] >= self.flash_min_seq_length
-    )
+
+    if self.attention_kernel == "flash":
+      can_use_flash_attention = (
+          query.shape[1] >= self.flash_min_seq_length
+          and key.shape[1] >= self.flash_min_seq_length
+          and value.shape[1] >= self.flash_min_seq_length
+      )
+    else:
+      can_use_flash_attention = True
 
     if self.attention_kernel == "dot_product" or self.use_memory_efficient_attention or not can_use_flash_attention:
       return self.apply_attention_dot(query, key, value)
     elif self.attention_kernel == "flash":
       return self.tpu_flash_attention(query, key * self.scale, value)
+    elif self.attention_kernel == "cudnn_flash_te":
+      return self.cudnn_flash_attention(query, key, value)
     else:
       raise ValueError(f"Unexpected attention kernel {self.attention_kernel=}.")
 
@@ -131,6 +155,32 @@ class AttentionOp(nn.Module):
     x = self.reshape_heads_to_head_dim(x)
 
     return x
+
+  def cudnn_flash_attention(
+      self,
+      query: Array,
+      key: Array,
+      value: Array,
+  ) -> Array:
+    """CUDNN Flash Attention with Transformer Engine.
+    1. Stable API, supports GQA
+    2. Supports head_dim till 128; head_dim=256 support will be added soon
+    """
+    # These imports are only meant to work in a GPU build.
+    # copied from tpu_flash_attention
+    query = self.reshape_data_for_cudnn_flash(query)
+    key = self.reshape_data_for_cudnn_flash(key)
+    value = self.reshape_data_for_cudnn_flash(value)
+
+    cudnn_flash_axis_names = (BATCH, LENGTH, HEAD, D_KV)
+    axis_names = nn.logical_to_mesh_axes(cudnn_flash_axis_names)
+
+    query = nn.with_logical_constraint(query, axis_names)
+    key = nn.with_logical_constraint(key, axis_names)
+    value = nn.with_logical_constraint(value, axis_names)
+
+    out = self.dpa_layer(query, key, value, mask=None)
+    return self.reshape_data_from_cudnn_flash(out)
 
   def apply_attention_dot(self, query: Array, key: Array, value: Array):
     """Apply Attention."""
@@ -208,6 +258,16 @@ class AttentionOp(nn.Module):
     tensor = jnp.transpose(tensor, (0, 2, 1, 3))
     tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
     return tensor
+
+  def reshape_data_for_cudnn_flash(self, tensor):
+    # reshapes from [b, s, h * d] to [b, s, h, d] (input format to flash format)
+    batch, seq, heads_and_dim_head = tensor.shape
+    tensor = tensor.reshape(batch, seq, self.heads, heads_and_dim_head // self.heads)
+    return tensor
+
+  def reshape_data_from_cudnn_flash(self, tensor):
+    # reshapes from [b, s, h, d] back to [b, s, h * d]
+    return tensor.reshape(tensor.shape[0], tensor.shape[1], -1)
 
   def reshape_data_for_flash(self, tensor):
     # reshapes from [b, s, h * d] to [b, h, s, d] (input format to flash format)
