@@ -55,19 +55,20 @@ class AttentionOp(nn.Module):
   def setup(self):
     if self.attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
+
       self.dpa_layer = DotProductAttention(
-        head_dim=self.dim_head,
-        num_attention_heads=self.heads,
-        num_gqa_groups=self.heads,
-        attn_mask_type="no_mask",  # 'no_mask', 'padding', 'causal', or 'padding_causal'
-        attn_bias_type="NO_BIAS",  # 'no_bias', 'pre_scale_bias' or 'post_scale_bias'
-        # attention_dropout=self.dropout_rate,
-        dropout_rng_name="aqt",
-        dtype=self.dtype,
-        # float32_logits=self.float32_logits,
-        qkv_layout="BSHD_BSHD_BSHD",  # 'BS3HD', 'BSHD_BS2HD' or 'BSHD_BSHD_BSHD'
-        scale_factor=self.scale,
-        transpose_batch_sequence=False,
+          head_dim=self.dim_head,
+          num_attention_heads=self.heads,
+          num_gqa_groups=self.heads,
+          attn_mask_type="no_mask",  # 'no_mask', 'padding', 'causal', or 'padding_causal'
+          attn_bias_type="NO_BIAS",  # 'no_bias', 'pre_scale_bias' or 'post_scale_bias'
+          # attention_dropout=self.dropout_rate,
+          dropout_rng_name="aqt",
+          dtype=self.dtype,
+          # float32_logits=self.float32_logits,
+          qkv_layout="BSHD_BSHD_BSHD",  # 'BS3HD', 'BSHD_BS2HD' or 'BSHD_BSHD_BSHD'
+          scale_factor=self.scale,
+          transpose_batch_sequence=False,
       )
 
   def check_attention_inputs(self, query: Array, key: Array, value: Array) -> None:

@@ -513,9 +513,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
     hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
     for single_block in self.single_blocks:
-      hidden_states = single_block(
-          hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb
-      )
+      hidden_states = single_block(hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb)
     hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
     hidden_states = self.norm_out(hidden_states, temb)
