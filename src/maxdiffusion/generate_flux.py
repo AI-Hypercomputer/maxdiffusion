@@ -92,12 +92,17 @@ def loop_body(
     txt_ids,
     vec,
     guidance_vec,
+    scheduler,
 ):
-  latents, state, c_ts, p_ts = args
+  latents, state, scheduler_state = args
   latents_dtype = latents.dtype
-  t_curr = c_ts[step]
-  t_prev = p_ts[step]
-  t_vec = jnp.full((latents.shape[0],), t_curr, dtype=latents.dtype)
+  #t_curr = c_ts[step]
+  #timestep = scheduler_state.timesteps[step]
+  t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+  jax.debug.print("t: {x}", x=t)
+  #breakpoint()
+  t_vec = jnp.broadcast_to(t, latents.shape[0])
+  #t_vec = jnp.full((latents.shape[0],), timestep, dtype=latents.dtype)
   pred = transformer.apply(
       {"params": state.params},
       hidden_states=latents,
@@ -108,9 +113,10 @@ def loop_body(
       guidance=guidance_vec,
       pooled_projections=vec,
   ).sample
-  latents = latents + (t_prev - t_curr) * pred
+  latents, scheduler_state = scheduler.step(scheduler_state, pred, t, latents, return_dict=False)
+  #latents = latents + (t_prev - t_curr) * pred
   latents = jnp.array(latents, dtype=latents_dtype)
-  return latents, state, c_ts, p_ts
+  return latents, state, scheduler_state
 
 
 def prepare_latent_image_ids(height, width):
@@ -135,7 +141,7 @@ def get_lin_function(x1: float = 256, y1: float = 0.5, x2: float = 4096, y2: flo
 
 
 def run_inference(
-    states, transformer, vae, config, mesh, latents, latent_image_ids, prompt_embeds, txt_ids, vec, guidance_vec, c_ts, p_ts
+    states, transformer, vae, config, mesh, latents, latent_image_ids, prompt_embeds, txt_ids, vec, guidance_vec, scheduler, scheduler_state
 ):
 
   transformer_state = states["transformer"]
@@ -149,11 +155,12 @@ def run_inference(
       txt_ids=txt_ids,
       vec=vec,
       guidance_vec=guidance_vec,
+      scheduler=scheduler
   )
   vae_decode_p = functools.partial(vae_decode, vae=vae, state=vae_state, config=config)
 
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-    latents, _, _, _ = jax.lax.fori_loop(0, len(c_ts), loop_body_p, (latents, transformer_state, c_ts, p_ts))
+    latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps, loop_body_p, (latents, transformer_state, scheduler_state))
   image = vae_decode_p(latents)
   return image
 
@@ -432,13 +439,21 @@ def run(config):
   # Setup timesteps
   timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
   # shifting the schedule to favor high timesteps for higher signal images
+  mu = None
   if config.time_shift:
     # estimate mu based on linear estimation between two points
     lin_function = get_lin_function(x1=config.max_sequence_length, y1=config.base_shift, y2=config.max_shift)
     mu = lin_function(latents.shape[1])
-    timesteps = time_shift(mu, 1.0, timesteps)
-  c_ts = timesteps[:-1]
-  p_ts = timesteps[1:]
+  from maxdiffusion import FlaxFlowMatchEulerDiscreteScheduler
+  scheduler, scheduler_state = FlaxFlowMatchEulerDiscreteScheduler.from_pretrained(
+    "black-forest-labs/FLUX.1-dev",
+    subfolder="scheduler"
+  )
+  scheduler_state = scheduler.set_timesteps(
+    scheduler_state,
+    mu=mu,
+    num_inference_steps=config.num_inference_steps
+  )
 
   validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
 
@@ -455,8 +470,8 @@ def run(config):
           txt_ids=text_ids,
           vec=pooled_prompt_embeds,
           guidance_vec=guidance,
-          c_ts=c_ts,
-          p_ts=p_ts,
+          scheduler=scheduler,
+          scheduler_state=scheduler_state
       ),
       in_shardings=(state_shardings,),
       out_shardings=None,
