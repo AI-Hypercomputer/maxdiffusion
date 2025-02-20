@@ -176,8 +176,23 @@ To generate images, run the following command:
   python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
   ```
 
-  ### Flash Attention for GPU:
-  Flash Attention for GPU is supported via TransformerEngine, make sure it is installed and then specify attention=cudnn_flash_te when running the above commands.
+    ## Flash Attention for GPU:
+    Flash Attention for GPU is supported via TransformerEngine. Installation instructions:
+
+    ```bash
+    cd maxdiffusion
+    pip install -U "jax[cuda12]"
+    pip install -r requirements.txt
+    pip install --upgrade torch torchvision
+    pip install "transformer_engine[jax]
+    pip install .
+    ```
+
+    Now run the command:
+
+    ```bash
+    NVTE_FUSED_ATTN=1 HF_HUB_ENABLE_HF_TRANSFER=1 python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 split_head_dim=True per_device_batch_size=1 attention="cudnn_flash_te" hardware=gpu
+    ```
 
     ## Flux LoRA
 

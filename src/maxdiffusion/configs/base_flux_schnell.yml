@@ -67,14 +67,14 @@ flash_block_sizes: {
 
 # Use the following flash_block_sizes on v6e (Trillium).
 # flash_block_sizes: {
-#   "block_q" : 1536,
-#   "block_kv_compute" : 1536,
-#   "block_kv" : 1536,
-#   "block_q_dkv" : 1536,
-#   "block_kv_dkv" : 1536,
-#   "block_kv_dkv_compute" : 1536,
-#   "block_q_dq" : 1536,
-#   "block_kv_dq" : 1536
+#   "block_q" : 2176,
+#   "block_kv_compute" : 2176,
+#   "block_kv" : 2176,
+#   "block_q_dkv" : 2176,
+#   "block_kv_dkv" : 2176,
+#   "block_kv_dkv_compute" : 2176,
+#   "block_q_dq" : 2176,
+#   "block_kv_dq" : 2176
 # }
 # GroupNorm groups
 norm_num_groups: 32
