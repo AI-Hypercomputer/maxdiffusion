@@ -77,7 +77,7 @@ def unpack(x: Array, height: int, width: int) -> Array:
 
 
 def vae_decode(latents, vae, state, config):
-  img = unpack(x=latents, height=config.resolution, width=config.resolution)
+  img = unpack(x=latents.astype(jnp.float32), height=config.resolution, width=config.resolution)
   img = img / vae.config.scaling_factor + vae.config.shift_factor
   img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample
   return img
