@@ -46,7 +46,7 @@ from flax.typing import (
 from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
 from jax.experimental import mesh_utils
-from jax.sharding import PositionalSharding
+from transformers import (FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel)
 from flax import struct
 from typing import (
     Callable,
@@ -315,7 +315,10 @@ def init_train_state(model, tx, weights_init_fn, params=None, training=True, eva
   Args: model_params, model, tx, training
   """
   if not params:
-    params = weights_init_fn(eval_only=eval_only)
+    if isinstance(model, FlaxCLIPTextModel) or isinstance(model, FlaxCLIPTextPreTrainedModel):
+      params = weights_init_fn()
+    else:
+      params = weights_init_fn(eval_only=eval_only)
   if training:
     state = train_state.TrainState.create(
         apply_fn=model.apply if hasattr(model, "apply") else model.__call__,

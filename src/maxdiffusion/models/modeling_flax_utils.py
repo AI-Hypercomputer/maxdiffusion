@@ -298,6 +298,7 @@ class FlaxModelMixin(PushToHubMixin):
     use_auth_token = kwargs.pop("use_auth_token", None)
     revision = kwargs.pop("revision", None)
     subfolder = kwargs.pop("subfolder", None)
+    use_safetensors = kwargs.pop("use_safetensors", None)
 
     user_agent = {
         "maxdiffusion": __version__,
@@ -356,7 +357,7 @@ class FlaxModelMixin(PushToHubMixin):
       try:
         model_file = hf_hub_download(
             pretrained_model_name_or_path,
-            filename=FLAX_WEIGHTS_NAME if not from_pt else WEIGHTS_NAME,
+            filename=FLAX_WEIGHTS_NAME if not from_pt else SAFETENSORS_WEIGHTS_NAME if use_safetensors else WEIGHTS_NAME,
             cache_dir=cache_dir,
             force_download=force_download,
             proxies=proxies,

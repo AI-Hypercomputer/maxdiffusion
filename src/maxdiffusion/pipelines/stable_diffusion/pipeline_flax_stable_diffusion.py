@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
 from packaging import version
-from maxdiffusion.transformers import CLIPTokenizer, FlaxCLIPTextModel
+from transformers import CLIPTokenizer, FlaxCLIPTextModel
 
 from ...models import FlaxAutoencoderKL, FlaxUNet2DConditionModel
 from ...schedulers import (

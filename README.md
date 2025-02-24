@@ -17,6 +17,8 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2025/02/12`**: Flux LoRA for inference.
+- **`2025/02/08`**: Flux schnell & dev inference.
 - **`2024/12/12`**: Load multiple LoRAs for inference.
 - **`2024/10/22`**: LoRA support for Hyper SDXL.
 - **`2024/8/1`**: Orbax is the new default checkpointer. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
@@ -42,16 +44,23 @@ MaxDiffusion supports
 
 # Table of Contents
 
-* [Getting Started](#getting-started)
-    * [Training](#training)
-      * [Dreambooth](#dreambooth)
-    * [Inference](#inference)
-      * [Hyper-SD XL LoRA](#hyper-sdxl-lora)
-      * [Load Multiple LoRA](#load-multiple-lora)
-      * [SDXL Lightning](#sdxl-lightning)
-      * [ControlNet](#controlnet)
-* [Comparison To Alternatives](#comparison-to-alternatives)
-* [Development](#development)
+- [What's new?](#whats-new)
+- [Overview](#overview)
+- [Table of Contents](#table-of-contents)
+- [Getting Started](#getting-started)
+  - [Getting Started:](#getting-started-1)
+  - [Training](#training)
+  - [Dreambooth](#dreambooth)
+  - [Inference](#inference)
+  - [Flux](#flux)
+    - [Flash Attention for GPU:](#flash-attention-for-gpu)
+  - [Hyper SDXL LoRA](#hyper-sdxl-lora)
+  - [Load Multiple LoRA](#load-multiple-lora)
+  - [SDXL Lightning](#sdxl-lightning)
+  - [ControlNet](#controlnet)
+  - [Getting Started: Multihost development](#getting-started-multihost-development)
+- [Comparison to Alternatives](#comparison-to-alternatives)
+- [Development](#development)
 
 # Getting Started
 
@@ -133,6 +142,75 @@ To generate images, run the following command:
   ```bash
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
   ```
+  ## Flux
+
+  First make sure you have permissions to access the Flux repos in Huggingface.
+
+  Expected results on 1024 x 1024 images with flash attention and bfloat16:
+
+  | Model | Accelerator | Sharding Strategy | Batch Size | Steps | time (secs) |
+  | --- | --- | --- | --- | --- | --- |
+  | Flux-dev | v4-8 | DDP | 4 | 28 | 23 |
+  | Flux-schnell | v4-8 | DDP | 4 | 4 | 2.2 |
+  | Flux-dev | v6e-4 | DDP | 4 | 28 | 5.5 |
+  | Flux-schnell | v6e-4 | DDP | 4 | 4 | 0.8 |
+  | Flux-schnell | v6e-4 | FSDP | 4 | 4 | 1.2 |
+
+  Schnell:
+
+  ```bash
+  python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1
+  ```
+
+  Dev:
+
+  ```bash
+  python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1
+  ```
+
+  If you are using a TPU v6e (Trillium), you can use optimized flash block sizes for faster inference. Uncomment Flux-dev [config](src/maxdiffusion/configs/base_flux_dev.yml#60) and Flux-schnell [config](src/maxdiffusion/configs/base_flux_schnell.yml#68)
+
+  To keep text encoders, vae and transformer on HBM memory at all times, the following command shards the model across devices. 
+
+  ```bash
+  python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
+  ```
+
+    ## Flash Attention for GPU:
+    Flash Attention for GPU is supported via TransformerEngine. Installation instructions:
+
+    ```bash
+    cd maxdiffusion
+    pip install -U "jax[cuda12]"
+    pip install -r requirements.txt
+    pip install --upgrade torch torchvision
+    pip install "transformer_engine[jax]
+    pip install .
+    ```
+
+    Now run the command:
+
+    ```bash
+    NVTE_FUSED_ATTN=1 HF_HUB_ENABLE_HF_TRANSFER=1 python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 split_head_dim=True per_device_batch_size=1 attention="cudnn_flash_te" hardware=gpu
+    ```
+
+    ## Flux LoRA
+
+    Disclaimer: not all LoRA formats have been tested. If there is a specific LoRA that doesn't load, please let us know.
+
+    Tested with [Amateur Photography](https://civitai.com/models/652699/amateur-photography-flux-dev) and [XLabs-AI](https://huggingface.co/XLabs-AI/flux-lora-collection/tree/main) LoRA collection.
+
+    First download the LoRA file to a local directory, for example, `/home/jfacevedo/anime_lora.safetensors`. Then run as follows:
+
+    ```bash
+    python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 ici_data_parallelism=1 ici_fsdp_parallelism=-1 split_head_dim=True lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/anime_lora.safetensors"], "weight_name" : ["anime_lora.safetensors"], "adapter_name" : ["anime"], "scale": [0.8], "from_pt": ["true"]}'
+    ```
+
+    Loading multiple LoRAs is supported as follows:
+
+    ```bash
+    python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 ici_data_parallelism=1 ici_fsdp_parallelism=-1 split_head_dim=True lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/anime_lora.safetensors", "/home/jfacevedo/amateurphoto-v6-forcu.safetensors"], "weight_name" : ["anime_lora.safetensors","amateurphoto-v6-forcu.safetensors"], "adapter_name" : ["anime","realistic"], "scale": [0.6, 0.6], "from_pt": ["true","true"]}'
+    ```
 
   ## Hyper SDXL LoRA
 

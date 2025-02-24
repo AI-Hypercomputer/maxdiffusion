@@ -249,9 +249,11 @@ def run(config):
         config=config,
         mesh=checkpoint_loader.mesh,
         weights_init_fn=weights_init_fn,
-        model_params=params.get("unet", None),
+        model_params=None,
         training=False,
     )
+    unet_state = unet_state.replace(params=params.get("unet", None))
+    unet_state = jax.device_put(unet_state, unet_state_shardings)
 
   vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
       pipeline, params, checkpoint_item_name="vae_state", is_training=False
@@ -305,7 +307,7 @@ def run(config):
     _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
     images = p_run_inference(states).block_until_ready()
   print("inference time: ", (time.time() - s))
-  images = jax.experimental.multihost_utils.process_allgather(images)
+  images = jax.experimental.multihost_utils.process_allgather(images, tiled=True)
   numpy_images = np.array(images)
   images = VaeImageProcessor.numpy_to_pil(numpy_images)
   for i, image in enumerate(images):

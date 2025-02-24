@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax.core.frozen_dict import FrozenDict
 from PIL import Image
-from maxdiffusion.transformers import CLIPTokenizer, FlaxCLIPTextModel
+from transformers import CLIPTokenizer, FlaxCLIPTextModel
 
 from ...models import FlaxAutoencoderKL, FlaxControlNetModel, FlaxUNet2DConditionModel
 from ...schedulers import (
