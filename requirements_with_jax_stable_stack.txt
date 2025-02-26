@@ -1,18 +1,34 @@
 # Requirements for Building the MaxDifussion Docker Image
 # These requirements are additional to the dependencies present in the JAX Stable Stack base image.
 absl-py
-transformers>=4.25.1
 datasets
-torch
-torchvision
+einops==0.8.0
+flax>=0.10.2
 ftfy
+git+https://github.com/mlperf/logging.git
+google-cloud-storage==2.17.0
+grain-nightly
+huggingface_hub==0.24.7
+jax>=0.4.30
+jaxlib>=0.4.30
 Jinja2
-scikit-image
+opencv-python-headless==4.10.0.84
+optax>=0.2.3
+orbax-checkpoint==0.10.2
 parameterized
 Pillow
-pytest
-tensorflow-datasets
+pyink
+pylint
+pytest==8.2.2
 ruff>=0.1.5,<=0.2
-git+https://github.com/mlperf/logging.git
-opencv-python
-huggingface_hub<0.26.0 #https://github.com/AI-Hypercomputer/maxdiffusion/issues/124
+scikit-image
+sentencepiece
+tensorboard>=2.17.0
+tensorboard-plugin-profile==2.15.2
+tensorboardx==2.6.2.2
+tensorflow>=2.17.0
+tensorflow-datasets>=4.9.6
+tokenizers==0.21.0
+torch==2.5.1
+torchvision==0.20.1
+transformers==4.48.1
