@@ -105,6 +105,8 @@ class FluxTrainer(FluxCheckpointer):
     if self.config.dataset_type == "grain":
       data_iterator = self.restore_data_iterator_state(data_iterator)
 
+    # don't need this anymore, clear some memory.
+    del pipeline.t5_encoder
 
     flux_state, flux_state_mesh_shardings, flux_learning_rate_scheduler = self.create_flux_state(
         # ambiguous here, but if self.params.get("unet") doesn't exist
@@ -138,7 +140,7 @@ class FluxTrainer(FluxCheckpointer):
     )
     # 6. save final checkpoint
     # Hook
-    self.post_training_steps(pipeline, params, train_states, "after_training")
+    #self.post_training_steps(pipeline, params, train_states, "after_training")
 
   def get_shaped_batch(self, config, pipeline=None):
     """Return the shape of the batch - this is what eval_shape would return for the
@@ -267,7 +269,9 @@ class FluxTrainer(FluxCheckpointer):
                           clip_tokenizer=pipeline.clip_tokenizer,
                           t5_tokenizer=pipeline.t5_tokenizer,
                           clip_text_encoder=pipeline.clip_encoder,
-                          t5_text_encoder=pipeline.t5_encoder
+                          t5_text_encoder=pipeline.t5_encoder,
+                          encode_in_batches=True,
+                          encode_batch_size=16
                           )
     pack_latents_p = partial(pipeline.pack_latents)
     prepare_latent_image_ids_p = partial(pipeline.prepare_latent_image_ids)

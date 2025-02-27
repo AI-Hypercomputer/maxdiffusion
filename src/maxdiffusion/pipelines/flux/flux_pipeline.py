@@ -190,6 +190,8 @@ class FluxPipeline(FlaxDiffusionPipeline):
       tokenizer: AutoTokenizer,
       text_encoder: FlaxT5EncoderModel,
       max_sequence_length: int = 512,
+      encode_in_batches=False,
+      encode_batch_size=None,
   ):
 
     prompt = [prompt] if isinstance(prompt, str) else prompt
@@ -205,13 +207,23 @@ class FluxPipeline(FlaxDiffusionPipeline):
         return_tensors="np",
     )
     text_input_ids = text_inputs.input_ids
-    prompt_embeds = text_encoder(text_input_ids, attention_mask=None, output_hidden_states=False)["last_hidden_state"]
+    if encode_in_batches:
+      prompt_embeds = None
+      for i in range(0, text_input_ids.shape[0], encode_batch_size):
+        batch_prompt_embeds = text_encoder(text_input_ids[i:i+encode_batch_size], attention_mask=None, output_hidden_states=False)["last_hidden_state"]
+        if prompt_embeds == None:
+          prompt_embeds = batch_prompt_embeds
+        else:
+          prompt_embeds = jnp.concatenate([prompt_embeds, batch_prompt_embeds])
+    else:
+      prompt_embeds = text_encoder(text_input_ids, attention_mask=None, output_hidden_states=False)["last_hidden_state"]
+      _, seq_len, _ = prompt_embeds.shape
+      # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
+      prompt_embeds = jnp.tile(prompt_embeds, (1, num_images_per_prompt, 1))
+      prompt_embeds = jnp.reshape(prompt_embeds, (batch_size * num_images_per_prompt, seq_len, -1))
+
     dtype = text_encoder.dtype
     prompt_embeds = prompt_embeds.astype(dtype)
-    _, seq_len, _ = prompt_embeds.shape
-    # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
-    prompt_embeds = jnp.tile(prompt_embeds, (1, num_images_per_prompt, 1))
-    prompt_embeds = jnp.reshape(prompt_embeds, (batch_size * num_images_per_prompt, seq_len, -1))
 
     return prompt_embeds
 
@@ -226,7 +238,12 @@ class FluxPipeline(FlaxDiffusionPipeline):
       t5_text_encoder: FlaxT5EncoderModel,
       num_images_per_prompt: int = 1,
       max_sequence_length: int = 512,
+      encode_in_batches: bool = False,
+      encode_batch_size: int = None
   ):
+    
+    if encode_in_batches:
+      assert encode_in_batches is not None
 
     prompt = [prompt] if isinstance(prompt, str) else prompt
     prompt_2 = prompt or prompt_2
@@ -242,6 +259,8 @@ class FluxPipeline(FlaxDiffusionPipeline):
         tokenizer=t5_tokenizer,
         text_encoder=t5_text_encoder,
         max_sequence_length=max_sequence_length,
+        encode_in_batches=encode_in_batches,
+        encode_batch_size=encode_batch_size
     )
 
     text_ids = jnp.zeros((prompt_embeds.shape[0], prompt_embeds.shape[1], 3)).astype(jnp.bfloat16)

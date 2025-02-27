@@ -115,7 +115,7 @@ diffusion_scheduler_config: {
 base_output_directory: ""
 
 # Hardware
-hardware: 'gpu' # Supported hardware types are 'tpu', 'gpu'
+hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
 
 # Parallelism
 mesh_axes: ['data', 'fsdp', 'tensor']

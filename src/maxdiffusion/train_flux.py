@@ -24,14 +24,13 @@ from maxdiffusion import (
     mllog_utils,
 )
 
-from maxdiffusion.trainers.flux_trainer import FluxTrainer
-
 from maxdiffusion.train_utils import (
     validate_train_config,
 )
 
 
 def train(config):
+  from maxdiffusion.trainers.flux_trainer import FluxTrainer
   trainer = FluxTrainer(config)
   trainer.start_training()
 
