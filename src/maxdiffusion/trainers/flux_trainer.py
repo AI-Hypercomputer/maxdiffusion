@@ -107,7 +107,6 @@ class FluxTrainer(FluxCheckpointer):
 
     # don't need this anymore, clear some memory.
     del pipeline.t5_encoder
-
     flux_state, flux_state_mesh_shardings, flux_learning_rate_scheduler = self.create_flux_state(
         # ambiguous here, but if self.params.get("unet") doesn't exist
         # Then its 1 of 2 scenarios:
@@ -120,7 +119,7 @@ class FluxTrainer(FluxCheckpointer):
     )
     train_states["flux_state"] = flux_state
     state_shardings["flux_state_shardings"] = flux_state_mesh_shardings
-    self.post_training_steps(pipeline, params, train_states, msg="before_training")
+    #self.post_training_steps(pipeline, params, train_states, msg="before_training")
 
     # Create scheduler
     noise_scheduler, noise_scheduler_state = self.create_scheduler(pipeline, params)
