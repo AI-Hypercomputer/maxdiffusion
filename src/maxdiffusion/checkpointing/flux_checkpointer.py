@@ -16,12 +16,10 @@
 
 from abc import ABC
 from contextlib import nullcontext
-import os
-import json
 import functools
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, PositionalSharding, PartitionSpec as P
+from jax.sharding import Mesh
 import orbax.checkpoint as ocp
 import grain.python as grain
 from maxdiffusion import (
@@ -35,15 +33,19 @@ from ..pipelines.flux.flux_pipeline import FluxPipeline
 from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
 
 from maxdiffusion.checkpointing.checkpointing_utils import (
-    create_orbax_checkpoint_manager,
-    load_stable_diffusion_configs,
+    create_orbax_checkpoint_manager
 )
 from maxdiffusion.models.flux.util import load_flow_model
 
 FLUX_CHECKPOINT = "FLUX_CHECKPOINT"
-_CHECKPOINT_FORMAT_DIFFUSERS = "CHECKPOINT_FORMAT_DIFFUSERS"
 _CHECKPOINT_FORMAT_ORBAX = "CHECKPOINT_FORMAT_ORBAX"
 
+FLUX_STATE_KEY = "flux_state"
+FLUX_TRANSFORMER_PARAMS_KEY = "flux_transformer_params"
+FLUX_STATE_SHARDINGS_KEY = "flux_state_shardings"
+FLUX_VAE_PARAMS_KEY = "flux_vae"
+VAE_STATE_KEY = "vae_state"
+VAE_STATE_SHARDINGS_KEY = "vae_state_shardings"
 
 class FluxCheckpointer(ABC):
 
@@ -144,67 +146,106 @@ class FluxCheckpointer(ABC):
     self.checkpoint_format = checkpoint_format
 
   def save_checkpoint(self, train_step, pipeline, train_states):
+    def config_to_json(model_or_config):
+      return json.loads(model_or_config.to_json_string())
     items = {
         "config": ocp.args.JsonSave({"model_name": self.config.model_name}),
     }
 
-    items["flux_state"] = ocp.args.PyTreeSave(train_states["flux_state"])
+    items[FLUX_STATE_KEY] = ocp.args.PyTreeSave(train_states[FLUX_STATE_KEY])
 
     self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
 
   def load_params(self, step=None):
 
     self.checkpoint_format = _CHECKPOINT_FORMAT_ORBAX
+  
+  def load_flux_configs_from_orbax(self):
+    # TODO - load configs from orbax
+    return None
+
+  def load_diffusers_checkpoint(self):
+    flash_block_sizes = max_utils.get_flash_block_sizes(self.config)
+
+    if jax.device_count() == jax.local_device_count():
+      context = jax.default_device(jax.devices("cpu")[0])
+    else:
+      context = nullcontext()
+    
+    with context:
+      clip_encoder = FlaxCLIPTextModel.from_pretrained(
+        self.config.clip_model_name_or_path, dtype=self.config.weights_dtype
+      )
+      clip_tokenizer = CLIPTokenizer.from_pretrained(
+        self.config.clip_model_name_or_path,
+        max_length=77,
+        use_fast=True
+      )
+      t5_encoder = FlaxT5EncoderModel.from_pretrained(self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype)
+      t5_tokenizer = AutoTokenizer.from_pretrained(
+        self.config.t5xxl_model_name_or_path,
+        max_length=self.config.max_sequence_length,
+        use_fast=True
+      )
+
+      vae, vae_params = FlaxAutoencoderKL.from_pretrained(
+        self.config.pretrained_model_name_or_path,
+        subfolder="vae",
+        from_pt=True,
+        use_safetensors=True,
+        dtype=self.config.weights_dtype
+      )
+
+      # loading from pretrained here causes a crash when trying to compile the model
+      # Failed to load HSACO: HIP_ERROR_NoBinaryForGpu
+      transformer = FluxTransformer2DModel.from_config(
+        self.config.pretrained_model_name_or_path,
+        subfolder="transformer",
+        mesh=self.mesh,
+        split_head_dim=self.config.split_head_dim,
+        attention_kernel=self.config.attention,
+        flash_block_sizes=flash_block_sizes,
+        dtype=self.config.activations_dtype,
+        weights_dtype=self.config.weights_dtype,
+        precision=max_utils.get_precision(self.config),
+      )
+      transformer_eval_params = transformer.init_weights(
+        rngs=self.rng, max_sequence_length=self.config.max_sequence_length, eval_only=True
+      )
+      
+      transformer_params = load_flow_model(self.config.flux_name, transformer_eval_params, "cpu")
+
+    pipeline = FluxPipeline(
+      t5_encoder,
+      clip_encoder,
+      vae,
+      t5_tokenizer,
+      clip_tokenizer,
+      transformer,
+      None,
+      dtype=self.config.activations_dtype,
+      mesh=self.mesh,
+      config=self.config,
+      rng=self.rng
+    )
+
+    params = {
+      FLUX_VAE_PARAMS_KEY : vae_params,
+      FLUX_TRANSFORMER_PARAMS_KEY : transformer_params
+    }
+
+    return pipeline, params
 
   def load_checkpoint(self, step=None, scheduler_class=None):
-    clip_encoder = FlaxCLIPTextModel.from_pretrained(
-      self.config.clip_model_name_or_path, dtype=self.config.weights_dtype
-    )
-    clip_tokenizer = CLIPTokenizer.from_pretrained(
-      self.config.clip_model_name_or_path, max_length=77, use_fast=True
-    )
 
-    t5_encoder = FlaxT5EncoderModel.from_pretrained(self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype)
-    t5_tokenizer = AutoTokenizer.from_pretrained(
-      self.config.t5xxl_model_name_or_path, max_length=self.config.max_sequence_length, use_fast=True
-    )
-    encoders_sharding = PositionalSharding(self.devices_array).replicate()
-    partial_device_put_replicated = functools.partial(max_utils.device_put_replicated, sharding=encoders_sharding)
-    clip_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), clip_encoder.params)
-    clip_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, clip_encoder.params)
-    t5_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), t5_encoder.params)
-    t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, t5_encoder.params)
+    model_configs = self.load_flux_configs_from_orbax()
 
+    pipeline, params = None, {}
 
-
-    vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-      self.config.pretrained_model_name_or_path, subfolder="vae", from_pt=True, use_safetensors=True, dtype="bfloat16"
-    )
-
-    flash_block_sizes = max_utils.get_flash_block_sizes(self.config)
-    # loading from pretrained here causes a crash when trying to compile the model
-    # Failed to load HSACO: HIP_ERROR_NoBinaryForGpu
-    transformer = FluxTransformer2DModel.from_config(
-      self.config.pretrained_model_name_or_path,
-      subfolder="transformer",
-      mesh=self.mesh,
-      split_head_dim=self.config.split_head_dim,
-      attention_kernel=self.config.attention,
-      flash_block_sizes=flash_block_sizes,
-      dtype=self.config.activations_dtype,
-      weights_dtype=self.config.weights_dtype,
-      precision=max_utils.get_precision(self.config),
-  )
-
-    return FluxPipeline(t5_encoder,
-                        clip_encoder,
-                        vae,
-                        t5_tokenizer,
-                        clip_tokenizer,
-                        transformer,
-                        None,
-                        dtype=self.config.activations_dtype,
-                        mesh=self.mesh,
-                        config=self.config,
-                        rng=self.rng), vae_params
+    if model_configs:
+      print("TODO - load configs from orbax")
+    else:
+      pipeline, params = self.load_diffusers_checkpoint()
+    
+    return pipeline, params
 

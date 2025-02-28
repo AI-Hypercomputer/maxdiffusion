@@ -22,9 +22,17 @@ import numpy as np
 import jax
 import optax
 import jax.numpy as jnp
-from jax.sharding import PartitionSpec as P
+from jax.sharding import PositionalSharding, PartitionSpec as P
 from flax.linen import partitioning as nn_partitioning
-from maxdiffusion.checkpointing.flux_checkpointer import (FluxCheckpointer, FLUX_CHECKPOINT)
+from maxdiffusion.checkpointing.flux_checkpointer import (
+  FluxCheckpointer,
+  FLUX_CHECKPOINT,
+  FLUX_TRANSFORMER_PARAMS_KEY,
+  FLUX_STATE_KEY,
+  FLUX_STATE_SHARDINGS_KEY,
+  FLUX_VAE_PARAMS_KEY,
+  VAE_STATE_KEY,
+  VAE_STATE_SHARDINGS_KEY)
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
 
@@ -57,7 +65,7 @@ class FluxTrainer(FluxCheckpointer):
       raise ValueError("this script currently doesn't support training text_encoders")
 
   def post_training_steps(self, pipeline, params, train_states, msg=""):
-    imgs = pipeline(flux_params=train_states["flux_state"],
+    imgs = pipeline(flux_params=train_states[FLUX_STATE_KEY],
                     timesteps=50,
                     vae_params=train_states["vae_state"])
     imgs = np.array(imgs)
@@ -94,11 +102,21 @@ class FluxTrainer(FluxCheckpointer):
     # create train states
     train_states = {}
     state_shardings = {}
+
+    # move params to accelerator
+    encoders_sharding = PositionalSharding(self.devices_array).replicate()
+    partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=encoders_sharding)
+    pipeline.clip_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), pipeline.clip_encoder.params)
+    pipeline.clip_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.clip_encoder.params)
+    pipeline.t5_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), pipeline.t5_encoder.params)
+    pipeline.t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.t5_encoder.params)
+
+
     vae_state, vae_state_mesh_shardings = self.create_vae_state(
-        pipeline=pipeline, params=params, checkpoint_item_name="vae_state", is_training=False
+        pipeline=pipeline, params=params[FLUX_VAE_PARAMS_KEY], checkpoint_item_name=VAE_STATE_KEY, is_training=False
     )
-    train_states["vae_state"] = vae_state
-    state_shardings["vae_state_shardings"] = vae_state_mesh_shardings
+    train_states[VAE_STATE_KEY] = vae_state
+    state_shardings[VAE_STATE_SHARDINGS_KEY] = vae_state_mesh_shardings
 
     # Load dataset
     data_iterator = self.load_dataset(pipeline, params, train_states)
@@ -107,18 +125,23 @@ class FluxTrainer(FluxCheckpointer):
 
     # don't need this anymore, clear some memory.
     del pipeline.t5_encoder
+
+    # evaluate shapes
+    
     flux_state, flux_state_mesh_shardings, flux_learning_rate_scheduler = self.create_flux_state(
-        # ambiguous here, but if self.params.get("unet") doesn't exist
+        # ambiguous here, but if params=None
         # Then its 1 of 2 scenarios:
         # 1. unet state will be loaded directly from orbax
         # 2. a new unet is being trained from scratch.
         pipeline=pipeline,
         params=None, # Params are loaded inside create_flux_state
-        checkpoint_item_name="flux_state",
+        checkpoint_item_name=FLUX_STATE_KEY,
         is_training=True,
     )
-    train_states["flux_state"] = flux_state
-    state_shardings["flux_state_shardings"] = flux_state_mesh_shardings
+    flux_state = flux_state.replace(params=params[FLUX_TRANSFORMER_PARAMS_KEY])
+    flux_state = jax.device_put(flux_state, flux_state_mesh_shardings)
+    train_states[FLUX_STATE_KEY] = flux_state
+    state_shardings[FLUX_STATE_SHARDINGS_KEY] = flux_state_mesh_shardings
     #self.post_training_steps(pipeline, params, train_states, msg="before_training")
 
     # Create scheduler
@@ -320,7 +343,7 @@ class FluxTrainer(FluxCheckpointer):
       max_logging.log("Precompiling...")
       s = time.time()
       dummy_batch = self.get_shaped_batch(self.config, pipeline)
-      p_train_step = p_train_step.lower(train_states["flux_state"], dummy_batch, train_rngs)
+      p_train_step = p_train_step.lower(train_states[FLUX_STATE_KEY], dummy_batch, train_rngs)
       p_train_step = p_train_step.compile()
       max_logging.log(f"Compile time: {(time.time() - s )}")
       return p_train_step
@@ -328,7 +351,7 @@ class FluxTrainer(FluxCheckpointer):
   def training_loop(self, p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler):
 
     writer = max_utils.initialize_summary_writer(self.config)
-    flux_state = train_states["flux_state"]
+    flux_state = train_states[FLUX_STATE_KEY]
     num_model_parameters = max_utils.calculate_num_params_from_pytree(flux_state.params)
 
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
@@ -352,7 +375,7 @@ class FluxTrainer(FluxCheckpointer):
     last_profiling_step = np.clip(
         first_profiling_step + self.config.profiler_steps - 1, first_profiling_step, self.config.max_train_steps - 1
     )
-    start_step = get_first_step(train_states["flux_state"])
+    start_step = get_first_step(train_states[FLUX_STATE_KEY])
     _, train_rngs = jax.random.split(self.rng)
     times = []
     for step in np.arange(start_step, self.config.max_train_steps):
@@ -379,7 +402,7 @@ class FluxTrainer(FluxCheckpointer):
 
       if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
         max_logging.log(f"Saving checkpoint for step {step}")
-        train_states["flux_state"] = flux_state
+        train_states[FLUX_STATE_KEY] = flux_state
         self.save_checkpoint(step, pipeline, train_states)
 
       if self.config.enable_profiler and step == last_profiling_step:
@@ -390,7 +413,7 @@ class FluxTrainer(FluxCheckpointer):
           writer, local_metrics_file, running_gcs_metrics, train_metric, self.config.max_train_steps - 1, self.config
       )
 
-    train_states["flux_state"] = flux_state
+    train_states[FLUX_STATE_KEY] = flux_state
     max_logging.log(f"Average time per step: {sum(times[2:], datetime.timedelta(0)) / len(times[2:])}")
     if self.config.save_final_checkpoint:
       max_logging.log(f"Saving checkpoint for step {step}")
@@ -402,7 +425,7 @@ class FluxTrainer(FluxCheckpointer):
 def _train_step(flux_state, batch, train_rng, guidance_vec, pipeline, scheduler, config):
   _, gen_dummy_rng = jax.random.split(train_rng)
   sample_rng, timestep_bias_rng, new_train_rng = jax.random.split(gen_dummy_rng, 3)
-  state_params = {"flux_state": flux_state.params}
+  state_params = {FLUX_STATE_KEY: flux_state.params}
 
   def compute_loss(state_params):
     latents = batch["pixel_values"]
@@ -424,7 +447,7 @@ def _train_step(flux_state, batch, train_rng, guidance_vec, pipeline, scheduler,
     noisy_latents = pipeline.scheduler.add_noise(scheduler, latents, noise, timesteps, flux=True)
 
     model_pred = pipeline.flux.apply(
-      {"params": state_params["flux_state"]},
+      {"params": state_params[FLUX_STATE_KEY]},
       hidden_states=noisy_latents,
       img_ids=img_ids,
       encoder_hidden_states=text_embeds,
@@ -444,7 +467,7 @@ def _train_step(flux_state, batch, train_rng, guidance_vec, pipeline, scheduler,
   grad_fn = jax.value_and_grad(compute_loss)
   loss, grad = grad_fn(state_params)
 
-  new_state = flux_state.apply_gradients(grads=grad["flux_state"])
+  new_state = flux_state.apply_gradients(grads=grad[FLUX_STATE_KEY])
 
   metrics = {"scalar": {"learning/loss": loss}, "scalars": {}}
 
