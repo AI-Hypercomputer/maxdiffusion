@@ -148,6 +148,8 @@ class _HyperParameters:
 
     if "hf_train_files" in raw_keys and not raw_keys["hf_train_files"]:
       raw_keys["hf_train_files"] = None
+    if "hf_access_token" in raw_keys and not raw_keys["hf_access_token"]:
+      raw_keys["hf_access_token"] = None
 
     raw_keys["total_train_batch_size"] = max_utils.get_global_batch_size(raw_keys["per_device_batch_size"])
 
