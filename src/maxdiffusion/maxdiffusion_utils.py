@@ -39,7 +39,7 @@ def load_sdxllightning_unet(config, pipeline, params):
   return pipeline, params
 
 
-def maybe_load_lora(config, pipeline, params):
+def maybe_load_sdxl_lora(config, pipeline, params):
 
   def _noop_interceptor(next_fn, args, kwargs, context):
     return next_fn(*args, **kwargs)

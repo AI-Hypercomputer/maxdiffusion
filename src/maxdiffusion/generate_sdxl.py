@@ -33,7 +33,7 @@ from maxdiffusion.maxdiffusion_utils import (
     get_add_time_ids,
     rescale_noise_cfg,
     load_sdxllightning_unet,
-    maybe_load_lora,
+    maybe_load_sdxl_lora,
     create_scheduler,
 )
 
@@ -234,7 +234,7 @@ def run(config):
     params["unet"] = unet_params
 
   # maybe load lora and create interceptor
-  params, lora_interceptors = maybe_load_lora(config, pipeline, params)
+  params, lora_interceptors = maybe_load_sdxl_lora(config, pipeline, params)
 
   if config.lightning_repo:
     pipeline, params = load_sdxllightning_unet(config, pipeline, params)
