@@ -77,6 +77,8 @@ if [[ "$MODE" == "stable" || ! -v MODE ]]; then
         echo "Installing stable jax, jaxlib, libtpu for NVIDIA gpu"
         pip3 install "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     fi
+    export NVTE_FRAMEWORK=jax
+    pip3 install git+https://github.com/NVIDIA/TransformerEngine.git@stable
   fi
 
 elif [[ $MODE == "nightly" ]]; then
@@ -85,6 +87,9 @@ elif [[ $MODE == "nightly" ]]; then
       echo "Installing jax-nightly, jaxlib-nightly"
       # Install jax-nightly
       pip install -U --pre jax jaxlib jax-cuda12-plugin[with_cuda] jax-cuda12-pjrt -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
+      # Install Transformer Engine
+      export NVTE_FRAMEWORK=jax
+      pip3 install git+https://github.com/NVIDIA/TransformerEngine.git@stable
   elif [[ $DEVICE == "tpu" ]]; then
     echo "Installing jax-nightly,jaxlib-nightly"
     # Install jax-nightly
