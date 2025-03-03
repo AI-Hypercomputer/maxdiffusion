@@ -108,6 +108,7 @@ class HFDataSource(grain.RandomAccessDataSource):
     self.current_shard = dataloading_host_index
     self.dataset_shard = split_dataset_by_node(dataset, world_size=self.n_shards, rank=self.current_shard)
     self.data_iter = None
+    self.out_of_data = False
 
   def _check_shard_count(self):
     if self.n_shards < self.dataloading_host_count:
@@ -119,11 +120,15 @@ class HFDataSource(grain.RandomAccessDataSource):
       self.n_shards = self.dataloading_host_count
 
   def _update_shard(self):
-    new_shard = (self.current_shard + self.dataloading_host_count) % self.n_shards
-    max_logging.log(f"Updating host {self.dataloading_host_index} dataset from shard {self.current_shard} to {new_shard}")
-    self.current_shard = new_shard
-    self.dataset_shard = split_dataset_by_node(self.dataset, world_size=self.n_shards, rank=self.current_shard)
-    self.data_iter = iter(self.dataset_shard)
+    new_shard = self.current_shard + self.dataloading_host_count
+    if new_shard < self.n_shards:
+      max_logging.log(f"Updating host {self.dataloading_host_index} dataset from shard {self.current_shard} to {new_shard}")
+      self.current_shard = new_shard
+      self.dataset_shard = split_dataset_by_node(self.dataset, world_size=self.n_shards, rank=self.current_shard)
+      self.data_iter = iter(self.dataset_shard)
+    else:
+      max_logging.log(f"Run out of shards on host {self.dataloading_host_index}, shard {new_shard} is not available")
+      self.out_of_data = True
 
   def __len__(self):
     """Return length of the HF dataset. Since HuggingFace IterableDataset does not have length,
@@ -138,6 +143,8 @@ class HFDataSource(grain.RandomAccessDataSource):
 
     while True:
       try:
+        if self.out_of_data:
+          return None
         data = next(self.data_iter)
         return data
       except StopIteration:

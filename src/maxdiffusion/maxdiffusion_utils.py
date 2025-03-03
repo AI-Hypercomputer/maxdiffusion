@@ -14,6 +14,8 @@
  limitations under the License.
  """
 
+import io
+from PIL import Image
 import importlib
 import numpy as np
 import tensorflow as tf
@@ -72,6 +74,24 @@ def vae_apply(images, sample_rng, vae, vae_params):
   return latents
 
 
+def convert_dict_to_pil(image):
+  """
+  Converts a dictionary containing image bytes to a PIL Image object.
+
+  Args:
+    image_dict: A dictionary with keys 'bytes' (image data) and 'path' (optional).
+
+  Returns:
+    A PIL Image object.
+  """
+  if isinstance(image, dict):
+    image_bytes = image["bytes"]
+    image_stream = io.BytesIO(image_bytes)  # Create a BytesIO object
+    pil_image = Image.open(image_stream)  # Open the image from the stream
+    return pil_image
+  return image
+
+
 def transform_images(
     examples,
     image_column,
@@ -83,7 +103,7 @@ def transform_images(
 ):
   """Preprocess images to latents."""
   images = list(examples[image_column])
-  images = [np.asarray(image) for image in images]
+  images = [convert_dict_to_pil(image) for image in images]
   tensor_list = []
   for image in images:
     image = tf.image.resize(image, [image_resolution, image_resolution], method="bilinear", antialias=True)
