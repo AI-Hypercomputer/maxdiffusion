@@ -12,7 +12,11 @@ multiple hosts.
 1. Clone MaxDiffusion in your TPU VM.
 1. Within the root directory of the MaxDiffusion `git` repo, install dependencies by running:
 ```bash
-bash setup.sh MODE=stable
+If you are running on TPU:
+bash setup.sh MODE=stable DEVICE=tpu
+
+If you are running on GPU:
+bash setup.sh MODE=stable DEVICE=gpu
 ```
 
 ## Getting Starting: Multihost development

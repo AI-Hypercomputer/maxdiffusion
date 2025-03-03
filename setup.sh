@@ -58,7 +58,7 @@ fi
 # Install JAX and JAXlib based on the specified mode
 if [[ "$MODE" == "stable" || ! -v MODE ]]; then
   # Stable mode
-  if [[ $DEVICE == "tpu" ]]; then 
+  if [[ $DEVICE == "tpu" ]]; then
     echo "Installing stable jax, jaxlib for tpu"
     if [[ -n "$JAX_VERSION" ]]; then
       echo "Installing stable jax, jaxlib, libtpu version ${JAX_VERSION}"
@@ -90,14 +90,14 @@ elif [[ $MODE == "nightly" ]]; then
       # Install Transformer Engine
       export NVTE_FRAMEWORK=jax
       pip3 install git+https://github.com/NVIDIA/TransformerEngine.git@stable
-  elif [[ $DEVICE == "tpu" ]]; then 
+  elif [[ $DEVICE == "tpu" ]]; then
     echo "Installing jax-nightly,jaxlib-nightly"
     # Install jax-nightly
     pip3 install --pre -U jax -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
     # Install jaxlib-nightly
     pip3 install --pre -U jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
     # Install libtpu-nightly
-    pip3 install --pre -U libtpu-nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html 
+    pip3 install --pre -U libtpu-nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
   fi
   echo "Installing nightly tensorboard plugin profile"
   pip3 install tbp-nightly --upgrade
@@ -107,7 +107,7 @@ else
 fi
 
 # Install dependencies from requirements.txt
-pip3 install -U -r requirements.txt
+pip3 install -U -r requirements.txt || echo "Failed to install dependencies in the requirements" >&2
 
 # Install maxdiffusion
-pip3 install -U .
+pip3 install -U . || echo "Failed to install maxdiffusion" >&2
