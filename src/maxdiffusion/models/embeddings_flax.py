@@ -116,9 +116,8 @@ def get_1d_rotary_pos_embed(
   freqs = jnp.outer(pos, freqs)
   freqs_cos = jnp.cos(freqs)
   freqs_sin = jnp.sin(freqs)
-  out = jnp.stack([freqs_cos, -freqs_sin, freqs_sin, freqs_cos], axis=-1)
-
-  return out
+  freq_cis = jnp.complex64(freqs_cos + 1j * freqs_sin)
+  return freq_cis
 
 
 class PixArtAlphaTextProjection(nn.Module):

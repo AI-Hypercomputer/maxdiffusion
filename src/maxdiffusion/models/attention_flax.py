@@ -494,13 +494,21 @@ class FlaxFluxAttention(nn.Module):
     )
 
   def apply_rope(self, xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
-    xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)
-    xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)
+      dtype = xq.dtype
+      reshape_xq = xq.astype(jnp.float32).reshape(*xq.shape[:-1], -1, 2)
+      reshape_xk = xk.astype(jnp.float32).reshape(*xk.shape[:-1], -1, 2)
+      
+      xq_ = jax.lax.complex(reshape_xq[..., 0], reshape_xq[..., 1])
+      xk_ = jax.lax.complex(reshape_xk[..., 0], reshape_xk[..., 1])
 
-    xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
-    xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
+      freqs_cis = freqs_cis[None, None, ...]
+      xq_out_complex = xq_ * freqs_cis
+      xk_out_complex = xk_ * freqs_cis
 
-    return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
+      xq_out = jnp.stack([jnp.real(xq_out_complex), jnp.imag(xq_out_complex)], axis=-1).reshape(xq.shape).astype(dtype)
+      xk_out = jnp.stack([jnp.real(xk_out_complex), jnp.imag(xk_out_complex)], axis=-1).reshape(xk.shape).astype(dtype)
+
+      return xq_out, xk_out
 
   def __call__(self, hidden_states, encoder_hidden_states=None, attention_mask=None, image_rotary_emb=None):
 
@@ -534,7 +542,6 @@ class FlaxFluxAttention(nn.Module):
       key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
       value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
 
-    image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
     query_proj, key_proj = self.apply_rope(query_proj, key_proj, image_rotary_emb)
 
     query_proj = query_proj.transpose(0, 2, 1, 3).reshape(query_proj.shape[0], query_proj.shape[2], -1)

@@ -130,8 +130,7 @@ class FluxSingleTransformerBlock(nn.Module):
     if image_rotary_emb is not None:
       # since this function returns image_rotary_emb and passes it between layers,
       # we do not want to modify it
-      image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-      q, k = self.attn.apply_rope(q, k, image_rotary_emb_reordered)
+      q, k = self.attn.apply_rope(q, k, image_rotary_emb)
 
     q = q.transpose(0, 2, 1, 3).reshape(q.shape[0], q.shape[2], -1)
     k = k.transpose(0, 2, 1, 3).reshape(k.shape[0], k.shape[2], -1)
@@ -147,7 +146,7 @@ class FluxSingleTransformerBlock(nn.Module):
     if hidden_states.dtype == jnp.float16:
       hidden_states = jnp.clip(hidden_states, -65504, 65504)
 
-    return hidden_states
+    return hidden_states, temb, image_rotary_emb
 
 
 class FluxTransformerBlock(nn.Module):
@@ -296,7 +295,7 @@ class FluxTransformerBlock(nn.Module):
     encoder_hidden_states = encoder_hidden_states + c_gate_mlp * context_ff_output
     if encoder_hidden_states.dtype == jnp.float16:
       encoder_hidden_states = encoder_hidden_states.clip(-65504, 65504)
-    return hidden_states, encoder_hidden_states
+    return hidden_states, encoder_hidden_states, temb, image_rotary_emb
 
 
 @flax_register_to_config
@@ -504,7 +503,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     image_rotary_emb = nn.with_logical_constraint(image_rotary_emb, ("activation_batch", "activation_embed"))
 
     for double_block in self.double_blocks:
-      hidden_states, encoder_hidden_states = double_block(
+      hidden_states, encoder_hidden_states, temb, image_rotary_emb = double_block(
           hidden_states=hidden_states,
           encoder_hidden_states=encoder_hidden_states,
           temb=temb,
@@ -513,7 +512,9 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
     hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
     for single_block in self.single_blocks:
-      hidden_states = single_block(hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb)
+      hidden_states, temb, image_rotary_emb = single_block(
+          hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb
+      )
     hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
     hidden_states = self.norm_out(hidden_states, temb)
