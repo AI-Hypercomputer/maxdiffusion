@@ -88,14 +88,11 @@ class BaseStableDiffusionCheckpointer(ABC):
         config=self.config,
         mesh=self.mesh,
         weights_init_fn=weights_init_fn,
-        model_params=None,
+        model_params=None if self.config.train_new_unet else params.get("unet", None),
         checkpoint_manager=self.checkpoint_manager,
         checkpoint_item=checkpoint_item_name,
         training=is_training,
     )
-    if not self.config.train_new_unet:
-      unet_state = unet_state.replace(params=params.get("unet", None))
-      unet_state = jax.device_put(unet_state, state_mesh_shardings)
     return unet_state, state_mesh_shardings, learning_rate_scheduler
 
   def create_vae_state(self, pipeline, params, checkpoint_item_name, is_training=False):
@@ -153,20 +150,18 @@ class BaseStableDiffusionCheckpointer(ABC):
         input_shape=(self.total_train_batch_size, pipeline.tokenizer.model_max_length),
     )
 
-    state, state_mesh_shardings = max_utils.setup_initial_state(
+    # state, state_mesh_shardings =
+    return max_utils.setup_initial_state(
         model=pipeline.text_encoder_2,
         tx=tx,
         config=self.config,
         mesh=self.mesh,
         weights_init_fn=weights_init_fn,
-        model_params=None,
+        model_params=params.get("text_encoder_2", None),
         checkpoint_manager=self.checkpoint_manager,
         checkpoint_item=checkpoint_item_name,
         training=is_training,
     )
-    state = state.replace(params=params.get("text_encoder_2", None))
-    state = jax.device_put(state, state_mesh_shardings)
-    return state, state_mesh_shardings
 
   def restore_data_iterator_state(self, data_iterator):
     if (
