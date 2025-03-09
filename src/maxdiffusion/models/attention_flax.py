@@ -383,6 +383,139 @@ def jax_memory_efficient_attention(
 
   return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
 
+def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
+  xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)
+  xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)
+
+  xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
+  xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
+
+  return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
+
+class FlaxWanAttention(nn.module):
+  query_dim: int
+  heads: int = 8
+  dim_head: int = 64
+  dropout: float = 0.0
+  use_memory_efficient_attention: bool = False
+  split_head_dim: bool = False
+  attention_kernel: str = "dot_product"
+  flash_min_seq_length: int = 4096
+  flash_block_sizes: BlockSizes = None
+  mesh: jax.sharding.Mesh = None
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+  key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+  value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+  out_axis_names: AxisNames = (BATCH, LENGTH, EMBED)
+  precision: jax.lax.Precision = None
+  qkv_bias: bool = False
+  
+  def setup(self):
+    if self.attention_kernel in {"flash", "cudnn_flash_te"} and self.mesh is None:
+      raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
+    inner_dim = self.dim_head * self.heads
+    scale = self.dim_head**-0.5
+
+    self.attention_op = AttentionOp(
+        mesh=self.mesh,
+        attention_kernel=self.attention_kernel,
+        scale=scale,
+        heads=self.heads,
+        dim_head=self.dim_head,
+        flash_min_seq_length=self.flash_min_seq_length,
+        use_memory_efficient_attention=self.use_memory_efficient_attention,
+        split_head_dim=self.split_head_dim,
+        flash_block_sizes=self.flash_block_sizes,
+        dtype=self.dtype,
+        float32_qk_product=False,
+    )
+
+    kernel_axes = ("embed", "heads")
+    qkv_init_kernel = nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes)
+
+    qkv_init_kernel = nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "heads"))
+
+    self.query = nn.Dense(
+        inner_dim,
+        kernel_init=qkv_init_kernel,
+        use_bias=False,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        name="to_q",
+        precision=self.precision,
+    )
+
+    self.key = nn.Dense(
+        inner_dim,
+        kernel_init=qkv_init_kernel,
+        use_bias=False,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        name="to_k",
+        precision=self.precision,
+    )
+
+    self.value = nn.Dense(
+        inner_dim,
+        kernel_init=qkv_init_kernel,
+        use_bias=False,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        name="to_v",
+        precision=self.precision,
+    )
+
+    self.query_norm = nn.RMSNorm(
+        dtype=self.dtype,
+        scale_init=nn.with_logical_partitioning(nn.initializers.ones, ("heads",)),
+        param_dtype=self.weights_dtype,
+    )
+    self.key_norm = nn.RMSNorm(
+        dtype=self.dtype,
+        scale_init=nn.with_logical_partitioning(nn.initializers.ones, ("heads",)),
+        param_dtype=self.weights_dtype,
+    )
+
+    self.proj_attn = nn.Dense(
+        self.query_dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("heads", "embed")),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        name="to_out_0",
+        precision=self.precision,
+    )
+    self.dropout_layer = nn.Dropout(rate=self.dropout)
+  
+  def call(
+    self,
+    hidden_states: Array,
+    encoder_hidden_states: Optional[Array],
+    rotary_emb: Optional[Array],
+    deterministic: bool = True
+  ):
+    encoder_hidden_states = hidden_states if encoder_hidden_states is None else encoder_hidden_states
+
+    query_proj = self.query(hidden_states)
+    key_proj = self.key(encoder_hidden_states)
+    value_proj = self.value(encoder_hidden_states)
+
+    query_proj = self.query_norm(query_proj)
+    key_proj = self.key_norm(key_proj)
+
+    if rotary_emb:
+      query_proj, key_proj = self.apply_rope(query_proj, key_proj, rotary_emb)
+
+    query_proj = nn.with_logical_constraint(query_proj, self.query_axis_names)
+    key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
+    value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
+
+    hidden_states = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+
+    hidden_states = self.proj_attn(hidden_states)
+    hidden_states = nn.with_logical_constraint(hidden_states, (BATCH, LENGTH, HEAD))
+    return self.dropout_layer(hidden_states, deterministic=deterministic)
 
 class FlaxFluxAttention(nn.Module):
   query_dim: int
@@ -493,15 +626,6 @@ class FlaxFluxAttention(nn.Module):
         param_dtype=self.weights_dtype,
     )
 
-  def apply_rope(self, xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
-    xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)
-    xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)
-
-    xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
-    xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
-
-    return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
-
   def __call__(self, hidden_states, encoder_hidden_states=None, attention_mask=None, image_rotary_emb=None):
 
     qkv_proj = self.qkv(hidden_states)
@@ -535,7 +659,7 @@ class FlaxFluxAttention(nn.Module):
       value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
 
     image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-    query_proj, key_proj = self.apply_rope(query_proj, key_proj, image_rotary_emb)
+    query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb)
 
     query_proj = query_proj.transpose(0, 2, 1, 3).reshape(query_proj.shape[0], query_proj.shape[2], -1)
     key_proj = key_proj.transpose(0, 2, 1, 3).reshape(key_proj.shape[0], key_proj.shape[2], -1)
