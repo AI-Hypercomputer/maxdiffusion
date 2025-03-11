@@ -577,6 +577,7 @@ class ConfigMixin:
     config_dict.pop("mesh", None)
     config_dict.pop("precision", None)
     config_dict.pop("weights_dtype", None)
+    config_dict.pop("quant", None)
 
     return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
 
@@ -659,7 +660,7 @@ def flax_register_to_config(cls):
       # ignore flax specific attributes
       if field.name in self._flax_internal_args:
         continue
-      if type(field.default) == dataclasses._MISSING_TYPE:
+      if type(field.default) == dataclasses._MISSING_TYPE:  # noqa: E721
         default_kwargs[field.name] = None
       else:
         default_kwargs[field.name] = getattr(self, field.name)
