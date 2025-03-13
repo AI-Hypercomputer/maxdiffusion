@@ -404,18 +404,20 @@ def setup_initial_state(
         state = state[checkpoint_item]
     if not state:
       max_logging.log(f"Could not find the item in orbax, creating state...")
-      state = init_train_state(
-        model=model,
-        tx=tx,
-        weights_init_fn=weights_init_fn,
-        params=model_params,
-        training=training,
-        eval_only=False
+      init_train_state_partial = functools.partial(
+          init_train_state,
+          model=model,
+          tx=tx,
+          weights_init_fn=weights_init_fn,
+          params=model_params,
+          training=training,
+          eval_only=False,
       )
-      if model_params:
-        state = state.replace(params=model_params)
-
-      state = jax.device_put(state, state_mesh_shardings)
+      state = jax.jit(
+          init_train_state_partial,
+          in_shardings=None,
+          out_shardings=state_mesh_shardings,
+      )()
 
   state = unbox_logicallypartioned_trainstate(state)
 
