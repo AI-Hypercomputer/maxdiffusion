@@ -255,6 +255,61 @@ def calculate_unet_tflops(config, pipeline, batch_size, rngs, train):
       / jax.local_device_count()
   )
 
+def get_dummy_flux_inputs(config, pipeline, batch_size):
+  """Returns randomly initialized flux inputs."""
+  latents, latents_ids = pipeline.prepare_latents(
+    batch_size=batch_size,
+    num_channels_latents=pipeline.flux.in_channels // 4,
+    height=config.resolution,
+    width=config.resolution,
+    vae_scale_factor=pipeline.vae_scale_factor,
+    dtype=config.activations_dtype,
+    rng=pipeline.rng
+  )
+  guidance_vec = jnp.asarray([config.guidance_scale] * batch_size, dtype=config.activations_dtype)
+  
+  timesteps = jnp.ones((batch_size,), dtype=config.weights_dtype)
+  t5_hidden_states_shape = (
+      batch_size,
+      config.max_sequence_length,
+      4096,
+  )
+  t5_hidden_states = jnp.zeros(t5_hidden_states_shape, dtype=config.weights_dtype)
+  t5_ids = jnp.zeros((batch_size, t5_hidden_states.shape[1], 3), dtype=config.weights_dtype)
+
+  clip_hidden_states_shape = (
+      batch_size,
+      768,
+  )
+  clip_hidden_states = jnp.zeros(clip_hidden_states_shape, dtype=config.weights_dtype)
+  
+  return (latents, timesteps, latents_ids, guidance_vec, t5_hidden_states, t5_ids, clip_hidden_states)
+
+
+def calculate_flux_tflops(config, pipeline, batch_size, rngs, train):
+  """
+  Calculates jflux tflops.
+  batch_size should be per_device_batch_size * jax.local_device_count() or attention's shard_map won't
+  cache the compilation when flash is enabled.
+  """
+
+  (latents, timesteps, latents_ids, guidance_vec, t5_hidden_states, t5_ids, clip_hidden_states) = get_dummy_flux_inputs(config, pipeline, batch_size)
+  return (
+      max_utils.calculate_model_tflops(
+          pipeline.flux,
+          rngs,
+          train,
+          hidden_states=latents,
+          img_ids=latents_ids,
+          encoder_hidden_states=t5_hidden_states,
+          txt_ids=t5_ids,
+          pooled_projections=clip_hidden_states,
+          timestep=timesteps,
+          guidance=guidance_vec,
+      )
+      / jax.local_device_count()
+  )
+
 
 def tokenize_captions(examples, caption_column, tokenizer, input_ids_key="input_ids", p_encode=None):
   """Tokenize captions for sd1.x,sd2.x models."""
