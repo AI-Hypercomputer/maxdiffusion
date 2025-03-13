@@ -206,7 +206,7 @@ class AttentionOp(nn.Module):
     def wrap_flash_attention(query, key, value):
       return jax.vmap(self.dpa_layer)(query, key, value, mask=None)
 
-    out = wrap_flash_attention(query, key, value)#self.dpa_layer(query, key, value, mask=None)
+    out = wrap_flash_attention(query, key, value)
     return self.reshape_data_from_cudnn_flash(out)
 
   def apply_attention_dot(self, query: Array, key: Array, value: Array):
