@@ -239,7 +239,7 @@ class FlaxStableDiffusionXLPipeline(FlaxDiffusionPipeline, StableDiffusionLoraLo
 
       # predict the noise residual
       noise_pred = self.unet.apply(
-          {"params": params["unet"]},
+          {"params": params["unet"], "aqt": params["unet"]["aqt"]},
           jnp.array(latents_input),
           jnp.array(timestep, dtype=jnp.int32),
           encoder_hidden_states=prompt_embeds,

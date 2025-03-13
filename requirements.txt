@@ -24,9 +24,10 @@ tensorflow-datasets>=4.9.6
 ruff>=0.1.5,<=0.2
 git+https://github.com/mlperf/logging.git
 opencv-python-headless==4.10.0.84
-orbax-checkpoint==0.10.2
+orbax-checkpoint==0.10.3
 tokenizers==0.21.0
 huggingface_hub==0.24.7
 transformers==4.48.1
 einops==0.8.0
 sentencepiece
+aqtp

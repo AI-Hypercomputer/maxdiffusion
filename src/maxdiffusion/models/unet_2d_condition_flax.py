@@ -31,7 +31,10 @@ from .unet_2d_blocks_flax import (
     FlaxUpBlock2D,
 )
 
+from . import quantizations
 from ..common_types import BlockSizes
+
+Quant = quantizations.AqtQuantization
 
 
 @flax.struct.dataclass
@@ -105,6 +108,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
           Overrides default block sizes for flash attention.
       mesh (`jax.sharding.mesh`, *optional*, defaults to `None`):
           jax mesh is required if attention is set to flash.
+      quant (`AqtQuantization`, *optional*, defaults to None)
+            Configures AQT quantization github.com/google/aqt.
   """
 
   sample_size: int = 32
@@ -142,8 +147,9 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
   projection_class_embeddings_input_dim: Optional[int] = None
   norm_num_groups: int = 32
   precision: jax.lax.Precision = None
+  quant: Quant = None
 
-  def init_weights(self, rng: jax.Array, eval_only: bool = False) -> FrozenDict:
+  def init_weights(self, rng: jax.Array, eval_only: bool = False, quantization_enabled: bool = False) -> FrozenDict:
     # init input tensors
     no_devices = jax.device_count()
     sample_shape = (no_devices, self.in_channels, self.sample_size, self.sample_size)
@@ -159,6 +165,8 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     params_rng, dropout_rng = jax.random.split(rng)
     rngs = {"params": params_rng, "dropout": dropout_rng}
+    if quantization_enabled:
+      rngs["aqt"] = params_rng
 
     added_cond_kwargs = None
     if self.addition_embed_type == "text_time":
@@ -280,6 +288,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             dtype=self.dtype,
             weights_dtype=self.weights_dtype,
             precision=self.precision,
+            quant=self.quant,
         )
       else:
         down_block = FlaxDownBlock2D(
@@ -312,6 +321,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
+        quant=self.quant,
     )
 
     # up
@@ -349,6 +359,7 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             dtype=self.dtype,
             weights_dtype=self.weights_dtype,
             precision=self.precision,
+            quant=self.quant,
         )
       else:
         up_block = FlaxUpBlock2D(

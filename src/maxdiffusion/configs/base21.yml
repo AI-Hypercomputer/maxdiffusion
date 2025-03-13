@@ -217,3 +217,7 @@ prior_loss_weight: 1.0
 num_class_images: 100
 # If true, set dataset_save_location.
 cache_dreambooth_dataset: False
+quantization: ''
+# Shard the range finding operation for quantization. By default this is set to number of slices.
+quantization_local_shard_count: -1
+compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
