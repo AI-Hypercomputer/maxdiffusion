@@ -268,7 +268,7 @@ class BaseStableDiffusionCheckpointer(ABC):
 
     self.checkpoint_format = _CHECKPOINT_FORMAT_ORBAX
 
-  def load_checkpoint(self, step=None, scheduler_class=None):
+  def load_checkpoint(self, step=None, scheduler_class=None, quant=None):
 
     pipeline_class = self._get_pipeline_class()
 
@@ -293,6 +293,7 @@ class BaseStableDiffusionCheckpointer(ABC):
           flash_block_sizes=flash_block_sizes,
           mesh=self.mesh,
           precision=precision,
+          quant=quant,
       )
 
       vae = FlaxAutoencoderKL.from_config(

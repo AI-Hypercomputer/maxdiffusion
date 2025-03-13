@@ -26,16 +26,90 @@ from jax import pmap
 from jax.experimental.compilation_cache import compilation_cache as cc
 
 from maxdiffusion import FlaxStableDiffusionXLPipeline
+from maxdiffusion.models import quantizations
+
+from maxdiffusion.max_utils import (
+    device_put_replicated,
+    get_memory_allocations,
+    create_device_mesh,
+    get_flash_block_sizes,
+    get_precision,
+    setup_initial_state,
+)
+from jax.sharding import Mesh
+from maxdiffusion import pyconfig
+import os
 
 cc.set_cache_dir("~/jax_cache")
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+config=pyconfig.initialize([None,os.path.join(THIS_DIR, "configs", "base_xl.yml")])
+
+import pdb
+pdb.set_trace
+
+
+def get_quantized_and_pruned_unet_variables(config):
+
+  # Setup Mesh
+  devices_array = create_device_mesh(config)
+  mesh = Mesh(devices_array, config.mesh_axes)
+
+  batch_size = config.per_device_batch_size * jax.device_count()
+
+  weight_dtype = jnp.bfloat16
+  flash_block_sizes = get_flash_block_sizes(config)
+
+  quant = quantizations.configure_quantization(config, "convert")
+  pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+    config.pretrained_model_name_or_path,
+    revision=config.revision,
+    dtype=weight_dtype,
+    split_head_dim=config.split_head_dim,
+    norm_num_groups=config.norm_num_groups,
+    attention_kernel=config.attention,
+    flash_block_sizes=flash_block_sizes,
+    mesh=mesh,
+    quant=quant,
+    )
+
+  k = jax.random.key(0)
+  latents = jnp.ones((8, 4,128,128), dtype=jnp.float32)
+  timesteps = jnp.ones((8,))
+  encoder_hidden_states = jnp.ones((8, 77, 2048))
+
+  added_cond_kwargs = {
+                "text_embeds": jnp.zeros((8, 1280), dtype=jnp.float32),
+                "time_ids": jnp.zeros((8, 6), dtype=jnp.float32),
+            }
+  noise_pred, quantized_unet_vars = pipeline.unet.apply(
+    params["unet"] | {"aqt" : {}},
+    latents,
+    timesteps,
+    encoder_hidden_states=encoder_hidden_states,
+    added_cond_kwargs=added_cond_kwargs,
+    rngs={"params": jax.random.PRNGKey(0)},
+    mutable=True,
+  )
+
+  params_pruned = {}
+  params_pruned['aqt'] = quantized_unet_vars['aqt']
+  params_pruned['unet'] = quantizations.remove_quantized_params(params['unet'], quantized_unet_vars["aqt"])
+  del pipeline
+  del params
+
+  return params_pruned
 
 NUM_DEVICES = jax.device_count()
+
+params_unet = get_quantized_and_pruned_unet_variables(config, "convert")
 
 # 1. Let's start by downloading the model and loading it into our pipeline class
 # Adhering to JAX's functional approach, the model's parameters are returned seperatetely and
 # will have to be passed to the pipeline during inference
+quant = quantizations.configure_quantization(config, "serve")
 pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-xl-base-1.0", revision="refs/pr/95", split_head_dim=True
+    "stabilityai/stable-diffusion-xl-base-1.0", revision="refs/pr/95", split_head_dim=True, quant=quant
 )
 
 # 2. We cast all parameters to bfloat16 EXCEPT the scheduler which we leave in

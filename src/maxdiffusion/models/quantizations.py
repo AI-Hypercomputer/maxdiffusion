@@ -102,15 +102,21 @@ class AqtQuantization:
 
   def dot_general_cls(self, mesh_axes: Tuple[str, ...] = ()):
     """Returns dot_general configured with aqt params."""
+    quant_dg, is_tiled, tiling_fn = self.quant_dg, False, None
+    rhs_axis_metadata_wrapper = self._get_rhs_axis_metadata_wrapper(
+        mesh_axes, is_tiled, replicate_scale=self.replicate_scale
+    )
     # module_path = "/".join(nn.module._context.module_stack[-1].path)
     # print(f"quant_dg: {quant_dg}, is_tiled: {is_tiled}, module_path: {module_path}")
     aqt_dg_cls = functools.partial(
         aqt_flax.AqtDotGeneral,
-        self.quant_dg,
-        lhs_quant_mode=self.lhs_quant_mode,
-        rhs_quant_mode=self.rhs_quant_mode,
-        lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
+        quant_dg,
+        rhs_quant_mode=self.quant_mode,
+        lhs_freeze_mode=aqt_flax.FreezerMode.NONE,
         rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
+        rhs_axis_metadata_wrapper=rhs_axis_metadata_wrapper,
+        use_legacy_freezer=False,
+        tiling_fn=tiling_fn,
     )
     return aqt_dg_cls
 
@@ -119,10 +125,11 @@ class AqtQuantization:
     aqt_einsum = functools.partial(
         aqt_flax.AqtEinsum(
             cfg=self.quant_dg,
-            lhs_quant_mode=self.lhs_quant_mode,
-            rhs_quant_mode=self.rhs_quant_mode,
-            lhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION,
+            rhs_quant_mode=self.quant_mode,
+            lhs_freeze_mode=aqt_flax.FreezerMode.NONE,
             rhs_freeze_mode=aqt_flax.FreezerMode.CALIBRATION_AND_VALUE,
+            use_legacy_freezer=False,
+            tiling_fn=None,
         )
     )
     return aqt_einsum
@@ -239,19 +246,46 @@ def match_aqt_and_unquantized_param(aqt_params, params):
   return jax.tree_util.tree_unflatten(aqt_tree_def, param_paths)
 
 
-def _get_aqt_key_paths(aqt_vars, params):
-  """Generate a list of paths which have aqt state"""
-  aqt_to_unquantized_key_path = match_aqt_and_unquantized_param(aqt_vars, params)
-  aqt_key_paths, _ = jax.tree_util.tree_flatten(aqt_to_unquantized_key_path, is_leaf=lambda x: isinstance(x, tuple))
-  return list(aqt_key_paths)
+# def _get_aqt_key_paths(aqt_vars, params):
+#   """Generate a list of paths which have aqt state"""
+#   aqt_to_unquantized_key_path = match_aqt_and_unquantized_param(aqt_vars, params)
+#   aqt_key_paths, _ = jax.tree_util.tree_flatten(aqt_to_unquantized_key_path, is_leaf=lambda x: isinstance(x, tuple))
+#   return list(aqt_key_paths)
 
+def _get_aqt_key_paths(aqt_vars):
+  """Generate a list of paths which have aqt state"""
+  aqt_tree_flat, _ = jax.tree_util.tree_flatten_with_path(aqt_vars)
+  aqt_key_paths = []
+  for k, _ in aqt_tree_flat:
+    pruned_keys = []
+    for d in list(k):
+      if "Aqt" in d.key:
+        print(d.key)
+        pruned_keys.append(jax.tree_util.DictKey(key="kernel"))
+        break
+      else:
+        assert "Aqt" not in d.key, f"Unexpected Aqt op {d.key} in {k}."
+        pruned_keys.append(d)
+    aqt_key_paths.append(tuple(pruned_keys))
+  return aqt_key_paths
+
+
+# def remove_quantized_params(params, aqt_vars):
+#   """Remove param values with aqt tensors to Null to optimize memory."""
+#   quantized_param_paths = _get_aqt_key_paths(aqt_vars, params)
+#   tree_flat, tree_struct = tree_flatten_with_path(params)
+#   for i, (k, v) in enumerate(tree_flat):
+#     if k in quantized_param_paths:
+#       v = {}
+#     tree_flat[i] = v
+#   return tree_unflatten(tree_struct, tree_flat)
 
 def remove_quantized_params(params, aqt_vars):
   """Remove param values with aqt tensors to Null to optimize memory."""
-  quantized_param_paths = _get_aqt_key_paths(aqt_vars, params)
+  aqt_paths = _get_aqt_key_paths(aqt_vars)
   tree_flat, tree_struct = tree_flatten_with_path(params)
   for i, (k, v) in enumerate(tree_flat):
-    if k in quantized_param_paths:
+    if k in aqt_paths:
       v = {}
     tree_flat[i] = v
   return tree_unflatten(tree_struct, tree_flat)

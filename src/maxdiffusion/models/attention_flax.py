@@ -45,10 +45,6 @@ Quant = quantizations.AqtQuantization
 Quant = quantizations.AqtQuantization
 
 
-def _maybe_aqt_einsum(quant: Quant):
-  return jnp.einsum if quant is None else quant.einsum()
-
-
 class AttentionOp(nn.Module):
   mesh: Mesh
   attention_kernel: str
@@ -82,6 +78,9 @@ class AttentionOp(nn.Module):
           scale_factor=self.scale,
           transpose_batch_sequence=False,
       )
+  
+  def _maybe_aqt_einsum(self):
+    return jnp.einsum if self.quant is None else self.quant.einsum()
 
   def check_attention_inputs(self, query: Array, key: Array, value: Array) -> None:
     """Check attention inputs."""
@@ -194,7 +193,7 @@ class AttentionOp(nn.Module):
 
     out = self.dpa_layer(query, key, value, mask=None)
     return self.reshape_data_from_cudnn_flash(out)
-
+  @nn.compact
   def apply_attention_dot(self, query: Array, key: Array, value: Array):
     """Apply Attention."""
     if self.split_head_dim:
@@ -236,9 +235,11 @@ class AttentionOp(nn.Module):
       hidden_states = hidden_states.transpose(1, 0, 2)
     else:
       if self.split_head_dim:
-        attention_scores = jnp.einsum("b t n h, b f n h -> b n f t", key_states, query_states)
+        attention_scores = self._maybe_aqt_einsum()("b t n h, b f n h -> b n f t", key_states, query_states)
+        # attention_scores = jnp.einsum("b t n h, b f n h -> b n f t", key_states, query_states)
       else:
-        attention_scores = jnp.einsum("b i d, b j d->b i j", query_states, key_states)
+        attention_scores = self._maybe_aqt_einsum()("b i d, b j d->b i j", query_states, key_states)
+        # attention_scores = jnp.einsum("b i d, b j d->b i j", query_states, key_states)
 
       attention_scores = attention_scores * self.scale
       attention_probs = nn.softmax(attention_scores, axis=-1 if self.split_head_dim else 2)
@@ -247,11 +248,13 @@ class AttentionOp(nn.Module):
 
       # attend to values
       if self.split_head_dim:
-        hidden_states = jnp.einsum("b n f t, b t n h -> b f n h", attention_probs, value_states)
+        hidden_states = self._maybe_aqt_einsum()("b n f t, b t n h -> b f n h", attention_probs, value_states)
+        # hidden_states = jnp.einsum("b n f t, b t n h -> b f n h", attention_probs, value_states)
         b = hidden_states.shape[0]
         hidden_states = jnp.reshape(hidden_states, (b, -1, self.heads * self.dim_head))
       else:
-        hidden_states = jnp.einsum("b i j, b j d -> b i d", attention_probs, value_states)
+        hidden_states = self._maybe_aqt_einsum()("b i j, b j d -> b i d", attention_probs, value_states)
+        # hidden_states = jnp.einsum("b i j, b j d -> b i d", attention_probs, value_states)
         hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
 
     return hidden_states
@@ -644,7 +647,8 @@ class FlaxAttention(nn.Module):
     qkv_init_kernel = nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "heads"))
     dot_general_cls = None
     if self.quant:
-      dot_general_cls = self.quant.dot_general_cls()
+      dot_general_cls = None
+      # dot_general_cls = self.quant.dot_general_cls()
     self.query = nn.Dense(
         inner_dim,
         kernel_init=qkv_init_kernel,
