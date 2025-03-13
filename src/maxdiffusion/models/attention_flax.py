@@ -193,15 +193,11 @@ class AttentionOp(nn.Module):
     value = nn.with_logical_constraint(value, axis_names)
 
     @functools.partial(
-      shard_map.shard_map,
-      mesh=self.mesh,
-      in_specs=(
-        axis_names,
-        axis_names,
-        axis_names
-      ),
-      out_specs=axis_names,
-      check_rep=False
+        shard_map.shard_map,
+        mesh=self.mesh,
+        in_specs=(axis_names, axis_names, axis_names),
+        out_specs=axis_names,
+        check_rep=False,
     )
     def wrap_flash_attention(query, key, value):
       return jax.vmap(self.dpa_layer)(query, key, value, mask=None)

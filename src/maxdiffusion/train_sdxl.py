@@ -49,6 +49,7 @@ if __name__ == "__main__":
   import os
   import tensorflow as tf
   import torch
+
   tf.config.set_visible_devices([], "GPU")
   os.environ["TF_CPP_MIN_LOG_LEVEL"] = "0"
   torch.set_default_device("cpu")
