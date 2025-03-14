@@ -50,6 +50,10 @@ activations_dtype: 'bfloat16'
 # at the cost of time.
 precision: "DEFAULT"
 
+# if False state is not jitted and instead replicate is called. This is good for debugging on single host
+# It must be True for multi-host.
+jit_initializers: True
+
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True

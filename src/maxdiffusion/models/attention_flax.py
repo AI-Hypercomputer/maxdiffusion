@@ -192,7 +192,17 @@ class AttentionOp(nn.Module):
     key = nn.with_logical_constraint(key, axis_names)
     value = nn.with_logical_constraint(value, axis_names)
 
-    out = self.dpa_layer(query, key, value, mask=None)
+    @functools.partial(
+        shard_map.shard_map,
+        mesh=self.mesh,
+        in_specs=(axis_names, axis_names, axis_names),
+        out_specs=axis_names,
+        check_rep=False,
+    )
+    def wrap_flash_attention(query, key, value):
+      return jax.vmap(self.dpa_layer)(query, key, value, mask=None)
+
+    out = wrap_flash_attention(query, key, value)
     return self.reshape_data_from_cudnn_flash(out)
 
   def apply_attention_dot(self, query: Array, key: Array, value: Array):

@@ -83,18 +83,6 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
     # create train states
     train_states = {}
     state_shardings = {}
-    unet_state, unet_state_mesh_shardings, unet_learning_rate_scheduler = self.create_unet_state(
-        # ambiguous here, but if self.params.get("unet") doesn't exist
-        # Then its 1 of 2 scenarios:
-        # 1. unet state will be loaded directly from orbax
-        # 2. a new unet is being trained from scratch.
-        pipeline=pipeline,
-        params=params,
-        checkpoint_item_name="unet_state",
-        is_training=True,
-    )
-    train_states["unet_state"] = unet_state
-    state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
     vae_state, vae_state_mesh_shardings = self.create_vae_state(
         pipeline=pipeline, params=params, checkpoint_item_name="vae_state", is_training=False
     )
@@ -130,6 +118,19 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
     data_iterator = self.load_dataset(pipeline, params, train_states)
     if self.config.dataset_type == "grain":
       data_iterator = self.restore_data_iterator_state(data_iterator)
+
+    unet_state, unet_state_mesh_shardings, unet_learning_rate_scheduler = self.create_unet_state(
+        # ambiguous here, but if self.params.get("unet") doesn't exist
+        # Then its 1 of 2 scenarios:
+        # 1. unet state will be loaded directly from orbax
+        # 2. a new unet is being trained from scratch.
+        pipeline=pipeline,
+        params=params,
+        checkpoint_item_name="unet_state",
+        is_training=True,
+    )
+    train_states["unet_state"] = unet_state
+    state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
 
     data_shardings = self.get_data_shardings()
     # Compile train_step
