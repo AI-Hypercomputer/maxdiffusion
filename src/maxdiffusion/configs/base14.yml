@@ -37,6 +37,11 @@ activations_dtype: 'bfloat16'
 # fp32 activations and fp32 weights with HIGHEST will provide the best precision
 # at the cost of time.
 precision: "DEFAULT"
+
+# if False state is not jitted and instead replicate is called. This is good for debugging on single host
+# It must be True for multi-host.
+jit_initializers: True
+
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True

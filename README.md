@@ -88,7 +88,7 @@ After installation completes, run the training script.
   First install Transformer Engine by following the [instructions here](#fused-attention-for-gpu).
 
   ```bash
-  NVTE_FUSED_ATTN=1 python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml hardware=gpu run_name='test-sdxl-train' output_dir=/tmp/ train_text_encoder=false cache_latents_text_encoder_outputs=true max_train_steps=200 weights_dtype=float16 activations_dtype=float16 per_device_batch_size=1 attention="cudnn_flash_te"
+  NVTE_FUSED_ATTN=1 python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml hardware=gpu run_name='test-sdxl-train' output_dir=/tmp/ train_new_unet=true train_text_encoder=false cache_latents_text_encoder_outputs=true max_train_steps=200 weights_dtype=bfloat16 resolution=512 per_device_batch_size=1 attention="cudnn_flash_te" jit_initializers=False
   ```
 
   To generate images with a trained checkpoint, run:
