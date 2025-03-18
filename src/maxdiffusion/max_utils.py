@@ -424,8 +424,6 @@ def setup_initial_state(
         if model_params:
           state = state.replace(params=model_params)
         state = jax.device_put(state, state_mesh_shardings)
-      if model_params:
-        state = state.replace(params=model_params)
 
   state = unbox_logicallypartioned_trainstate(state)
 
