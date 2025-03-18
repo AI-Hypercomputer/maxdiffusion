@@ -469,7 +469,7 @@ def run(config):
   max_logging.log(f"Compile time: {t1 - t0:.1f}s.")
 
   t0 = time.perf_counter()
-  with ExitStack() as stack, jax.profiler.trace("/home/jfacevedo/trace/"):
+  with ExitStack() as stack, jax.profiler.trace("/tmp/trace/"):
     _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
     imgs = p_run_inference(states).block_until_ready()
   t1 = time.perf_counter()
