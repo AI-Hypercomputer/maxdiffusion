@@ -76,8 +76,8 @@ def unpack(x: Array, height: int, width: int) -> Array:
   )
 
 
-def vae_decode(latents, vae, state, config):
-  img = unpack(x=latents.astype(jnp.float32), height=config.resolution, width=config.resolution)
+def vae_decode(latents, vae, state, config, resolution):
+  img = unpack(x=latents.astype(jnp.float32), height=resolution, width=resolution)
   img = img / vae.config.scaling_factor + vae.config.shift_factor
   img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample
   return img
@@ -135,7 +135,7 @@ def get_lin_function(x1: float = 256, y1: float = 0.5, x2: float = 4096, y2: flo
 
 
 def run_inference(
-    states, transformer, vae, config, mesh, latents, latent_image_ids, prompt_embeds, txt_ids, vec, guidance_vec, c_ts, p_ts
+    states, transformer, vae, config, resolution, mesh, latents, latent_image_ids, prompt_embeds, txt_ids, vec, guidance_vec, c_ts, p_ts
 ):
 
   transformer_state = states["transformer"]
@@ -150,7 +150,7 @@ def run_inference(
       vec=vec,
       guidance_vec=guidance_vec,
   )
-  vae_decode_p = functools.partial(vae_decode, vae=vae, state=vae_state, config=config)
+  vae_decode_p = functools.partial(vae_decode, vae=vae, state=vae_state, config=config, resolution=resolution)
 
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
     latents, _, _, _ = jax.lax.fori_loop(0, len(c_ts), loop_body_p, (latents, transformer_state, c_ts, p_ts))
@@ -376,8 +376,6 @@ def run(config):
 
   # move inputs to device and shard
   data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
-  latents = jax.device_put(latents, data_sharding)
-  latent_image_ids = jax.device_put(latent_image_ids)
   prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
   text_ids = jax.device_put(text_ids)
   guidance = jax.device_put(guidance, data_sharding)
@@ -429,45 +427,66 @@ def run(config):
   states["transformer"] = transformer_state
   states["vae"] = vae_state
 
-  # Setup timesteps
-  timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
-  # shifting the schedule to favor high timesteps for higher signal images
-  if config.time_shift:
-    # estimate mu based on linear estimation between two points
-    lin_function = get_lin_function(x1=config.max_sequence_length, y1=config.base_shift, y2=config.max_shift)
-    mu = lin_function(latents.shape[1])
-    timesteps = time_shift(mu, 1.0, timesteps)
-  c_ts = timesteps[:-1]
-  p_ts = timesteps[1:]
+  #validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
 
-  validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
+  resolutions = [1024, 768, 512]
+  p_jitted = {}
+  for resolution in resolutions:
+    latents, latent_image_ids = prepare_latents(
+      batch_size=global_batch_size,
+      num_channels_latents=num_channels_latents,
+      height=resolution,
+      width=resolution,
+      dtype=jnp.bfloat16,
+      vae_scale_factor=vae_scale_factor,
+      rng=rng,
+    )
+    latents = jax.device_put(latents, data_sharding)
+    latent_image_ids = jax.device_put(latent_image_ids)
 
-  p_run_inference = jax.jit(
-      functools.partial(
-          run_inference,
-          transformer=transformer,
-          vae=vae,
-          config=config,
-          mesh=mesh,
-          latents=latents,
-          latent_image_ids=latent_image_ids,
-          prompt_embeds=prompt_embeds,
-          txt_ids=text_ids,
-          vec=pooled_prompt_embeds,
-          guidance_vec=guidance,
-          c_ts=c_ts,
-          p_ts=p_ts,
-      ),
-      in_shardings=(state_shardings,),
-      out_shardings=None,
-  )
+    # Setup timesteps
+    timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
+    # shifting the schedule to favor high timesteps for higher signal images
+    if config.time_shift:
+      # estimate mu based on linear estimation between two points
+      lin_function = get_lin_function(x1=config.max_sequence_length, y1=config.base_shift, y2=config.max_shift)
+      mu = lin_function(latents.shape[1])
+      timesteps = time_shift(mu, 1.0, timesteps)
+    c_ts = timesteps[:-1]
+    p_ts = timesteps[1:]
+
+    p_run_inference = jax.jit(
+        functools.partial(
+            run_inference,
+            transformer=transformer,
+            vae=vae,
+            config=config,
+            resolution=resolution,
+            mesh=mesh,
+            latents=latents,
+            latent_image_ids=latent_image_ids,
+            prompt_embeds=prompt_embeds,
+            txt_ids=text_ids,
+            vec=pooled_prompt_embeds,
+            guidance_vec=guidance,
+            c_ts=c_ts,
+            p_ts=p_ts,
+        ),
+        in_shardings=(state_shardings,),
+        out_shardings=None,
+    )
+    with ExitStack() as stack:
+      _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+      p_run_inference(states).block_until_ready()
+    p_jitted[resolution] = p_run_inference
+  breakpoint()
   t0 = time.perf_counter()
   with ExitStack() as stack:
     _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
     p_run_inference(states).block_until_ready()
   t1 = time.perf_counter()
   max_logging.log(f"Compile time: {t1 - t0:.1f}s.")
-
+  breakpoint()
   t0 = time.perf_counter()
   with ExitStack() as stack, jax.profiler.trace("/tmp/trace/"):
     _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
