@@ -77,7 +77,7 @@ def unpack(x: Array, height: int, width: int) -> Array:
 
 
 def vae_decode(latents, vae, state, config, resolution):
-  img = unpack(x=latents.astype(jnp.float32), height=resolution, width=resolution)
+  img = unpack(x=latents.astype(jnp.float32), height=resolution[1], width=resolution[0])
   img = img / vae.config.scaling_factor + vae.config.shift_factor
   img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample
   return img
@@ -322,15 +322,6 @@ def run(config):
   )
 
   num_channels_latents = transformer.in_channels // 4
-  latents, latent_image_ids = prepare_latents(
-      batch_size=global_batch_size,
-      num_channels_latents=num_channels_latents,
-      height=config.resolution,
-      width=config.resolution,
-      dtype=jnp.bfloat16,
-      vae_scale_factor=vae_scale_factor,
-      rng=rng,
-  )
 
   # LOAD TEXT ENCODERS
   clip_text_encoder = FlaxCLIPTextModel.from_pretrained(
@@ -352,17 +343,6 @@ def run(config):
   t5_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), t5_encoder.params)
   t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, t5_encoder.params)
 
-  prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
-      prompt=config.prompt,
-      prompt_2=config.prompt_2,
-      clip_tokenizer=clip_tokenizer,
-      clip_text_encoder=clip_text_encoder,
-      t5_tokenizer=t5_tokenizer,
-      t5_text_encoder=t5_encoder,
-      num_images_per_prompt=global_batch_size,
-      max_sequence_length=config.max_sequence_length,
-  )
-
   def validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds):
     print("latents.shape: ", latents.shape, latents.dtype)
     print("latent_image_ids.shape: ", latent_image_ids.shape, latent_image_ids.dtype)
@@ -373,13 +353,6 @@ def run(config):
     print("pooled_prompt_embeds.shape: ", pooled_prompt_embeds.shape, pooled_prompt_embeds.dtype)
 
   guidance = jnp.asarray([config.guidance_scale] * global_batch_size, dtype=jnp.bfloat16)
-
-  # move inputs to device and shard
-  data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
-  prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
-  text_ids = jax.device_put(text_ids)
-  guidance = jax.device_put(guidance, data_sharding)
-  pooled_prompt_embeds = jax.device_put(pooled_prompt_embeds, data_sharding)
 
   if config.offload_encoders:
     cpus = jax.devices("cpu")
@@ -427,58 +400,110 @@ def run(config):
   states["transformer"] = transformer_state
   states["vae"] = vae_state
 
-  #validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
-
-  resolutions = [1024, 768, 512]
+  resolutions = [
+    (768, 768),
+    (768, 1024),
+    (1024, 768),
+    (1024, 1024),
+    (896, 1152),
+    (1152, 896),
+    (1920, 1080),
+    (1080, 1920)
+  ]
   p_jitted = {}
   for resolution in resolutions:
-    latents, latent_image_ids = prepare_latents(
-      batch_size=global_batch_size,
-      num_channels_latents=num_channels_latents,
-      height=resolution,
-      width=resolution,
-      dtype=jnp.bfloat16,
-      vae_scale_factor=vae_scale_factor,
-      rng=rng,
-    )
-    latents = jax.device_put(latents, data_sharding)
-    latent_image_ids = jax.device_put(latent_image_ids)
+    max_logging.log(f"Resolutions: {resolution}")
+    for _ in range(5):
+      s0 = time.perf_counter()
+      prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
+        prompt=config.prompt,
+        prompt_2=config.prompt_2,
+        clip_tokenizer=clip_tokenizer,
+        clip_text_encoder=clip_text_encoder,
+        t5_tokenizer=t5_tokenizer,
+        t5_text_encoder=t5_encoder,
+        num_images_per_prompt=global_batch_size,
+        max_sequence_length=config.max_sequence_length,
+      )
+      max_logging.log(f"text encoding time: {(time.perf_counter() - s0)}")
+      latents, latent_image_ids = prepare_latents(
+        batch_size=global_batch_size,
+        num_channels_latents=num_channels_latents,
+        height=resolution[1],
+        width=resolution[0],
+        dtype=jnp.bfloat16,
+        vae_scale_factor=vae_scale_factor,
+        rng=rng,
+      )
+      
+      # move inputs to device and shard
+      s0 = time.perf_counter()
+      data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
+      prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
+      text_ids = jax.device_put(text_ids)
+      guidance = jax.device_put(guidance, data_sharding)
+      pooled_prompt_embeds = jax.device_put(pooled_prompt_embeds, data_sharding)
+      latents = jax.device_put(latents, data_sharding)
+      latent_image_ids = jax.device_put(latent_image_ids)
+      max_logging.log(f"Moving to device time: {(time.perf_counter() - s0)}")
 
-    # Setup timesteps
-    timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
-    # shifting the schedule to favor high timesteps for higher signal images
-    if config.time_shift:
-      # estimate mu based on linear estimation between two points
-      lin_function = get_lin_function(x1=config.max_sequence_length, y1=config.base_shift, y2=config.max_shift)
-      mu = lin_function(latents.shape[1])
-      timesteps = time_shift(mu, 1.0, timesteps)
-    c_ts = timesteps[:-1]
-    p_ts = timesteps[1:]
-
-    p_run_inference = jax.jit(
-        functools.partial(
-            run_inference,
-            transformer=transformer,
-            vae=vae,
-            config=config,
-            resolution=resolution,
-            mesh=mesh,
-            latents=latents,
-            latent_image_ids=latent_image_ids,
-            prompt_embeds=prompt_embeds,
-            txt_ids=text_ids,
-            vec=pooled_prompt_embeds,
-            guidance_vec=guidance,
-            c_ts=c_ts,
-            p_ts=p_ts,
-        ),
-        in_shardings=(state_shardings,),
-        out_shardings=None,
-    )
-    with ExitStack() as stack:
-      _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
-      p_run_inference(states).block_until_ready()
-    p_jitted[resolution] = p_run_inference
+      # Setup timesteps
+      timesteps = jnp.linspace(1, 0, config.num_inference_steps + 1)
+      # shifting the schedule to favor high timesteps for higher signal images
+      if config.time_shift:
+        # estimate mu based on linear estimation between two points
+        lin_function = get_lin_function(x1=config.max_sequence_length, y1=config.base_shift, y2=config.max_shift)
+        mu = lin_function(latents.shape[1])
+        timesteps = time_shift(mu, 1.0, timesteps)
+      c_ts = timesteps[:-1]
+      p_ts = timesteps[1:]
+      validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
+      p_run_inference = p_jitted.get(resolution, None)
+      if p_run_inference is None:
+        print("FN not found, compiling...")
+        p_run_inference = jax.jit(
+            functools.partial(
+                run_inference,
+                transformer=transformer,
+                vae=vae,
+                config=config,
+                resolution=resolution,
+                mesh=mesh,
+                latents=latents,
+                latent_image_ids=latent_image_ids,
+                prompt_embeds=prompt_embeds,
+                txt_ids=text_ids,
+                vec=pooled_prompt_embeds,
+                guidance_vec=guidance,
+                c_ts=c_ts,
+                p_ts=p_ts,
+            ),
+        )
+        p_jitted[resolution] = p_run_inference
+      with ExitStack() as stack:
+        _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+        s0 = time.perf_counter()
+        imgs = p_run_inference(
+          states,
+          latents = latents,
+          latent_image_ids=latent_image_ids,
+          prompt_embeds=prompt_embeds,
+          txt_ids=text_ids,
+          vec=pooled_prompt_embeds,
+        ).block_until_ready()
+        max_logging.log(f"inference time: {(time.perf_counter() - s0)}")
+        s0 = time.perf_counter()
+        imgs = jax.experimental.multihost_utils.process_allgather(imgs, tiled=True)
+        max_logging.log(f"Gathering all time: {(time.perf_counter() - s0)}")
+        s0 = time.perf_counter()
+        imgs = np.array(imgs)
+        imgs = (imgs * 0.5 + 0.5).clip(0, 1)
+        imgs = np.transpose(imgs, (0, 2, 3, 1))
+        imgs = np.uint8(imgs * 255)
+        for i, image in enumerate(imgs):
+          Image.fromarray(image).save(f"flux_{resolution[0]}_{resolution[1]}_{i}.png")
+        max_logging.log(f"Saving images time: {(time.perf_counter() - s0)}")
+        get_memory_allocations()
   breakpoint()
   t0 = time.perf_counter()
   with ExitStack() as stack:
