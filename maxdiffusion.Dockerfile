@@ -17,9 +17,9 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python
 # Set environment variables for Google Cloud SDK and Python 3.10
 ENV PATH="/usr/local/google-cloud-sdk/bin:/usr/local/bin/python3.10:${PATH}"
 
-RUN git clone -b mlperf_4.1 https://github.com/google/maxdiffusion.git
-RUN pip install libtpu==0.0.1.dev20241011 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-RUN pip install git+https://github.com/google/jax@83b0a932b
+RUN git clone -b raymondzou/mlperf_5.0 https://github.com/google/maxdiffusion.git
+# RUN pip install libtpu==0.0.1.dev20241011 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+# RUN pip install git+https://github.com/google/jax@83b0a932b
 
 WORKDIR maxdiffusion
 RUN pip install -r requirements.txt
