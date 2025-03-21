@@ -33,6 +33,7 @@ from orbax.checkpoint.checkpoint_manager import CheckpointManager, CheckpointMan
 
 STABLE_DIFFUSION_CHECKPOINT = "STABLE_DIFFUSION_CHECKPOINT"
 STABLE_DIFFUSION_XL_CHECKPOINT = "STABLE_DIFUSSION_XL_CHECKPOINT"
+FLUX_CHECKPOINT = "FLUX_CHECKPOINT"
 
 
 def create_orbax_checkpoint_manager(
@@ -66,7 +67,7 @@ def create_orbax_checkpoint_manager(
       "text_encoder_state",
       "tokenizer_config",
   )
-  if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
+  if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT or checkpoint_type == FLUX_CHECKPOINT:
     item_names += (
         "text_encoder_2_state",
         "text_encoder_2_config",
@@ -117,7 +118,7 @@ def load_stable_diffusion_configs(
       "tokenizer_config": orbax.checkpoint.args.JsonRestore(),
   }
 
-  if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT:
+  if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT or checkpoint_type == FLUX_CHECKPOINT:
     restore_args["text_encoder_2_config"] = orbax.checkpoint.args.JsonRestore()
 
   return (checkpoint_manager.restore(step, args=orbax.checkpoint.args.Composite(**restore_args)), None)
