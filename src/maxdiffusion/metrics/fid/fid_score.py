@@ -36,7 +36,7 @@ def compute_statistics_with_mmap(path, mmap_filname, params, apply_fn, batch_siz
     )
     assert directory_iterator.samples > 0, "No images found. Make sure your images are within a subdirectory."
 
-    get_batch_fn = lambda: directory_iterator.next()[0]
+    get_batch_fn = lambda: next(directory_iterator)[0]
     num_activations = directory_iterator.samples
     num_batches = len(directory_iterator)
     dtype = 'float32'
