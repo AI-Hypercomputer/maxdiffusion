@@ -109,15 +109,19 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     p_vae_apply = None
     rng = None
     if config.dataset_type == "tf" and config.cache_latents_text_encoder_outputs:
-      p_encode = jax.jit(
-          partial(
+      text_encoder_partial = partial(
               maxdiffusion_utils.encode_xl,
               text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
               text_encoder_params=[train_states["text_encoder_state"].params, train_states["text_encoder_2_state"].params],
           )
+      text_encoder_partial.__name__="Text encoder"
+      p_encode = jax.jit(
+         text_encoder_partial
       )
+      vae_partial = partial(maxdiffusion_utils.vae_apply, vae=pipeline.vae, vae_params=train_states["vae_state"].params)
+      vae_partial.__name__="VAE Partial"
       p_vae_apply = jax.jit(
-          partial(maxdiffusion_utils.vae_apply, vae=pipeline.vae, vae_params=train_states["vae_state"].params)
+         vae_partial
       )
       rng = self.rng
 
@@ -152,8 +156,10 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
 
     self.rng, train_rngs = jax.random.split(self.rng)
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      train_step_partial = partial(_train_step, pipeline=pipeline, params=params, config=self.config)
+      train_step_partial.__name__ = "Train Step"
       p_train_step = jax.jit(
-          partial(_train_step, pipeline=pipeline, params=params, config=self.config),
+          train_step_partial,
           in_shardings=(
               state_shardings["unet_state_shardings"],
               state_shardings["vae_state_shardings"],
