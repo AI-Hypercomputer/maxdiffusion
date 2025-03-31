@@ -65,15 +65,7 @@ class FluxTrainer(FluxCheckpointer):
       raise ValueError("this script currently doesn't support training text_encoders")
 
   def post_training_steps(self, pipeline, params, train_states, msg=""):
-    imgs = pipeline(flux_params=train_states[FLUX_STATE_KEY],
-                    timesteps=50,
-                    vae_params=train_states["vae_state"])
-    imgs = np.array(imgs)
-    imgs = (imgs * 0.5 + 0.5).clip(0, 1)
-    imgs = np.transpose(imgs, (0, 2, 3, 1))
-    imgs = np.uint8(imgs * 255)
-    for i, image in enumerate(imgs):
-      Image.fromarray(image).save(f"flux_{msg}_{i}.png")
+    pass
 
   def create_scheduler(self, pipeline, params):
     noise_scheduler, noise_scheduler_state = FlaxEulerDiscreteScheduler.from_pretrained(
@@ -113,7 +105,7 @@ class FluxTrainer(FluxCheckpointer):
 
 
     vae_state, vae_state_mesh_shardings = self.create_vae_state(
-        pipeline=pipeline, params=params[FLUX_VAE_PARAMS_KEY], checkpoint_item_name=VAE_STATE_KEY, is_training=False
+        pipeline=pipeline, params=params, checkpoint_item_name=VAE_STATE_KEY, is_training=False
     )
     train_states[VAE_STATE_KEY] = vae_state
     state_shardings[VAE_STATE_SHARDINGS_KEY] = vae_state_mesh_shardings
@@ -131,14 +123,13 @@ class FluxTrainer(FluxCheckpointer):
     flux_state, flux_state_mesh_shardings, flux_learning_rate_scheduler = self.create_flux_state(
         # ambiguous here, but if params=None
         # Then its 1 of 2 scenarios:
-        # 1. unet state will be loaded directly from orbax
-        # 2. a new unet is being trained from scratch.
+        # 1. flux state will be loaded directly from orbax
+        # 2. a new flux is being trained from scratch.
         pipeline=pipeline,
         params=None, # Params are loaded inside create_flux_state
         checkpoint_item_name=FLUX_STATE_KEY,
         is_training=True,
     )
-    flux_state = flux_state.replace(params=params[FLUX_TRANSFORMER_PARAMS_KEY])
     flux_state = jax.device_put(flux_state, flux_state_mesh_shardings)
     train_states[FLUX_STATE_KEY] = flux_state
     state_shardings[FLUX_STATE_SHARDINGS_KEY] = flux_state_mesh_shardings
@@ -162,7 +153,7 @@ class FluxTrainer(FluxCheckpointer):
     )
     # 6. save final checkpoint
     # Hook
-    #self.post_training_steps(pipeline, params, train_states, "after_training")
+    self.post_training_steps(pipeline, params, train_states, "after_training")
 
   def get_shaped_batch(self, config, pipeline=None):
     """Return the shape of the batch - this is what eval_shape would return for the
@@ -408,13 +399,9 @@ class FluxTrainer(FluxCheckpointer):
       if self.config.enable_profiler and step == last_profiling_step:
         max_utils.deactivate_profiler(self.config)
 
-    if self.config.write_metrics:
-      write_metrics(
-          writer, local_metrics_file, running_gcs_metrics, train_metric, self.config.max_train_steps - 1, self.config
-      )
-
     train_states[FLUX_STATE_KEY] = flux_state
-    max_logging.log(f"Average time per step: {sum(times[2:], datetime.timedelta(0)) / len(times[2:])}")
+    if len(times) > 0:
+      max_logging.log(f"Average time per step: {sum(times[2:], datetime.timedelta(0)) / len(times[2:])}")
     if self.config.save_final_checkpoint:
       max_logging.log(f"Saving checkpoint for step {step}")
       self.save_checkpoint(step, pipeline, train_states)

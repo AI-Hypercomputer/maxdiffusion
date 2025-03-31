@@ -102,12 +102,12 @@ class FluxPipeline(FlaxDiffusionPipeline):
   def vae_decode(self, latents, vae, state, config):
     img = self.unpack(x=latents, height=config.resolution, width=config.resolution)
     img = img / vae.config.scaling_factor + vae.config.shift_factor
-    img = vae.apply({"params": state.params}, img, deterministic=True, method=vae.decode).sample
+    img = vae.apply({"params": state["params"]}, img, deterministic=True, method=vae.decode).sample
     return img
 
   def vae_encode(self, latents, vae, state):
     img = vae.apply(
-        {"params": state.params},
+        {"params": state["params"]},
         latents,
         deterministic=True,
         method=vae.encode).latent_dist.mode()
@@ -297,7 +297,7 @@ class FluxPipeline(FlaxDiffusionPipeline):
       t_prev = p_ts[step]
       t_vec = jnp.full((latents.shape[0],), t_curr, dtype=latents.dtype)
       pred = transformer.apply(
-          {"params": state.params},
+          {"params": state['params']},
           hidden_states=latents,
           img_ids=latent_image_ids,
           encoder_hidden_states=prompt_embeds,

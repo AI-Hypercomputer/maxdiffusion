@@ -17,6 +17,8 @@
 from abc import ABC
 from contextlib import nullcontext
 import functools
+import json
+import os
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
@@ -59,8 +61,10 @@ class FluxCheckpointer(ABC):
     self.mesh = Mesh(self.devices_array, self.config.mesh_axes)
     self.total_train_batch_size = self.config.total_train_batch_size
 
+    checkpoint_dir = os.path.abspath(self.config.checkpoint_dir)
+
     self.checkpoint_manager = create_orbax_checkpoint_manager(
-        self.config.checkpoint_dir,
+        checkpoint_dir,
         enable_checkpointing=True,
         save_interval_steps=1,
         checkpoint_type=checkpoint_type,
@@ -117,7 +121,7 @@ class FluxCheckpointer(ABC):
         config=self.config,
         mesh=self.mesh,
         weights_init_fn=weights_init_fn,
-        model_params=params,
+        model_params=params.get("flux_vae", None),
         checkpoint_manager=self.checkpoint_manager,
         checkpoint_item=checkpoint_item_name,
         training=is_training,
@@ -149,10 +153,14 @@ class FluxCheckpointer(ABC):
     def config_to_json(model_or_config):
       return json.loads(model_or_config.to_json_string())
     items = {
-        "config": ocp.args.JsonSave({"model_name": self.config.model_name}),
+        "flux_config": ocp.args.JsonSave(config_to_json(pipeline.flux)),
+        "vae_config": ocp.args.JsonSave(config_to_json(pipeline.vae)),
+        "scheduler_config": ocp.args.JsonSave(config_to_json(pipeline.scheduler))
     }
 
     items[FLUX_STATE_KEY] = ocp.args.PyTreeSave(train_states[FLUX_STATE_KEY])
+    items["vae_state"] = ocp.args.PyTreeSave(train_states["vae_state"])
+    items["scheduler"] = ocp.args.PyTreeSave(train_states["scheduler"])
 
     self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
 
@@ -160,9 +168,20 @@ class FluxCheckpointer(ABC):
 
     self.checkpoint_format = _CHECKPOINT_FORMAT_ORBAX
   
-  def load_flux_configs_from_orbax(self):
-    # TODO - load configs from orbax
-    return None
+  def load_flux_configs_from_orbax(self, step):
+    max_logging.log("Restoring stable diffusion configs")
+    if step is None:
+      step = self.checkpoint_manager.latest_step()
+      if step is None:
+        return None
+
+    restore_args = {
+        "flux_config": ocp.args.JsonRestore(),
+        "vae_config": ocp.args.JsonRestore(),
+        "scheduler_config": ocp.args.JsonRestore(),
+    }
+
+    return (self.checkpoint_manager.restore(step, args=ocp.args.Composite(**restore_args)), None)
 
   def load_diffusers_checkpoint(self):
     flash_block_sizes = max_utils.get_flash_block_sizes(self.config)
@@ -238,12 +257,65 @@ class FluxCheckpointer(ABC):
 
   def load_checkpoint(self, step=None, scheduler_class=None):
 
-    model_configs = self.load_flux_configs_from_orbax()
+    model_configs = self.load_flux_configs_from_orbax(step)
 
     pipeline, params = None, {}
 
     if model_configs:
-      print("TODO - load configs from orbax")
+      if jax.device_count() == jax.local_device_count():
+        context = jax.default_device(jax.devices("cpu")[0])
+      else:
+        context = nullcontext()
+
+      with context:
+        clip_encoder = FlaxCLIPTextModel.from_pretrained(
+          self.config.clip_model_name_or_path, dtype=self.config.weights_dtype
+        )
+        clip_tokenizer = CLIPTokenizer.from_pretrained(
+          self.config.clip_model_name_or_path,
+          max_length=77,
+          use_fast=True
+        )
+        t5_encoder = FlaxT5EncoderModel.from_pretrained(self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype)
+        t5_tokenizer = AutoTokenizer.from_pretrained(
+          self.config.t5xxl_model_name_or_path,
+          max_length=self.config.max_sequence_length,
+          use_fast=True
+        )
+
+        vae = FlaxAutoencoderKL.from_config(
+          model_configs[0]["vae_config"],
+          dtype=self.config.activations_dtype,
+          weights_dtype=self.config.weights_dtype,
+          from_pt=self.config.from_pt,
+        )
+
+        transformer = FluxTransformer2DModel.from_config(
+          model_configs[0]["flux_config"],
+          mesh=self.mesh,
+          split_head_dim=self.config.split_head_dim,
+          attention_kernel=self.config.attention,
+          flash_block_sizes=max_utils.get_flash_block_sizes(self.config),
+          dtype=self.config.activations_dtype,
+          weights_dtype=self.config.weights_dtype,
+          precision=max_utils.get_precision(self.config),
+          from_pt=self.config.from_pt,
+        )
+
+        pipeline = FluxPipeline(
+          t5_encoder,
+          clip_encoder,
+          vae,
+          t5_tokenizer,
+          clip_tokenizer,
+          transformer,
+          None,
+          dtype=self.config.activations_dtype,
+          mesh=self.mesh,
+          config=self.config,
+          rng=self.rng
+        )
+
     else:
       pipeline, params = self.load_diffusers_checkpoint()
     

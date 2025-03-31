@@ -57,16 +57,21 @@ def create_orbax_checkpoint_manager(
   max_logging.log(f"checkpoint dir: {checkpoint_dir}")
   p = epath.Path(checkpoint_dir)
 
-  item_names = (
-      "unet_config",
-      "vae_config",
-      "text_encoder_config",
-      "scheduler_config",
-      "unet_state",
-      "vae_state",
-      "text_encoder_state",
-      "tokenizer_config",
-  )
+  if checkpoint_type == FLUX_CHECKPOINT:
+    item_names = ("flux_state", "flux_config",
+                  "vae_state", "vae_config",
+                  "scheduler", "scheduler_config")
+  else:
+    item_names = (
+        "unet_config",
+        "vae_config",
+        "text_encoder_config",
+        "scheduler_config",
+        "unet_state",
+        "vae_state",
+        "text_encoder_state",
+        "tokenizer_config",
+    )
   if checkpoint_type == STABLE_DIFFUSION_XL_CHECKPOINT or checkpoint_type == FLUX_CHECKPOINT:
     item_names += (
         "text_encoder_2_state",
@@ -140,6 +145,7 @@ def load_params_from_path(
 
   ckpt_path = os.path.join(config.checkpoint_dir, str(step), checkpoint_item)
   ckpt_path = epath.Path(ckpt_path)
+  ckpt_path = os.path.abspath(ckpt_path)
 
   restore_args = ocp.checkpoint_utils.construct_restore_args(unboxed_abstract_params)
   restored = ckptr.restore(
