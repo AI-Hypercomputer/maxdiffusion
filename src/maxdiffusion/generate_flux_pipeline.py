@@ -25,11 +25,11 @@ import jax
 
 from maxdiffusion import pyconfig, max_logging, max_utils
 
-from maxdiffusion.checkpointing.flux_checkpointer import FluxCheckpointer
 from maxdiffusion.checkpointing.checkpointing_utils import load_params_from_path
 from maxdiffusion.max_utils import setup_initial_state
 
 def run(config):
+  from maxdiffusion.checkpointing.flux_checkpointer import FluxCheckpointer
   checkpoint_loader = FluxCheckpointer(config, "FLUX_CHECKPOINT")
   pipeline, params = checkpoint_loader.load_checkpoint()
 
