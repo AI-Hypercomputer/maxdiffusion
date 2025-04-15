@@ -328,6 +328,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
     dtype = kwargs.pop("dtype", None)
     weights_dtype = kwargs.pop("weights_dtype", None)
     norm_num_groups = kwargs.pop("norm_num_groups", 32)
+    quant = kwargs.pop("quant", None)
 
     # 1. Download the checkpoints and configs
     # use snapshot download here to get it working from from_pretrained
@@ -510,6 +511,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
               norm_num_groups=norm_num_groups,
               dtype=dtype,
               weights_dtype=weights_dtype,
+              quant=quant,
           )
           params[name] = loaded_params
         elif issubclass(class_obj, FlaxPreTrainedModel):

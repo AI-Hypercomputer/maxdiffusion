@@ -413,12 +413,17 @@ def setup_initial_state(
           training=training,
           eval_only=False,
       )
-
-      state = jax.jit(
-          init_train_state_partial,
-          in_shardings=None,
-          out_shardings=state_mesh_shardings,
-      )()
+      if config.jit_initializers:
+        state = jax.jit(
+            init_train_state_partial,
+            in_shardings=None,
+            out_shardings=state_mesh_shardings,
+        )()
+      else:
+        state = init_train_state_partial()
+        if model_params:
+          state = state.replace(params=model_params)
+        state = jax.device_put(state, state_mesh_shardings)
 
   state = unbox_logicallypartioned_trainstate(state)
 

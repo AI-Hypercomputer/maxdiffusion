@@ -152,6 +152,26 @@ class _HyperParameters:
       raw_keys["hf_access_token"] = None
 
     raw_keys["total_train_batch_size"] = max_utils.get_global_batch_size(raw_keys["per_device_batch_size"])
+    raw_keys["num_slices"] = get_num_slices(raw_keys)
+    raw_keys["quantization_local_shard_count"] = get_quantization_local_shard_count(raw_keys)
+
+
+def get_num_slices(raw_keys):
+  if int(raw_keys["compile_topology_num_slices"]) > 0:
+    return raw_keys["compile_topology_num_slices"]
+  else:
+    devices = jax.devices()
+    try:
+      return 1 + max([d.slice_index for d in devices])
+    except:  # noqa: E722
+      return 1
+
+
+def get_quantization_local_shard_count(raw_keys):
+  if raw_keys["quantization_local_shard_count"] == -1:
+    return raw_keys["num_slices"]
+  else:
+    return raw_keys["quantization_local_shard_count"]
 
 
 def get_num_target_devices(raw_keys):

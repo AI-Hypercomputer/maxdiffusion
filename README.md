@@ -53,7 +53,7 @@ MaxDiffusion supports
   - [Dreambooth](#dreambooth)
   - [Inference](#inference)
   - [Flux](#flux)
-    - [Flash Attention for GPU:](#flash-attention-for-gpu)
+    - [Fused Attention for GPU:](#fused-attention-for-gpu)
   - [Hyper SDXL LoRA](#hyper-sdxl-lora)
   - [Load Multiple LoRA](#load-multiple-lora)
   - [SDXL Lightning](#sdxl-lightning)
@@ -81,6 +81,14 @@ After installation completes, run the training script.
   ```bash
   export LIBTPU_INIT_ARGS=""
   python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml run_name="my_xl_run" output_dir="gs://your-bucket/" per_device_batch_size=1
+  ```
+
+  On GPUS with Fused Attention:
+
+  First install Transformer Engine by following the [instructions here](#fused-attention-for-gpu).
+
+  ```bash
+  NVTE_FUSED_ATTN=1 python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml hardware=gpu run_name='test-sdxl-train' output_dir=/tmp/ train_new_unet=true train_text_encoder=false cache_latents_text_encoder_outputs=true max_train_steps=200 weights_dtype=bfloat16 resolution=512 per_device_batch_size=1 attention="cudnn_flash_te" jit_initializers=False
   ```
 
   To generate images with a trained checkpoint, run:
@@ -176,8 +184,8 @@ To generate images, run the following command:
   python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
   ```
 
-    ## Flash Attention for GPU:
-    Flash Attention for GPU is supported via TransformerEngine. Installation instructions:
+    ## Fused Attention for GPU:
+    Fused Attention for GPU is supported via TransformerEngine. Installation instructions:
 
     ```bash
     cd maxdiffusion

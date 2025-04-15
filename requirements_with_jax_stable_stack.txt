@@ -7,14 +7,14 @@ flax>=0.10.2
 ftfy
 git+https://github.com/mlperf/logging.git
 google-cloud-storage==2.17.0
-grain-nightly
+grain-nightly==0.0.10
 huggingface_hub==0.24.7
 jax>=0.4.30
 jaxlib>=0.4.30
 Jinja2
 opencv-python-headless==4.10.0.84
 optax>=0.2.3
-orbax-checkpoint==0.10.2
+orbax-checkpoint==0.10.3
 parameterized
 Pillow
 pyink

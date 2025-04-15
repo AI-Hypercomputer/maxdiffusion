@@ -38,6 +38,10 @@ activations_dtype: 'bfloat16'
 # at the cost of time.
 precision: "DEFAULT"
 
+# if False state is not jitted and instead replicate is called. This is good for debugging on single host
+# It must be True for multi-host.
+jit_initializers: True
+
 # Set true to load weights from pytorch
 from_pt: False
 split_head_dim: True
@@ -233,3 +237,9 @@ controlnet_model_name_or_path: 'diffusers/controlnet-canny-sdxl-1.0'
 controlnet_from_pt: True
 controlnet_conditioning_scale: 0.5
 controlnet_image: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/1024px-Google_%22G%22_logo.svg.png'
+enable_mllog: False
+
+quantization: ''
+# Shard the range finding operation for quantization. By default this is set to number of slices.
+quantization_local_shard_count: -1
+compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
