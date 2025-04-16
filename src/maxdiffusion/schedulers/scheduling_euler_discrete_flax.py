@@ -254,13 +254,13 @@ class FlaxEulerDiscreteScheduler(FlaxSchedulerMixin, ConfigMixin):
       original_samples: jnp.ndarray,
       noise: jnp.ndarray,
       timesteps: jnp.ndarray,
-      flux: bool=False,
+      flux: bool = False,
   ) -> jnp.ndarray:
 
     if flux:
       t = state.timesteps[timesteps]
       t = t[:, None, None]
-      noisy_samples = t * noise + (1-t) * original_samples
+      noisy_samples = t * noise + (1 - t) * original_samples
       return noisy_samples
 
     sigma = state.sigmas[timesteps].flatten()

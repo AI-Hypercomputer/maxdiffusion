@@ -28,8 +28,10 @@ from maxdiffusion import pyconfig, max_logging, max_utils
 from maxdiffusion.checkpointing.checkpointing_utils import load_params_from_path
 from maxdiffusion.max_utils import setup_initial_state
 
+
 def run(config):
   from maxdiffusion.checkpointing.flux_checkpointer import FluxCheckpointer
+
   checkpoint_loader = FluxCheckpointer(config, "FLUX_CHECKPOINT")
   pipeline, params = checkpoint_loader.load_checkpoint()
 
@@ -47,9 +49,9 @@ def run(config):
     vae_state = {"params": vae_params}
 
     ## Flux
-    weights_init_fn = functools.partial(pipeline.flux.init_weights,
-                                        rngs=checkpoint_loader.rng,
-                                        max_sequence_length=config.max_sequence_length)
+    weights_init_fn = functools.partial(
+        pipeline.flux.init_weights, rngs=checkpoint_loader.rng, max_sequence_length=config.max_sequence_length
+    )
 
     unboxed_abstract_state, _, _ = max_utils.get_abstract_state(
         pipeline.flux, None, config, checkpoint_loader.mesh, weights_init_fn, False
@@ -61,10 +63,10 @@ def run(config):
     flux_state = {"params": flux_params}
   else:
     weights_init_fn = functools.partial(
-      pipeline.flux.init_weights,
-      rngs=checkpoint_loader.rng,
-      max_sequence_length=config.max_sequence_length,
-      eval_only=False
+        pipeline.flux.init_weights,
+        rngs=checkpoint_loader.rng,
+        max_sequence_length=config.max_sequence_length,
+        eval_only=False,
     )
     transformer_state, flux_state_shardings = setup_initial_state(
         model=pipeline.flux,
@@ -85,7 +87,7 @@ def run(config):
         config=config,
         mesh=checkpoint_loader.mesh,
         weights_init_fn=weights_init_fn,
-        model_params=params['flux_vae'],
+        model_params=params["flux_vae"],
         training=False,
     )
 
@@ -93,18 +95,14 @@ def run(config):
     flux_state = {"params": transformer_state.params}
 
   t0 = time.perf_counter()
-  with ExitStack() as stack:
-    imgs = pipeline(flux_params=flux_state,
-                    timesteps=50,
-                    vae_params=vae_state).block_until_ready()
+  with ExitStack():
+    imgs = pipeline(flux_params=flux_state, timesteps=50, vae_params=vae_state).block_until_ready()
   t1 = time.perf_counter()
   max_logging.log(f"Compile time: {t1 - t0:.1f}s.")
 
   t0 = time.perf_counter()
-  with ExitStack() as stack:
-    imgs = pipeline(flux_params=flux_state,
-                    timesteps=50,
-                    vae_params=vae_state).block_until_ready()
+  with ExitStack():
+    imgs = pipeline(flux_params=flux_state, timesteps=50, vae_params=vae_state).block_until_ready()
   imgs = jax.experimental.multihost_utils.process_allgather(imgs, tiled=True)
   t1 = time.perf_counter()
   max_logging.log(f"Inference time: {t1 - t0:.1f}s.")

@@ -20,27 +20,23 @@ import datetime
 import time
 import numpy as np
 import jax
-import optax
 import jax.numpy as jnp
 from jax.sharding import PositionalSharding, PartitionSpec as P
 from flax.linen import partitioning as nn_partitioning
 from maxdiffusion.checkpointing.flux_checkpointer import (
-  FluxCheckpointer,
-  FLUX_CHECKPOINT,
-  FLUX_TRANSFORMER_PARAMS_KEY,
-  FLUX_STATE_KEY,
-  FLUX_STATE_SHARDINGS_KEY,
-  FLUX_VAE_PARAMS_KEY,
-  VAE_STATE_KEY,
-  VAE_STATE_SHARDINGS_KEY)
+    FluxCheckpointer,
+    FLUX_CHECKPOINT,
+    FLUX_STATE_KEY,
+    FLUX_STATE_SHARDINGS_KEY,
+    VAE_STATE_KEY,
+    VAE_STATE_SHARDINGS_KEY,
+)
 
 from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
 
 from maxdiffusion import (max_utils, max_logging)
-from PIL import Image
 
 from maxdiffusion.train_utils import (
-    generate_timestep_weights,
     get_first_step,
     load_next_batch,
     record_scalar_metrics,
@@ -49,9 +45,7 @@ from maxdiffusion.train_utils import (
 
 from maxdiffusion.maxdiffusion_utils import calculate_flux_tflops
 
-from ..schedulers import (
-    FlaxEulerDiscreteScheduler
-)
+from ..schedulers import (FlaxEulerDiscreteScheduler)
 
 
 class FluxTrainer(FluxCheckpointer):
@@ -72,22 +66,19 @@ class FluxTrainer(FluxCheckpointer):
         pretrained_model_name_or_path=self.config.pretrained_model_name_or_path, subfolder="scheduler", dtype=jnp.float32
     )
     noise_scheduler_state = noise_scheduler.set_timesteps(
-      state=noise_scheduler_state,
-      num_inference_steps=self.config.num_inference_steps,
-      timestep_spacing="flux")
-    return noise_scheduler, noise_scheduler_state
-  
-  def calculate_tflops(self, pipeline):
-    per_device_tflops = calculate_flux_tflops(
-        self.config, pipeline, self.total_train_batch_size, self.rng, train=True
+        state=noise_scheduler_state, num_inference_steps=self.config.num_inference_steps, timestep_spacing="flux"
     )
+    return noise_scheduler, noise_scheduler_state
+
+  def calculate_tflops(self, pipeline):
+    per_device_tflops = calculate_flux_tflops(self.config, pipeline, self.total_train_batch_size, self.rng, train=True)
     max_logging.log(f"JFLUX per device TFLOPS: {per_device_tflops}")
     return per_device_tflops
 
   def start_training(self):
 
     # Hook
-    #self.pre_training_steps()
+    # self.pre_training_steps()
     # Load checkpoint - will load or create states
     pipeline, params = self.load_checkpoint()
 
@@ -102,7 +93,6 @@ class FluxTrainer(FluxCheckpointer):
     pipeline.clip_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.clip_encoder.params)
     pipeline.t5_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), pipeline.t5_encoder.params)
     pipeline.t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.t5_encoder.params)
-
 
     vae_state, vae_state_mesh_shardings = self.create_vae_state(
         pipeline=pipeline, params=params, checkpoint_item_name=VAE_STATE_KEY, is_training=False
@@ -119,21 +109,21 @@ class FluxTrainer(FluxCheckpointer):
     del pipeline.t5_encoder
 
     # evaluate shapes
-    
+
     flux_state, flux_state_mesh_shardings, flux_learning_rate_scheduler = self.create_flux_state(
         # ambiguous here, but if params=None
         # Then its 1 of 2 scenarios:
         # 1. flux state will be loaded directly from orbax
         # 2. a new flux is being trained from scratch.
         pipeline=pipeline,
-        params=None, # Params are loaded inside create_flux_state
+        params=None,  # Params are loaded inside create_flux_state
         checkpoint_item_name=FLUX_STATE_KEY,
         is_training=True,
     )
     flux_state = jax.device_put(flux_state, flux_state_mesh_shardings)
     train_states[FLUX_STATE_KEY] = flux_state
     state_shardings[FLUX_STATE_SHARDINGS_KEY] = flux_state_mesh_shardings
-    #self.post_training_steps(pipeline, params, train_states, msg="before_training")
+    # self.post_training_steps(pipeline, params, train_states, msg="before_training")
 
     # Create scheduler
     noise_scheduler, noise_scheduler_state = self.create_scheduler(pipeline, params)
@@ -165,20 +155,12 @@ class FluxTrainer(FluxCheckpointer):
     w = config.resolution // scale_factor
     c = 16
     ph = pw = 2
-    batch_image_shape = (
-        self.total_train_batch_size, # b
-        h*w,
-        c*ph*pw
-    )
-    img_ids_shape = (
-      self.total_train_batch_size,
-      (2*h // 2) * (2*w // 2),
-      3
-    )
+    batch_image_shape = (self.total_train_batch_size, h * w, c * ph * pw)  # b
+    img_ids_shape = (self.total_train_batch_size, (2 * h // 2) * (2 * w // 2), 3)
     text_shape = (
         self.total_train_batch_size,
         config.max_sequence_length,
-        4096, # Sequence length of text encoder, how to get this programmatically?
+        4096,  # Sequence length of text encoder, how to get this programmatically?
     )
     text_ids_shape = (
         self.total_train_batch_size,
@@ -187,7 +169,7 @@ class FluxTrainer(FluxCheckpointer):
     )
     prompt_embeds_shape = (
         self.total_train_batch_size,
-        768, # Sequence length of clip, how to get this programmatically?
+        768,  # Sequence length of clip, how to get this programmatically?
     )
     input_ids_dtype = self.config.activations_dtype
 
@@ -201,11 +183,13 @@ class FluxTrainer(FluxCheckpointer):
 
   def get_data_shardings(self):
     data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
-    data_sharding = {"text_embeds": data_sharding,
-                     "input_ids": data_sharding,
-                     "prompt_embeds": data_sharding,
-                     "pixel_values": data_sharding,
-                     "img_ids": data_sharding}
+    data_sharding = {
+        "text_embeds": data_sharding,
+        "input_ids": data_sharding,
+        "prompt_embeds": data_sharding,
+        "pixel_values": data_sharding,
+        "img_ids": data_sharding,
+    }
 
     return data_sharding
 
@@ -223,33 +207,23 @@ class FluxTrainer(FluxCheckpointer):
     return examples
 
   @staticmethod
-  def transform_images(
-      examples,
-      image_column,
-      image_resolution,
-      vae_encode,
-      pack_latents,
-      prepare_latent_imgage_ids
-  ):
+  def transform_images(examples, image_column, image_resolution, vae_encode, pack_latents, prepare_latent_imgage_ids):
     """Preprocess images to latents."""
     images = list(examples[image_column])
 
     images = [
-      jax.image.resize(
-        jnp.asarray(image) / 127.5 - 1.0,
-        [image_resolution, image_resolution, 3],
-        method="bilinear",
-        antialias=True
-      )
+        jax.image.resize(
+            jnp.asarray(image) / 127.5 - 1.0, [image_resolution, image_resolution, 3], method="bilinear", antialias=True
+        )
         for image in images
-      ]
+    ]
 
     images = jnp.stack(images, axis=0, dtype=jnp.float16)
     batch_size = 8
     num_batches = len(images) // batch_size + int(len(images) % batch_size != 0)
     encoded_images = []
     for i in range(num_batches):
-      batch_images = images[i * batch_size:(i + 1) * batch_size]
+      batch_images = images[i * batch_size : (i + 1) * batch_size]
       batch_images = jnp.transpose(batch_images, (0, 3, 1, 2))
       batch_images = vae_encode(batch_images)
       batch_images = jnp.transpose(batch_images, (0, 3, 1, 2))
@@ -257,16 +231,10 @@ class FluxTrainer(FluxCheckpointer):
 
     images = jnp.concatenate(encoded_images, axis=0, dtype=jnp.float16)
     b, c, h, w = images.shape
-    images = pack_latents(
-      latents=images,
-      batch_size=b,
-      num_channels_latents=c,
-      height=h,
-      width=w)
+    images = pack_latents(latents=images, batch_size=b, num_channels_latents=c, height=h, width=w)
 
     img_ids = prepare_latent_imgage_ids(h // 2, w // 2)
     img_ids = jnp.tile(img_ids, (b, 1, 1))
-
 
     examples["pixel_values"] = jnp.float16(images)
     examples["img_ids"] = jnp.float16(img_ids)
@@ -278,31 +246,27 @@ class FluxTrainer(FluxCheckpointer):
     total_train_batch_size = self.total_train_batch_size
     mesh = self.mesh
 
-    encode_fn = partial(pipeline.encode_prompt,
-                          clip_tokenizer=pipeline.clip_tokenizer,
-                          t5_tokenizer=pipeline.t5_tokenizer,
-                          clip_text_encoder=pipeline.clip_encoder,
-                          t5_text_encoder=pipeline.t5_encoder,
-                          encode_in_batches=True,
-                          encode_batch_size=16
-                          )
+    encode_fn = partial(
+        pipeline.encode_prompt,
+        clip_tokenizer=pipeline.clip_tokenizer,
+        t5_tokenizer=pipeline.t5_tokenizer,
+        clip_text_encoder=pipeline.clip_encoder,
+        t5_text_encoder=pipeline.t5_encoder,
+        encode_in_batches=True,
+        encode_batch_size=16,
+    )
     pack_latents_p = partial(pipeline.pack_latents)
     prepare_latent_image_ids_p = partial(pipeline.prepare_latent_image_ids)
     vae_encode_p = partial(pipeline.vae_encode, vae=pipeline.vae, state=train_states["vae_state"])
-    
 
-    tokenize_fn = partial(
-        FluxTrainer.tokenize_captions,
-        caption_column=config.caption_column,
-        encoder=encode_fn
-    )
+    tokenize_fn = partial(FluxTrainer.tokenize_captions, caption_column=config.caption_column, encoder=encode_fn)
     image_transforms_fn = partial(
         FluxTrainer.transform_images,
         image_column=config.image_column,
         image_resolution=config.resolution,
         vae_encode=vae_encode_p,
         pack_latents=pack_latents_p,
-        prepare_latent_imgage_ids=prepare_latent_image_ids_p
+        prepare_latent_imgage_ids=prepare_latent_image_ids_p,
     )
 
     data_iterator = make_data_iterator(
@@ -322,7 +286,13 @@ class FluxTrainer(FluxCheckpointer):
     guidance_vec = jnp.full((self.total_train_batch_size,), self.config.guidance_scale, dtype=self.config.activations_dtype)
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       p_train_step = jax.jit(
-          partial(_train_step, guidance_vec=guidance_vec, pipeline=pipeline, scheduler=train_states["scheduler"], config=self.config),
+          partial(
+              _train_step,
+              guidance_vec=guidance_vec,
+              pipeline=pipeline,
+              scheduler=train_states["scheduler"],
+              config=self.config,
+          ),
           in_shardings=(
               state_shardings["flux_state_shardings"],
               data_shardings,
@@ -430,18 +400,18 @@ def _train_step(flux_state, batch, train_rng, guidance_vec, pipeline, scheduler,
     )
     # Sample a random timestep for each image
     bsz = latents.shape[0]
-    timesteps = jax.random.randint(timestep_rng, shape=(bsz,), minval=0, maxval=len(scheduler.timesteps)-1)
+    timesteps = jax.random.randint(timestep_rng, shape=(bsz,), minval=0, maxval=len(scheduler.timesteps) - 1)
     noisy_latents = pipeline.scheduler.add_noise(scheduler, latents, noise, timesteps, flux=True)
 
     model_pred = pipeline.flux.apply(
-      {"params": state_params[FLUX_STATE_KEY]},
-      hidden_states=noisy_latents,
-      img_ids=img_ids,
-      encoder_hidden_states=text_embeds,
-      txt_ids=text_embeds_ids,
-      timestep=scheduler.timesteps[timesteps],
-      guidance=guidance_vec,
-      pooled_projections=prompt_embeds,
+        {"params": state_params[FLUX_STATE_KEY]},
+        hidden_states=noisy_latents,
+        img_ids=img_ids,
+        encoder_hidden_states=text_embeds,
+        txt_ids=text_embeds_ids,
+        timestep=scheduler.timesteps[timesteps],
+        guidance=guidance_vec,
+        pooled_projections=prompt_embeds,
     ).sample
 
     target = noise - latents
@@ -459,4 +429,3 @@ def _train_step(flux_state, batch, train_rng, guidance_vec, pipeline, scheduler,
   metrics = {"scalar": {"learning/loss": loss}, "scalars": {}}
 
   return new_state, metrics, new_train_rng
-

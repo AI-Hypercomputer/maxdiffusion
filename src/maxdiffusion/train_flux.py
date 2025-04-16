@@ -31,6 +31,7 @@ from maxdiffusion.train_utils import (
 
 def train(config):
   from maxdiffusion.trainers.flux_trainer import FluxTrainer
+
   trainer = FluxTrainer(config)
   trainer.start_training()
 

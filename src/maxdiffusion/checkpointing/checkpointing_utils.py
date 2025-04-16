@@ -58,9 +58,7 @@ def create_orbax_checkpoint_manager(
   p = epath.Path(checkpoint_dir)
 
   if checkpoint_type == FLUX_CHECKPOINT:
-    item_names = ("flux_state", "flux_config",
-                  "vae_state", "vae_config",
-                  "scheduler", "scheduler_config")
+    item_names = ("flux_state", "flux_config", "vae_state", "vae_config", "scheduler", "scheduler_config")
   else:
     item_names = (
         "unet_config",

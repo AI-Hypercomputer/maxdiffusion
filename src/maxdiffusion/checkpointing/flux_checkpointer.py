@@ -18,9 +18,7 @@ from abc import ABC
 from contextlib import nullcontext
 import functools
 import json
-import os
 import jax
-import jax.numpy as jnp
 from jax.sharding import Mesh
 import orbax.checkpoint as ocp
 import grain.python as grain
@@ -32,11 +30,9 @@ from maxdiffusion import (
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
 from ..pipelines.flux.flux_pipeline import FluxPipeline
 
-from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
+from transformers import (CLIPTokenizer, FlaxCLIPTextModel, FlaxT5EncoderModel, AutoTokenizer)
 
-from maxdiffusion.checkpointing.checkpointing_utils import (
-    create_orbax_checkpoint_manager
-)
+from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
 from maxdiffusion.models.flux.util import load_flow_model
 
 FLUX_CHECKPOINT = "FLUX_CHECKPOINT"
@@ -48,6 +44,7 @@ FLUX_STATE_SHARDINGS_KEY = "flux_state_shardings"
 FLUX_VAE_PARAMS_KEY = "flux_vae"
 VAE_STATE_KEY = "vae_state"
 VAE_STATE_SHARDINGS_KEY = "vae_state_shardings"
+
 
 class FluxCheckpointer(ABC):
 
@@ -87,12 +84,14 @@ class FluxCheckpointer(ABC):
       tx, learning_rate_scheduler = self._create_optimizer(self.config, learning_rate)
 
     transformer_eval_params = transformer.init_weights(
-      rngs=self.rng, max_sequence_length=self.config.max_sequence_length, eval_only=True
+        rngs=self.rng, max_sequence_length=self.config.max_sequence_length, eval_only=True
     )
 
     transformer_params = load_flow_model(self.config.flux_name, transformer_eval_params, "cpu")
 
-    weights_init_fn = functools.partial(pipeline.flux.init_weights, rngs=self.rng, max_sequence_length=self.config.max_sequence_length)
+    weights_init_fn = functools.partial(
+        pipeline.flux.init_weights, rngs=self.rng, max_sequence_length=self.config.max_sequence_length
+    )
     flux_state, state_mesh_shardings = max_utils.setup_initial_state(
         model=pipeline.flux,
         tx=tx,
@@ -150,10 +149,11 @@ class FluxCheckpointer(ABC):
   def save_checkpoint(self, train_step, pipeline, train_states):
     def config_to_json(model_or_config):
       return json.loads(model_or_config.to_json_string())
+
     items = {
         "flux_config": ocp.args.JsonSave(config_to_json(pipeline.flux)),
         "vae_config": ocp.args.JsonSave(config_to_json(pipeline.vae)),
-        "scheduler_config": ocp.args.JsonSave(config_to_json(pipeline.scheduler))
+        "scheduler_config": ocp.args.JsonSave(config_to_json(pipeline.scheduler)),
     }
 
     items[FLUX_STATE_KEY] = ocp.args.PyTreeSave(train_states[FLUX_STATE_KEY])
@@ -165,7 +165,7 @@ class FluxCheckpointer(ABC):
   def load_params(self, step=None):
 
     self.checkpoint_format = _CHECKPOINT_FORMAT_ORBAX
-  
+
   def load_flux_configs_from_orbax(self, step):
     max_logging.log("Restoring stable diffusion configs")
     if step is None:
@@ -188,68 +188,57 @@ class FluxCheckpointer(ABC):
       context = jax.default_device(jax.devices("cpu")[0])
     else:
       context = nullcontext()
-    
+
     with context:
-      clip_encoder = FlaxCLIPTextModel.from_pretrained(
-        self.config.clip_model_name_or_path, dtype=self.config.weights_dtype
-      )
-      clip_tokenizer = CLIPTokenizer.from_pretrained(
-        self.config.clip_model_name_or_path,
-        max_length=77,
-        use_fast=True
-      )
+      clip_encoder = FlaxCLIPTextModel.from_pretrained(self.config.clip_model_name_or_path, dtype=self.config.weights_dtype)
+      clip_tokenizer = CLIPTokenizer.from_pretrained(self.config.clip_model_name_or_path, max_length=77, use_fast=True)
       t5_encoder = FlaxT5EncoderModel.from_pretrained(self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype)
       t5_tokenizer = AutoTokenizer.from_pretrained(
-        self.config.t5xxl_model_name_or_path,
-        max_length=self.config.max_sequence_length,
-        use_fast=True
+          self.config.t5xxl_model_name_or_path, max_length=self.config.max_sequence_length, use_fast=True
       )
 
       vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-        self.config.pretrained_model_name_or_path,
-        subfolder="vae",
-        from_pt=True,
-        use_safetensors=True,
-        dtype=self.config.weights_dtype
+          self.config.pretrained_model_name_or_path,
+          subfolder="vae",
+          from_pt=True,
+          use_safetensors=True,
+          dtype=self.config.weights_dtype,
       )
 
       # loading from pretrained here causes a crash when trying to compile the model
       # Failed to load HSACO: HIP_ERROR_NoBinaryForGpu
       transformer = FluxTransformer2DModel.from_config(
-        self.config.pretrained_model_name_or_path,
-        subfolder="transformer",
-        mesh=self.mesh,
-        split_head_dim=self.config.split_head_dim,
-        attention_kernel=self.config.attention,
-        flash_block_sizes=flash_block_sizes,
-        dtype=self.config.activations_dtype,
-        weights_dtype=self.config.weights_dtype,
-        precision=max_utils.get_precision(self.config),
+          self.config.pretrained_model_name_or_path,
+          subfolder="transformer",
+          mesh=self.mesh,
+          split_head_dim=self.config.split_head_dim,
+          attention_kernel=self.config.attention,
+          flash_block_sizes=flash_block_sizes,
+          dtype=self.config.activations_dtype,
+          weights_dtype=self.config.weights_dtype,
+          precision=max_utils.get_precision(self.config),
       )
       transformer_eval_params = transformer.init_weights(
-        rngs=self.rng, max_sequence_length=self.config.max_sequence_length, eval_only=True
+          rngs=self.rng, max_sequence_length=self.config.max_sequence_length, eval_only=True
       )
-      
+
       transformer_params = load_flow_model(self.config.flux_name, transformer_eval_params, "cpu")
 
     pipeline = FluxPipeline(
-      t5_encoder,
-      clip_encoder,
-      vae,
-      t5_tokenizer,
-      clip_tokenizer,
-      transformer,
-      None,
-      dtype=self.config.activations_dtype,
-      mesh=self.mesh,
-      config=self.config,
-      rng=self.rng
+        t5_encoder,
+        clip_encoder,
+        vae,
+        t5_tokenizer,
+        clip_tokenizer,
+        transformer,
+        None,
+        dtype=self.config.activations_dtype,
+        mesh=self.mesh,
+        config=self.config,
+        rng=self.rng,
     )
 
-    params = {
-      FLUX_VAE_PARAMS_KEY : vae_params,
-      FLUX_TRANSFORMER_PARAMS_KEY : transformer_params
-    }
+    params = {FLUX_VAE_PARAMS_KEY: vae_params, FLUX_TRANSFORMER_PARAMS_KEY: transformer_params}
 
     return pipeline, params
 
@@ -267,55 +256,50 @@ class FluxCheckpointer(ABC):
 
       with context:
         clip_encoder = FlaxCLIPTextModel.from_pretrained(
-          self.config.clip_model_name_or_path, dtype=self.config.weights_dtype
+            self.config.clip_model_name_or_path, dtype=self.config.weights_dtype
         )
-        clip_tokenizer = CLIPTokenizer.from_pretrained(
-          self.config.clip_model_name_or_path,
-          max_length=77,
-          use_fast=True
+        clip_tokenizer = CLIPTokenizer.from_pretrained(self.config.clip_model_name_or_path, max_length=77, use_fast=True)
+        t5_encoder = FlaxT5EncoderModel.from_pretrained(
+            self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype
         )
-        t5_encoder = FlaxT5EncoderModel.from_pretrained(self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype)
         t5_tokenizer = AutoTokenizer.from_pretrained(
-          self.config.t5xxl_model_name_or_path,
-          max_length=self.config.max_sequence_length,
-          use_fast=True
+            self.config.t5xxl_model_name_or_path, max_length=self.config.max_sequence_length, use_fast=True
         )
 
         vae = FlaxAutoencoderKL.from_config(
-          model_configs[0]["vae_config"],
-          dtype=self.config.activations_dtype,
-          weights_dtype=self.config.weights_dtype,
-          from_pt=self.config.from_pt,
+            model_configs[0]["vae_config"],
+            dtype=self.config.activations_dtype,
+            weights_dtype=self.config.weights_dtype,
+            from_pt=self.config.from_pt,
         )
 
         transformer = FluxTransformer2DModel.from_config(
-          model_configs[0]["flux_config"],
-          mesh=self.mesh,
-          split_head_dim=self.config.split_head_dim,
-          attention_kernel=self.config.attention,
-          flash_block_sizes=max_utils.get_flash_block_sizes(self.config),
-          dtype=self.config.activations_dtype,
-          weights_dtype=self.config.weights_dtype,
-          precision=max_utils.get_precision(self.config),
-          from_pt=self.config.from_pt,
+            model_configs[0]["flux_config"],
+            mesh=self.mesh,
+            split_head_dim=self.config.split_head_dim,
+            attention_kernel=self.config.attention,
+            flash_block_sizes=max_utils.get_flash_block_sizes(self.config),
+            dtype=self.config.activations_dtype,
+            weights_dtype=self.config.weights_dtype,
+            precision=max_utils.get_precision(self.config),
+            from_pt=self.config.from_pt,
         )
 
         pipeline = FluxPipeline(
-          t5_encoder,
-          clip_encoder,
-          vae,
-          t5_tokenizer,
-          clip_tokenizer,
-          transformer,
-          None,
-          dtype=self.config.activations_dtype,
-          mesh=self.mesh,
-          config=self.config,
-          rng=self.rng
+            t5_encoder,
+            clip_encoder,
+            vae,
+            t5_tokenizer,
+            clip_tokenizer,
+            transformer,
+            None,
+            dtype=self.config.activations_dtype,
+            mesh=self.mesh,
+            config=self.config,
+            rng=self.rng,
         )
 
     else:
       pipeline, params = self.load_diffusers_checkpoint()
-    
-    return pipeline, params
 
+    return pipeline, params
