@@ -19,7 +19,6 @@ import jax
 import math
 import jax.numpy as jnp
 from chex import Array
-import flax
 import flax.linen as nn
 
 from ...attention_flax import FlaxFeedForward, Fla

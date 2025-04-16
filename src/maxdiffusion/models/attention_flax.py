@@ -14,7 +14,7 @@
 
 import functools
 import math
-
+from typing import Optional
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
@@ -414,7 +414,7 @@ def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
 
   return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
 
-class FlaxWanAttention(nn.module):
+class FlaxWanAttention(nn.Module):
   query_dim: int
   heads: int = 8
   dim_head: int = 64
