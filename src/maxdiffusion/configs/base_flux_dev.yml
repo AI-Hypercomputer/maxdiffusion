@@ -75,7 +75,7 @@ flash_block_sizes: {}
 # GroupNorm groups
 norm_num_groups: 32
 
-# If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
+# If train_new_flux, flux weights will be randomly initialized to train flux from scratch
 # else they will be loaded from pretrained_model_name_or_path
 train_new_flux: False
 
@@ -223,8 +223,8 @@ skip_first_n_steps_for_profiler: 5
 profiler_steps: 10
 
 # Generation parameters
-prompt: "A Cubone, the lonely Pokémon, sits clutching its signature bone, its face hidden by a skull helmet."
-prompt_2: "A Cubone, the lonely Pokémon, sits clutching its signature bone, its face hidden by a skull helmet."
+prompt: "A magical castle in the middle of a forest, artistic drawing"
+prompt_2: "A magical castle in the middle of a forest, artistic drawing"
 negative_prompt: "purple, red"
 do_classifier_free_guidance: True
 guidance_scale: 3.5

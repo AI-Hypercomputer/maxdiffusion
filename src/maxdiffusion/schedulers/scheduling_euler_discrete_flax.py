@@ -17,7 +17,6 @@ from typing import Optional, Tuple, Union
 
 import flax
 import jax.numpy as jnp
-import max_logging
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from .scheduling_utils_flax import (
@@ -170,7 +169,6 @@ class FlaxEulerDiscreteScheduler(FlaxSchedulerMixin, ConfigMixin):
       timesteps = (jnp.arange(self.config.num_train_timesteps, 0, -step_ratio)).round()
       timesteps -= 1
     elif timestep_spacing == "flux":
-      max_logging.log("Using flux timestep spacing")
       timesteps = jnp.linspace(1, 0, num_inference_steps + 1)
     else:
       raise ValueError(

@@ -83,9 +83,9 @@ flash_block_sizes: {
 # GroupNorm groups
 norm_num_groups: 32
 
-# If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
+# If train_new_flux, flux weights will be randomly initialized to train flux from scratch
 # else they will be loaded from pretrained_model_name_or_path
-train_new_unet: False
+train_new_flux: False
 
 # train text_encoder - Currently not supported for SDXL
 train_text_encoder: False
@@ -123,7 +123,7 @@ diffusion_scheduler_config: {
 base_output_directory: ""
 
 # Hardware
-hardware: 'gpu' # Supported hardware types are 'tpu', 'gpu'
+hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
 
 # Parallelism
 mesh_axes: ['data', 'fsdp', 'tensor']
@@ -238,7 +238,7 @@ do_classifier_free_guidance: True
 guidance_scale: 0.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
-num_inference_steps: 50
+num_inference_steps: 4
 
 # SDXL Lightning parameters
 lightning_from_pt: True

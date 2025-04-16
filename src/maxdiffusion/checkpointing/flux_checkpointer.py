@@ -61,10 +61,8 @@ class FluxCheckpointer(ABC):
     self.mesh = Mesh(self.devices_array, self.config.mesh_axes)
     self.total_train_batch_size = self.config.total_train_batch_size
 
-    checkpoint_dir = os.path.abspath(self.config.checkpoint_dir)
-
     self.checkpoint_manager = create_orbax_checkpoint_manager(
-        checkpoint_dir,
+        self.config.checkpoint_dir,
         enable_checkpointing=True,
         save_interval_steps=1,
         checkpoint_type=checkpoint_type,
