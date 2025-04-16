@@ -75,9 +75,9 @@ flash_block_sizes: {}
 # GroupNorm groups
 norm_num_groups: 32
 
-# If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
+# If train_new_flux, flux weights will be randomly initialized to train flux from scratch
 # else they will be loaded from pretrained_model_name_or_path
-train_new_unet: False
+train_new_flux: False
 
 # train text_encoder - Currently not supported for SDXL
 train_text_encoder: False
@@ -177,7 +177,7 @@ hf_train_files: ''
 hf_access_token: ''
 image_column: 'image'
 caption_column: 'text'
-resolution: 1024
+resolution: 512
 center_crop: False
 random_flip: False
 # If cache_latents_text_encoder_outputs is True
@@ -193,17 +193,17 @@ checkpoint_every: -1
 enable_single_replica_ckpt_restoring: False
 
 # Training loop
-learning_rate: 4.e-7
+learning_rate: 1.e-5
 scale_lr: False
 max_train_samples: -1
 # max_train_steps takes priority over num_train_epochs.
-max_train_steps: 200
+max_train_steps: 1500
 num_train_epochs: 1
 seed: 0
 output_dir: 'sdxl-model-finetuned'
 per_device_batch_size: 1
 
-warmup_steps_fraction: 0.0
+warmup_steps_fraction: 0.1
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
 
 # However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before
@@ -213,7 +213,7 @@ learning_rate_schedule_steps: -1 # By default the length of the schedule is set 
 adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradients.
 adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradients.
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
-adam_weight_decay: 1.e-2 # AdamW Weight decay
+adam_weight_decay: 0 # AdamW Weight decay
 max_grad_norm: 1.0
 
 enable_profiler: False
@@ -231,6 +231,7 @@ guidance_scale: 3.5
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 50
+save_final_checkpoint: False
 
 # SDXL Lightning parameters
 lightning_from_pt: True
