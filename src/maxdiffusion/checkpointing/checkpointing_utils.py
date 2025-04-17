@@ -143,7 +143,8 @@ def load_params_from_path(
 
   ckpt_path = os.path.join(config.checkpoint_dir, str(step), checkpoint_item)
   ckpt_path = epath.Path(ckpt_path)
-  ckpt_path = os.path.abspath(ckpt_path)
+  if not ckpt_path.as_uri().startswith("gs://"):
+    ckpt_path = os.path.abspath(ckpt_path)
 
   restore_args = ocp.checkpoint_utils.construct_restore_args(unboxed_abstract_params)
   restored = ckptr.restore(

@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2025/04/17`**: Flux Finetuning.
 - **`2025/02/12`**: Flux LoRA for inference.
 - **`2025/02/08`**: Flux schnell & dev inference.
 - **`2024/12/12`**: Load multiple LoRAs for inference.
@@ -75,6 +76,20 @@ For your first time running Maxdiffusion, we provide specific [instructions](doc
 ## Training
 
 After installation completes, run the training script.
+
+- **Flux**
+
+  Flux finetuning has only been tested on TPU v5p.
+
+  ```bash
+  python src/maxdiffusion/train_flux.py src/maxdiffusion/configs/base_flux_dev.yml run_name="test-flux-train" output_dir="gs://<your-gcs-bucket>/" save_final_checkpoint=True  jax_cache_dir="/tmp/jax_cache" max_train_steps=4500
+  ```
+
+  To generate images with a finetuned checkpoint, run:
+
+  ```bash
+  python src/maxdiffusion/generate_flux_pipeline.py src/maxdiffusion/configs/base_flux_dev.yml  run_name="test-flux-train" output_dir="gs://<your-gcs-bucket>/" jax_cache_dir="/tmp/jax_cache"
+  ```
 
 - **Stable Diffusion XL**
 

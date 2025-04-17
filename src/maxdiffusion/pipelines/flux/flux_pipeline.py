@@ -102,7 +102,7 @@ class FluxPipeline(FlaxDiffusionPipeline):
     return img
 
   def vae_encode(self, latents, vae, state):
-    img = vae.apply({"params": state["params"]}, latents, deterministic=True, method=vae.encode).latent_dist.mode()
+    img = vae.apply({"params": state.params}, latents, deterministic=True, method=vae.encode).latent_dist.mode()
     img = vae.config.scaling_factor * (img - vae.config.shift_factor)
     return img
 

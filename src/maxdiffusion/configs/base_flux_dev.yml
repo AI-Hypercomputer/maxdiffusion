@@ -177,7 +177,7 @@ hf_train_files: ''
 hf_access_token: ''
 image_column: 'image'
 caption_column: 'text'
-resolution: 512
+resolution: 1024
 center_crop: False
 random_flip: False
 # If cache_latents_text_encoder_outputs is True
