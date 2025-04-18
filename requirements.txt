@@ -6,7 +6,7 @@ absl-py
 datasets
 flax>=0.10.2
 optax>=0.2.3
-torch==2.5.1
+torch==2.6.0
 torchvision==0.20.1
 ftfy
 tensorboard>=2.17.0
