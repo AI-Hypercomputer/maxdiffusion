@@ -76,6 +76,7 @@ def unpack(x: Array, height: int, width: int, vae_scale_factor: int) -> Array:
 
   return x
 
+
 def vae_decode(latents, vae, state, vae_scale_factor, resolution):
   img = unpack(x=latents.astype(jnp.float32), height=resolution[0], width=resolution[1], vae_scale_factor=vae_scale_factor)
   img = img / vae.config.scaling_factor + vae.config.shift_factor
@@ -127,17 +128,15 @@ def prepare_latent_image_ids(height, width):
 def time_shift(mu: float, sigma: float, t: Array):
   return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
 
+
 def calculate_shift(
-    image_seq_len,
-    base_seq_len: int = 256,
-    max_seq_len: int = 4096,
-    base_shift: float = 0.5,
-    max_shift: float = 1.16
+    image_seq_len, base_seq_len: int = 256, max_seq_len: int = 4096, base_shift: float = 0.5, max_shift: float = 1.16
 ):
   m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
   b = base_shift - m * base_seq_len
   mu = image_seq_len * m + b
   return mu
+
 
 def run_inference(
     states,
@@ -154,7 +153,7 @@ def run_inference(
     guidance_vec,
     c_ts,
     p_ts,
-    vae_scale_factor
+    vae_scale_factor,
 ):
 
   transformer_state = states["transformer"]
@@ -169,7 +168,9 @@ def run_inference(
       vec=vec,
       guidance_vec=guidance_vec,
   )
-  vae_decode_p = functools.partial(vae_decode, vae=vae, state=vae_state, vae_scale_factor=vae_scale_factor, resolution=resolution)
+  vae_decode_p = functools.partial(
+      vae_decode, vae=vae, state=vae_state, vae_scale_factor=vae_scale_factor, resolution=resolution
+  )
 
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
     latents, _, _, _ = jax.lax.fori_loop(0, len(c_ts), loop_body_p, (latents, transformer_state, c_ts, p_ts))
@@ -211,6 +212,7 @@ def prepare_latents(
 
   return latents, latent_image_ids
 
+
 def tokenize_clip(prompt: Union[str, List[str]], tokenizer: CLIPTokenizer):
   prompt = [prompt] if isinstance(prompt, str) else prompt
   text_inputs = tokenizer(
@@ -223,6 +225,7 @@ def tokenize_clip(prompt: Union[str, List[str]], tokenizer: CLIPTokenizer):
       return_tensors="np",
   )
   return text_inputs.input_ids
+
 
 def get_clip_prompt_embeds(
     prompt: Union[str, List[str]], num_images_per_prompt: int, tokenizer: CLIPTokenizer, text_encoder: FlaxCLIPTextModel
@@ -246,6 +249,7 @@ def get_clip_prompt_embeds(
   prompt_embeds = jnp.tile(prompt_embeds, (batch_size * num_images_per_prompt, 1))
   return prompt_embeds
 
+
 def tokenize_t5(prompt: Union[str, List[str]], tokenizer: AutoTokenizer, max_sequence_length: int = 512):
   prompt = [prompt] if isinstance(prompt, str) else prompt
   text_inputs = tokenizer(
@@ -258,6 +262,7 @@ def tokenize_t5(prompt: Union[str, List[str]], tokenizer: AutoTokenizer, max_seq
       return_tensors="np",
   )
   return text_inputs.input_ids
+
 
 def get_t5_prompt_embeds(
     prompt: Union[str, List[str]],
@@ -288,6 +293,7 @@ def get_t5_prompt_embeds(
   prompt_embeds = jnp.reshape(prompt_embeds, (batch_size * num_images_per_prompt, seq_len, -1))
   return prompt_embeds
 
+
 def encode_prompt(
     prompt: Union[str, List[str]],
     prompt_2: Union[str, List[str]],
@@ -317,6 +323,7 @@ def encode_prompt(
 
   text_ids = jnp.zeros((prompt_embeds.shape[1], 3)).astype(jnp.bfloat16)
   return prompt_embeds, pooled_prompt_embeds, text_ids
+
 
 def run(config):
   from maxdiffusion.models.flux.util import load_flow_model
@@ -436,19 +443,19 @@ def run(config):
   states["vae"] = vae_state
   # some resolutions from https://www.reddit.com/r/StableDiffusion/comments/1enxdga/flux_recommended_resolutions_from_01_to_20/
   resolutions = [
-    (768, 768),
-    (768, 1024),
-    (1024, 768),
-    (1024, 1024),
-    (1408, 1408),
-    (1728, 1152),
-    (1152, 1728),
-    (1664, 1216),
-    (1216, 1664),
-    (1920, 1088),
-    (1088, 1920),
-    (2176, 960),
-    (960, 2176)
+      (768, 768),
+      (768, 1024),
+      (1024, 768),
+      (1024, 1024),
+      (1408, 1408),
+      (1728, 1152),
+      (1152, 1728),
+      (1664, 1216),
+      (1216, 1664),
+      (1920, 1088),
+      (1088, 1920),
+      (2176, 960),
+      (960, 2176),
   ]
   p_jitted = {}
   recorded_times = {}
@@ -461,14 +468,14 @@ def run(config):
         t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, t5_encoder.params)
         max_logging.log(f"Moving encoder to TPU time: {(time.perf_counter() - s0)}")
       prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
-        prompt=config.prompt,
-        prompt_2=config.prompt_2,
-        clip_tokenizer=clip_tokenizer,
-        clip_text_encoder=clip_text_encoder,
-        t5_tokenizer=t5_tokenizer,
-        t5_text_encoder=t5_encoder,
-        num_images_per_prompt=global_batch_size,
-        max_sequence_length=config.max_sequence_length,
+          prompt=config.prompt,
+          prompt_2=config.prompt_2,
+          clip_tokenizer=clip_tokenizer,
+          clip_text_encoder=clip_text_encoder,
+          t5_tokenizer=t5_tokenizer,
+          t5_text_encoder=t5_encoder,
+          num_images_per_prompt=global_batch_size,
+          max_sequence_length=config.max_sequence_length,
       )
       if config.offload_encoders:
         s1 = time.perf_counter()
@@ -478,15 +485,15 @@ def run(config):
       text_encoding_time_final = time.perf_counter() - s0
       max_logging.log(f"text encoding time: {text_encoding_time_final}")
       latents, latent_image_ids = prepare_latents(
-        batch_size=global_batch_size,
-        num_channels_latents=num_channels_latents,
-        height=resolution[0],
-        width=resolution[1],
-        dtype=jnp.bfloat16,
-        vae_scale_factor=vae_scale_factor,
-        rng=rng,
+          batch_size=global_batch_size,
+          num_channels_latents=num_channels_latents,
+          height=resolution[0],
+          width=resolution[1],
+          dtype=jnp.bfloat16,
+          vae_scale_factor=vae_scale_factor,
+          rng=rng,
       )
-      
+
       # move inputs to device and shard
       s0 = time.perf_counter()
       data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
@@ -509,7 +516,7 @@ def run(config):
         timesteps = time_shift(mu, 1.0, timesteps)
       c_ts = timesteps[:-1]
       p_ts = timesteps[1:]
-      #validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
+      # validate_inputs(latents, latent_image_ids, prompt_embeds, text_ids, timesteps, guidance, pooled_prompt_embeds)
       p_run_inference = p_jitted.get(resolution, None)
       if p_run_inference is None:
         print("FN not found, compiling...")
@@ -537,14 +544,14 @@ def run(config):
         _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
         s0 = time.perf_counter()
         imgs = p_run_inference(
-          states,
-          latents = latents,
-          latent_image_ids=latent_image_ids,
-          prompt_embeds=prompt_embeds,
-          txt_ids=text_ids,
-          vec=pooled_prompt_embeds,
+            states,
+            latents=latents,
+            latent_image_ids=latent_image_ids,
+            prompt_embeds=prompt_embeds,
+            txt_ids=text_ids,
+            vec=pooled_prompt_embeds,
         ).block_until_ready()
-        recorded_times[resolution] = (time.perf_counter() - s0)
+        recorded_times[resolution] = time.perf_counter() - s0
         max_logging.log(f"inference time: {recorded_times[resolution]}")
         s0 = time.perf_counter()
         imgs = jax.experimental.multihost_utils.process_allgather(imgs, tiled=True)
@@ -565,6 +572,7 @@ def run(config):
   max_logging.log(f"\nText encoding time: {text_encoding_time_final}")
 
   return imgs
+
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
