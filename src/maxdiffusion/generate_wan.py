@@ -19,11 +19,20 @@ from flax import nnx
 from absl import app
 from maxdiffusion import pyconfig, max_logging
 from maxdiffusion.models.wan.transformers.transformer_flux_wan_nnx import WanModel
+from maxdiffusion.pipelines.wan.pipeline_wan import WanPipeline
 
 def run(config):
   max_logging.log("Wan 2.1 inference script")
 
-  wan_transformer = WanModel(rngs=nnx.Rngs(config.seed))
+  pipeline, params = WanPipeline.from_pretrained(
+    config.pretrained_model_name_or_path,
+    vae=None,
+    transformer=None
+  )
+  breakpoint()
+
+  #wan_transformer = WanModel(rngs=nnx.Rngs(config.seed))
+
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)

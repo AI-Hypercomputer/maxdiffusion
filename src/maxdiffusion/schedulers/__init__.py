@@ -48,6 +48,7 @@ else:
   _import_structure["scheduling_lms_discrete_flax"] = ["FlaxLMSDiscreteScheduler"]
   _import_structure["scheduling_pndm_flax"] = ["FlaxPNDMScheduler"]
   _import_structure["scheduling_sde_ve_flax"] = ["FlaxScoreSdeVeScheduler"]
+  _import_structure["scheduling_flow_match_euler_discrete_flax"] = ["FlowMatchEulerDiscreteScheduler"]
   _import_structure["scheduling_utils_flax"] = [
       "FlaxKarrasDiffusionSchedulers",
       "FlaxSchedulerMixin",
@@ -73,6 +74,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
     from .scheduling_lms_discrete_flax import FlaxLMSDiscreteScheduler
     from .scheduling_pndm_flax import FlaxPNDMScheduler
     from .scheduling_sde_ve_flax import FlaxScoreSdeVeScheduler
+    from .scheduling_flow_match_euler_discrete_flax import FlowMatchEulerDiscreteScheduler
     from .scheduling_utils_flax import (
         FlaxKarrasDiffusionSchedulers,
         FlaxSchedulerMixin,
