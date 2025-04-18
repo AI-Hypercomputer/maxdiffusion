@@ -14,7 +14,7 @@
  limitations under the License.
 """
 
-from typing import Callable, List, Union, Sequence
+from typing import List, Union, Sequence
 from absl import app
 from contextlib import ExitStack
 import functools
@@ -27,7 +27,6 @@ from jax.sharding import Mesh, PositionalSharding, PartitionSpec as P
 import jax.numpy as jnp
 import flax.linen as nn
 from chex import Array
-from einops import rearrange
 from flax.linen import partitioning as nn_partitioning
 from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
 
