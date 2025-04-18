@@ -96,13 +96,13 @@ def run(config):
 
   t0 = time.perf_counter()
   with ExitStack():
-    imgs = pipeline(flux_params=flux_state, timesteps=50, vae_params=vae_state).block_until_ready()
+    imgs = pipeline(flux_params=flux_state, timesteps=config.num_inference_steps, vae_params=vae_state).block_until_ready()
   t1 = time.perf_counter()
   max_logging.log(f"Compile time: {t1 - t0:.1f}s.")
 
   t0 = time.perf_counter()
   with ExitStack():
-    imgs = pipeline(flux_params=flux_state, timesteps=50, vae_params=vae_state).block_until_ready()
+    imgs = pipeline(flux_params=flux_state, timesteps=config.num_inference_steps, vae_params=vae_state).block_until_ready()
   imgs = jax.experimental.multihost_utils.process_allgather(imgs, tiled=True)
   t1 = time.perf_counter()
   max_logging.log(f"Inference time: {t1 - t0:.1f}s.")
