@@ -79,10 +79,16 @@ After installation completes, run the training script.
 
 - **Flux**
 
+  Expected results on 1024 x 1024 images with flash attention and bfloat16:
+
+  | Model | Accelerator | Sharding Strategy | Per Device Batch Size | Global Batch Size | Step Time (secs) |
+  | --- | --- | --- | --- | --- | --- |
+  | Flux-dev | v5p-8 | DDP | 1 | 4 | 1.31 |
+
   Flux finetuning has only been tested on TPU v5p.
 
   ```bash
-  python src/maxdiffusion/train_flux.py src/maxdiffusion/configs/base_flux_dev.yml run_name="test-flux-train" output_dir="gs://<your-gcs-bucket>/" save_final_checkpoint=True  jax_cache_dir="/tmp/jax_cache" max_train_steps=4500
+  python src/maxdiffusion/train_flux.py src/maxdiffusion/configs/base_flux_dev.yml run_name="test-flux-train" output_dir="gs://<your-gcs-bucket>/" save_final_checkpoint=True  jax_cache_dir="/tmp/jax_cache"
   ```
 
   To generate images with a finetuned checkpoint, run:
