@@ -83,9 +83,9 @@ flash_block_sizes: {
 # GroupNorm groups
 norm_num_groups: 32
 
-# If train_new_unet, unet weights will be randomly initialized to train the unet from scratch
+# If train_new_flux, flux weights will be randomly initialized to train flux from scratch
 # else they will be loaded from pretrained_model_name_or_path
-train_new_unet: False
+train_new_flux: False
 
 # train text_encoder - Currently not supported for SDXL
 train_text_encoder: False
