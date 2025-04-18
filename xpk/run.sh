@@ -56,9 +56,13 @@
 
 # echo "rto_setup.sh finished"
 
+# echo '4096 41943040 314572800' > /proc/sys/net/ipv4/tcp_rmem
+
 export JAX_TRACEBACK_FILTERING=off
-export LIBTPU_INIT_ARGS='--xla_tpu_enable_async_collective_fusion_fuse_all_gather=true --xla_tpu_megacore_fusion_allow_ags=false --xla_enable_async_collective_permute=true --xla_tpu_enable_ag_backward_pipelining=true --xla_tpu_enable_data_parallel_all_reduce_opt=true --xla_tpu_data_parallel_opt_different_sized_ops=true --xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_gather=true --xla_tpu_spmd_threshold_for_allgather_cse=1000000 --xla_jf_spmd_threshold_for_windowed_einsum_mib=1000000'
-LIBTPU_INIT_ARGS+=' --xla_sc_disable_megacore_partitioning=true --xla_tpu_use_tc_device_shape_on_sc=true --tpu_use_continuations=true --xla_sc_enable_instruction_fusion=false --xla_sc_disjoint_spmem=false --2a886c8_chip_config_name=megachip_tccontrol --xla_jf_crs_combiner_threshold_count=10 --xla_tpu_enable_sparse_core_collective_offload_all_reduce=true --xla_tpu_enable_async_collective_fusion_fuse_all_gather=true'
+# export LIBTPU_INIT_ARGS='--xla_tpu_enable_async_collective_fusion_fuse_all_gather=true --xla_tpu_megacore_fusion_allow_ags=false --xla_enable_async_collective_permute=true --xla_tpu_enable_ag_backward_pipelining=true --xla_tpu_enable_data_parallel_all_reduce_opt=true --xla_tpu_data_parallel_opt_different_sized_ops=true --xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_gather=true --xla_tpu_spmd_threshold_for_allgather_cse=1000000 --xla_jf_spmd_threshold_for_windowed_einsum_mib=1000000'
+# LIBTPU_INIT_ARGS+=' --xla_sc_disable_megacore_partitioning=true --xla_tpu_use_tc_device_shape_on_sc=true --tpu_use_continuations=true --xla_sc_enable_instruction_fusion=false --xla_sc_disjoint_spmem=false --2a886c8_chip_config_name=megachip_tccontrol --xla_jf_crs_combiner_threshold_count=10 --xla_tpu_enable_sparse_core_collective_offload_all_reduce=true --xla_tpu_enable_async_collective_fusion_fuse_all_gather=true'
+# export LIBTPU_INIT_ARGS='--xla_tpu_scoped_vmem_limit_kib=98304 --xla_tpu_use_minor_sharding_for_major_trivial_input=true --xla_tpu_relayout_group_size_threshold_for_reduce_scatter=1 --xla_tpu_assign_all_reduce_scatter_layout=true --xla_tpu_enable_data_parallel_all_reduce_opt=true --xla_tpu_data_parallel_opt_different_sized_ops=true --xla_tpu_enable_async_collective_fusion_fuse_all_gather=false --xla_tpu_enable_async_collective_fusion_fuse_all_reduce=false --xla_tpu_enable_async_collective_fusion_fuse_reduce_scatter=false --xla_tpu_enable_sparse_core_collective_offload_all_gather=true --xla_tpu_enable_sparse_core_collective_offload_reduce_scatter=true --xla_tpu_enable_sparse_core_collective_offload_all_reduce=true --xla_tpu_enable_all_gather_offload_tracing=true --xla_tpu_enable_reduce_scatter_offload_tracing=true --xla_tpu_enable_all_reduce_offload_tracing=true --xla_tpu_use_tc_device_shape_on_sc=true --xla_sc_enable_instruction_fusion=false --xla_sc_disjoint_spmem=false --xla_sc_disable_megacore_partitioning=true --2a886c8_chip_config_name=megachip_tccontrol'
+
 # export TPU_STDERR_LOG_LEVEL=0
 # export TPU_MIN_LOG_LEVEL=0
 # export TF_CPP_MIN_LOG_LEVEL=0
@@ -85,9 +89,9 @@ EVAL_OUT_DIR=/tmp/outputs
 mkdir -p $EVAL_OUT_DIR
 # training
 RUN_NAME=${RUN_NAME:-"mlperf_e2e"}
-OUTPUT_DIRECTORY=${OUTPUT_DIRECTORY:-gs://raymondzou-multipod-prod/v6e/$RUN_NAME}
+OUTPUT_DIRECTORY=${OUTPUT_DIRECTORY:-gs://raymondzou-southamerica/v5p/$RUN_NAME}
 DATA_DIR=gs://mlperf-llm-public2/laion400m/raw_data/tf_records_512_encoder_state_fp32
-bucket_name=raymondzou-multipod-prod/v6e
+bucket_name=raymondzou-southamerica/v6e
 
 python -m src.maxdiffusion.models.train src/maxdiffusion/configs/base_2_base.yml run_name="$RUN_NAME" base_output_directory="$OUTPUT_DIRECTORY" train_data_dir="${DATA_DIR}" \
 per_device_batch_size="${PER_DEVICE_BATCH_SIZE}" split_head_dim=True  attention=flash  norm_num_groups=16 \
@@ -105,8 +109,8 @@ stat_output_file="output/stats.npz" \
 stat_coco_file="gs://mlperf-exp/sd-copy/cocodata/val2014_30k_stats.npz" \
 clip_cache_dir="clip_cache_dir" \
 start_step_to_checkpoint=5120000 \
-skip_first_n_steps_for_profiler=10 \
-profiler_steps=3 \
+skip_first_n_steps_for_profiler=1 \
+profiler_steps=5 \
 enable_profiler=True \
 seed="$SEED" \
 checkpoint_every="$CHECKPOINT_EVERY" max_train_steps="$MAX_TRAIN_STEPS" metrics_period="$METRICS_INTERVAL" 2>&1 | tee /tmp/log
