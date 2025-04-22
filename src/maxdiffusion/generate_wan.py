@@ -209,7 +209,16 @@ def run(config):
   # )
   # breakpoint()
 
-  wan_transformer = WanModel(rngs=nnx.Rngs(config.seed))
+  pipeline, params = WanPipeline.from_pretrained(
+    config.pretrained_model_name_or_path,
+    vae=None,
+    transformer=None
+  )
+  breakpoint()
+
+  #wan_transformer = WanModel(rngs=nnx.Rngs(config.seed))
+
+
 
 
 def main(argv: Sequence[str]) -> None:
