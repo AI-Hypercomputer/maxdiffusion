@@ -192,10 +192,16 @@ class Identity(nnx.Module):
     return x
 
 class ZeroPaddedConv2D(nnx.Module):
+  """
+  Module for adding padding before conv.
+  Currently it does not add any padding.
+  """
   def __init__(
     self,
     dim: int,
     rngs: nnx.Rngs,
+    kernel_size: Union[int, Tuple[int, int, int]],
+    stride: Union[int, Tuple[int, int, int]] = 1,
     flash_min_seq_length: int = 4096,
     flash_block_sizes: BlockSizes = None,
     mesh: jax.sharding.Mesh = None,
@@ -204,18 +210,18 @@ class ZeroPaddedConv2D(nnx.Module):
     precision: jax.lax.Precision = None,
     attention: str = "dot_product",
   ):
+    kernel_size = _canonicalize_tuple(kernel_size, 3, 'kernel_size')
+    stride = _canonicalize_tuple(stride, 3, 'stride')
     self.conv = nnx.Conv(
       dim,
       dim,
-      kernel_size=(1, 3, 3),
-      padding='SAME',
+      kernel_size=kernel_size,
+      strides=stride,
       use_bias=True,
       rngs=rngs
     )
   
   def __call__(self, x):
-    # This pad assumes (B, C, H, W)
-    x = jax.lax.pad(x, 0.0, [(0, 0, 0), (0, 0, 0), (0, 1, 0), (0, 1, 0)])
     return self.conv(x)
 
 
@@ -263,9 +269,21 @@ class WanResample(nnx.Module):
       )
       self.time_conv = WanCausalConv3d(dim, dim * 2, (3, 1, 1), padding=(1, 0, 0), rngs=rngs)
     elif mode == "downsample2d":
-      self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs)
+      # TODO - do I need to transpose?
+      self.resample = ZeroPaddedConv2D(
+        dim=dim,
+        rngs=rngs,
+        kernel_size=(1, 3, 3),
+        stride=(1, 2, 2)
+      )
     elif mode == "downsample3d":
-      self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs)
+      # TODO - do I need to transpose?
+      self.resample = ZeroPaddedConv2D(
+        dim=dim,
+        rngs=rngs,
+        kernel_size=(1, 3, 3),
+        stride=(1, 2, 2)
+      )
     else:
       self.resample = Identity()
 

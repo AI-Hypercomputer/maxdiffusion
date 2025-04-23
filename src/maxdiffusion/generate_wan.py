@@ -214,7 +214,6 @@ def run(config):
     vae=None,
     transformer=None
   )
-  breakpoint()
 
   #wan_transformer = WanModel(rngs=nnx.Rngs(config.seed))
 

@@ -22,7 +22,13 @@ import numpy as np
 import unittest
 import pytest
 from absl.testing import absltest
-from ..models.wan.autoencoder_kl_wan import WanCausalConv3d, WanUpsample, AutoencoderKLWan, WanRMS_norm
+from ..models.wan.autoencoder_kl_wan import (
+  WanCausalConv3d,
+  WanUpsample,
+  AutoencoderKLWan,
+  WanRMS_norm,
+  ZeroPaddedConv2D
+)
 
 class WanVaeTest(unittest.TestCase):
   def setUp(self):
@@ -66,36 +72,63 @@ class WanVaeTest(unittest.TestCase):
         return F.normalize(x, dim=(1 if self.channel_first else -1)) * self.scale * self.gamma + self.bias
     
     # --- Test Case 1: images == True ---
-    model = TorchWanRMS_norm(2)
-    input_shape = (1, 2, 2, 2, 3)
+    dim = 96
+    input_shape = (1, 96, 1, 480, 720)
+
+    model = TorchWanRMS_norm(dim)
     input = torch.ones(input_shape)
     torch_output = model(input)
     torch_output_np = torch_output.detach().numpy()
     
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
-    wanrms_norm = WanRMS_norm(dim=2, rngs=rngs)
-    input_shape = (1, 2, 2, 2, 3)
+    wanrms_norm = WanRMS_norm(dim=dim, rngs=rngs)
     dummy_input = jnp.ones(input_shape)
     output = wanrms_norm(dummy_input)
     output_np = np.array(output)
     assert np.allclose(output_np, torch_output_np) == True
 
     # --- Test Case 2: images == False ---
-    model = TorchWanRMS_norm(2, images=False)
-    input_shape = (1, 2, 2, 2, 3)
+    model = TorchWanRMS_norm(dim, images=False)
     input = torch.ones(input_shape)
     torch_output = model(input)
     torch_output_np = torch_output.detach().numpy()
     
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
-    wanrms_norm = WanRMS_norm(dim=2, rngs=rngs, images=False)
-    input_shape = (1, 2, 2, 2, 3)
+    wanrms_norm = WanRMS_norm(dim=dim, rngs=rngs, images=False)
     dummy_input = jnp.ones(input_shape)
     output = wanrms_norm(dummy_input)
     output_np = np.array(output)
     assert np.allclose(output_np, torch_output_np) == True
+  
+  def test_zero_padded_conv(self):
+    import torch
+    import torch.nn as nn
+
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+
+    dim = 96
+    kernel_size = 3
+    stride= (2, 2)
+    resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, kernel_size, stride=stride))
+    input_shape = (1, 96, 480, 720)
+    input = torch.ones(input_shape)
+    output_torch = resample(input)
+    assert output_torch.shape == (1, 96, 240, 360)
+
+    model = ZeroPaddedConv2D(
+      dim=dim,
+      rngs=rngs,
+      kernel_size=(1, 3, 3),
+      stride=(1, 2, 2)
+    )
+    dummy_input = jnp.ones(input_shape)
+    dummy_input = jnp.transpose(dummy_input, (0, 2, 3, 1))
+    output = model(dummy_input)
+    output = jnp.transpose(output, (0, 3, 1, 2))
+    assert output.shape == (1, 96, 240, 360)
 
   def test_wan_upsample(self):
     batch_size=1
