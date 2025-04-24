@@ -30,6 +30,7 @@ from ..models.wan.autoencoder_kl_wan import (
   WanUpsample,
   AutoencoderKLWan,
   WanEncoder3d,
+  WanMidBlock,
   WanResidualBlock,
   WanRMS_norm,
   WanResample,
@@ -373,6 +374,22 @@ class WanVaeTest(unittest.TestCase):
     output = wan_attention(dummy_input)
     assert output.shape == input_shape
 
+  def test_wan_midblock(self):
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    batch = 1
+    t = 1
+    dim = 384
+    height = 60
+    width = 90
+    input_shape = (batch, t, height, width, dim)
+    wan_midblock = WanMidBlock(
+      dim=dim, rngs=rngs
+    )
+    dummy_input = jnp.ones(input_shape)
+    output = wan_midblock(dummy_input)
+    assert output.shape == input_shape
+
   def test_wan_encode(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
@@ -392,16 +409,6 @@ class WanVaeTest(unittest.TestCase):
       attn_scales=attn_scales,
       temperal_downsample=temperal_downsample,
     )
-    # wan_encoder = WanEncoder3d(
-    #    rngs=rngs,
-    #    dim=dim,
-    #    z_dim=z_dim,
-    #    dim_mult=dim_mult,
-    #    num_res_blocks=num_res_blocks,
-    #    attn_scales=attn_scales,
-    #    temperal_downsample=temperal_downsample,
-    #    non_linearity=nonlinearity
-    # )
     batch = 1
     channels = 3
     t = 49

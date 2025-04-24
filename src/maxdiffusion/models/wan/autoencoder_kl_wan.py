@@ -414,8 +414,20 @@ class WanMidBlock(nnx.Module):
     num_layers: int = 1
   ):
     self.dim = dim
+    resnets = [WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs,dropout=dropout, non_linearity=non_linearity)]
+    attentions = []
+    for _ in range(num_layers):
+      attentions.append(WanAttentionBlock(dim=dim, rngs=rngs))
+      resnets.append(WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs,dropout=dropout, non_linearity=non_linearity))
+    self.attentions = attentions
+    self.resnets = resnets
   
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
+    x = self.resnets[0](x)
+    for attn, resnet in zip(self.attentions, self.resnets[1:]):
+      if attn is not None:
+        x = attn(x)
+      x = resnet(x)
     return x
 
 class WanUpBlock(nnx.Module):
@@ -519,6 +531,8 @@ class WanEncoder3d(nnx.Module):
     # (1, 1, 480, 720, 96)
     for layer in self.down_blocks:
       x = layer(x)
+    
+    x = self.mid_block(x)
     breakpoint()
     return x
 
