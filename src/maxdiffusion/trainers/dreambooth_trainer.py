@@ -16,7 +16,6 @@
 
 from pathlib import Path
 import time
-from functools import partial
 import datetime
 import os
 import numpy as np
