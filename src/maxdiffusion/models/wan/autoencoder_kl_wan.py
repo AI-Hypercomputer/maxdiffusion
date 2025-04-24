@@ -364,9 +364,45 @@ class WanAttentionBlock(nnx.Module):
       rngs: nnx.Rngs
   ):
     self.dim = dim
+    self.norm = WanRMS_norm(rngs=rngs, dim=dim, channel_first=False)
+    self.to_qkv = nnx.Conv(
+      in_features=dim,
+      out_features=dim * 3,
+      kernel_size=1,
+      rngs=rngs
+    )
+    self.proj = nnx.Conv(
+      in_features=dim,
+      out_features=dim,
+      kernel_size=1,
+      rngs=rngs
+    )
   
   def __call__(self, x: jax.Array):
-    return x
+    batch_size, time, height, width, channels = x.shape
+    identity = x
+    
+    x = x.reshape(batch_size * time, height, width, channels)
+    x = self.norm(x)
+
+    qkv = self.to_qkv(x) # Output: (N*D, H, W, C * 3)
+
+    qkv = qkv.reshape(batch_size*time, 1, channels * 3, -1)
+    qkv = jnp.transpose(qkv, (0, 1, 3, 2))
+    q, k, v = jnp.split(qkv, 3, axis=-1)
+
+    x = jax.nn.dot_product_attention(q, k, v)
+    x = jnp.squeeze(x, 1).reshape(batch_size * time, height, width, channels)
+
+    #output projection
+    x = self.proj(x)
+
+    # Reshape back
+    x = x.reshape(batch_size, time, height, width, channels)
+
+    return x + identity
+
+
 
 class WanMidBlock(nnx.Module):
   def __init__(

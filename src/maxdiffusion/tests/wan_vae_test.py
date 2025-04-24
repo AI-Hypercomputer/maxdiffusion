@@ -33,7 +33,8 @@ from ..models.wan.autoencoder_kl_wan import (
   WanResidualBlock,
   WanRMS_norm,
   WanResample,
-  ZeroPaddedConv2D
+  ZeroPaddedConv2D,
+  WanAttentionBlock
 )
 
 CACHE_T = 2
@@ -322,7 +323,7 @@ class WanVaeTest(unittest.TestCase):
   def test_wan_residual(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
-    # one test
+    # --- Test Case 1: same in/out dim ---
     in_dim = out_dim = 96
     batch = 1
     t = 1
@@ -341,7 +342,7 @@ class WanVaeTest(unittest.TestCase):
     dummy_output = wan_residual_block(dummy_input)
     assert dummy_output.shape == expected_output_shape
 
-    # another test
+    # --- Test Case 1: different in/out dim ---
     in_dim = 96
     out_dim = 196
     expected_output_shape = (batch, t, height, width, out_dim)
@@ -355,8 +356,22 @@ class WanVaeTest(unittest.TestCase):
     dummy_output = wan_residual_block(dummy_input)
     assert dummy_output.shape == expected_output_shape
 
-
-
+  def test_wan_attention(self):
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    dim = 384
+    batch = 1
+    t = 1
+    height = 60
+    width = 90
+    input_shape=(batch, t, height, width, dim)
+    wan_attention = WanAttentionBlock(
+      dim=dim,
+      rngs=rngs
+    )
+    dummy_input = jnp.ones(input_shape)
+    output = wan_attention(dummy_input)
+    assert output.shape == input_shape
 
   def test_wan_encode(self):
     key = jax.random.key(0)
