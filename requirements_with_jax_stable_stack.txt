@@ -8,7 +8,7 @@ ftfy
 git+https://github.com/mlperf/logging.git
 google-cloud-storage==2.17.0
 grain-nightly==0.0.10
-huggingface_hub==0.24.7
+huggingface_hub==0.30.2
 jax>=0.4.30
 jaxlib>=0.4.30
 Jinja2

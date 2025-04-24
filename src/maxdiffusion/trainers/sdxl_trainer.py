@@ -153,7 +153,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     self.rng, train_rngs = jax.random.split(self.rng)
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       p_train_step = jax.jit(
-          partial(_train_step, pipeline=pipeline, params=params, config=self.config),
+          max_utils.get_train_step_partial_with_signature(_train_step, pipeline=pipeline, params=params, config=self.config),
           in_shardings=(
               state_shardings["unet_state_shardings"],
               state_shardings["vae_state_shardings"],
