@@ -30,6 +30,7 @@ from ..models.wan.autoencoder_kl_wan import (
   WanUpsample,
   AutoencoderKLWan,
   WanEncoder3d,
+  WanResidualBlock,
   WanRMS_norm,
   WanResample,
   ZeroPaddedConv2D
@@ -318,6 +319,45 @@ class WanVaeTest(unittest.TestCase):
     output_with_larger_cache = causal_conv_layer(dummy_input, cache_x=dummy_larger_cache)
     assert output_with_larger_cache.shape == (1, 10, 32, 32, 16)
 
+  def test_wan_residual(self):
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    # one test
+    in_dim = out_dim = 96
+    batch = 1
+    t = 1
+    height = 480
+    width = 720
+    dim = 96
+    input_shape = (batch, t, height, width, dim)
+    expected_output_shape = (batch, t, height, width, dim)
+
+    wan_residual_block = WanResidualBlock(
+      in_dim=in_dim,
+      out_dim=out_dim,
+      rngs=rngs,
+    )
+    dummy_input = jnp.ones(input_shape)
+    dummy_output = wan_residual_block(dummy_input)
+    assert dummy_output.shape == expected_output_shape
+
+    # another test
+    in_dim = 96
+    out_dim = 196
+    expected_output_shape = (batch, t, height, width, out_dim)
+
+    wan_residual_block = WanResidualBlock(
+      in_dim=in_dim,
+      out_dim=out_dim,
+      rngs=rngs,
+    )
+    dummy_input = jnp.ones(input_shape)
+    dummy_output = wan_residual_block(dummy_input)
+    assert dummy_output.shape == expected_output_shape
+
+
+
+
   def test_wan_encode(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
@@ -328,16 +368,25 @@ class WanVaeTest(unittest.TestCase):
     attn_scales = []
     temperal_downsample = [False, True, True]
     nonlinearity = "silu"
-    wan_encoder = WanEncoder3d(
-       rngs=rngs,
-       dim=dim,
-       z_dim=z_dim,
-       dim_mult=dim_mult,
-       num_res_blocks=num_res_blocks,
-       attn_scales=attn_scales,
-       temperal_downsample=temperal_downsample,
-       non_linearity=nonlinearity
+    wan_vae = AutoencoderKLWan(
+      rngs=rngs,
+      base_dim=dim,
+      z_dim=z_dim,
+      dim_mult=dim_mult,
+      num_res_blocks=num_res_blocks,
+      attn_scales=attn_scales,
+      temperal_downsample=temperal_downsample,
     )
+    # wan_encoder = WanEncoder3d(
+    #    rngs=rngs,
+    #    dim=dim,
+    #    z_dim=z_dim,
+    #    dim_mult=dim_mult,
+    #    num_res_blocks=num_res_blocks,
+    #    attn_scales=attn_scales,
+    #    temperal_downsample=temperal_downsample,
+    #    non_linearity=nonlinearity
+    # )
     batch = 1
     channels = 3
     t = 49
@@ -345,7 +394,8 @@ class WanVaeTest(unittest.TestCase):
     width = 720
     input_shape = (batch, channels, t, height, width)
     input = jnp.ones(input_shape)
-    output = wan_encoder(input)
+    output = wan_vae.encode(input)
+    breakpoint()
 
 
 
