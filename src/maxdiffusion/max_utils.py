@@ -564,11 +564,12 @@ def calculate_model_tflops(module: module_lib.Module, rngs: Union[PRNGKey, RNGSe
   total_flops = (total_flops * 3 if train else total_flops) / 10**12
   return total_flops
 
-def get_train_step_partial_with_signature(train_step:Callable, pipeline:object, params:Dict, config:object)->Callable:
+
+def get_train_step_partial_with_signature(train_step: Callable, pipeline: object, params: Dict, config: object) -> Callable:
   partial_train = partial(train_step, pipeline=pipeline, params=params, config=config)
   partial_train.__name__ = "train_step"
   return partial_train
-  
+
 
 def calculate_num_params_from_pytree(params):
   """Calculates number of parameters from a pytree"""

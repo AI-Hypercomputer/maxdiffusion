@@ -286,12 +286,12 @@ class FluxTrainer(FluxCheckpointer):
     guidance_vec = jnp.full((self.total_train_batch_size,), self.config.guidance_scale, dtype=self.config.activations_dtype)
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       train_step_partial = partial(
-              _train_step,
-              guidance_vec=guidance_vec,
-              pipeline=pipeline,
-              scheduler=train_states["scheduler"],
-              config=self.config,
-          )
+          _train_step,
+          guidance_vec=guidance_vec,
+          pipeline=pipeline,
+          scheduler=train_states["scheduler"],
+          config=self.config,
+      )
       train_step_partial.__name__ = "train_step"
       p_train_step = jax.jit(
           train_step_partial,

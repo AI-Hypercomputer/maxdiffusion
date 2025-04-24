@@ -28,6 +28,7 @@ from urllib import request
 from huggingface_hub import HfFolder, hf_hub_download, model_info
 import huggingface_hub
 from packaging import version
+
 cached_download = None
 
 from .. import __version__
@@ -42,20 +43,22 @@ COMMUNITY_PIPELINES_URL = (
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 # https://github.com/huggingface/huggingface_hub/releases/tag/v0.26.0
-# `cached_download(), url_to_filename(), filename_to_url() methods are now completely removed. 
+# `cached_download(), url_to_filename(), filename_to_url() methods are now completely removed.
 # From now on, you will have to use hf_hub_download() to benefit from the new cache layout.`
-if hasattr(huggingface_hub, '__version__'):
-    current_version = version.parse(huggingface_hub.__version__)
-    target_version = version.parse("0.26.0")
+if hasattr(huggingface_hub, "__version__"):
+  current_version = version.parse(huggingface_hub.__version__)
+  target_version = version.parse("0.26.0")
 
-    if current_version < target_version:
-        try:
-            from huggingface_hub import cached_download
-            
-        except ImportError:
-            logger.error(f"huggingface_hub version {current_version} is below 0.26.0, but 'cached_download' could not be imported. It might have been removed or deprecated in this version as well.")
+  if current_version < target_version:
+    try:
+      from huggingface_hub import cached_download
+
+    except ImportError:
+      logger.error(
+          f"huggingface_hub version {current_version} is below 0.26.0, but 'cached_download' could not be imported. It might have been removed or deprecated in this version as well."
+      )
 else:
-    logger.error("Could not determine huggingface_hub version. Unable to conditionally import 'cached_download'.")
+  logger.error("Could not determine huggingface_hub version. Unable to conditionally import 'cached_download'.")
 
 
 def get_diffusers_versions():

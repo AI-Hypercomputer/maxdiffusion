@@ -14,6 +14,15 @@
  limitations under the License.
  """
 
+"""
+Example to run
+python end_to_end/tpu/eval_assert.py avg_tflops metrics.txt 100
+python end_to_end/tpu/eval_assert.py avg_step_time metrics.txt 0.5 100
+python end_to_end/tpu/eval_assert.py avg_step_time metrics.txt 0.5 100
+"""
+
+
+
 # pylint: skip-file
 """Reads and asserts over target values"""
 from absl import app
@@ -34,11 +43,12 @@ def get_last_n_data(metrics_file, target, n=10):
   return last_n_data
 
 
-def test_final_loss(metrics_file, target_loss):
+def test_final_loss(metrics_file, target_loss, num_samples_str="10"):
   target_loss = float(target_loss)
+  num_samples = int(num_samples_str)
   with open(metrics_file, "r", encoding="utf8") as _:
     use_last_n_data = 10
-    last_n_data = get_last_n_data(metrics_file, "learning/loss", use_last_n_data)
+    last_n_data = get_last_n_data(metrics_file, "learning/loss",num_samples)
     avg_last_n_data = sum(last_n_data) / len(last_n_data)
     print(f"Mean of last {len(last_n_data)} losses is {avg_last_n_data}")
     print(f"Target loss is {target_loss}")
@@ -61,8 +71,9 @@ def test_avg_step_time(metrics_file, max_avg_step_time_str, num_samples_str="10"
   print(f"Found {len(last_n_step_times)} data points for '{metric_key}'.")
   print(f"Mean of last {len(last_n_step_times)} step times is {avg_last_n_step_time:.4f} s")
 
-  assert avg_last_n_step_time < max_avg_step_time, \
-      f"Average step time {avg_last_n_step_time:.4f}s is not less than target {max_avg_step_time}s."
+  assert (
+      avg_last_n_step_time < max_avg_step_time
+  ), f"Average step time {avg_last_n_step_time:.4f}s is not less than target {max_avg_step_time}s."
   print("Average step time test passed.")
 
 
@@ -82,8 +93,9 @@ def test_avg_tflops(metrics_file, min_avg_tflops_str, num_samples_str="10"):
   print(f"Found {len(last_n_tflops)} data points for '{metric_key}'.")
   print(f"Mean of last {len(last_n_tflops)} steps TFLOPs/sec is {avg_last_n_tflops:.2f}")
 
-  assert avg_last_n_tflops > min_avg_tflops, \
-      f"Average TFLOPs/sec {avg_last_n_tflops:.2f} is not greater than target {min_avg_tflops}."
+  assert (
+      avg_last_n_tflops > min_avg_tflops
+  ), f"Average TFLOPs/sec {avg_last_n_tflops:.2f} is not greater than target {min_avg_tflops}."
   print("Average TFLOPs/sec test passed.")
 
 
