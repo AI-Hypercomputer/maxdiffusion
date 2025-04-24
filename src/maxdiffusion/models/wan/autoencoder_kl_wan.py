@@ -55,14 +55,13 @@ def _canonicalize_tuple(x: Union[int, Sequence[int]], rank: int, name: str) -> T
 class WanCausalConv3d(nnx.Module):
   def __init__(
     self,
+    rngs: nnx.Rngs, # rngs are required for initializing parameters,
     in_channels: int,
     out_channels: int,
     kernel_size: Union[int, Tuple[int, int, int]],
-    *, # Mark subsequent arguments as keyword-only
     stride: Union[int, Tuple[int, int, int]] = 1,
     padding: Union[int, Tuple[int, int, int]] = 0,
     use_bias: bool = True,
-    rngs: nnx.Rngs, # rngs are required for initializing parameters,
     flash_min_seq_length: int = 4096,
     flash_block_sizes: BlockSizes = None,
     mesh: jax.sharding.Mesh = None,
@@ -267,7 +266,13 @@ class WanResample(nnx.Module):
           rngs=rngs,
         )
       )
-      self.time_conv = WanCausalConv3d(dim, dim * 2, (3, 1, 1), padding=(1, 0, 0), rngs=rngs)
+      self.time_conv = WanCausalConv3d(
+        rngs=rngs,
+        in_channels=dim,
+        out_channels=dim * 2,
+        kernel_size=(3, 1, 1),
+        padding=(1, 0, 0),
+      )
     elif mode == "downsample2d":
       # TODO - do I need to transpose?
       self.resample = ZeroPaddedConv2D(
@@ -288,6 +293,15 @@ class WanResample(nnx.Module):
       self.resample = Identity()
 
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]) -> jax.Array:
+    # Input x: (N, D, H, W, C), assume C = self.dim
+    n, d, h, w, c = x.shape
+    assert c == self.dim
+
+    x = x.reshape(n*d,h,w,c)
+    x = self.resample(x)
+    h_new, w_new, c_new = x.shape[1:]
+    x = x.reshape(n, d, h_new, w_new, c_new)
+
     return x
   
 class WanResidualBlock(nnx.Module):
@@ -382,7 +396,13 @@ class WanEncoder3d(nnx.Module):
     scale = 1.0
 
     # init block
-    self.conv_in = WanCausalConv3d(3, dims[0], 3, padding=1, rngs=rngs)
+    self.conv_in = WanCausalConv3d(
+      in_channels=3,
+      out_channels=dims[0],
+      kernel_size=3,
+      padding=1,
+      rngs=rngs
+    )
 
     # downsample blocks
     self.down_blocks = []
@@ -400,11 +420,23 @@ class WanEncoder3d(nnx.Module):
         self.down_blocks.append(WanResample(out_dim, mode=mode, rngs=rngs))
       
     # middle_blocks
-    self.mid_block = WanMidBlock(out_dim, dropout, non_linearity, num_layers=1, rngs=rngs)
+    self.mid_block = WanMidBlock(
+      dim=out_dim,
+      rngs=rngs,
+      dropout=dropout,
+      non_linearity=non_linearity,
+      num_layers=1,
+    )
 
     # output blocks
     self.norm_out = WanRMS_norm(out_dim, images=False, rngs=rngs)
-    self.conv_out = WanCausalConv3d(in_channels=out_dim, out_channels=z_dim, kernel_size=3, padding=1)
+    self.conv_out = WanCausalConv3d(
+      rngs=rngs,
+      in_channels=out_dim,
+      out_channels=z_dim,
+      kernel_size=3,
+      padding=1
+    )
   
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
     return x
@@ -487,6 +519,9 @@ class WanDecoder3d(nnx.Module):
     self.conv_out = WanCausalConv3d(in_channels=out_dim, out_channels=3, kernel_size=3, padding=1, rngs=rngs)
   
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
+    breakpoint()
+    x = self.conv_in(x)
+    breakpoint()
     return x
 
 class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
@@ -514,6 +549,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.temporal_upsample = temporal_downsample[::-1]
 
     self.encoder = WanEncoder3d(z_dim * 2, z_dim * 2, 1)
+    self.quant_conv = WanCausalConv3d(z_dim * 2, z_dim * 2, 1, rngs=rngs)
     self.post_quant_conv = WanCausalConv3d(z_dim, z_dim, 1, rngs=rngs)
 
     self.decoder = WanDecoder3d(
@@ -539,10 +575,42 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     self._enc_conv_idx = [0]
     self._enc_feat_map = [None] * self._enc_conv_num
 
+  def _encode(self, x: jax.Array):
+    if x.shape[-1] != 3:
+      # reshape channel last for JAX
+      x = jnp.transpose(x, (0, 2, 3, 4, 1))
+      assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
+    
+    self.clear_cache()
+
+    t = x.shape[1]
+    iter_ = 1 + (t - 1) // 4
+    for i in range(iter_):
+      if i == 0:
+        out = self.encoder(
+          x[:, :1, :, :, :],
+          feat_cache=self._enc_feat_map,
+          feat_ids=self._enc_conv_idx
+        )
+      else:
+        out_ = self.encoder(
+          x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :],
+          feat_cache=self._enc_feat_map,
+          feat_idx=self._enc_conv_idx
+        )
+        out = jnp.concatenate([out, out_], axis=1)
+    
+    enc = self.quant_conv(out)
+    mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
+    enc = jnp.concatenate([mu, logvar], dim=1)
+    self.clear_cache()
+    return enc
 
   def encode(self, x: jax.Array, return_dict: bool = True) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """ Encode video into latent distribution."""
-    if x.shape[-1] != 3:
-      raise ValueError(f"Expected input shape (N, D, H, W, 3), got {x.shape}")
+    h = self._encode(x)
+    posterior = FlaxDiagonalGaussianDistribution(h)
+    if not return_dict:
+      return (posterior, )
+    return FlaxAutoencoderKLOutput(latent_dict=posterior)
     
-    self.clear_cache()
