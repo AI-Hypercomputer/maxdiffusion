@@ -14,7 +14,7 @@ jaxlib>=0.4.30
 Jinja2
 opencv-python-headless==4.10.0.84
 optax>=0.2.3
-orbax-checkpoint==0.10.3
+orbax-checkpoint>=0.10.3
 parameterized
 Pillow
 pyink
