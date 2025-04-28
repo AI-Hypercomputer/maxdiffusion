@@ -153,11 +153,11 @@ class WanVaeTest(unittest.TestCase):
   def setUp(self):
     WanVaeTest.dummy_data = {}
   
-  # def test_clear_cache(self):
-  #   key = jax.random.key(0)
-  #   rngs = nnx.Rngs(key)
-  #   wan_vae = AutoencoderKLWan(rngs=rngs)
-  #   wan_vae.clear_cache()
+  def test_clear_cache(self):
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    wan_vae = AutoencoderKLWan(rngs=rngs)
+    wan_vae.clear_cache()
 
   def test_wanrms_norm(self):
     """Test against the Pytorch implementation"""
@@ -394,12 +394,11 @@ class WanVaeTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     dim = 96
-    z_dim = 32
+    z_dim = 16
     dim_mult = [1, 2, 4, 4]
     num_res_blocks = 2
     attn_scales = []
     temperal_downsample = [False, True, True]
-    nonlinearity = "silu"
     wan_vae = AutoencoderKLWan(
       rngs=rngs,
       base_dim=dim,
@@ -417,9 +416,7 @@ class WanVaeTest(unittest.TestCase):
     input_shape = (batch, channels, t, height, width)
     input = jnp.ones(input_shape)
     output = wan_vae.encode(input)
-    breakpoint()
-
-
+    assert output.latent_dist.sample(key).shape == (1, 13, 60, 90, 16)
 
 if __name__ == "__main__":
   absltest.main()
