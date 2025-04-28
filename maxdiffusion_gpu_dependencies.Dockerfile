@@ -22,8 +22,7 @@ RUN apt-get update && apt-get install -y google-cloud-sdk
 # Set environment variables for Google Cloud SDK
 ENV PATH="/usr/local/google-cloud-sdk/bin:${PATH}"
 
-# Upgrade libcusprase to work with Jax
-RUN apt-get update && apt-get install -y libcusparse-12-3
+
 
 ARG MODE
 ENV ENV_MODE=$MODE
@@ -45,6 +44,5 @@ RUN ls .
 
 RUN echo "Running command: bash setup.sh MODE=$ENV_MODE JAX_VERSION=$ENV_JAX_VERSION DEVICE=${ENV_DEVICE}"
 RUN --mount=type=cache,target=/root/.cache/pip bash setup.sh MODE=${ENV_MODE} JAX_VERSION=${ENV_JAX_VERSION} DEVICE=${ENV_DEVICE}
-
 
 WORKDIR /deps
