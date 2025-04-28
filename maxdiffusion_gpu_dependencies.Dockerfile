@@ -44,7 +44,5 @@ RUN ls .
 
 RUN echo "Running command: bash setup.sh MODE=$ENV_MODE JAX_VERSION=$ENV_JAX_VERSION DEVICE=${ENV_DEVICE}"
 RUN --mount=type=cache,target=/root/.cache/pip bash setup.sh MODE=${ENV_MODE} JAX_VERSION=${ENV_JAX_VERSION} DEVICE=${ENV_DEVICE}
-RUN pip install -r requirements.txt
-RUN pip install -U "jax[cuda12]"
 
 WORKDIR /deps

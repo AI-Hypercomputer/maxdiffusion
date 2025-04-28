@@ -55,6 +55,9 @@ if [[ -n $JAX_VERSION && ! ($MODE == "stable" || -z $MODE) ]]; then
   exit 1
 fi
 
+# Install dependencies from requirements.txt first
+pip3 install -U -r requirements.txt || echo "Failed to install dependencies in the requirements" >&2
+
 # Install JAX and JAXlib based on the specified mode
 if [[ "$MODE" == "stable" || ! -v MODE ]]; then
   # Stable mode
@@ -78,7 +81,7 @@ if [[ "$MODE" == "stable" || ! -v MODE ]]; then
         pip3 install "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     fi
     export NVTE_FRAMEWORK=jax
-    pip3 install git+https://github.com/NVIDIA/TransformerEngine.git@stable
+    pip3 install transformer_engine[jax]==2.1.0
   fi
 
 elif [[ $MODE == "nightly" ]]; then
@@ -105,9 +108,6 @@ else
   echo -e "\n\nError: You can only set MODE to [stable,nightly].\n\n"
   exit 1
 fi
-
-# Install dependencies from requirements.txt
-pip3 install -U -r requirements.txt || echo "Failed to install dependencies in the requirements" >&2
 
 # Install maxdiffusion
 pip3 install -U . || echo "Failed to install maxdiffusion" >&2
