@@ -367,12 +367,33 @@ class WanResidualBlock(nnx.Module):
 
     x = self.norm1(x)
     x = self.nonlinearity(x)
-    x = self.conv1(x)
+
+    if feat_cache is not None:
+      idx = feat_idx[0]
+      cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
+      if cache_x.shape[1] <2 and feat_cache[idx] is not None:
+        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+
+      x = self.conv1(x, feat_cache[idx])
+      feat_cache[idx] = cache_x
+      feat_idx[0] +=1
+    else:
+      x = self.conv1(x)
 
     x = self.norm2(x)
     x = self.nonlinearity(x)
     x = self.dropout(x)
-    x = self.conv2(x)
+
+    if feat_cache is not None:
+      idx = feat_idx[0]
+      cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
+      if cache_x.shape[1] <2 and feat_cache[idx] is not None:
+        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+      x = self.conv2(x, feat_cache[idx])
+      feat_cache[idx] = cache_x
+      feat_idx[0] +=1
+    else:
+      x = self.conv2(x)
 
     return x + h
 
@@ -442,7 +463,7 @@ class WanMidBlock(nnx.Module):
     self.resnets = resnets
   
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
-    x = self.resnets[0](x)
+    x = self.resnets[0](x, feat_cache, feat_idx)
     for attn, resnet in zip(self.attentions, self.resnets[1:]):
       if attn is not None:
         x = attn(x)
