@@ -35,3 +35,16 @@ jobs:
     - name: build maxdiffusion jax nightly image
       run: |
         bash .github/workflows/build_and_upload_images.sh CLOUD_IMAGE_NAME=maxdiffusion_jax_nightly MODE=nightly PROJECT=tpu-prod-env-multipod LOCAL_IMAGE_NAME=maxdiffusion_jax_nightly
+
+  build-gpu-image:
+    runs-on: ["self-hosted", "e2", "cpu"]
+    steps:
+    - uses: actions/checkout@v3
+    - name: Cleanup old docker images
+      run: docker system prune --all --force
+    - name: build maxdiffusion jax stable stack gpu image
+      run: |
+        bash .github/workflows/build_and_upload_images.sh CLOUD_IMAGE_NAME=maxdiffusion_jax_stable_stack_gpu MODE=stable_stack PROJECT=tpu-prod-env-multipod LOCAL_IMAGE_NAME=maxdiffusion_jax_stable_stack_gpu BASEIMAGE=us-docker.pkg.dev/cloud-tpu-images/jax-stable-stack/tpu:latest DEVICE=gpu
+    - name: build maxdiffusion jax nightly image
+      run: |
+         bash .github/workflows/build_and_upload_images.sh CLOUD_IMAGE_NAME=maxdiffusion_jax_nightly_gpu MODE=nightly PROJECT=tpu-prod-env-multipod LOCAL_IMAGE_NAME=maxdiffusion_jax_nightly DEVICE=gpu
