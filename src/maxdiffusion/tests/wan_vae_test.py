@@ -26,133 +26,135 @@ import unittest
 import pytest
 from absl.testing import absltest
 from ..models.wan.autoencoder_kl_wan import (
-  WanCausalConv3d,
-  WanUpsample,
-  AutoencoderKLWan,
-  WanEncoder3d,
-  WanMidBlock,
-  WanResidualBlock,
-  WanRMS_norm,
-  WanResample,
-  ZeroPaddedConv2D,
-  WanAttentionBlock
+    WanCausalConv3d,
+    WanUpsample,
+    AutoencoderKLWan,
+    WanEncoder3d,
+    WanMidBlock,
+    WanResidualBlock,
+    WanRMS_norm,
+    WanResample,
+    ZeroPaddedConv2D,
+    WanAttentionBlock,
 )
 
 CACHE_T = 2
 
+
 class TorchWanRMS_norm(nn.Module):
-      r"""
-      A custom RMS normalization layer.
+  r"""
+  A custom RMS normalization layer.
 
-      Args:
-          dim (int): The number of dimensions to normalize over.
-          channel_first (bool, optional): Whether the input tensor has channels as the first dimension.
-              Default is True.
-          images (bool, optional): Whether the input represents image data. Default is True.
-          bias (bool, optional): Whether to include a learnable bias term. Default is False.
-      """
+  Args:
+      dim (int): The number of dimensions to normalize over.
+      channel_first (bool, optional): Whether the input tensor has channels as the first dimension.
+          Default is True.
+      images (bool, optional): Whether the input represents image data. Default is True.
+      bias (bool, optional): Whether to include a learnable bias term. Default is False.
+  """
 
-      def __init__(self, dim: int, channel_first: bool = True, images: bool = True, bias: bool = False) -> None:
-        super().__init__()
-        broadcastable_dims = (1, 1, 1) if not images else (1, 1)
-        shape = (dim, *broadcastable_dims) if channel_first else (dim,)
+  def __init__(self, dim: int, channel_first: bool = True, images: bool = True, bias: bool = False) -> None:
+    super().__init__()
+    broadcastable_dims = (1, 1, 1) if not images else (1, 1)
+    shape = (dim, *broadcastable_dims) if channel_first else (dim,)
 
-        self.channel_first = channel_first
-        self.scale = dim**0.5
-        self.gamma = nn.Parameter(torch.ones(shape))
-        self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.0
+    self.channel_first = channel_first
+    self.scale = dim**0.5
+    self.gamma = nn.Parameter(torch.ones(shape))
+    self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.0
 
-      def forward(self, x):
-        return F.normalize(x, dim=(1 if self.channel_first else -1)) * self.scale * self.gamma + self.bias
+  def forward(self, x):
+    return F.normalize(x, dim=(1 if self.channel_first else -1)) * self.scale * self.gamma + self.bias
+
 
 class TorchWanResample(nn.Module):
-    r"""
-    A custom resampling module for 2D and 3D data.
+  r"""
+  A custom resampling module for 2D and 3D data.
 
-    Args:
-        dim (int): The number of input/output channels.
-        mode (str): The resampling mode. Must be one of:
-            - 'none': No resampling (identity operation).
-            - 'upsample2d': 2D upsampling with nearest-exact interpolation and convolution.
-            - 'upsample3d': 3D upsampling with nearest-exact interpolation, convolution, and causal 3D convolution.
-            - 'downsample2d': 2D downsampling with zero-padding and convolution.
-            - 'downsample3d': 3D downsampling with zero-padding, convolution, and causal 3D convolution.
-    """
+  Args:
+      dim (int): The number of input/output channels.
+      mode (str): The resampling mode. Must be one of:
+          - 'none': No resampling (identity operation).
+          - 'upsample2d': 2D upsampling with nearest-exact interpolation and convolution.
+          - 'upsample3d': 3D upsampling with nearest-exact interpolation, convolution, and causal 3D convolution.
+          - 'downsample2d': 2D downsampling with zero-padding and convolution.
+          - 'downsample3d': 3D downsampling with zero-padding, convolution, and causal 3D convolution.
+  """
 
-    def __init__(self, dim: int, mode: str) -> None:
-        super().__init__()
-        self.dim = dim
-        self.mode = mode
+  def __init__(self, dim: int, mode: str) -> None:
+    super().__init__()
+    self.dim = dim
+    self.mode = mode
 
-        # layers
-        if mode == "upsample2d":
-            self.resample = nn.Sequential(
-                WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
-            )
-        elif mode == "upsample3d":
-            self.resample = nn.Sequential(
-                WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
-            )
-            self.time_conv = WanCausalConv3d(dim, dim * 2, (3, 1, 1), padding=(1, 0, 0))
+    # layers
+    if mode == "upsample2d":
+      self.resample = nn.Sequential(
+          WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
+      )
+    elif mode == "upsample3d":
+      self.resample = nn.Sequential(
+          WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
+      )
+      self.time_conv = WanCausalConv3d(dim, dim * 2, (3, 1, 1), padding=(1, 0, 0))
 
-        elif mode == "downsample2d":
-            self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
-        elif mode == "downsample3d":
-            self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
-            self.time_conv = WanCausalConv3d(dim, dim, (3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0))
+    elif mode == "downsample2d":
+      self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
+    elif mode == "downsample3d":
+      self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
+      self.time_conv = WanCausalConv3d(dim, dim, (3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0))
 
+    else:
+      self.resample = nn.Identity()
+
+  def forward(self, x, feat_cache=None, feat_idx=[0]):
+    b, c, t, h, w = x.size()
+    if self.mode == "upsample3d":
+      if feat_cache is not None:
+        idx = feat_idx[0]
+        if feat_cache[idx] is None:
+          feat_cache[idx] = "Rep"
+          feat_idx[0] += 1
         else:
-            self.resample = nn.Identity()
+          cache_x = x[:, :, -CACHE_T:, :, :].clone()
+          if cache_x.shape[2] < 2 and feat_cache[idx] is not None and feat_cache[idx] != "Rep":
+            # cache last frame of last two chunk
+            cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
+          if cache_x.shape[2] < 2 and feat_cache[idx] is not None and feat_cache[idx] == "Rep":
+            cache_x = torch.cat([torch.zeros_like(cache_x).to(cache_x.device), cache_x], dim=2)
+          if feat_cache[idx] == "Rep":
+            x = self.time_conv(x)
+          else:
+            x = self.time_conv(x, feat_cache[idx])
+          feat_cache[idx] = cache_x
+          feat_idx[0] += 1
 
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
-        b, c, t, h, w = x.size()
-        if self.mode == "upsample3d":
-            if feat_cache is not None:
-                idx = feat_idx[0]
-                if feat_cache[idx] is None:
-                    feat_cache[idx] = "Rep"
-                    feat_idx[0] += 1
-                else:
-                    cache_x = x[:, :, -CACHE_T:, :, :].clone()
-                    if cache_x.shape[2] < 2 and feat_cache[idx] is not None and feat_cache[idx] != "Rep":
-                        # cache last frame of last two chunk
-                        cache_x = torch.cat(
-                            [feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2
-                        )
-                    if cache_x.shape[2] < 2 and feat_cache[idx] is not None and feat_cache[idx] == "Rep":
-                        cache_x = torch.cat([torch.zeros_like(cache_x).to(cache_x.device), cache_x], dim=2)
-                    if feat_cache[idx] == "Rep":
-                        x = self.time_conv(x)
-                    else:
-                        x = self.time_conv(x, feat_cache[idx])
-                    feat_cache[idx] = cache_x
-                    feat_idx[0] += 1
+          x = x.reshape(b, 2, c, t, h, w)
+          x = torch.stack((x[:, 0, :, :, :, :], x[:, 1, :, :, :, :]), 3)
+          x = x.reshape(b, c, t * 2, h, w)
+    t = x.shape[2]
+    x = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+    x = self.resample(x)
+    x = x.view(b, t, x.size(1), x.size(2), x.size(3)).permute(0, 2, 1, 3, 4)
 
-                    x = x.reshape(b, 2, c, t, h, w)
-                    x = torch.stack((x[:, 0, :, :, :, :], x[:, 1, :, :, :, :]), 3)
-                    x = x.reshape(b, c, t * 2, h, w)
-        t = x.shape[2]
-        x = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
-        x = self.resample(x)
-        x = x.view(b, t, x.size(1), x.size(2), x.size(3)).permute(0, 2, 1, 3, 4)
+    if self.mode == "downsample3d":
+      if feat_cache is not None:
+        idx = feat_idx[0]
+        if feat_cache[idx] is None:
+          feat_cache[idx] = x.clone()
+          feat_idx[0] += 1
+        else:
+          cache_x = x[:, :, -1:, :, :].clone()
+          x = self.time_conv(torch.cat([feat_cache[idx][:, :, -1:, :, :], x], 2))
+          feat_cache[idx] = cache_x
+          feat_idx[0] += 1
+    return x
 
-        if self.mode == "downsample3d":
-            if feat_cache is not None:
-                idx = feat_idx[0]
-                if feat_cache[idx] is None:
-                    feat_cache[idx] = x.clone()
-                    feat_idx[0] += 1
-                else:
-                    cache_x = x[:, :, -1:, :, :].clone()
-                    x = self.time_conv(torch.cat([feat_cache[idx][:, :, -1:, :, :], x], 2))
-                    feat_cache[idx] = cache_x
-                    feat_idx[0] += 1
-        return x
 
 class WanVaeTest(unittest.TestCase):
+
   def setUp(self):
     WanVaeTest.dummy_data = {}
-  
+
   def test_clear_cache(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
@@ -161,7 +163,7 @@ class WanVaeTest(unittest.TestCase):
 
   def test_wanrms_norm(self):
     """Test against the Pytorch implementation"""
-    
+
     # --- Test Case 1: images == True ---
     dim = 96
     input_shape = (1, 96, 1, 480, 720)
@@ -170,7 +172,7 @@ class WanVaeTest(unittest.TestCase):
     input = torch.ones(input_shape)
     torch_output = model(input)
     torch_output_np = torch_output.detach().numpy()
-    
+
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     wanrms_norm = WanRMS_norm(dim=dim, rngs=rngs)
@@ -184,7 +186,7 @@ class WanVaeTest(unittest.TestCase):
     input = torch.ones(input_shape)
     torch_output = model(input)
     torch_output_np = torch_output.detach().numpy()
-    
+
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     wanrms_norm = WanRMS_norm(dim=dim, rngs=rngs, images=False)
@@ -192,7 +194,7 @@ class WanVaeTest(unittest.TestCase):
     output = wanrms_norm(dummy_input)
     output_np = np.array(output)
     assert np.allclose(output_np, torch_output_np) == True
-  
+
   def test_zero_padded_conv(self):
 
     key = jax.random.key(0)
@@ -200,19 +202,14 @@ class WanVaeTest(unittest.TestCase):
 
     dim = 96
     kernel_size = 3
-    stride= (2, 2)
+    stride = (2, 2)
     resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, kernel_size, stride=stride))
     input_shape = (1, 96, 480, 720)
     input = torch.ones(input_shape)
     output_torch = resample(input)
     assert output_torch.shape == (1, 96, 240, 360)
 
-    model = ZeroPaddedConv2D(
-      dim=dim,
-      rngs=rngs,
-      kernel_size=(1, 3, 3),
-      stride=(1, 2, 2)
-    )
+    model = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(1, 3, 3), stride=(1, 2, 2))
     dummy_input = jnp.ones(input_shape)
     dummy_input = jnp.transpose(dummy_input, (0, 2, 3, 1))
     output = model(dummy_input)
@@ -220,7 +217,7 @@ class WanVaeTest(unittest.TestCase):
     assert output.shape == (1, 96, 240, 360)
 
   def test_wan_upsample(self):
-    batch_size=1
+    batch_size = 1
     in_depth, in_height, in_width = 10, 32, 32
     in_channels = 3
 
@@ -237,59 +234,49 @@ class WanVaeTest(unittest.TestCase):
     # --- Test Case 1: depth == 1 ---
     output = upsample(dummy_input)
     assert output.shape == (1, 1, 64, 64, 3)
-  
+
   def test_wan_resample(self):
     # TODO - needs to test all modes - upsample2d, upsample3d, downsample2d, downsample3d and identity
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
-    
+
     # --- Test Case 1: downsample2d ---
     batch = 1
     dim = 96
     t = 1
     h = 480
     w = 720
-    mode="downsample2d"
+    mode = "downsample2d"
     input_shape = (batch, dim, t, h, w)
     expected_output_shape = (1, dim, 1, 240, 360)
     # output dim should be (1, 96, 1, 480, 720)
     dummy_input = torch.ones(input_shape)
-    torch_wan_resample = TorchWanResample(
-      dim=dim,
-      mode=mode
-    )
+    torch_wan_resample = TorchWanResample(dim=dim, mode=mode)
     torch_output = torch_wan_resample(dummy_input)
-    assert torch_output.shape == (batch, dim, t, h // 2, w //2)
+    assert torch_output.shape == (batch, dim, t, h // 2, w // 2)
 
-    wan_resample = WanResample(
-       dim,
-       mode=mode,
-       rngs=rngs
-    )
+    wan_resample = WanResample(dim, mode=mode, rngs=rngs)
     # channels is always last here
     input_shape = (batch, t, h, w, dim)
     dummy_input = jnp.ones(input_shape)
     output = wan_resample(dummy_input)
-    assert output.shape == (batch, t, h//2, h//2, dim)
+    assert output.shape == (batch, t, h // 2, h // 2, dim)
     breakpoint()
-    
+
     # --- Test Case 1: downsample3d ---
     dim = 192
     input_shape = (1, dim, 1, 240, 360)
-    torch_wan_resample = WanResample(
-       dim=dim,
-       mode="downsample3d"
-    )
+    torch_wan_resample = WanResample(dim=dim, mode="downsample3d")
 
   def test_3d_conv(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
-    batch_size=1
+    batch_size = 1
     in_depth, in_height, in_width = 10, 32, 32
     in_channels = 3
     out_channels = 16
-    kernel_d, kernel_h, kernel_w = 3, 3, 3 # Kernel size (Depth, Height, Width)
-    padding_d, padding_h, padding_w = 1, 1, 1 # Base padding (Depth, Height, Width)
+    kernel_d, kernel_h, kernel_w = 3, 3, 3  # Kernel size (Depth, Height, Width)
+    padding_d, padding_h, padding_w = 1, 1, 1  # Base padding (Depth, Height, Width)
 
     # Create dummy input data
     dummy_input = jnp.ones((batch_size, in_depth, in_height, in_width, in_channels))
@@ -300,11 +287,11 @@ class WanVaeTest(unittest.TestCase):
 
     # Instantiate the module
     causal_conv_layer = WanCausalConv3d(
-      in_channels=in_channels,
-      out_channels=out_channels,
-      kernel_size=(kernel_d, kernel_h, kernel_w),
-      padding=(padding_d, padding_h, padding_w),
-      rngs=rngs # Pass rngs for initialization
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=(kernel_d, kernel_h, kernel_w),
+        padding=(padding_d, padding_h, padding_w),
+        rngs=rngs,  # Pass rngs for initialization
     )
 
     # --- Test Case 1: No Cache ---
@@ -316,7 +303,7 @@ class WanVaeTest(unittest.TestCase):
     assert output_with_cache.shape == (1, 10, 32, 32, 16)
 
     # --- Test Case 3: With Cache larger than padding ---
-    larger_cache_depth = 4 # Larger than needed padding (2*padding_d = 2)
+    larger_cache_depth = 4  # Larger than needed padding (2*padding_d = 2)
     dummy_larger_cache = jnp.zeros((batch_size, larger_cache_depth, in_height, in_width, in_channels))
     output_with_larger_cache = causal_conv_layer(dummy_input, cache_x=dummy_larger_cache)
     assert output_with_larger_cache.shape == (1, 10, 32, 32, 16)
@@ -335,9 +322,9 @@ class WanVaeTest(unittest.TestCase):
     expected_output_shape = (batch, t, height, width, dim)
 
     wan_residual_block = WanResidualBlock(
-      in_dim=in_dim,
-      out_dim=out_dim,
-      rngs=rngs,
+        in_dim=in_dim,
+        out_dim=out_dim,
+        rngs=rngs,
     )
     dummy_input = jnp.ones(input_shape)
     dummy_output = wan_residual_block(dummy_input)
@@ -349,9 +336,9 @@ class WanVaeTest(unittest.TestCase):
     expected_output_shape = (batch, t, height, width, out_dim)
 
     wan_residual_block = WanResidualBlock(
-      in_dim=in_dim,
-      out_dim=out_dim,
-      rngs=rngs,
+        in_dim=in_dim,
+        out_dim=out_dim,
+        rngs=rngs,
     )
     dummy_input = jnp.ones(input_shape)
     dummy_output = wan_residual_block(dummy_input)
@@ -365,11 +352,8 @@ class WanVaeTest(unittest.TestCase):
     t = 1
     height = 60
     width = 90
-    input_shape=(batch, t, height, width, dim)
-    wan_attention = WanAttentionBlock(
-      dim=dim,
-      rngs=rngs
-    )
+    input_shape = (batch, t, height, width, dim)
+    wan_attention = WanAttentionBlock(dim=dim, rngs=rngs)
     dummy_input = jnp.ones(input_shape)
     output = wan_attention(dummy_input)
     assert output.shape == input_shape
@@ -383,9 +367,7 @@ class WanVaeTest(unittest.TestCase):
     height = 60
     width = 90
     input_shape = (batch, t, height, width, dim)
-    wan_midblock = WanMidBlock(
-      dim=dim, rngs=rngs
-    )
+    wan_midblock = WanMidBlock(dim=dim, rngs=rngs)
     dummy_input = jnp.ones(input_shape)
     output = wan_midblock(dummy_input)
     assert output.shape == input_shape
@@ -400,13 +382,13 @@ class WanVaeTest(unittest.TestCase):
     attn_scales = []
     temperal_downsample = [False, True, True]
     wan_vae = AutoencoderKLWan(
-      rngs=rngs,
-      base_dim=dim,
-      z_dim=z_dim,
-      dim_mult=dim_mult,
-      num_res_blocks=num_res_blocks,
-      attn_scales=attn_scales,
-      temperal_downsample=temperal_downsample,
+        rngs=rngs,
+        base_dim=dim,
+        z_dim=z_dim,
+        dim_mult=dim_mult,
+        num_res_blocks=num_res_blocks,
+        attn_scales=attn_scales,
+        temperal_downsample=temperal_downsample,
     )
 
     batch = 1
@@ -433,13 +415,13 @@ class WanVaeTest(unittest.TestCase):
     attn_scales = []
     temperal_downsample = [False, True, True]
     wan_vae = AutoencoderKLWan(
-      rngs=rngs,
-      base_dim=dim,
-      z_dim=z_dim,
-      dim_mult=dim_mult,
-      num_res_blocks=num_res_blocks,
-      attn_scales=attn_scales,
-      temperal_downsample=temperal_downsample,
+        rngs=rngs,
+        base_dim=dim,
+        z_dim=z_dim,
+        dim_mult=dim_mult,
+        num_res_blocks=num_res_blocks,
+        attn_scales=attn_scales,
+        temperal_downsample=temperal_downsample,
     )
     batch = 1
     channels = 3
@@ -450,6 +432,7 @@ class WanVaeTest(unittest.TestCase):
     input = jnp.ones(input_shape)
     output = wan_vae.encode(input)
     assert output.latent_dist.sample(key).shape == (1, 13, 60, 90, 16)
+
 
 if __name__ == "__main__":
   absltest.main()

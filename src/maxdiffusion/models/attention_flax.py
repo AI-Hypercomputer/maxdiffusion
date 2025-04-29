@@ -405,6 +405,7 @@ def jax_memory_efficient_attention(
 
   return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
 
+
 def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
   xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)
   xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)
@@ -413,6 +414,7 @@ def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
   xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
 
   return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
+
 
 class FlaxWanAttention(nn.Module):
   query_dim: int
@@ -433,7 +435,7 @@ class FlaxWanAttention(nn.Module):
   out_axis_names: AxisNames = (BATCH, LENGTH, EMBED)
   precision: jax.lax.Precision = None
   qkv_bias: bool = False
-  
+
   def setup(self):
     if self.attention_kernel in {"flash", "cudnn_flash_te"} and self.mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
@@ -509,13 +511,13 @@ class FlaxWanAttention(nn.Module):
         precision=self.precision,
     )
     self.dropout_layer = nn.Dropout(rate=self.dropout)
-  
+
   def call(
-    self,
-    hidden_states: Array,
-    encoder_hidden_states: Optional[Array],
-    rotary_emb: Optional[Array],
-    deterministic: bool = True
+      self,
+      hidden_states: Array,
+      encoder_hidden_states: Optional[Array],
+      rotary_emb: Optional[Array],
+      deterministic: bool = True,
   ):
     encoder_hidden_states = hidden_states if encoder_hidden_states is None else encoder_hidden_states
 
@@ -538,6 +540,7 @@ class FlaxWanAttention(nn.Module):
     hidden_states = self.proj_attn(hidden_states)
     hidden_states = nn.with_logical_constraint(hidden_states, (BATCH, LENGTH, HEAD))
     return self.dropout_layer(hidden_states, deterministic=deterministic)
+
 
 class FlaxFluxAttention(nn.Module):
   query_dim: int

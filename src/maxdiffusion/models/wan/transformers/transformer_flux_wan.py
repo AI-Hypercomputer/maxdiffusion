@@ -22,15 +22,11 @@ from chex import Array
 import flax.linen as nn
 
 from ...attention_flax import FlaxFeedForward, Fla
-from ...embeddings_flax import (
-  get_1d_rotary_pos_embed,
-  FlaxTimesteps,
-  FlaxTimestepEmbedding,
-  PixArtAlphaTextProjection
-)
+from ...embeddings_flax import (get_1d_rotary_pos_embed, FlaxTimesteps, FlaxTimestepEmbedding, PixArtAlphaTextProjection)
 
 from ....configuration_utils import ConfigMixin, flax_register_to_config
 from ...modeling_flax_utils import FlaxModelMixin
+
 
 class WanRotaryPosEmbed(nn.Module):
   attention_head_dim: int
@@ -54,9 +50,9 @@ class WanRotaryPosEmbed(nn.Module):
     self.freqs = jnp.concatenate(freqs, dim=1)
 
     sizes = [
-      self.attention_head_dim // 2 - 2 * (self.attention_head_dim // 6),
-      self.attention_head_dim // 6,
-      self.attention_head_dim // 6
+        self.attention_head_dim // 2 - 2 * (self.attention_head_dim // 6),
+        self.attention_head_dim // 6,
+        self.attention_head_dim // 6,
     ]
     cumulative_sizes = jnp.cumsum(jnp.array(sizes))
     split_indices = cumulative_sizes[:-1]
@@ -76,6 +72,7 @@ class WanRotaryPosEmbed(nn.Module):
 
     return freqs_final
 
+
 class WanImageEmbeddings(nn.Module):
   out_features: int
   dtype: jnp.dtype = jnp.float32
@@ -85,18 +82,15 @@ class WanImageEmbeddings(nn.Module):
   @nn.compact
   def __call__(self, encoder_hidden_states_image: Array) -> Array:
     hidden_states = nn.LayerNorm(
-      dtype=jnp.float32,
-      param_dtype=jnp.float32,
+        dtype=jnp.float32,
+        param_dtype=jnp.float32,
     )(encoder_hidden_states_image)
     hidden_states = FlaxFeedForward(
-      self.out_features,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision
+        self.out_features, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
     )(hidden_states)
     hidden_states = nn.LayerNorm(
-      dtype=jnp.float32,
-      param_dtype=jnp.float32,
+        dtype=jnp.float32,
+        param_dtype=jnp.float32,
     )(hidden_states)
     return hidden_states
 
@@ -113,42 +107,36 @@ class WanTimeTextImageEmbeddings(nn.Module):
 
   @nn.compact
   def __call__(self, timestep: Array, encoder_hidden_states: Array, encoder_hidden_states_image: Array) -> Array:
-    
+
     timestep = FlaxTimesteps(
-      dim=self.time_freq_dim,
-      flip_sin_to_cos=True,
-      freq_shift=0,
+        dim=self.time_freq_dim,
+        flip_sin_to_cos=True,
+        freq_shift=0,
     )(timestep)
-    temb = FlaxTimestepEmbedding(
-      time_embed_dim=self.dim,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype
-    )(timestep)
+    temb = FlaxTimestepEmbedding(time_embed_dim=self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype)(timestep)
     timestep_proj = nn.Dense(
-      self.time_proj_dim,
-      kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), (None, "mlp")),
-      bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
-      dtype=self.dtype,
-      param_dtype=self.weights_dtype,
-      precision=self.precision,
+        self.time_proj_dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), (None, "mlp")),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
     )(nn.silu(temb))
     encoder_hidden_states = PixArtAlphaTextProjection(
-      hidden_size=self.dim,
-      act_fn="gelu_tanh",
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision
+        hidden_size=self.dim,
+        act_fn="gelu_tanh",
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision,
     )(encoder_hidden_states)
 
     if encoder_hidden_states_image is not None:
       encoder_hidden_states_image = WanImageEmbeddings(
-        out_features=self.dim,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-        precision=self.precision
+          out_features=self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
       )(encoder_hidden_states_image)
-    
+
     return temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image
+
 
 class WanTransformerBlock(nn.Module):
   dim: int
@@ -160,37 +148,35 @@ class WanTransformerBlock(nn.Module):
   added_kv_proj_dim: Optional[int] = None
 
   @nn.compact
-  def __call__(
-    self,
-    hidden_states: Array,
-    encoder_hidden_states: Array,
-    temb: Array,
-    rotary_emb: Array
-    ):
+  def __call__(self, hidden_states: Array, encoder_hidden_states: Array, temb: Array, rotary_emb: Array):
 
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
-      (scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
+        (scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
     )
 
     # 1. Self-attention
-    norm_hidden_states = (nn.LayerNorm(
-      epsilon=self.eps,
-      use_bias=False,
-      use_scale=False,
-      dtype=jnp.float32,
-      param_dtype=jnp.float32,
-    )(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
+    norm_hidden_states = (
+        nn.LayerNorm(
+            epsilon=self.eps,
+            use_bias=False,
+            use_scale=False,
+            dtype=jnp.float32,
+            param_dtype=jnp.float32,
+        )(hidden_states.astype(jnp.float32))
+        * (1 + scale_msa)
+        + shift_msa
+    ).astype(hidden_states.dtype)
     attn_output = FlaxWanAttention(
-      query_dim=self.dim,
-      heads=self.num_heads,
-      dim_head=self.dim // self.num_heads,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      attention_kernel=self.attention_kernel,
-      mesh=self.mesh,
-      flash_block_sizes=self.flash_block_sizes,
-
+        query_dim=self.dim,
+        heads=self.num_heads,
+        dim_head=self.dim // self.num_heads,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        attention_kernel=self.attention_kernel,
+        mesh=self.mesh,
+        flash_block_sizes=self.flash_block_sizes,
     )
+
 
 class WanTransformer3dModel(nn.Module, FlaxModelMixin, ConfigMixin):
   r"""
@@ -254,15 +240,15 @@ class WanTransformer3dModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
   @nn.compact
   def __call__(
-    self,
-    hidden_states: Array,
-    timestep: Array,
-    encoder_hidden_states: Array,
-    encoder_hidden_states_image: Optional[Array] = None,
-    return_dict: bool = True,
-    attention_kwargs: Optional[Dict[str, Any]] = None
+      self,
+      hidden_states: Array,
+      timestep: Array,
+      encoder_hidden_states: Array,
+      encoder_hidden_states_image: Optional[Array] = None,
+      return_dict: bool = True,
+      attention_kwargs: Optional[Dict[str, Any]] = None,
   ) -> Union[Array, Dict[str, Array]]:
-    
+
     inner_dim = self.num_attention_heads * self.attention_head_dim
     batch_size, num_channels, num_frames, height, width = hidden_states.shape
 
@@ -273,32 +259,29 @@ class WanTransformer3dModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     # 1. Patch & position embedding
     rotary_emb = WanRotaryPosEmbed(
-      attention_head_dim=self.attention_head_dim,
-      patch_size=self.patch_size,
-      max_seq_len=self.rope_max_seq_len
+        attention_head_dim=self.attention_head_dim, patch_size=self.patch_size, max_seq_len=self.rope_max_seq_len
     )(hidden_states)
     hidden_states = nn.Conv(
-      features=inner_dim,
-      kernel_size=self.patch_size,
-      stride=self.patch_size,
-      dtype=self.dtype,
-      param_dtype=self.weights_dtype,
-      precision=self.precision,
+        features=inner_dim,
+        kernel_size=self.patch_size,
+        stride=self.patch_size,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
     )(hidden_states)
-    flattened_shape = (batch_size, num_channels, -1) # TODO is his num_channels or frames?
+    flattened_shape = (batch_size, num_channels, -1)  # TODO is his num_channels or frames?
     flattened = hidden_states.reshape(flattened_shape)
     transposed = jnp.transpose(flattened, (0, 2, 1))
 
     # 2. Condition embeddings
     # image_embedding_dim=1280 for I2V model
     temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = WanTimeTextImageEmbeddings(
-      dim=inner_dim,
-      time_freq_dim=self.freq_dim,
-      time_proj_dim=inner_dim * 6,
-      text_embed_dim=self.text_dim,
-      image_embed_dim=self.image_dim,
-      dtype=self.dtype,
-      weights_dtype=self.weights_dtype,
-      precision=self.precision
+        dim=inner_dim,
+        time_freq_dim=self.freq_dim,
+        time_proj_dim=inner_dim * 6,
+        text_embed_dim=self.text_dim,
+        image_embed_dim=self.image_dim,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision,
     )(timestep, encoder_hidden_states, encoder_hidden_states_image)
-

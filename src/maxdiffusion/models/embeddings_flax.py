@@ -56,6 +56,7 @@ def get_sinusoidal_embeddings(
   signal = jnp.reshape(signal, [jnp.shape(timesteps)[0], embedding_dim])
   return signal
 
+
 class FlaxTimestepEmbedding(nn.Module):
   r"""
   Time step Embedding Module. Learns embeddings for input time steps.

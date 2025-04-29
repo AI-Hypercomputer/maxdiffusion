@@ -35,51 +35,52 @@ PipelineImageInput = Union[
     List[torch.FloatTensor],
 ]
 
+
 def is_valid_image(image) -> bool:
-    r"""
-    Checks if the input is a valid image.
+  r"""
+  Checks if the input is a valid image.
 
-    A valid image can be:
-    - A `PIL.Image.Image`.
-    - A 2D or 3D `np.ndarray` or `torch.Tensor` (grayscale or color image).
+  A valid image can be:
+  - A `PIL.Image.Image`.
+  - A 2D or 3D `np.ndarray` or `torch.Tensor` (grayscale or color image).
 
-    Args:
-        image (`Union[PIL.Image.Image, np.ndarray, torch.Tensor]`):
-            The image to validate. It can be a PIL image, a NumPy array, or a torch tensor.
+  Args:
+      image (`Union[PIL.Image.Image, np.ndarray, torch.Tensor]`):
+          The image to validate. It can be a PIL image, a NumPy array, or a torch tensor.
 
-    Returns:
-        `bool`:
-            `True` if the input is a valid image, `False` otherwise.
-    """
-    return isinstance(image, PIL.Image.Image) or isinstance(image, (np.ndarray, torch.Tensor)) and image.ndim in (2, 3)
+  Returns:
+      `bool`:
+          `True` if the input is a valid image, `False` otherwise.
+  """
+  return isinstance(image, PIL.Image.Image) or isinstance(image, (np.ndarray, torch.Tensor)) and image.ndim in (2, 3)
 
 
 def is_valid_image_imagelist(images):
-    r"""
-    Checks if the input is a valid image or list of images.
+  r"""
+  Checks if the input is a valid image or list of images.
 
-    The input can be one of the following formats:
-    - A 4D tensor or numpy array (batch of images).
-    - A valid single image: `PIL.Image.Image`, 2D `np.ndarray` or `torch.Tensor` (grayscale image), 3D `np.ndarray` or
-      `torch.Tensor`.
-    - A list of valid images.
+  The input can be one of the following formats:
+  - A 4D tensor or numpy array (batch of images).
+  - A valid single image: `PIL.Image.Image`, 2D `np.ndarray` or `torch.Tensor` (grayscale image), 3D `np.ndarray` or
+    `torch.Tensor`.
+  - A list of valid images.
 
-    Args:
-        images (`Union[np.ndarray, torch.Tensor, PIL.Image.Image, List]`):
-            The image(s) to check. Can be a batch of images (4D tensor/array), a single image, or a list of valid
-            images.
+  Args:
+      images (`Union[np.ndarray, torch.Tensor, PIL.Image.Image, List]`):
+          The image(s) to check. Can be a batch of images (4D tensor/array), a single image, or a list of valid
+          images.
 
-    Returns:
-        `bool`:
-            `True` if the input is valid, `False` otherwise.
-    """
-    if isinstance(images, (np.ndarray, torch.Tensor)) and images.ndim == 4:
-        return True
-    elif is_valid_image(images):
-        return True
-    elif isinstance(images, list):
-        return all(is_valid_image(image) for image in images)
-    return False
+  Returns:
+      `bool`:
+          `True` if the input is valid, `False` otherwise.
+  """
+  if isinstance(images, (np.ndarray, torch.Tensor)) and images.ndim == 4:
+    return True
+  elif is_valid_image(images):
+    return True
+  elif isinstance(images, list):
+    return all(is_valid_image(image) for image in images)
+  return False
 
 
 class VaeImageProcessor(ConfigMixin):
