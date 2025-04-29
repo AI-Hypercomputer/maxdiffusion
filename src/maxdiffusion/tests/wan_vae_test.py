@@ -221,19 +221,13 @@ class WanVaeTest(unittest.TestCase):
     in_depth, in_height, in_width = 10, 32, 32
     in_channels = 3
 
-    dummy_input = jnp.ones((batch_size, in_depth, in_height, in_width, in_channels))
+    dummy_input = jnp.ones((batch_size * in_depth, in_height, in_width, in_channels))
 
     upsample = WanUpsample(scale_factor=(2.0, 2.0))
 
     # --- Test Case 1: depth > 1 ---
     output = upsample(dummy_input)
-    assert output.shape == (1, 10, 64, 64, 3)
-
-    in_depth = 1
-    dummy_input = jnp.ones((batch_size, in_depth, in_height, in_width, in_channels))
-    # --- Test Case 1: depth == 1 ---
-    output = upsample(dummy_input)
-    assert output.shape == (1, 1, 64, 64, 3)
+    assert output.shape == (10, 64, 64, 3)
 
   def test_wan_resample(self):
     # TODO - needs to test all modes - upsample2d, upsample3d, downsample2d, downsample3d and identity
@@ -260,13 +254,7 @@ class WanVaeTest(unittest.TestCase):
     input_shape = (batch, t, h, w, dim)
     dummy_input = jnp.ones(input_shape)
     output = wan_resample(dummy_input)
-    assert output.shape == (batch, t, h // 2, h // 2, dim)
-    breakpoint()
-
-    # --- Test Case 1: downsample3d ---
-    dim = 192
-    input_shape = (1, dim, 1, 240, 360)
-    torch_wan_resample = WanResample(dim=dim, mode="downsample3d")
+    assert output.shape == (batch, t, h // 2, w // 2, dim)
 
   def test_3d_conv(self):
     key = jax.random.key(0)
