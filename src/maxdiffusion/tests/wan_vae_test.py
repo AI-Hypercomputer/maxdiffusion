@@ -390,6 +390,39 @@ class WanVaeTest(unittest.TestCase):
     output = wan_midblock(dummy_input)
     assert output.shape == input_shape
 
+  def test_wan_decode(self):
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    dim = 96
+    z_dim = 16
+    dim_mult = [1, 2, 4, 4]
+    num_res_blocks = 2
+    attn_scales = []
+    temperal_downsample = [False, True, True]
+    wan_vae = AutoencoderKLWan(
+      rngs=rngs,
+      base_dim=dim,
+      z_dim=z_dim,
+      dim_mult=dim_mult,
+      num_res_blocks=num_res_blocks,
+      attn_scales=attn_scales,
+      temperal_downsample=temperal_downsample,
+    )
+
+    batch = 1
+    t = 13
+    channels = 16
+    height = 60
+    width = 90
+    input_shape = (batch, t, height, width, channels)
+    input = jnp.ones(input_shape)
+
+    latents_mean = jnp.array(wan_vae.latents_mean).reshape(1, 1, 1, 1, wan_vae.z_dim)
+    latents_std = 1.0 / jnp.array(wan_vae.latents_std).reshape(1, 1, 1, 1, wan_vae.z_dim)
+    input = input / latents_std + latents_mean
+    dummy_output = wan_vae.decode(input)
+    assert dummy_output.sample.shape == (batch, 49, 480, 720, 3)
+
   def test_wan_encode(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)

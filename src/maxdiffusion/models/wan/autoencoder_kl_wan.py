@@ -22,7 +22,11 @@ from flax import nnx
 from ...configuration_utils import ConfigMixin, flax_register_to_config
 from ..modeling_flax_utils import FlaxModelMixin
 from ... import common_types
-from ..vae_flax import FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution
+from ..vae_flax import (
+  FlaxAutoencoderKLOutput,
+  FlaxDiagonalGaussianDistribution,
+  FlaxDecoderOutput
+)
 
 BlockSizes = common_types.BlockSizes
 
@@ -82,7 +86,7 @@ class WanCausalConv3d(nnx.Module):
       (0, 0) # Channel dimension - no padding
     )
 
-    # Store the amount of padding needed *before* the depth dimension for caching logoic
+    # Store the amount of padding needed *before* the depth dimension for caching logic
     self._depth_padding_before = self._causal_padding[1][0] # 2 * padding_tuple[0]
 
     self.conv = nnx.Conv(
@@ -103,7 +107,6 @@ class WanCausalConv3d(nnx.Module):
       # Ensure cache has same spatial/channel dims, potentially different depth
       assert cache_x.shape[0] == x.shape[0] and \
              cache_x.shape[2:] == x.shape[2:], "Cache spatial/channel dims mismatch"
-
       cache_len = cache_x.shape[1]
       x = jnp.concatenate([cache_x, x], axis=1) # Concat along depth (D)
 
@@ -166,24 +169,13 @@ class WanUpsample(nnx.Module):
   def __call__(self, x: jax.Array) -> jax.Array:
     input_dtype = x.dtype
     in_shape = x.shape
-    is_3d = len(in_shape) == 5
-    n, d, h, w, c = in_shape if is_3d else(in_shape[0], 1, in_shape[1], in_shape[2], in_shape[3])
-
+    assert len(in_shape) == 4, "This module only takes tensors with shape of 4."
+    n, h, w, c = in_shape
     target_h = int(h * self.scale_factor[0])
     target_w = int(w * self.scale_factor[1])
-
-    # jax.image.resize expects (..., H, W, C)
-    if is_3d:
-      x_reshaped = x.reshape(n * d, h, w, c)
-      out_reshaped = jax.image.resize(x_reshaped.astype(jnp.float32),
-                                      (n * d, target_h, target_w, c),
-                                      method=self.method)
-      out = out_reshaped.reshape(n, d, target_h, target_w, c)
-    else: # Asumming (N, H, W, C)
-      out = jax.image.resize(x.astype(jnp.float32),
-                             (n, target_h, target_w, c),
-                             method=self.method)
-    
+    out = jax.image.resize(x.astype(jnp.float32),
+                            (n, target_h, target_w, c),
+                            method=self.method)
     return out.astype(input_dtype)
 
 class Identity(nnx.Module):
@@ -256,7 +248,7 @@ class WanResample(nnx.Module):
       )
     elif mode == "upsample3d":
       self.resample = nnx.Sequential(
-        WanUpsample(scale_factor=(2.0, 2.0), method="nearest"),
+        WanUpsample(scale_factor=(2.0, 2.0, 2.0), method="nearest"),
         nnx.Conv(
           dim,
           dim // 2,
@@ -305,6 +297,29 @@ class WanResample(nnx.Module):
     n, d, h, w, c = x.shape
     assert c == self.dim
 
+    if self.mode == "upsample3d":
+      if feat_cache is not None:
+        idx = feat_idx[0]
+        if feat_cache[idx] is None:
+          feat_cache[idx] = "Rep"
+          feat_idx[0] += 1
+        else:
+          cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
+          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and feat_cache[idx] != "Rep":
+            # cache last frame of last two chunk
+            cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and feat_cache[idx] != "Rep":
+            cache_x = jnp.concatenate([jnp.zeros(cache_x.shape), cache_x], dim=1)
+          if feat_cache[idx] == "Rep":
+            x = self.time_conv(x)
+          else:
+            x = self.time_conv(x, feat_cache[idx])
+          feat_cache[idx] = cache_x
+          feat_idx[0] += 1
+          x = x.reshape(n, 2, d, h, w, c)
+          x = jnp.stack([x[:, 0, :, :, :, :], x[:, 1, :, :, :, :]], axis=2)
+          x = x.reshape(n, d*2, h, w, c)
+    d = x.shape[1]
     x = x.reshape(n*d,h,w,c)
     x = self.resample(x)
     h_new, w_new, c_new = x.shape[1:]
@@ -371,7 +386,7 @@ class WanResidualBlock(nnx.Module):
     if feat_cache is not None:
       idx = feat_idx[0]
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] <2 and feat_cache[idx] is not None:
+      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
         cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
 
       x = self.conv1(x, feat_cache[idx])
@@ -387,7 +402,7 @@ class WanResidualBlock(nnx.Module):
     if feat_cache is not None:
       idx = feat_idx[0]
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] <2 and feat_cache[idx] is not None:
+      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
         cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
       x = self.conv2(x, feat_cache[idx])
       feat_cache[idx] = cache_x
@@ -458,7 +473,7 @@ class WanMidBlock(nnx.Module):
     attentions = []
     for _ in range(num_layers):
       attentions.append(WanAttentionBlock(dim=dim, rngs=rngs))
-      resnets.append(WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs,dropout=dropout, non_linearity=non_linearity))
+      resnets.append(WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs, dropout=dropout, non_linearity=non_linearity))
     self.attentions = attentions
     self.resnets = resnets
   
@@ -467,7 +482,7 @@ class WanMidBlock(nnx.Module):
     for attn, resnet in zip(self.attentions, self.resnets[1:]):
       if attn is not None:
         x = attn(x)
-      x = resnet(x)
+      x = resnet(x, feat_cache, feat_idx)
     return x
 
 class WanUpBlock(nnx.Module):
@@ -482,19 +497,31 @@ class WanUpBlock(nnx.Module):
     non_linearity: str = "silu"
   ):
     # Create layers list
-    self.resnets = []
+    resnets = []
     # Add residual blocks and attention if needed
     current_dim = in_dim
     for _ in range(num_res_blocks + 1):
-      self.resnets.append(WanResidualBlock(in_dim=current_dim, out_dim=out_dim, dropout=dropout, non_linearity=non_linearity, rngs=rngs))
+      resnets.append(WanResidualBlock(in_dim=current_dim, out_dim=out_dim, dropout=dropout, non_linearity=non_linearity, rngs=rngs))
       current_dim = out_dim
+    self.resnets = resnets
     
     # Add upsampling layer if needed.
     self.upsamplers = None
     if upsample_mode is not None:
-      self.upsamplers = WanResample(dim=out_dim, mode=upsample_mode, rngs=rngs)
+      self.upsamplers = [WanResample(dim=out_dim, mode=upsample_mode, rngs=rngs)]
   
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
+    for resnet in self.resnets:
+      if feat_cache is not None:
+        x = resnet(x, feat_cache, feat_idx)
+      else:
+        x = resnet(x)
+    
+    if self.upsamplers is not None:
+      if feat_cache is not None:
+        x = self.upsamplers[0](x, feat_cache, feat_idx)
+      else:
+        x = self.upsamplers[0](x)
     return x
 
 class WanEncoder3d(nnx.Module):
@@ -655,7 +682,13 @@ class WanDecoder3d(nnx.Module):
     )
 
     # middle_blocks
-    self.mid_block = WanMidBlock(dim=dims[0], rngs=rngs, dropout=dropout, non_linearity=non_linearity, num_layers=1)
+    self.mid_block = WanMidBlock(
+      dim=dims[0],
+      rngs=rngs,
+      dropout=dropout,
+      non_linearity=non_linearity,
+      num_layers=1
+    )
 
     # upsample blocks
     self.up_blocks = []
@@ -668,7 +701,6 @@ class WanDecoder3d(nnx.Module):
       upsample_mode = None
       if i != len(dim_mult) - 1:
         upsample_mode = "upsample3d" if temperal_upsample[i] else "upsample2d"
-      
       # Crete and add the upsampling block
       up_block = WanUpBlock(
         in_dim=in_dim,
@@ -686,8 +718,7 @@ class WanDecoder3d(nnx.Module):
         scale *=2.0
     
     # output blocks
-    self.norm_out = nnx.RMSNorm(num_features=out_dim, )
-    self.norm_out = WanRMS_norm(dim=out_dim, images=False, rngs=rngs)
+    self.norm_out = WanRMS_norm(dim=out_dim, images=False, rngs=rngs, channel_first=False)
     self.conv_out = WanCausalConv3d(
       rngs=rngs,
       in_channels=out_dim,
@@ -697,7 +728,39 @@ class WanDecoder3d(nnx.Module):
     )
   
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
-    x = self.conv_in(x)
+    if feat_cache is not None:
+      idx = feat_idx[0]
+      cache_x = jnp.copy(x[:, -CACHE_T: , :, :, :])
+      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
+        # cache last frame of the last two chunk
+        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+      x = self.conv_in(x, feat_cache[idx])
+      feat_cache[idx] = cache_x
+      feat_idx[0] += 1
+    else:
+      x = self.conv_in(x)
+    
+    ## middle
+    x = self.mid_block(x, feat_cache, feat_idx)
+    
+    ## upsamples
+    for up_block in self.up_blocks:
+      x = up_block(x, feat_cache, feat_idx)
+
+    ## head
+    x = self.norm_out(x)
+    x = self.nonlinearity(x)
+    if feat_cache is not None:
+      idx = feat_idx[0]
+      cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
+      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
+        # cache last frame of the last two chunk
+        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+      x = self.conv_out(x, feat_cache[idx])
+      feat_cache[idx] = cache_x
+      feat_idx[0] += 1
+    else:
+      x = self.conv_out(x)
     return x
 
 class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
@@ -723,6 +786,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.z_dim = z_dim
     self.temperal_downsample = temperal_downsample
     self.temporal_upsample = temperal_downsample[::-1]
+    self.latents_mean = latents_mean
+    self.latents_std = latents_std
 
     self.encoder = WanEncoder3d(
       rngs=rngs,
@@ -747,16 +812,16 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       kernel_size=1,
     )
 
-    # self.decoder = WanDecoder3d(
-    #   rngs=rngs,
-    #   dim=base_dim,
-    #   z_dim=z_dim,
-    #   dim_mult=dim_mult,
-    #   num_res_blocks=num_res_blocks,
-    #   attn_scales=attn_scales,
-    #   temperal_upsample=self.temporal_upsample,
-    #   dropout=dropout
-    # )
+    self.decoder = WanDecoder3d(
+      rngs=rngs,
+      dim=base_dim,
+      z_dim=z_dim,
+      dim_mult=dim_mult,
+      num_res_blocks=num_res_blocks,
+      attn_scales=attn_scales,
+      temperal_upsample=self.temporal_upsample,
+      dropout=dropout
+    )
     self.clear_cache()
   
   def clear_cache(self):
@@ -769,9 +834,9 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
           count +=1
       return count
 
-    # self._conv_num = _count_conv3d(self.decoder)
-    # self._conv_idx = [0]
-    # self._feat_map = [None] * self._conv_num
+    self._conv_num = _count_conv3d(self.decoder)
+    self._conv_idx = [0]
+    self._feat_map = [None] * self._conv_num
     # cache encode
     self._enc_conv_num = _count_conv3d(self.encoder)
     self._enc_conv_idx = [0]
@@ -817,4 +882,35 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     if not return_dict:
       return (posterior, )
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
+  
+  def _decode(self, z: jax.Array, return_dict: bool = True) -> Union[FlaxDecoderOutput, jax.Array]:
+    self.clear_cache()
+    iter_ = z.shape[1]
+    x = self.post_quant_conv(z)
+    for i in range(iter_):
+      self._conv_idx = [0]
+      if i == 0:
+        out = self.decoder(x[:,i : i + 1, :, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
+      else:
+        out_ = self.decoder(x[:,i : i + 1, :, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
+
+        out = jnp.concatenate([out, out_], axis=1)
+    
+    out = jnp.clip(out, a_min=-1.0, a_max=1.0)
+    self.clear_cache()
+    if not return_dict:
+      return (out, )
+
+    return FlaxDecoderOutput(sample=out)
+
+  def decode(self, z: jax.Array, return_dict: bool = True) -> Union[FlaxDecoderOutput, jax.Array]:
+    if z.shape[-1] != self.z_dim:
+      # reshape channel last for JAX
+      x = jnp.transpose(x, (0, 2, 3, 4, 1))
+      assert x.shape[-1] == self.z_dim, f"Expected input shape (N, D, H, W, {self.z_dim}, got {x.shape}"
+    decoded = self._decode(z).sample
+    if not return_dict:
+      return (decoded,)
+    return FlaxDecoderOutput(sample=decoded)
+
     
