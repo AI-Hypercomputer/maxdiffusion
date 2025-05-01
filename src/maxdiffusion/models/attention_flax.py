@@ -52,7 +52,7 @@ def _maybe_aqt_einsum(quant: Quant):
 class AttentionOp(nn.Module):
   mesh: Mesh
   attention_kernel: str
-  scale: int
+  scale: float
   heads: int
   dim_head: int
   use_memory_efficient_attention: bool = False
@@ -60,9 +60,9 @@ class AttentionOp(nn.Module):
   float32_qk_product: bool = True
   flash_axis_names: AxisNames = (BATCH, HEAD, LENGTH, D_KV)
   flash_min_seq_length: int = 4096
-  flash_block_sizes: BlockSizes = None
+  flash_block_sizes: BlockSizes | None = None
   dtype: DType = jnp.float32
-  quant: Quant = None
+  quant: Quant | None = None
 
   def setup(self):
     if self.attention_kernel == "cudnn_flash_te":
@@ -79,7 +79,7 @@ class AttentionOp(nn.Module):
           dtype=self.dtype,
           # float32_logits=self.float32_logits,
           qkv_layout="BSHD_BSHD_BSHD",  # 'BS3HD', 'BSHD_BS2HD' or 'BSHD_BSHD_BSHD'
-          scale_factor=self.scale,
+          scale_factor=float(self.scale),
           transpose_batch_sequence=False,
       )
 
@@ -415,15 +415,15 @@ class FlaxFluxAttention(nn.Module):
   split_head_dim: bool = False
   attention_kernel: str = "dot_product"
   flash_min_seq_length: int = 4096
-  flash_block_sizes: BlockSizes = None
-  mesh: jax.sharding.Mesh = None
+  flash_block_sizes: BlockSizes | None = None
+  mesh: jax.sharding.Mesh | None = None
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
   key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
   value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
   out_axis_names: AxisNames = (BATCH, LENGTH, EMBED)
-  precision: jax.lax.Precision = None
+  precision: jax.lax.Precision | None = None
   qkv_bias: bool = False
 
   def setup(self):
@@ -619,16 +619,16 @@ class FlaxAttention(nn.Module):
   split_head_dim: bool = False
   attention_kernel: str = "dot_product"
   flash_min_seq_length: int = 4096
-  flash_block_sizes: BlockSizes = None
-  mesh: jax.sharding.Mesh = None
+  flash_block_sizes: BlockSizes | None = None
+  mesh: jax.sharding.Mesh | None = None
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
   key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
   value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
   out_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
-  precision: jax.lax.Precision = None
-  quant: Quant = None
+  precision: jax.lax.Precision | None = None
+  quant: Quant | None = None
 
   def setup(self):
 
@@ -762,10 +762,10 @@ class FlaxBasicTransformerBlock(nn.Module):
   split_head_dim: bool = False
   attention_kernel: str = "dot_product"
   flash_min_seq_length: int = 4096
-  flash_block_sizes: BlockSizes = None
-  mesh: jax.sharding.Mesh = None
-  precision: jax.lax.Precision = None
-  quant: Quant = None
+  flash_block_sizes: BlockSizes | None = None
+  mesh: jax.sharding.Mesh | None = None
+  precision: jax.lax.Precision | None = None
+  quant: Quant | None = None
 
   def setup(self):
     # self attention (or cross_attention if only_cross_attention is True)
@@ -890,12 +890,12 @@ class FlaxTransformer2DModel(nn.Module):
   split_head_dim: bool = False
   attention_kernel: str = "dot_product"
   flash_min_seq_length: int = 4096
-  flash_block_sizes: BlockSizes = None
-  mesh: jax.sharding.Mesh = None
+  flash_block_sizes: BlockSizes | None = None
+  mesh: jax.sharding.Mesh | None = None
   norm_num_groups: int = 32
-  precision: jax.lax.Precision = None
+  precision: jax.lax.Precision | None = None
   hidden_state_axis_names: AxisNames = (BATCH, LENGTH, D_KV)
-  quant: Quant = (None,)
+  quant: Quant | tuple[None] = (None,)
 
   def setup(self):
     self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
@@ -1019,7 +1019,7 @@ class FlaxFeedForward(nn.Module):
   dropout: float = 0.0
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
-  precision: jax.lax.Precision = None
+  precision: jax.lax.Precision | None = None
 
   def setup(self):
     # The second linear layer needs to be called
@@ -1051,7 +1051,7 @@ class FlaxGEGLU(nn.Module):
   dropout: float = 0.0
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
-  precision: jax.lax.Precision = None
+  precision: jax.lax.Precision | None = None
 
   def setup(self):
     inner_dim = self.dim * 4

@@ -16,11 +16,11 @@ if version.parse(version.parse(PIL.__version__).base_version) >= version.parse("
   }
 else:
   PIL_INTERPOLATION = {
-      "linear": PIL.Image.LINEAR,
-      "bilinear": PIL.Image.BILINEAR,
-      "bicubic": PIL.Image.BICUBIC,
-      "lanczos": PIL.Image.LANCZOS,
-      "nearest": PIL.Image.NEAREST,
+      "linear": PIL.Image.LINEAR,  # pytype: disable=module-attr
+      "bilinear": PIL.Image.BILINEAR,  # pytype: disable=module-attr
+      "bicubic": PIL.Image.BICUBIC,  # pytype: disable=module-attr
+      "lanczos": PIL.Image.LANCZOS,  # pytype: disable=module-attr
+      "nearest": PIL.Image.NEAREST,  # pytype: disable=module-attr
   }
 
 
@@ -50,7 +50,7 @@ def numpy_to_pil(images):
   return pil_images
 
 
-def make_image_grid(images: List[PIL.Image.Image], rows: int, cols: int, resize: int = None) -> PIL.Image.Image:
+def make_image_grid(images: List[PIL.Image.Image], rows: int, cols: int, resize: int | None = None) -> PIL.Image.Image:
   """
   Prepares a single grid of images. Useful for visualization purposes.
   """
