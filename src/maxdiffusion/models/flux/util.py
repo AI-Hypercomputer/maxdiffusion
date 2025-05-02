@@ -11,7 +11,11 @@ from huggingface_hub import hf_hub_download
 from jax import numpy as jnp
 from safetensors import safe_open
 
-from maxdiffusion.models.modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor)
+from ..modeling_flax_pytorch_utils import (
+  rename_key,
+  rename_key_and_reshape_tensor,
+  torch2jax
+)
 from maxdiffusion import max_logging
 
 
@@ -31,21 +35,6 @@ class FluxParams:
   guidance_embed: bool
   rngs: Array
   param_dtype: DTypeLike
-
-
-def torch2jax(torch_tensor: torch.Tensor) -> Array:
-  is_bfloat16 = torch_tensor.dtype == torch.bfloat16
-  if is_bfloat16:
-    # upcast the tensor to fp32
-    torch_tensor = torch_tensor.float()
-
-  if torch.device.type != "cpu":
-    torch_tensor = torch_tensor.to("cpu")
-
-  numpy_value = torch_tensor.numpy()
-  jax_array = jnp.array(numpy_value, dtype=jnp.bfloat16 if is_bfloat16 else None)
-  return jax_array
-
 
 @dataclass
 class ModelSpec:

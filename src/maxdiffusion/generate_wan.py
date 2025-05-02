@@ -26,6 +26,7 @@ from flax import nnx
 from absl import app
 from transformers import AutoTokenizer, UMT5EncoderModel
 from maxdiffusion import pyconfig, max_logging
+from maxdiffusion.models.wan.autoencoder_kl_wan import AutoencoderKLWan
 from maxdiffusion.models.wan.transformers.transformer_flux_wan_nnx import WanModel
 from maxdiffusion.pipelines.wan.pipeline_wan import WanPipeline
 

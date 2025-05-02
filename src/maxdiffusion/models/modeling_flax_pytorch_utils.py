@@ -15,18 +15,57 @@
 """ PyTorch - Flax general utilities."""
 import re
 
+import torch
 import jax
 import jax.numpy as jnp
 from flax.linen import Partitioned
 from flax.traverse_util import flatten_dict, unflatten_dict
 from flax.core.frozen_dict import unfreeze
 from jax.random import PRNGKey
-
+from chex import Array
 from ..utils import logging
+from .. import max_logging
 
 
 logger = logging.get_logger(__name__)
 
+def validate_flax_state_dict(expected_pytree: dict, new_pytree: dict):
+  """
+  expected_pytree: dict - a pytree that comes from initializing the model.
+  new_pytree: dict - a pytree that has been created from pytorch weights.
+  """
+  expected_pytree = flatten_dict(expected_pytree)
+  if len(expected_pytree.keys()) != len(new_pytree.keys()):
+    set1 = set(expected_pytree.keys())
+    set2 = set(new_pytree.keys())
+    missing_keys = set1 ^ set2
+    max_logging.log(f"missing keys : {missing_keys}")
+  for key in expected_pytree.keys():
+    if key in new_pytree.keys():
+      try:
+        expected_pytree_shape = expected_pytree[key].shape
+      except Exception:
+        expected_pytree_shape = expected_pytree[key].value.shape
+      if expected_pytree_shape != new_pytree[key].shape:
+        max_logging.log(f"shape mismatch for {key}")
+        max_logging.log(
+            f"shape mismatch, expected shape of {expected_pytree[key].shape}, but got shape of {new_pytree[key].shape}"
+        )
+    else:
+      max_logging.log(f"key: {key} not found...")
+
+def torch2jax(torch_tensor: torch.Tensor) -> Array:
+  is_bfloat16 = torch_tensor.dtype == torch.bfloat16
+  if is_bfloat16:
+    # upcast the tensor to fp32
+    torch_tensor = torch_tensor.float()
+
+  if torch.device.type != "cpu":
+    torch_tensor = torch_tensor.to("cpu")
+
+  numpy_value = torch_tensor.numpy()
+  jax_array = jnp.array(numpy_value, dtype=jnp.bfloat16 if is_bfloat16 else None)
+  return jax_array
 
 def rename_key(key):
   regex = r"\w+[.]\d+"
@@ -93,6 +132,12 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
   if pt_tuple_key[-1] == "weight" and pt_tensor.ndim == 4:
     pt_tensor = pt_tensor.transpose(2, 3, 1, 0)
     return renamed_pt_tuple_key, pt_tensor
+  
+  # 3d conv layer
+  renamed_pt_tuple_key = pt_tuple_key[:-1] + ("kernel",)
+  if pt_tuple_key[-1] == "weight" and pt_tensor.ndim == 5:
+    pt_tensor = pt_tensor.transpose(2, 3, 4, 1, 0)
+    return renamed_pt_tuple_key, pt_tensor
 
   # linear layer
   renamed_pt_tuple_key = pt_tuple_key[:-1] + ("kernel",)
@@ -103,6 +148,8 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
   # old PyTorch layer norm weight
   renamed_pt_tuple_key = pt_tuple_key[:-1] + ("weight",)
   if pt_tuple_key[-1] == "gamma":
+    renamed_pt_tuple_key = pt_tuple_key
+    pt_tensor = pt_tensor.flatten()
     return renamed_pt_tuple_key, pt_tensor
 
   # old PyTorch layer norm bias

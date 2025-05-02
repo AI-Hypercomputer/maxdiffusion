@@ -1,41 +1,57 @@
 import os
+import tempfile
 from typing import Any, Callable, List, Optional, Tuple, Union
+from urllib.parse import unquote, urlparse
 
 import PIL.Image
 import PIL.ImageOps
 import requests
-import tempfile
-from urllib.parse import unquote, urlparse
+
 from .import_utils import BACKENDS_MAPPING, is_imageio_available
 
 
-def load_image(image: Union[str, PIL.Image.Image]) -> PIL.Image.Image:
-  """
-  Loads `image` to a PIL Image.
+def load_image(
+    image: Union[str, PIL.Image.Image], convert_method: Optional[Callable[[PIL.Image.Image], PIL.Image.Image]] = None
+) -> PIL.Image.Image:
+    """
+    Loads `image` to a PIL Image.
 
-  Args:
-      image (`str` or `PIL.Image.Image`):
-          The image to convert to the PIL Image format.
-  Returns:
-      `PIL.Image.Image`:
-          A PIL Image.
-  """
-  if isinstance(image, str):
-    if image.startswith("http://") or image.startswith("https://"):
-      image = PIL.Image.open(requests.get(image, stream=True).raw)
-    elif os.path.isfile(image):
-      image = PIL.Image.open(image)
+    Args:
+        image (`str` or `PIL.Image.Image`):
+            The image to convert to the PIL Image format.
+        convert_method (Callable[[PIL.Image.Image], PIL.Image.Image], *optional*):
+            A conversion method to apply to the image after loading it. When set to `None` the image will be converted
+            "RGB".
+
+    Returns:
+        `PIL.Image.Image`:
+            A PIL Image.
+    """
+    if isinstance(image, str):
+        if image.startswith("http://") or image.startswith("https://"):
+            image = PIL.Image.open(requests.get(image, stream=True).raw)
+        elif os.path.isfile(image):
+            image = PIL.Image.open(image)
+        else:
+            raise ValueError(
+                f"Incorrect path or URL. URLs must start with `http://` or `https://`, and {image} is not a valid path."
+            )
+    elif isinstance(image, PIL.Image.Image):
+        image = image
     else:
-      raise ValueError(
-          f"Incorrect path or url, URLs must start with `http://` or `https://`, and {image} is not a valid path"
-      )
-  elif isinstance(image, PIL.Image.Image):
-    image = image
-  else:
-    raise ValueError("Incorrect format used for image. Should be an url linking to an image, a local path, or a PIL image.")
-  image = PIL.ImageOps.exif_transpose(image)
-  image = image.convert("RGB")
-  return image
+        raise ValueError(
+            "Incorrect format used for the image. Should be a URL linking to an image, a local path, or a PIL image."
+        )
+
+    image = PIL.ImageOps.exif_transpose(image)
+
+    if convert_method is not None:
+        image = convert_method(image)
+    else:
+        image = image.convert("RGB")
+
+    return image
+
 
 def load_video(
     video: str,
@@ -119,3 +135,28 @@ def load_video(
         pil_images = convert_method(pil_images)
 
     return pil_images
+
+
+# Taken from `transformers`.
+def get_module_from_name(module, tensor_name: str) -> Tuple[Any, str]:
+    if "." in tensor_name:
+        splits = tensor_name.split(".")
+        for split in splits[:-1]:
+            new_module = getattr(module, split)
+            if new_module is None:
+                raise ValueError(f"{module} has no attribute {split}.")
+            module = new_module
+        tensor_name = splits[-1]
+    return module, tensor_name
+
+
+def get_submodule_by_name(root_module, module_path: str):
+    current = root_module
+    parts = module_path.split(".")
+    for part in parts:
+        if part.isdigit():
+            idx = int(part)
+            current = current[idx]  # e.g., for nn.ModuleList or nn.Sequential
+        else:
+            current = getattr(current, part)
+    return current

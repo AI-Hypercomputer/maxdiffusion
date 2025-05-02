@@ -200,8 +200,6 @@ class ZeroPaddedConv2D(nnx.Module):
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
   ):
-    kernel_size = _canonicalize_tuple(kernel_size, 3, "kernel_size")
-    stride = _canonicalize_tuple(stride, 3, "stride")
     self.conv = nnx.Conv(dim, dim, kernel_size=kernel_size, strides=stride, use_bias=True, rngs=rngs)
 
   def __call__(self, x):
@@ -233,7 +231,7 @@ class WanResample(nnx.Module):
           nnx.Conv(
               dim,
               dim // 2,
-              kernel_size=(1, 3, 3),
+              kernel_size=(3, 3),
               padding="SAME",
               use_bias=True,
               rngs=rngs,
@@ -241,11 +239,11 @@ class WanResample(nnx.Module):
       )
     elif mode == "upsample3d":
       self.resample = nnx.Sequential(
-          WanUpsample(scale_factor=(2.0, 2.0, 2.0), method="nearest"),
+          WanUpsample(scale_factor=(2.0, 2.0), method="nearest"),
           nnx.Conv(
               dim,
               dim // 2,
-              kernel_size=(1, 3, 3),
+              kernel_size=(3, 3),
               padding="SAME",
               use_bias=True,
               rngs=rngs,
@@ -259,11 +257,9 @@ class WanResample(nnx.Module):
           padding=(1, 0, 0),
       )
     elif mode == "downsample2d":
-      # TODO - do I need to transpose?
-      self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(1, 3, 3), stride=(1, 2, 2))
+      self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2))
     elif mode == "downsample3d":
-      # TODO - do I need to transpose?
-      self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(1, 3, 3), stride=(1, 2, 2))
+      self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2))
       self.time_conv = WanCausalConv3d(
           rngs=rngs, in_channels=dim, out_channels=dim, kernel_size=(3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0)
       )
@@ -334,7 +330,6 @@ class WanResidualBlock(nnx.Module):
     self.norm1 = WanRMS_norm(dim=in_dim, rngs=rngs, images=False, channel_first=False)
     self.conv1 = WanCausalConv3d(rngs=rngs, in_channels=in_dim, out_channels=out_dim, kernel_size=3, padding=1)
     self.norm2 = WanRMS_norm(dim=out_dim, rngs=rngs, images=False, channel_first=False)
-    self.dropout = nnx.Dropout(dropout, rngs=rngs)
     self.conv2 = WanCausalConv3d(rngs=rngs, in_channels=out_dim, out_channels=out_dim, kernel_size=3, padding=1)
     self.conv_shortcut = (
         WanCausalConv3d(rngs=rngs, in_channels=in_dim, out_channels=out_dim, kernel_size=1)
@@ -363,7 +358,6 @@ class WanResidualBlock(nnx.Module):
 
     x = self.norm2(x)
     x = self.nonlinearity(x)
-    x = self.dropout(x)
 
     if feat_cache is not None:
       idx = feat_idx[0]
@@ -384,8 +378,8 @@ class WanAttentionBlock(nnx.Module):
   def __init__(self, dim: int, rngs: nnx.Rngs):
     self.dim = dim
     self.norm = WanRMS_norm(rngs=rngs, dim=dim, channel_first=False)
-    self.to_qkv = nnx.Conv(in_features=dim, out_features=dim * 3, kernel_size=1, rngs=rngs)
-    self.proj = nnx.Conv(in_features=dim, out_features=dim, kernel_size=1, rngs=rngs)
+    self.to_qkv = nnx.Conv(in_features=dim, out_features=dim * 3, kernel_size=(1, 1), rngs=rngs)
+    self.proj = nnx.Conv(in_features=dim, out_features=dim, kernel_size=(1, 1), rngs=rngs)
 
   def __call__(self, x: jax.Array):
     batch_size, time, height, width, channels = x.shape
@@ -801,8 +795,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
       assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
 
-    # self.clear_cache()
-
     t = x.shape[1]
     iter_ = 1 + (t - 1) // 4
     for i in range(iter_):
@@ -854,8 +846,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
   def decode(self, z: jax.Array, return_dict: bool = True) -> Union[FlaxDecoderOutput, jax.Array]:
     if z.shape[-1] != self.z_dim:
       # reshape channel last for JAX
-      x = jnp.transpose(x, (0, 2, 3, 4, 1))
-      assert x.shape[-1] == self.z_dim, f"Expected input shape (N, D, H, W, {self.z_dim}, got {x.shape}"
+      z = jnp.transpose(z, (0, 2, 3, 4, 1))
+      assert z.shape[-1] == self.z_dim, f"Expected input shape (N, D, H, W, {self.z_dim}, got {z.shape}"
     decoded = self._decode(z).sample
     if not return_dict:
       return (decoded,)

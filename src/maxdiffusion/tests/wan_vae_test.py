@@ -29,7 +29,6 @@ from ..models.wan.autoencoder_kl_wan import (
     WanCausalConv3d,
     WanUpsample,
     AutoencoderKLWan,
-    WanEncoder3d,
     WanMidBlock,
     WanResidualBlock,
     WanRMS_norm,
@@ -37,6 +36,7 @@ from ..models.wan.autoencoder_kl_wan import (
     ZeroPaddedConv2D,
     WanAttentionBlock,
 )
+from ..models.wan.wan_utils import load_wan_vae
 
 CACHE_T = 2
 
@@ -420,6 +420,20 @@ class WanVaeTest(unittest.TestCase):
     input = jnp.ones(input_shape)
     output = wan_vae.encode(input)
     assert output.latent_dist.sample(key).shape == (1, 13, 60, 90, 16)
+
+  # def test_load_checkpoint(self):
+  #   pretrained_model_name_or_path = "Wan-AI/Wan2.1-T2V-14B-Diffusers"
+  #   key = jax.random.key(0)
+  #   rngs = nnx.Rngs(key)
+  #   wan_vae = AutoencoderKLWan.from_config(
+  #     pretrained_model_name_or_path,
+  #     subfolder="vae",
+  #     rngs=rngs
+  #   )
+  #   graphdef, state = nnx.split(wan_vae)
+  #   params = state.to_pure_dict()
+  #   # This replaces random params with the model.
+  #   params = load_wan_vae(pretrained_model_name_or_path, params, "cpu")
 
 
 if __name__ == "__main__":
