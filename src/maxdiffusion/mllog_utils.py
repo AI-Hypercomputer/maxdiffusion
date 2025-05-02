@@ -38,7 +38,7 @@ def train_run_end(config):
   if jax.process_index() == 0 and config.enable_mllog:
     mllogger.end(mllog.constants.RUN_STOP, metadata={'status': 'success'})
 
-def train_init_print(config, device: str = 'tpu-v5p'):
+def train_init_print(config, device: str = 'tpu-trillium'):
   """an initial mllog for mlperf sumbission compliance check."""
   if jax.process_index() == 0 and config.enable_mllog:
     mllogger.event(mllog.constants.SUBMISSION_ORG, 'Google')

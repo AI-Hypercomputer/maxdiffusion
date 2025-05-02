@@ -521,7 +521,7 @@ def train(config):
                     mllog_utils.maybe_train_step_log(config, start_step, step_num, samples_count, loss, lr)
 
         if step != 0 and samples_count % config.checkpoint_every == 0:
-            checkpoint_name = f"{step_num=}-{samples_count=}"
+            checkpoint_name = f"step_num={step_num}-samples_count={samples_count}"
             if config.eval_at_checkpoint:
                 eval_at_checkpoint(config,
                     f"{str(step * total_train_batch_size)}",
@@ -589,6 +589,9 @@ def train(config):
 def main(argv: Sequence[str]) -> None:
     pyconfig.initialize(argv)
     config = pyconfig.config
+    max_logging.log(f"System Information: Jax Version: {jax.__version__}")
+    max_logging.log(f"System Information: Jaxlib Version: {jax.lib.__version__}")
+    max_logging.log(f"System Information: Jax Backend: {jax.extend.backend.get_backend().platform_version}")
     mllog_utils.train_init_start(config)
     max_logging.log(f"Found {jax.device_count()} devices.")
     cc.initialize_cache(os.path.expanduser("~/jax_cache"))
