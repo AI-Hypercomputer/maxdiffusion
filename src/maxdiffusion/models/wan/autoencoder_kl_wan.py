@@ -286,7 +286,7 @@ class WanResample(nnx.Module):
 
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]) -> jax.Array:
     # Input x: (N, D, H, W, C), assume C = self.dim
-    n, d, h, w, c = x.shape
+    b, t, h, w, c = x.shape
     assert c == self.dim
 
     if self.mode == "upsample3d":
@@ -308,14 +308,14 @@ class WanResample(nnx.Module):
             x = self.time_conv(x, feat_cache[idx])
           feat_cache[idx] = cache_x
           feat_idx[0] += 1
-          x = x.reshape(n, 2, d, h, w, c)
-          x = jnp.stack([x[:, 0, :, :, :, :], x[:, 1, :, :, :, :]], axis=2)
-          x = x.reshape(n, d * 2, h, w, c)
-    d = x.shape[1]
-    x = x.reshape(n * d, h, w, c)
+          x = x.reshape(b, t, h, w, 2, c)
+          x = jnp.stack([x[:, :, :, :, 0, :], x[:, :, :, :, 1, :]], axis=1)
+          x = x.reshape(b, t * 2, h, w, c)
+    t = x.shape[1]
+    x = x.reshape(b * t, h, w, c)
     x = self.resample(x)
     h_new, w_new, c_new = x.shape[1:]
-    x = x.reshape(n, d, h_new, w_new, c_new)
+    x = x.reshape(b, t, h_new, w_new, c_new)
 
     if self.mode == "downsample3d":
       if feat_cache is not None:
@@ -425,7 +425,6 @@ class WanAttentionBlock(nnx.Module):
     x = self.norm(x)
 
     qkv = self.to_qkv(x)  # Output: (N*D, H, W, C * 3)
-    #breakpoint()
     #qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
     qkv = qkv.reshape(batch_size * time, 1, -1, channels * 3)
     qkv = jnp.transpose(qkv, (0, 1, 3, 2))
@@ -439,21 +438,10 @@ class WanAttentionBlock(nnx.Module):
     print("k min: ", np.max(k))
     print("v min: ", np.min(v))
     print("v min: ", np.max(v))
-    #breakpoint()
     q = jnp.transpose(q, (0, 1, 3, 2))
     k = jnp.transpose(k, (0, 1, 3, 2))
     v = jnp.transpose(v, (0, 1, 3, 2))
-    import torch
-    import torch.nn.functional as F
-    q = torch.tensor(np.array(q, dtype=np.float32))
-    k = torch.tensor(np.array(k, dtype=np.float32))
-    v = torch.tensor(np.array(v, dtype=np.float32))
-    #x = jax.nn.dot_product_attention(q, k, v)
-    x = F.scaled_dot_product_attention(q, k, v)
-    print("attn min: ", torch.min(x))
-    print("attn max: ", torch.max(x))
-    #breakpoint()
-    x = jnp.array(x.detach().numpy())
+    x = jax.nn.dot_product_attention(q, k, v)
     x = jnp.squeeze(x, 1).reshape(batch_size * time, height, width, channels)
 
     # output projection
@@ -696,7 +684,7 @@ class WanDecoder3d(nnx.Module):
       upsample_mode = None
       if i != len(dim_mult) - 1:
         upsample_mode = "upsample3d" if temperal_upsample[i] else "upsample2d"
-      # Crete and add the upsampling block
+      # Create and add the upsampling block
       up_block = WanUpBlock(
           in_dim=in_dim,
           out_dim=out_dim,
@@ -731,7 +719,6 @@ class WanDecoder3d(nnx.Module):
 
     ## middle
     x = self.mid_block(x, feat_cache, feat_idx)
-    #breakpoint()
     ## upsamples
     for up_block in self.up_blocks:
       x = up_block(x, feat_cache, feat_idx)
