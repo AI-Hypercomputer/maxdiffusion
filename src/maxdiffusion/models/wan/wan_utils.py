@@ -26,7 +26,6 @@ def load_wan_vae(pretrained_model_name_or_path: str, eval_shapes: dict, device: 
   with jax.default_device(device):
     if hf_download:
       ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder="vae", filename="diffusion_pytorch_model.safetensors")
-    #breakpoint()
     max_logging.log(f"Load and port Wan 2.1 VAE on {device}")
 
     if ckpt_path is not None:

@@ -40,7 +40,6 @@ from ..models.wan.wan_utils import load_wan_vae
 
 CACHE_T = 2
 
-
 class TorchWanRMS_norm(nn.Module):
   r"""
   A custom RMS normalization layer.
@@ -92,16 +91,18 @@ class TorchWanResample(nn.Module):
           WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
       )
     elif mode == "upsample3d":
-      self.resample = nn.Sequential(
-          WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
-      )
-      self.time_conv = WanCausalConv3d(dim, dim * 2, (3, 1, 1), padding=(1, 0, 0))
+      # self.resample = nn.Sequential(
+      #     WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
+      # )
+      # self.time_conv = WanCausalConv3d(dim, dim * 2, (3, 1, 1), padding=(1, 0, 0))
+      raise Exception("downsample3d not supported")
 
     elif mode == "downsample2d":
       self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
     elif mode == "downsample3d":
-      self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
-      self.time_conv = WanCausalConv3d(dim, dim, (3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0))
+      raise Exception("downsample3d not supported")
+      #self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
+      #self.time_conv = WanCausalConv3d(dim, dim, (3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0))
 
     else:
       self.resample = nn.Identity()

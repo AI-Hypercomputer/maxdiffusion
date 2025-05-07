@@ -23,7 +23,7 @@ from ...configuration_utils import ConfigMixin, flax_register_to_config
 from ..modeling_flax_utils import FlaxModelMixin
 from ... import common_types
 from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput)
-
+import numpy as np
 BlockSizes = common_types.BlockSizes
 
 CACHE_T = 2
@@ -93,11 +93,16 @@ class WanCausalConv3d(nnx.Module):
         rngs=rngs,
     )
 
-  def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None) -> jax.Array:
+  def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None, idx=-1) -> jax.Array:
+    print("wanCausalConv3d, x min: ", np.min(x))
+    print("wanCausalConv3d, x max: ", np.max(x))
     current_padding = list(self._causal_padding)  # Mutable copy
     padding_needed = self._depth_padding_before
 
     if cache_x is not None and padding_needed > 0:
+      print("WanCausalConv3d, cache.shape: ", cache_x.shape)
+      print("wanCausalConv3d, cache_x min: ", np.min(cache_x))
+      print("wanCausalConv3d, cache_x max: ", np.max(cache_x))
       # Ensure cache has same spatial/channel dims, potentially different depth
       assert cache_x.shape[0] == x.shape[0] and cache_x.shape[2:] == x.shape[2:], "Cache spatial/channel dims mismatch"
       cache_len = cache_x.shape[1]
@@ -105,21 +110,34 @@ class WanCausalConv3d(nnx.Module):
 
       padding_needed -= cache_len
       if padding_needed < 0:
+        print("wanCausanConv3d, padding_needed < 0")
         # Cache longer than needed padding, trim from start
         x = x[:, -padding_needed:, ...]
         current_padding[1] = (0, 0)  # No explicit padding needed now
       else:
         # Update depth padding needed
+        print("wanCausanConv3d, padding_needed > 0")
         current_padding[1] = (padding_needed, 0)
 
     # Apply padding if any dimension requires it
     padding_to_apply = tuple(current_padding)
+    print("WanCausalConv3d, before padding x shape: ", x.shape)
     if any(p > 0 for dim_pads in padding_to_apply for p in dim_pads):
+      print("WanCausalConv3d, applying padding")
       x_padded = jnp.pad(x, padding_to_apply, mode="constant", constant_values=0.0)
     else:
+      print("WanCausalConv3d, NOT applying padding")
       x_padded = x
 
+    print("WanCausalConv3d, x shape: ", x_padded.shape)
+    print("wanCausalConv3d, x min: ", np.min(x_padded))
+    print("wanCausalConv3d, x max: ", np.max(x_padded))
+    # if idx == 12:
+    #   breakpoint()
     out = self.conv(x_padded)
+    print("WanCausalConv3d, after conv, x shape: ", out.shape)
+    print("wanCausalConv3d, x min: ", np.min(out))
+    print("wanCausalConv3d, x max: ", np.max(out))
     return out
 
 
@@ -346,11 +364,13 @@ class WanResidualBlock(nnx.Module):
 
     if feat_cache is not None:
       idx = feat_idx[0]
+      print("Before conv1, idx: ", idx)
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
       if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
         cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-
-      x = self.conv1(x, feat_cache[idx])
+      x = self.conv1(x, feat_cache[idx], idx)
+      # if idx == 4:
+      #   breakpoint()
       feat_cache[idx] = cache_x
       feat_idx[0] += 1
     else:
@@ -358,19 +378,34 @@ class WanResidualBlock(nnx.Module):
 
     x = self.norm2(x)
     x = self.nonlinearity(x)
+    idx = feat_idx[0]
+    # if idx == 4:
+    #   breakpoint()
 
     if feat_cache is not None:
       idx = feat_idx[0]
+      print("Residual block, idx: ", idx)
+      # if idx == 14:
+      #   breakpoint()
+      print("cache_x min: ", np.min(cache_x))
+      print("cache_x max: ", np.max(cache_x))
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
       if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
         cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+        print("cache_x min: ", np.min(cache_x))
+        print("cache_x max: ", np.max(cache_x))
+        #breakpoint()
       x = self.conv2(x, feat_cache[idx])
       feat_cache[idx] = cache_x
       feat_idx[0] += 1
     else:
       x = self.conv2(x)
-
-    return x + h
+    print("before conv shortcut add: x min", np.min(x))
+    print("before conv shortcut add: x max", np.max(x))
+    x = x + h
+    print("after conv shortcut add: x min: ", np.min(x))
+    print("after conv shortcut add: x max: ", np.max(x))
+    return x
 
 
 class WanAttentionBlock(nnx.Module):
@@ -382,26 +417,51 @@ class WanAttentionBlock(nnx.Module):
     self.proj = nnx.Conv(in_features=dim, out_features=dim, kernel_size=(1, 1), rngs=rngs)
 
   def __call__(self, x: jax.Array):
-    batch_size, time, height, width, channels = x.shape
+
     identity = x
+    batch_size, time, height, width, channels = x.shape
 
     x = x.reshape(batch_size * time, height, width, channels)
     x = self.norm(x)
 
     qkv = self.to_qkv(x)  # Output: (N*D, H, W, C * 3)
-
-    qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
+    #breakpoint()
+    #qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
+    qkv = qkv.reshape(batch_size * time, 1, -1, channels * 3)
     qkv = jnp.transpose(qkv, (0, 1, 3, 2))
-    q, k, v = jnp.split(qkv, 3, axis=-1)
-
-    x = jax.nn.dot_product_attention(q, k, v)
+    print("qkv min: ", np.min(qkv))
+    print("qkv max: ", np.max(qkv))
+    #q, k, v = jnp.split(qkv, 3, axis=-1)
+    q, k, v = jnp.split(qkv, 3, axis=-2)
+    print("q min: ", np.min(q))
+    print("q max: ", np.max(q))
+    print("k min: ", np.min(k))
+    print("k min: ", np.max(k))
+    print("v min: ", np.min(v))
+    print("v min: ", np.max(v))
+    #breakpoint()
+    q = jnp.transpose(q, (0, 1, 3, 2))
+    k = jnp.transpose(k, (0, 1, 3, 2))
+    v = jnp.transpose(v, (0, 1, 3, 2))
+    import torch
+    import torch.nn.functional as F
+    q = torch.tensor(np.array(q, dtype=np.float32))
+    k = torch.tensor(np.array(k, dtype=np.float32))
+    v = torch.tensor(np.array(v, dtype=np.float32))
+    #x = jax.nn.dot_product_attention(q, k, v)
+    x = F.scaled_dot_product_attention(q, k, v)
+    print("attn min: ", torch.min(x))
+    print("attn max: ", torch.max(x))
+    #breakpoint()
+    x = jnp.array(x.detach().numpy())
     x = jnp.squeeze(x, 1).reshape(batch_size * time, height, width, channels)
 
     # output projection
     x = self.proj(x)
-
+    #breakpoint()
     # Reshape back
     x = x.reshape(batch_size, time, height, width, channels)
+    #breakpoint()
 
     return x + identity
 
@@ -419,11 +479,20 @@ class WanMidBlock(nnx.Module):
     self.resnets = resnets
 
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
+    print("WanMidblock...")
     x = self.resnets[0](x, feat_cache, feat_idx)
+    print("WanMidBlock resnets[0], x min: ", np.min(x))
+    print("WanMidBlock resnets[0], x max: ", np.max(x))
     for attn, resnet in zip(self.attentions, self.resnets[1:]):
+      print("WanMidBlock, for loop, attn len: ", len(self.attentions))
+      print("WanMidBlock, for loop, resnets len: ", len(self.resnets))
       if attn is not None:
         x = attn(x)
+        print("WanMidBlock attn[0], x min: ", np.min(x))
+        print("WanMidBlock attn[0], x max: ", np.max(x))
       x = resnet(x, feat_cache, feat_idx)
+      print("WanMidBlock resnets[i], x min: ", np.min(x))
+      print("WanMidBlock resnets[i], x max: ", np.max(x))
     return x
 
 
@@ -589,7 +658,7 @@ class WanDecoder3d(nnx.Module):
       self,
       rngs: nnx.Rngs,
       dim: int = 128,
-      z_dim: int = 128,
+      z_dim: int = 4,
       dim_mult: List[int] = [1, 2, 4, 4],
       num_res_blocks: int = 2,
       attn_scales=List[float],
@@ -662,7 +731,7 @@ class WanDecoder3d(nnx.Module):
 
     ## middle
     x = self.mid_block(x, feat_cache, feat_idx)
-
+    #breakpoint()
     ## upsamples
     for up_block in self.up_blocks:
       x = up_block(x, feat_cache, feat_idx)
@@ -810,7 +879,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
     enc = jnp.concatenate([mu, logvar], axis=-1)
     self.clear_cache()
-    # return enc
     return enc
 
   def encode(
@@ -833,10 +901,22 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         out = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
       else:
         out_ = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
-
         out = jnp.concatenate([out, out_], axis=1)
-
-    out = jnp.clip(out, a_min=-1.0, a_max=1.0)
+        print("out_.shape: ", out_.shape)
+        print("out_ min: ", np.min(out_))
+        print("out_ max: ", np.max(out_))
+      print("out.shape: ", out.shape)
+      print("out min: ", np.min(out))
+      print("out max: ", np.max(out))
+      for i in range(len(self._feat_map)):
+        if isinstance(self._feat_map[i], jax.Array):
+          print("i: ", i)
+          print("min: ", np.min(self._feat_map[i]))
+          print("max: ", np.max(self._feat_map[i]))
+        else:
+          print(f"feat_map[{i}] : {self._feat_map[i]}")
+      # breakpoint()
+    out = jnp.clip(out, min=-1.0, max=1.0)
     self.clear_cache()
     if not return_dict:
       return (out,)
