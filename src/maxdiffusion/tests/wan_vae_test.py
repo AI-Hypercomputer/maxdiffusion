@@ -23,7 +23,6 @@ import jax.numpy as jnp
 from flax import nnx
 import numpy as np
 import unittest
-import pytest
 from absl.testing import absltest
 from skimage.metrics import structural_similarity as ssim
 from ..models.wan.autoencoder_kl_wan import (
@@ -172,7 +171,7 @@ class WanVaeTest(unittest.TestCase):
     dummy_input = jnp.ones(input_shape)
     output = wanrms_norm(dummy_input)
     output_np = np.array(output)
-    assert np.allclose(output_np, torch_output_np) == True
+    assert np.allclose(output_np, torch_output_np) is True
 
     # --- Test Case 2: images == False ---
     model = TorchWanRMS_norm(dim, images=False)
@@ -186,7 +185,7 @@ class WanVaeTest(unittest.TestCase):
     dummy_input = jnp.ones(input_shape)
     output = wanrms_norm(dummy_input)
     output_np = np.array(output)
-    assert np.allclose(output_np, torch_output_np) == True
+    assert np.allclose(output_np, torch_output_np) is True
 
   def test_zero_padded_conv(self):
 
@@ -235,8 +234,6 @@ class WanVaeTest(unittest.TestCase):
     w = 720
     mode = "downsample2d"
     input_shape = (batch, dim, t, h, w)
-    expected_output_shape = (1, dim, 1, 240, 360)
-    # output dim should be (1, 96, 1, 480, 720)
     dummy_input = torch.ones(input_shape)
     torch_wan_resample = TorchWanResample(dim=dim, mode=mode)
     torch_output = torch_wan_resample(dummy_input)
@@ -426,7 +423,7 @@ class WanVaeTest(unittest.TestCase):
     rngs = nnx.Rngs(key)
     wan_vae = AutoencoderKLWan.from_config(pretrained_model_name_or_path, subfolder="vae", rngs=rngs)
     vae_cache = AutoencoderKLWanCache(wan_vae)
-    video_path, fps = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/hiker.mp4", 8
+    video_path = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/hiker.mp4"
     video = load_video(video_path)
 
     vae_scale_factor_spatial = 2 ** len(wan_vae.temperal_downsample)

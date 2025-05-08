@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 import jax
 from jax.typing import DTypeLike
-import torch  # need for torch 2 jax
 from chex import Array
 from flax.traverse_util import flatten_dict, unflatten_dict
 from huggingface_hub import hf_hub_download

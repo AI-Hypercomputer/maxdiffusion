@@ -1,5 +1,5 @@
 import os
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Union
 
 import PIL.Image
 import PIL.ImageOps
