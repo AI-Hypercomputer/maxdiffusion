@@ -22,7 +22,6 @@ python end_to_end/tpu/eval_assert.py avg_step_time metrics.txt 0.5 100
 """
 
 
-
 # pylint: skip-file
 """Reads and asserts over target values"""
 from absl import app
@@ -47,7 +46,7 @@ def test_final_loss(metrics_file, target_loss, num_samples_str="10"):
   target_loss = float(target_loss)
   num_samples = int(num_samples_str)
   with open(metrics_file, "r", encoding="utf8") as _:
-    last_n_data = get_last_n_data(metrics_file, "learning/loss",num_samples)
+    last_n_data = get_last_n_data(metrics_file, "learning/loss", num_samples)
     avg_last_n_data = sum(last_n_data) / len(last_n_data)
     print(f"Mean of last {len(last_n_data)} losses is {avg_last_n_data}")
     print(f"Target loss is {target_loss}")

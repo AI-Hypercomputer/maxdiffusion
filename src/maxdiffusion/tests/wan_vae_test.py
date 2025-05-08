@@ -14,7 +14,7 @@
  limitations under the License.
  """
 
-import os
+import functools
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,6 +25,7 @@ import numpy as np
 import unittest
 import pytest
 from absl.testing import absltest
+from skimage.metrics import structural_similarity as ssim
 from ..models.wan.autoencoder_kl_wan import (
     WanCausalConv3d,
     WanUpsample,
@@ -35,10 +36,14 @@ from ..models.wan.autoencoder_kl_wan import (
     WanResample,
     ZeroPaddedConv2D,
     WanAttentionBlock,
+    AutoencoderKLWanCache,
 )
 from ..models.wan.wan_utils import load_wan_vae
+from ..utils import load_video
+from ..video_processor import VideoProcessor
 
 CACHE_T = 2
+
 
 class TorchWanRMS_norm(nn.Module):
   r"""
@@ -91,19 +96,12 @@ class TorchWanResample(nn.Module):
           WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
       )
     elif mode == "upsample3d":
-      # self.resample = nn.Sequential(
-      #     WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
-      # )
-      # self.time_conv = WanCausalConv3d(dim, dim * 2, (3, 1, 1), padding=(1, 0, 0))
       raise Exception("downsample3d not supported")
 
     elif mode == "downsample2d":
       self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
     elif mode == "downsample3d":
       raise Exception("downsample3d not supported")
-      #self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
-      #self.time_conv = WanCausalConv3d(dim, dim, (3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0))
-
     else:
       self.resample = nn.Identity()
 
@@ -155,12 +153,6 @@ class WanVaeTest(unittest.TestCase):
 
   def setUp(self):
     WanVaeTest.dummy_data = {}
-
-  def test_clear_cache(self):
-    key = jax.random.key(0)
-    rngs = nnx.Rngs(key)
-    wan_vae = AutoencoderKLWan(rngs=rngs)
-    wan_vae.clear_cache()
 
   def test_wanrms_norm(self):
     """Test against the Pytorch implementation"""
@@ -379,7 +371,7 @@ class WanVaeTest(unittest.TestCase):
         attn_scales=attn_scales,
         temperal_downsample=temperal_downsample,
     )
-
+    vae_cache = AutoencoderKLWanCache(wan_vae)
     batch = 1
     t = 13
     channels = 16
@@ -391,7 +383,7 @@ class WanVaeTest(unittest.TestCase):
     latents_mean = jnp.array(wan_vae.latents_mean).reshape(1, 1, 1, 1, wan_vae.z_dim)
     latents_std = 1.0 / jnp.array(wan_vae.latents_std).reshape(1, 1, 1, 1, wan_vae.z_dim)
     input = input / latents_std + latents_mean
-    dummy_output = wan_vae.decode(input)
+    dummy_output = wan_vae.decode(input, feat_cache=vae_cache)
     assert dummy_output.sample.shape == (batch, 49, 480, 720, 3)
 
   def test_wan_encode(self):
@@ -412,6 +404,7 @@ class WanVaeTest(unittest.TestCase):
         attn_scales=attn_scales,
         temperal_downsample=temperal_downsample,
     )
+    vae_cache = AutoencoderKLWanCache(wan_vae)
     batch = 1
     channels = 3
     t = 49
@@ -419,22 +412,51 @@ class WanVaeTest(unittest.TestCase):
     width = 720
     input_shape = (batch, channels, t, height, width)
     input = jnp.ones(input_shape)
-    output = wan_vae.encode(input)
+    output = wan_vae.encode(input, feat_cache=vae_cache)
     assert output.latent_dist.sample(key).shape == (1, 13, 60, 90, 16)
 
-  # def test_load_checkpoint(self):
-  #   pretrained_model_name_or_path = "Wan-AI/Wan2.1-T2V-14B-Diffusers"
-  #   key = jax.random.key(0)
-  #   rngs = nnx.Rngs(key)
-  #   wan_vae = AutoencoderKLWan.from_config(
-  #     pretrained_model_name_or_path,
-  #     subfolder="vae",
-  #     rngs=rngs
-  #   )
-  #   graphdef, state = nnx.split(wan_vae)
-  #   params = state.to_pure_dict()
-  #   # This replaces random params with the model.
-  #   params = load_wan_vae(pretrained_model_name_or_path, params, "cpu")
+  def test_load_checkpoint(self):
+    def vae_encode(video, wan_vae, vae_cache, key):
+      latent = wan_vae.encode(video, feat_cache=vae_cache)
+      latent = latent.latent_dist.sample(key)
+      return latent
+
+    pretrained_model_name_or_path = "Wan-AI/Wan2.1-T2V-14B-Diffusers"
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    wan_vae = AutoencoderKLWan.from_config(pretrained_model_name_or_path, subfolder="vae", rngs=rngs)
+    vae_cache = AutoencoderKLWanCache(wan_vae)
+    video_path, fps = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/hiker.mp4", 8
+    video = load_video(video_path)
+
+    vae_scale_factor_spatial = 2 ** len(wan_vae.temperal_downsample)
+    video_processor = VideoProcessor(vae_scale_factor=vae_scale_factor_spatial)
+    width, height = video[0].size
+    video = video_processor.preprocess_video(video, height=height, width=width)  # .to(dtype=jnp.float32)
+    original_video = jnp.array(np.array(video), dtype=jnp.bfloat16)
+
+    graphdef, state = nnx.split(wan_vae)
+    params = state.to_pure_dict()
+    # This replaces random params with the model.
+    params = load_wan_vae(pretrained_model_name_or_path, params, "cpu")
+    params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), params)
+    wan_vae = nnx.merge(graphdef, params)
+
+    p_vae_encode = jax.jit(functools.partial(vae_encode, wan_vae=wan_vae, vae_cache=vae_cache, key=key))
+    original_video_shape = original_video.shape
+    latent = p_vae_encode(original_video)
+
+    jitted_decode = jax.jit(functools.partial(wan_vae.decode, feat_cache=vae_cache, return_dict=False))
+    video = jitted_decode(latent)[0]
+    video = jnp.transpose(video, (0, 4, 1, 2, 3))
+    assert video.shape == original_video_shape
+
+    original_video = torch.from_numpy(np.array(original_video.astype(jnp.float32))).to(dtype=torch.bfloat16)
+    video = torch.from_numpy(np.array(video)).to(dtype=torch.bfloat16)
+    video = video_processor.postprocess_video(video, output_type="np")
+    original_video = video_processor.postprocess_video(original_video, output_type="np")
+    ssim_compare = ssim(video[0], original_video[0], multichannel=True, channel_axis=-1, data_range=255)
+    assert ssim_compare >= 0.9999
 
 
 if __name__ == "__main__":

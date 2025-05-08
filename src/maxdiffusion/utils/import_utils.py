@@ -51,18 +51,20 @@ DIFFUSERS_SLOW_IMPORT = DIFFUSERS_SLOW_IMPORT in ENV_VARS_TRUE_VALUES
 
 STR_OPERATION_TO_FUNC = {">": op.gt, ">=": op.ge, "==": op.eq, "!=": op.ne, "<=": op.le, "<": op.lt}
 
+
 def _is_package_available(pkg_name: str):
-    pkg_exists = importlib.util.find_spec(pkg_name) is not None
-    pkg_version = "N/A"
+  pkg_exists = importlib.util.find_spec(pkg_name) is not None
+  pkg_version = "N/A"
 
-    if pkg_exists:
-        try:
-            pkg_version = importlib_metadata.version(pkg_name)
-            logger.debug(f"Successfully imported {pkg_name} version {pkg_version}")
-        except (ImportError, importlib_metadata.PackageNotFoundError):
-            pkg_exists = False
+  if pkg_exists:
+    try:
+      pkg_version = importlib_metadata.version(pkg_name)
+      logger.debug(f"Successfully imported {pkg_name} version {pkg_version}")
+    except (ImportError, importlib_metadata.PackageNotFoundError):
+      pkg_exists = False
 
-    return pkg_exists, pkg_version
+  return pkg_exists, pkg_version
+
 
 _torch_version = "N/A"
 if USE_TORCH in ENV_VARS_TRUE_AND_AUTO_VALUES and USE_TF not in ENV_VARS_TRUE_VALUES:
@@ -298,8 +300,10 @@ try:
 except importlib_metadata.PackageNotFoundError:
   _peft_available = False
 
+
 def is_imageio_available():
   return _imageio_available
+
 
 def is_torch_available():
   return _torch_available
@@ -727,4 +731,3 @@ class _LazyModule(ModuleType):
 
   def __reduce__(self):
     return (self.__class__, (self._name, self.__file__, self._import_structure))
-

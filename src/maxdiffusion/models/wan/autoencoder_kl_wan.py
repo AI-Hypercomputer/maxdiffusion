@@ -23,6 +23,7 @@ from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin
 from ... import common_types
 from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput)
+
 BlockSizes = common_types.BlockSizes
 
 CACHE_T = 2
@@ -367,10 +368,10 @@ class WanAttentionBlock(nnx.Module):
     x = self.norm(x)
 
     qkv = self.to_qkv(x)  # Output: (N*D, H, W, C * 3)
-    #qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
+    # qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
     qkv = qkv.reshape(batch_size * time, 1, -1, channels * 3)
     qkv = jnp.transpose(qkv, (0, 1, 3, 2))
-    #q, k, v = jnp.split(qkv, 3, axis=-1)
+    # q, k, v = jnp.split(qkv, 3, axis=-1)
     q, k, v = jnp.split(qkv, 3, axis=-2)
     q = jnp.transpose(q, (0, 1, 3, 2))
     k = jnp.transpose(k, (0, 1, 3, 2))
@@ -662,6 +663,32 @@ class WanDecoder3d(nnx.Module):
     return x
 
 
+class AutoencoderKLWanCache:
+
+  def __init__(self, module):
+    self.module = module
+    self.clear_cache()
+
+  def clear_cache(self):
+    """Resets cache dictionaries and indices"""
+
+    def _count_conv3d(module):
+      count = 0
+      node_types = nnx.graph.iter_graph([module])
+      for _, value in node_types:
+        if isinstance(value, WanCausalConv3d):
+          count += 1
+      return count
+
+    self._conv_num = _count_conv3d(self.module.decoder)
+    self._conv_idx = [0]
+    self._feat_map = [None] * self._conv_num
+    # cache encode
+    self._enc_conv_num = _count_conv3d(self.module.encoder)
+    self._enc_conv_idx = [0]
+    self._enc_feat_map = [None] * self._enc_conv_num
+
+
 class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def __init__(
@@ -745,29 +772,9 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         temperal_upsample=self.temporal_upsample,
         dropout=dropout,
     )
-    self.clear_cache()
 
-  def clear_cache(self):
-    """Resets cache dictionaries and indices"""
-
-    def _count_conv3d(module):
-      count = 0
-      node_types = nnx.graph.iter_graph([module])
-      for path, value in node_types:
-        if isinstance(value, WanCausalConv3d):
-          count += 1
-      return count
-
-    self._conv_num = _count_conv3d(self.decoder)
-    self._conv_idx = [0]
-    self._feat_map = [None] * self._conv_num
-    # cache encode
-    self._enc_conv_num = _count_conv3d(self.encoder)
-    self._enc_conv_idx = [0]
-    self._enc_feat_map = [None] * self._enc_conv_num
-
-  def _encode(self, x: jax.Array):
-    self.clear_cache()
+  def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
+    feat_cache.clear_cache()
     if x.shape[-1] != 3:
       # reshape channel last for JAX
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
@@ -776,42 +783,46 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     t = x.shape[1]
     iter_ = 1 + (t - 1) // 4
     for i in range(iter_):
-      self._enc_conv_idx = [0]
+      feat_cache._enc_conv_idx = [0]
       if i == 0:
-        out = self.encoder(x[:, :1, :, :, :], feat_cache=self._enc_feat_map, feat_idx=self._enc_conv_idx)
+        out = self.encoder(x[:, :1, :, :, :], feat_cache=feat_cache._enc_feat_map, feat_idx=feat_cache._enc_conv_idx)
       else:
         out_ = self.encoder(
-            x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :], feat_cache=self._enc_feat_map, feat_idx=self._enc_conv_idx
+            x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :],
+            feat_cache=feat_cache._enc_feat_map,
+            feat_idx=feat_cache._enc_conv_idx,
         )
         out = jnp.concatenate([out, out_], axis=1)
     enc = self.quant_conv(out)
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
     enc = jnp.concatenate([mu, logvar], axis=-1)
-    self.clear_cache()
+    feat_cache.clear_cache()
     return enc
 
   def encode(
-      self, x: jax.Array, return_dict: bool = True
+      self, x: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """Encode video into latent distribution."""
-    h = self._encode(x)
+    h = self._encode(x, feat_cache)
     posterior = FlaxDiagonalGaussianDistribution(h)
     if not return_dict:
       return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
-  def _decode(self, z: jax.Array, return_dict: bool = True) -> Union[FlaxDecoderOutput, jax.Array]:
-    self.clear_cache()
+  def _decode(
+      self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
+  ) -> Union[FlaxDecoderOutput, jax.Array]:
+    feat_cache.clear_cache()
     iter_ = z.shape[1]
     x = self.post_quant_conv(z)
     for i in range(iter_):
-      self._conv_idx = [0]
+      feat_cache._conv_idx = [0]
       if i == 0:
-        out = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
+        out = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=feat_cache._feat_map, feat_idx=feat_cache._conv_idx)
       else:
-        out_ = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
-        
-        # This is to bypass an issue where frame[1] should be frame[2] and vise versa. 
+        out_ = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=feat_cache._feat_map, feat_idx=feat_cache._conv_idx)
+
+        # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
         # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
         # Most likely due to an incorrect reshaping in the decoder.
         fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
@@ -820,21 +831,23 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
           fm2 = jnp.expand_dims(fm2, axis=0)
           fm3 = jnp.expand_dims(fm3, axis=0)
           fm4 = jnp.expand_dims(fm4, axis=0)
-        
+
         out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
     out = jnp.clip(out, min=-1.0, max=1.0)
-    self.clear_cache()
+    feat_cache.clear_cache()
     if not return_dict:
       return (out,)
 
     return FlaxDecoderOutput(sample=out)
 
-  def decode(self, z: jax.Array, return_dict: bool = True) -> Union[FlaxDecoderOutput, jax.Array]:
+  def decode(
+      self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
+  ) -> Union[FlaxDecoderOutput, jax.Array]:
     if z.shape[-1] != self.z_dim:
       # reshape channel last for JAX
       z = jnp.transpose(z, (0, 2, 3, 4, 1))
       assert z.shape[-1] == self.z_dim, f"Expected input shape (N, D, H, W, {self.z_dim}, got {z.shape}"
-    decoded = self._decode(z).sample
+    decoded = self._decode(z, feat_cache).sample
     if not return_dict:
       return (decoded,)
     return FlaxDecoderOutput(sample=decoded)

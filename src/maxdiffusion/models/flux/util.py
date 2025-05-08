@@ -11,11 +11,7 @@ from huggingface_hub import hf_hub_download
 from jax import numpy as jnp
 from safetensors import safe_open
 
-from ..modeling_flax_pytorch_utils import (
-  rename_key,
-  rename_key_and_reshape_tensor,
-  torch2jax
-)
+from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax)
 from maxdiffusion import max_logging
 
 
@@ -35,6 +31,7 @@ class FluxParams:
   guidance_embed: bool
   rngs: Array
   param_dtype: DTypeLike
+
 
 @dataclass
 class ModelSpec:

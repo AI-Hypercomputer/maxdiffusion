@@ -29,6 +29,7 @@ from .. import max_logging
 
 logger = logging.get_logger(__name__)
 
+
 def validate_flax_state_dict(expected_pytree: dict, new_pytree: dict):
   """
   expected_pytree: dict - a pytree that comes from initializing the model.
@@ -54,6 +55,7 @@ def validate_flax_state_dict(expected_pytree: dict, new_pytree: dict):
     else:
       max_logging.log(f"key: {key} not found...")
 
+
 def torch2jax(torch_tensor: torch.Tensor) -> Array:
   is_bfloat16 = torch_tensor.dtype == torch.bfloat16
   if is_bfloat16:
@@ -66,6 +68,7 @@ def torch2jax(torch_tensor: torch.Tensor) -> Array:
   numpy_value = torch_tensor.numpy()
   jax_array = jnp.array(numpy_value, dtype=jnp.bfloat16 if is_bfloat16 else None)
   return jax_array
+
 
 def rename_key(key):
   regex = r"\w+[.]\d+"
@@ -132,7 +135,7 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
   if pt_tuple_key[-1] == "weight" and pt_tensor.ndim == 4:
     pt_tensor = pt_tensor.transpose(2, 3, 1, 0)
     return renamed_pt_tuple_key, pt_tensor
-  
+
   # 3d conv layer
   renamed_pt_tuple_key = pt_tuple_key[:-1] + ("kernel",)
   if pt_tuple_key[-1] == "weight" and pt_tensor.ndim == 5:

@@ -4,12 +4,8 @@ from maxdiffusion import max_logging
 from huggingface_hub import hf_hub_download
 from safetensors import safe_open
 from flax.traverse_util import flatten_dict, unflatten_dict
-from ..modeling_flax_pytorch_utils import (
-  rename_key,
-  rename_key_and_reshape_tensor,
-  torch2jax,
-  validate_flax_state_dict
-)
+from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
+
 
 def _tuple_str_to_int(in_tuple):
   out_list = []
@@ -25,7 +21,9 @@ def load_wan_vae(pretrained_model_name_or_path: str, eval_shapes: dict, device: 
   device = jax.devices(device)[0]
   with jax.default_device(device):
     if hf_download:
-      ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder="vae", filename="diffusion_pytorch_model.safetensors")
+      ckpt_path = hf_hub_download(
+          pretrained_model_name_or_path, subfolder="vae", filename="diffusion_pytorch_model.safetensors"
+      )
     max_logging.log(f"Load and port Wan 2.1 VAE on {device}")
 
     if ckpt_path is not None:
@@ -73,5 +71,5 @@ def load_wan_vae(pretrained_model_name_or_path: str, eval_shapes: dict, device: 
       jax.clear_caches()
     else:
       raise FileNotFoundError(f"Path {ckpt_path} was not found")
-    
+
     return flax_state_dict

@@ -110,30 +110,32 @@ def export_to_obj(mesh, output_obj_path: str = None):
   with open(output_obj_path, "w") as f:
     f.writelines("\n".join(combined_data))
 
+
 def _legacy_export_to_video(
     video_frames: Union[List[np.ndarray], List[PIL.Image.Image]], output_video_path: str = None, fps: int = 10
 ):
-    if is_opencv_available():
-        import cv2
-    else:
-        raise ImportError(BACKENDS_MAPPING["opencv"][1].format("export_to_video"))
-    if output_video_path is None:
-        output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
+  if is_opencv_available():
+    import cv2
+  else:
+    raise ImportError(BACKENDS_MAPPING["opencv"][1].format("export_to_video"))
+  if output_video_path is None:
+    output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
 
-    if isinstance(video_frames[0], np.ndarray):
-        video_frames = [(frame * 255).astype(np.uint8) for frame in video_frames]
+  if isinstance(video_frames[0], np.ndarray):
+    video_frames = [(frame * 255).astype(np.uint8) for frame in video_frames]
 
-    elif isinstance(video_frames[0], PIL.Image.Image):
-        video_frames = [np.array(frame) for frame in video_frames]
+  elif isinstance(video_frames[0], PIL.Image.Image):
+    video_frames = [np.array(frame) for frame in video_frames]
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    h, w, c = video_frames[0].shape
-    video_writer = cv2.VideoWriter(output_video_path, fourcc, fps=fps, frameSize=(w, h))
-    for i in range(len(video_frames)):
-        img = cv2.cvtColor(video_frames[i], cv2.COLOR_RGB2BGR)
-        video_writer.write(img)
+  fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+  h, w, c = video_frames[0].shape
+  video_writer = cv2.VideoWriter(output_video_path, fourcc, fps=fps, frameSize=(w, h))
+  for i in range(len(video_frames)):
+    img = cv2.cvtColor(video_frames[i], cv2.COLOR_RGB2BGR)
+    video_writer.write(img)
 
-    return output_video_path
+  return output_video_path
+
 
 def export_to_video(
     video_frames: Union[List[np.ndarray], List[PIL.Image.Image]],
@@ -143,64 +145,64 @@ def export_to_video(
     bitrate: Optional[int] = None,
     macro_block_size: Optional[int] = 16,
 ) -> str:
-    """
-    quality:
-        Video output quality. Default is 5. Uses variable bit rate. Highest quality is 10, lowest is 0. Set to None to
-        prevent variable bitrate flags to FFMPEG so you can manually specify them using output_params instead.
-        Specifying a fixed bitrate using `bitrate` disables this parameter.
+  """
+  quality:
+      Video output quality. Default is 5. Uses variable bit rate. Highest quality is 10, lowest is 0. Set to None to
+      prevent variable bitrate flags to FFMPEG so you can manually specify them using output_params instead.
+      Specifying a fixed bitrate using `bitrate` disables this parameter.
 
-    bitrate:
-        Set a constant bitrate for the video encoding. Default is None causing `quality` parameter to be used instead.
-        Better quality videos with smaller file sizes will result from using the `quality` variable bitrate parameter
-        rather than specifiying a fixed bitrate with this parameter.
+  bitrate:
+      Set a constant bitrate for the video encoding. Default is None causing `quality` parameter to be used instead.
+      Better quality videos with smaller file sizes will result from using the `quality` variable bitrate parameter
+      rather than specifiying a fixed bitrate with this parameter.
 
-    macro_block_size:
-        Size constraint for video. Width and height, must be divisible by this number. If not divisible by this number
-        imageio will tell ffmpeg to scale the image up to the next closest size divisible by this number. Most codecs
-        are compatible with a macroblock size of 16 (default), some can go smaller (4, 8). To disable this automatic
-        feature set it to None or 1, however be warned many players can't decode videos that are odd in size and some
-        codecs will produce poor results or fail. See https://en.wikipedia.org/wiki/Macroblock.
-    """
-    # TODO: Dhruv. Remove by Diffusers release 0.33.0
-    # Added to prevent breaking existing code
-    if not is_imageio_available():
-        logger.warning(
-            (
-                "It is recommended to use `export_to_video` with `imageio` and `imageio-ffmpeg` as a backend. \n"
-                "These libraries are not present in your environment. Attempting to use legacy OpenCV backend to export video. \n"
-                "Support for the OpenCV backend will be deprecated in a future Diffusers version"
-            )
+  macro_block_size:
+      Size constraint for video. Width and height, must be divisible by this number. If not divisible by this number
+      imageio will tell ffmpeg to scale the image up to the next closest size divisible by this number. Most codecs
+      are compatible with a macroblock size of 16 (default), some can go smaller (4, 8). To disable this automatic
+      feature set it to None or 1, however be warned many players can't decode videos that are odd in size and some
+      codecs will produce poor results or fail. See https://en.wikipedia.org/wiki/Macroblock.
+  """
+  # TODO: Dhruv. Remove by Diffusers release 0.33.0
+  # Added to prevent breaking existing code
+  if not is_imageio_available():
+    logger.warning(
+        (
+            "It is recommended to use `export_to_video` with `imageio` and `imageio-ffmpeg` as a backend. \n"
+            "These libraries are not present in your environment. Attempting to use legacy OpenCV backend to export video. \n"
+            "Support for the OpenCV backend will be deprecated in a future Diffusers version"
         )
-        return _legacy_export_to_video(video_frames, output_video_path, fps)
+    )
+    return _legacy_export_to_video(video_frames, output_video_path, fps)
 
-    if is_imageio_available():
-        import imageio
-    else:
-        raise ImportError(BACKENDS_MAPPING["imageio"][1].format("export_to_video"))
+  if is_imageio_available():
+    import imageio
+  else:
+    raise ImportError(BACKENDS_MAPPING["imageio"][1].format("export_to_video"))
 
-    try:
-        imageio.plugins.ffmpeg.get_exe()
-    except AttributeError:
-        raise AttributeError(
-            (
-                "Found an existing imageio backend in your environment. Attempting to export video with imageio. \n"
-                "Unable to find a compatible ffmpeg installation in your environment to use with imageio. Please install via `pip install imageio-ffmpeg"
-            )
+  try:
+    imageio.plugins.ffmpeg.get_exe()
+  except AttributeError:
+    raise AttributeError(
+        (
+            "Found an existing imageio backend in your environment. Attempting to export video with imageio. \n"
+            "Unable to find a compatible ffmpeg installation in your environment to use with imageio. Please install via `pip install imageio-ffmpeg"
         )
+    )
 
-    if output_video_path is None:
-        output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
+  if output_video_path is None:
+    output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
 
-    if isinstance(video_frames[0], np.ndarray):
-        video_frames = [(frame * 255).astype(np.uint8) for frame in video_frames]
+  if isinstance(video_frames[0], np.ndarray):
+    video_frames = [(frame * 255).astype(np.uint8) for frame in video_frames]
 
-    elif isinstance(video_frames[0], PIL.Image.Image):
-        video_frames = [np.array(frame) for frame in video_frames]
+  elif isinstance(video_frames[0], PIL.Image.Image):
+    video_frames = [np.array(frame) for frame in video_frames]
 
-    with imageio.get_writer(
-        output_video_path, fps=fps, quality=quality, bitrate=bitrate, macro_block_size=macro_block_size
-    ) as writer:
-        for frame in video_frames:
-            writer.append_data(frame)
+  with imageio.get_writer(
+      output_video_path, fps=fps, quality=quality, bitrate=bitrate, macro_block_size=macro_block_size
+  ) as writer:
+    for frame in video_frames:
+      writer.append_data(frame)
 
-    return output_video_path
+  return output_video_path
