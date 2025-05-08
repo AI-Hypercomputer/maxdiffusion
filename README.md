@@ -53,7 +53,6 @@ MaxDiffusion supports
   - [Training](#training)
   - [Dreambooth](#dreambooth)
   - [Inference](#inference)
-  - [Wan 2.1](#wan)
   - [Flux](#flux)
     - [Fused Attention for GPU:](#fused-attention-for-gpu)
   - [Hyper SDXL LoRA](#hyper-sdxl-lora)
@@ -171,12 +170,6 @@ To generate images, run the following command:
 - **Stable Diffusion 2.1**
   ```bash
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
-  ```
-
-  ## Wan
-
-  ```bash
-  python src/maxdiffusion/generate_wan.py src/maxdiffusion/configs/base_wan_t2v.yml run_name="wan-test" output_dir="gs://jfacevedo-maxdiffusion" jax_cache_dir="/tmp/"
   ```
   
   ## Flux
