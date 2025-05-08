@@ -16,7 +16,6 @@
 
 from pathlib import Path
 import time
-from functools import partial
 import datetime
 import os
 import numpy as np
@@ -168,7 +167,7 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
     self.rng, train_rngs = jax.random.split(self.rng)
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       p_train_step = jax.jit(
-          partial(_train_step, config=self.config, pipeline=pipeline, params=params),
+          max_utils.get_train_step_partial_with_signature(_train_step, pipeline=pipeline, params=params, config=self.config),
           in_shardings=(state_shardings["unet_state_shardings"], None, data_shardings, None),
           out_shardings=(state_shardings["unet_state_shardings"], None, None, None),
           donate_argnums=(0,),
