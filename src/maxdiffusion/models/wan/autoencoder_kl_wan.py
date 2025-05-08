@@ -19,11 +19,10 @@ from typing import Tuple, List, Sequence, Union, Optional
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from ...configuration_utils import ConfigMixin, flax_register_to_config
+from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin
 from ... import common_types
 from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput)
-import numpy as np
 BlockSizes = common_types.BlockSizes
 
 CACHE_T = 2
@@ -60,13 +59,6 @@ class WanCausalConv3d(nnx.Module):
       stride: Union[int, Tuple[int, int, int]] = 1,
       padding: Union[int, Tuple[int, int, int]] = 0,
       use_bias: bool = True,
-      flash_min_seq_length: int = 4096,
-      flash_block_sizes: BlockSizes = None,
-      mesh: jax.sharding.Mesh = None,
-      dtype: jnp.dtype = jnp.float32,
-      weights_dtype: jnp.dtype = jnp.float32,
-      precision: jax.lax.Precision = None,
-      attention: str = "dot_product",
   ):
     self.kernel_size = _canonicalize_tuple(kernel_size, 3, "kernel_size")
     self.stride = _canonicalize_tuple(stride, 3, "stride")
@@ -191,13 +183,6 @@ class ZeroPaddedConv2D(nnx.Module):
       rngs: nnx.Rngs,
       kernel_size: Union[int, Tuple[int, int, int]],
       stride: Union[int, Tuple[int, int, int]] = 1,
-      flash_min_seq_length: int = 4096,
-      flash_block_sizes: BlockSizes = None,
-      mesh: jax.sharding.Mesh = None,
-      dtype: jnp.dtype = jnp.float32,
-      weights_dtype: jnp.dtype = jnp.float32,
-      precision: jax.lax.Precision = None,
-      attention: str = "dot_product",
   ):
     self.conv = nnx.Conv(dim, dim, kernel_size=kernel_size, strides=stride, use_bias=True, rngs=rngs)
 
@@ -212,13 +197,6 @@ class WanResample(nnx.Module):
       dim: int,
       mode: str,
       rngs: nnx.Rngs,
-      flash_min_seq_length: int = 4096,
-      flash_block_sizes: BlockSizes = None,
-      mesh: jax.sharding.Mesh = None,
-      dtype: jnp.dtype = jnp.float32,
-      weights_dtype: jnp.dtype = jnp.float32,
-      precision: jax.lax.Precision = None,
-      attention: str = "dot_product",
   ):
     self.dim = dim
     self.mode = mode
@@ -548,7 +526,6 @@ class WanEncoder3d(nnx.Module):
       feat_idx[0] += 1
     else:
       x = self.conv_in(x)
-    # (1, 1, 480, 720, 96)
     for layer in self.down_blocks:
       if feat_cache is not None:
         x = layer(x, feat_cache, feat_idx)
