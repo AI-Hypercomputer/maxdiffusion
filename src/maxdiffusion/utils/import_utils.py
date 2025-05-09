@@ -51,6 +51,21 @@ DIFFUSERS_SLOW_IMPORT = DIFFUSERS_SLOW_IMPORT in ENV_VARS_TRUE_VALUES
 
 STR_OPERATION_TO_FUNC = {">": op.gt, ">=": op.ge, "==": op.eq, "!=": op.ne, "<=": op.le, "<": op.lt}
 
+
+def _is_package_available(pkg_name: str):
+  pkg_exists = importlib.util.find_spec(pkg_name) is not None
+  pkg_version = "N/A"
+
+  if pkg_exists:
+    try:
+      pkg_version = importlib_metadata.version(pkg_name)
+      logger.debug(f"Successfully imported {pkg_name} version {pkg_version}")
+    except (ImportError, importlib_metadata.PackageNotFoundError):
+      pkg_exists = False
+
+  return pkg_exists, pkg_version
+
+
 _torch_version = "N/A"
 if USE_TORCH in ENV_VARS_TRUE_AND_AUTO_VALUES and USE_TF not in ENV_VARS_TRUE_VALUES:
   _torch_available = importlib.util.find_spec("torch") is not None
@@ -105,6 +120,7 @@ try:
 except importlib_metadata.PackageNotFoundError:
   _transformers_available = False
 
+_imageio_available, _imageio_version = _is_package_available("imageio")
 
 _inflect_available = importlib.util.find_spec("inflect") is not None
 try:
@@ -283,6 +299,10 @@ try:
   logger.debug(f"Successfully imported peft version {_peft_version}")
 except importlib_metadata.PackageNotFoundError:
   _peft_available = False
+
+
+def is_imageio_available():
+  return _imageio_available
 
 
 def is_torch_available():
@@ -486,6 +506,11 @@ INVISIBLE_WATERMARK_IMPORT_ERROR = """
 {0} requires the invisible-watermark library but it was not found in your environment. You can install it with pip: `pip install invisible-watermark>=0.2.0`
 """
 
+# docstyle-ignore
+IMAGEIO_IMPORT_ERROR = """
+{0} requires the imageio library and ffmpeg but it was not found in your environment. You can install it with pip: `pip install imageio imageio-ffmpeg`
+"""
+
 
 BACKENDS_MAPPING = OrderedDict(
     [
@@ -506,6 +531,7 @@ BACKENDS_MAPPING = OrderedDict(
         ("compel", (is_compel_available, COMPEL_IMPORT_ERROR)),
         ("ftfy", (is_ftfy_available, FTFY_IMPORT_ERROR)),
         ("torchsde", (is_torchsde_available, TORCHSDE_IMPORT_ERROR)),
+        ("imageio", (is_imageio_available, IMAGEIO_IMPORT_ERROR)),
         ("invisible_watermark", (is_invisible_watermark_available, INVISIBLE_WATERMARK_IMPORT_ERROR)),
     ]
 )

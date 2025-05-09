@@ -464,7 +464,8 @@ class ConfigMixin:
     # remove flax internal keys
     if hasattr(cls, "_flax_internal_args"):
       for arg in cls._flax_internal_args:
-        expected_keys.remove(arg)
+        if arg in expected_keys:
+          expected_keys.remove(arg)
 
     # 2. Remove attributes that cannot be expected from expected config attributes
     # remove keys to be ignored

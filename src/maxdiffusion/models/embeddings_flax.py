@@ -91,7 +91,8 @@ class FlaxTimesteps(nn.Module):
 
   dim: int = 32
   flip_sin_to_cos: bool = False
-  freq_shift: float = 1
+  freq_shift: float = 1.0
+  scale: int = 1
 
   @nn.compact
   def __call__(self, timesteps):

@@ -171,6 +171,7 @@ To generate images, run the following command:
   ```bash
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
   ```
+  
   ## Flux
 
   First make sure you have permissions to access the Flux repos in Huggingface.

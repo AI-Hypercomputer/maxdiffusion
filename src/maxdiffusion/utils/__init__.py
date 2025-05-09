@@ -83,7 +83,7 @@ from .import_utils import (
     is_xformers_available,
     requires_backends,
 )
-from .loading_utils import load_image
+from .loading_utils import load_image, load_video
 from .logging import get_logger
 from .outputs import BaseOutput
 from .peft_utils import (
@@ -102,7 +102,6 @@ from .state_dict_utils import (
     convert_state_dict_to_peft,
     convert_unet_state_dict_to_peft,
 )
-
 
 logger = get_logger(__name__)
 
