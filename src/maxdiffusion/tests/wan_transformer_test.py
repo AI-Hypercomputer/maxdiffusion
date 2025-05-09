@@ -21,6 +21,7 @@ from absl.testing import absltest
 from flax import nnx
 
 from ..models.wan.transformers.transformer_wan import WanRotaryPosEmbed
+from ..models.embeddings_flax import NNXTimestepEmbedding
 
 class WanTransformerTest(unittest.TestCase):
   def setUp(self):
@@ -41,7 +42,19 @@ class WanTransformerTest(unittest.TestCase):
     )
     dummy_output = wan_rot_embed(dummy_hidden_states)
     assert dummy_output.shape == (1, 1, 75600, 64)
-    # output shape should be torch.Size([1, 1, 75600, 64])
+  
+  def test_nnx_timestep_embedding(self):
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+
+    dummy_sample = jnp.ones((1, 256))
+    layer = NNXTimestepEmbedding(
+      rngs=rngs,
+      in_channels=256,
+      time_embed_dim=5120
+    )
+    dummy_output = layer(dummy_sample)
+    assert dummy_output.shape == (1, 5120)
 
 if __name__ == "__main__":
   absltest.main()

@@ -20,22 +20,13 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from ...configuration_utils import ConfigMixin
-from ..modeling_flax_utils import FlaxModelMixin
+from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
 from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput)
 
 BlockSizes = common_types.BlockSizes
 
 CACHE_T = 2
-
-_ACTIVATIONS = {"swish": jax.nn.silu, "silu": jax.nn.silu, "relu": jax.nn.relu, "gelu": jax.nn.gelu, "mish": jax.nn.mish}
-
-
-def get_activation(name: str):
-  func = _ACTIVATIONS.get(name)
-  if func is None:
-    raise ValueError(f"Unknown activation function: {name}")
-  return func
 
 
 # Helper to ensure kernel_size, stride, padding are tuples of 3 integers

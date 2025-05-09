@@ -14,14 +14,14 @@
  limitations under the License.
 """
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Union, Any
 import jax
 import jax.numpy as jnp
 from flax import nnx
 from .... import common_types, max_logging
 from ...modeling_flax_utils import FlaxModelMixin
-from ....configuration_utils import ConfigMixin
-from ...embeddings_flax import get_1d_rotary_pos_embed
+from ....configuration_utils import ConfigMixin, register_to_config
+from ...embeddings_flax import get_1d_rotary_pos_embed, NNXFlaxTimesteps, NNXTimestepEmbedding
 
 BlockSizes = common_types.BlockSizes
 
@@ -65,7 +65,7 @@ class WanRotaryPosEmbed(nnx.Module):
     cumulative_sizes = jnp.cumsum(jnp.array(sizes))
     split_indices = cumulative_sizes[:-1]
     freqs_split = jnp.split(self.freqs, split_indices, axis=1)
-    
+
     freqs_f = jnp.expand_dims(jnp.expand_dims(freqs_split[0][:ppf], axis=1), axis=1)
     freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, freqs_split[0].shape[-1]))
 
@@ -78,6 +78,40 @@ class WanRotaryPosEmbed(nnx.Module):
     freqs_concat = jnp.concatenate([freqs_f, freqs_h, freqs_w], axis=-1)
     freqs_final = jnp.reshape(freqs_concat, (1, 1, ppf * pph * ppw, -1))
     return freqs_final
+
+
+class WanTimeTextImageEmbedding(nnx.Module):
+  def __init__(
+    self,
+    rngs: nnx.Rngs,
+    dim: int,
+    time_freq_dim: int,
+    time_proj_dim: int,
+    text_embed_dim: int,
+    image_embed_dim: Optional[int] = None,
+    pos_embed_seq_len: Optional[int] = None,
+    dtype: jnp.dtype = jnp.float32,
+    weights_dtype: jnp.dtype = jnp.float32,
+    precision: jax.lax.Precision = None,
+  ):
+    self.timesteps_proj = NNXFlaxTimesteps(
+      dim=time_freq_dim, flip_sin_to_cos=True, freq_shift=0
+    )
+    self.time_embedder = NNXTimestepEmbedding(
+      rngs=rngs, in_channels=time_freq_dim, time_embed_dim=dim,
+      dtype=dtype, weights_dtype=weights_dtype, precision=precision
+    )
+  
+  def __call__(
+    self,
+    timestep: jax.Array,
+    encoder_hidden_states: jax.Array,
+    encoder_hidden_states_image: Optional[jax.Array] = None
+  ):
+    timestep = self.timesteps_proj(timestep)
+    temb = self.time_embedder(timestep)
+    breakpoint()
+
 
 
 class WanTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
@@ -120,25 +154,28 @@ class WanTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
 
 class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
-
+  
+  @register_to_config
   def __init__(
       self,
       rngs: nnx.Rngs,
       model_type="t2v",
-      patch_size=(1, 2, 2),
-      text_len=512,
-      in_dim=16,
-      dim=2048,
-      ffn_dim=8192,
-      freq_dim=256,
-      text_dim=4096,
-      out_dim=16,
-      num_heads=16,
-      num_layers=32,
-      window_size=(-1, -1),
-      qk_norm=True,
-      cross_attn_norm=True,
-      eps=1e-6,
+      patch_size: Tuple[int] = (1, 2, 2),
+      num_attention_heads: int = 40,
+      attention_head_dim: int = 128,
+      in_channels: int = 16,
+      out_channels: int = 16,
+      text_dim: int = 4096,
+      freq_dim: int = 256,
+      ffn_dim: int = 13824,
+      num_layers: int = 40,
+      cross_attn_norm: bool = True,
+      qk_norm: Optional[str] = "rms_norm_across_heads",
+      eps: float = 1e-6,
+      image_dim: Optional[int] = None,
+      added_kn_proj_dim: Optional[int] = None,
+      rope_max_seq_len: int = 1024,
+      pos_embed_seq_len: Optional[int] = None,
       flash_min_seq_length: int = 4096,
       flash_block_sizes: BlockSizes = None,
       mesh: jax.sharding.Mesh = None,
@@ -147,18 +184,62 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
   ):
-    self.path_embedding = nnx.Conv(
-        in_dim,
-        dim,
+    
+    inner_dim = num_attention_heads * attention_head_dim
+    out_channels = out_channels or in_channels
+
+    #1. Patch & position embedding
+    self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
+    self.patch_embedding = nnx.Conv(
+        in_channels,
+        inner_dim,
+        rngs=rngs,
         kernel_size=patch_size,
         strides=patch_size,
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("batch",)),
-        rngs=rngs,
     )
 
-  def __call__(self, x):
-    x = self.path_embedding(x)
-    return x
+    # 2. Condition embeddings
+    # image_embedding_dim=1280 for I2V model
+    self.condition_embedder = WanTimeTextImageEmbedding(
+      rngs=rngs,
+      dim=inner_dim,
+      time_freq_dim=freq_dim,
+      time_proj_dim=inner_dim * 6,
+      text_embed_dim=text_dim,
+      image_embed_dim=image_dim,
+      pos_embed_seq_len=pos_embed_seq_len
+    )
+
+  def __call__(
+    self,
+    hidden_states: jax.Array,
+    timestep: jax.Array,
+    encoder_hidden_states: jax.Array,
+    encoder_hidden_states_image: Optional[jax.Array] = None,
+    return_dict: bool = True,
+    attention_kwargs: Optional[Dict[str, Any]] = None,
+  ) -> Union[jax.Array, Dict[str, jax.Array]]:
+    batch_size, num_frames, height, width, num_channels = hidden_states.shape
+    p_t, p_h, p_w = self.config.patch_size
+    post_patch_num_frames = num_frames // p_t
+    post_patch_height = height // p_h
+    post_patch_width = width // p_w
+
+
+    rotary_emb = self.rope(hidden_states)
+    hidden_states = self.patch_embedding(hidden_states)
+    hidden_states = jax.lax.collapse(hidden_states, 1, -1)
+
+    temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
+      timestep, encoder_hidden_states, encoder_hidden_states_image
+    )
+    #hidden_states = 
+    # Torch shape: ([1, 5120, 21, 45, 80])
+    # Jax shape: (1, 21, 45, 80, 5120) so channels is 5120
+
+
+    return hidden_states
