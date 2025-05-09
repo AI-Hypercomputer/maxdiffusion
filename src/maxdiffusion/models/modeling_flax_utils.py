@@ -42,8 +42,8 @@ from .modeling_flax_pytorch_utils import convert_pytorch_state_dict_to_flax
 
 
 logger = logging.get_logger(__name__)
-
-_ACTIVATIONS = {"swish": jax.nn.silu, "silu": jax.nn.silu, "relu": jax.nn.relu, "gelu": jax.nn.gelu, "mish": jax.nn.mish}
+# gelu and gelu_tanh both use approximate=True by default
+_ACTIVATIONS = {"swish": jax.nn.silu, "silu": jax.nn.silu, "relu": jax.nn.relu, "gelu": jax.nn.gelu, "gelu_tanh" : jax.nn.gelu, "mish": jax.nn.mish}
 
 def get_activation(name: str):
   func = _ACTIVATIONS.get(name)

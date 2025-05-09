@@ -230,6 +230,51 @@ def get_1d_rotary_pos_embed(
     out = jax.lax.complex(jnp.ones_like(freqs), freqs)
   return out
 
+class NNXPixArtAlphaTextProjection(nnx.Module):
+  def __init__(
+    self,
+    rngs: nnx.Rngs,
+    in_features: int,
+    hidden_size: int,
+    out_features: int = None,
+    act_fn: str = "gelu_tanh",
+    dtype: jnp.dtype = jnp.float32,
+    weights_dtype: jnp.dtype = jnp.float32,
+    precision: jax.lax.Precision = None
+  ):
+    if out_features is None:
+      out_features = hidden_size
+    
+    self.linear_1 = nnx.Linear(
+      rngs=rngs,
+      in_features=in_features,
+      out_features=hidden_size,
+      use_bias=True,
+      dtype=dtype,
+      param_dtype=weights_dtype,
+      precision=precision,
+      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "mlp",)),
+      bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+    )
+    self.act_1 = get_activation(act_fn)
+
+    self.linear_2 = nnx.Linear(
+      rngs=rngs,
+      in_features=hidden_size,
+      out_features=out_features,
+      use_bias=True,
+      dtype=dtype,
+      param_dtype=weights_dtype,
+      precision=precision,
+      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("mlp", "embed",)),
+      bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+    )
+  
+  def __call__(self, caption):
+    hidden_states = self.linear_1(caption)
+    hidden_states = self.act_1(hidden_states)
+    hidden_states = self.linear_2(hidden_states)
+    return hidden_states
 
 class PixArtAlphaTextProjection(nn.Module):
   """

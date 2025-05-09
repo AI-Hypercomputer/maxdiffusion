@@ -19,9 +19,14 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from .... import common_types, max_logging
-from ...modeling_flax_utils import FlaxModelMixin
+from ...modeling_flax_utils import FlaxModelMixin, get_activation
 from ....configuration_utils import ConfigMixin, register_to_config
-from ...embeddings_flax import get_1d_rotary_pos_embed, NNXFlaxTimesteps, NNXTimestepEmbedding
+from ...embeddings_flax import (
+  get_1d_rotary_pos_embed,
+  NNXFlaxTimesteps,
+  NNXTimestepEmbedding,
+  NNXPixArtAlphaTextProjection
+)
 
 BlockSizes = common_types.BlockSizes
 
@@ -101,6 +106,23 @@ class WanTimeTextImageEmbedding(nnx.Module):
       rngs=rngs, in_channels=time_freq_dim, time_embed_dim=dim,
       dtype=dtype, weights_dtype=weights_dtype, precision=precision
     )
+    self.act_fn = get_activation("silu")
+    self.time_proj = nnx.Linear(
+      rngs=rngs,
+      in_features=dim,
+      out_features=time_proj_dim,
+      dtype=dtype,
+      param_dtype=weights_dtype,
+      precision=precision,
+      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "mlp",)),
+      bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+    )
+    self.text_embedder = NNXPixArtAlphaTextProjection(
+      rngs=rngs,
+      in_features=text_embed_dim,
+      hidden_size=dim,
+      act_fn="gelu_tanh",
+    )
   
   def __call__(
     self,
@@ -110,7 +132,13 @@ class WanTimeTextImageEmbedding(nnx.Module):
   ):
     timestep = self.timesteps_proj(timestep)
     temb = self.time_embedder(timestep)
-    breakpoint()
+    
+    timestep_proj = self.time_proj(self.act_fn(temb))
+
+    encoder_hidden_states = self.text_embedder(encoder_hidden_states)
+    if encoder_hidden_states_image is not None:
+      raise NotImplementedError("currently img2vid is not supported")
+    return temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image
 
 
 
