@@ -102,7 +102,13 @@ class FlaxTimesteps(nn.Module):
 
 
 def get_1d_rotary_pos_embed(
-    dim: int, pos: Union[jnp.array, int], theta: float = 10000.0, linear_factor=1.0, ntk_factor=1.0, freqs_dtype=jnp.float32
+    dim: int,
+    pos: Union[jnp.array, int],
+    theta: float = 10000.0,
+    linear_factor=1.0,
+    ntk_factor=1.0,
+    freqs_dtype=jnp.float32,
+    use_real: bool = True
 ):
   """
   Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
@@ -115,10 +121,14 @@ def get_1d_rotary_pos_embed(
   theta = theta * ntk_factor
   freqs = 1.0 / (theta ** (jnp.arange(0, dim, 2, dtype=freqs_dtype)[: (dim // 2)] / dim)) / linear_factor
   freqs = jnp.outer(pos, freqs)
-  freqs_cos = jnp.cos(freqs)
-  freqs_sin = jnp.sin(freqs)
-  out = jnp.stack([freqs_cos, -freqs_sin, freqs_sin, freqs_cos], axis=-1)
-
+  if use_real:
+    # Flux
+    freqs_cos = jnp.cos(freqs)
+    freqs_sin = jnp.sin(freqs)
+    out = jnp.stack([freqs_cos, -freqs_sin, freqs_sin, freqs_cos], axis=-1)
+  else:
+    # Wan 2.1
+    out = jax.lax.complex(jnp.ones_like(freqs), freqs)
   return out
 
 
