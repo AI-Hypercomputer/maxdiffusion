@@ -22,6 +22,7 @@ from flax import nnx
 
 from ..models.wan.transformers.transformer_wan import WanRotaryPosEmbed, WanTimeTextImageEmbedding
 from ..models.embeddings_flax import NNXTimestepEmbedding, NNXPixArtAlphaTextProjection
+from ..models.normalization_flax import FP32LayerNorm
 
 class WanTransformerTest(unittest.TestCase):
   def setUp(self):
@@ -67,6 +68,21 @@ class WanTransformerTest(unittest.TestCase):
     )
     dummy_output = layer(dummy_sample)
     assert dummy_output.shape == (1, 5120)
+
+  def test_fp32_layer_norm(self):
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    batch_size = 1
+    dummy_hidden_states = jnp.ones((batch_size, 75600, 5120))
+    # expected same output shape with same dtype
+    layer = FP32LayerNorm(
+      rngs=rngs,
+      dim=5120,
+      eps=1e-6,
+      elementwise_affine=False
+    )
+    dummy_output = layer(dummy_hidden_states)
+    assert dummy_output.shape == dummy_hidden_states.shape    
 
   def test_wan_time_text_embedding(self):
     key = jax.random.key(0)

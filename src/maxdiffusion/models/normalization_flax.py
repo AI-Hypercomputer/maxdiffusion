@@ -17,6 +17,7 @@
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
+from flax import nnx
 
 
 class AdaLayerNormContinuous(nn.Module):
@@ -147,3 +148,20 @@ class AdaLayerNormZeroSingle(nn.Module):
     else:
       raise ValueError(f"Unsupported `norm_type` ({self.norm_type}) provided. Supported ones are: 'layer_norm'.")
     return x, gate_msa
+
+class FP32LayerNorm(nnx.Module):
+  def __init__(self, rngs: nnx.Rngs, dim: int, eps : float, elementwise_affine: bool):
+    self.layer_norm = nnx.LayerNorm(
+      rngs=rngs,
+      num_features=dim,
+      epsilon=eps,
+      use_bias=elementwise_affine,
+      use_scale=elementwise_affine,
+      param_dtype=jnp.float32,
+      dtype=jnp.float32
+    )
+  def __call__(self, inputs: jax.Array) -> jax.Array:
+    origin_dtype = inputs.dtype
+    return self.layer_norm(
+      inputs.astype(dtype=jnp.float32)
+    ).astype(dtype=origin_dtype)
