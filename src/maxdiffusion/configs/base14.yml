@@ -92,6 +92,7 @@ diffusion_scheduler_config: {
 
 # Hardware
 hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
+skip_jax_distributed_system: False
 
 base_output_directory: ""
 

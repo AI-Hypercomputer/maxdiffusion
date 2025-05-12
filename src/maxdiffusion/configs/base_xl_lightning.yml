@@ -71,7 +71,7 @@ diffusion_scheduler_config: {
 
 # Hardware
 hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
-
+skip_jax_distributed_system: False
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
 base_output_directory: ""
