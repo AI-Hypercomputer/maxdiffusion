@@ -114,6 +114,7 @@ base_output_directory: ""
 
 # Hardware
 hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
+skip_jax_distributed_system: False
 
 # Parallelism
 mesh_axes: ['data', 'fsdp', 'tensor']

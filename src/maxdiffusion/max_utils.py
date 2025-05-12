@@ -601,6 +601,9 @@ def initialize_jax_for_gpu():
 
 
 def maybe_initialize_jax_distributed_system(raw_keys):
+  if raw_keys["skip_jax_distributed_system"]:
+    max_logging.log("Skipping jax distributed system due to skip_jax_distributed_system=True flag.")
+    return
   if is_gpu_backend(raw_keys):
     max_logging.log("Attempting to initialize the jax distributed system for GPU backend...")
     initialize_jax_for_gpu()
