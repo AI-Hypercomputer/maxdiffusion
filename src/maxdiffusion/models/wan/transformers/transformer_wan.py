@@ -28,6 +28,7 @@ from ...embeddings_flax import (
   NNXPixArtAlphaTextProjection
 )
 from ...normalization_flax import FP32LayerNorm
+from ...attention_flax import FlaxWanAttention
 
 BlockSizes = common_types.BlockSizes
 
@@ -181,6 +182,89 @@ class WanTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       rope_max_seq_len
     )
 
+class ApproximateGELU(nnx.Module):
+  r"""
+  The approximate form of the Gaussian Error Linear Unit (GELU). For more details, see section 2 of this
+  [paper](https://arxiv.org/abs/1606.08415).
+  """
+  def __init__(
+    self,
+    rngs: nnx.Rngs,
+    dim_in: int,
+    dim_out: int,
+    bias: bool,
+    dtype: jnp.dtype = jnp.float32,
+    weights_dtype: jnp.dtype = jnp.float32,
+    precision: jax.lax.Precision = None,
+  ):
+    self.proj = nnx.Linear(
+      rngs=rngs,
+      in_features=dim_in,
+      out_features=dim_out,
+      use_bias=bias,
+      dtype=dtype,
+      param_dtype=weights_dtype,
+      precision=precision,
+      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "mlp",)),
+      bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+    )
+  
+  def __call__(self, x: jax.Array) -> jax.Array:
+    x = self.proj(x)
+    return x * jax.nn.sigmoid(1.702 * x)
+  
+
+class WanFeedForward(nnx.Module):
+  def __init__(
+    self,
+    rngs: nnx.Rngs,
+    dim: int,
+    dim_out: Optional[int] = None,
+    mult: int = 4,
+    dropout: float = 0.0,
+    activation_fn: str = "geglu",
+    final_dropout: bool = False,
+    inner_dim: int = None,
+    bias: bool = True,
+    dtype: jnp.dtype = jnp.float32,
+    weights_dtype: jnp.dtype = jnp.float32,
+    precision: jax.lax.Precision = None,
+  ):
+    if inner_dim is None:
+      inner_dim = int(dim * mult)
+    dim_out = dim_out if dim_out is not None else dim
+    
+    self.act_fn = None
+    if activation_fn == "gelu-approximate":
+      self.act_fn = ApproximateGELU(
+        rngs=rngs,
+        dim_in=dim,
+        dim_out=inner_dim,
+        bias=bias,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision
+      )
+    else:
+      raise NotImplementedError(f"{activation_fn} is not implemented.")
+
+    self.proj_out = nnx.Linear(
+      rngs=rngs,
+      in_features=inner_dim,
+      out_features=dim_out,
+      use_bias=bias,
+      dtype=dtype,
+      param_dtype=weights_dtype,
+      precision=precision,
+      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("mlp", "embed",)),
+      bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+    )
+  
+  def __call__(self, hidden_states: jax.Array) -> jax.Array:
+    hidden_states = self.act_fn(hidden_states)
+    return self.proj_out(hidden_states)
+
+
 
 class WanTransformerBlock(nnx.Module):
   def __init__(
@@ -192,17 +276,107 @@ class WanTransformerBlock(nnx.Module):
       qk_norm: str = "rms_norm_across_heads",
       cross_attn_norm: bool = False,
       eps: float = 1e-6,
-      added_kv_proj_dim: Optional[int] = None
+      # In torch, this is none, so it can be ignored.  
+      # added_kv_proj_dim: Optional[int] = None,
+      flash_min_seq_length: int = 4096,
+      flash_block_sizes: BlockSizes = None,
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
+      attention: str = "dot_product",
+
   ):
+    
+    # 1. Self-attention
     self.norm1 = FP32LayerNorm(
+      rngs=rngs,
       dim=dim,
       eps=eps,
       elementwise_affine=False
     )
-  
-  def __call__(self):
-    pass
+    self.attn1 = FlaxWanAttention(
+      rngs=rngs,
+      query_dim=dim,
+      heads=num_heads,
+      dim_head= dim // num_heads,
+      qk_norm=qk_norm,
+      eps=eps,
+      flash_min_seq_length=flash_min_seq_length,
+      flash_block_sizes=flash_block_sizes,
+      mesh=mesh,
+      dtype=dtype,
+      weights_dtype=weights_dtype,
+      precision=precision,
+      attention_kernel=attention
+    )
 
+    # 1. Cross-attention
+    self.attn2 = FlaxWanAttention(
+      rngs=rngs,
+      query_dim=dim,
+      heads=num_heads,
+      dim_head= dim // num_heads,
+      qk_norm=qk_norm,
+      eps=eps,
+      flash_min_seq_length=flash_min_seq_length,
+      flash_block_sizes=flash_block_sizes,
+      mesh=mesh,
+      dtype=dtype,
+      weights_dtype=weights_dtype,
+      precision=precision,
+      attention_kernel=attention
+    )
+    assert cross_attn_norm == True
+    self.norm2 = FP32LayerNorm(
+      rngs=rngs,
+      dim=dim,
+      eps=eps,
+      elementwise_affine=True
+    )
+
+    # 3. Feed-forward
+    self.ffn = WanFeedForward(
+      rngs=rngs,
+      dim=dim,
+      inner_dim=ffn_dim,
+      activation_fn="gelu-approximate",
+      dtype=dtype,
+      weights_dtype=weights_dtype,
+      precision=precision
+    )
+    self.norm3 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=False)
+    
+    key = rngs.params()
+    self.scale_shift_table = nnx.Param(jax.random.normal(key, (1, 6, dim)) / dim**0.5)
+  
+  def __call__(
+    self,
+    hidden_states: jax.Array,
+    encoder_hidden_states: jax.Array,
+    temb: jax.Array,
+    rotary_emb: jax.Array
+    ):
+    shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
+      (self.scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
+    )
+
+    # 1. Self-attention
+    norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
+    attn_output = self.attn1(hidden_states=norm_hidden_states, rotary_emb=rotary_emb)
+    hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
+
+    # 2. Cross-attention
+    norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32))
+    attn_output = self.attn2(hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states)
+    hidden_states = hidden_states + attn_output
+
+    # 3. Feed-forward
+    norm_hidden_states = (self.norm3(hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(hidden_states.dtype)
+
+    ff_output = self.ffn(norm_hidden_states)
+    hidden_states = (hidden_states.astype(jnp.float32) + ff_output.astype(jnp.float32) * c_gate_msa).astype(hidden_states.dtype)
+    return hidden_states
   
 
 class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
@@ -269,7 +443,22 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     # 3. Transformer blocks
     blocks = []
     for _ in range(num_layers):
-      block = WanTransformerBlock()
+      block = WanTransformerBlock(
+        rngs=rngs,
+        dim=inner_dim,
+        ffn_dim=ffn_dim,
+        num_attention_heads=num_attention_heads,
+        qk_norm=qk_norm,
+        cross_attn_norm=cross_attn_norm,
+        eps=eps,
+        flash_min_seq_length=flash_min_seq_length,
+        flash_block_sizes=flash_block_sizes,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
+        attention=attention
+      )
       blocks.append(block)
     self.blocks = blocks
 
@@ -301,8 +490,9 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if encoder_hidden_states_image is not None:
       raise NotImplementedError("img2vid is not yet implemented.")
 
-    # for block in self.blocks:
-
+    for block in self.blocks:
+      hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
+    breakpoint()
 
 
     return hidden_states

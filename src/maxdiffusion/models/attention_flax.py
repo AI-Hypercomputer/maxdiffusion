@@ -697,11 +697,11 @@ class FlaxWanAttention(nnx.Module):
   def __call__(
     self,
     hidden_states: jax.Array,
-    encoder_hidden_states: jax.Array,
+    encoder_hidden_states: jax.Array = None,
     rotary_emb: Optional[jax.Array] = None
   ) -> jax.Array:
+    
     dtype = hidden_states.dtype
-    # batch_size = hidden_states.shape[0]
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
     query_proj = self.query(hidden_states)
@@ -715,12 +715,14 @@ class FlaxWanAttention(nnx.Module):
     if self.qk_norm:
       query_proj = self.query_norm(query_proj)
       key_proj = self.key_norm(key_proj)
-    query_proj = _unflatten_heads(query_proj, self.heads)
-    key_proj = _unflatten_heads(key_proj, self.heads)
+    
     if rotary_emb is not None:
+      query_proj = _unflatten_heads(query_proj, self.heads)
+      key_proj = _unflatten_heads(key_proj, self.heads)
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
-    query_proj = _reshape_heads_to_head_dim(query_proj)
-    key_proj = _reshape_heads_to_head_dim(key_proj)
+      query_proj = _reshape_heads_to_head_dim(query_proj)
+      key_proj = _reshape_heads_to_head_dim(key_proj)
+    
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
     attn_output = attn_output.astype(dtype=dtype)
 
@@ -1308,7 +1310,6 @@ class FlaxTransformer2DModel(nn.Module):
 
     hidden_states = hidden_states + residual
     return self.dropout_layer(hidden_states, deterministic=deterministic)
-
 
 class FlaxFeedForward(nn.Module):
   r"""

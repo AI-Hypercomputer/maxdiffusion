@@ -27,7 +27,7 @@ from ..max_utils import (
   create_device_mesh,
   get_flash_block_sizes
 )
-from ..models.wan.transformers.transformer_wan import WanRotaryPosEmbed, WanTimeTextImageEmbedding
+from ..models.wan.transformers.transformer_wan import WanRotaryPosEmbed, WanTimeTextImageEmbedding, WanTransformerBlock
 from ..models.embeddings_flax import NNXTimestepEmbedding, NNXPixArtAlphaTextProjection
 from ..models.normalization_flax import FP32LayerNorm
 from ..models.attention_flax import FlaxWanAttention
@@ -119,6 +119,75 @@ class WanTransformerTest(unittest.TestCase):
     assert timestep_proj.shape == (batch_size, time_proj_dim)
     assert encoder_hidden_states.shape == (batch_size, time_freq_dim * 2, dim)
   
+  def test_wan_block(self):
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    pyconfig.initialize(
+      [
+        None,
+        os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+      ],
+      unittest=True
+    )
+    config = pyconfig.config
+
+    devices_array = create_device_mesh(config)
+
+    flash_block_sizes = get_flash_block_sizes(config)
+
+    mesh = Mesh(devices_array, config.mesh_axes)
+
+    dim=5120
+    ffn_dim=13824
+    num_heads=40
+    qk_norm="rms_norm_across_heads"
+    cross_attn_norm=True
+    eps=1e-6
+
+    batch_size = 1
+    channels = 16
+    frames = 21
+    height = 90
+    width = 160
+    hidden_dim = 75600
+
+    # for rotary post embed.
+    hidden_states_shape = (batch_size, frames, height, width, channels)
+    dummy_hidden_states = jnp.ones(hidden_states_shape)
+
+    wan_rot_embed = WanRotaryPosEmbed(
+      attention_head_dim=128,
+      patch_size=[1, 2, 2],
+      max_seq_len=1024
+    )
+    dummy_rotary_emb = wan_rot_embed(dummy_hidden_states)
+    assert dummy_rotary_emb.shape == (batch_size, 1, hidden_dim, 64)
+    
+    # for transformer block
+    dummy_hidden_states = jnp.ones((batch_size, hidden_dim, dim))
+    
+    dummy_encoder_hidden_states = jnp.ones((batch_size, 512, dim))
+
+    dummy_temb = jnp.ones((batch_size, 6, dim))
+
+    wan_block = WanTransformerBlock(
+      rngs=rngs,
+      dim=dim,
+      ffn_dim=ffn_dim,
+      num_heads=num_heads,
+      qk_norm=qk_norm,
+      cross_attn_norm=cross_attn_norm,
+      eps=eps,
+      attention="flash",
+      mesh=mesh,
+      flash_block_sizes=flash_block_sizes
+    )
+
+    dummy_output = wan_block(dummy_hidden_states, dummy_encoder_hidden_states, dummy_temb, dummy_rotary_emb)
+    assert dummy_output.shape == dummy_hidden_states.shape
+
+
+
   def test_wan_attention(self):
     pyconfig.initialize(
       [
