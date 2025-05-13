@@ -101,16 +101,28 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size):
   Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
   """
   tensor = _unflatten_heads(tensor, heads)
+  
+  # pad head_dim to 128 if less than that.
   kv_size = tensor.shape[-1]
+  head_dim_pad = 0
   if kv_size < 128:
-    npad = ((0, 0), (0, 0), (0, 0), (0, 128 - kv_size))
-    tensor = jnp.pad(tensor, npad)
+    head_dim_pad = 128 - kv_size
+
+  # pad seq_len to a multiple of flash_block_size if needed.
   seq_len = tensor.shape[2]
+  # remainder
   rem = seq_len % flash_block_size
+  seq_len_pad = 0
   if rem != 0:
+    # multiplier
     mul = seq_len // flash_block_size
-    npad = ((0, 0), (0, 0), (0, (mul + 1)*flash_block_size - seq_len), (0, 0))
+    # pad to the closest multiplier of flash_block_size
+    seq_len_pad = (mul + 1) * flash_block_size - seq_len
+  
+  if kv_size < 128 or rem != 0:
+    npad = ((0, 0), (0, 0), (0, seq_len_pad), (0, head_dim_pad))
     tensor = jnp.pad(tensor, npad)
+
   return tensor, kv_size, seq_len
 
 def _tpu_flash_attention(
@@ -140,15 +152,7 @@ def _tpu_flash_attention(
   query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q)
   key, _, _ = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute)
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute)
-  # query_seq_len = query.shape[2]
-  # query_rem = query_seq_len % block_sizes.block_q
-  # if query_rem != 0:
-  #   query_mul = query_seq_len // block_sizes.block_q
-  #   npad = ((0, 0), (0, 0), (0, (query_mul + 1)*block_sizes.block_q - query.shape[2]), (0, 0))
-  #   query = jnp.pad(query, npad)
-  #   key = jnp.pad(key, npad)
-  #   value = jnp.pad(value, npad)
-  # breakpoint()
+
   axis_names = nn.logical_to_mesh_axes(flash_axis_names)
 
   @functools.partial(
@@ -456,7 +460,7 @@ class NNXAttentionOp(nnx.Module):
   ):
     self.dpa_layer = None
     if attention_kernel == "cudnn_flash_te":
-      raise NotImplementedError("Wan 2.1 has not been tested with cudnn_flash_te")
+      raise NotImplementedError(f"{self} has not been tested with {attention_kernel}")
     
     self.mesh = mesh
     self.scale = scale
@@ -574,34 +578,13 @@ class FlaxWanAttention(nnx.Module):
     qkv_bias: bool = False,
     quant: Quant = None,
   ):
-    # TODO - Params from pytorch implementation 
-    # to set for the creation of this. 
-    # bias is True
-    # upcast_attention - False
-    # upcast_softmax - False
-    # cross_attention_norm - None
-    # cross_attention_norm_num_groups - 32
-    # qk_norm - rms_norm_across_heads
-    # added_kv_proj_dim
-    # norm_num_groups: Optional[int] = None,
-    # spatial_norm_dim: Optional[int] = None,
-    # out_bias: bool = True,
-    # scale_qk: bool = True,
-    # only_cross_attention - False
-    # eps - 1e-06
-    # rescale_output_factor: float = 1.0,
-    # residual_connection: bool = False,
-    # _from_deprecated_attn_block: bool = False,
-    # processor: Optional["AttnProcessor"] = WanAttnProcessor2_0
-    # out_dim: int = None,
-    # out_context_dim: int = None,
-    # context_pre_only=None,
-    # pre_only=False,
-    # elementwise_affine: bool = True,
-    # is_causal: bool = False,
+
+    if attention_kernel == "cudnn_flash_te" or attention_kernel == "dot_product":
+      raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
 
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
+    
     self.dim_head = dim_head
     self.heads = heads
     self.inner_dim = dim_head * heads
@@ -717,7 +700,8 @@ class FlaxWanAttention(nnx.Module):
     encoder_hidden_states: jax.Array,
     rotary_emb: Optional[jax.Array] = None
   ) -> jax.Array:
-    batch_size = hidden_states.shape[0]
+    dtype = hidden_states.dtype
+    # batch_size = hidden_states.shape[0]
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
     query_proj = self.query(hidden_states)
@@ -735,34 +719,14 @@ class FlaxWanAttention(nnx.Module):
     key_proj = _unflatten_heads(key_proj, self.heads)
     if rotary_emb is not None:
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
-    #breakpoint()
     query_proj = _reshape_heads_to_head_dim(query_proj)
     key_proj = _reshape_heads_to_head_dim(key_proj)
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
-    breakpoint()
-      
+    attn_output = attn_output.astype(dtype=dtype)
 
+    hidden_states = self.proj_attn(hidden_states)
+    return hidden_states
 
-
-  def setup(self):
-    if self.attention_kernel in {"flash", "cudnn_flash_te"} and self.mesh is None:
-      raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
-    inner_dim = self.dim_head * self.heads
-    scale = self.dim_head**-0.5
-
-    self.attention_op = NNXAttentionOp(
-        mesh=self.mesh,
-        attention_kernel=self.attention_kernel,
-        scale=scale,
-        heads=self.heads,
-        dim_head=self.dim_head,
-        flash_min_seq_length=self.flash_min_seq_length,
-        use_memory_efficient_attention=self.use_memory_efficient_attention,
-        split_head_dim=self.split_head_dim,
-        flash_block_sizes=self.flash_block_sizes,
-        dtype=self.dtype,
-        float32_qk_product=False,
-    )
 
 class FlaxFluxAttention(nn.Module):
   query_dim: int
