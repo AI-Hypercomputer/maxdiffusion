@@ -27,6 +27,7 @@ from ...embeddings_flax import (
   NNXTimestepEmbedding,
   NNXPixArtAlphaTextProjection
 )
+from ...normalization_flax import FP32LayerNorm
 
 BlockSizes = common_types.BlockSizes
 
@@ -181,6 +182,29 @@ class WanTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
 
+class WanTransformerBlock(nnx.Module):
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      dim: int,
+      ffn_dim: int,
+      num_heads: int,
+      qk_norm: str = "rms_norm_across_heads",
+      cross_attn_norm: bool = False,
+      eps: float = 1e-6,
+      added_kv_proj_dim: Optional[int] = None
+  ):
+    self.norm1 = FP32LayerNorm(
+      dim=dim,
+      eps=eps,
+      elementwise_affine=False
+    )
+  
+  def __call__(self):
+    pass
+
+  
+
 class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
   
   @register_to_config
@@ -242,6 +266,13 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       pos_embed_seq_len=pos_embed_seq_len
     )
 
+    # 3. Transformer blocks
+    blocks = []
+    for _ in range(num_layers):
+      block = WanTransformerBlock()
+      blocks.append(block)
+    self.blocks = blocks
+
   def __call__(
     self,
     hidden_states: jax.Array,
@@ -265,9 +296,13 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
       timestep, encoder_hidden_states, encoder_hidden_states_image
     )
-    #hidden_states = 
-    # Torch shape: ([1, 5120, 21, 45, 80])
-    # Jax shape: (1, 21, 45, 80, 5120) so channels is 5120
+    timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
+
+    if encoder_hidden_states_image is not None:
+      raise NotImplementedError("img2vid is not yet implemented.")
+
+    # for block in self.blocks:
+
 
 
     return hidden_states
