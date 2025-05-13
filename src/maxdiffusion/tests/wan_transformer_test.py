@@ -27,7 +27,9 @@ from ..max_utils import (
   create_device_mesh,
   get_flash_block_sizes
 )
-from ..models.wan.transformers.transformer_wan import WanRotaryPosEmbed, WanTimeTextImageEmbedding, WanTransformerBlock
+from ..models.wan.transformers.transformer_wan import (
+  WanRotaryPosEmbed, WanTimeTextImageEmbedding, WanTransformerBlock, WanModel
+)
 from ..models.embeddings_flax import NNXTimestepEmbedding, NNXPixArtAlphaTextProjection
 from ..models.normalization_flax import FP32LayerNorm
 from ..models.attention_flax import FlaxWanAttention
@@ -256,7 +258,49 @@ class WanTransformerTest(unittest.TestCase):
     except NotImplementedError as e:
       pass
     
-    
+  def test_wan_model(self):
+    pyconfig.initialize(
+      [
+        None,
+        os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+      ],
+      unittest=True
+    )
+    config = pyconfig.config
+
+    batch_size = 1
+    channels = 16
+    frames = 21
+    height = 90
+    width = 160
+    hidden_states_shape = (batch_size, frames, height, width, channels)
+    dummy_hidden_states = jnp.ones(hidden_states_shape)
+
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    devices_array = create_device_mesh(config)
+
+    flash_block_sizes = get_flash_block_sizes(config)
+
+    mesh = Mesh(devices_array, config.mesh_axes)
+    batch_size = 1
+    query_dim = 5120
+    wan_model = WanModel(
+      rngs=rngs,
+      attention="flash",
+      mesh=mesh,
+      flash_block_sizes=flash_block_sizes,
+    )
+
+    dummy_timestep = jnp.ones((batch_size))
+    dummy_encoder_hidden_states = jnp.ones((batch_size, 512, 4096))
+
+    dummy_output = wan_model(
+      hidden_states=dummy_hidden_states,
+      timestep=dummy_timestep,
+      encoder_hidden_states=dummy_encoder_hidden_states
+    )
+    assert dummy_output.shape == hidden_states_shape
 
 if __name__ == "__main__":
   absltest.main()

@@ -15,10 +15,11 @@
 """
 
 from typing import Tuple, Optional, Dict, Union, Any
+import math
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from .... import common_types, max_logging
+from .... import common_types
 from ...modeling_flax_utils import FlaxModelMixin, get_activation
 from ....configuration_utils import ConfigMixin, register_to_config
 from ...embeddings_flax import (
@@ -447,7 +448,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         rngs=rngs,
         dim=inner_dim,
         ffn_dim=ffn_dim,
-        num_attention_heads=num_attention_heads,
+        num_heads=num_attention_heads,
         qk_norm=qk_norm,
         cross_attn_norm=cross_attn_norm,
         eps=eps,
@@ -461,6 +462,20 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       )
       blocks.append(block)
     self.blocks = blocks
+
+    self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
+    self.proj_out = nnx.Linear(
+      rngs=rngs,
+      in_features=inner_dim,
+      out_features=out_channels * math.prod(patch_size),
+      dtype=dtype,
+      param_dtype=weights_dtype,
+      precision=precision,
+      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "mlp",)),
+      bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+    )
+    key = rngs.params()
+    self.scale_shift_table = nnx.Param(jax.random.normal(key, (1, 2, inner_dim)) / inner_dim**0.5)
 
   def __call__(
     self,
@@ -492,7 +507,14 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     for block in self.blocks:
       hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
-    breakpoint()
+      
+    shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 
+    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
+    hidden_states = self.proj_out(hidden_states)
+
+    # TODO - can this reshape happen in a single command?
+    hidden_states = hidden_states.reshape(batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1)
+    hidden_states = hidden_states.reshape(batch_size, num_frames, height, width, num_channels)
 
     return hidden_states
