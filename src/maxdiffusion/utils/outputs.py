@@ -16,7 +16,7 @@ Generic utilities
 """
 
 from collections import OrderedDict
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, Tuple
 
 import numpy as np
@@ -37,6 +37,7 @@ def is_tensor(x):
   return isinstance(x, np.ndarray)
 
 
+@dataclass
 class BaseOutput(OrderedDict):
   """
   Base class for all model outputs as dataclass. Has a `__getitem__` that allows indexing by integer or slice (like a
