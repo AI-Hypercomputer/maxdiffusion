@@ -618,7 +618,6 @@ class FlaxWanAttention(nnx.Module):
         in_features=self.inner_dim,
         out_features=self.inner_dim,
         kernel_init=qkv_init_kernel,
-        use_bias=qkv_bias,
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
@@ -629,7 +628,6 @@ class FlaxWanAttention(nnx.Module):
         in_features=self.inner_dim,
         out_features=self.inner_dim,
         kernel_init=qkv_init_kernel,
-        use_bias=qkv_bias,
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
@@ -640,7 +638,6 @@ class FlaxWanAttention(nnx.Module):
         in_features=self.inner_dim,
         out_features=self.inner_dim,
         kernel_init=qkv_init_kernel,
-        use_bias=qkv_bias,
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
@@ -651,16 +648,15 @@ class FlaxWanAttention(nnx.Module):
       in_features=self.inner_dim,
       out_features=self.inner_dim,
       kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
-      use_bias=qkv_bias,
       dtype=dtype,
       param_dtype=weights_dtype,
       precision=precision,
     )
 
-    self.query_norm = None
-    self.key_norm = None
+    self.norm_q = None
+    self.norm_k = None
     if qk_norm is not None:
-      self.query_norm = nnx.RMSNorm(
+      self.norm_q = nnx.RMSNorm(
         num_features=self.inner_dim,
         rngs=rngs,
         epsilon=eps,
@@ -669,7 +665,7 @@ class FlaxWanAttention(nnx.Module):
         param_dtype=weights_dtype
       )
 
-      self.key_norm = nnx.RMSNorm(
+      self.norm_k = nnx.RMSNorm(
         num_features=self.inner_dim,
         rngs=rngs,
         dtype=dtype,
@@ -713,8 +709,8 @@ class FlaxWanAttention(nnx.Module):
     value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
 
     if self.qk_norm:
-      query_proj = self.query_norm(query_proj)
-      key_proj = self.key_norm(key_proj)
+      query_proj = self.norm_q(query_proj)
+      key_proj = self.norm_k(key_proj)
     
     if rotary_emb is not None:
       query_proj = _unflatten_heads(query_proj, self.heads)
