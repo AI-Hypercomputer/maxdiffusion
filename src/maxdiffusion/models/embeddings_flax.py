@@ -227,7 +227,7 @@ def get_1d_rotary_pos_embed(
     out = jnp.stack([freqs_cos, -freqs_sin, freqs_sin, freqs_cos], axis=-1)
   else:
     # Wan 2.1
-    out = jax.lax.complex(jnp.ones_like(freqs), freqs)
+    out = jax.lax.complex(jnp.cos(freqs), jnp.sin(freqs))
   return out
 
 class NNXPixArtAlphaTextProjection(nnx.Module):

@@ -15,6 +15,7 @@
 import functools
 import math
 from typing import Optional, Callable, Tuple
+import numpy as np
 import flax.linen as nn
 from flax import nnx
 import jax
@@ -318,7 +319,7 @@ def _apply_attention(
   ):
   """Routes to different attention kernels."""
   _check_attention_inputs(query, key, value)
-
+  
   if attention_kernel == "flash":
     can_use_flash_attention = (
         query.shape[1] >= flash_min_seq_length
@@ -578,8 +579,7 @@ class FlaxWanAttention(nnx.Module):
     qkv_bias: bool = False,
     quant: Quant = None,
   ):
-
-    if attention_kernel == "cudnn_flash_te" or attention_kernel == "dot_product":
+    if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
 
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
@@ -676,7 +676,7 @@ class FlaxWanAttention(nnx.Module):
   def _apply_rope(self, xq: jax.Array, xk: jax.Array, freqs_cis: jax.Array) -> Tuple[jax.Array, jax.Array]:
     dtype = xq.dtype
     reshape_xq = xq.astype(jnp.float32).reshape(*xq.shape[:-1], -1, 2)
-    reshape_xk = xq.astype(jnp.float32).reshape(*xk.shape[:-1], -1, 2)
+    reshape_xk = xk.astype(jnp.float32).reshape(*xk.shape[:-1], -1, 2)
 
     xq_ = jax.lax.complex(reshape_xq[..., 0], reshape_xq[..., 1])
     xk_ = jax.lax.complex(reshape_xk[..., 0], reshape_xk[..., 1])
@@ -696,13 +696,19 @@ class FlaxWanAttention(nnx.Module):
     encoder_hidden_states: jax.Array = None,
     rotary_emb: Optional[jax.Array] = None
   ) -> jax.Array:
-    
+    print(" -- -- WanAttention -- ")
     dtype = hidden_states.dtype
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
     query_proj = self.query(hidden_states)
+    print("query_proj min: ", np.min(query_proj))
+    print("query_proj max: ", np.max(query_proj))
     key_proj = self.key(encoder_hidden_states)
+    print("key_proj min: ", np.min(key_proj))
+    print("key_proj max: ", np.max(key_proj))
     value_proj = self.value(encoder_hidden_states)
+    print("value_proj min: ", np.min(value_proj))
+    print("value_proj max: ", np.max(value_proj))
 
     query_proj = nn.with_logical_constraint(query_proj, self.query_axis_names)
     key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
@@ -711,18 +717,37 @@ class FlaxWanAttention(nnx.Module):
     if self.qk_norm:
       query_proj = self.norm_q(query_proj)
       key_proj = self.norm_k(key_proj)
+      print("query_proj min: ", np.min(query_proj))
+      print("query_proj max: ", np.max(query_proj))
+      print("key_proj min: ", np.min(key_proj))
+      print("key_proj max: ", np.max(key_proj))
     
     if rotary_emb is not None:
       query_proj = _unflatten_heads(query_proj, self.heads)
       key_proj = _unflatten_heads(key_proj, self.heads)
+      # value_proj = _unflatten_heads(value_proj, self.heads)
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
+      print("Rope query_proj min: ", np.min(query_proj))
+      print("Rope query_proj max: ", np.max(query_proj))
+      print("Rope key_proj min: ", np.min(key_proj))
+      print("Rope key_proj max: ", np.max(key_proj))
+      #breakpoint()
       query_proj = _reshape_heads_to_head_dim(query_proj)
       key_proj = _reshape_heads_to_head_dim(key_proj)
     
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+    try:
+      print("attn_output min: ", np.min(attn_output))
+      print("attn_output_for_print max: ", np.max(attn_output))
+    except:
+      pass
     attn_output = attn_output.astype(dtype=dtype)
 
     hidden_states = self.proj_attn(hidden_states)
+    print("hidden_states min: ", np.min(hidden_states))
+    print("hidden_states max: ", np.max(hidden_states))
+    print(" -- -- WanAttention DONE -- ")
+    #breakpoint()
     return hidden_states
 
 

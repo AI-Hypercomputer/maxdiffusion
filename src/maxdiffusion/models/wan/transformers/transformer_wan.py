@@ -19,6 +19,7 @@ import math
 import jax
 import jax.numpy as jnp
 from flax import nnx
+import numpy as np
 from .... import common_types
 from ...modeling_flax_utils import FlaxModelMixin, get_activation
 from ....configuration_utils import ConfigMixin, register_to_config
@@ -58,12 +59,7 @@ class WanRotaryPosEmbed(nnx.Module):
         use_real=False
       )
       freqs.append(freq)
-    self.freqs = jnp.concatenate(freqs, axis=1)
-  
-  def __call__(self, hidden_states: jax.Array) -> jax.Array:
-    _, num_frames, height, width, _ = hidden_states.shape
-    p_t, p_h, p_w = self.patch_size
-    ppf, pph, ppw = num_frames // p_t, height // p_h, width // p_w
+    freqs = jnp.concatenate(freqs, axis=1)
 
     sizes = [
         self.attention_head_dim // 2 - 2 * (self.attention_head_dim // 6),
@@ -72,16 +68,21 @@ class WanRotaryPosEmbed(nnx.Module):
     ]
     cumulative_sizes = jnp.cumsum(jnp.array(sizes))
     split_indices = cumulative_sizes[:-1]
-    freqs_split = jnp.split(self.freqs, split_indices, axis=1)
+    self.freqs_split = jnp.split(freqs, split_indices, axis=1)
+  
+  def __call__(self, hidden_states: jax.Array) -> jax.Array:
+    _, num_frames, height, width, _ = hidden_states.shape
+    p_t, p_h, p_w = self.patch_size
+    ppf, pph, ppw = num_frames // p_t, height // p_h, width // p_w
 
-    freqs_f = jnp.expand_dims(jnp.expand_dims(freqs_split[0][:ppf], axis=1), axis=1)
-    freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, freqs_split[0].shape[-1]))
+    freqs_f = jnp.expand_dims(jnp.expand_dims(self.freqs_split[0][:ppf], axis=1), axis=1)
+    freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, self.freqs_split[0].shape[-1]))
 
-    freqs_h = jnp.expand_dims(jnp.expand_dims(freqs_split[1][:pph], axis=0), axis=2)
-    freqs_h = jnp.broadcast_to(freqs_h, (ppf, pph, ppw, freqs_split[1].shape[-1]))
+    freqs_h = jnp.expand_dims(jnp.expand_dims(self.freqs_split[1][:pph], axis=0), axis=2)
+    freqs_h = jnp.broadcast_to(freqs_h, (ppf, pph, ppw, self.freqs_split[1].shape[-1]))
 
-    freqs_w = jnp.expand_dims(jnp.expand_dims(freqs_split[2][:ppw], axis=0), axis=1)
-    freqs_w = jnp.broadcast_to(freqs_w, (ppf, pph, ppw, freqs_split[2].shape[-1]))
+    freqs_w = jnp.expand_dims(jnp.expand_dims(self.freqs_split[2][:ppw], axis=0), axis=1)
+    freqs_w = jnp.broadcast_to(freqs_w, (ppf, pph, ppw, self.freqs_split[2].shape[-1]))
 
     freqs_concat = jnp.concatenate([freqs_f, freqs_h, freqs_w], axis=-1)
     freqs_final = jnp.reshape(freqs_concat, (1, 1, ppf * pph * ppw, -1))
@@ -361,22 +362,41 @@ class WanTransformerBlock(nnx.Module):
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
       (self.scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
     )
+    print("Wan Block -- START -- ")
 
     # 1. Self-attention
     norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
+    print("Wan Block -- norm_hidden_states, min: ", np.min(norm_hidden_states))
+    print("Wan Block -- norm_hidden_states, max: ", np.max(norm_hidden_states))
     attn_output = self.attn1(hidden_states=norm_hidden_states, rotary_emb=rotary_emb)
+    print("Wan Block -- Self Attn. attn_output, min: ", np.min(attn_output))
+    print("Wan Block -- Self Attn. attn_output, max: ", np.max(attn_output))
     hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
+    print("Wan Block -- hidden_states, min: ", np.min(hidden_states))
+    print("Wan Block -- hidden_states, max: ", np.max(hidden_states))
 
     # 2. Cross-attention
     norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32))
+    print("Wan Block -- norm_hidden_states, min: ", np.min(norm_hidden_states))
+    print("Wan Block -- norm_hidden_states, max: ", np.max(norm_hidden_states))
     attn_output = self.attn2(hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states)
+    print("Wan Block -- Cross Attn. attn_output, min: ", np.min(attn_output))
+    print("Wan Block -- Cross Attn. attn_output, max: ", np.max(attn_output))
     hidden_states = hidden_states + attn_output
+    print("Wan Block -- hidden_states, min: ", np.min(hidden_states))
+    print("Wan Block -- hidden_states, max: ", np.max(hidden_states))
 
     # 3. Feed-forward
     norm_hidden_states = (self.norm3(hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(hidden_states.dtype)
-
+    print("Wan Block -- norm_hidden_states, min: ", np.min(norm_hidden_states))
+    print("Wan Block -- norm_hidden_states, max: ", np.max(norm_hidden_states))
     ff_output = self.ffn(norm_hidden_states)
+    print("Wan Block -- ff_output, min: ", np.min(ff_output))
+    print("Wan Block -- ff_output, max: ", np.max(ff_output))
     hidden_states = (hidden_states.astype(jnp.float32) + ff_output.astype(jnp.float32) * c_gate_msa).astype(hidden_states.dtype)
+    print("Wan Block -- hidden_states, min: ", np.min(hidden_states))
+    print("Wan Block -- hidden_states, max: ", np.max(hidden_states))
+    print("Wan Block -- COMPLETE -- ")
     return hidden_states
   
 
@@ -495,11 +515,22 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     rotary_emb = self.rope(hidden_states)
     hidden_states = self.patch_embedding(hidden_states)
+    print("***** After patch embedding")
+    print("hidden_states, min: ", np.min(hidden_states))
+    print("hidden_states, max: ", np.max(hidden_states))
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
 
     temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
       timestep, encoder_hidden_states, encoder_hidden_states_image
     )
+    print("***** After condition embedder")
+    print("temb, min: ", np.min(temb))
+    print("temb, max: ", np.max(temb))
+    print("timestep_proj, min: ", np.min(timestep_proj))
+    print("timestep_proj, max: ", np.max(timestep_proj))
+    print("encoder_hidden_states min: ", np.min(encoder_hidden_states))
+    print("encoder_hidden_states max: ", np.max(encoder_hidden_states))
+
     timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
 
     if encoder_hidden_states_image is not None:
@@ -507,7 +538,9 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     for block in self.blocks:
       hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
-      
+      print("After block, hidden_states min:", np.min(hidden_states))
+      print("After block, hidden_states max:", np.max(hidden_states))
+    #breakpoint()
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
