@@ -1,5 +1,5 @@
 # Requirements for Building the MaxDifussion Docker Image
-# These requirements are additional to the dependencies present in the JAX Stable Stack base image.
+# These requirements are additional to the dependencies present in the JAX AI base image.
 absl-py
 datasets
 einops==0.8.0
