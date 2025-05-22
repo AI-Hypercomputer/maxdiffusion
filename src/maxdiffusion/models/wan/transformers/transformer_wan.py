@@ -145,45 +145,6 @@ class WanTimeTextImageEmbedding(nnx.Module):
     return temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image
 
 
-
-class WanTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
-  def __init__(
-    self,
-    rngs: nnx.Rngs,
-    patch_size: Tuple[int] = (1, 2, 2),
-    num_attention_heads: int = 40,
-    attention_head_dim: int = 128,
-    in_channels: int = 16,
-    out_channels: int = 16,
-    text_dim: int = 4096,
-    freq_dim: int = 256,
-    ffn_dim: int = 13824,
-    num_layers: int = 40,
-    cross_attn_norm: bool = True,
-    qk_norm: Optional[str] = "rms_norm_across_heads",
-    eps: float = 1e-6,
-    image_dim: Optional[int] = None,
-    added_kv_proj_dim: Optional[int] = None,
-    rope_max_seq_len: int = 1024,
-    pos_embed_seq_len: Optional[int] = None,
-    flash_min_seq_length: int = 4096,
-    flash_block_sizes: BlockSizes = None,
-    mesh: jax.sharding.Mesh = None,
-    dtype: jnp.dtype = jnp.float32,
-    weights_dtype: jnp.dtype = jnp.float32,
-    precision: jax.lax.Precision = None,
-    attention: str = "dot_product",
-  ):
-    inner_dim = num_attention_heads * attention_head_dim
-    out_channels = out_channels or in_channels
-
-    #1. Patch & position embedding
-    self.rope = WanRotaryPosEmbed(
-      attention_head_dim,
-      patch_size,
-      rope_max_seq_len
-    )
-
 class ApproximateGELU(nnx.Module):
   r"""
   The approximate form of the Gaussian Error Linear Unit (GELU). For more details, see section 2 of this
@@ -213,7 +174,7 @@ class ApproximateGELU(nnx.Module):
   
   def __call__(self, x: jax.Array) -> jax.Array:
     x = self.proj(x)
-    return x * jax.nn.sigmoid(1.702 * x)
+    return nnx.gelu(x)
   
 
 class WanFeedForward(nnx.Module):
@@ -362,41 +323,54 @@ class WanTransformerBlock(nnx.Module):
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
       (self.scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
     )
-    print("Wan Block -- START -- ")
+    # print("Wan Block -- START -- ")
+    # print("shift_msa min: ", shift_msa.min())
+    # print("shift_msa max: ", shift_msa.max())
+    # print("scale_msa min: ", scale_msa.min())
+    # print("scale_msa max: ", scale_msa.max())
+    # print("gate_msa min: ", gate_msa.min())
+    # print("gate_msa max: ", gate_msa.max())
+    # print("c_shift_msa min: ", c_shift_msa.min())
+    # print("c_shift_msa max: ", c_shift_msa.max())
+    # print("c_scale_msa min: ", c_scale_msa.min())
+    # print("c_scale_msa max: ", c_scale_msa.max())
+    # print("c_gate_msa min: ", c_gate_msa.min())
+    # print("c_gate_msa max: ", c_gate_msa.max())
+    
 
     # 1. Self-attention
     norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
-    print("Wan Block -- norm_hidden_states, min: ", np.min(norm_hidden_states))
-    print("Wan Block -- norm_hidden_states, max: ", np.max(norm_hidden_states))
+    # print("Wan Block -- norm_hidden_states, min: ", np.min(norm_hidden_states))
+    # print("Wan Block -- norm_hidden_states, max: ", np.max(norm_hidden_states))
     attn_output = self.attn1(hidden_states=norm_hidden_states, rotary_emb=rotary_emb)
-    print("Wan Block -- Self Attn. attn_output, min: ", np.min(attn_output))
-    print("Wan Block -- Self Attn. attn_output, max: ", np.max(attn_output))
+    # print("Wan Block -- Self Attn. attn_output, min: ", np.min(attn_output))
+    # print("Wan Block -- Self Attn. attn_output, max: ", np.max(attn_output))
     hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
-    print("Wan Block -- hidden_states, min: ", np.min(hidden_states))
-    print("Wan Block -- hidden_states, max: ", np.max(hidden_states))
+    # print("Wan Block -- hidden_states, min: ", np.min(hidden_states))
+    # print("Wan Block -- hidden_states, max: ", np.max(hidden_states))
 
     # 2. Cross-attention
     norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32))
-    print("Wan Block -- norm_hidden_states, min: ", np.min(norm_hidden_states))
-    print("Wan Block -- norm_hidden_states, max: ", np.max(norm_hidden_states))
+    # print("Wan Block -- norm_hidden_states, min: ", np.min(norm_hidden_states))
+    # print("Wan Block -- norm_hidden_states, max: ", np.max(norm_hidden_states))
     attn_output = self.attn2(hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states)
-    print("Wan Block -- Cross Attn. attn_output, min: ", np.min(attn_output))
-    print("Wan Block -- Cross Attn. attn_output, max: ", np.max(attn_output))
+    # print("Wan Block -- Cross Attn. attn_output, min: ", np.min(attn_output))
+    # print("Wan Block -- Cross Attn. attn_output, max: ", np.max(attn_output))
     hidden_states = hidden_states + attn_output
-    print("Wan Block -- hidden_states, min: ", np.min(hidden_states))
-    print("Wan Block -- hidden_states, max: ", np.max(hidden_states))
+    # print("Wan Block -- hidden_states, min: ", np.min(hidden_states))
+    # print("Wan Block -- hidden_states, max: ", np.max(hidden_states))
 
     # 3. Feed-forward
     norm_hidden_states = (self.norm3(hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(hidden_states.dtype)
-    print("Wan Block -- norm_hidden_states, min: ", np.min(norm_hidden_states))
-    print("Wan Block -- norm_hidden_states, max: ", np.max(norm_hidden_states))
+    # print("Wan Block -- norm_hidden_states, min: ", np.min(norm_hidden_states))
+    # print("Wan Block -- norm_hidden_states, max: ", np.max(norm_hidden_states))
     ff_output = self.ffn(norm_hidden_states)
-    print("Wan Block -- ff_output, min: ", np.min(ff_output))
-    print("Wan Block -- ff_output, max: ", np.max(ff_output))
+    # print("Wan Block -- ff_output, min: ", np.min(ff_output))
+    # print("Wan Block -- ff_output, max: ", np.max(ff_output))
     hidden_states = (hidden_states.astype(jnp.float32) + ff_output.astype(jnp.float32) * c_gate_msa).astype(hidden_states.dtype)
-    print("Wan Block -- hidden_states, min: ", np.min(hidden_states))
-    print("Wan Block -- hidden_states, max: ", np.max(hidden_states))
-    print("Wan Block -- COMPLETE -- ")
+    # print("Wan Block -- hidden_states, min: ", np.min(hidden_states))
+    # print("Wan Block -- hidden_states, max: ", np.max(hidden_states))
+    # print("Wan Block -- COMPLETE -- ")
     return hidden_states
   
 
@@ -431,7 +405,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
   ):
-    
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
 
@@ -515,39 +488,49 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     rotary_emb = self.rope(hidden_states)
     hidden_states = self.patch_embedding(hidden_states)
-    print("***** After patch embedding")
-    print("hidden_states, min: ", np.min(hidden_states))
-    print("hidden_states, max: ", np.max(hidden_states))
+    # print("***** After patch embedding")
+    # print("hidden_states, min: ", np.min(hidden_states))
+    # print("hidden_states, max: ", np.max(hidden_states))
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
 
     temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
       timestep, encoder_hidden_states, encoder_hidden_states_image
     )
-    print("***** After condition embedder")
-    print("temb, min: ", np.min(temb))
-    print("temb, max: ", np.max(temb))
-    print("timestep_proj, min: ", np.min(timestep_proj))
-    print("timestep_proj, max: ", np.max(timestep_proj))
-    print("encoder_hidden_states min: ", np.min(encoder_hidden_states))
-    print("encoder_hidden_states max: ", np.max(encoder_hidden_states))
+    # print("***** After condition embedder")
+    # print("temb, min: ", np.min(temb))
+    # print("temb, max: ", np.max(temb))
+    # print("timestep_proj, min: ", np.min(timestep_proj))
+    # print("timestep_proj, max: ", np.max(timestep_proj))
+    # print("encoder_hidden_states min: ", np.min(encoder_hidden_states))
+    # print("encoder_hidden_states max: ", np.max(encoder_hidden_states))
 
     timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
 
     if encoder_hidden_states_image is not None:
       raise NotImplementedError("img2vid is not yet implemented.")
-
     for block in self.blocks:
       hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
-      print("After block, hidden_states min:", np.min(hidden_states))
-      print("After block, hidden_states max:", np.max(hidden_states))
+      # print("After block, hidden_states min:", np.min(hidden_states))
+      # print("After block, hidden_states max:", np.max(hidden_states))
+      # jax.debug.print("after block, hidden_states min: {x}", x=hidden_states.min())
+      # jax.debug.print("after block, hidden_states min: {x}", x=hidden_states.max())
     #breakpoint()
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
+    # print("shift min: ", shift.min())
+    # print("shift.max: ", shift.max())
+    # print("scale.min: ", scale.min())
+    # print("scale.max: ", scale.max())
 
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
+    # print("hidden_states.min: ", hidden_states.min())
+    # print("hidden_states.max: ", hidden_states.max())
     hidden_states = self.proj_out(hidden_states)
+    # print("After proj_out -- hidden_states.min: ", hidden_states.min())
+    # print("After proj_out -- hidden_states.max: ", hidden_states.max())
 
     # TODO - can this reshape happen in a single command?
     hidden_states = hidden_states.reshape(batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1)
     hidden_states = hidden_states.reshape(batch_size, num_frames, height, width, num_channels)
-
+    # jax.debug.print("FINAL hidden_states min: {x}", x=hidden_states.min())
+    # jax.debug.print("FINAL hidden_states max: {x}", x=hidden_states.max())
     return hidden_states
