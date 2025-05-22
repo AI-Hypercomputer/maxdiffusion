@@ -24,7 +24,7 @@ from einops import repeat, rearrange
 from ....configuration_utils import ConfigMixin, flax_register_to_config
 from ...modeling_flax_utils import FlaxModelMixin
 from ...normalization_flax import AdaLayerNormZeroSingle, AdaLayerNormContinuous, AdaLayerNormZero
-from ...attention_flax import FlaxFluxAttention
+from ...attention_flax import FlaxFluxAttention, apply_rope
 from ...embeddings_flax import (FluxPosEmbed, CombinedTimestepGuidanceTextProjEmbeddings, CombinedTimestepTextProjEmbeddings)
 from .... import common_types
 from ....common_types import BlockSizes
@@ -131,7 +131,7 @@ class FluxSingleTransformerBlock(nn.Module):
       # since this function returns image_rotary_emb and passes it between layers,
       # we do not want to modify it
       image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-      q, k = self.attn.apply_rope(q, k, image_rotary_emb_reordered)
+      q, k = apply_rope(q, k, image_rotary_emb_reordered)
 
     q = q.transpose(0, 2, 1, 3).reshape(q.shape[0], q.shape[2], -1)
     k = k.transpose(0, 2, 1, 3).reshape(k.shape[0], k.shape[2], -1)
