@@ -1,0 +1,224 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from typing import List, Union, Optional
+import numpy as np
+import jax
+from jax.sharding import Mesh, PositionalSharding
+from flax import nnx
+from ...pyconfig import HyperParameters
+from ... import max_utils
+from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
+from ...models.wan.transformers.transformer_wan import WanModel
+from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
+from maxdiffusion.video_processor import VideoProcessor
+from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
+from transformers import AutoTokenizer, UMT5EncoderModel
+import ftfy
+import html
+import re
+import torch
+
+def basic_clean(text):
+    text = ftfy.fix_text(text)
+    text = html.unescape(html.unescape(text))
+    return text.strip()
+
+
+def whitespace_clean(text):
+    text = re.sub(r"\s+", " ", text)
+    text = text.strip()
+    return text
+
+
+def prompt_clean(text):
+    text = whitespace_clean(basic_clean(text))
+    return text
+
+class WanPipeline:
+  r"""
+  Pipeline for text-to-video generation using Wan.
+
+  tokenizer ([`T5Tokenizer`]):
+      Tokenizer from [T5](https://huggingface.co/docs/transformers/en/model_doc/t5#transformers.T5Tokenizer),
+      specifically the [google/umt5-xxl](https://huggingface.co/google/umt5-xxl) variant.
+  text_encoder ([`T5EncoderModel`]):
+      [T5](https://huggingface.co/docs/transformers/en/model_doc/t5#transformers.T5EncoderModel), specifically
+      the [google/umt5-xxl](https://huggingface.co/google/umt5-xxl) variant.
+  transformer ([`WanModel`]):
+      Conditional Transformer to denoise the input latents.
+  scheduler ([`FlaxUniPCMultistepScheduler`]):
+      A scheduler to be used in combination with `transformer` to denoise the encoded image latents.
+  vae ([`AutoencoderKLWan`]):
+      Variational Auto-Encoder (VAE) Model to encode and decode videos to and from latent representations.
+  """
+  def __init__(
+    self,
+    tokenizer: AutoTokenizer,
+    text_encoder: UMT5EncoderModel,
+    transformer: WanModel,
+    vae: AutoencoderKLWan,
+    vae_cache: AutoencoderKLWanCache,
+    scheduler: FlaxUniPCMultistepScheduler,
+    scheduler_state: UniPCMultistepSchedulerState,
+    devices_array: np.array,
+    mesh: Mesh,
+    config: HyperParameters
+  ):
+    self.tokenizer = tokenizer
+    self.text_encoder = text_encoder
+    self.transformer = transformer
+    self.vae = vae
+    self.vae_cache = vae_cache
+    self.scheduler = scheduler
+    self.scheduler_state = scheduler_state
+    self.devices_array = devices_array
+    self.mesh = mesh
+    self.config = config
+
+    self.vae_scale_factor_temporal = 2 ** sum(self.vae.temperal_downsample) if getattr(self, "vae", None) else 4
+    self.vae_scale_factor_spatial = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
+    self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
+
+  @classmethod
+  def load_vae(cls, rngs: nnx.Rngs, config: HyperParameters):
+    wan_vae = AutoencoderKLWan.from_config(
+      config.pretrained_model_name_or_path, subfolder="vae", rngs=rngs
+    )
+    vae_cache = AutoencoderKLWanCache(wan_vae)
+
+    graphdef, state = nnx.split(wan_vae, nnx.Param)
+    params = state.to_pure_dict()
+    # This replaces random params with the model.
+    params = load_wan_vae(config.pretrained_model_name_or_path, params, "cpu")
+    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+    wan_vae = nnx.merge(graphdef, params)
+
+    return wan_vae, vae_cache
+
+  @classmethod
+  def load_text_encoder(cls, config: HyperParameters):
+    text_encoder = UMT5EncoderModel.from_pretrained(
+      config.pretrained_model_name_or_path,
+      subfolder="text_encoder",
+    )
+    return text_encoder
+  
+  @classmethod
+  def load_tokenizer(cls, config: HyperParameters):
+    tokenizer = AutoTokenizer.from_pretrained(
+      config.pretrained_model_name_or_path,
+      subfolder="tokenizer",
+    )
+    return tokenizer
+  
+  @classmethod
+  def load_transformer(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+    wan_transformer = WanModel.from_config(
+      config.pretrained_model_name_or_path,
+      subfolder="transformer",
+      rngs=rngs,
+      attention=config.attention,
+      mesh=mesh,
+      dtype=config.activations_dtype,
+      weights_dtype=config.weights_dtype
+    )
+    graphdef, state, rest_of_state = nnx.split(wan_transformer, nnx.Param, ...)
+    params = state.to_pure_dict()
+    del state
+    params = load_wan_transformer(config.pretrained_model_name_or_path, params, "cpu")
+    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+    params = jax.device_put(params, PositionalSharding(devices_array).replicate())
+    wan_transformer = nnx.merge(graphdef, params, rest_of_state)
+    return wan_transformer
+
+  @classmethod
+  def load_scheduler(cls, config):
+    scheduler, scheduler_state = FlaxUniPCMultistepScheduler.from_pretrained(
+      config.pretrained_model_name_or_path,
+      subfolder="scheduler",
+      flow_shift=config.flow_shift # 5.0 for 720p, 3.0 for 480p
+    )
+    return scheduler, scheduler_state
+
+  @classmethod  
+  def from_pretrained(cls, config: HyperParameters):
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+    rng = jax.random.key(config.seed)
+    rngs = nnx.Rngs(rng)
+
+    wan_vae, vae_cache = cls.load_vae(rngs=rngs, config=config)
+    text_encoder = cls.load_text_encoder(config=config)
+    tokenizer = cls.load_tokenizer(config=config)
+    transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+    scheduler, scheduler_state = cls.load_scheduler(config=config)
+
+    return WanPipeline(
+      tokenizer=tokenizer,
+      text_encoder=text_encoder,
+      transformer=transformer,
+      vae=wan_vae,
+      vae_cache=vae_cache,
+      scheduler=scheduler,
+      scheduler_state=scheduler_state,
+      devices_array=devices_array,
+      mesh=mesh,
+      config=config
+    )
+
+  def _get_t5_prompt_embeds(
+    self,
+    prompt: Union[str, List[str]] = None,
+    num_videos_per_prompt: int = 1,
+    max_sequence_length: int = 226,
+  ):
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+    prompt = [prompt_clean(u) for u in prompt]
+    batch_size = len(prompt)
+
+    text_inputs = self.tokenizer(
+      prompt,
+      padding="max_length",
+      max_length=max_sequence_length,
+      truncation=True,
+      add_special_tokens=True,
+      return_attention_mask=True,
+      return_tensors="pt",
+    )
+    text_input_ids, mask = text_inputs.input_ids, text_inputs.attention_mask
+    seq_lens = mask.gt(0).sum(dim=1).long()
+    prompt_embeds = self.text_encoder(text_input_ids, mask).last_hidden_state
+    prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
+    prompt_embeds = torch.stack(
+        [torch.cat([u, u.new_zeros(max_sequence_length - u.size(0), u.size(1))]) for u in prompt_embeds], dim=0
+    )
+
+    # duplicate text embeddings for each generation per prompt, using mps friendly method
+    _, seq_len, _ = prompt_embeds.shape
+    prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
+    prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
+
+    return prompt_embeds
+  
+  def encode_prompt(
+    self,
+    prompt: Union[str, List[str]],
+    negative_prompt: Optional[Union[str, List[str]]] = None,
+    num_videos_per_prompt: int = 1,
+    max_sequence_length: int = 226,
+  ):
+
+
+    

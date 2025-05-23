@@ -217,8 +217,9 @@ do_classifier_free_guidance: True
 guidance_scale: 3.5
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
-num_inference_steps: 50
+num_inference_steps: 30
 save_final_checkpoint: False
+flow_shift: 5.0
 
 # SDXL Lightning parameters
 lightning_from_pt: True
