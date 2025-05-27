@@ -20,6 +20,16 @@ from absl import app
 def run(config):
   pipeline = WanPipeline.from_pretrained(config)
 
+  pipeline(
+    prompt=config.prompt,
+    negative_prompt=config.negative_prompt,
+    height=config.height,
+    width=config.width,
+    num_frames=config.num_frames,
+    num_inference_steps=config.num_inference_steps,
+    guidance_scale=config.guidance_scale,
+  )
+
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   run(pyconfig.config)

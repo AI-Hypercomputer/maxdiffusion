@@ -13,11 +13,14 @@
 # limitations under the License.
 
 from typing import List, Union, Optional
+from functools import partial
 import numpy as np
 import jax
+import jax.numpy as jnp
 from jax.sharding import Mesh, PositionalSharding
 from flax import nnx
 from ...pyconfig import HyperParameters
+from ... import max_logging
 from ... import max_utils
 from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
 from ...models.wan.transformers.transformer_wan import WanModel
@@ -219,6 +222,156 @@ class WanPipeline:
     num_videos_per_prompt: int = 1,
     max_sequence_length: int = 226,
   ):
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+    batch_size = len(prompt)
+    prompt_embeds = self._get_t5_prompt_embeds(
+      prompt=prompt,
+      num_videos_per_prompt=num_videos_per_prompt,
+      max_sequence_length=max_sequence_length,
+    )
 
+    negative_prompt = negative_prompt or ""
+    negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+    negative_prompt_embeds = self._get_t5_prompt_embeds(
+      prompt=negative_prompt,
+      num_videos_per_prompt=num_videos_per_prompt,
+      max_sequence_length=max_sequence_length,
+    )
 
+    prompt_embeds = jnp.array(prompt_embeds.detach().numpy(), dtype=self.config.weights_dtype)
+    negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().numpy(), dtype=self.config.weights_dtype)
+    return prompt_embeds, negative_prompt_embeds
+  
+  def prepare_latents(
+    self,
+    batch_size: int,
+    vae_scale_factor_temporal: int,
+    vae_scale_factor_spatial: int,
+    height: int = 480,
+    width: int = 832,
+    num_frames: int = 81,
+    num_channels_latents: int = 16,
+  ):
+    rng = jax.random.key(self.config.seed)
+    num_latent_frames = (num_frames - 1) // vae_scale_factor_temporal + 1
+    shape = (
+      batch_size,
+      num_latent_frames,
+      int(height) // vae_scale_factor_spatial,
+      int(width) // vae_scale_factor_spatial,
+      num_channels_latents
+    )
+    latents = jax.random.normal(rng, shape=shape, dtype=self.config.weights_dtype)
+
+    return latents
+
+  def __call__(
+    self,
+    prompt: Union[str, List[str]] = None,
+    negative_prompt: Union[str, List[str]] = None,
+    height: int = 480,
+    width: int = 832,
+    num_frames: int = 81,
+    num_inference_steps: int = 50,
+    guidance_scale: float = 5.0,
+    num_videos_per_prompt: Optional[int] = 1,
+    max_sequence_length: int = 512  
+  ):
+    if num_frames % self.vae_scale_factor_temporal != 1:
+      max_logging.log(
+        f"`num_frames -1` has to be divisible by {self.vae_scale_factor_temporal}. Rounding to the nearest number."
+      )
+      num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
+    num_frames = max(num_frames, 1)
+
+    # 2. Define call parameters
+    if prompt is not None and isinstance(prompt, str):
+        batch_size = 1
+    elif prompt is not None and isinstance(prompt, list):
+        batch_size = len(prompt)
     
+    prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+      prompt=prompt,
+      negative_prompt=negative_prompt,
+      max_sequence_length=max_sequence_length
+    )
+
+    num_channel_latents = self.transformer.config.in_channels
+    latents = self.prepare_latents(
+      batch_size=batch_size,
+      vae_scale_factor_temporal=self.vae_scale_factor_temporal,
+      vae_scale_factor_spatial=self.vae_scale_factor_spatial,
+      height=height,
+      width=width,
+      num_frames=num_frames,
+      num_channels_latents=num_channel_latents
+    )
+
+    prompt_embeds = jnp.concatenate([prompt_embeds] * latents.shape[0], dtype=self.config.weights_dtype)
+    negative_prompt_embeds = jnp.concatenate([negative_prompt_embeds] * latents.shape[0], dtype=self.config.weights_dtype)
+    
+    latents = jax.device_put(latents, PositionalSharding(self.devices_array).replicate())
+    prompt_embeds = jax.device_put(prompt_embeds, PositionalSharding(self.devices_array).replicate())
+    negative_prompt_embeds = jax.device_put(negative_prompt_embeds, PositionalSharding(self.devices_array).replicate())
+
+    scheduler_state = self.scheduler.set_timesteps(
+      self.scheduler_state, num_inference_steps=self.config.num_inference_steps, shape=latents.shape
+    )
+
+    graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
+
+    p_run_inference = partial(
+      run_inference,
+      guidance_scale=self.config.guidance_scale,
+      num_inference_steps=self.config.num_inference_steps,
+      scheduler=self.scheduler,
+      scheduler_state=scheduler_state
+    )
+    with self.mesh:
+      latent = p_run_inference(
+        graphdef=graphdef,
+        sharded_state=state,
+        rest_of_state=rest_of_state,
+        latents=latents,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds
+      )
+
+  
+@partial(jax.jit, static_argnums=(6, 7, 8))
+def run_inference(
+  graphdef,
+  sharded_state,
+  rest_of_state,
+  latents: jnp.array,
+  prompt_embeds: jnp.array,
+  negative_prompt_embeds: jnp.array,
+  guidance_scale: float,
+  num_inference_steps: int,
+  scheduler : FlaxUniPCMultistepScheduler,
+  scheduler_state):
+    wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+    do_classifier_free_guidance = guidance_scale > 1.0
+
+    for step in range(num_inference_steps):
+      t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+      timestep = jnp.broadcast_to(t, latents.shape[0])
+
+      noise_pred = wan_transformer(
+        hidden_states=latents,
+        timestep=timestep,
+        encoder_hidden_states=prompt_embeds,
+        return_dict=False
+      )[0]
+
+      if do_classifier_free_guidance:
+        noise_uncond = wan_transformer(
+          hidden_states=latents,
+          timestep=timestep,
+          encoder_hidden_states=negative_prompt_embeds,
+          return_dict=False
+        )[0]
+        noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+      latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+
+    return latents
