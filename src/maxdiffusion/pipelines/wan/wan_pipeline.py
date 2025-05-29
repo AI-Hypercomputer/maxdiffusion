@@ -26,7 +26,6 @@ from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
 from ...models.wan.transformers.transformer_wan import WanModel
 from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
 from maxdiffusion.video_processor import VideoProcessor
-from ...utils import export_to_video
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
 from transformers import AutoTokenizer, UMT5EncoderModel
 import ftfy
@@ -314,75 +313,77 @@ class WanPipeline:
     max_sequence_length: int = 512,
     latents: jax.Array = None,
     prompt_embeds: jax.Array = None,
-    negative_prompt_embeds: jax.Array = None
+    negative_prompt_embeds: jax.Array = None,
+    vae_only: bool = False
   ):
-    if num_frames % self.vae_scale_factor_temporal != 1:
-      max_logging.log(
-        f"`num_frames -1` has to be divisible by {self.vae_scale_factor_temporal}. Rounding to the nearest number."
-      )
-      num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
-    num_frames = max(num_frames, 1)
+    if not vae_only:
+      if num_frames % self.vae_scale_factor_temporal != 1:
+        max_logging.log(
+          f"`num_frames -1` has to be divisible by {self.vae_scale_factor_temporal}. Rounding to the nearest number."
+        )
+        num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
+      num_frames = max(num_frames, 1)
 
-    # 2. Define call parameters
-    if prompt is not None and isinstance(prompt, str):
-        batch_size = 1
-    elif prompt is not None and isinstance(prompt, list):
-        batch_size = len(prompt)
-    
-    prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-      prompt=prompt,
-      negative_prompt=negative_prompt,
-      max_sequence_length=max_sequence_length,
-      prompt_embeds=prompt_embeds,
-      negative_prompt_embeds=negative_prompt_embeds
-    )
-
-    num_channel_latents = self.transformer.config.in_channels
-    if latents is None:
-      latents = self.prepare_latents(
-        batch_size=batch_size,
-        vae_scale_factor_temporal=self.vae_scale_factor_temporal,
-        vae_scale_factor_spatial=self.vae_scale_factor_spatial,
-        height=height,
-        width=width,
-        num_frames=num_frames,
-        num_channels_latents=num_channel_latents
-      )
-
-    prompt_embeds = jnp.concatenate([prompt_embeds] * latents.shape[0], dtype=self.config.weights_dtype)
-    negative_prompt_embeds = jnp.concatenate([negative_prompt_embeds] * latents.shape[0], dtype=self.config.weights_dtype)
-    
-    latents = jax.device_put(latents, PositionalSharding(self.devices_array).replicate())
-    prompt_embeds = jax.device_put(prompt_embeds, PositionalSharding(self.devices_array).replicate())
-    negative_prompt_embeds = jax.device_put(negative_prompt_embeds, PositionalSharding(self.devices_array).replicate())
-
-    scheduler_state = self.scheduler.set_timesteps(
-      self.scheduler_state, num_inference_steps=self.config.num_inference_steps, shape=latents.shape
-    )
-
-    graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
-
-    p_run_inference = partial(
-      run_inference,
-      guidance_scale=self.config.guidance_scale,
-      num_inference_steps=self.config.num_inference_steps,
-      scheduler=self.scheduler,
-      scheduler_state=scheduler_state
-    )
-    with self.mesh:
-      latents = p_run_inference(
-        graphdef=graphdef,
-        sharded_state=state,
-        rest_of_state=rest_of_state,
-        latents=latents,
+      # 2. Define call parameters
+      if prompt is not None and isinstance(prompt, str):
+          batch_size = 1
+      elif prompt is not None and isinstance(prompt, list):
+          batch_size = len(prompt)
+      
+      prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        max_sequence_length=max_sequence_length,
         prompt_embeds=prompt_embeds,
         negative_prompt_embeds=negative_prompt_embeds
       )
-    latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
-    latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, 1, 1, 1, self.vae.z_dim)
-    latents = latents / latents_std + latents_mean
 
-    latents = latents.astype(self.config.weights_dtype)
+      num_channel_latents = self.transformer.config.in_channels
+      if latents is None:
+        latents = self.prepare_latents(
+          batch_size=batch_size,
+          vae_scale_factor_temporal=self.vae_scale_factor_temporal,
+          vae_scale_factor_spatial=self.vae_scale_factor_spatial,
+          height=height,
+          width=width,
+          num_frames=num_frames,
+          num_channels_latents=num_channel_latents
+        )
+
+      prompt_embeds = jnp.concatenate([prompt_embeds] * latents.shape[0], dtype=self.config.weights_dtype)
+      negative_prompt_embeds = jnp.concatenate([negative_prompt_embeds] * latents.shape[0], dtype=self.config.weights_dtype)
+      
+      latents = jax.device_put(latents, PositionalSharding(self.devices_array).replicate())
+      prompt_embeds = jax.device_put(prompt_embeds, PositionalSharding(self.devices_array).replicate())
+      negative_prompt_embeds = jax.device_put(negative_prompt_embeds, PositionalSharding(self.devices_array).replicate())
+
+      scheduler_state = self.scheduler.set_timesteps(
+        self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
+      )
+
+      graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
+
+      p_run_inference = partial(
+        run_inference,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
+        scheduler=self.scheduler,
+        scheduler_state=scheduler_state
+      )
+      with self.mesh:
+        latents = p_run_inference(
+          graphdef=graphdef,
+          sharded_state=state,
+          rest_of_state=rest_of_state,
+          latents=latents,
+          prompt_embeds=prompt_embeds,
+          negative_prompt_embeds=negative_prompt_embeds
+        )
+      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
+      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, 1, 1, 1, self.vae.z_dim)
+      latents = latents / latents_std + latents_mean
+
+      latents = latents.astype(self.config.weights_dtype)
 
     jitted_decode = jax.jit(
       partial(
@@ -396,9 +397,18 @@ class WanPipeline:
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
     video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
     video = self.video_processor.postprocess_video(video, output_type="np")
-    export_to_video(video[0], "jax_output.mp4", fps=24)
+    return video
 
-  
+
+@jax.jit
+def transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, prompt_embeds):
+  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+  return wan_transformer(
+    hidden_states=latents,
+    timestep=timestep,
+    encoder_hidden_states=prompt_embeds
+  )[0]
+
 #@partial(jax.jit, static_argnums=(6, 7, 8))
 def run_inference(
   graphdef,
@@ -411,26 +421,16 @@ def run_inference(
   num_inference_steps: int,
   scheduler : FlaxUniPCMultistepScheduler,
   scheduler_state):
-    wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
     do_classifier_free_guidance = guidance_scale > 1.0
     for step in range(num_inference_steps):
       t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
       timestep = jnp.broadcast_to(t, latents.shape[0])
-
-      noise_pred = wan_transformer(
-        hidden_states=latents,
-        timestep=timestep,
-        encoder_hidden_states=prompt_embeds,
-        return_dict=False
-      )[0]
+      
+      noise_pred = transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, prompt_embeds)
 
       if do_classifier_free_guidance:
-        noise_uncond = wan_transformer(
-          hidden_states=latents,
-          timestep=timestep,
-          encoder_hidden_states=negative_prompt_embeds,
-          return_dict=False
-        )[0]
+        noise_uncond = transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, negative_prompt_embeds)
         noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     return latents

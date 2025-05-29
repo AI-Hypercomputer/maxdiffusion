@@ -13,14 +13,17 @@
 # limitations under the License.
 
 from typing import Sequence
+import time
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 from maxdiffusion import pyconfig
 from absl import app
+from maxdiffusion.utils import export_to_video
 
 def run(config):
   pipeline = WanPipeline.from_pretrained(config)
 
-  pipeline(
+  s0 = time.perf_counter()
+  video = pipeline(
     prompt=config.prompt,
     negative_prompt=config.negative_prompt,
     height=config.height,
@@ -29,6 +32,20 @@ def run(config):
     num_inference_steps=config.num_inference_steps,
     guidance_scale=config.guidance_scale,
   )
+  print("compile time: ", (time.perf_counter() - s0))
+  s0 = time.perf_counter()
+  video = pipeline(
+    prompt=config.prompt,
+    negative_prompt=config.negative_prompt,
+    height=config.height,
+    width=config.width,
+    num_frames=config.num_frames,
+    num_inference_steps=config.num_inference_steps,
+    guidance_scale=config.guidance_scale,
+  )
+  print("generation time: ", (time.perf_counter() - s0))
+  export_to_video(video[0], "jax_output.mp4", fps=16)
+
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
