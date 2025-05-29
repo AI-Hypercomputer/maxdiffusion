@@ -130,6 +130,7 @@ logical_axis_rules: [
                       ['conv_batch', ['data','fsdp']],
                       ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
+                      ['conv_in', 'fsdp']
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
