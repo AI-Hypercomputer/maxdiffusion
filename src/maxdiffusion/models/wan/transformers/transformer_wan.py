@@ -447,13 +447,14 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     return_dict: bool = True,
     attention_kwargs: Optional[Dict[str, Any]] = None,
   ) -> Union[jax.Array, Dict[str, jax.Array]]:
-    batch_size, num_frames, height, width, num_channels = hidden_states.shape
+    batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size
     post_patch_num_frames = num_frames // p_t
     post_patch_height = height // p_h
     post_patch_width = width // p_w
 
 
+    hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
     rotary_emb = self.rope(hidden_states)
     hidden_states = self.patch_embedding(hidden_states)
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
@@ -472,9 +473,9 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
     hidden_states = self.proj_out(hidden_states)
 
-    # TODO - can this reshape happen in a single command?
     hidden_states = hidden_states.reshape(batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1)
-    hidden_states = hidden_states.reshape(batch_size, num_frames, height, width, num_channels)
-    # jax.debug.print("FINAL hidden_states min: {x}", x=hidden_states.min())
-    # jax.debug.print("FINAL hidden_states max: {x}", x=hidden_states.max())
+    hidden_states = jnp.transpose(hidden_states, (0, 7, 1, 4, 2, 5, 3, 6))
+    hidden_states = jax.lax.collapse(hidden_states, 6, None)
+    hidden_states = jax.lax.collapse(hidden_states, 4, 6)
+    hidden_states = jax.lax.collapse(hidden_states, 2, 4)
     return hidden_states

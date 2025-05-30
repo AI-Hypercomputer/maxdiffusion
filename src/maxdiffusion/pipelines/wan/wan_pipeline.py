@@ -109,6 +109,16 @@ class WanPipeline:
     self.vae_scale_factor_spatial = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
     self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
 
+    self.jitted_decode = jax.jit(
+      partial(
+        self.vae.decode,
+        feat_cache=self.vae_cache,
+        return_dict=False
+      )
+    )
+
+    self.p_run_inference = None
+
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
     text_encoder = UMT5EncoderModel.from_pretrained(
@@ -184,20 +194,27 @@ class WanPipeline:
     return scheduler, scheduler_state
   
   @classmethod  
-  def from_pretrained(cls, config: HyperParameters):
+  def from_pretrained(cls, config: HyperParameters, vae_only=False):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
+    transformer=None
+    tokenizer=None
+    scheduler=None
+    scheduler_state=None
+    text_encoder=None
+    if not vae_only:
+      with mesh:
+        transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+      
+      text_encoder = cls.load_text_encoder(config=config)
+      tokenizer = cls.load_tokenizer(config=config)
+      
+      scheduler, scheduler_state = cls.load_scheduler(config=config)
     
     with mesh:
       wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
-      transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
-    
-    text_encoder = cls.load_text_encoder(config=config)
-    tokenizer = cls.load_tokenizer(config=config)
-    
-    scheduler, scheduler_state = cls.load_scheduler(config=config)
 
     return WanPipeline(
       tokenizer=tokenizer,
@@ -291,10 +308,10 @@ class WanPipeline:
     num_latent_frames = (num_frames - 1) // vae_scale_factor_temporal + 1
     shape = (
       batch_size,
+      num_channels_latents,
       num_latent_frames,
       int(height) // vae_scale_factor_spatial,
       int(width) // vae_scale_factor_spatial,
-      num_channels_latents
     )
     latents = jax.random.normal(rng, shape=shape, dtype=self.config.weights_dtype)
 
@@ -370,6 +387,7 @@ class WanPipeline:
         scheduler=self.scheduler,
         scheduler_state=scheduler_state
       )
+
       with self.mesh:
         latents = p_run_inference(
           graphdef=graphdef,
@@ -379,21 +397,13 @@ class WanPipeline:
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds
         )
-      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
-      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, 1, 1, 1, self.vae.z_dim)
+      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
+      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
       latents = latents / latents_std + latents_mean
-
       latents = latents.astype(self.config.weights_dtype)
 
-    jitted_decode = jax.jit(
-      partial(
-        self.vae.decode,
-        feat_cache=self.vae_cache,
-        return_dict=False
-      )
-    )
     with self.mesh:
-      video = jitted_decode(latents)[0]
+      video = self.jitted_decode(latents)[0]
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
     video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
     video = self.video_processor.postprocess_video(video, output_type="np")
@@ -431,6 +441,5 @@ def run_inference(
       if do_classifier_free_guidance:
         noise_uncond = transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, negative_prompt_embeds)
         noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
-
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     return latents
