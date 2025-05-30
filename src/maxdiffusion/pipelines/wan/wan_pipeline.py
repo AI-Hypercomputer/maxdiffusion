@@ -109,14 +109,6 @@ class WanPipeline:
     self.vae_scale_factor_spatial = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
     self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
 
-    self.jitted_decode = jax.jit(
-      partial(
-        self.vae.decode,
-        feat_cache=self.vae_cache,
-        return_dict=False
-      )
-    )
-
     self.p_run_inference = None
 
   @classmethod
@@ -402,8 +394,8 @@ class WanPipeline:
       latents = latents / latents_std + latents_mean
       latents = latents.astype(self.config.weights_dtype)
 
-    with self.mesh:
-      video = self.jitted_decode(latents)[0]
+    video = self.vae.decode(latents, self.vae_cache)[0]
+
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
     video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
     video = self.video_processor.postprocess_video(video, output_type="np")
