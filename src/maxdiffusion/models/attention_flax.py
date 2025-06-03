@@ -75,11 +75,16 @@ def _reshape_batch_dim_to_heads(tensor, heads):
   return tensor
 
 def _reshape_heads_to_batch_dim(tensor, heads):
-  batch_size, seq_len, dim = tensor.shape
-  head_size = heads
-  tensor = tensor.reshape(batch_size, seq_len, head_size, dim // head_size)
-  tensor = jnp.transpose(tensor, (0, 2, 1, 3))
-  tensor = tensor.reshape(batch_size * head_size, seq_len, dim // head_size)
+  if tensor.ndim == 3:
+    batch_size, seq_len, dim = tensor.shape
+    head_size = heads
+    tensor = tensor.reshape(batch_size, seq_len, head_size, dim // head_size)
+    tensor = jnp.transpose(tensor, (0, 2, 1, 3))
+    tensor = tensor.reshape(batch_size * head_size, seq_len, dim // head_size)
+  else:
+    batch_size, head_size, seq_len, head_dim = tensor.shape
+    tensor = tensor.reshape(batch_size * head_size, seq_len, head_dim)
+  
   return tensor
 
 def _reshape_heads_to_head_dim(tensor):
