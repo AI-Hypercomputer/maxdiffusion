@@ -1131,12 +1131,17 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
         # Most likely due to an incorrect reshaping in the decoder.
         fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
-        if len(fm1.shape) == 4:
-          fm1 = jnp.expand_dims(fm1, axis=0)
-          fm2 = jnp.expand_dims(fm2, axis=0)
-          fm3 = jnp.expand_dims(fm3, axis=0)
-          fm4 = jnp.expand_dims(fm4, axis=0)
+        # When batch_size is 0, expand batch dim for contatenation
+        # else, expand frame dim for concatenation so that batch dim stays intact.
+        axis=0
+        if fm1.shape[0] > 1:
+          axis=1
 
+        if len(fm1.shape) == 4:
+          fm1 = jnp.expand_dims(fm1, axis=axis)
+          fm2 = jnp.expand_dims(fm2, axis=axis)
+          fm3 = jnp.expand_dims(fm3, axis=axis)
+          fm4 = jnp.expand_dims(fm4, axis=axis)
         out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
     out = jnp.clip(out, min=-1.0, max=1.0)
     feat_cache.clear_cache()

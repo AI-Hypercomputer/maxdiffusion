@@ -53,14 +53,14 @@ split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
 
 flash_block_sizes: {
-  "block_q" : 512,
-  "block_kv_compute" : 512,
-  "block_kv" : 512,
-  "block_q_dkv" : 512,
-  "block_kv_dkv" : 512,
-  "block_kv_dkv_compute" : 512,
-  "block_q_dq" : 512,
-  "block_kv_dq" : 512
+  "block_q" : 1024,
+  "block_kv_compute" : 1024,
+  "block_kv" : 1024,
+  "block_q_dkv" : 1024,
+  "block_kv_dkv" : 1024,
+  "block_kv_dkv_compute" : 1024,
+  "block_q_dq" : 1024,
+  "block_kv_dq" : 1024
 }
 # GroupNorm groups
 norm_num_groups: 32

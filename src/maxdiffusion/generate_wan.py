@@ -23,7 +23,7 @@ from maxdiffusion.utils import export_to_video
 def run(config):
   pipeline = WanPipeline.from_pretrained(config)
   s0 = time.perf_counter()
-  video = pipeline(
+  videos = pipeline(
     prompt=config.prompt,
     negative_prompt=config.negative_prompt,
     height=config.height,
@@ -34,10 +34,11 @@ def run(config):
   )
 
   print("compile time: ", (time.perf_counter() - s0))
-  export_to_video(video[0], "jax_output.mp4", fps=16)
+  for i in range(len(videos)):
+    export_to_video(videos[i], f"wan_output_{i}.mp4", fps=16)
   s0 = time.perf_counter()
   with jax.profiler.trace("/tmp/trace/"):
-    video = pipeline(
+    videos = pipeline(
       prompt=config.prompt,
       negative_prompt=config.negative_prompt,
       height=config.height,
@@ -47,7 +48,8 @@ def run(config):
       guidance_scale=config.guidance_scale,
     )
   print("generation time: ", (time.perf_counter() - s0))
-  export_to_video(video[0], "jax_output.mp4", fps=16)
+  for i in range(len(videos)):
+    export_to_video(videos[i], f"wan_output_{i}.mp4", fps=16)
 
 
 def main(argv: Sequence[str]) -> None:

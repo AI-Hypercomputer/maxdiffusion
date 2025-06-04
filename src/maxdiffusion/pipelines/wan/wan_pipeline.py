@@ -17,13 +17,14 @@ from functools import partial
 import numpy as np
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, PositionalSharding
+from jax.sharding import Mesh, PositionalSharding, PartitionSpec as P
 import flax
 import flax.linen as nn
 from flax import nnx
 from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
+from ...max_utils import get_flash_block_sizes, get_precision
 from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
 from ...models.wan.transformers.transformer_wan import WanModel
 from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
@@ -59,11 +60,12 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
 
 partial(nnx.jit, static_argnums=(3,))
 def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
-  # breakpoint()
+
   def create_model(rngs: nnx.Rngs, wan_config: dict):
     wan_transformer = WanModel(**wan_config, rngs=rngs)
     return wan_transformer
 
+  # 1. Load config.
   wan_config = WanModel.load_config(
     config.pretrained_model_name_or_path,
     subfolder="transformer"
@@ -72,31 +74,38 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   wan_config["dtype"] = config.activations_dtype
   wan_config["weights_dtype"] = config.weights_dtype
   wan_config["attention"] = config.attention
+  wan_config["precision"] = get_precision(config)
+  wan_config["flash_block_sizes"] = get_flash_block_sizes(config)
+
+  # 2. eval_shape - will not use flops or create weights on device
+  # thus not using HBM memory.
   p_model_factory = partial(create_model, wan_config=wan_config)
   wan_transformer = nnx.eval_shape(p_model_factory, rngs=rngs)
   graphdef, state, rest_of_state = nnx.split(wan_transformer, nnx.Param, ...)
-  #breakpoint()
+
+  # 3. retrieve the state shardings, mapping logical names to mesh axis names.
   logical_state_spec = nnx.get_partition_spec(state)
   logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
   logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
   params = state.to_pure_dict()
   state = dict(nnx.to_flat_state(state))
-  # del state
+
+  # 4. Load pretrained weights and move them to device using the state shardings from (3) above.
+  # This helps with loading sharded weights directly into the accelerators without fist copying them
+  # all to one device and then distributing them, thus using low HBM memory.
   params = load_wan_transformer(config.pretrained_model_name_or_path, params, "cpu")
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():
     sharding = logical_state_sharding[path].value
-    state[path].value = jax.device_put(val, sharding)
+    try:
+      state[path].value = jax.device_put(val, sharding)
+    except:
+      breakpoint()
   state = nnx.from_flat_state(state)
-  p_add_sharding_rule = partial(_add_sharding_rule, logical_axis_rules=config.logical_axis_rules)
-  state = jax.tree.map(p_add_sharding_rule, state, is_leaf=lambda x: isinstance(x, nnx.VariableState))
-  pspecs = nnx.get_partition_spec(state)
-  #breakpoint()
-  sharded_state = jax.lax.with_sharding_constraint(state, pspecs)
-  #breakpoint()
-  #wan_transformer = jax.jit(nnx.merge(graphdef, sharded_state, rest_of_state), in_shardings=None, out_shardings=sharded_state)
-  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+
+  wan_transformer = nnx.merge(graphdef, state, rest_of_state)
   return wan_transformer
+
 
 partial(nnx.jit, static_argnums=(1,))
 def create_sharded_logical_model(model, logical_axis_rules):
@@ -107,6 +116,7 @@ def create_sharded_logical_model(model, logical_axis_rules):
   sharded_state = jax.lax.with_sharding_constraint(state, pspecs)
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   return wan_transformer
+
 
 class WanPipeline:
   r"""
@@ -155,6 +165,7 @@ class WanPipeline:
 
     self.p_run_inference = None
 
+
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
     text_encoder = UMT5EncoderModel.from_pretrained(
@@ -163,6 +174,7 @@ class WanPipeline:
     )
     return text_encoder
   
+
   @classmethod
   def load_tokenizer(cls, config: HyperParameters):
     tokenizer = AutoTokenizer.from_pretrained(
@@ -171,6 +183,7 @@ class WanPipeline:
     )
     return tokenizer
   
+
   @classmethod
   def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     wan_vae = AutoencoderKLWan.from_config(
@@ -196,32 +209,13 @@ class WanPipeline:
       wan_vae = p_create_sharded_logical_model(model=wan_vae)
     return wan_vae, vae_cache
 
+
   @classmethod
   def load_transformer(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     with mesh:
       wan_transformer = create_sharded_logical_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
-    # wan_transformer = WanModel.from_config(
-    #   config.pretrained_model_name_or_path,
-    #   subfolder="transformer",
-    #   rngs=rngs,
-    #   attention=config.attention,
-    #   mesh=mesh,
-    #   dtype=config.activations_dtype,
-    #   weights_dtype=config.weights_dtype
-    # )
-    # graphdef, state, rest_of_state = nnx.split(wan_transformer, nnx.Param, ...)
-    # breakpoint()
-    # params = state.to_pure_dict()
-    # del state
-    # #params = load_wan_transformer(config.pretrained_model_name_or_path, params, "cpu")
-    # params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
-    # #params = jax.device_put(params, PositionalSharding(devices_array).replicate())
-    # wan_transformer = nnx.merge(graphdef, params, rest_of_state)
-    # # Shard
-    # p_create_sharded_logical_model = partial(create_sharded_logical_model, logical_axis_rules=config.logical_axis_rules)
-    # with mesh:
-    #   wan_transformer = p_create_sharded_logical_model(model=wan_transformer)
     return wan_transformer
+
 
   @classmethod
   def load_scheduler(cls, config):
@@ -232,6 +226,7 @@ class WanPipeline:
     )
     return scheduler, scheduler_state
   
+
   @classmethod  
   def from_pretrained(cls, config: HyperParameters, vae_only=False):
     devices_array = max_utils.create_device_mesh(config)
@@ -268,6 +263,7 @@ class WanPipeline:
       config=config
     )
 
+
   def _get_t5_prompt_embeds(
     self,
     prompt: Union[str, List[str]] = None,
@@ -302,6 +298,7 @@ class WanPipeline:
 
     return prompt_embeds
   
+
   def encode_prompt(
     self,
     prompt: Union[str, List[str]],
@@ -333,6 +330,7 @@ class WanPipeline:
 
     return prompt_embeds, negative_prompt_embeds
   
+
   def prepare_latents(
     self,
     batch_size: int,
@@ -355,6 +353,7 @@ class WanPipeline:
     latents = jax.random.normal(rng, shape=shape, dtype=self.config.weights_dtype)
 
     return latents
+
 
   def __call__(
     self,
@@ -382,9 +381,9 @@ class WanPipeline:
 
       # 2. Define call parameters
       if prompt is not None and isinstance(prompt, str):
-          batch_size = 1
-      elif prompt is not None and isinstance(prompt, list):
-          batch_size = len(prompt)
+        prompt = [prompt]
+      
+      batch_size = len(prompt)
       
       prompt_embeds, negative_prompt_embeds = self.encode_prompt(
         prompt=prompt,
@@ -406,12 +405,13 @@ class WanPipeline:
           num_channels_latents=num_channel_latents
         )
 
-      prompt_embeds = jnp.concatenate([prompt_embeds] * latents.shape[0], dtype=self.config.weights_dtype)
-      negative_prompt_embeds = jnp.concatenate([negative_prompt_embeds] * latents.shape[0], dtype=self.config.weights_dtype)
-      
-      latents = jax.device_put(latents, PositionalSharding(self.devices_array).replicate())
-      prompt_embeds = jax.device_put(prompt_embeds, PositionalSharding(self.devices_array).replicate())
-      negative_prompt_embeds = jax.device_put(negative_prompt_embeds, PositionalSharding(self.devices_array).replicate())
+      data_sharding = PositionalSharding(self.devices_array).replicate()
+      if len(prompt) % jax.device_count() == 0:
+        data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
+        
+      latents = jax.device_put(latents, data_sharding)
+      prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
+      negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
 
       scheduler_state = self.scheduler.set_timesteps(
         self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
