@@ -34,6 +34,38 @@ from ...attention_flax import FlaxWanAttention
 
 BlockSizes = common_types.BlockSizes
 
+def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
+  h_dim = w_dim = 2 * (attention_head_dim // 6)
+  t_dim = attention_head_dim - h_dim - w_dim
+  freqs = []
+  for dim in [t_dim, h_dim, w_dim]:
+    freq = get_1d_rotary_pos_embed(
+      dim,
+      max_seq_len,
+      theta,
+      freqs_dtype=jnp.float64,
+      use_real=False
+    )
+    freqs.append(freq)
+  freqs = jnp.concatenate(freqs, axis=1)
+  # sizes = jnp.array([
+  #     attention_head_dim // 2 - 2 * (attention_head_dim // 6),
+  #     attention_head_dim // 6,
+  #     attention_head_dim // 6,
+  # ])
+  # cumulative_sizes = jnp.cumsum(jnp.array(sizes))
+  # split_indices = cumulative_sizes[:-1]
+  t_size = attention_head_dim // 2 - 2 * (attention_head_dim // 6)
+  hw_size = attention_head_dim // 6
+  
+  dims = [t_size, hw_size, hw_size]
+  
+  # Calculate split indices as a static list of integers
+  cumulative_sizes = np.cumsum(dims)
+  split_indices = cumulative_sizes[:-1].tolist()
+  freqs_split = jnp.split(freqs, split_indices, axis=1)
+  return freqs_split
+
 class WanRotaryPosEmbed(nnx.Module):
   def __init__(
     self,
@@ -45,44 +77,23 @@ class WanRotaryPosEmbed(nnx.Module):
     self.attention_head_dim = attention_head_dim
     self.patch_size = patch_size
     self.max_seq_len = max_seq_len
-
-    h_dim = w_dim = 2 * (attention_head_dim // 6)
-    t_dim = attention_head_dim - h_dim - w_dim
-
-    freqs = []
-    for dim in [t_dim, h_dim, w_dim]:
-      freq = get_1d_rotary_pos_embed(
-        dim,
-        self.max_seq_len,
-        theta,
-        freqs_dtype=jnp.float64,
-        use_real=False
-      )
-      freqs.append(freq)
-    freqs = jnp.concatenate(freqs, axis=1)
-
-    sizes = [
-        self.attention_head_dim // 2 - 2 * (self.attention_head_dim // 6),
-        self.attention_head_dim // 6,
-        self.attention_head_dim // 6,
-    ]
-    cumulative_sizes = jnp.cumsum(jnp.array(sizes))
-    split_indices = cumulative_sizes[:-1]
-    self.freqs_split = jnp.split(freqs, split_indices, axis=1)
+    self.theta = theta
   
   def __call__(self, hidden_states: jax.Array) -> jax.Array:
     _, num_frames, height, width, _ = hidden_states.shape
     p_t, p_h, p_w = self.patch_size
     ppf, pph, ppw = num_frames // p_t, height // p_h, width // p_w
 
-    freqs_f = jnp.expand_dims(jnp.expand_dims(self.freqs_split[0][:ppf], axis=1), axis=1)
-    freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, self.freqs_split[0].shape[-1]))
+    freqs_split = get_frequencies(self.max_seq_len, self.theta, self.attention_head_dim)
 
-    freqs_h = jnp.expand_dims(jnp.expand_dims(self.freqs_split[1][:pph], axis=0), axis=2)
-    freqs_h = jnp.broadcast_to(freqs_h, (ppf, pph, ppw, self.freqs_split[1].shape[-1]))
+    freqs_f = jnp.expand_dims(jnp.expand_dims(freqs_split[0][:ppf], axis=1), axis=1)
+    freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, freqs_split[0].shape[-1]))
 
-    freqs_w = jnp.expand_dims(jnp.expand_dims(self.freqs_split[2][:ppw], axis=0), axis=1)
-    freqs_w = jnp.broadcast_to(freqs_w, (ppf, pph, ppw, self.freqs_split[2].shape[-1]))
+    freqs_h = jnp.expand_dims(jnp.expand_dims(freqs_split[1][:pph], axis=0), axis=2)
+    freqs_h = jnp.broadcast_to(freqs_h, (ppf, pph, ppw, freqs_split[1].shape[-1]))
+
+    freqs_w = jnp.expand_dims(jnp.expand_dims(freqs_split[2][:ppw], axis=0), axis=1)
+    freqs_w = jnp.broadcast_to(freqs_w, (ppf, pph, ppw, freqs_split[2].shape[-1]))
 
     freqs_concat = jnp.concatenate([freqs_f, freqs_h, freqs_w], axis=-1)
     freqs_final = jnp.reshape(freqs_concat, (1, 1, ppf * pph * ppw, -1))
@@ -362,7 +373,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       qk_norm: Optional[str] = "rms_norm_across_heads",
       eps: float = 1e-6,
       image_dim: Optional[int] = None,
-      added_kn_proj_dim: Optional[int] = None,
+      added_kv_proj_dim: Optional[int] = None,
       rope_max_seq_len: int = 1024,
       pos_embed_seq_len: Optional[int] = None,
       flash_min_seq_length: int = 4096,

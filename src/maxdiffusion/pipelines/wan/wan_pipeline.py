@@ -18,6 +18,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, PositionalSharding
+import flax
+import flax.linen as nn
 from flax import nnx
 from ...pyconfig import HyperParameters
 from ... import max_logging
@@ -53,6 +55,48 @@ def prompt_clean(text):
 def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.VariableState:
   vs.sharding_rules = logical_axis_rules
   return vs
+
+
+partial(nnx.jit, static_argnums=(3,))
+def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+  # breakpoint()
+  def create_model(rngs: nnx.Rngs, wan_config: dict):
+    wan_transformer = WanModel(**wan_config, rngs=rngs)
+    return wan_transformer
+
+  wan_config = WanModel.load_config(
+    config.pretrained_model_name_or_path,
+    subfolder="transformer"
+  )
+  wan_config["mesh"] = mesh
+  wan_config["dtype"] = config.activations_dtype
+  wan_config["weights_dtype"] = config.weights_dtype
+  wan_config["attention"] = config.attention
+  p_model_factory = partial(create_model, wan_config=wan_config)
+  wan_transformer = nnx.eval_shape(p_model_factory, rngs=rngs)
+  graphdef, state, rest_of_state = nnx.split(wan_transformer, nnx.Param, ...)
+  #breakpoint()
+  logical_state_spec = nnx.get_partition_spec(state)
+  logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
+  logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
+  params = state.to_pure_dict()
+  state = dict(nnx.to_flat_state(state))
+  # del state
+  params = load_wan_transformer(config.pretrained_model_name_or_path, params, "cpu")
+  params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+  for path, val in flax.traverse_util.flatten_dict(params).items():
+    sharding = logical_state_sharding[path].value
+    state[path].value = jax.device_put(val, sharding)
+  state = nnx.from_flat_state(state)
+  p_add_sharding_rule = partial(_add_sharding_rule, logical_axis_rules=config.logical_axis_rules)
+  state = jax.tree.map(p_add_sharding_rule, state, is_leaf=lambda x: isinstance(x, nnx.VariableState))
+  pspecs = nnx.get_partition_spec(state)
+  #breakpoint()
+  sharded_state = jax.lax.with_sharding_constraint(state, pspecs)
+  #breakpoint()
+  #wan_transformer = jax.jit(nnx.merge(graphdef, sharded_state, rest_of_state), in_shardings=None, out_shardings=sharded_state)
+  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+  return wan_transformer
 
 partial(nnx.jit, static_argnums=(1,))
 def create_sharded_logical_model(model, logical_axis_rules):
@@ -154,26 +198,29 @@ class WanPipeline:
 
   @classmethod
   def load_transformer(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
-    wan_transformer = WanModel.from_config(
-      config.pretrained_model_name_or_path,
-      subfolder="transformer",
-      rngs=rngs,
-      attention=config.attention,
-      mesh=mesh,
-      dtype=config.activations_dtype,
-      weights_dtype=config.weights_dtype
-    )
-    graphdef, state, rest_of_state = nnx.split(wan_transformer, nnx.Param, ...)
-    params = state.to_pure_dict()
-    del state
-    params = load_wan_transformer(config.pretrained_model_name_or_path, params, "cpu")
-    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
-    params = jax.device_put(params, PositionalSharding(devices_array).replicate())
-    wan_transformer = nnx.merge(graphdef, params, rest_of_state)
-    # Shard
-    p_create_sharded_logical_model = partial(create_sharded_logical_model, logical_axis_rules=config.logical_axis_rules)
     with mesh:
-      wan_transformer = p_create_sharded_logical_model(model=wan_transformer)
+      wan_transformer = create_sharded_logical_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+    # wan_transformer = WanModel.from_config(
+    #   config.pretrained_model_name_or_path,
+    #   subfolder="transformer",
+    #   rngs=rngs,
+    #   attention=config.attention,
+    #   mesh=mesh,
+    #   dtype=config.activations_dtype,
+    #   weights_dtype=config.weights_dtype
+    # )
+    # graphdef, state, rest_of_state = nnx.split(wan_transformer, nnx.Param, ...)
+    # breakpoint()
+    # params = state.to_pure_dict()
+    # del state
+    # #params = load_wan_transformer(config.pretrained_model_name_or_path, params, "cpu")
+    # params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+    # #params = jax.device_put(params, PositionalSharding(devices_array).replicate())
+    # wan_transformer = nnx.merge(graphdef, params, rest_of_state)
+    # # Shard
+    # p_create_sharded_logical_model = partial(create_sharded_logical_model, logical_axis_rules=config.logical_axis_rules)
+    # with mesh:
+    #   wan_transformer = p_create_sharded_logical_model(model=wan_transformer)
     return wan_transformer
 
   @classmethod
