@@ -404,6 +404,9 @@ class WanPipeline:
           num_frames=num_frames,
           num_channels_latents=num_channel_latents
         )
+      
+      # import pdb
+      # pdb.set_trace()
 
       data_sharding = PositionalSharding(self.devices_array).replicate()
       if len(prompt) % jax.device_count() == 0:
