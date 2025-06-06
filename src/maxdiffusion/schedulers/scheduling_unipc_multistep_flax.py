@@ -15,7 +15,6 @@
 # DISCLAIMER: reference pytorch implementation: https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_unipc_multistep.py
 
 from typing import List, Optional, Tuple, Union
-from dataclasses import dataclass
 
 import flax
 import jax
@@ -611,10 +610,6 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
 
         hh = -h if self.config.predict_x0 else h
         h_phi_1 = jnp.expm1(hh)
-
-        # Calculate h_phi_k values for coefficients
-        current_h_phi_k = h_phi_1 / hh - 1.0
-        factorial_val = 1.0
 
         if self.config.solver_type == "bh1":
             B_h = hh
