@@ -28,6 +28,7 @@ from ...max_utils import get_flash_block_sizes, get_precision
 from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
 from ...models.wan.transformers.transformer_wan import WanModel
 from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
+from ...models.wan.wan_orig_torch import Decoder3d
 from maxdiffusion.video_processor import VideoProcessor
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
 from transformers import AutoTokenizer, UMT5EncoderModel
@@ -440,13 +441,41 @@ class WanPipeline:
       latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
       latents = latents / latents_std + latents_mean
       latents = latents.astype(self.config.weights_dtype)
-
+    max_logging.log(f"TRANSFORMER LATENTS HERE {latents.shape}")
+    pytorch_decoder = Decoder3d(z_dim=latents.shape[-1])
+    device = torch.device("cpu")
+    pytorch_decoder.to(device=device, dtype=torch.bfloat16)
+    pytorch_latents_nthwc = torch.from_numpy(np.asarray(latents).copy().astype(dtype=jnp.float32)).to(dtype=torch.bfloat16)
+    pytorch_latents_ncthw =  pytorch_latents_nthwc.permute(0, 4, 1, 2, 3)
+    # pytorch_vae_cache = torch.from_numpy(np.asarray(self.vae_cache).copy().astype(dtype=jnp.float32)).to(dtype=torch.bfloat16)
+    # video = self.vae.decode(latents, self.vae_cache)[0]
     video = self.vae.decode(latents, self.vae_cache)[0]
-
+    
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
-    video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
-    video = self.video_processor.postprocess_video(video, output_type="np")
-    return video
+    with torch.no_grad():
+      max_logging.log(
+      f"LATENTS Compare | JAX out: {latents.shape}, Torch out: {pytorch_latents_ncthw.shape} | "
+      f"Shapes Match: {latents.shape == pytorch_latents_ncthw.shape} | "
+      # f"Avg Diff: {torch.from_numpy(torch.mean(torch.abs(torch.from_numpy(np.asarray(video).copy().astype(dtype=jnp.float32)).to(dtype=torch.bfloat16)).to(dtype=torch.bfloat16) - video_pytorch)).item():.6f}"
+      )
+      # max_logging.log(
+      # f"Feature cache Compare | JAX out: {latents.shape}, Torch out: {pytorch_latents_ncthw.shape} | "
+      # f"Shapes Match: {latents.shape == pytorch_latents_ncthw.shape} | "
+      # # f"Avg Diff: {torch.from_numpy(torch.mean(torch.abs(torch.from_numpy(np.asarray(video).copy().astype(dtype=jnp.float32)).to(dtype=torch.bfloat16)).to(dtype=torch.bfloat16) - video_pytorch)).item():.6f}"
+      # )
+      
+      video_pytorch = pytorch_decoder(pytorch_latents_ncthw, self.vae_cache._feat_map, [0])[0]
+      max_logging.log(
+      f"Vid Compare | JAX out: {video.shape} , Torch out:  {video_pytorch.shape}| "
+      f"Shapes Match: {video_pytorch.shape ==  video.shape} | "
+      # f"Avg Diff: {torch.from_numpy(torch.mean(torch.abs(torch.from_numpy(np.asarray(video).copy().astype(dtype=jnp.float32)).to(dtype=torch.bfloat16)).to(dtype=torch.bfloat16) - video_pytorch)).item():.6f}"
+      )
+      # video_pytorch = self.video_processor.postprocess_video(video_pytorch, output_type="np")
+      # return video_pytorch
+      video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
+      video = self.video_processor.postprocess_video(video, output_type="np")
+      return video
+    return 
 
 
 @jax.jit

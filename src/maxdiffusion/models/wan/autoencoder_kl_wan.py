@@ -967,7 +967,6 @@ class AutoencoderKLWanCache:
     self._enc_conv_idx = [0]
     self._enc_feat_map = [None] * self._enc_conv_num
 
-
 class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def __init__(
