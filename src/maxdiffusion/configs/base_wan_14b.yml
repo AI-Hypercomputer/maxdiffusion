@@ -207,15 +207,20 @@ prompt: "A cat and a dog baking a cake together in a kitchen. The cat is careful
 prompt_2: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
 negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 do_classifier_free_guidance: True
-height: 720
-width: 1280
+height: 480
+width: 832
 num_frames: 81
 guidance_scale: 5.0
+flow_shift: 3.0
+
+# skip layer guidance
+slg_layers: [9]
+slg_start: 0.2
+slg_end: 1.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 30
 save_final_checkpoint: False
-flow_shift: 5.0
 
 # SDXL Lightning parameters
 lightning_from_pt: True

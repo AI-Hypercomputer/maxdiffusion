@@ -21,8 +21,15 @@ from absl import app
 from maxdiffusion.utils import export_to_video
 
 def run(config):
+  print("seed: ", config.seed)
   pipeline = WanPipeline.from_pretrained(config)
   s0 = time.perf_counter()
+  
+  # Skip layer guidance
+  slg_layers = config.slg_layers
+  slg_start = config.slg_start
+  slg_end = config.slg_end
+  
   videos = pipeline(
     prompt=config.prompt,
     negative_prompt=config.negative_prompt,
@@ -31,6 +38,9 @@ def run(config):
     num_frames=config.num_frames,
     num_inference_steps=config.num_inference_steps,
     guidance_scale=config.guidance_scale,
+    slg_layers=slg_layers,
+    slg_start=slg_start,
+    slg_end=slg_end
   )
 
   print("compile time: ", (time.perf_counter() - s0))
@@ -46,6 +56,9 @@ def run(config):
       num_frames=config.num_frames,
       num_inference_steps=config.num_inference_steps,
       guidance_scale=config.guidance_scale,
+      slg_layers=slg_layers,
+      slg_start=slg_start,
+      slg_end=slg_end
     )
   print("generation time: ", (time.perf_counter() - s0))
   for i in range(len(videos)):

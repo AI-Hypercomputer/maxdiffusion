@@ -14,7 +14,7 @@
  limitations under the License.
 """
 
-from typing import Tuple, Optional, Dict, Union, Any
+from typing import Tuple, Optional, Dict, Union, Any, List
 import math
 import jax
 import jax.numpy as jnp
@@ -453,6 +453,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     hidden_states: jax.Array,
     timestep: jax.Array,
     encoder_hidden_states: jax.Array,
+    is_uncond: jax.Array, # jnp.bool_ scalar
+    slg_mask: jax.Array, # jnp.bool_ array of shape (num_blocks,)
     encoder_hidden_states_image: Optional[jax.Array] = None,
     return_dict: bool = True,
     attention_kwargs: Optional[Dict[str, Any]] = None,
@@ -476,8 +478,14 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     if encoder_hidden_states_image is not None:
       raise NotImplementedError("img2vid is not yet implemented.")
-    for block in self.blocks:
-      hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
+    for block_idx, block in enumerate(self.blocks):
+      should_skip_block = slg_mask[block_idx] & is_uncond
+      hidden_states = jax.lax.cond(
+        should_skip_block,
+        lambda hs: hs, # If true, pass through original hidden_states (skip block)
+        lambda _: block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb),
+        hidden_states
+      )
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)

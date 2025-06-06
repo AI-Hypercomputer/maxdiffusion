@@ -369,7 +369,10 @@ class WanPipeline:
     latents: jax.Array = None,
     prompt_embeds: jax.Array = None,
     negative_prompt_embeds: jax.Array = None,
-    vae_only: bool = False
+    vae_only: bool = False,
+    slg_layers: List[int] = None,
+    slg_start: float = 0.0,
+    slg_end: float = 1.0
   ):
     if not vae_only:
       if num_frames % self.vae_scale_factor_temporal != 1:
@@ -424,7 +427,11 @@ class WanPipeline:
         guidance_scale=guidance_scale,
         num_inference_steps=num_inference_steps,
         scheduler=self.scheduler,
-        scheduler_state=scheduler_state
+        scheduler_state=scheduler_state,
+        slg_layers=slg_layers,
+        slg_start=slg_start,
+        slg_end=slg_end,
+        num_transformer_layers=self.transformer.config.num_layers
       )
 
       with self.mesh:
@@ -450,12 +457,22 @@ class WanPipeline:
 
 
 @jax.jit
-def transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, prompt_embeds):
+def transformer_forward_pass(
+  graphdef,
+  sharded_state,
+  rest_of_state,
+  latents,
+  timestep,
+  prompt_embeds,
+  is_uncond,
+  slg_mask):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   return wan_transformer(
     hidden_states=latents,
     timestep=timestep,
-    encoder_hidden_states=prompt_embeds
+    encoder_hidden_states=prompt_embeds,
+    is_uncond=is_uncond,
+    slg_mask=slg_mask
   )[0]
 
 #@partial(jax.jit, static_argnums=(6, 7, 8))
@@ -469,16 +486,42 @@ def run_inference(
   guidance_scale: float,
   num_inference_steps: int,
   scheduler : FlaxUniPCMultistepScheduler,
-  scheduler_state):
+  num_transformer_layers: int,
+  scheduler_state,
+  slg_layers: List[int] = None,
+  slg_start: float = 0.0,
+  slg_end: float = 1.0
+  ):
     do_classifier_free_guidance = guidance_scale > 1.0
     for step in range(num_inference_steps):
+      slg_mask = jnp.zeros(num_transformer_layers, dtype=jnp.bool_)
+      if slg_layers and int(slg_start * num_inference_steps) <= step < int(slg_end * num_inference_steps):
+        slg_mask = slg_mask.at[jnp.array(slg_layers)].set(True)
       t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
       timestep = jnp.broadcast_to(t, latents.shape[0])
       
-      noise_pred = transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, prompt_embeds)
+      noise_pred = transformer_forward_pass(
+        graphdef,
+        sharded_state,
+        rest_of_state,
+        latents,
+        timestep,
+        prompt_embeds,
+        is_uncond=jnp.array(False, dtype=jnp.bool_),
+        slg_mask=slg_mask
+      )
 
       if do_classifier_free_guidance:
-        noise_uncond = transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, negative_prompt_embeds)
+        noise_uncond = transformer_forward_pass(
+          graphdef,
+          sharded_state,
+          rest_of_state,
+          latents,
+          timestep,
+          negative_prompt_embeds,
+          is_uncond=jnp.array(True, dtype=jnp.bool_),
+          slg_mask=slg_mask
+          )
         noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     return latents
