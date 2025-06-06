@@ -35,7 +35,7 @@ def run(config):
 
   print("compile time: ", (time.perf_counter() - s0))
   for i in range(len(videos)):
-    export_to_video(videos[i], f"wan_output_{i}.mp4", fps=16)
+    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=16)
   s0 = time.perf_counter()
   with jax.profiler.trace("/tmp/trace/"):
     videos = pipeline(
@@ -49,7 +49,7 @@ def run(config):
     )
   print("generation time: ", (time.perf_counter() - s0))
   for i in range(len(videos)):
-    export_to_video(videos[i], f"wan_output_{i}.mp4", fps=16)
+    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=16)
 
 
 def main(argv: Sequence[str]) -> None:

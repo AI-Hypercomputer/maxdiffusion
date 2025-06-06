@@ -179,8 +179,6 @@ class ApproximateGELU(nnx.Module):
       dtype=dtype,
       param_dtype=weights_dtype,
       precision=precision,
-      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "mlp",)),
-      bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
     )
   
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -231,7 +229,6 @@ class WanFeedForward(nnx.Module):
       param_dtype=weights_dtype,
       precision=precision,
       kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("mlp", "embed",)),
-      bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
   
   def __call__(self, hidden_states: jax.Array) -> jax.Array:
@@ -338,7 +335,7 @@ class WanTransformerBlock(nnx.Module):
 
     # 1. Self-attention
     norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
-    attn_output = self.attn1(hidden_states=norm_hidden_states, rotary_emb=rotary_emb)
+    attn_output = self.attn1(hidden_states=norm_hidden_states, encoder_hidden_states=norm_hidden_states, rotary_emb=rotary_emb)
     hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
 
     # 2. Cross-attention
@@ -443,11 +440,13 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       dtype=dtype,
       param_dtype=weights_dtype,
       precision=precision,
-      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "mlp",)),
-      bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", None)),
     )
     key = rngs.params()
-    self.scale_shift_table = nnx.Param(jax.random.normal(key, (1, 2, inner_dim)) / inner_dim**0.5)
+    self.scale_shift_table = nnx.Param(
+      jax.random.normal(key, (1, 2, inner_dim)) / inner_dim**0.5,
+      kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, "embed"))
+    )
 
   def __call__(
     self,

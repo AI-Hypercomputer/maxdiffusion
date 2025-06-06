@@ -19,6 +19,7 @@ import numpy as np
 import flax.linen as nn
 from flax import nnx
 import jax
+from jax.sharding import PartitionSpec
 import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
@@ -139,21 +140,23 @@ def _tpu_flash_attention(
   heads: int,
   mesh: Mesh,
   flash_axis_names: AxisNames,
-  flash_block_sizes: BlockSizes) -> jax.Array:
+  flash_block_sizes: BlockSizes,
+  dtype: jnp.dtype = jnp.float32) -> jax.Array:
   """TPU Flash Attention"""
 
+  max_block_size = 1024 if dtype == jnp.bfloat16 else 512
   if flash_block_sizes:
     block_sizes = flash_block_sizes
   else:
     block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=min(512, query.shape[2]),
-        block_kv_compute=min(512, key.shape[2]),
-        block_kv=min(512, key.shape[2]),
-        block_q_dkv=min(512, query.shape[2]),
-        block_kv_dkv=min(512, key.shape[2]),
-        block_kv_dkv_compute=min(512, query.shape[2]),
-        block_q_dq=min(512, query.shape[2]),
-        block_kv_dq=min(512, query.shape[2]),
+        block_q=min(max_block_size, query.shape[2]),
+        block_kv_compute=min(max_block_size, key.shape[2]),
+        block_kv=min(max_block_size, key.shape[2]),
+        block_q_dkv=min(max_block_size, query.shape[2]),
+        block_kv_dkv=min(max_block_size, key.shape[2]),
+        block_kv_dkv_compute=min(max_block_size, query.shape[2]),
+        block_q_dq=min(max_block_size, query.shape[2]),
+        block_kv_dq=min(max_block_size, query.shape[2]),
     )
 
   query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q)
@@ -340,7 +343,7 @@ def _apply_attention(
   if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
     return _apply_attention_dot(query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention)
   elif attention_kernel == "flash":
-    return _tpu_flash_attention(query, key * scale, value, heads, mesh, flash_axis_names, flash_block_sizes)
+    return _tpu_flash_attention(query, key * scale, value, heads, mesh, flash_axis_names, flash_block_sizes, dtype)
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:
@@ -668,7 +671,7 @@ class FlaxWanAttention(nnx.Module):
         rngs=rngs,
         epsilon=eps,
         dtype=dtype,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones, ("heads", )),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones, ("norm", )),
         param_dtype=weights_dtype
       )
 
@@ -676,7 +679,7 @@ class FlaxWanAttention(nnx.Module):
         num_features=self.inner_dim,
         rngs=rngs,
         dtype=dtype,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones, ("heads", )),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones, ("norm", )),
         param_dtype=weights_dtype
       )
 
@@ -702,9 +705,12 @@ class FlaxWanAttention(nnx.Module):
     encoder_hidden_states: jax.Array = None,
     rotary_emb: Optional[jax.Array] = None
   ) -> jax.Array:
+    hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec('data', 'fsdp','tensor'))
+    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec('data', 'fsdp','tensor'))
     dtype = hidden_states.dtype
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
+
     query_proj = self.query(hidden_states)
     key_proj = self.key(encoder_hidden_states)
     value_proj = self.value(encoder_hidden_states)
@@ -717,8 +723,13 @@ class FlaxWanAttention(nnx.Module):
       key_proj = _unflatten_heads(key_proj, self.heads)
       value_proj = _unflatten_heads(value_proj, self.heads)
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
-    
+      query_proj = jax.lax.with_sharding_constraint(query_proj, PartitionSpec('data', 'tensor', None, None))
+      key_proj = jax.lax.with_sharding_constraint(key_proj, PartitionSpec('data', 'tensor', None, None))
+      value_proj = jax.lax.with_sharding_constraint(value_proj, PartitionSpec('data', 'tensor', None, None))
+
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+    attn_output = jax.lax.with_sharding_constraint(attn_output, PartitionSpec('data', None, None))
+
     attn_output = attn_output.astype(dtype=dtype)
 
     hidden_states = self.proj_attn(attn_output)
