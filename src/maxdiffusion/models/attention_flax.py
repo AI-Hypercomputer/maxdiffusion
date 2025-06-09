@@ -24,6 +24,8 @@ import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
+from jax.experimental.pallas.ops.tpu import flash_attention
+from jax.experimental.pallas.ops.tpu.flash_attention import flash_attention as jax_flash_attention
 from einops import rearrange
 from .. import common_types, max_logging
 
@@ -103,7 +105,7 @@ def _unflatten_heads(tensor, heads):
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
   return tensor
 
-def _reshape_data_for_flash(tensor, heads, flash_block_size):
+def _reshape_data_for_flash(tensor, heads, flash_block_size, pad=True):
   """
   Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
   """
@@ -127,13 +129,82 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size):
     # pad to the closest multiplier of flash_block_size
     seq_len_pad = (mul + 1) * flash_block_size - seq_len
   
-  if kv_size < 128 or rem != 0:
+  if kv_size < 128 or rem != 0 and pad:
     npad = ((0, 0), (0, 0), (0, seq_len_pad), (0, head_dim_pad))
     tensor = jnp.pad(tensor, npad)
 
   return tensor, kv_size, seq_len
 
+def default_block_sizes(query: jax.Array, key: jax.Array, dtype: jnp.dtype):
+  max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  return flash_attention.BlockSizes(
+    block_q=min(max_block_size, query.shape[-2]),
+    block_k_major=min(max_block_size, key.shape[-2]),
+    block_k=min(max_block_size, key.shape[-2]),
+    block_b=min(1, query.shape[0]),
+    block_q_major_dkv=min(max_block_size, query.shape[-2]),
+    block_k_major_dkv=min(max_block_size, key.shape[-2]),
+    block_q_dkv=min(max_block_size, query.shape[-2]),
+    block_k_dkv=min(max_block_size, key.shape[-2]),
+    block_q_dq=min(max_block_size, query.shape[-2]),
+    block_k_dq=min(512, key.shape[-2]),
+    block_k_major_dq=min(max_block_size, key.shape[-2]),
+  )
+
 def _tpu_flash_attention(
+  query: jax.Array,
+  key: jax.Array,
+  value: jax.Array,
+  heads: int,
+  mesh: Mesh,
+  flash_axis_names: AxisNames,
+  flash_block_sizes: BlockSizes,
+  dtype: jnp.dtype = jnp.float32) -> jax.Array:
+  """TPU Flash Attention"""
+
+  if flash_block_sizes is None:
+    block_sizes = default_block_sizes(query, key, dtype)
+  
+  query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q, pad=True)
+  key, _, _ = _reshape_data_for_flash(key, heads, block_sizes.block_k, pad=True)
+  value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_k, pad=True)
+
+  axis_names = nn.logical_to_mesh_axes(flash_axis_names)
+  @functools.partial(
+      shard_map.shard_map,
+      mesh=mesh,
+      in_specs=(
+          axis_names,
+          axis_names,
+          axis_names,
+      ),
+      out_specs=axis_names,
+      check_rep=False,
+  )
+  def wrap_flash_attention(query, key, value):
+    output = jax_flash_attention(
+      query,
+      key,
+      value,
+      block_sizes=block_sizes
+    )
+    return output
+  
+  devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
+  # This warning might show up when doing model eval for example, when calculating model flops
+  # and that is expected.
+  if not (query.shape[0] / devices_in_data_fsdp).is_integer():
+    max_logging.log(
+        "Warning, batch dimension should be shardable among the devices in data and fsdp"
+        f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
+    )
+  x = wrap_flash_attention(query, key, value)
+  x = x[:, :, :query_seq_len, :kv_size]
+  x = _reshape_heads_to_head_dim(x)
+  return x
+
+
+def _tpu_splash_attention(
   query: jax.Array,
   key: jax.Array,
   value: jax.Array,
@@ -182,6 +253,7 @@ def _tpu_flash_attention(
     splash_kernel = splash_attention_kernel.make_splash_mha(
         mask=multi_head_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
     )
+    #return splash_kernel(query, key, value)
     return jax.vmap(splash_kernel)(query, key, value)
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
@@ -344,6 +416,8 @@ def _apply_attention(
     return _apply_attention_dot(query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention)
   elif attention_kernel == "flash":
     return _tpu_flash_attention(query, key * scale, value, heads, mesh, flash_axis_names, flash_block_sizes, dtype)
+  elif attention_kernel == "splash":
+    return _tpu_splash_attention(query, key * scale, value, heads, mesh, flash_axis_names, flash_block_sizes, dtype)
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:
