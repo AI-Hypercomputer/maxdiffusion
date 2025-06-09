@@ -21,7 +21,7 @@ from datasets import load_dataset, load_from_disk
 
 from maxdiffusion import multihost_dataloading
 
-AUTOTUNE = tf.data.experimental.AUTOTUNE
+AUTOTUNE = tf.data.AUTOTUNE
 
 
 def load_as_tf_dataset(dataset, global_batch_size, shuffle, dataloading_host_count):
@@ -31,7 +31,7 @@ def load_as_tf_dataset(dataset, global_batch_size, shuffle, dataloading_host_cou
   if shuffle:
     tf_dataset = tf_dataset.shuffle(len(tf_dataset))
   tf_dataset = tf_dataset.batch(global_batch_size // dataloading_host_count, drop_remainder=True)
-  tf_dataset = tf_dataset.prefetch(tf.data.experimental.AUTOTUNE)
+  tf_dataset = tf_dataset.prefetch(AUTOTUNE)
   tf_dataset = tf_dataset.repeat(-1)
 
   return tf_dataset
@@ -74,6 +74,57 @@ def make_tf_iterator(
   return train_iter
 
 
+def make_cached_tfrecord_iterator(
+    config,
+    dataloading_host_index,
+    dataloading_host_count,
+    mesh,
+    global_batch_size,
+):
+  """
+  New iterator for TFRecords that contain the full 4 pre-computed latents and embeddings:
+  latents, input_ids, prompt_embeds, and text_embeds.
+  """
+  feature_description = {
+      "pixel_values": tf.io.FixedLenFeature([], tf.string),
+      "input_ids": tf.io.FixedLenFeature([], tf.string),
+      "prompt_embeds": tf.io.FixedLenFeature([], tf.string),
+      "text_embeds": tf.io.FixedLenFeature([], tf.string),
+  }
+
+  def _parse_tfrecord_fn(example):
+    return tf.io.parse_single_example(example, feature_description)
+
+  def prepare_sample(features):
+    pixel_values = tf.io.parse_tensor(features["pixel_values"], out_type=tf.float32)
+    input_ids = tf.io.parse_tensor(features["input_ids"], out_type=tf.int32)
+    prompt_embeds = tf.io.parse_tensor(features["prompt_embeds"], out_type=tf.float32)
+    text_embeds = tf.io.parse_tensor(features["text_embeds"], out_type=tf.float32)
+    
+    return {
+        "pixel_values": pixel_values,
+        "input_ids": input_ids,
+        "prompt_embeds": prompt_embeds,
+        "text_embeds": text_embeds
+    }
+
+  # This pipeline reads the sharded files and applies the parsing and preparation.
+  filenames = tf.io.gfile.glob(os.path.join(config.train_data_dir, "*"))
+  train_ds = (
+      tf.data.TFRecordDataset(filenames, num_parallel_reads=AUTOTUNE)
+      .shard(num_shards=dataloading_host_count, index=dataloading_host_index)
+      .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
+      .map(prepare_sample, num_parallel_calls=AUTOTUNE)
+      .shuffle(global_batch_size * 10)
+      .batch(global_batch_size // dataloading_host_count, drop_remainder=True)
+      .repeat(-1)
+      .prefetch(AUTOTUNE)
+  )
+
+  # This wraps the tf.data.Dataset for use in the multi-host JAX environment.
+  train_iter = multihost_dataloading.MultiHostDataLoadIterator(train_ds, mesh)
+  return train_iter
+
 # TODO - https://github.com/google/array_record/blob/main/beam/examples/example_gcs_conversion.py
 def make_tfrecord_iterator(
     config,
@@ -86,11 +137,15 @@ def make_tfrecord_iterator(
   check out preparation script
   maxdiffusion/pedagogical_examples/to_tfrecords.py
   """
+  if config.cache_latents_text_encoder_outputs and os.path.isdir(config.dataset_save_location):
+    return make_cached_tfrecord_iterator(config, dataloading_host_index, 
+                                         dataloading_host_count, mesh,
+                                         global_batch_size)
   feature_description = {
       "moments": tf.io.FixedLenFeature([], tf.string),
       "clip_embeddings": tf.io.FixedLenFeature([], tf.string),
   }
-
+  
   def _parse_tfrecord_fn(example):
     return tf.io.parse_single_example(example, feature_description)
 
@@ -98,7 +153,7 @@ def make_tfrecord_iterator(
     moments = tf.io.parse_tensor(tnp.asarray(features["moments"]), out_type=tf.float32)
     clip_embeddings = tf.io.parse_tensor(tnp.asarray(features["clip_embeddings"]), out_type=tf.float32)
     return {"pixel_values": moments, "input_ids": clip_embeddings}
-
+    
   filenames = tf.io.gfile.glob(os.path.join(config.train_data_dir, "*"))
   train_ds = (
       tf.data.TFRecordDataset(filenames, num_parallel_reads=AUTOTUNE)

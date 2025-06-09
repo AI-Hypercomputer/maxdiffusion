@@ -1,4 +1,5 @@
-jax>=0.4.30
+--extra-index-url https://download.pytorch.org/whl/cpu
+jax==0.5.3
 jaxlib>=0.4.30
 grain-nightly==0.0.10
 google-cloud-storage==2.17.0
@@ -6,8 +7,8 @@ absl-py
 datasets
 flax>=0.10.2
 optax>=0.2.3
-torch==2.5.1
-torchvision==0.20.1
+torch==2.6.0
+torchvision>=0.20.1
 ftfy
 tensorboard>=2.17.0
 tensorboardx==2.6.2.2
