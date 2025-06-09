@@ -17,6 +17,8 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
+import threading
+import queue
 
 from maxdiffusion import max_utils, max_logging
 
@@ -67,10 +69,28 @@ def record_scalar_metrics(metrics, step_time_delta, per_device_tflops, lr):
   metrics["scalar"].update({"perf/per_device_tflops_per_sec": per_device_tflops / step_time_delta.total_seconds()})
   metrics["scalar"].update({"learning/current_learning_rate": lr})
 
-
+_metrics_queue = queue.Queue()
 _buffered_step = None
 _buffered_metrics = None
 
+def _tensorboard_writer_worker(writer, config):
+    """
+    A worker function that runs in a separate thread.
+    It waits for metrics to appear in the queue and writes them to TensorBoard.
+    """
+    while True:
+        data = _metrics_queue.get()
+        if data is None:
+            break
+        metrics, step = data
+        if jax.process_index() == 0:
+            for metric_name in metrics.get("scalar", []):
+                writer.add_scalar(metric_name, np.array(metrics["scalar"][metric_name]), step)
+            for metric_name in metrics.get("scalars", []):
+                writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
+
+            if step % config.log_period == 0:
+                writer.flush()
 
 def write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, step, config):
   """Entry point for all metrics writing in Train's Main.
@@ -81,15 +101,18 @@ def write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, step
   The logic is that this ensures that Jax is able to queues train_steps and we
   don't block when turning "lazy" Jax arrays into real Python numbers.
   """
-  global _buffered_step, _buffered_metrics
+  global _buffered_step, _buffered_metrics, _metrics_queue
 
+  if metrics:
+    _metrics_queue.put((metrics, step))
   if _buffered_metrics is not None:
+    if config.metrics_file:
+      max_utils.write_metrics_locally(_buffered_metrics, _buffered_step, config, local_metrics_file)
+    
     if _buffered_step is None:
       raise ValueError(f"When writing metrics, {_buffered_step=} was none")
     write_metrics_to_tensorboard(writer, _buffered_metrics, _buffered_step, config)
 
-    if config.metrics_file:
-      max_utils.write_metrics_locally(_buffered_metrics, _buffered_step, config, local_metrics_file)
 
     if config.gcs_metrics and jax.process_index() == 0:
       running_gcs_metrics = max_utils.write_metrics_for_gcs(_buffered_metrics, _buffered_step, config, running_gcs_metrics)
@@ -101,13 +124,6 @@ def write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, step
 def write_metrics_to_tensorboard(writer, metrics, step, config):
   """Writes metrics to tensorboard"""
   if jax.process_index() == 0:
-    for metric_name in metrics.get("scalar", []):
-      writer.add_scalar(metric_name, np.array(metrics["scalar"][metric_name]), step)
-    for metric_name in metrics.get("scalars", []):
-      writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
-
-  full_log = step % config.log_period == 0
-  if jax.process_index() == 0:
     max_logging.log(
         "completed step: {}, seconds: {:.3f}, TFLOP/s/device: {:.3f}, loss: {:.3f}".format(
             step,
@@ -116,6 +132,13 @@ def write_metrics_to_tensorboard(writer, metrics, step, config):
             float(metrics["scalar"]["learning/loss"]),
         )
     )
+  if jax.process_index() == 0:
+    for metric_name in metrics.get("scalar", []):
+      writer.add_scalar(metric_name, np.array(metrics["scalar"][metric_name]), step)
+    for metric_name in metrics.get("scalars", []):
+      writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
+
+  full_log = step % config.log_period == 0
 
   if full_log and jax.process_index() == 0:
     max_logging.log(f"To see full metrics 'tensorboard --logdir={config.tensorboard_dir}'")
