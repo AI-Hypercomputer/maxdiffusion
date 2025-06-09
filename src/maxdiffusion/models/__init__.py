@@ -14,7 +14,7 @@
 
 from typing import TYPE_CHECKING
 
-from ..utils import DIFFUSERS_SLOW_IMPORT, _LazyModule, is_flax_available, is_torch_available
+from maxdiffusion.utils import DIFFUSERS_SLOW_IMPORT, _LazyModule, is_flax_available, is_torch_available
 
 
 _import_structure = {}
@@ -32,7 +32,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
   from .vae_flax import FlaxAutoencoderKL
   from .lora import *
   from .flux.transformers.transformer_flux_flax import FluxTransformer2DModel
-
+  from .ltx_video.transformers.transformer3d import Transformer3DModel
 else:
   import sys
 
