@@ -100,7 +100,7 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
     try:
       state[path].value = jax.device_put(val, sharding)
     except:
-      breakpoint()
+      raise ValueError("value should exist.")
   state = nnx.from_flat_state(state)
 
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
