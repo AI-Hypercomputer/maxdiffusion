@@ -87,7 +87,7 @@ class FluxTrainer(FluxCheckpointer):
     state_shardings = {}
 
     # move params to accelerator
-    encoders_sharding = PositionalSharding(self.devices_array).replicate()
+    encoders_sharding = jax.NamedSharding(self.mesh, P(None))
     partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=encoders_sharding)
     pipeline.clip_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), pipeline.clip_encoder.params)
     pipeline.clip_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.clip_encoder.params)
