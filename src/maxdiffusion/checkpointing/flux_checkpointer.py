@@ -87,7 +87,7 @@ class FluxCheckpointer(ABC):
         rngs=self.rng, max_sequence_length=self.config.max_sequence_length, eval_only=True
     )
 
-    transformer_params = load_flow_model(self.config.flux_name, transformer_eval_params, "cpu")
+    #transformer_params = load_flow_model(self.config.flux_name, transformer_eval_params, "cpu")
 
     weights_init_fn = functools.partial(
         pipeline.flux.init_weights, rngs=self.rng, max_sequence_length=self.config.max_sequence_length
@@ -103,9 +103,9 @@ class FluxCheckpointer(ABC):
         checkpoint_item=checkpoint_item_name,
         training=is_training,
     )
-    if not self.config.train_new_flux:
-      flux_state = flux_state.replace(params=transformer_params)
-      flux_state = jax.device_put(flux_state, state_mesh_shardings)
+    # if not self.config.train_new_flux:
+    #   flux_state = flux_state.replace(params=transformer_params)
+    #   flux_state = jax.device_put(flux_state, state_mesh_shardings)
     return flux_state, state_mesh_shardings, learning_rate_scheduler
 
   def create_vae_state(self, pipeline, params, checkpoint_item_name, is_training=False):
@@ -217,12 +217,13 @@ class FluxCheckpointer(ABC):
           dtype=self.config.activations_dtype,
           weights_dtype=self.config.weights_dtype,
           precision=max_utils.get_precision(self.config),
+          num_layers=1
       )
-      transformer_eval_params = transformer.init_weights(
-          rngs=self.rng, max_sequence_length=self.config.max_sequence_length, eval_only=True
+      transformer_params = transformer.init_weights(
+          rngs=self.rng, max_sequence_length=self.config.max_sequence_length, eval_only=False
       )
 
-      transformer_params = load_flow_model(self.config.flux_name, transformer_eval_params, "cpu")
+      #transformer_params = load_flow_model(self.config.flux_name, transformer_eval_params, "cpu")
 
     pipeline = FluxPipeline(
         t5_encoder,

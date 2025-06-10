@@ -524,6 +524,7 @@ class AttentionOp(nn.Module):
   quant: Quant = None
 
   def setup(self):
+    self.dpa_layer = None
     if self.attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
 
