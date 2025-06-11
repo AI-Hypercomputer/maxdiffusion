@@ -39,6 +39,8 @@ BlockSizes = common_types.BlockSizes
 AxisNames = common_types.AxisNames
 BATCH = common_types.BATCH
 LENGTH = common_types.LENGTH
+Q_LENGTH = common_types.Q_LENGTH
+KV_LENGTH = common_types.KV_LENGTH
 HEAD = common_types.HEAD
 D_KV = common_types.D_KV
 EMBED = common_types.EMBED
@@ -139,50 +141,87 @@ def _tpu_flash_attention(
   value: jax.Array,
   heads: int,
   mesh: Mesh,
-  flash_axis_names: AxisNames,
-  flash_block_sizes: BlockSizes,
+  flash_block_sizes: BlockSizes = None,
+  flash_axis_names_kv: AxisNames = (BATCH, HEAD, KV_LENGTH, D_KV),
+  flash_axis_names_q: AxisNames = (BATCH, HEAD, LENGTH, D_KV),
+  flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH),
   dtype: jnp.dtype = jnp.float32) -> jax.Array:
   """TPU Flash Attention"""
 
-  max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  cp_size = mesh.shape["context"]
+  #breakpoint()
+  axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
+  axis_names_q = nn.logical_to_mesh_axes(flash_axis_names_q)
+  axis_names_kv = nn.logical_to_mesh_axes(flash_axis_names_kv)
+  max_logging.log(f"axis_names_q: {axis_names_q}")
+  max_logging.log(f"axis_names_kv: {axis_names_kv}")
+  max_logging.log(f"axis_names_splash_kernel: {axis_names_splash_kernel}")
+
+  max_block_size = 256 if dtype == jnp.bfloat16 else 128
   if flash_block_sizes:
     block_sizes = flash_block_sizes
   else:
     block_sizes = splash_attention_kernel.BlockSizes(
         block_q=min(max_block_size, query.shape[2]),
-        block_kv_compute=min(max_block_size, key.shape[2]),
         block_kv=min(max_block_size, key.shape[2]),
+        block_kv_compute=min(max_block_size, key.shape[2]),
         block_q_dkv=min(max_block_size, query.shape[2]),
         block_kv_dkv=min(max_block_size, key.shape[2]),
         block_kv_dkv_compute=min(max_block_size, query.shape[2]),
         block_q_dq=min(max_block_size, query.shape[2]),
         block_kv_dq=min(max_block_size, query.shape[2]),
+        q_layout=splash_attention_kernel.QKVLayout["HEAD_DIM_MINOR"],
+        k_layout=splash_attention_kernel.QKVLayout["HEAD_DIM_MINOR"],
+        v_layout=splash_attention_kernel.QKVLayout["HEAD_DIM_MINOR"],
     )
 
   query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q)
   key, _, _ = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute)
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute)
 
-  axis_names = nn.logical_to_mesh_axes(flash_axis_names)
-
   @functools.partial(
-      shard_map.shard_map,
-      mesh=mesh,
-      in_specs=(
-          axis_names,
-          axis_names,
-          axis_names,
-      ),
-      out_specs=axis_names,
-      check_rep=False,
+      jax.jit,
+      static_argnames=[
+        "multi_head_mask",
+        "shard_head_size"
+      ],
   )
-  def wrap_flash_attention(query, key, value):
-    masks = [splash_attention_mask.FullMask(_shape=(query.shape[2], query.shape[2])) for _ in range(query.shape[1])]
-    multi_head_mask = splash_attention_mask.MultiHeadMask(masks=masks)
+  def wrap_splash_kernel(multi_head_mask, shard_head_size=1):
+    # breakpoint()
     splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
+      mask=multi_head_mask,
+      head_shards=shard_head_size, # the sizes of the axis is sharding over heads
+      q_seq_shards=cp_size,
+      block_sizes=block_sizes,
     )
-    return jax.vmap(splash_kernel)(query, key, value)
+    return splash_kernel
+
+  # logical_axis_rules_head = np.array(
+  #   [mesh.shape[physical_axes] for physical_axes in dict(config.logical_axis_rules)[HEAD]]
+  # )
+  shard_head_size = 1
+
+  masks = [splash_attention_mask.FullMask(_shape=(query.shape[2], query.shape[2])) for _ in range(query.shape[1])]
+  multi_head_mask = splash_attention_mask.MultiHeadMask(masks=masks)
+  splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
+  named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
+  segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
+  @functools.partial(
+    shard_map.shard_map,
+    mesh=mesh,
+    in_specs=(
+      axis_names_q,
+      axis_names_kv,
+      axis_names_kv,
+      segment_axis_names_splash_kernel,
+      None
+    ),
+    out_specs=axis_names_q,
+    check_rep=False
+  )
+  def wrap_flash_attention(query, key, value, splash_kernel, cp_size):
+    attention_output = jax.vmap(splash_kernel)(query, key, value)
+    return attention_output
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
   # This warning might show up when doing model eval for example, when calculating model flops
@@ -192,7 +231,7 @@ def _tpu_flash_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
     )
-  x = wrap_flash_attention(query, key, value)
+  x = wrap_flash_attention(query, key, value, splash_kernel, cp_size)
   x = x[:, :, :query_seq_len, :kv_size]
   x = _reshape_heads_to_head_dim(x)
 
@@ -343,7 +382,15 @@ def _apply_attention(
   if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
     return _apply_attention_dot(query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention)
   elif attention_kernel == "flash":
-    return _tpu_flash_attention(query, key * scale, value, heads, mesh, flash_axis_names, flash_block_sizes, dtype)
+    return _tpu_flash_attention(
+      query=query,
+      key=key * scale,
+      value=value,
+      heads=heads,
+      mesh=mesh,
+      flash_block_sizes=flash_block_sizes,
+      dtype=dtype
+    )
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:

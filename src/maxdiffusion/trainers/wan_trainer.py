@@ -77,26 +77,24 @@ class WanTrainer(WanCheckpointer):
 
     pipeline = self.load_checkpoint()
     mesh = pipeline.mesh
+    #breakpoint()
+    # logical_axis_rules_head = np.array([mesh.shape[physical_axes] for physical_axes in dict(self.config.logical_axis_rules)["activation_heads"]])
+    # breakpoint()
 
     optimizer, learning_rate_scheduler = self._create_optimizer(pipeline.transformer, self.config, self.config.learning_rate)
 
-    # @nnx.jit
-    # def create_transformer_state(transformer):
-    #   optimizer = self._create_optimizer(transformer, self.config, self.config.learning_rate)
-    #   breakpoint()
-    #   _, state = nnx.split((transformer, optimizer))
-    
-    # with mesh:
-    #   create_transformer_state(pipeline.transformer)
-
-    #graphdef, state = nnx.plit((pipeline.transformer, optimizer))
     dummy_inputs = self.load_dataset(pipeline)
     dummy_inputs = tuple([jtu.tree_map_with_path(functools.partial(_form_global_array, global_mesh=mesh), input) for input in dummy_inputs])
 
     self.training_loop(pipeline, optimizer, learning_rate_scheduler, dummy_inputs)
   
   def training_loop(self, pipeline, optimizer, learning_rate_scheduler, data):
-    
+    # From Wan 2.1 paper https://arxiv.org/pdf/2503.20314
+    # Input shape of DiT block is (b, s, h)
+    # b corresponds to data parallelism.
+    # s represents the sequence length and sharding is achieved through context parallelism.
+    # Sharding long the h dimension primarily involves Megatron's tensor parallelism TP combined
+    # with sequence parallelism  which shards the hidden dimension of the activations by splitting the weights.
     graphdef, state = nnx.split((pipeline.transformer, optimizer))
     state = state.to_pure_dict()
     p_train_step = jax.jit(

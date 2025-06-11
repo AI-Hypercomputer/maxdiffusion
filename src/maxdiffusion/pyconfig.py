@@ -155,6 +155,22 @@ class _HyperParameters:
     raw_keys["num_slices"] = get_num_slices(raw_keys)
     raw_keys["quantization_local_shard_count"] = get_quantization_local_shard_count(raw_keys)
 
+    ici_parallelism = [
+      raw_keys["ici_data_parallelism"],
+      raw_keys["ici_fsdp_parallelism"],
+      raw_keys["ici_context_parallelism"],
+      raw_keys["ici_tensor_parallelism"],
+      
+    ]
+    dcn_parallelism = [
+      raw_keys["dcn_data_parallelism"],
+      raw_keys["dcn_fsdp_parallelism"],
+      raw_keys["dcn_context_parallelism"],
+      raw_keys["dcn_tensor_parallelism"],
+    ]
+    raw_keys["ici_parallelism"] = ici_parallelism
+    raw_keys['dcn_parallelism'] = dcn_parallelism
+
 
 def get_num_slices(raw_keys):
   if int(raw_keys["compile_topology_num_slices"]) > 0:

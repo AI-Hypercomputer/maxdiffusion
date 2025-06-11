@@ -266,21 +266,13 @@ def create_device_mesh(config, devices=None, logging=True):
 
   multi_slice_env = num_slices > 1
 
-  dcn_parallelism = [
-      config.dcn_data_parallelism,
-      config.dcn_fsdp_parallelism,
-      config.dcn_tensor_parallelism,
-  ]
-  ici_parallelism = [
-      config.ici_data_parallelism,
-      config.ici_fsdp_parallelism,
-      config.ici_tensor_parallelism,
-  ]
+  ici_parallelism = fill_unspecified_mesh_axes(config.ici_parallelism.copy(), num_devices_per_slice, "ICI")
 
   # Find possible unspecified parallelisms
   ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, "ICI")
+  
   if multi_slice_env:
-    dcn_parallelism = fill_unspecified_mesh_axes(dcn_parallelism, num_slices, "DCN")
+    dcn_parallelism = fill_unspecified_mesh_axes(config.dcp_parallelism.copy(), num_slices, "DCN")
     mesh = mesh_utils.create_hybrid_device_mesh(ici_parallelism, dcn_parallelism, devices)
   else:
     mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
