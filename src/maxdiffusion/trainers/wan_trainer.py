@@ -14,6 +14,8 @@
  limitations under the License.
  """
 
+import os
+import datetime
 import functools
 import numpy as np
 import jax.numpy as jnp
@@ -21,8 +23,7 @@ import jax
 import jax.tree_util as jtu
 from flax import nnx
 from ..schedulers import FlaxEulerDiscreteScheduler
-from .. import max_utils
-from .. import max_logging
+from .. import max_utils, max_logging, train_utils
 from ..checkpointing.wan_checkpointer import (
   WanCheckpointer,
   WAN_CHECKPOINT
@@ -34,6 +35,8 @@ class WanTrainer(WanCheckpointer):
     WanCheckpointer.__init__(self, config, WAN_CHECKPOINT)
     if config.train_text_encoder:
       raise ValueError("this script currently doesn't support training text_encoders")
+
+    self.global_batch_size = self.config.per_device_batch_size * jax.device_count()
 
   def post_training_steps(self, pipeline, params, train_states, msg=""):
     pass
@@ -49,7 +52,8 @@ class WanTrainer(WanCheckpointer):
     return noise_scheduler, noise_scheduler_state
 
   def calculate_tflops(self, pipeline):
-    pass
+    max_logging.log(f"WARNING : Calculting tflops is not implemented in Wan 2.1. Returning 0...")
+    return 0
 
   def load_dataset(self, pipeline):
     # Stages of training as described in the Wan 2.1 paper - https://arxiv.org/pdf/2503.20314
@@ -60,10 +64,9 @@ class WanTrainer(WanCheckpointer):
     # prompt embeds shape: (1, 512, 4096)
     # For now, we will pass the same latents over and over
     # TODO - create a dataset
-    global_batch_size = self.config.per_device_batch_size * jax.device_count()
-    prompt_embeds = jax.random.normal(jax.random.key(self.config.seed), (global_batch_size, 512, 4096))
+    prompt_embeds = jax.random.normal(jax.random.key(self.config.seed), (self.global_batch_size, 512, 4096))
     latents = pipeline.prepare_latents(
-      global_batch_size,
+      self.global_batch_size,
       vae_scale_factor_temporal=pipeline.vae_scale_factor_temporal,
       vae_scale_factor_spatial=pipeline.vae_scale_factor_spatial,
       height=self.config.height,
@@ -92,12 +95,24 @@ class WanTrainer(WanCheckpointer):
     #graphdef, state = nnx.plit((pipeline.transformer, optimizer))
     dummy_inputs = self.load_dataset(pipeline)
     dummy_inputs = tuple([jtu.tree_map_with_path(functools.partial(_form_global_array, global_mesh=mesh), input) for input in dummy_inputs])
-
     self.training_loop(pipeline, optimizer, learning_rate_scheduler, dummy_inputs)
   
   def training_loop(self, pipeline, optimizer, learning_rate_scheduler, data):
     
     graphdef, state = nnx.split((pipeline.transformer, optimizer))
+    writer = max_utils.initialize_summary_writer(self.config)
+    num_model_parameters = max_utils.calculate_num_params_from_pytree(state[0])
+    max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
+    max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ.get("LIBTPU_INIT_ARGS", ""), writer)
+    max_utils.add_config_to_summary_writer(self.config, writer)
+
+    if jax.process_index() == 0:
+      max_logging.log("***** Running training *****")
+      max_logging.log(f"  Instantaneous batch size per device = {self.config.per_device_batch_size}")
+      max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.global_batch_size}")
+      max_logging.log(f"  Total optimization steps = {self.config.max_train_steps}")
+    
+    
     state = state.to_pure_dict()
     p_train_step = jax.jit(
       train_step,
@@ -105,10 +120,36 @@ class WanTrainer(WanCheckpointer):
     )
     rng = jax.random.key(self.config.seed)
     start_step = 0
+    last_step_completion = datetime.datetime.now()
+    local_metrics_file = open(self.config.metrics_file, "a", encoding="utf8") if self.config.metrics_file else None
+    running_gcs_metrics = [] if self.config.gcs_metrics else None
+    first_profiling_step = self.config.skip_first_n_steps_for_profiler
+    if self.config.enable_profiler and first_profiling_step >= self.config.max_train_steps:
+      raise ValueError("Profiling requested but initial profiling step set past training final step")
+    last_profiling_step = np.clip(
+        first_profiling_step + self.config.profiler_steps - 1, first_profiling_step, self.config.max_train_steps - 1
+    )
+    # TODO - 0 needs to be changed to last step if continuing from an orbax checkpoint.
+    start_step = 0
+    per_device_tflops = self.calculate_tflops(pipeline)
+
     for step in np.arange(start_step, self.config.max_train_steps):
-      with pipeline.mesh:
-        loss, state, rng = p_train_step(graphdef, state, data, rng)
-        max_logging.log(f"loss: {loss}")
+      if self.config.enable_profiler and step == first_profiling_step:
+        max_utils.activate_profiler(self.config)
+      with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh:
+        state, train_metric, rng = p_train_step(graphdef, state, data, rng)
+      
+      new_time = datetime.datetime.now()
+
+      if self.config.enable_profiler and step == last_profiling_step:
+        max_utils.deactivate_profiler(self.config)
+
+      train_utils.record_scalar_metrics(
+          train_metric, new_time - last_step_completion, per_device_tflops, learning_rate_scheduler(step)
+      )
+      if self.config.write_metrics:
+        train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
+      last_step_completion = new_time
 
 def train_step(graphdef, state, data, rng):
   return step_optimizer(graphdef, state, data, rng)
@@ -145,4 +186,5 @@ def step_optimizer(graphdef, state, data, rng):
   optimizer.update(grads)
   state = nnx.state((model, optimizer))
   state = state.to_pure_dict()
-  return loss, state, new_rng
+  metrics = {"scalar": {"learning/loss": loss}, "scalars": {}}
+  return state, metrics, new_rng
