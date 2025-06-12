@@ -23,7 +23,7 @@ import jax
 import jax.tree_util as jtu
 from flax import nnx
 from ..schedulers import FlaxEulerDiscreteScheduler
-from .. import max_utils, max_logging, train_utils
+from .. import max_utils, max_logging, train_utils, maxdiffusion_utils
 from ..checkpointing.wan_checkpointer import (
   WanCheckpointer,
   WAN_CHECKPOINT
@@ -64,36 +64,15 @@ class WanTrainer(WanCheckpointer):
     # prompt embeds shape: (1, 512, 4096)
     # For now, we will pass the same latents over and over
     # TODO - create a dataset
-    prompt_embeds = jax.random.normal(jax.random.key(self.config.seed), (self.global_batch_size, 512, 4096))
-    latents = pipeline.prepare_latents(
-      self.global_batch_size,
-      vae_scale_factor_temporal=pipeline.vae_scale_factor_temporal,
-      vae_scale_factor_spatial=pipeline.vae_scale_factor_spatial,
-      height=self.config.height,
-      width=self.config.width,
-      num_frames=self.config.num_frames,
-      num_channels_latents=pipeline.transformer.config.in_channels
-    )
-    return (latents, prompt_embeds)
+    return maxdiffusion_utils.get_dummy_wan_inputs(self.config, pipeline, self.global_batch_size)
 
   def start_training(self):
 
     pipeline = self.load_checkpoint()
-    mesh = pipeline.mesh
-
-    optimizer, learning_rate_scheduler = self._create_optimizer(pipeline.transformer, self.config, self.config.learning_rate)
-
-    # @nnx.jit
-    # def create_transformer_state(transformer):
-    #   optimizer = self._create_optimizer(transformer, self.config, self.config.learning_rate)
-    #   breakpoint()
-    #   _, state = nnx.split((transformer, optimizer))
-    
-    # with mesh:
-    #   create_transformer_state(pipeline.transformer)
-
-    #graphdef, state = nnx.plit((pipeline.transformer, optimizer))
+    del pipeline.vae
     dummy_inputs = self.load_dataset(pipeline)
+    mesh = pipeline.mesh
+    optimizer, learning_rate_scheduler = self._create_optimizer(pipeline.transformer, self.config, 1e-5)
     dummy_inputs = tuple([jtu.tree_map_with_path(functools.partial(_form_global_array, global_mesh=mesh), input) for input in dummy_inputs])
     self.training_loop(pipeline, optimizer, learning_rate_scheduler, dummy_inputs)
   
@@ -116,7 +95,7 @@ class WanTrainer(WanCheckpointer):
     state = state.to_pure_dict()
     p_train_step = jax.jit(
       train_step,
-      donate_argnums=(1,),
+      donate_argnums=(0,),
     )
     rng = jax.random.key(self.config.seed)
     start_step = 0
@@ -137,7 +116,7 @@ class WanTrainer(WanCheckpointer):
       if self.config.enable_profiler and step == first_profiling_step:
         max_utils.activate_profiler(self.config)
       with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh:
-        state, train_metric, rng = p_train_step(graphdef, state, data, rng)
+        state, train_metric, rng = p_train_step(state, graphdef, data, rng)
       
       new_time = datetime.datetime.now()
 
@@ -151,15 +130,13 @@ class WanTrainer(WanCheckpointer):
         train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
       last_step_completion = new_time
 
-def train_step(graphdef, state, data, rng):
+def train_step(state, graphdef, data, rng):
   return step_optimizer(graphdef, state, data, rng)
 
 def step_optimizer(graphdef, state, data, rng):
   _, new_rng = jax.random.split(rng)
   def loss_fn(model):
-    latents, prompt_embeds = data
-    bsz = latents.shape[0]
-    timesteps = jnp.array([0] * bsz, dtype=jnp.int32)
+    latents, prompt_embeds, timesteps = data
 
     noise = jax.random.normal(
       key=new_rng,

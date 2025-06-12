@@ -58,7 +58,7 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
   return vs
 
 
-partial(nnx.jit, static_argnums=(3,))
+# For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
 
   def create_model(rngs: nnx.Rngs, wan_config: dict):
@@ -106,16 +106,15 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
   return wan_transformer
 
-
-partial(nnx.jit, static_argnums=(1,))
+@nnx.jit(static_argnums=(1,), donate_argnums=(0,))
 def create_sharded_logical_model(model, logical_axis_rules):
   graphdef, state, rest_of_state = nnx.split(model, nnx.Param, ...)
   p_add_sharding_rule = partial(_add_sharding_rule, logical_axis_rules=logical_axis_rules)
   state = jax.tree.map(p_add_sharding_rule, state, is_leaf=lambda x: isinstance(x, nnx.VariableState))
   pspecs = nnx.get_partition_spec(state)
   sharded_state = jax.lax.with_sharding_constraint(state, pspecs)
-  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  return wan_transformer
+  model = nnx.merge(graphdef, sharded_state, rest_of_state)
+  return model
 
 
 class WanPipeline:
@@ -473,9 +472,8 @@ def transformer_forward_pass(
     encoder_hidden_states=prompt_embeds,
     is_uncond=is_uncond,
     slg_mask=slg_mask
-  )[0]
+  )
 
-#@partial(jax.jit, static_argnums=(6, 7, 8))
 def run_inference(
   graphdef,
   sharded_state,

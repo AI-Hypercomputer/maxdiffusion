@@ -29,10 +29,13 @@ def run(config):
   slg_layers = config.slg_layers
   slg_start = config.slg_start
   slg_end = config.slg_end
-  
+
+  prompt = [config.prompt] * jax.device_count()
+  negative_prompt= [config.negative_prompt] * jax.device_count()
+   
   videos = pipeline(
-    prompt=config.prompt,
-    negative_prompt=config.negative_prompt,
+    prompt=prompt,
+    negative_prompt=negative_prompt,
     height=config.height,
     width=config.width,
     num_frames=config.num_frames,
@@ -45,12 +48,12 @@ def run(config):
 
   print("compile time: ", (time.perf_counter() - s0))
   for i in range(len(videos)):
-    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=16)
+    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=config.fps)
   s0 = time.perf_counter()
   with jax.profiler.trace("/tmp/trace/"):
     videos = pipeline(
-      prompt=config.prompt,
-      negative_prompt=config.negative_prompt,
+      prompt=prompt,
+      negative_prompt=negative_prompt,
       height=config.height,
       width=config.width,
       num_frames=config.num_frames,
@@ -62,7 +65,7 @@ def run(config):
     )
   print("generation time: ", (time.perf_counter() - s0))
   for i in range(len(videos)):
-    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=16)
+    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=config.fps)
 
 
 def main(argv: Sequence[str]) -> None:

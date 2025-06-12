@@ -15,6 +15,7 @@
 """
 
 from abc import ABC
+import jax
 from flax import nnx
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
 from ..pipelines.wan.wan_pipeline import WanPipeline
@@ -35,19 +36,13 @@ class WanCheckpointer(ABC):
       dataset_type=config.dataset_type
     )
   
-  # @nnx.jit
   def _create_optimizer(self, model, config, learning_rate):
     learning_rate_scheduler = max_utils.create_learning_rate_schedule(
       learning_rate, config.learning_rate_schedule_steps, config.warmup_steps_fraction, config.max_train_steps
     )
     tx = max_utils.create_optimizer(config, learning_rate_scheduler)
-    # tx = nnx.Optimizer(model, tx)
-
-    # _, state, rest_of_state = nnx.split((model, tx), ...)
-    # nnx.update((model, tx), state, rest_of_state)
-
-
     return nnx.Optimizer(model, tx), learning_rate_scheduler
+
 
   def load_wan_configs_from_orbax(self, step):
     max_logging.log("Restoring stable diffusion configs")
