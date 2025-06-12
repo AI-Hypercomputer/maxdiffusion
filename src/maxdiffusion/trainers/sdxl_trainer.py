@@ -223,6 +223,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         (unet_state, train_metric, train_rngs) = p_train_step(
             unet_state, vae_state, text_encoder_state, text_encoder_2_state, example_batch, train_rngs
         )
+        train_metric['scalar']['learning/loss'].block_until_ready()
 
       samples_count = self.total_train_batch_size * (step + 1)
       new_time = datetime.datetime.now()
