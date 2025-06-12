@@ -36,6 +36,7 @@ import html
 import re
 import torch
 
+
 def basic_clean(text):
   text = ftfy.fix_text(text)
   text = html.unescape(html.unescape(text))
@@ -66,10 +67,7 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
     return wan_transformer
 
   # 1. Load config.
-  wan_config = WanModel.load_config(
-    config.pretrained_model_name_or_path,
-    subfolder="transformer"
-  )
+  wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder="transformer")
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
   wan_config["weights_dtype"] = config.weights_dtype
@@ -97,14 +95,12 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():
     sharding = logical_state_sharding[path].value
-    try:
-      state[path].value = jax.device_put(val, sharding)
-    except:
-      raise ValueError("value should exist.")
+    state[path].value = jax.device_put(val, sharding)
   state = nnx.from_flat_state(state)
 
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
   return wan_transformer
+
 
 @nnx.jit(static_argnums=(1,), donate_argnums=(0,))
 def create_sharded_logical_model(model, logical_axis_rules):
@@ -134,18 +130,19 @@ class WanPipeline:
   vae ([`AutoencoderKLWan`]):
       Variational Auto-Encoder (VAE) Model to encode and decode videos to and from latent representations.
   """
+
   def __init__(
-    self,
-    tokenizer: AutoTokenizer,
-    text_encoder: UMT5EncoderModel,
-    transformer: WanModel,
-    vae: AutoencoderKLWan,
-    vae_cache: AutoencoderKLWanCache,
-    scheduler: FlaxUniPCMultistepScheduler,
-    scheduler_state: UniPCMultistepSchedulerState,
-    devices_array: np.array,
-    mesh: Mesh,
-    config: HyperParameters
+      self,
+      tokenizer: AutoTokenizer,
+      text_encoder: UMT5EncoderModel,
+      transformer: WanModel,
+      vae: AutoencoderKLWan,
+      vae_cache: AutoencoderKLWanCache,
+      scheduler: FlaxUniPCMultistepScheduler,
+      scheduler_state: UniPCMultistepSchedulerState,
+      devices_array: np.array,
+      mesh: Mesh,
+      config: HyperParameters,
   ):
     self.tokenizer = tokenizer
     self.text_encoder = text_encoder
@@ -164,34 +161,31 @@ class WanPipeline:
 
     self.p_run_inference = None
 
-
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
     text_encoder = UMT5EncoderModel.from_pretrained(
-      config.pretrained_model_name_or_path,
-      subfolder="text_encoder",
+        config.pretrained_model_name_or_path,
+        subfolder="text_encoder",
     )
     return text_encoder
-  
 
   @classmethod
   def load_tokenizer(cls, config: HyperParameters):
     tokenizer = AutoTokenizer.from_pretrained(
-      config.pretrained_model_name_or_path,
-      subfolder="tokenizer",
+        config.pretrained_model_name_or_path,
+        subfolder="tokenizer",
     )
     return tokenizer
-  
 
   @classmethod
   def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     wan_vae = AutoencoderKLWan.from_config(
-      config.pretrained_model_name_or_path,
-      subfolder="vae",
-      rngs=rngs,
-      mesh=mesh,
-      dtype=config.activations_dtype,
-      weights_dtype=config.weights_dtype
+        config.pretrained_model_name_or_path,
+        subfolder="vae",
+        rngs=rngs,
+        mesh=mesh,
+        dtype=config.activations_dtype,
+        weights_dtype=config.weights_dtype,
     )
     vae_cache = AutoencoderKLWanCache(wan_vae)
 
@@ -208,79 +202,75 @@ class WanPipeline:
       wan_vae = p_create_sharded_logical_model(model=wan_vae)
     return wan_vae, vae_cache
 
-
   @classmethod
   def load_transformer(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     with mesh:
       wan_transformer = create_sharded_logical_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
     return wan_transformer
 
-
   @classmethod
   def load_scheduler(cls, config):
     scheduler, scheduler_state = FlaxUniPCMultistepScheduler.from_pretrained(
-      config.pretrained_model_name_or_path,
-      subfolder="scheduler",
-      flow_shift=config.flow_shift # 5.0 for 720p, 3.0 for 480p
+        config.pretrained_model_name_or_path,
+        subfolder="scheduler",
+        flow_shift=config.flow_shift,  # 5.0 for 720p, 3.0 for 480p
     )
     return scheduler, scheduler_state
-  
 
-  @classmethod  
+  @classmethod
   def from_pretrained(cls, config: HyperParameters, vae_only=False):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
-    transformer=None
-    tokenizer=None
-    scheduler=None
-    scheduler_state=None
-    text_encoder=None
+    transformer = None
+    tokenizer = None
+    scheduler = None
+    scheduler_state = None
+    text_encoder = None
     if not vae_only:
       with mesh:
         transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
-      
+
       text_encoder = cls.load_text_encoder(config=config)
       tokenizer = cls.load_tokenizer(config=config)
-      
+
       scheduler, scheduler_state = cls.load_scheduler(config=config)
-    
+
     with mesh:
       wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
     return WanPipeline(
-      tokenizer=tokenizer,
-      text_encoder=text_encoder,
-      transformer=transformer,
-      vae=wan_vae,
-      vae_cache=vae_cache,
-      scheduler=scheduler,
-      scheduler_state=scheduler_state,
-      devices_array=devices_array,
-      mesh=mesh,
-      config=config
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        transformer=transformer,
+        vae=wan_vae,
+        vae_cache=vae_cache,
+        scheduler=scheduler,
+        scheduler_state=scheduler_state,
+        devices_array=devices_array,
+        mesh=mesh,
+        config=config,
     )
 
-
   def _get_t5_prompt_embeds(
-    self,
-    prompt: Union[str, List[str]] = None,
-    num_videos_per_prompt: int = 1,
-    max_sequence_length: int = 226,
+      self,
+      prompt: Union[str, List[str]] = None,
+      num_videos_per_prompt: int = 1,
+      max_sequence_length: int = 226,
   ):
     prompt = [prompt] if isinstance(prompt, str) else prompt
     prompt = [prompt_clean(u) for u in prompt]
     batch_size = len(prompt)
 
     text_inputs = self.tokenizer(
-      prompt,
-      padding="max_length",
-      max_length=max_sequence_length,
-      truncation=True,
-      add_special_tokens=True,
-      return_attention_mask=True,
-      return_tensors="pt",
+        prompt,
+        padding="max_length",
+        max_length=max_sequence_length,
+        truncation=True,
+        add_special_tokens=True,
+        return_attention_mask=True,
+        return_tensors="pt",
     )
     text_input_ids, mask = text_inputs.input_ids, text_inputs.attention_mask
     seq_lens = mask.gt(0).sum(dim=1).long()
@@ -296,24 +286,23 @@ class WanPipeline:
     prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
 
     return prompt_embeds
-  
 
   def encode_prompt(
-    self,
-    prompt: Union[str, List[str]],
-    negative_prompt: Optional[Union[str, List[str]]] = None,
-    num_videos_per_prompt: int = 1,
-    max_sequence_length: int = 226,
-    prompt_embeds: jax.Array = None,
-    negative_prompt_embeds: jax.Array = None
+      self,
+      prompt: Union[str, List[str]],
+      negative_prompt: Optional[Union[str, List[str]]] = None,
+      num_videos_per_prompt: int = 1,
+      max_sequence_length: int = 226,
+      prompt_embeds: jax.Array = None,
+      negative_prompt_embeds: jax.Array = None,
   ):
     prompt = [prompt] if isinstance(prompt, str) else prompt
     batch_size = len(prompt)
-    if prompt_embeds is None:  
+    if prompt_embeds is None:
       prompt_embeds = self._get_t5_prompt_embeds(
-        prompt=prompt,
-        num_videos_per_prompt=num_videos_per_prompt,
-        max_sequence_length=max_sequence_length,
+          prompt=prompt,
+          num_videos_per_prompt=num_videos_per_prompt,
+          max_sequence_length=max_sequence_length,
       )
       prompt_embeds = jnp.array(prompt_embeds.detach().numpy(), dtype=self.config.weights_dtype)
 
@@ -321,62 +310,60 @@ class WanPipeline:
       negative_prompt = negative_prompt or ""
       negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
       negative_prompt_embeds = self._get_t5_prompt_embeds(
-        prompt=negative_prompt,
-        num_videos_per_prompt=num_videos_per_prompt,
-        max_sequence_length=max_sequence_length,
+          prompt=negative_prompt,
+          num_videos_per_prompt=num_videos_per_prompt,
+          max_sequence_length=max_sequence_length,
       )
       negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().numpy(), dtype=self.config.weights_dtype)
 
     return prompt_embeds, negative_prompt_embeds
-  
 
   def prepare_latents(
-    self,
-    batch_size: int,
-    vae_scale_factor_temporal: int,
-    vae_scale_factor_spatial: int,
-    height: int = 480,
-    width: int = 832,
-    num_frames: int = 81,
-    num_channels_latents: int = 16,
+      self,
+      batch_size: int,
+      vae_scale_factor_temporal: int,
+      vae_scale_factor_spatial: int,
+      height: int = 480,
+      width: int = 832,
+      num_frames: int = 81,
+      num_channels_latents: int = 16,
   ):
     rng = jax.random.key(self.config.seed)
     num_latent_frames = (num_frames - 1) // vae_scale_factor_temporal + 1
     shape = (
-      batch_size,
-      num_channels_latents,
-      num_latent_frames,
-      int(height) // vae_scale_factor_spatial,
-      int(width) // vae_scale_factor_spatial,
+        batch_size,
+        num_channels_latents,
+        num_latent_frames,
+        int(height) // vae_scale_factor_spatial,
+        int(width) // vae_scale_factor_spatial,
     )
     latents = jax.random.normal(rng, shape=shape, dtype=self.config.weights_dtype)
 
     return latents
 
-
   def __call__(
-    self,
-    prompt: Union[str, List[str]] = None,
-    negative_prompt: Union[str, List[str]] = None,
-    height: int = 480,
-    width: int = 832,
-    num_frames: int = 81,
-    num_inference_steps: int = 50,
-    guidance_scale: float = 5.0,
-    num_videos_per_prompt: Optional[int] = 1,
-    max_sequence_length: int = 512,
-    latents: jax.Array = None,
-    prompt_embeds: jax.Array = None,
-    negative_prompt_embeds: jax.Array = None,
-    vae_only: bool = False,
-    slg_layers: List[int] = None,
-    slg_start: float = 0.0,
-    slg_end: float = 1.0
+      self,
+      prompt: Union[str, List[str]] = None,
+      negative_prompt: Union[str, List[str]] = None,
+      height: int = 480,
+      width: int = 832,
+      num_frames: int = 81,
+      num_inference_steps: int = 50,
+      guidance_scale: float = 5.0,
+      num_videos_per_prompt: Optional[int] = 1,
+      max_sequence_length: int = 512,
+      latents: jax.Array = None,
+      prompt_embeds: jax.Array = None,
+      negative_prompt_embeds: jax.Array = None,
+      vae_only: bool = False,
+      slg_layers: List[int] = None,
+      slg_start: float = 0.0,
+      slg_end: float = 1.0,
   ):
     if not vae_only:
       if num_frames % self.vae_scale_factor_temporal != 1:
         max_logging.log(
-          f"`num_frames -1` has to be divisible by {self.vae_scale_factor_temporal}. Rounding to the nearest number."
+            f"`num_frames -1` has to be divisible by {self.vae_scale_factor_temporal}. Rounding to the nearest number."
         )
         num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
       num_frames = max(num_frames, 1)
@@ -384,63 +371,63 @@ class WanPipeline:
       # 2. Define call parameters
       if prompt is not None and isinstance(prompt, str):
         prompt = [prompt]
-      
+
       batch_size = len(prompt)
-      
+
       prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        max_sequence_length=max_sequence_length,
-        prompt_embeds=prompt_embeds,
-        negative_prompt_embeds=negative_prompt_embeds
+          prompt=prompt,
+          negative_prompt=negative_prompt,
+          max_sequence_length=max_sequence_length,
+          prompt_embeds=prompt_embeds,
+          negative_prompt_embeds=negative_prompt_embeds,
       )
 
       num_channel_latents = self.transformer.config.in_channels
       if latents is None:
         latents = self.prepare_latents(
-          batch_size=batch_size,
-          vae_scale_factor_temporal=self.vae_scale_factor_temporal,
-          vae_scale_factor_spatial=self.vae_scale_factor_spatial,
-          height=height,
-          width=width,
-          num_frames=num_frames,
-          num_channels_latents=num_channel_latents
+            batch_size=batch_size,
+            vae_scale_factor_temporal=self.vae_scale_factor_temporal,
+            vae_scale_factor_spatial=self.vae_scale_factor_spatial,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            num_channels_latents=num_channel_latents,
         )
 
       data_sharding = PositionalSharding(self.devices_array).replicate()
       if len(prompt) % jax.device_count() == 0:
         data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
-        
+
       latents = jax.device_put(latents, data_sharding)
       prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
       negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
 
       scheduler_state = self.scheduler.set_timesteps(
-        self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
+          self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
       )
 
       graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
 
       p_run_inference = partial(
-        run_inference,
-        guidance_scale=guidance_scale,
-        num_inference_steps=num_inference_steps,
-        scheduler=self.scheduler,
-        scheduler_state=scheduler_state,
-        slg_layers=slg_layers,
-        slg_start=slg_start,
-        slg_end=slg_end,
-        num_transformer_layers=self.transformer.config.num_layers
+          run_inference,
+          guidance_scale=guidance_scale,
+          num_inference_steps=num_inference_steps,
+          scheduler=self.scheduler,
+          scheduler_state=scheduler_state,
+          slg_layers=slg_layers,
+          slg_start=slg_start,
+          slg_end=slg_end,
+          num_transformer_layers=self.transformer.config.num_layers,
       )
 
       with self.mesh:
         latents = p_run_inference(
-          graphdef=graphdef,
-          sharded_state=state,
-          rest_of_state=rest_of_state,
-          latents=latents,
-          prompt_embeds=prompt_embeds,
-          negative_prompt_embeds=negative_prompt_embeds
+            graphdef=graphdef,
+            sharded_state=state,
+            rest_of_state=rest_of_state,
+            latents=latents,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
         )
       latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
       latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
@@ -456,49 +443,38 @@ class WanPipeline:
 
 
 @jax.jit
-def transformer_forward_pass(
-  graphdef,
-  sharded_state,
-  rest_of_state,
-  latents,
-  timestep,
-  prompt_embeds,
-  is_uncond,
-  slg_mask):
+def transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, prompt_embeds, is_uncond, slg_mask):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   return wan_transformer(
-    hidden_states=latents,
-    timestep=timestep,
-    encoder_hidden_states=prompt_embeds,
-    is_uncond=is_uncond,
-    slg_mask=slg_mask
+      hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds, is_uncond=is_uncond, slg_mask=slg_mask
   )
 
+
 def run_inference(
-  graphdef,
-  sharded_state,
-  rest_of_state,
-  latents: jnp.array,
-  prompt_embeds: jnp.array,
-  negative_prompt_embeds: jnp.array,
-  guidance_scale: float,
-  num_inference_steps: int,
-  scheduler : FlaxUniPCMultistepScheduler,
-  num_transformer_layers: int,
-  scheduler_state,
-  slg_layers: List[int] = None,
-  slg_start: float = 0.0,
-  slg_end: float = 1.0
-  ):
-    do_classifier_free_guidance = guidance_scale > 1.0
-    for step in range(num_inference_steps):
-      slg_mask = jnp.zeros(num_transformer_layers, dtype=jnp.bool_)
-      if slg_layers and int(slg_start * num_inference_steps) <= step < int(slg_end * num_inference_steps):
-        slg_mask = slg_mask.at[jnp.array(slg_layers)].set(True)
-      t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
-      timestep = jnp.broadcast_to(t, latents.shape[0])
-      
-      noise_pred = transformer_forward_pass(
+    graphdef,
+    sharded_state,
+    rest_of_state,
+    latents: jnp.array,
+    prompt_embeds: jnp.array,
+    negative_prompt_embeds: jnp.array,
+    guidance_scale: float,
+    num_inference_steps: int,
+    scheduler: FlaxUniPCMultistepScheduler,
+    num_transformer_layers: int,
+    scheduler_state,
+    slg_layers: List[int] = None,
+    slg_start: float = 0.0,
+    slg_end: float = 1.0,
+):
+  do_classifier_free_guidance = guidance_scale > 1.0
+  for step in range(num_inference_steps):
+    slg_mask = jnp.zeros(num_transformer_layers, dtype=jnp.bool_)
+    if slg_layers and int(slg_start * num_inference_steps) <= step < int(slg_end * num_inference_steps):
+      slg_mask = slg_mask.at[jnp.array(slg_layers)].set(True)
+    t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+    timestep = jnp.broadcast_to(t, latents.shape[0])
+
+    noise_pred = transformer_forward_pass(
         graphdef,
         sharded_state,
         rest_of_state,
@@ -506,11 +482,11 @@ def run_inference(
         timestep,
         prompt_embeds,
         is_uncond=jnp.array(False, dtype=jnp.bool_),
-        slg_mask=slg_mask
-      )
+        slg_mask=slg_mask,
+    )
 
-      if do_classifier_free_guidance:
-        noise_uncond = transformer_forward_pass(
+    if do_classifier_free_guidance:
+      noise_uncond = transformer_forward_pass(
           graphdef,
           sharded_state,
           rest_of_state,
@@ -518,8 +494,8 @@ def run_inference(
           timestep,
           negative_prompt_embeds,
           is_uncond=jnp.array(True, dtype=jnp.bool_),
-          slg_mask=slg_mask
-          )
-        noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
-      latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
-    return latents
+          slg_mask=slg_mask,
+      )
+      noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+    latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+  return latents

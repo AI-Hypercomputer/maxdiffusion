@@ -21,10 +21,13 @@ from absl import app
 from maxdiffusion import max_logging, pyconfig
 from maxdiffusion.train_utils import validate_train_config
 
+
 def train(config):
   from maxdiffusion.trainers.wan_trainer import WanTrainer
+
   trainer = WanTrainer(config)
   trainer.start_training()
+
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
@@ -32,6 +35,7 @@ def main(argv: Sequence[str]) -> None:
   validate_train_config(config)
   max_logging.log(f"Found {jax.device_count()} devices.")
   train(config)
+
 
 if __name__ == "__main__":
   app.run(main)

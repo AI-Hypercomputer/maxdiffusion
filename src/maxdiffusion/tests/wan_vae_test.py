@@ -25,7 +25,7 @@ from flax import nnx
 from jax.sharding import Mesh
 from .. import pyconfig
 from ..max_utils import (
-  create_device_mesh,
+    create_device_mesh,
 )
 import numpy as np
 import unittest
@@ -258,11 +258,11 @@ class WanVaeTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     pyconfig.initialize(
-      [
-        None,
-        os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-      ],
-      unittest=True
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+        ],
+        unittest=True,
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
@@ -289,7 +289,7 @@ class WanVaeTest(unittest.TestCase):
         kernel_size=(kernel_d, kernel_h, kernel_w),
         padding=(padding_d, padding_h, padding_w),
         rngs=rngs,  # Pass rngs for initialization,
-        mesh=mesh
+        mesh=mesh,
     )
 
     # --- Test Case 1: No Cache ---
@@ -310,11 +310,11 @@ class WanVaeTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     pyconfig.initialize(
-      [
-        None,
-        os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-      ],
-      unittest=True
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+        ],
+        unittest=True,
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
@@ -329,12 +329,7 @@ class WanVaeTest(unittest.TestCase):
     input_shape = (batch, t, height, width, dim)
     expected_output_shape = (batch, t, height, width, dim)
 
-    wan_residual_block = WanResidualBlock(
-        in_dim=in_dim,
-        out_dim=out_dim,
-        rngs=rngs,
-        mesh=mesh
-    )
+    wan_residual_block = WanResidualBlock(in_dim=in_dim, out_dim=out_dim, rngs=rngs, mesh=mesh)
     dummy_input = jnp.ones(input_shape)
     dummy_output = wan_residual_block(dummy_input)
     assert dummy_output.shape == expected_output_shape
@@ -344,12 +339,7 @@ class WanVaeTest(unittest.TestCase):
     out_dim = 196
     expected_output_shape = (batch, t, height, width, out_dim)
 
-    wan_residual_block = WanResidualBlock(
-        in_dim=in_dim,
-        out_dim=out_dim,
-        rngs=rngs,
-        mesh=mesh
-    )
+    wan_residual_block = WanResidualBlock(in_dim=in_dim, out_dim=out_dim, rngs=rngs, mesh=mesh)
     dummy_input = jnp.ones(input_shape)
     dummy_output = wan_residual_block(dummy_input)
     assert dummy_output.shape == expected_output_shape
@@ -372,11 +362,11 @@ class WanVaeTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     pyconfig.initialize(
-      [
-        None,
-        os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-      ],
-      unittest=True
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+        ],
+        unittest=True,
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
@@ -396,11 +386,11 @@ class WanVaeTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     pyconfig.initialize(
-      [
-        None,
-        os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-      ],
-      unittest=True
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+        ],
+        unittest=True,
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
@@ -419,7 +409,7 @@ class WanVaeTest(unittest.TestCase):
         num_res_blocks=num_res_blocks,
         attn_scales=attn_scales,
         temperal_downsample=temperal_downsample,
-        mesh=mesh
+        mesh=mesh,
     )
     vae_cache = AutoencoderKLWanCache(wan_vae)
     batch = 1
@@ -440,11 +430,11 @@ class WanVaeTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     pyconfig.initialize(
-      [
-        None,
-        os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-      ],
-      unittest=True
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+        ],
+        unittest=True,
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
@@ -463,7 +453,7 @@ class WanVaeTest(unittest.TestCase):
         num_res_blocks=num_res_blocks,
         attn_scales=attn_scales,
         temperal_downsample=temperal_downsample,
-        mesh=mesh
+        mesh=mesh,
     )
     vae_cache = AutoencoderKLWanCache(wan_vae)
     batch = 1
@@ -485,22 +475,17 @@ class WanVaeTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     pyconfig.initialize(
-      [
-        None,
-        os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-      ],
-      unittest=True
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+        ],
+        unittest=True,
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
 
-    wan_vae = AutoencoderKLWan.from_config(
-      config.pretrained_model_name_or_path,
-      subfolder="vae",
-      rngs=rngs,
-      mesh=mesh
-    )
+    wan_vae = AutoencoderKLWan.from_config(config.pretrained_model_name_or_path, subfolder="vae", rngs=rngs, mesh=mesh)
     vae_cache = AutoencoderKLWanCache(wan_vae)
     video_path = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/hiker.mp4"
     video = load_video(video_path)

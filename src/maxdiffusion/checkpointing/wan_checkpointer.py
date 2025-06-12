@@ -15,7 +15,6 @@
 """
 
 from abc import ABC
-import jax
 from flax import nnx
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
 from ..pipelines.wan.wan_pipeline import WanPipeline
@@ -23,26 +22,27 @@ from .. import max_logging, max_utils
 
 WAN_CHECKPOINT = "WAN_CHECKPOINT"
 
+
 class WanCheckpointer(ABC):
+
   def __init__(self, config, checkpoint_type):
     self.config = config
     self.checkpoint_type = checkpoint_type
 
     self.checkpoint_manager = create_orbax_checkpoint_manager(
-      self.config.checkpoint_dir,
-      enable_checkpointing=True,
-      save_interval_steps=1,
-      checkpoint_type=checkpoint_type,
-      dataset_type=config.dataset_type
+        self.config.checkpoint_dir,
+        enable_checkpointing=True,
+        save_interval_steps=1,
+        checkpoint_type=checkpoint_type,
+        dataset_type=config.dataset_type,
     )
-  
+
   def _create_optimizer(self, model, config, learning_rate):
     learning_rate_scheduler = max_utils.create_learning_rate_schedule(
-      learning_rate, config.learning_rate_schedule_steps, config.warmup_steps_fraction, config.max_train_steps
+        learning_rate, config.learning_rate_schedule_steps, config.warmup_steps_fraction, config.max_train_steps
     )
     tx = max_utils.create_optimizer(config, learning_rate_scheduler)
     return nnx.Optimizer(model, tx), learning_rate_scheduler
-
 
   def load_wan_configs_from_orbax(self, step):
     max_logging.log("Restoring stable diffusion configs")
@@ -59,8 +59,8 @@ class WanCheckpointer(ABC):
     model_configs = self.load_wan_configs_from_orbax(step)
 
     if model_configs:
-      raise NotImplemented("model configs should not exist in orbax")
+      raise NotImplementedError("model configs should not exist in orbax")
     else:
       pipeline = self.load_diffusers_checkpoint()
-    
+
     return pipeline

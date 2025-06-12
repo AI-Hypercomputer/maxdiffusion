@@ -20,38 +20,21 @@ from maxdiffusion import pyconfig
 from absl import app
 from maxdiffusion.utils import export_to_video
 
+
 def run(config):
   print("seed: ", config.seed)
   pipeline = WanPipeline.from_pretrained(config)
   s0 = time.perf_counter()
-  
+
   # Skip layer guidance
   slg_layers = config.slg_layers
   slg_start = config.slg_start
   slg_end = config.slg_end
 
   prompt = [config.prompt] * jax.device_count()
-  negative_prompt= [config.negative_prompt] * jax.device_count()
-   
-  videos = pipeline(
-    prompt=prompt,
-    negative_prompt=negative_prompt,
-    height=config.height,
-    width=config.width,
-    num_frames=config.num_frames,
-    num_inference_steps=config.num_inference_steps,
-    guidance_scale=config.guidance_scale,
-    slg_layers=slg_layers,
-    slg_start=slg_start,
-    slg_end=slg_end
-  )
+  negative_prompt = [config.negative_prompt] * jax.device_count()
 
-  print("compile time: ", (time.perf_counter() - s0))
-  for i in range(len(videos)):
-    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=config.fps)
-  s0 = time.perf_counter()
-  with jax.profiler.trace("/tmp/trace/"):
-    videos = pipeline(
+  videos = pipeline(
       prompt=prompt,
       negative_prompt=negative_prompt,
       height=config.height,
@@ -61,7 +44,25 @@ def run(config):
       guidance_scale=config.guidance_scale,
       slg_layers=slg_layers,
       slg_start=slg_start,
-      slg_end=slg_end
+      slg_end=slg_end,
+  )
+
+  print("compile time: ", (time.perf_counter() - s0))
+  for i in range(len(videos)):
+    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=config.fps)
+  s0 = time.perf_counter()
+  with jax.profiler.trace("/tmp/trace/"):
+    videos = pipeline(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        height=config.height,
+        width=config.width,
+        num_frames=config.num_frames,
+        num_inference_steps=config.num_inference_steps,
+        guidance_scale=config.guidance_scale,
+        slg_layers=slg_layers,
+        slg_start=slg_start,
+        slg_end=slg_end,
     )
   print("generation time: ", (time.perf_counter() - s0))
   for i in range(len(videos)):

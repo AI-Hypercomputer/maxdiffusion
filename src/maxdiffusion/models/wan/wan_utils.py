@@ -17,31 +17,33 @@ def _tuple_str_to_int(in_tuple):
       out_list.append(item)
   return tuple(out_list)
 
+
 def rename_for_nnx(key):
   new_key = key
   if "norm_k" in key or "norm_q" in key:
-     new_key = key[:-1] + ("scale",)
+    new_key = key[:-1] + ("scale",)
   return new_key
+
 
 def load_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
   with jax.default_device(device):
     if hf_download:
       # download the index file for sharded models.
-      index_file_path = hf_hub_download(pretrained_model_name_or_path, subfolder="transformer", filename="diffusion_pytorch_model.safetensors.index.json")
+      index_file_path = hf_hub_download(
+          pretrained_model_name_or_path, subfolder="transformer", filename="diffusion_pytorch_model.safetensors.index.json"
+      )
       # open the index file.
-      with open(index_file_path, 'r') as f:
+      with open(index_file_path, "r") as f:
         index_dict = json.load(f)
       model_files = set()
       for key in index_dict["weight_map"].keys():
         model_files.add(index_dict["weight_map"][key])
-      
+
       model_files = list(model_files)
       tensors = {}
       for model_file in model_files:
-        ckpt_shard_path = hf_hub_download(
-          pretrained_model_name_or_path, subfolder="transformer", filename=model_file
-        )
+        ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder="transformer", filename=model_file)
         # now get all the filenames for the model that need downloading
         max_logging.log(f"Load and port Wan 2.1 transformer on {device}")
 
@@ -52,7 +54,7 @@ def load_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, 
       flax_state_dict = {}
       cpu = jax.local_devices(backend="cpu")[0]
       flattened_dict = flatten_dict(eval_shapes)
-      # turn all block numbers to strings just for matching weights. 
+      # turn all block numbers to strings just for matching weights.
       # Later they will be turned back to ints.
       random_flax_state_dict = {}
       for key in flattened_dict:
@@ -67,7 +69,7 @@ def load_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, 
         renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
         renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
         pt_tuple_key = tuple(renamed_pt_key.split("."))
-        
+
         flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
         flax_key = rename_for_nnx(flax_key)
         flax_key = _tuple_str_to_int(flax_key)
@@ -77,6 +79,7 @@ def load_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, 
       del tensors
       jax.clear_caches()
       return flax_state_dict
+
 
 def load_wan_vae(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]

@@ -15,7 +15,6 @@
 import functools
 import math
 from typing import Optional, Callable, Tuple
-import numpy as np
 import flax.linen as nn
 from flax import nnx
 import jax
@@ -48,6 +47,7 @@ Quant = quantizations.AqtQuantization
 def _maybe_aqt_einsum(quant: Quant):
   return jnp.einsum if quant is None else quant.einsum()
 
+
 def _check_attention_inputs(query: Array, key: Array, value: Array) -> None:
   """Check attention inputs."""
 
@@ -57,15 +57,18 @@ def _check_attention_inputs(query: Array, key: Array, value: Array) -> None:
   assert key.shape[-3] == value.shape[-3], "k, v lengths must match."
   assert query.shape[-1] == key.shape[-1], "q, k depths must match."
 
+
 def _reshape_data_from_cudnn_flash(tensor):
   # reshapes from [b, s, h, d] back to [b, s, h * d]
   return tensor.reshape(tensor.shape[0], tensor.shape[1], -1)
+
 
 def _reshape_data_for_cudnn_flash(tensor, heads):
   # reshapes from [b, s, h * d] to [b, s, h, d] (input format to flash format)
   batch, seq, heads_and_dim_head = tensor.shape
   tensor = tensor.reshape(batch, seq, heads, heads_and_dim_head // heads)
   return tensor
+
 
 def _reshape_batch_dim_to_heads(tensor, heads):
   batch_size, seq_len, dim = tensor.shape
@@ -74,6 +77,7 @@ def _reshape_batch_dim_to_heads(tensor, heads):
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
   tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
   return tensor
+
 
 def _reshape_heads_to_batch_dim(tensor, heads):
   if tensor.ndim == 3:
@@ -85,8 +89,9 @@ def _reshape_heads_to_batch_dim(tensor, heads):
   else:
     batch_size, head_size, seq_len, head_dim = tensor.shape
     tensor = tensor.reshape(batch_size * head_size, seq_len, head_dim)
-  
+
   return tensor
+
 
 def _reshape_heads_to_head_dim(tensor):
   # takes a tensor of shape [b, h, s, d] and reshapes to [b, s, h * d]
@@ -94,6 +99,7 @@ def _reshape_heads_to_head_dim(tensor):
   b, h, s, d = tensor.shape
   tensor = jnp.transpose(tensor, axes=[0, 2, 1, 3])
   return jnp.reshape(tensor, (b, -1, h * d))
+
 
 def _unflatten_heads(tensor, heads):
   # reshapes from [b, s, h * d] to [b, h, s, d] (input format to flash format)
@@ -103,13 +109,14 @@ def _unflatten_heads(tensor, heads):
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
   return tensor
 
+
 def _reshape_data_for_flash(tensor, heads, flash_block_size):
   """
   Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
   """
-  if tensor.ndim != 4: 
+  if tensor.ndim != 4:
     tensor = _unflatten_heads(tensor, heads)
-  
+
   # pad head_dim to 128 if less than that.
   kv_size = tensor.shape[-1]
   head_dim_pad = 0
@@ -126,22 +133,24 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size):
     mul = seq_len // flash_block_size
     # pad to the closest multiplier of flash_block_size
     seq_len_pad = (mul + 1) * flash_block_size - seq_len
-  
+
   if kv_size < 128 or rem != 0:
     npad = ((0, 0), (0, 0), (0, seq_len_pad), (0, head_dim_pad))
     tensor = jnp.pad(tensor, npad)
 
   return tensor, kv_size, seq_len
 
+
 def _tpu_flash_attention(
-  query: jax.Array,
-  key: jax.Array,
-  value: jax.Array,
-  heads: int,
-  mesh: Mesh,
-  flash_axis_names: AxisNames,
-  flash_block_sizes: BlockSizes,
-  dtype: jnp.dtype = jnp.float32) -> jax.Array:
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    heads: int,
+    mesh: Mesh,
+    flash_axis_names: AxisNames,
+    flash_block_sizes: BlockSizes,
+    dtype: jnp.dtype = jnp.float32,
+) -> jax.Array:
   """TPU Flash Attention"""
 
   max_block_size = 1024 if dtype == jnp.bfloat16 else 512
@@ -198,17 +207,18 @@ def _tpu_flash_attention(
 
   return x
 
+
 def _apply_attention_dot(
-  query: Array,
-  key: Array,
-  value: Array,
-  dtype: jnp.dtype,
-  heads: int,
-  dim_head: int,
-  scale: float,
-  split_head_dim: bool,
-  float32_qk_product: bool,
-  use_memory_efficient_attention: bool
+    query: Array,
+    key: Array,
+    value: Array,
+    dtype: jnp.dtype,
+    heads: int,
+    dim_head: int,
+    scale: float,
+    split_head_dim: bool,
+    float32_qk_product: bool,
+    use_memory_efficient_attention: bool,
 ):
   """Apply Attention."""
   if split_head_dim:
@@ -270,14 +280,8 @@ def _apply_attention_dot(
 
   return hidden_states
 
-def _cudnn_flash_attention(
-    query: Array,
-    key: Array,
-    value: Array,
-    heads: int,
-    mesh: Mesh,
-    dpa_layer: Callable
-) -> Array:
+
+def _cudnn_flash_attention(query: Array, key: Array, value: Array, heads: int, mesh: Mesh, dpa_layer: Callable) -> Array:
   """CUDNN Flash Attention with Transformer Engine.
   1. Stable API, supports GQA
   2. Supports head_dim till 128; head_dim=256 support will be added soon
@@ -308,24 +312,25 @@ def _cudnn_flash_attention(
   out = wrap_flash_attention(query, key, value)
   return _reshape_data_from_cudnn_flash(out)
 
+
 def _apply_attention(
-  query: Array,
-  key: Array,
-  value: Array,
-  heads: int,
-  dim_head: int,
-  split_head_dim: bool,
-  float32_qk_product: bool,
-  attention_kernel: str,
-  flash_min_seq_length: int,
-  use_memory_efficient_attention: bool,
-  scale: float,
-  dtype: jnp.dtype,
-  mesh: Mesh,
-  flash_axis_names: AxisNames,
-  flash_block_sizes: BlockSizes,
-  dpa_layer: Callable
-  ):
+    query: Array,
+    key: Array,
+    value: Array,
+    heads: int,
+    dim_head: int,
+    split_head_dim: bool,
+    float32_qk_product: bool,
+    attention_kernel: str,
+    flash_min_seq_length: int,
+    use_memory_efficient_attention: bool,
+    scale: float,
+    dtype: jnp.dtype,
+    mesh: Mesh,
+    flash_axis_names: AxisNames,
+    flash_block_sizes: BlockSizes,
+    dpa_layer: Callable,
+):
   """Routes to different attention kernels."""
   _check_attention_inputs(query, key, value)
   seq_len_idx = 1
@@ -341,13 +346,16 @@ def _apply_attention(
     can_use_flash_attention = True
 
   if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
-    return _apply_attention_dot(query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention)
+    return _apply_attention_dot(
+        query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
+    )
   elif attention_kernel == "flash":
     return _tpu_flash_attention(query, key * scale, value, heads, mesh, flash_axis_names, flash_block_sizes, dtype)
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:
     raise ValueError(f"Unexpected attention kernel {attention_kernel=}.")
+
 
 def _query_chunk_attention(query, key, value, precision, key_chunk_size: int = 4096):
   """Multi-head dot product attention with a limited number of queries."""
@@ -454,26 +462,27 @@ def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
 
 
 class NNXAttentionOp(nnx.Module):
+
   def __init__(
-    self,
-    mesh: Mesh,
-    attention_kernel: str,
-    scale: int,
-    heads: int,
-    dim_head: int,
-    use_memory_efficient_attention: bool = False,
-    split_head_dim: bool = False,
-    float32_qk_product: bool = True,
-    flash_axis_names: AxisNames = (BATCH, HEAD, LENGTH, D_KV),
-    flash_min_seq_length: int = 4096,
-    flash_block_sizes: BlockSizes = None,
-    dtype: DType = jnp.float32,
-    quant: Quant = None,
+      self,
+      mesh: Mesh,
+      attention_kernel: str,
+      scale: int,
+      heads: int,
+      dim_head: int,
+      use_memory_efficient_attention: bool = False,
+      split_head_dim: bool = False,
+      float32_qk_product: bool = True,
+      flash_axis_names: AxisNames = (BATCH, HEAD, LENGTH, D_KV),
+      flash_min_seq_length: int = 4096,
+      flash_block_sizes: BlockSizes = None,
+      dtype: DType = jnp.float32,
+      quant: Quant = None,
   ):
     self.dpa_layer = None
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"{self} has not been tested with {attention_kernel}")
-    
+
     self.mesh = mesh
     self.scale = scale
     self.heads = heads
@@ -481,32 +490,33 @@ class NNXAttentionOp(nnx.Module):
     self.attention_kernel = attention_kernel
     self.use_memory_efficient_attention = use_memory_efficient_attention
     self.split_head_dim = split_head_dim
-    self.float32_qk_product=float32_qk_product
-    self.flash_axis_names=flash_axis_names
-    self.flash_min_seq_length=flash_min_seq_length
-    self.flash_block_sizes=flash_block_sizes
-    self.dtype=dtype
-    self.quant=quant
-  
+    self.float32_qk_product = float32_qk_product
+    self.flash_axis_names = flash_axis_names
+    self.flash_min_seq_length = flash_min_seq_length
+    self.flash_block_sizes = flash_block_sizes
+    self.dtype = dtype
+    self.quant = quant
+
   def apply_attention(self, query: Array, key: Array, value: Array):
     return _apply_attention(
-      query=query,
-      key=key,
-      value=value,
-      heads=self.heads,
-      dim_head=self.dim_head,
-      split_head_dim=self.split_head_dim,
-      float32_qk_product=self.float32_qk_product,
-      attention_kernel=self.attention_kernel,
-      flash_min_seq_length=self.flash_min_seq_length,
-      use_memory_efficient_attention=self.use_memory_efficient_attention,
-      scale=self.scale,
-      dtype=self.dtype,
-      mesh=self.mesh,
-      flash_axis_names=self.flash_axis_names,
-      flash_block_sizes=self.flash_block_sizes,
-      dpa_layer=self.dpa_layer
+        query=query,
+        key=key,
+        value=value,
+        heads=self.heads,
+        dim_head=self.dim_head,
+        split_head_dim=self.split_head_dim,
+        float32_qk_product=self.float32_qk_product,
+        attention_kernel=self.attention_kernel,
+        flash_min_seq_length=self.flash_min_seq_length,
+        use_memory_efficient_attention=self.use_memory_efficient_attention,
+        scale=self.scale,
+        dtype=self.dtype,
+        mesh=self.mesh,
+        flash_axis_names=self.flash_axis_names,
+        flash_block_sizes=self.flash_block_sizes,
+        dpa_layer=self.dpa_layer,
     )
+
 
 class AttentionOp(nn.Module):
   mesh: Mesh
@@ -545,51 +555,52 @@ class AttentionOp(nn.Module):
 
   def apply_attention(self, query: Array, key: Array, value: Array):
     return _apply_attention(
-      query=query,
-      key=key,
-      value=value,
-      heads=self.heads,
-      dim_head=self.dim_head,
-      split_head_dim=self.split_head_dim,
-      float32_qk_product=self.float32_qk_product,
-      attention_kernel=self.attention_kernel,
-      flash_min_seq_length=self.flash_min_seq_length,
-      use_memory_efficient_attention=self.use_memory_efficient_attention,
-      scale=self.scale,
-      dtype=self.dtype,
-      mesh=self.mesh,
-      flash_axis_names=self.flash_axis_names,
-      flash_block_sizes=self.flash_block_sizes,
-      dpa_layer=self.dpa_layer
+        query=query,
+        key=key,
+        value=value,
+        heads=self.heads,
+        dim_head=self.dim_head,
+        split_head_dim=self.split_head_dim,
+        float32_qk_product=self.float32_qk_product,
+        attention_kernel=self.attention_kernel,
+        flash_min_seq_length=self.flash_min_seq_length,
+        use_memory_efficient_attention=self.use_memory_efficient_attention,
+        scale=self.scale,
+        dtype=self.dtype,
+        mesh=self.mesh,
+        flash_axis_names=self.flash_axis_names,
+        flash_block_sizes=self.flash_block_sizes,
+        dpa_layer=self.dpa_layer,
     )
 
 
 class FlaxWanAttention(nnx.Module):
+
   def __init__(
-    self,
-    rngs: nnx.Rngs,
-    query_dim: int,
-    cross_attention_dim: Optional[int] = None,
-    heads: int = 8,
-    dim_head: int = 64,
-    dropout: float = 0.0,
-    eps: float = 1e-6,
-    qk_norm: str = "rms_norm_across_heads",
-    use_memory_efficient_attention: bool = False,
-    split_head_dim: bool = False,
-    attention_kernel: str = "flash",
-    flash_min_seq_length: int = 4096,
-    flash_block_sizes: BlockSizes = None,
-    mesh: jax.sharding.Mesh = None,
-    dtype: jnp.dtype = jnp.float32,
-    weights_dtype: jnp.dtype = jnp.float32,
-    query_axis_names: AxisNames = (BATCH, LENGTH, HEAD),
-    key_axis_names: AxisNames = (BATCH, LENGTH, HEAD),
-    value_axis_names: AxisNames = (BATCH, LENGTH, HEAD),
-    out_axis_names: AxisNames = (BATCH, LENGTH, EMBED),
-    precision: jax.lax.Precision = None,
-    qkv_bias: bool = False,
-    quant: Quant = None,
+      self,
+      rngs: nnx.Rngs,
+      query_dim: int,
+      cross_attention_dim: Optional[int] = None,
+      heads: int = 8,
+      dim_head: int = 64,
+      dropout: float = 0.0,
+      eps: float = 1e-6,
+      qk_norm: str = "rms_norm_across_heads",
+      use_memory_efficient_attention: bool = False,
+      split_head_dim: bool = False,
+      attention_kernel: str = "flash",
+      flash_min_seq_length: int = 4096,
+      flash_block_sizes: BlockSizes = None,
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      query_axis_names: AxisNames = (BATCH, LENGTH, HEAD),
+      key_axis_names: AxisNames = (BATCH, LENGTH, HEAD),
+      value_axis_names: AxisNames = (BATCH, LENGTH, HEAD),
+      out_axis_names: AxisNames = (BATCH, LENGTH, EMBED),
+      precision: jax.lax.Precision = None,
+      qkv_bias: bool = False,
+      quant: Quant = None,
   ):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
@@ -605,20 +616,20 @@ class FlaxWanAttention(nnx.Module):
     self.key_axis_names = key_axis_names
     self.value_axis_names = value_axis_names
     self.out_axis_names = out_axis_names
-    
+
     self.attention_op = NNXAttentionOp(
-      mesh=mesh,
-      attention_kernel=attention_kernel,
-      scale=scale,
-      heads=heads,
-      dim_head=dim_head,
-      use_memory_efficient_attention=use_memory_efficient_attention,
-      split_head_dim=split_head_dim,
-      float32_qk_product=False,
-      flash_min_seq_length=flash_min_seq_length,
-      flash_block_sizes=flash_block_sizes,
-      dtype=dtype,
-      quant=quant
+        mesh=mesh,
+        attention_kernel=attention_kernel,
+        scale=scale,
+        heads=heads,
+        dim_head=dim_head,
+        use_memory_efficient_attention=use_memory_efficient_attention,
+        split_head_dim=split_head_dim,
+        float32_qk_product=False,
+        flash_min_seq_length=flash_min_seq_length,
+        flash_block_sizes=flash_block_sizes,
+        dtype=dtype,
+        quant=quant,
     )
 
     kernel_axes = ("embed", "heads")
@@ -655,33 +666,33 @@ class FlaxWanAttention(nnx.Module):
     )
 
     self.proj_attn = nnx.Linear(
-      rngs=rngs,
-      in_features=self.inner_dim,
-      out_features=self.inner_dim,
-      kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
-      dtype=dtype,
-      param_dtype=weights_dtype,
-      precision=precision,
+        rngs=rngs,
+        in_features=self.inner_dim,
+        out_features=self.inner_dim,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        precision=precision,
     )
 
     self.norm_q = None
     self.norm_k = None
     if qk_norm is not None:
       self.norm_q = nnx.RMSNorm(
-        num_features=self.inner_dim,
-        rngs=rngs,
-        epsilon=eps,
-        dtype=dtype,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones, ("norm", )),
-        param_dtype=weights_dtype
+          num_features=self.inner_dim,
+          rngs=rngs,
+          epsilon=eps,
+          dtype=dtype,
+          scale_init=nnx.with_partitioning(nnx.initializers.ones, ("norm",)),
+          param_dtype=weights_dtype,
       )
 
       self.norm_k = nnx.RMSNorm(
-        num_features=self.inner_dim,
-        rngs=rngs,
-        dtype=dtype,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones, ("norm", )),
-        param_dtype=weights_dtype
+          num_features=self.inner_dim,
+          rngs=rngs,
+          dtype=dtype,
+          scale_init=nnx.with_partitioning(nnx.initializers.ones, ("norm",)),
+          param_dtype=weights_dtype,
       )
 
   def _apply_rope(self, xq: jax.Array, xk: jax.Array, freqs_cis: jax.Array) -> Tuple[jax.Array, jax.Array]:
@@ -701,13 +712,10 @@ class FlaxWanAttention(nnx.Module):
     return xq_out, xk_out
 
   def __call__(
-    self,
-    hidden_states: jax.Array,
-    encoder_hidden_states: jax.Array = None,
-    rotary_emb: Optional[jax.Array] = None
+      self, hidden_states: jax.Array, encoder_hidden_states: jax.Array = None, rotary_emb: Optional[jax.Array] = None
   ) -> jax.Array:
-    hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec('data', 'fsdp','tensor'))
-    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec('data', 'fsdp','tensor'))
+    hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", "tensor"))
     dtype = hidden_states.dtype
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
@@ -724,12 +732,12 @@ class FlaxWanAttention(nnx.Module):
       key_proj = _unflatten_heads(key_proj, self.heads)
       value_proj = _unflatten_heads(value_proj, self.heads)
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
-      query_proj = jax.lax.with_sharding_constraint(query_proj, PartitionSpec('data', 'tensor', None, None))
-      key_proj = jax.lax.with_sharding_constraint(key_proj, PartitionSpec('data', 'tensor', None, None))
-      value_proj = jax.lax.with_sharding_constraint(value_proj, PartitionSpec('data', 'tensor', None, None))
+      query_proj = jax.lax.with_sharding_constraint(query_proj, PartitionSpec("data", "tensor", None, None))
+      key_proj = jax.lax.with_sharding_constraint(key_proj, PartitionSpec("data", "tensor", None, None))
+      value_proj = jax.lax.with_sharding_constraint(value_proj, PartitionSpec("data", "tensor", None, None))
 
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
-    attn_output = jax.lax.with_sharding_constraint(attn_output, PartitionSpec('data', None, None))
+    attn_output = jax.lax.with_sharding_constraint(attn_output, PartitionSpec("data", None, None))
 
     attn_output = attn_output.astype(dtype=dtype)
 
@@ -1317,6 +1325,7 @@ class FlaxTransformer2DModel(nn.Module):
 
     hidden_states = hidden_states + residual
     return self.dropout_layer(hidden_states, deterministic=deterministic)
+
 
 class FlaxFeedForward(nn.Module):
   r"""
