@@ -137,47 +137,30 @@ class Transformer3DModel(nn.Module):
                 weight_dtype=self.weight_dtype,
                 matmul_precision=self.matmul_precision,
             )
-    def init_weights(self, key, batch_size, text_tokens, num_tokens, features, eval_only=True):
-
-        #bookkeeping, for convenient changes later
-        latents_shape = (batch_size, num_tokens, features)
-        fractional_cords_shape = (batch_size, 3, num_tokens)
-        prompt_embeds_shape = (batch_size, text_tokens, features)
-        noise_cond_shape = (batch_size, 1)
-        latents_dtype = jnp.bfloat16
-        fractional_coords_dtype = jnp.bfloat16
-        prompt_embeds_dtype = jnp.bfloat16
-        noise_cond_dtype = jnp.bfloat16
-
-        #initialize to random 
-        key, split_key = jax.random.split(key)
-        prompt_embeds = jax.random.normal(split_key, shape=prompt_embeds_shape, dtype=latents_dtype) 
-        key, split_key = jax.random.split(key)
-        fractional_coords = jax.random.normal(split_key, shape=fractional_cords_shape, dtype=fractional_coords_dtype)
-        key, split_key = jax.random.split(key)
-        latents = jax.random.normal(split_key, shape=latents_shape, dtype=prompt_embeds_dtype)
-        key, split_key = jax.random.split(key)
-        noise_cond = jax.random.normal(split_key, shape=noise_cond_shape, dtype=noise_cond_dtype)
-        
-        
-        key, split_key = jax.random.split(key)
+    def init_weights(self, in_channels, caption_channels, eval_only=True):
+        example_inputs = {}
+        batch_size, num_tokens = 4, 256
+        input_shapes = {
+            "hidden_states": (batch_size, num_tokens, in_channels),
+            "indices_grid": (batch_size, 3, num_tokens),
+            "encoder_hidden_states": (batch_size, 128, caption_channels),
+            "timestep": (batch_size, 256),
+            "segment_ids": (batch_size, 256),
+            "encoder_attention_segment_ids": (batch_size, 128),
+        }
+        for name, shape in input_shapes.items():
+            example_inputs[name] = jnp.ones(
+                shape, dtype=jnp.float32 if name not in ["attention_mask", "encoder_attention_mask"] else jnp.bool
+            )
+    
         if eval_only:
             return jax.eval_shape(
                 self.init,
-                rngs = {"params": split_key},
-                hidden_states=latents,
-                indices_grid=fractional_coords,
-                encoder_hidden_states = prompt_embeds,
-                timestep=noise_cond,
+                jax.random.PRNGKey(42), ##need to change?
+                **example_inputs,
             )["params"]
         else:
-            return self.init(
-                rngs = {"params": split_key},
-                hidden_states=latents,
-                indices_grid=fractional_coords,
-                encoder_hidden_states = prompt_embeds,
-                timestep=noise_cond,
-            )["params"]
+            return self.init(jax.random.PRNGKey(42), **example_inputs)['params']
 
     def __call__(
         self,

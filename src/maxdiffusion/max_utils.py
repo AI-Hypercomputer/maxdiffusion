@@ -402,7 +402,11 @@ def setup_initial_state(
           config.enable_single_replica_ckpt_restoring,
       )
       if state:
-        state = state[checkpoint_item]
+        ###!Edited
+        if checkpoint_item == " ":
+          state = state
+        else:
+          state = state[checkpoint_item]
     if not state:
       max_logging.log(f"Could not find the item in orbax, creating state...")
       init_train_state_partial = functools.partial(

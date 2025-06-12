@@ -1,8 +1,8 @@
 from functools import partial
+import functools
 import math
 from typing import Any, Dict, Optional, Tuple
 from enum import Enum, auto
-
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
@@ -604,7 +604,8 @@ class AttentionOp(nn.Module):
             block_sizes = self.default_block_sizes(q, k, dtype)
 
         scale_factor = 1 / math.sqrt(q.shape[-1])
-
+        
+    
         def partial_flash_attention(q, k, v, q_segment_ids, kv_segment_ids):
             s = (
                 # flash attention expects segment ids to be float32
@@ -630,14 +631,27 @@ class AttentionOp(nn.Module):
                 raise ValueError(f"Expected mask with 2 dims, got {q_segment_ids.ndim}.")
             # Based on: ("activation_kv_batch", "activation_kv_heads", "activation_length", "activation_kv_head_dim")
             # Computation of the spec based on the logical constraints can be found in logical_axes_to_spec.py.
+            # qkvo_sharding_spec = jax.sharding.PartitionSpec(
+            #     ("data", "fsdp", "fsdp_transpose", "expert"),
+            #     ("tensor", "tensor_transpose", "sequence", "tensor_sequence"),
+            #     None,
+            #     None,
+            # )
+            # qkvo_sharding_spec = jax.sharding.PartitionSpec(
+            #     ("data", "fsdp", "fsdp_transpose", "expert"),
+            #     ("tensor", "tensor_transpose", "sequence", "tensor_sequence"),
+            #     None,
+            #     None,
+            # )
             qkvo_sharding_spec = jax.sharding.PartitionSpec(
-                ("data", "fsdp", "fsdp_transpose", "expert"),
-                ("tensor", "tensor_transpose", "sequence", "tensor_sequence"),
+                None,
+                None,
                 None,
                 None,
             )
-            # Based on: ("activation_kv_batch", "activation_length")
-            qkv_segment_ids_spec = jax.sharding.PartitionSpec(("data", "fsdp", "fsdp_transpose", "expert"), "sequence")
+            #Based on: ("activation_kv_batch", "activation_length")
+            # qkv_segment_ids_spec = jax.sharding.PartitionSpec(("data", "fsdp", "fsdp_transpose", "expert"), "sequence")
+            qkv_segment_ids_spec = jax.sharding.PartitionSpec(None, None)
             wrapped_flash_attention = shard_map(
                 partial_flash_attention,
                 mesh=sharding_mesh,
