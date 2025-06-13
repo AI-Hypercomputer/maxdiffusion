@@ -251,45 +251,23 @@ def fill_unspecified_mesh_axes(parallelism_vals, target_product, parallelism_typ
 
   return parallelism_vals
 
-
-def create_device_mesh(config, devices=None, logging=True):
+def create_device_mesh(config, devices=None):
   """Creates a device mesh with each slice in its own data parallel group. If there is only one slice, uses two replicas"""
   if devices is None:
     devices = jax.devices()
   num_devices = len(devices)
-  try:
-    num_slices = 1 + max([d.slice_index for d in devices])
-  except:
-    num_slices = 1
+  num_slices = 1
   num_devices_per_slice = num_devices // num_slices
-  max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
-
-  multi_slice_env = num_slices > 1
-
-  dcn_parallelism = [
-      config.dcn_data_parallelism,
-      config.dcn_fsdp_parallelism,
-      config.dcn_tensor_parallelism,
-  ]
-  ici_parallelism = [
-      config.ici_data_parallelism,
-      config.ici_fsdp_parallelism,
-      config.ici_tensor_parallelism,
-  ]
 
   # Find possible unspecified parallelisms
-  ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, "ICI")
-  if multi_slice_env:
-    dcn_parallelism = fill_unspecified_mesh_axes(dcn_parallelism, num_slices, "DCN")
-    mesh = mesh_utils.create_hybrid_device_mesh(ici_parallelism, dcn_parallelism, devices)
-  else:
-    mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
-
-  if logging:
-    max_logging.log(f"Decided on mesh: {mesh}")
+  ici_parallelism = fill_unspecified_mesh_axes(config.ici_parallelism.copy(), num_devices_per_slice, "ICI")
+  mesh = mesh_utils.create_device_mesh(
+      ici_parallelism,
+      devices,
+  )
+  max_logging.log(f"Num_devices: {num_devices}, shape {mesh.shape}")
 
   return mesh
-
 
 def unbox_logicallypartioned_trainstate(boxed_train_state: train_state.TrainState):
   """Unboxes the flax.LogicallyPartitioned pieces in a train state.

@@ -28,6 +28,48 @@ def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise
   print("segment_ids.shape: ", segment_ids.shape, segment_ids.dtype)
   print("encoder_attention_segment_ids.shape: ", encoder_attention_segment_ids.shape, encoder_attention_segment_ids.dtype)
 
+
+def loop_body(
+    step,
+    args,
+    transformer,
+    fractional_cords,
+    prompt_embeds,
+    segment_ids,
+    encoder_attention_segment_ids
+):
+  latents, state, noise_cond = args
+  noise_pred = transformer.apply(
+      {"params": state.params},
+      hidden_states=latents,
+      indices_grid=fractional_cords,
+      encoder_hidden_states=prompt_embeds,
+      timestep=noise_cond,
+      segment_ids=segment_ids,
+      encoder_attention_segment_ids=encoder_attention_segment_ids
+  )
+  return noise_pred, state, noise_cond 
+
+
+
+def run_inference(
+    states, transformer, config, mesh, latents, fractional_cords, prompt_embeds, timestep, segment_ids, encoder_attention_segment_ids
+):
+  transformer_state = states["transformer"]
+  loop_body_p = functools.partial(
+      loop_body,
+      transformer=transformer,
+      fractional_cords=fractional_cords,
+      prompt_embeds=prompt_embeds,
+      segment_ids=segment_ids,
+      encoder_attention_segment_ids=encoder_attention_segment_ids
+  )
+  ## TODO: add vae decode step
+  ## TODO: add loop
+  with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+    latents, transformer_state, _ = jax.lax.fori_loop(0, 1, loop_body_p, (latents, transformer_state, timestep))   
+  return latents
+  
 def run(config):
   key = jax.random.PRNGKey(0)
 
@@ -50,7 +92,7 @@ def run(config):
   
  
   transformer = Transformer3DModel(**model_config, dtype=jnp.float32, gradient_checkpointing="matmul_without_batch", sharding_mesh=mesh)
-  transformer_param_shapes = transformer.init_weights(in_channels, model_config['caption_channels'], eval_only = True)
+  transformer_param_shapes = transformer.init_weights(in_channels, model_config['caption_channels'], eval_only = True) 
   
   weights_init_fn = functools.partial(
       transformer.init_weights, 
@@ -75,7 +117,61 @@ def run(config):
   )
 
   
+  
+  
+  transformer_state = jax.device_put(transformer_state, transformer_state_shardings)
+  get_memory_allocations()
 
+  states = {}
+  state_shardings = {}
+
+  state_shardings["transformer"] = transformer_state_shardings
+  states["transformer"] = transformer_state
+
+  #create dummy inputs:
+  example_inputs = {}
+  batch_size, num_tokens = 4, 256
+  input_shapes = {
+    "latents": (batch_size, num_tokens, in_channels),
+    "fractional_coords": (batch_size, 3, num_tokens),
+    "prompt_embeds": (batch_size, 128, model_config["caption_channels"]),
+    "timestep": (batch_size, 256), 
+    "segment_ids": (batch_size, 256),
+    "encoder_attention_segment_ids": (batch_size, 128),
+  }
+  for name, shape in input_shapes.items():
+    example_inputs[name] = jnp.ones(
+      shape, dtype=jnp.float32 if name not in ["attention_mask", "encoder_attention_mask"] else jnp.bool
+    )
+
+  data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
+  latents = jax.device_put(example_inputs["latents"], data_sharding)
+  prompt_embeds = jax.device_put(example_inputs["prompt_embeds"], data_sharding)
+  fractional_coords = jax.device_put(example_inputs["fractional_coords"], data_sharding)
+  noise_cond = jax.device_put(example_inputs["timestep"], data_sharding)
+  segment_ids = jax.device_put(example_inputs["segment_ids"], data_sharding)
+  encoder_attention_segment_ids = jax.device_put(example_inputs["encoder_attention_segment_ids"], data_sharding)
+
+  validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids)
+  p_run_inference = jax.jit(
+      functools.partial(
+          run_inference,
+          transformer=transformer,
+          config=config,
+          mesh=mesh,
+          latents=latents,
+          fractional_cords=fractional_coords,
+          prompt_embeds=prompt_embeds,
+          timestep = noise_cond,
+          segment_ids=segment_ids,
+          encoder_attention_segment_ids=encoder_attention_segment_ids
+      ),
+      in_shardings=(state_shardings,),
+      out_shardings=None,
+  )
+
+  noise_pred = p_run_inference(states).block_until_ready()
+  print(noise_pred)  #(4, 256, 128)
 
 
 def main(argv: Sequence[str]) -> None:
@@ -89,4 +185,14 @@ if __name__ == "__main__":
 
 
 
+  
+
+
+
+
+
+
+
+
+  
 
