@@ -402,7 +402,6 @@ def setup_initial_state(
           config.enable_single_replica_ckpt_restoring,
       )
       if state:
-        ###!Edited
         if checkpoint_item == " ":
           state = state
         else:

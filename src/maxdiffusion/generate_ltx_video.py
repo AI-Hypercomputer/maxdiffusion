@@ -50,7 +50,7 @@ def run(config):
   
  
   transformer = Transformer3DModel(**model_config, dtype=jnp.float32, gradient_checkpointing="matmul_without_batch", sharding_mesh=mesh)
-  transformer_param_shapes = transformer.init_weights(in_channels, model_config['caption_channels'], eval_only = True) #use this to test!
+  transformer_param_shapes = transformer.init_weights(in_channels, model_config['caption_channels'], eval_only = True)
   
   weights_init_fn = functools.partial(
       transformer.init_weights, 
