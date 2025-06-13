@@ -21,6 +21,7 @@ from jax.sharding import Mesh, PositionalSharding, PartitionSpec as P
 import flax
 import flax.linen as nn
 from flax import nnx
+from flax.linen import partitioning as nn_partitioning
 from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
@@ -420,7 +421,7 @@ class WanPipeline:
           num_transformer_layers=self.transformer.config.num_layers,
       )
 
-      with self.mesh:
+      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
         latents = p_run_inference(
             graphdef=graphdef,
             sharded_state=state,

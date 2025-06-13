@@ -112,8 +112,8 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
+                      ['activation_heads', 'fsdp'],
                       ['activation_batch', ['data','fsdp']],
-                      ['activation_heads', 'tensor'],
                       ['activation_kv', 'tensor'],
                       ['mlp','tensor'],
                       ['embed','fsdp'],
@@ -182,6 +182,8 @@ num_train_epochs: 1
 seed: 0
 output_dir: 'sdxl-model-finetuned'
 per_device_batch_size: 1
+# If global_batch_size % jax.device_count is not 0, use FSDP sharding.
+global_batch_size: 0
 
 warmup_steps_fraction: 0.1
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.

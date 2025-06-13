@@ -16,7 +16,7 @@ from typing import Sequence
 import jax
 import time
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
-from maxdiffusion import pyconfig
+from maxdiffusion import pyconfig, max_logging
 from absl import app
 from maxdiffusion.utils import export_to_video
 
@@ -30,9 +30,17 @@ def run(config):
   slg_layers = config.slg_layers
   slg_start = config.slg_start
   slg_end = config.slg_end
+  # If global_batch_size % jax.device_count is not 0, use FSDP sharding.
+  global_batch_size = config.global_batch_size
+  if global_batch_size != 0:
+    batch_multiplier = global_batch_size
+  else:
+    batch_multiplier = jax.device_count() * config.per_device_batch_size
 
-  prompt = [config.prompt] * jax.device_count()
-  negative_prompt = [config.negative_prompt] * jax.device_count()
+  prompt = [config.prompt] * batch_multiplier
+  negative_prompt = [config.negative_prompt] * batch_multiplier
+
+  max_logging.log(f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}")
 
   videos = pipeline(
       prompt=prompt,
@@ -51,6 +59,23 @@ def run(config):
   for i in range(len(videos)):
     export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=config.fps)
   s0 = time.perf_counter()
+  videos = pipeline(
+      prompt=prompt,
+      negative_prompt=negative_prompt,
+      height=config.height,
+      width=config.width,
+      num_frames=config.num_frames,
+      num_inference_steps=config.num_inference_steps,
+      guidance_scale=config.guidance_scale,
+      slg_layers=slg_layers,
+      slg_start=slg_start,
+      slg_end=slg_end,
+  )
+  print("generation time: ", (time.perf_counter() - s0))
+  for i in range(len(videos)):
+    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=config.fps)
+
+  s0 = time.perf_counter()
   with jax.profiler.trace("/tmp/trace/"):
     videos = pipeline(
         prompt=prompt,
@@ -65,9 +90,6 @@ def run(config):
         slg_end=slg_end,
     )
   print("generation time: ", (time.perf_counter() - s0))
-  for i in range(len(videos)):
-    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=config.fps)
-
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)

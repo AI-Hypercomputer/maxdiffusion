@@ -311,29 +311,29 @@ class WanTransformerBlock(nnx.Module):
 
   def __call__(self, hidden_states: jax.Array, encoder_hidden_states: jax.Array, temb: jax.Array, rotary_emb: jax.Array):
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
-        (self.scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
+        (self.scale_shift_table + temb), 6, axis=1
     )
 
     # 1. Self-attention
-    norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(
+    norm_hidden_states = (self.norm1(hidden_states) * (1 + scale_msa) + shift_msa).astype(
         hidden_states.dtype
     )
     attn_output = self.attn1(
         hidden_states=norm_hidden_states, encoder_hidden_states=norm_hidden_states, rotary_emb=rotary_emb
     )
-    hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
+    hidden_states = (hidden_states + attn_output * gate_msa).astype(hidden_states.dtype)
 
     # 2. Cross-attention
-    norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32))
+    norm_hidden_states = self.norm2(hidden_states)
     attn_output = self.attn2(hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states)
     hidden_states = hidden_states + attn_output
 
     # 3. Feed-forward
-    norm_hidden_states = (self.norm3(hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(
+    norm_hidden_states = (self.norm3(hidden_states) * (1 + c_scale_msa) + c_shift_msa).astype(
         hidden_states.dtype
     )
     ff_output = self.ffn(norm_hidden_states)
-    hidden_states = (hidden_states.astype(jnp.float32) + ff_output.astype(jnp.float32) * c_gate_msa).astype(
+    hidden_states = (hidden_states + ff_output * c_gate_msa).astype(
         hidden_states.dtype
     )
     return hidden_states
@@ -485,7 +485,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       )
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 
-    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
+    hidden_states = (self.norm_out(hidden_states) * (1 + scale) + shift).astype(hidden_states.dtype)
     hidden_states = self.proj_out(hidden_states)
 
     hidden_states = hidden_states.reshape(
