@@ -1,5 +1,5 @@
 {
-    "ckpt_path": "/mnt/disks/diffusionproj/jax_weights",
+    "ckpt_path": "/dev/shm/ltx_converted",
     "activation_fn": "gelu-approximate",
     "attention_bias": true,
     "attention_head_dim": 128,
