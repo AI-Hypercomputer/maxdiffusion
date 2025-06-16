@@ -40,7 +40,9 @@ def run(config):
   prompt = [config.prompt] * batch_multiplier
   negative_prompt = [config.negative_prompt] * batch_multiplier
 
-  max_logging.log(f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}")
+  max_logging.log(
+      f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
+  )
 
   videos = pipeline(
       prompt=prompt,
@@ -90,6 +92,7 @@ def run(config):
         slg_end=slg_end,
     )
   print("generation time: ", (time.perf_counter() - s0))
+
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)

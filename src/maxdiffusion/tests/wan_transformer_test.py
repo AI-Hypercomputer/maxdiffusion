@@ -272,7 +272,7 @@ class WanTransformerTest(unittest.TestCase):
           timestep=dummy_timestep,
           encoder_hidden_states=dummy_encoder_hidden_states,
           is_uncond=jnp.array(True, dtype=jnp.bool_),
-          slg_mask=jnp.zeros(40, dtype=jnp.bool_)
+          slg_mask=jnp.zeros(40, dtype=jnp.bool_),
       )
     assert dummy_output.shape == hidden_states_shape
 

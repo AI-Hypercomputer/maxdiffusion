@@ -37,10 +37,16 @@ class AttentionTest(unittest.TestCase):
   def test_splash_attention(self):
     """Test numerics of splash attention are equivalent to dot_product"""
 
-    pyconfig.initialize([None, os.path.join(THIS_DIR, "..", "configs", "base21.yml"),
-      'flash_block_sizes={"block_q" : 512, "block_kv_compute": 512, "block_kv": 512,'
-      '"block_q_dkv": 512, "block_kv_dkv": 512, "block_kv_dkv_compute": 512,'
-      '"block_q_dq": 512, "block_kv_dq": 512}',], unittest=True)
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base21.yml"),
+            'flash_block_sizes={"block_q" : 512, "block_kv_compute": 512, "block_kv": 512,'
+            '"block_q_dkv": 512, "block_kv_dkv": 512, "block_kv_dkv_compute": 512,'
+            '"block_q_dq": 512, "block_kv_dq": 512}',
+        ],
+        unittest=True,
+    )
     config = pyconfig.config
 
     batch = 8
@@ -57,7 +63,7 @@ class AttentionTest(unittest.TestCase):
         split_head_dim=True,
         attention_kernel="dot_product",
         mesh=None,
-        dtype=jnp.bfloat16
+        dtype=jnp.bfloat16,
     )
 
     params = dot_product_attention.init(key2, x)["params"]
@@ -75,7 +81,7 @@ class AttentionTest(unittest.TestCase):
         attention_kernel="flash",
         mesh=mesh,
         dtype=jnp.bfloat16,
-        flash_block_sizes=flash_block_sizes
+        flash_block_sizes=flash_block_sizes,
     )
 
     params = splash_attention.init(key2, x)["params"]

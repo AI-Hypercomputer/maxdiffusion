@@ -116,7 +116,9 @@ class WanTrainer(WanCheckpointer):
     for step in np.arange(start_step, self.config.max_train_steps):
       if self.config.enable_profiler and step == first_profiling_step:
         max_utils.activate_profiler(self.config)
-      with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(
+          self.config.logical_axis_rules
+      ):
         state, train_metric, rng = p_train_step(state, graphdef, data, rng)
 
       new_time = datetime.datetime.now()
