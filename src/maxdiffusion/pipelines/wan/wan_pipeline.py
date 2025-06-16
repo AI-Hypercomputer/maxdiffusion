@@ -199,13 +199,13 @@ class WanPipeline:
     wan_vae = nnx.merge(graphdef, params)
     p_create_sharded_logical_model = partial(create_sharded_logical_model, logical_axis_rules=config.logical_axis_rules)
     # Shard
-    with mesh:
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
       wan_vae = p_create_sharded_logical_model(model=wan_vae)
     return wan_vae, vae_cache
 
   @classmethod
   def load_transformer(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
-    with mesh:
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
       wan_transformer = create_sharded_logical_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
     return wan_transformer
 
@@ -468,11 +468,17 @@ def run_inference(
     slg_end: float = 1.0,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
+  if do_classifier_free_guidance:
+    prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
   for step in range(num_inference_steps):
     slg_mask = jnp.zeros(num_transformer_layers, dtype=jnp.bool_)
     if slg_layers and int(slg_start * num_inference_steps) <= step < int(slg_end * num_inference_steps):
       slg_mask = slg_mask.at[jnp.array(slg_layers)].set(True)
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+    # get original batch size before concat in case of cfg.
+    bsz = latents.shape[0]
+    if do_classifier_free_guidance:
+      latents = jnp.concatenate([latents] * 2)
     timestep = jnp.broadcast_to(t, latents.shape[0])
 
     noise_pred = transformer_forward_pass(
@@ -482,21 +488,14 @@ def run_inference(
         latents,
         timestep,
         prompt_embeds,
-        is_uncond=jnp.array(False, dtype=jnp.bool_),
+        is_uncond=jnp.array(True, dtype=jnp.bool_),
         slg_mask=slg_mask,
     )
 
     if do_classifier_free_guidance:
-      noise_uncond = transformer_forward_pass(
-          graphdef,
-          sharded_state,
-          rest_of_state,
-          latents,
-          timestep,
-          negative_prompt_embeds,
-          is_uncond=jnp.array(True, dtype=jnp.bool_),
-          slg_mask=slg_mask,
-      )
+      noise_uncond = noise_pred[bsz:]
+      noise_pred = noise_pred[:bsz]
       noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+      latents = latents[:bsz]
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
   return latents
