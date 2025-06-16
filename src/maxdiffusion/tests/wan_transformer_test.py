@@ -17,6 +17,7 @@
 import os
 import jax
 import jax.numpy as jnp
+import pytest
 import unittest
 from absl.testing import absltest
 from flax import nnx
@@ -33,6 +34,8 @@ from ..models.wan.transformers.transformer_wan import (
 from ..models.embeddings_flax import NNXTimestepEmbedding, NNXPixArtAlphaTextProjection
 from ..models.normalization_flax import FP32LayerNorm
 from ..models.attention_flax import FlaxWanAttention
+
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -81,6 +84,7 @@ class WanTransformerTest(unittest.TestCase):
     dummy_output = layer(dummy_hidden_states)
     assert dummy_output.shape == dummy_hidden_states.shape
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_wan_time_text_embedding(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
@@ -231,6 +235,7 @@ class WanTransformerTest(unittest.TestCase):
     except NotImplementedError:
       pass
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_wan_model(self):
     pyconfig.initialize(
         [
