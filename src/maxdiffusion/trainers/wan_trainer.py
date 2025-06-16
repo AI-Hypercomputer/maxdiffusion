@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import jax
 import jax.tree_util as jtu
 from flax import nnx
+from flax.linen import partitioning as nn_partitioning
 from ..schedulers import FlaxEulerDiscreteScheduler
 from .. import max_utils, max_logging, train_utils, maxdiffusion_utils
 from ..checkpointing.wan_checkpointer import (WanCheckpointer, WAN_CHECKPOINT)
@@ -115,7 +116,7 @@ class WanTrainer(WanCheckpointer):
     for step in np.arange(start_step, self.config.max_train_steps):
       if self.config.enable_profiler and step == first_profiling_step:
         max_utils.activate_profiler(self.config)
-      with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh:
+      with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
         state, train_metric, rng = p_train_step(state, graphdef, data, rng)
 
       new_time = datetime.datetime.now()

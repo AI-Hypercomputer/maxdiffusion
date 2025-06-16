@@ -163,8 +163,8 @@ class WanTransformerTest(unittest.TestCase):
         mesh=mesh,
         flash_block_sizes=flash_block_sizes,
     )
-
-    dummy_output = wan_block(dummy_hidden_states, dummy_encoder_hidden_states, dummy_temb, dummy_rotary_emb)
+    with mesh:
+      dummy_output = wan_block(dummy_hidden_states, dummy_encoder_hidden_states, dummy_temb, dummy_rotary_emb)
     assert dummy_output.shape == dummy_hidden_states.shape
 
   def test_wan_attention(self):
@@ -210,10 +210,10 @@ class WanTransformerTest(unittest.TestCase):
 
     dummy_hidden_states = jnp.ones(dummy_hidden_states_shape)
     dummy_encoder_hidden_states = jnp.ones(dummy_hidden_states_shape)
-
-    dummy_output = attention(
-        hidden_states=dummy_hidden_states, encoder_hidden_states=dummy_encoder_hidden_states, rotary_emb=dummy_rotary_emb
-    )
+    with mesh:
+      dummy_output = attention(
+          hidden_states=dummy_hidden_states, encoder_hidden_states=dummy_encoder_hidden_states, rotary_emb=dummy_rotary_emb
+      )
     assert dummy_output.shape == dummy_hidden_states_shape
 
     # dot product
@@ -246,7 +246,7 @@ class WanTransformerTest(unittest.TestCase):
     frames = 21
     height = 90
     width = 160
-    hidden_states_shape = (batch_size, frames, height, width, channels)
+    hidden_states_shape = (batch_size, channels, frames, height, width)
     dummy_hidden_states = jnp.ones(hidden_states_shape)
 
     key = jax.random.key(0)
@@ -266,10 +266,14 @@ class WanTransformerTest(unittest.TestCase):
 
     dummy_timestep = jnp.ones((batch_size))
     dummy_encoder_hidden_states = jnp.ones((batch_size, 512, 4096))
-
-    dummy_output = wan_model(
-        hidden_states=dummy_hidden_states, timestep=dummy_timestep, encoder_hidden_states=dummy_encoder_hidden_states
-    )
+    with mesh:
+      dummy_output = wan_model(
+          hidden_states=dummy_hidden_states,
+          timestep=dummy_timestep,
+          encoder_hidden_states=dummy_encoder_hidden_states,
+          is_uncond=jnp.array(True, dtype=jnp.bool_),
+          slg_mask=jnp.zeros(40, dtype=jnp.bool_)
+      )
     assert dummy_output.shape == hidden_states_shape
 
 
