@@ -40,7 +40,7 @@ from maxdiffusion.train_utils import (
     load_next_batch,
     record_scalar_metrics,
     write_metrics,
-    _metrics_queue
+    _metrics_queue,
 )
 
 from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (STABLE_DIFFUSION_XL_CHECKPOINT)
@@ -67,7 +67,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     total_train_batch_size = config.total_train_batch_size
     shaped_batch = {}
 
-    if self.config.dataset_type in ["tf","tfrecord"] and self.config.cache_latents_text_encoder_outputs:
+    if self.config.dataset_type in ["tf", "tfrecord"] and self.config.cache_latents_text_encoder_outputs:
       batch_image_shape = (
           total_train_batch_size,
           pipeline.unet.config.in_channels,
@@ -92,7 +92,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
 
   def get_data_shardings(self):
     data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
-    if self.config.dataset_type in ["tf","tfrecord"]  and self.config.cache_latents_text_encoder_outputs:
+    if self.config.dataset_type in ["tf", "tfrecord"] and self.config.cache_latents_text_encoder_outputs:
       data_sharding = {
           "input_ids": data_sharding,
           "pixel_values": data_sharding,
@@ -188,11 +188,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
   def training_loop(self, p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler):
 
     writer = max_utils.initialize_summary_writer(self.config)
-    writer_thread = threading.Thread(
-        target=_tensorboard_writer_worker,
-        args=(writer, self.config),
-        daemon=True
-    )
+    writer_thread = threading.Thread(target=_tensorboard_writer_worker, args=(writer, self.config), daemon=True)
     writer_thread.start()
     unet_state = train_states["unet_state"]
     vae_state = train_states["vae_state"]
@@ -228,14 +224,14 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
       for step in np.arange(start_step, self.config.max_train_steps):
         if self.config.enable_profiler and step == first_profiling_step:
           max_utils.activate_profiler(self.config)
-        
+
         next_batch_future = executor.submit(load_next_batch, data_iterator, example_batch, self.config)
         start_step_time = datetime.datetime.now()
         with jax.profiler.StepTraceAnnotation("train-new", step_num=step):
           (unet_state, train_metric, train_rngs) = p_train_step(
               unet_state, vae_state, text_encoder_state, text_encoder_2_state, example_batch, train_rngs
           )
-          train_metric['scalar']['learning/loss'].block_until_ready()
+          train_metric["scalar"]["learning/loss"].block_until_ready()
         samples_count = self.total_train_batch_size * (step + 1)
         last_step_completion = datetime.datetime.now()
         time_difference = last_step_completion - start_step_time
@@ -247,7 +243,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         if self.config.write_metrics:
           write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
         example_batch = next_batch_future.result()
-        
+
         if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
           train_states["unet_state"] = unet_state
           train_states["vae_state"] = vae_state
@@ -265,7 +261,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     _metrics_queue.put(None)
     writer_thread.join()
     if writer:
-        writer.flush()
+      writer.flush()
     train_states["unet_state"] = unet_state
     train_states["text_encoder_state"] = text_encoder_state
     train_states["text_encoder_2_state"] = text_encoder_2_state
@@ -369,5 +365,5 @@ def _train_step(unet_state, vae_state, text_encoder_state, text_encoder_2_state,
   new_state = unet_state.apply_gradients(grads=grad["unet"])
 
   metrics = {"scalar": {"learning/loss": loss}, "scalars": {}}
-   
+
   return new_state, metrics, new_train_rng
