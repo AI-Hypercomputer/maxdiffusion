@@ -24,7 +24,6 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 from flax.linen import partitioning as nn_partitioning
-from jax.experimental import io_callback
 from concurrent.futures import ThreadPoolExecutor
 from maxdiffusion.trainers.stable_diffusion_trainer import (StableDiffusionTrainer)
 

@@ -17,7 +17,6 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-import threading
 import queue
 
 from maxdiffusion import max_utils, max_logging
