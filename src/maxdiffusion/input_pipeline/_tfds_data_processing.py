@@ -73,7 +73,6 @@ def make_tf_iterator(
   train_iter = multihost_dataloading.MultiHostDataLoadIterator(train_ds, mesh)
   return train_iter
 
-
 def make_cached_tfrecord_iterator(
     config,
     dataloading_host_index,
@@ -105,6 +104,7 @@ def make_cached_tfrecord_iterator(
 
   # This pipeline reads the sharded files and applies the parsing and preparation.
   filenames = tf.io.gfile.glob(os.path.join(config.train_data_dir, "*"))
+
   train_ds = (
       tf.data.TFRecordDataset(filenames, num_parallel_reads=AUTOTUNE)
       .shard(num_shards=dataloading_host_count, index=dataloading_host_index)
@@ -133,8 +133,16 @@ def make_tfrecord_iterator(
   check out preparation script
   maxdiffusion/pedagogical_examples/to_tfrecords.py
   """
-  if config.cache_latents_text_encoder_outputs and os.path.isdir(config.dataset_save_location):
+
+  # set load_tfrecord_cached to True in config to use pre-processed tfrecord dataset.
+  # pedagogical_examples/dataset_tf_cache_to_tfrecord.py to convert tf preprocessed dataset to tfrecord.
+  # Datset cache in github runner test doesn't contain all the features since its shared, Use the default tfrecord iterator.
+  if (config.cache_latents_text_encoder_outputs and
+      os.path.isdir(config.dataset_save_location) and
+      hasattr(config, 'load_tfrecord_cached') and
+      config.load_tfrecord_cached):
     return make_cached_tfrecord_iterator(config, dataloading_host_index, dataloading_host_count, mesh, global_batch_size)
+
   feature_description = {
       "moments": tf.io.FixedLenFeature([], tf.string),
       "clip_embeddings": tf.io.FixedLenFeature([], tf.string),
