@@ -137,10 +137,10 @@ def make_tfrecord_iterator(
   # set load_tfrecord_cached to True in config to use pre-processed tfrecord dataset.
   # pedagogical_examples/dataset_tf_cache_to_tfrecord.py to convert tf preprocessed dataset to tfrecord.
   # Datset cache in github runner test doesn't contain all the features since its shared, Use the default tfrecord iterator.
-  if (config.cache_latents_text_encoder_outputs and
-      os.path.isdir(config.dataset_save_location) and
-      hasattr(config, 'load_tfrecord_cached') and
-      config.load_tfrecord_cached):
+  if (config.cache_latents_text_encoder_outputs
+      and os.path.isdir(config.dataset_save_location)
+      and 'load_tfrecord_cached'in config.get_keys()
+      and config.load_tfrecord_cached):
     return make_cached_tfrecord_iterator(config, dataloading_host_index, dataloading_host_count, mesh, global_batch_size)
 
   feature_description = {
