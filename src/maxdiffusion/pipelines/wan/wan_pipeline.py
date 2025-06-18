@@ -17,7 +17,7 @@ from functools import partial
 import numpy as np
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, PositionalSharding, PartitionSpec as P
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import flax
 import flax.linen as nn
 from flax import nnx
@@ -195,7 +195,7 @@ class WanPipeline:
     # This replaces random params with the model.
     params = load_wan_vae(config.pretrained_model_name_or_path, params, "cpu")
     params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
-    params = jax.device_put(params, PositionalSharding(devices_array).replicate())
+    params = jax.device_put(params, NamedSharding(devices_array, P()))
     wan_vae = nnx.merge(graphdef, params)
     p_create_sharded_logical_model = partial(create_sharded_logical_model, logical_axis_rules=config.logical_axis_rules)
     # Shard
@@ -395,7 +395,7 @@ class WanPipeline:
             num_channels_latents=num_channel_latents,
         )
 
-      data_sharding = PositionalSharding(self.devices_array).replicate()
+      data_sharding = NamedSharding(self.devices_array, P())
       if len(prompt) % jax.device_count() == 0:
         data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
 

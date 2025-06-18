@@ -35,13 +35,13 @@ MaxDiffusion supports
 * Stable Diffusion 2 base (training and inference)
 * Stable Diffusion 2.1 (training and inference)
 * Stable Diffusion XL (training and inference).
+* Flux Dev and Schnell (Training and inference).
 * Stable Diffusion Lightning (inference).
 * Hyper-SD XL LoRA loading (inference).
 * Load Multiple LoRA (SDXL inference).
 * ControlNet inference (Stable Diffusion 1.4 & SDXL).
 * Dreambooth training support for Stable Diffusion 1.x,2.x.
 
-**WARNING: The training code is purely experimental and is under development.**
 
 # Table of Contents
 
