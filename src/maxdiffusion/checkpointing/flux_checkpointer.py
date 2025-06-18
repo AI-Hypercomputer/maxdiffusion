@@ -194,7 +194,7 @@ class FluxCheckpointer(ABC):
       clip_tokenizer = CLIPTokenizer.from_pretrained(self.config.clip_model_name_or_path, max_length=77, use_fast=True)
       t5_encoder = FlaxT5EncoderModel.from_pretrained(self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype)
       t5_tokenizer = AutoTokenizer.from_pretrained(
-          self.config.t5xxl_model_name_or_path, max_length=self.config.max_sequence_length, use_fast=True
+          self.config.t5xxl_model_name_or_path, model_max_length=self.config.max_sequence_length, use_fast=True
       )
 
       vae, vae_params = FlaxAutoencoderKL.from_pretrained(
@@ -263,7 +263,7 @@ class FluxCheckpointer(ABC):
             self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype
         )
         t5_tokenizer = AutoTokenizer.from_pretrained(
-            self.config.t5xxl_model_name_or_path, max_length=self.config.max_sequence_length, use_fast=True
+            self.config.t5xxl_model_name_or_path, model_max_length=self.config.max_sequence_length, use_fast=True
         )
 
         vae = FlaxAutoencoderKL.from_config(
