@@ -252,6 +252,7 @@ class FluxTrainer(FluxCheckpointer):
         t5_tokenizer=pipeline.t5_tokenizer,
         clip_text_encoder=pipeline.clip_encoder,
         t5_text_encoder=pipeline.t5_encoder,
+        max_sequence_length=config.max_sequence_length,
         encode_in_batches=True,
         encode_batch_size=16,
     )
@@ -348,9 +349,13 @@ class FluxTrainer(FluxCheckpointer):
       example_batch = load_next_batch(data_iterator, example_batch, self.config)
       example_batch = {key: jnp.asarray(value, dtype=self.config.activations_dtype) for key, value in example_batch.items()}
 
-      with jax.profiler.StepTraceAnnotation("train", step_num=step):
+      if self.config.profiler == 'nsys':
         with self.mesh:
           flux_state, train_metric, train_rngs = p_train_step(flux_state, example_batch, train_rngs)
+      else:
+        with jax.profiler.StepTraceAnnotation("train", step_num=step):
+          with self.mesh:
+            flux_state, train_metric, train_rngs = p_train_step(flux_state, example_batch, train_rngs)
 
       samples_count = self.total_train_batch_size * (step + 1)
       new_time = datetime.datetime.now()
