@@ -343,7 +343,7 @@ def run(config):
       config.t5xxl_model_name_or_path, max_length=config.max_sequence_length, use_fast=True
   )
 
-  encoders_sharding = NamedSharding(devices_array, P())
+  encoders_sharding = NamedSharding(mesh, P())
   partial_device_put_replicated = functools.partial(device_put_replicated, sharding=encoders_sharding)
   clip_text_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), clip_text_encoder.params)
   clip_text_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, clip_text_encoder.params)
