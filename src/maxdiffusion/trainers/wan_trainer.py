@@ -26,7 +26,7 @@ from flax.linen import partitioning as nn_partitioning
 from ..schedulers import FlaxEulerDiscreteScheduler
 from .. import max_utils, max_logging, train_utils, maxdiffusion_utils
 from ..checkpointing.wan_checkpointer import (WanCheckpointer, WAN_CHECKPOINT)
-from multihost_dataloading import _form_global_array
+from maxdiffusion.multihost_dataloading import _form_global_array
 
 
 class WanTrainer(WanCheckpointer):

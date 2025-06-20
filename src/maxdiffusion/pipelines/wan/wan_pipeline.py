@@ -195,7 +195,7 @@ class WanPipeline:
     # This replaces random params with the model.
     params = load_wan_vae(config.pretrained_model_name_or_path, params, "cpu")
     params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
-    params = jax.device_put(params, NamedSharding(devices_array, P()))
+    params = jax.device_put(params, NamedSharding(mesh, P()))
     wan_vae = nnx.merge(graphdef, params)
     p_create_sharded_logical_model = partial(create_sharded_logical_model, logical_axis_rules=config.logical_axis_rules)
     # Shard
