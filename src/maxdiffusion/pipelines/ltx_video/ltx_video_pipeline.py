@@ -11,7 +11,43 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import argparse
+import os
+import random
+from datetime import datetime
+from pathlib import Path
+from diffusers import AutoencoderKL
+from typing import Optional, List, Union
+import yaml
 
+import imageio
+import json
+import numpy as np
+import torch
+from safetensors import safe_open
+from PIL import Image
+from transformers import (
+    T5EncoderModel,
+    T5Tokenizer,
+    AutoModelForCausalLM,
+    AutoProcessor,
+    AutoTokenizer,
+)
+from huggingface_hub import hf_hub_download
+from maxdiffusion.models.ltx_video.autoencoders.causal_video_autoencoder import (
+    CausalVideoAutoencoder,
+)
+from maxdiffusion.models.ltx_video.autoencoders.vae_encode import (
+    get_vae_size_scale_factor,
+    latent_to_pixel_coords,
+    vae_decode,
+    vae_encode,
+)
+from diffusers.image_processor import VaeImageProcessor
+from ltx_video.schedulers.rf import RectifiedFlowScheduler
+from maxdiffusion.models.ltx_video.autoencoders.latent_upsampler import LatentUpsampler
+import ltx_video.pipelines.crf_compressor as crf_compressor
+from maxdiffusion.models.ltx_video.utils.prompt_enhance_utils import generate_cinematic_prompt
 from math import e
 from types import NoneType
 from typing import Any, Dict
@@ -26,6 +62,7 @@ from typing import Optional, Union, List
 import torch
 from maxdiffusion.checkpointing import checkpointing_utils
 from flax.linen import partitioning as nn_partitioning
+from maxdiffusion.models.ltx_video.transformers_pytorch.symmetric_patchifier import SymmetricPatchifier
 
 from ...pyconfig import HyperParameters
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
@@ -40,8 +77,6 @@ import json
 import functools
 import orbax.checkpoint as ocp
 import pickle
-import orbax.checkpoint as ocp
-import os
 
 class PickleCheckpointHandler(ocp.CheckpointHandler):
     def save(self, directory: str, item, args=None):
@@ -66,6 +101,9 @@ def save_tensor_dict(tensor_dict, timestep):
         print(f"Error saving dictionary: {e}")
         raise
 
+
+
+
 def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids):
     print("prompts_embeds.shape: ", prompt_embeds.shape, prompt_embeds.dtype)
     print("fractional_coords.shape: ", fractional_coords.shape, fractional_coords.dtype)
@@ -74,100 +112,12 @@ def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise
     print("noise_cond.shape: ", noise_cond.shape, noise_cond.dtype)
     # print("segment_ids.shape: ", segment_ids.shape, segment_ids.dtype)
     print("encoder_attention_segment_ids.shape: ", encoder_attention_segment_ids.shape, encoder_attention_segment_ids.dtype)
-    
-def get_scheduler_config():  #got parameters from maxdiffusion scheduler test, change later
-    config = {
-      "_class_name": 'FlaxEulerDiscreteScheduler',
-      "_diffusers_version": "0.33.0.dev0",
-      "beta_end": 0.02,
-      "beta_schedule": "linear",
-      "beta_start": 0.0001,
-      "disable_corrector": [],
-      "dynamic_thresholding_ratio": 0.995,
-      "final_sigmas_type": "zero",
-      "flow_shift": 3.0,
-      "lower_order_final": True,
-      "num_train_timesteps": 1000,
-      "predict_x0": True,
-      "prediction_type": "epsilon",
-      "rescale_zero_terminal_snr": False,
-      "rescale_betas_zero_snr": False,
-      "sample_max_value": 1.0,
-      "solver_order": 2,
-      "solver_p": None,
-      "solver_type": "bh2",
-      "steps_offset": 0,
-      "thresholding": False,
-      "timestep_spacing": "trailing",
-      "trained_betas": None,
-      "use_beta_sigmas": False,
-      "use_exponential_sigmas": False,
-      "use_flow_sigmas": True,
-      "use_karras_sigmas": False
-    }
-    return config
+
  
 def prepare_extra_step_kwargs(generator):
     extra_step_kwargs = {}
     extra_step_kwargs["generator"] = generator
     return extra_step_kwargs  
-
-# def retrieve_timesteps(
-#     scheduler,
-#     scheduler_state,
-#     latents_shape,
-#     num_inference_steps: Optional[int] = None,
-#     timesteps: Optional[List[int]] = None,
-#     skip_initial_inference_steps: int = 0,
-#     skip_final_inference_steps: int = 0,
-#     **kwargs,
-# ):
-#   # if timesteps is not None:       #this part currently doesn't work, cause scheduler doesn't support custom timestep schedulers
-#   #   accepts_timesteps = "timesteps" in set(
-#   #     inspect.signature(scheduler.set_timesteps).parameters.keys()
-#   #   )
-#   #   if not accepts_timesteps:
-#   #     raise ValueError(
-#   #       f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
-#   #       f" timestep schedules. Please check whether you are using the correct scheduler."
-#   #     )
-#   #   scheduler_state = scheduler.set_timesteps(
-#   #     scheduler_state, num_inference_steps=num_inference_steps, shape=latents_shape
-#   #   )
-#   #   timesteps = scheduler_state.timesteps
-#   #   num_inference_steps = len(timesteps)
-#   # else:
-#   #   scheduler_state = scheduler.set_timesteps(
-#   #     scheduler_state, num_inference_steps=num_inference_steps, shape=latents_shape
-#   #   )
-#   #   timesteps = scheduler_state.timesteps
-
-#   #   if (
-#   #       skip_initial_inference_steps < 0
-#   #       or skip_final_inference_steps < 0
-#   #       or skip_initial_inference_steps + skip_final_inference_steps
-#   #       >= num_inference_steps
-#   #   ):
-#   #       raise ValueError(
-#   #           "invalid skip inference step values: must be non-negative and the sum of skip_initial_inference_steps and skip_final_inference_steps must be less than the number of inference steps"
-#   #       )
-
-#   #   timesteps = timesteps[
-#   #       skip_initial_inference_steps : len(timesteps) - skip_final_inference_steps
-#   #   ]
-#   #   scheduler_state = scheduler.set_timesteps(
-#   #     scheduler_state, num_inference_steps=num_inference_steps, shape=latents_shape
-#   #   )
-#   #   num_inference_steps = len(timesteps)
-#     scheduler_state = scheduler.set_timesteps(
-#       scheduler_state, num_inference_steps=num_inference_steps, shape=latents_shape
-#     )
-
-#     return num_inference_steps, scheduler_state
-
-
-
-  
 
 
 class LTXVideoPipeline:
@@ -176,47 +126,60 @@ class LTXVideoPipeline:
     transformer: Transformer3DModel,
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state: UniPCMultistepSchedulerState,
+    vae: AutoencoderKL,
+    text_encoder,
+    patchifier,
+    tokenizer,
+    prompt_enhancer_image_caption_model,
+    prompt_enhancer_image_caption_processor,
+    prompt_enhancer_llm_model,
+    prompt_enhancer_llm_tokenizer,
     devices_array: np.array,
     mesh: Mesh,
     config: HyperParameters,
-    states: Dict[Any, Any] = None,
-    state_shardings: Dict[Any, Any] = NoneType,
+    transformer_state: Dict[Any, Any] = None,
+    transformer_state_shardings: Dict[Any, Any] = NoneType,
   ):
     self.transformer = transformer
     self.devices_array = devices_array
     self.mesh = mesh
     self.config = config
     self.p_run_inference = None
-    self.states = states    ## check is it okay to keep this as a paramter?
-    self.state_shardings = state_shardings
+    self.transformer_state = transformer_state
+    self.transformer_state_shardings = transformer_state_shardings 
     self.scheduler = scheduler
     self.scheduler_state = scheduler_state
+    self.vae = vae
+    self.text_encoder = text_encoder
+    self.patchifier = patchifier
+    self.tokenizer = tokenizer
+    self.prompt_enhancer_image_caption_model = prompt_enhancer_image_caption_model
+    self.prompt_enhancer_image_caption_processor = prompt_enhancer_image_caption_processor
+    self.prompt_enhancer_llm_model = prompt_enhancer_llm_model
+    self.prompt_enhancer_llm_tokenizer = prompt_enhancer_llm_tokenizer
+    import pdb; pdb.set_trace()
+    self.video_scale_factor, self.vae_scale_factor, _ = get_vae_size_scale_factor(
+      self.vae
+    )
+    self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
 
 
   
   
   @classmethod
   def load_scheduler(cls):
-
-    # scheduler_config = get_scheduler_config()
-    # scheduler = FlaxUniPCMultistepScheduler(**scheduler_config)
-    # scheduler_state = scheduler.create_state()
     scheduler, scheduler_state = FlaxUniPCMultistepScheduler.from_pretrained(
        "Wan-AI/Wan2.1-T2V-14B-Diffusers",
         subfolder="scheduler",
         flow_shift=3.0  # 5.0 for 720p, 3.0 for 480p
     )
     return scheduler, scheduler_state
-
-
+  
   @classmethod
-  def from_pretrained(cls, config: HyperParameters):
+  def load_transformer(cls, config):
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-
     base_dir = os.path.dirname(__file__)
-
-    ##load in model config
     config_path = os.path.join(base_dir, "../../models/ltx_video/xora_v1.2-13B-balanced-128.json")
     with open(config_path, "r") as f:
         model_config = json.load(f)
@@ -235,7 +198,6 @@ class LTXVideoPipeline:
         model_config['caption_channels'],
         eval_only = True
     )
-
     absolute_ckpt_path = os.path.abspath(relative_ckpt_path)
 
     checkpoint_manager = ocp.CheckpointManager(absolute_ckpt_path)
@@ -252,33 +214,232 @@ class LTXVideoPipeline:
     )
     transformer_state = jax.device_put(transformer_state, transformer_state_shardings)
     get_memory_allocations()
-
-    states = {}
-    state_shardings = {}
-    state_shardings["transformer"] = transformer_state_shardings
-    states["transformer"] = transformer_state
-
-
-    #initialize scheduler
-
     
+    return transformer, transformer_state, transformer_state_shardings
+  
+  @classmethod
+  def load_vae(cls, ckpt_path):
+    vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
+    return vae
+    
+  @classmethod
+  def load_text_encoder(cls, ckpt_path):
+    text_encoder = T5EncoderModel.from_pretrained(
+        ckpt_path, subfolder="text_encoder"
+    )
+    return text_encoder
+    
+  @classmethod
+  def load_tokenizer(cls, ckpt_path):
+    tokenizer = T5Tokenizer.from_pretrained(
+      ckpt_path, subfolder="tokenizer"
+    )
+    return tokenizer
+  
+  @classmethod
+  def load_prompt_enhancement(cls, config):
+    prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained(
+      config.prompt_enhancer_image_caption_model_name_or_path, trust_remote_code=True
+    )
+    prompt_enhancer_image_caption_processor = AutoProcessor.from_pretrained(
+      config.prompt_enhancer_image_caption_model_name_or_path, trust_remote_code=True
+    )
+    prompt_enhancer_llm_model = AutoModelForCausalLM.from_pretrained(
+      config.prompt_enhancer_llm_model_name_or_path, torch_dtype="bfloat16",
+    )
+    prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(
+      config.prompt_enhancer_llm_model_name_or_path,
+    )
+    return prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
+    
+    
+
+  @classmethod
+  def from_pretrained(cls, config: HyperParameters, enhance_prompt: bool = False):
+    devices_array = create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+
+    transformer, transformer_state, transformer_state_shardings = cls.load_transformer(config)
     scheduler, scheduler_state = cls.load_scheduler()
-    scheduler_checkpointer = ocp.Checkpointer(PickleCheckpointHandler())
-    base_dir = os.path.dirname(__file__)
-    ckpt_path = os.path.join(base_dir, "scheduler_ckpt")
-    #scheduler_checkpointer.save(ckpt_path, scheduler_state)
-    #scheduler_state = scheduler_checkpointer.restore(ckpt_path)
+    
+    
+    #load from pytorch version
+    models_dir = "/mnt/disks/diffusionproj"
+    ltxv_model_name_or_path ="ltxv-13b-0.9.7-dev.safetensors"
+    if not os.path.isfile(ltxv_model_name_or_path):
+        ltxv_model_path = hf_hub_download(
+            repo_id="Lightricks/LTX-Video",
+            filename=ltxv_model_name_or_path,
+            local_dir=models_dir,
+            repo_type="model",
+        )
+    else:
+        ltxv_model_path = ltxv_model_name_or_path
+    vae = cls.load_vae(ltxv_model_path)
+    vae = vae.to(torch.bfloat16)
+    text_encoder = cls.load_text_encoder(config.text_encoder_model_name_or_path)
+    patchifier = SymmetricPatchifier(patch_size=1)
+    tokenizer = cls.load_tokenizer(config.text_encoder_model_name_or_path)
+    
+    if enhance_prompt:
+      prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = cls.load_prompt_enhancement(config)
+    else:
+      prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None 
+  
     return LTXVideoPipeline(
       transformer=transformer,
       scheduler=scheduler,
       scheduler_state=scheduler_state,
+      vae=vae, 
+      text_encoder=text_encoder,
+      patchifier=patchifier,
+      tokenizer=tokenizer,
+      prompt_enhancer_image_caption_model=prompt_enhancer_image_caption_model,
+      prompt_enhancer_image_caption_processor=prompt_enhancer_image_caption_processor,
+      prompt_enhancer_llm_model=prompt_enhancer_llm_model,
+      prompt_enhancer_llm_tokenizer=prompt_enhancer_llm_tokenizer,
       devices_array=devices_array,
       mesh=mesh,
       config=config,
-      states=states,
-      state_shardings=state_shardings
+      transformer_state=transformer_state,
+      transformer_state_shardings=transformer_state_shardings
     )
   
+  @classmethod
+  def _text_preprocessing(self, text):
+        if not isinstance(text, (tuple, list)):
+            text = [text]
+
+        def process(text: str):
+            text = text.strip()
+            return text
+
+        return [process(t) for t in text]
+      
+  @classmethod
+  def encode_prompt(
+    cls,
+    prompt: Union[str, List[str]],
+    do_classifier_free_guidance: bool = True,
+    negative_prompt: str = "",
+    num_images_per_prompt: int = 1,
+    device: Optional[torch.device] = None,
+    prompt_embeds: Optional[torch.FloatTensor] = None,
+    negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+    prompt_attention_mask: Optional[torch.FloatTensor] = None,
+    negative_prompt_attention_mask: Optional[torch.FloatTensor] = None,
+    text_encoder_max_tokens: int = 256,
+    **kwargs,
+    ):
+    if prompt is not None and isinstance(prompt, str):
+        batch_size = 1
+    elif prompt is not None and isinstance(prompt, list):
+        batch_size = len(prompt)
+    else:
+        batch_size = prompt_embeds.shape[0]
+
+    max_length = (
+        text_encoder_max_tokens  # TPU supports only lengths multiple of 128
+    )
+    if prompt_embeds is None:
+        assert (
+            cls.text_encoder is not None
+        ), "You should provide either prompt_embeds or self.text_encoder should not be None,"
+        text_enc_device = next(cls.text_encoder.parameters())
+        prompt = cls._text_preprocessing(prompt)
+        text_inputs = cls.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=max_length,
+            truncation=True,
+            add_special_tokens=True,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids
+        untruncated_ids = cls.tokenizer(
+            prompt, padding="longest", return_tensors="pt"
+        ).input_ids
+
+        if untruncated_ids.shape[-1] >= text_input_ids.shape[
+            -1
+        ] and not torch.equal(text_input_ids, untruncated_ids):
+            removed_text = cls.tokenizer.batch_decode(
+                untruncated_ids[:, max_length - 1 : -1]
+            )
+
+        prompt_attention_mask = text_inputs.attention_mask
+        prompt_embeds = cls.text_encoder(
+            text_input_ids, attention_mask=prompt_attention_mask
+        )
+        prompt_embeds = prompt_embeds[0]
+
+    if cls.text_encoder is not None:
+        dtype = cls.text_encoder.dtype
+    elif cls.transformer is not None:
+        dtype = cls.transformer.dtype
+    else:
+        dtype = None
+    bs_embed, seq_len, _ = prompt_embeds.shape
+    # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
+    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
+    prompt_embeds = prompt_embeds.view(
+        bs_embed * num_images_per_prompt, seq_len, -1
+    )
+    prompt_attention_mask = prompt_attention_mask.repeat(1, num_images_per_prompt)
+    prompt_attention_mask = prompt_attention_mask.view(
+        bs_embed * num_images_per_prompt, -1
+    )
+
+    # get unconditional embeddings for classifier free guidance
+    if do_classifier_free_guidance and negative_prompt_embeds is None:
+        uncond_tokens = cls._text_preprocessing(negative_prompt)
+        uncond_tokens = uncond_tokens * batch_size
+        max_length = prompt_embeds.shape[1]
+        uncond_input = cls.tokenizer(
+            uncond_tokens,
+            padding="max_length",
+            max_length=max_length,
+            truncation=True,
+            return_attention_mask=True,
+            add_special_tokens=True,
+            return_tensors="pt",
+        )
+        negative_prompt_attention_mask = uncond_input.attention_mask
+
+        negative_prompt_embeds = cls.text_encoder(
+            uncond_input.input_ids.to(text_enc_device),
+            attention_mask=negative_prompt_attention_mask,
+        )
+        negative_prompt_embeds = negative_prompt_embeds[0]
+
+    if do_classifier_free_guidance:
+        # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
+        seq_len = negative_prompt_embeds.shape[1]
+
+        negative_prompt_embeds = negative_prompt_embeds.repeat(
+            1, num_images_per_prompt, 1
+        )
+        negative_prompt_embeds = negative_prompt_embeds.view(
+            batch_size * num_images_per_prompt, seq_len, -1
+        )
+
+        negative_prompt_attention_mask = negative_prompt_attention_mask.repeat(
+            1, num_images_per_prompt
+        )
+        negative_prompt_attention_mask = negative_prompt_attention_mask.view(
+            bs_embed * num_images_per_prompt, -1
+        )
+    else:
+        negative_prompt_embeds = None
+        negative_prompt_attention_mask = None
+
+    return (
+        prompt_embeds,
+        prompt_attention_mask,
+        negative_prompt_embeds,
+        negative_prompt_attention_mask,
+    )
+
   
   
    
@@ -286,10 +447,86 @@ class LTXVideoPipeline:
   ##change the paramters of these, currently pass in dummy inputs
   def __call__(
     self,
-    example_inputs,
-    num_inference_steps: int = 50,
+    height: int,
+    width: int,
+    num_frames: int,
+    negative_prompt: str = "",
+    num_images_per_prompt: Optional[int] = 1,
+    eta: float = 0.0,
+    generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+    latents: Optional[torch.FloatTensor] = None,
+    prompt_embeds: Optional[torch.FloatTensor] = None,
+    prompt_attention_mask: Optional[torch.FloatTensor] = None,
+    negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+    negative_prompt_attention_mask: Optional[torch.FloatTensor] = None,
+    output_type: Optional[str] = "pil",
+    return_dict: bool = True,
+    decode_timestep: Union[List[float], float] = 0.0,
+    decode_noise_scale: Optional[List[float]] = None,
+    offload_to_cpu: bool = False,
+    enhance_prompt: bool = False,
+    text_encoder_max_tokens: int = 256,
+    num_inference_steps: int = 2,
+    **kwargs,
     # guidance_scale: Union[float, List[float]] = 4.5,
   ):
+    prompt = self.config.prompt
+    is_video = kwargs.get("is_video", False)
+    if prompt is not None and isinstance(prompt, str):
+      batch_size = 1
+    elif prompt is not None and isinstance(prompt, list):
+      batch_size = len(prompt)
+    else:
+      batch_size = prompt_embeds.shape[0]
+    vae_per_channel_normalize = kwargs.get("vae_per_channel_normalize", True)
+    latent_height = height // self.vae_scale_factor
+    latent_width = width // self.vae_scale_factor
+    latent_num_frames = num_frames // self.video_scale_factor
+    if isinstance(self.vae, CausalVideoAutoencoder) and is_video:
+      latent_num_frames += 1
+    latent_shape = (
+      batch_size * num_images_per_prompt,
+      self.transformer.config.in_channels,
+      latent_num_frames,
+      latent_height,
+      latent_width,
+    )
+    num_conds = 1
+    if enhance_prompt:
+      prompt = generate_cinematic_prompt(
+          self.prompt_enhancer_image_caption_model,
+          self.prompt_enhancer_image_caption_processor,
+          self.prompt_enhancer_llm_model,
+          self.prompt_enhancer_llm_tokenizer,
+          prompt,
+          None, #conditioning items set to None
+          max_new_tokens=text_encoder_max_tokens,
+      )
+    
+
+    (
+      prompt_embeds,  
+      prompt_attention_mask, 
+      negative_prompt_embeds,
+      negative_prompt_attention_mask,
+    ) = self.encode_prompt(
+      prompt,
+      False, #do_classifier_free_guidance
+      negative_prompt=negative_prompt,
+      num_images_per_prompt=num_images_per_prompt,
+      device=None, #device set to none
+      prompt_embeds=prompt_embeds,
+      negative_prompt_embeds=negative_prompt_embeds,
+      prompt_attention_mask=prompt_attention_mask,
+      negative_prompt_attention_mask=negative_prompt_attention_mask,
+      text_encoder_max_tokens=text_encoder_max_tokens,
+    )
+    prompt_embeds_batch = prompt_embeds 
+    prompt_attention_mask_batch = prompt_attention_mask
+    
+    
+      
+    
     
     # if not isinstance(guidance_scale, List):
     #   guidance_scale = [guidance_scale] * len(self.scheduler_state.timesteps)
@@ -379,7 +616,6 @@ class LTXVideoPipeline:
 
 
 def transformer_forward_pass(   #need to jit this? wan didnt
-                             
   latents,
   state,
   noise_cond,

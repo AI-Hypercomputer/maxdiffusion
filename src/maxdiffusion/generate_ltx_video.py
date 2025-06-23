@@ -4,37 +4,36 @@ from typing import Sequence
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXVideoPipeline
 from maxdiffusion import pyconfig
 import jax.numpy as jnp
+from datetime import datetime
 import os
 import json
 import torch
+from pathlib import Path
 
 def run(config):
-  pipeline = LTXVideoPipeline.from_pretrained(config)
-  base_dir = os.path.dirname(__file__)
-
-  ##load in model config
-  config_path = os.path.join(base_dir, "models/ltx_video/xora_v1.2-13B-balanced-128.json")
-  with open(config_path, "r") as f:
-    model_config = json.load(f)
-  example_inputs = {}
-  batch_size, num_tokens = 4, 256
-  input_shapes = {
-    "latents": (batch_size, num_tokens, model_config["in_channels"]),
-    "fractional_coords": (batch_size, 3, num_tokens),
-    "prompt_embeds": (batch_size, 128, model_config["caption_channels"]),
-    "timestep": (batch_size, 256), 
-    "segment_ids": (batch_size, 256),
-    "encoder_attention_segment_ids": (batch_size, 128),
-  }
-  for name, shape in input_shapes.items():
-    example_inputs[name] = jnp.ones(
-      shape, dtype=jnp.float32 if name not in ["attention_mask", "encoder_attention_mask"] else jnp.bool
-    )
   
-  # example_inputs = tensor_dict
-  # import pdb
-  noise_pred = pipeline(example_inputs)
-  print(noise_pred)
+  height_padded = ((config.height - 1) // 32 + 1) * 32
+  width_padded = ((config.width - 1) // 32 + 1) * 32
+  num_frames_padded = ((config.num_frames - 2) // 8 + 1) * 8 + 1
+  prompt_enhancement_words_threshold = config.prompt_enhancement_words_threshold
+  prompt_word_count = len(config.prompt.split())
+  enhance_prompt = (
+    prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
+  )
+  
+
+  pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt)
+  images = pipeline()
+  
+  
+  
+  output_dir = (
+    Path(config.output_path)
+    if config.output_path
+    else Path(f"outputs/{datetime.today().strftime('%Y-%m-%d')}")
+  )
+  output_dir.mkdir(parents=True, exist_ok=True)
+  
   
   
 

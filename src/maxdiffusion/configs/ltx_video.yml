@@ -10,8 +10,28 @@ activations_dtype: 'bfloat16'
 run_name: ''
 output_dir: 'ltx-video-output'
 save_config_to_gcs: False
+#Checkpoints
+text_encoder_model_name_or_path: "PixArt-alpha/PixArt-XL-2-1024-MS"
+prompt_enhancer_image_caption_model_name_or_path: "MiaoshouAI/Florence-2-large-PromptGen-v2.0"
+prompt_enhancer_llm_model_name_or_path: "unsloth/Llama-3.2-3B-Instruct"
 
-#parallelism
+
+
+
+
+# Generation parameters
+prompt: "Two police officers in dark blue uniforms and matching hats enter a dimly lit room through a doorway on the left side of the frame. The first officer, with short brown hair and a mustache, steps inside first, followed by his partner, who has a shaved head and a goatee. Both officers have serious expressions and maintain a steady pace as they move deeper into the room. The camera remains stationary, capturing them from a slightly low angle as they enter. The room has exposed brick walls and a corrugated metal ceiling, with a barred window visible in the background. The lighting is low-key, casting shadows on the officers' faces and emphasizing the grim atmosphere. The scene appears to be from a film or television show."
+#prompt_2: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
+#negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
+#do_classifier_free_guidance: True
+height: 512
+width: 512
+num_frames: 88
+guidance_scale: 5.0
+flow_shift: 3.0
+prompt_enhancement_words_threshold: 120
+
+#Parallelism
 mesh_axes: ['data', 'fsdp', 'tensor', 'fsdp_transpose', 'expert', 'tensor_transpose', 'tensor_sequence', 'sequence']
 logical_axis_rules: [
                       ['batch', 'data'],
