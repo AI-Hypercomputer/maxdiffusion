@@ -6,6 +6,7 @@ from maxdiffusion import pyconfig
 import jax.numpy as jnp
 import os
 import json
+import torch
 
 def run(config):
   pipeline = LTXVideoPipeline.from_pretrained(config)
@@ -29,6 +30,9 @@ def run(config):
     example_inputs[name] = jnp.ones(
       shape, dtype=jnp.float32 if name not in ["attention_mask", "encoder_attention_mask"] else jnp.bool
     )
+  
+  # example_inputs = tensor_dict
+  # import pdb
   noise_pred = pipeline(example_inputs)
   print(noise_pred)
   
