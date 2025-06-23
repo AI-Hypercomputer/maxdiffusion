@@ -32,14 +32,16 @@ from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanC
 from maxdiffusion.video_processor import VideoProcessor
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
 from transformers import AutoTokenizer, UMT5EncoderModel
-import ftfy
+from maxdiffusion.utils.import_utils import is_ftfy_available
 import html
 import re
 import torch
 
 
 def basic_clean(text):
-  text = ftfy.fix_text(text)
+  if is_ftfy_available():
+    import ftfy
+    text = ftfy.fix_text(text)
   text = html.unescape(html.unescape(text))
   return text.strip()
 
