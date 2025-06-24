@@ -5,10 +5,10 @@ from einops import rearrange
 from torch import Tensor
 
 
-from ltx_video.models.autoencoders.causal_video_autoencoder import (
+from maxdiffusion.models.ltx_video.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
 )
-from ltx_video.models.autoencoders.video_autoencoder import (
+from maxdiffusion.models.ltx_video.autoencoders.video_autoencoder import (
     Downsample3D,
     VideoAutoencoder,
 )
