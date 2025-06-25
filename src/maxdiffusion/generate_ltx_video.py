@@ -83,10 +83,11 @@ def run(config):
   enhance_prompt = (
     prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
   )
-  seed = 100 #change this, generator in pytorch, used in prepare_latents
+  
+  seed = 10 #change this, generator in pytorch, used in prepare_latents
   generator = torch.Generator().manual_seed(seed)
   pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt)
-  images = pipeline(height=height_padded, width=width_padded, num_frames=num_frames_padded, is_video=True, output_type='pt').images
+  images = pipeline(height=height_padded, width=width_padded, num_frames=num_frames_padded, is_video=True, output_type='pt', generator = generator).images
   
   (pad_left, pad_right, pad_top, pad_bottom) = padding
   pad_bottom = -pad_bottom
@@ -100,7 +101,7 @@ def run(config):
   output_dir.mkdir(parents=True, exist_ok=True)
   for i in range(images.shape[0]):
       # Gathering from B, C, F, H, W to C, F, H, W and then permuting to F, H, W, C
-      video_np = images[i].permute(1, 2, 3, 0).to(torch.float32).detach().numpy()
+      video_np = images[i].permute(1, 2, 3, 0).detach().float().numpy()
       # Unnormalizing images to [0, 255] range
       video_np = (video_np * 255).astype(np.uint8)
       fps = config.frame_rate
