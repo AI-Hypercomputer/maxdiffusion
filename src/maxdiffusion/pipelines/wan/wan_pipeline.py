@@ -221,7 +221,7 @@ class WanPipeline:
     return scheduler, scheduler_state
 
   @classmethod
-  def from_pretrained(cls, config: HyperParameters, vae_only=False):
+  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
@@ -232,8 +232,9 @@ class WanPipeline:
     scheduler_state = None
     text_encoder = None
     if not vae_only:
-      with mesh:
-        transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+      if load_transformer:
+        with mesh:
+          transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
       text_encoder = cls.load_text_encoder(config=config)
       tokenizer = cls.load_tokenizer(config=config)

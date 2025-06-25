@@ -21,7 +21,8 @@ import numpy as np
 import jax.numpy as jnp
 import jax
 import jax.tree_util as jtu
-from flax import nnx
+from flax import nnx  
+from ..schedulers import FlaxFlowMatchScheduler
 from flax.linen import partitioning as nn_partitioning
 from ..schedulers import FlaxEulerDiscreteScheduler
 from .. import max_utils, max_logging, train_utils, maxdiffusion_utils
@@ -41,14 +42,11 @@ class WanTrainer(WanCheckpointer):
   def post_training_steps(self, pipeline, params, train_states, msg=""):
     pass
 
-  def create_scheduler(self, pipeline, params):
-    # TODO - set right scheduler
-    noise_scheduler, noise_scheduler_state = FlaxEulerDiscreteScheduler.from_pretrained(
-        pretrained_model_name_or_path=self.config.pretrained_model_name_or_path, subfolder="scheduler", dtype=jnp.float32
-    )
-    noise_scheduler_state = noise_scheduler.set_timesteps(
-        state=noise_scheduler_state, num_inference_steps=self.config.num_inference_steps, timestep_spacing="flux"
-    )
+  def create_scheduler(self):
+    """Creates and initializes the Flow Match scheduler for training."""
+    noise_scheduler = FlaxFlowMatchScheduler(dtype=jnp.float32)
+    noise_scheduler_state = noise_scheduler.create_state()
+    noise_scheduler_state = noise_scheduler.set_timesteps(noise_scheduler_state, num_inference_steps=1000, training=True)
     return noise_scheduler, noise_scheduler_state
 
   def calculate_tflops(self, pipeline):
@@ -71,7 +69,14 @@ class WanTrainer(WanCheckpointer):
     pipeline = self.load_checkpoint()
     del pipeline.vae
     dummy_inputs = self.load_dataset(pipeline)
+    
     mesh = pipeline.mesh
+    
+    # Load FlowMatch scheduler
+    scheduler, scheduler_state = self.create_scheduler()
+    pipeline.scheduler = scheduler
+    pipeline.scheduler_state = scheduler_state
+
     optimizer, learning_rate_scheduler = self._create_optimizer(pipeline.transformer, self.config, 1e-5)
     dummy_inputs = tuple(
         [jtu.tree_map_with_path(functools.partial(_form_global_array, global_mesh=mesh), input) for input in dummy_inputs]
@@ -95,7 +100,7 @@ class WanTrainer(WanCheckpointer):
 
     state = state.to_pure_dict()
     p_train_step = jax.jit(
-        train_step,
+        functools.partial(train_step, scheduler=pipeline.scheduler),
         donate_argnums=(0,),
     )
     rng = jax.random.key(self.config.seed)
@@ -113,13 +118,15 @@ class WanTrainer(WanCheckpointer):
     start_step = 0
     per_device_tflops = self.calculate_tflops(pipeline)
 
+    scheduler_state = pipeline.scheduler_state
+
     for step in np.arange(start_step, self.config.max_train_steps):
       if self.config.enable_profiler and step == first_profiling_step:
         max_utils.activate_profiler(self.config)
       with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(
           self.config.logical_axis_rules
       ):
-        state, train_metric, rng = p_train_step(state, graphdef, data, rng)
+        state, scheduler_state, train_metric, rng = p_train_step(state, graphdef, scheduler_state, data, rng)
 
       new_time = datetime.datetime.now()
 
@@ -134,11 +141,11 @@ class WanTrainer(WanCheckpointer):
       last_step_completion = new_time
 
 
-def train_step(state, graphdef, data, rng):
-  return step_optimizer(graphdef, state, data, rng)
+def train_step(state, graphdef, scheduler_state, data, rng, scheduler):
+  return step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng)
 
 
-def step_optimizer(graphdef, state, data, rng):
+def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng):
   _, new_rng = jax.random.split(rng)
 
   def loss_fn(model):
@@ -147,18 +154,20 @@ def step_optimizer(graphdef, state, data, rng):
     noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
 
     # TODO - add noise here
+    noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
 
     model_pred = model(
-        hidden_states=noise,
+        hidden_states=noisy_latents,
         timestep=timesteps,
         encoder_hidden_states=prompt_embeds,
         is_uncond=jnp.array(False, dtype=jnp.bool_),
         slg_mask=jnp.zeros(1, dtype=jnp.bool_),
     )
-    target = noise - latents
-    loss = (target - model_pred) ** 2
+    
+    training_target = scheduler.training_target(latents, noise, timesteps)
+    loss = ((training_target - model_pred) ** 2) * scheduler.training_weight(scheduler_state, timesteps)
     loss = jnp.mean(loss)
-    # breakpoint()
+
     return loss
 
   model, optimizer = nnx.merge(graphdef, state)
@@ -167,4 +176,4 @@ def step_optimizer(graphdef, state, data, rng):
   state = nnx.state((model, optimizer))
   state = state.to_pure_dict()
   metrics = {"scalar": {"learning/loss": loss}, "scalars": {}}
-  return state, metrics, new_rng
+  return state, scheduler_state, metrics, new_rng
