@@ -397,7 +397,7 @@ class WanPipeline:
             num_channels_latents=num_channel_latents,
         )
 
-      data_sharding = NamedSharding(self.devices_array, P())
+      data_sharding = NamedSharding(self.mesh, P())
       if len(prompt) % jax.device_count() == 0:
         data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
 
