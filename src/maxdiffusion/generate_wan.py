@@ -20,10 +20,13 @@ from maxdiffusion import pyconfig, max_logging
 from absl import app
 from maxdiffusion.utils import export_to_video
 
+jax.config.update('jax_use_shardy_partitioner', True)
 
-def run(config):
+
+def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)
-  pipeline = WanPipeline.from_pretrained(config)
+  if pipeline is None:
+    pipeline = WanPipeline.from_pretrained(config)
   s0 = time.perf_counter()
 
   # Skip layer guidance
@@ -59,7 +62,7 @@ def run(config):
 
   print("compile time: ", (time.perf_counter() - s0))
   for i in range(len(videos)):
-    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=config.fps)
+    export_to_video(videos[i], f"{filename_prefix}wan_output_{config.seed}_{i}.mp4", fps=config.fps)
   s0 = time.perf_counter()
   videos = pipeline(
       prompt=prompt,

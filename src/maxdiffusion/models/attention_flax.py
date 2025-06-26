@@ -173,25 +173,54 @@ def _tpu_flash_attention(
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute)
 
   axis_names = nn.logical_to_mesh_axes(flash_axis_names)
+  kv_axis_names = nn.logical_to_mesh_axes((BATCH, HEAD, None, D_KV))
+  flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH)
+  axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
+  named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
+  
+  cp_size=8
 
   @functools.partial(
-      shard_map.shard_map,
-      mesh=mesh,
-      in_specs=(
-          axis_names,
-          axis_names,
-          axis_names,
-      ),
-      out_specs=axis_names,
-      check_rep=False,
+      jax.jit,
+      static_argnames=[
+        "multi_head_mask",
+        "shard_head_size"
+      ],
   )
-  def wrap_flash_attention(query, key, value):
-    masks = [splash_attention_mask.FullMask(_shape=(query.shape[2], query.shape[2])) for _ in range(query.shape[1])]
-    multi_head_mask = splash_attention_mask.MultiHeadMask(masks=masks)
+  def wrap_splash_kernel(multi_head_mask, shard_head_size=1):
     splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
+      mask=multi_head_mask,
+      head_shards=shard_head_size, # the sizes of the axis is sharding over heads
+      q_seq_shards=cp_size,
+      block_sizes=block_sizes,
     )
-    return jax.vmap(splash_kernel)(query, key, value)
+    return splash_kernel
+
+  shard_head_size = 1
+  mask = splash_attention_mask.FullMask(_shape=(query.shape[2], query.shape[2]))
+  mask &= splash_attention_mask.LocalMask(
+    shape=(query.shape[2], key.shape[2]),
+    window_size=(query.shape[2], query.shape[2]),
+    offset=0
+  )
+  multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+  splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
+  segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
+  @functools.partial(
+    shard_map.shard_map,
+    mesh=mesh,
+    in_specs=(
+      axis_names,
+      kv_axis_names,
+      kv_axis_names,
+      segment_axis_names_splash_kernel,
+    ),
+    out_specs=axis_names,
+    check_rep=False
+  )
+  def wrap_flash_attention(query, key, value, splash_kernel):
+    attention_output = jax.vmap(splash_kernel)(query, key, value)
+    return attention_output
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
   # This warning might show up when doing model eval for example, when calculating model flops
@@ -201,7 +230,7 @@ def _tpu_flash_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
     )
-  x = wrap_flash_attention(query, key, value)
+  x = wrap_flash_attention(query, key, value, splash_kernel)
   x = x[:, :, :query_seq_len, :kv_size]
   x = _reshape_heads_to_head_dim(x)
 
