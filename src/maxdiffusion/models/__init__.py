@@ -25,14 +25,15 @@ _import_structure["vae_flax"] = ["FlaxAutoencoderKL"]
 
 if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
 
-  from .controlnet_flax import FlaxControlNetModel
-  from .unet_2d_condition_flax import FlaxUNet2DConditionModel
-  from .vae_flax import FlaxAutoencoderKL
-  from .lora import *
-  from .flux.transformers.transformer_flux_flax import FluxTransformer2DModel
-  from .ltx_video.transformers.transformer3d import Transformer3DModel
+    from .controlnet_flax import FlaxControlNetModel
+    from .unet_2d_condition_flax import FlaxUNet2DConditionModel
+    from .vae_flax import FlaxAutoencoderKL
+    from .lora import *
+    from .flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+    from .ltx_video.transformers.transformer3d import Transformer3DModel
 
 else:
-  import sys
+    import sys
 
-  sys.modules[__name__] = _LazyModule(__name__, globals()["__file__"], _import_structure, module_spec=__spec__)
+    sys.modules[__name__] = _LazyModule(
+        __name__, globals()["__file__"], _import_structure, module_spec=__spec__)
