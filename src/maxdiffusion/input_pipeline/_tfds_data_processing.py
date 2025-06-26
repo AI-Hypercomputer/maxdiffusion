@@ -18,7 +18,7 @@ import os
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
 from datasets import load_dataset, load_from_disk
-
+import jax
 from maxdiffusion import multihost_dataloading
 
 AUTOTUNE = tf.data.AUTOTUNE
@@ -65,8 +65,13 @@ def make_tf_iterator(
     )
     if config.cache_latents_text_encoder_outputs:
       train_ds.save_to_disk(config.dataset_save_location)
-      train_ds.cleanup_cache_files()
-
+      # Only process 0 should attempt to clean up cache files
+      if jax.process_index() == 0:
+        try:
+          train_ds.cleanup_cache_files()
+        except FileNotFoundError:
+          # Ignore FileNotFoundError as files may have been cleaned up by another process
+          pass
   train_ds = load_as_tf_dataset(train_ds, global_batch_size, True, dataloading_host_count)
   train_ds = train_ds.shard(num_shards=dataloading_host_count, index=dataloading_host_index)
 
