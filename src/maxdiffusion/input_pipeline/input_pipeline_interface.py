@@ -63,7 +63,7 @@ def make_data_iterator(
       config.dataset_type == "tfrecord"
       and config.cache_latents_text_encoder_outputs
       and feature_description is None
-      or prepare_sample_fn is None
+      and prepare_sample_fn is None
   ):
     raise ValueError(
         f"dataset type {config.dataset_type} needs to pass a feature_description dictionary and prepare_sample_fn function when cache_latents_text_encoder_outputs is True."
