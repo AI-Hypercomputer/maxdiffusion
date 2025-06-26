@@ -51,16 +51,23 @@ def make_data_iterator(
     tokenize_fn=None,
     image_transforms_fn=None,
     feature_description=None,
-    prepare_sample_fn=None
+    prepare_sample_fn=None,
 ):
   """Make data iterator for SD1, 2, XL, dataset_types in (hf, tf, tfrecord)"""
-  
+
   if config.dataset_type == "hf" or config.dataset_type == "tf":
     if tokenize_fn is None or image_transforms_fn is None:
       raise ValueError(f"dataset type {config.dataset_type} needs to pass a tokenize_fn and image_transforms_fn")
-  
-  if config.dataset_type == "tfrecord" and config.cache_latents_text_encoder_outputs and feature_description is None or prepare_sample_fn is None:
-    raise ValueError(f"dataset type {config.dataset_type} needs to pass a feature_description dictionary and prepare_sample_fn function when cache_latents_text_encoder_outputs is True.")
+
+  if (
+      config.dataset_type == "tfrecord"
+      and config.cache_latents_text_encoder_outputs
+      and feature_description is None
+      or prepare_sample_fn is None
+  ):
+    raise ValueError(
+        f"dataset type {config.dataset_type} needs to pass a feature_description dictionary and prepare_sample_fn function when cache_latents_text_encoder_outputs is True."
+    )
 
   if config.dataset_type == "hf":
     return _hf_data_processing.make_hf_streaming_iterator(
@@ -98,7 +105,7 @@ def make_data_iterator(
         mesh,
         global_batch_size,
         feature_description,
-        prepare_sample_fn
+        prepare_sample_fn,
     )
   else:
     assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be in (tf, tfrecord, hf, grain)"

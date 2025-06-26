@@ -41,6 +41,7 @@ import torch
 def basic_clean(text):
   if is_ftfy_available():
     import ftfy
+
     text = ftfy.fix_text(text)
   text = html.unescape(html.unescape(text))
   return text.strip()
@@ -398,7 +399,7 @@ class WanPipeline:
             num_channels_latents=num_channel_latents,
         )
 
-      data_sharding = NamedSharding(self.devices_array, P())
+      data_sharding = NamedSharding(self.mesh, P())
       if len(prompt) % jax.device_count() == 0:
         data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
 

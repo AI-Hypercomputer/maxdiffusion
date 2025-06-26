@@ -23,21 +23,15 @@ from concurrent.futures import ThreadPoolExecutor
 import tensorflow as tf
 import jax.numpy as jnp
 import jax
-import jax.tree_util as jtu
-from flax import nnx  
+from flax import nnx
 from ..schedulers import FlaxFlowMatchScheduler
 from flax.linen import partitioning as nn_partitioning
-from ..schedulers import FlaxEulerDiscreteScheduler
-from .. import max_utils, max_logging, train_utils, maxdiffusion_utils
+from .. import max_utils, max_logging, train_utils
 from ..checkpointing.wan_checkpointer import (WanCheckpointer, WAN_CHECKPOINT)
-from maxdiffusion.multihost_dataloading import _form_global_array
 from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
 from maxdiffusion.generate_wan import run as generate_wan
-from maxdiffusion.train_utils import (
-  _tensorboard_writer_worker,
-  load_next_batch,
-  _metrics_queue
-)
+from maxdiffusion.train_utils import (_tensorboard_writer_worker, load_next_batch, _metrics_queue)
+
 
 def generate_sample(config, pipeline, filename_prefix):
   """
@@ -80,39 +74,41 @@ class WanTrainer(WanCheckpointer):
     # TODO - create a dataset
     config = self.config
     if config.dataset_type != "tfrecord" and not config.cache_latents_text_encoder_outputs:
-      raise ValueError("Wan 2.1 training only supports config.dataset_type set to tfrecords and config.cache_latents_text_encoder_outputs set to True")
+      raise ValueError(
+          "Wan 2.1 training only supports config.dataset_type set to tfrecords and config.cache_latents_text_encoder_outputs set to True"
+      )
 
     feature_description = {
-      "latents" : tf.io.FixedLenFeature([], tf.string),
-      "encoder_hidden_states" : tf.io.FixedLenFeature([], tf.string),
+        "latents": tf.io.FixedLenFeature([], tf.string),
+        "encoder_hidden_states": tf.io.FixedLenFeature([], tf.string),
     }
 
     def prepare_sample(features):
       latents = tf.io.parse_tensor(features["latents"], out_type=tf.float32)
       encoder_hidden_states = tf.io.parse_tensor(features["encoder_hidden_states"], out_type=tf.float32)
-      return {"latents" : latents, "encoder_hidden_states" : encoder_hidden_states}
-    
+      return {"latents": latents, "encoder_hidden_states": encoder_hidden_states}
+
     data_iterator = make_data_iterator(
-      config,
-      jax.process_index(),
-      jax.process_count(),
-      mesh,
-      self.global_batch_size,
-      feature_description=feature_description,
-      prepare_sample_fn=prepare_sample
+        config,
+        jax.process_index(),
+        jax.process_count(),
+        mesh,
+        self.global_batch_size,
+        feature_description=feature_description,
+        prepare_sample_fn=prepare_sample,
     )
     return data_iterator
 
   def start_training(self):
 
     pipeline = self.load_checkpoint()
-    #del pipeline.vae
+    # del pipeline.vae
 
     # Generate a sample before training to compare against generated sample after training.
-    generate_sample(self.config, pipeline, filename_prefix='pre-training-')
+    generate_sample(self.config, pipeline, filename_prefix="pre-training-")
     mesh = pipeline.mesh
     data_iterator = self.load_dataset(mesh)
-    
+
     # Load FlowMatch scheduler
     scheduler, scheduler_state = self.create_scheduler()
     pipeline.scheduler = scheduler
@@ -124,11 +120,11 @@ class WanTrainer(WanCheckpointer):
   def training_loop(self, pipeline, optimizer, learning_rate_scheduler, data_iterator):
 
     graphdef, state = nnx.split((pipeline.transformer, optimizer))
-    
+
     writer = max_utils.initialize_summary_writer(self.config)
     writer_thread = threading.Thread(target=_tensorboard_writer_worker, args=(writer, self.config), daemon=True)
     writer_thread.start()
-    
+
     num_model_parameters = max_utils.calculate_num_params_from_pytree(state[0])
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ.get("LIBTPU_INIT_ARGS", ""), writer)
@@ -189,12 +185,12 @@ class WanTrainer(WanCheckpointer):
       writer_thread.join()
       if writer:
         writer.flush()
-      
+
       # load new state for trained tranformer
       graphdef, _, rest_of_state = nnx.split(pipeline.transformer, nnx.Param, ...)
       pipeline.transformer = nnx.merge(graphdef, state[0], rest_of_state)
 
-      generate_sample(self.config, pipeline, filename_prefix='post-training-')
+      generate_sample(self.config, pipeline, filename_prefix="post-training-")
 
 
 def train_step(state, graphdef, scheduler_state, data, rng, scheduler):
@@ -205,14 +201,14 @@ def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng):
   _, new_rng, timestep_rng = jax.random.split(rng, num=3)
 
   def loss_fn(model):
-    latents = data['latents']
-    encoder_hidden_states = data['encoder_hidden_states']
+    latents = data["latents"]
+    encoder_hidden_states = data["encoder_hidden_states"]
     bsz = latents.shape[0]
     timesteps = jax.random.randint(
-      timestep_rng,
-      (bsz,),
-      0,
-      scheduler.config.num_train_timesteps,
+        timestep_rng,
+        (bsz,),
+        0,
+        scheduler.config.num_train_timesteps,
     )
     noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
@@ -224,10 +220,10 @@ def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng):
         is_uncond=jnp.array(False, dtype=jnp.bool_),
         slg_mask=jnp.zeros(1, dtype=jnp.bool_),
     )
-    
+
     training_target = scheduler.training_target(latents, noise, timesteps)
     training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
-    loss = ((training_target - model_pred) ** 2)
+    loss = (training_target - model_pred) ** 2
     loss = loss * training_weight
     loss = jnp.mean(loss)
 

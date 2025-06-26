@@ -142,10 +142,10 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     )
 
     feature_description = {
-      "pixel_values": tf.io.FixedLenFeature([], tf.string),
-      "input_ids": tf.io.FixedLenFeature([], tf.string),
-      "prompt_embeds": tf.io.FixedLenFeature([], tf.string),
-      "text_embeds": tf.io.FixedLenFeature([], tf.string),
+        "pixel_values": tf.io.FixedLenFeature([], tf.string),
+        "input_ids": tf.io.FixedLenFeature([], tf.string),
+        "prompt_embeds": tf.io.FixedLenFeature([], tf.string),
+        "text_embeds": tf.io.FixedLenFeature([], tf.string),
     }
 
     def prepare_sample(features):
@@ -154,7 +154,12 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
       prompt_embeds = tf.io.parse_tensor(features["prompt_embeds"], out_type=tf.float32)
       text_embeds = tf.io.parse_tensor(features["text_embeds"], out_type=tf.float32)
 
-      return {"pixel_values": pixel_values, "input_ids": input_ids, "prompt_embeds": prompt_embeds, "text_embeds": text_embeds}
+      return {
+          "pixel_values": pixel_values,
+          "input_ids": input_ids,
+          "prompt_embeds": prompt_embeds,
+          "text_embeds": text_embeds,
+      }
 
     data_iterator = make_data_iterator(
         config,
@@ -165,7 +170,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         tokenize_fn=tokenize_fn,
         image_transforms_fn=image_transforms_fn,
         feature_description=feature_description,
-        prepare_sample_fn=prepare_sample
+        prepare_sample_fn=prepare_sample,
     )
 
     return data_iterator

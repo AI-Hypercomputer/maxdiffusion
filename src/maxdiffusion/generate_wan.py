@@ -21,7 +21,7 @@ from absl import app
 from maxdiffusion.utils import export_to_video
 
 
-def run(config, pipeline=None, filename_prefix=''):
+def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)
   if pipeline is None:
     pipeline = WanPipeline.from_pretrained(config)

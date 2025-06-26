@@ -34,6 +34,7 @@ from maxdiffusion.video_processor import VideoProcessor
 
 import tensorflow as tf
 
+
 def image_feature(value):
   """Returns a bytes_list from a string / byte."""
   return tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.encode_jpeg(value).numpy()]))
@@ -58,6 +59,7 @@ def float_feature_list(value):
   """Returns a list of float_list from a float / double."""
   return tf.train.Feature(float_list=tf.train.FloatList(value=value))
 
+
 def create_example(latent, hidden_states):
   latent = tf.io.serialize_tensor(latent)
   hidden_states = tf.io.serialize_tensor(hidden_states)
@@ -74,11 +76,13 @@ def text_encode(pipeline, prompt: Union[str, List[str]]):
   encoder_hidden_states = encoder_hidden_states.detach().numpy()
   return encoder_hidden_states
 
+
 def vae_encode(video, rng, vae, vae_cache):
   latent = vae.encode(video, feat_cache=vae_cache)
   latent = latent.latent_dist.sample(rng)
   return latent
-  
+
+
 def generate_dataset(config, pipeline):
 
   tfrecords_dir = config.tfrecords_dir
@@ -99,21 +103,21 @@ def generate_dataset(config, pipeline):
   rng = jax.random.key(config.seed)
 
   vae_scale_factor_spatial = 2 ** len(pipeline.vae.temperal_downsample)
-  video_processor = VideoProcessor(vae_scale_factor=vae_scale_factor_spatial) 
-  
+  video_processor = VideoProcessor(vae_scale_factor=vae_scale_factor_spatial)
+
   # jit vae fun.
   p_vae_encode = jax.jit(functools.partial(vae_encode, vae=pipeline.vae, vae_cache=pipeline.vae_cache))
-  
+
   # Load dataset
-  ds = load_dataset(config.dataset_name, split='train')
+  ds = load_dataset(config.dataset_name, split="train")
   ds = ds.shuffle(seed=config.seed)
   ds = ds.select_columns([config.caption_column, config.image_column])
   batch_size = 10
   for i in range(0, len(ds), batch_size):
     rng, new_rng = jax.random.split(rng)
-    text = ds[i:i+batch_size]['text']
-    videos = ds[i:i+batch_size]['image']
-    
+    text = ds[i : i + batch_size]["text"]
+    videos = ds[i : i + batch_size]["image"]
+
     videos = [video_processor.preprocess_video([video], height=config.height, width=config.width) for video in videos]
     video = jnp.array(np.squeeze(np.array(videos), axis=1), dtype=config.weights_dtype)
     with mesh:
@@ -127,12 +131,11 @@ def generate_dataset(config, pipeline):
 
     if shard_record_count >= no_records_per_shard:
       writer.close()
-      tf_rec_num +=1
+      tf_rec_num += 1
       writer = tf.io.TFRecordWriter(
           tfrecords_dir + "/file_%.2i-%i.tfrec" % (tf_rec_num, (global_record_count + no_records_per_shard))
       )
       shard_record_count = 0
-
 
 
 def run(config):
@@ -141,10 +144,10 @@ def run(config):
   generate_dataset(config, pipeline)
 
 
-
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   run(pyconfig.config)
+
 
 if __name__ == "__main__":
   app.run(main)
