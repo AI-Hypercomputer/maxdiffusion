@@ -41,6 +41,7 @@ import torch
 def basic_clean(text):
   if is_ftfy_available():
     import ftfy
+
     text = ftfy.fix_text(text)
   text = html.unescape(html.unescape(text))
   return text.strip()
@@ -221,7 +222,7 @@ class WanPipeline:
     return scheduler, scheduler_state
 
   @classmethod
-  def from_pretrained(cls, config: HyperParameters, vae_only=False):
+  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
@@ -232,8 +233,9 @@ class WanPipeline:
     scheduler_state = None
     text_encoder = None
     if not vae_only:
-      with mesh:
-        transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+      if load_transformer:
+        with mesh:
+          transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
       text_encoder = cls.load_text_encoder(config=config)
       tokenizer = cls.load_tokenizer(config=config)
@@ -397,7 +399,7 @@ class WanPipeline:
             num_channels_latents=num_channel_latents,
         )
 
-      data_sharding = NamedSharding(self.devices_array, P())
+      data_sharding = NamedSharding(self.mesh, P())
       if len(prompt) % jax.device_count() == 0:
         data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
 

@@ -141,14 +141,15 @@ ici_tensor_parallelism: 1
 # Replace with dataset path or train_data_dir. One has to be set.
 dataset_name: 'diffusers/pokemon-gpt4-captions'
 train_split: 'train'
-dataset_type: 'tf'
+dataset_type: 'tfrecord'
 cache_latents_text_encoder_outputs: True
 # cache_latents_text_encoder_outputs only apply to dataset_type="tf",
 # only apply to small dataset that fits in memory
 # prepare image latents and text encoder outputs
 # Reduce memory consumption and reduce step time during training
 # transformed dataset is saved at dataset_save_location
-dataset_save_location: '/tmp/pokemon-gpt4-captions_xl'
+dataset_save_location: ''
+load_tfrecord_cached: True
 train_data_dir: ''
 dataset_config_name: ''
 jax_cache_dir: ''
@@ -184,6 +185,10 @@ output_dir: 'sdxl-model-finetuned'
 per_device_batch_size: 1
 # If global_batch_size % jax.device_count is not 0, use FSDP sharding.
 global_batch_size: 0
+
+# For creating tfrecords from dataset
+tfrecords_dir: ''
+no_records_per_shard: 0
 
 warmup_steps_fraction: 0.1
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
