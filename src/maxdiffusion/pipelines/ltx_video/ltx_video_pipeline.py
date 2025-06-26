@@ -817,20 +817,20 @@ class LTXVideoPipeline:
     )
     
     # # noise_cond = None
-    saved_tensor_path = "/home/serenagu_google_com/LTX-Video/ltx_video/pipelines/schedulerTest1.0"
-    tensor_dict = torch.load(saved_tensor_path)
+    # saved_tensor_path = "/home/serenagu_google_com/LTX-Video/ltx_video/pipelines/schedulerTest1.0"
+    # tensor_dict = torch.load(saved_tensor_path)
    
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
 
-    for key, value in tensor_dict.items():
-      if value is not None:
-        tensor_dict[key] = jnp.array(value.to(torch.float32).cpu().numpy())
-    example_inputs = tensor_dict
-    latents = jax.device_put(example_inputs["latent_model_input"])
-    # prompt_embeds = jax.device_put(example_inputs["encoder_hidden_states"])
-    fractional_coords = jax.device_put(example_inputs["indices_grid"])
-    encoder_attention_segment_ids = jax.device_put(example_inputs["encoder_attention_segment_ids"])
-    segment_ids = None
+    # for key, value in tensor_dict.items():
+    #   if value is not None:
+    #     tensor_dict[key] = jnp.array(value.to(torch.float32).cpu().numpy())
+    # example_inputs = tensor_dict
+    # latents = jax.device_put(example_inputs["latent_model_input"])
+    # # prompt_embeds = jax.device_put(example_inputs["encoder_hidden_states"])
+    # fractional_coords = jax.device_put(example_inputs["indices_grid"])
+    # encoder_attention_segment_ids = jax.device_put(example_inputs["encoder_attention_segment_ids"])
+    # segment_ids = None
     # # validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids)
     
     # #only run this for the first time!
@@ -876,10 +876,10 @@ class LTXVideoPipeline:
         transformer=self.transformer,
         config=self.config,
         mesh=self.mesh,
-        fractional_cords=fractional_coords,
+        fractional_cords=jnp.array(fractional_coords.to(torch.float32).detach().numpy()),
         prompt_embeds =jnp.array(prompt_embeds_batch.to(torch.float32).detach().numpy()),
         segment_ids=None,
-        encoder_attention_segment_ids=encoder_attention_segment_ids,
+        encoder_attention_segment_ids=jnp.array(prompt_attention_mask_batch.to(torch.float32).detach().numpy()),
         num_inference_steps=num_inference_steps,
         scheduler=self.scheduler,
         # guidance_scale=guidance_scale
@@ -887,7 +887,7 @@ class LTXVideoPipeline:
 
     with self.mesh:
       latents, scheduler_state = p_run_inference(transformer_state=self.transformer_state, latents=
-                                latents, timestep=noise_cond, scheduler_state=scheduler_state) #add scheduler state back in
+                                jnp.array(latents.to(torch.float32).detach().numpy()), timestep=noise_cond, scheduler_state=scheduler_state) #add scheduler state back in
     latents = torch.from_numpy(np.array(latents))
     latents = latents[:, num_cond_latents:]
 
