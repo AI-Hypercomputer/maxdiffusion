@@ -20,6 +20,7 @@ import datetime
 import threading
 import time
 import numpy as np
+import tensorflow as tf
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
@@ -140,6 +141,21 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         p_vae_apply=p_vae_apply,
     )
 
+    feature_description = {
+      "pixel_values": tf.io.FixedLenFeature([], tf.string),
+      "input_ids": tf.io.FixedLenFeature([], tf.string),
+      "prompt_embeds": tf.io.FixedLenFeature([], tf.string),
+      "text_embeds": tf.io.FixedLenFeature([], tf.string),
+    }
+
+    def prepare_sample(features):
+      pixel_values = tf.io.parse_tensor(features["pixel_values"], out_type=tf.float32)
+      input_ids = tf.io.parse_tensor(features["input_ids"], out_type=tf.int32)
+      prompt_embeds = tf.io.parse_tensor(features["prompt_embeds"], out_type=tf.float32)
+      text_embeds = tf.io.parse_tensor(features["text_embeds"], out_type=tf.float32)
+
+      return {"pixel_values": pixel_values, "input_ids": input_ids, "prompt_embeds": prompt_embeds, "text_embeds": text_embeds}
+
     data_iterator = make_data_iterator(
         config,
         jax.process_index(),
@@ -148,6 +164,8 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         total_train_batch_size,
         tokenize_fn=tokenize_fn,
         image_transforms_fn=image_transforms_fn,
+        feature_description=feature_description,
+        prepare_sample_fn=prepare_sample
     )
 
     return data_iterator

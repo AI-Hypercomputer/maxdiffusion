@@ -112,25 +112,26 @@ def generate_dataset(config, pipeline):
   for i in range(0, len(ds), batch_size):
     rng, new_rng = jax.random.split(rng)
     text = ds[i:i+batch_size]['text']
-    video = ds[i:i+batch_size]['image']
+    videos = ds[i:i+batch_size]['image']
     
-    video = [np.expand_dims(np.array(i), axis=0) for i in video]
-    video = video_processor.preprocess_video(video, height=config.height, width=config.width)
-    video = jnp.array(np.array(video), dtype=config.weights_dtype)
+    videos = [video_processor.preprocess_video([video], height=config.height, width=config.width) for video in videos]
+    video = jnp.array(np.squeeze(np.array(videos), axis=1), dtype=config.weights_dtype)
     with mesh:
       latents = p_vae_encode(video=video, rng=new_rng)
+      latents = jnp.transpose(latents, (0, 4, 1, 2, 3))
     encoder_hidden_states = text_encode(pipeline, text)
-    example = create_example(latents, encoder_hidden_states)
-    writer.write(example)
-    shard_record_count += batch_size
-    global_record_count += batch_size
+    for latent, encoder_hidden_state in zip(latents, encoder_hidden_states):
+      writer.write(create_example(latent, encoder_hidden_state))
+      shard_record_count += 1
+      global_record_count += 1
+
     if shard_record_count >= no_records_per_shard:
       writer.close()
+      tf_rec_num +=1
       writer = tf.io.TFRecordWriter(
           tfrecords_dir + "/file_%.2i-%i.tfrec" % (tf_rec_num, (global_record_count + no_records_per_shard))
       )
       shard_record_count = 0
-    tf_rec_num +=1
 
 
 
