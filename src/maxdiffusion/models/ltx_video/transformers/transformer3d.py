@@ -25,15 +25,13 @@ class Transformer3DModel(nn.Module):
   only_cross_attention: bool = False
   double_self_attention: bool = False
   upcast_attention: bool = False
-  # 'single_scale_shift' or 'single_scale'
-  adaptive_norm: str = "single_scale_shift"
+  adaptive_norm: str = "single_scale_shift"  # 'single_scale_shift' or 'single_scale'
   standardization_norm: str = "layer_norm"  # 'layer_norm' or 'rms_norm'
   norm_elementwise_affine: bool = True
   norm_eps: float = 1e-5
   attention_type: str = "default"
   caption_channels: int = None
-  # if True uses the TPU attention offload ('flash attention')
-  use_tpu_flash_attention: bool = True
+  use_tpu_flash_attention: bool = True  # if True uses the TPU attention offload ('flash attention')
   qk_norm: Optional[str] = None
   positional_embedding_type: str = "rope"
   positional_embedding_theta: Optional[float] = None
@@ -98,7 +96,7 @@ class Transformer3DModel(nn.Module):
       self.transformer_blocks = RepeatableLayer(
           RemattedBasicTransformerBlock,
           num_layers=self.num_layers,
-          module_init_kwargs=dict(
+          module_init_kwargs=dict(  # noqa C408
               dim=self.inner_dim,
               num_attention_heads=self.num_attention_heads,
               attention_head_dim=self.attention_head_dim,
@@ -139,46 +137,30 @@ class Transformer3DModel(nn.Module):
           matmul_precision=self.matmul_precision,
       )
 
-  def init_weights(self, key, batch_size, text_tokens, num_tokens, features, eval_only=True):
+  def init_weights(self, in_channels, key, caption_channels, eval_only=True):
+    example_inputs = {}
+    batch_size, num_tokens = 4, 256
+    input_shapes = {
+        "hidden_states": (batch_size, num_tokens, in_channels),
+        "indices_grid": (batch_size, 3, num_tokens),
+        "encoder_hidden_states": (batch_size, 128, caption_channels),
+        "timestep": (batch_size, 256),
+        "segment_ids": (batch_size, 256),
+        "encoder_attention_segment_ids": (batch_size, 128),
+    }
+    for name, shape in input_shapes.items():
+      example_inputs[name] = jnp.ones(
+          shape, dtype=jnp.float32 if name not in ["attention_mask", "encoder_attention_mask"] else jnp.bool
+      )
 
-    # bookkeeping, for convenient changes later
-    latents_shape = (batch_size, num_tokens, features)
-    fractional_cords_shape = (batch_size, 3, num_tokens)
-    prompt_embeds_shape = (batch_size, text_tokens, features)
-    noise_cond_shape = (batch_size, 1)
-    latents_dtype = jnp.bfloat16
-    fractional_coords_dtype = jnp.bfloat16
-    prompt_embeds_dtype = jnp.bfloat16
-    noise_cond_dtype = jnp.bfloat16
-
-    # initialize to random
-    key, split_key = jax.random.split(key)
-    prompt_embeds = jax.random.normal(split_key, shape=prompt_embeds_shape, dtype=latents_dtype)
-    key, split_key = jax.random.split(key)
-    fractional_coords = jax.random.normal(split_key, shape=fractional_cords_shape, dtype=fractional_coords_dtype)
-    key, split_key = jax.random.split(key)
-    latents = jax.random.normal(split_key, shape=latents_shape, dtype=prompt_embeds_dtype)
-    key, split_key = jax.random.split(key)
-    noise_cond = jax.random.normal(split_key, shape=noise_cond_shape, dtype=noise_cond_dtype)
-
-    key, split_key = jax.random.split(key)
     if eval_only:
       return jax.eval_shape(
           self.init,
-          rngs={"params": split_key},
-          hidden_states=latents,
-          indices_grid=fractional_coords,
-          encoder_hidden_states=prompt_embeds,
-          timestep=noise_cond,
+          key,
+          **example_inputs,
       )["params"]
     else:
-      return self.init(
-          rngs={"params": split_key},
-          hidden_states=latents,
-          indices_grid=fractional_coords,
-          encoder_hidden_states=prompt_embeds,
-          timestep=noise_cond,
-      )["params"]
+      return self.init(key, **example_inputs)["params"]
 
   def __call__(
       self,
@@ -271,8 +253,7 @@ class FreqsCisPrecomputer(nn.Module):
   @nn.compact
   def __call__(self, indices_grid: jax.Array) -> Tuple[jax.Array, jax.Array]:
     source_dtype = indices_grid.dtype
-    # We need full precision in the freqs_cis computation.
-    dtype = jnp.float32
+    dtype = jnp.float32  # We need full precision in the freqs_cis computation.
     dim = self.inner_dim
     theta = self.positional_embedding_theta
 
@@ -294,8 +275,7 @@ class FreqsCisPrecomputer(nn.Module):
     indices = indices * jnp.pi / 2
 
     freqs = (indices * (jnp.expand_dims(fractional_positions, axis=-1) * 2 - 1)).swapaxes(-1, -2)
-    # Flatten along axis 2
-    freqs = freqs.reshape(freqs.shape[0], freqs.shape[1], -1)
+    freqs = freqs.reshape(freqs.shape[0], freqs.shape[1], -1)  # Flatten along axis 2
 
     cos_freq = jnp.cos(freqs).repeat(2, axis=-1)
     sin_freq = jnp.sin(freqs).repeat(2, axis=-1)

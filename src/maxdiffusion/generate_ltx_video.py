@@ -20,11 +20,13 @@ import jax
 import json
 from maxdiffusion.models.ltx_video.transformers.transformer3d import Transformer3DModel
 import os
+import functools
 import jax.numpy as jnp
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import (
     create_device_mesh,
 )
+from jax.sharding import Mesh
 
 
 def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise_cond):
@@ -38,7 +40,7 @@ def run(config):
   key = jax.random.PRNGKey(0)
 
   devices_array = create_device_mesh(config)
-  mesh = Mesh(devices_array, config.mesh_axes)
+  mesh = Mesh(devices_array, config.mesh_axes)  # noqa F841
 
   batch_size, text_tokens, num_tokens, features = 4, 256, 2048, 128
   base_dir = os.path.dirname(__file__)
@@ -49,12 +51,10 @@ def run(config):
     model_config = json.load(f)
 
   transformer = Transformer3DModel(**model_config, dtype=jnp.bfloat16, gradient_checkpointing="matmul_without_batch")
-  transformer_param_shapes = transformer.init_weights(key, batch_size, text_tokens, num_tokens, features, eval_only=False)
+  transformer_param_shapes = transformer.init_weights(key, batch_size, text_tokens, num_tokens, features, eval_only=False)  # noqa F841
 
   key, split_key = jax.random.split(key)
-
-
-  weights_init_fn = functools.partial(
+  weights_init_fn = functools.partial(  # noqa F841
       transformer.init_weights, split_key, batch_size, text_tokens, num_tokens, features, eval_only=True
   )
 
