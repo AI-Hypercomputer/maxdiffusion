@@ -77,7 +77,7 @@ def run(config):
   )
   transformer_param_shapes = transformer.init_weights(  # noqa: F841
       in_channels, key, model_config["caption_channels"], eval_only=True
-  )  
+  )
   weights_init_fn = functools.partial(
       transformer.init_weights, in_channels, key, model_config["caption_channels"], eval_only=True
   )
