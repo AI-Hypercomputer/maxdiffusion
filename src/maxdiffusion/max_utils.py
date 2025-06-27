@@ -258,7 +258,7 @@ def create_device_mesh(config, devices=None, logging=True):
     devices = jax.devices()
   num_devices = len(devices)
   ##special case for ltx-video
-  if config.ici_fsdp_transpose_parallelism:
+  if "fsdp_transpose" in config.mesh_axes:
     num_slices = 1
     # if config.inference_benchmark_test else config.num_slices
     num_devices_per_slice = num_devices // num_slices
