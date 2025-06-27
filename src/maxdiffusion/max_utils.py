@@ -252,43 +252,86 @@ def fill_unspecified_mesh_axes(parallelism_vals, target_product, parallelism_typ
   return parallelism_vals
 
 
-def create_device_mesh(config, devices=None, logging=True):
+def create_device_mesh(config, devices=None):
   """Creates a device mesh with each slice in its own data parallel group. If there is only one slice, uses two replicas"""
   if devices is None:
     devices = jax.devices()
   num_devices = len(devices)
-  try:
-    num_slices = 1 + max([d.slice_index for d in devices])
-  except:
-    num_slices = 1
+  num_slices = 1
+  # if config.inference_benchmark_test else config.num_slices
   num_devices_per_slice = num_devices // num_slices
-  max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
 
-  multi_slice_env = num_slices > 1
-
-  dcn_parallelism = [
-      config.dcn_data_parallelism,
-      config.dcn_fsdp_parallelism,
-      config.dcn_tensor_parallelism,
-  ]
-  ici_parallelism = [
-      config.ici_data_parallelism,
-      config.ici_fsdp_parallelism,
-      config.ici_tensor_parallelism,
-  ]
+  # multi_slice_env = num_slices > 1
 
   # Find possible unspecified parallelisms
-  ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, "ICI")
-  if multi_slice_env:
-    dcn_parallelism = fill_unspecified_mesh_axes(dcn_parallelism, num_slices, "DCN")
-    mesh = mesh_utils.create_hybrid_device_mesh(ici_parallelism, dcn_parallelism, devices)
-  else:
-    mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
+  ici_parallelism = fill_unspecified_mesh_axes(config.ici_parallelism.copy(), num_devices_per_slice, "ICI")
 
-  if logging:
-    max_logging.log(f"Decided on mesh: {mesh}")
+  # allow_split_physical_axes = config.allow_split_physical_axes if config.allow_split_physical_axes else False
+
+  # if allow_split_physical_axes:
+  #   if max_utils.is_valid_custom_mesh(ici_parallelism, config.custom_mesh):
+  #     mesh = mesh_utils.create_device_mesh(
+  #         [16, 16],
+  #         devices,
+  #         contiguous_submeshes=False,
+  #         allow_split_physical_axes=False,
+  #     )
+  #     mesh = max_utils.reshape_mesh_to_rings(mesh, config.custom_mesh)
+  #     mesh = np.reshape(mesh, ici_parallelism)
+  #   else:
+  #     mesh = mesh_utils.create_device_mesh(
+  #         ici_parallelism,
+  #         devices,
+  #         contiguous_submeshes=False,
+  #         allow_split_physical_axes=allow_split_physical_axes,
+  #     )
+  # else:
+  mesh = mesh_utils.create_device_mesh(
+      ici_parallelism,
+      devices,
+  )
+  max_logging.log(f"Num_devices: {num_devices}, shape {mesh.shape}")
 
   return mesh
+
+
+# def create_device_mesh(config, devices=None, logging=True):
+#   """Creates a device mesh with each slice in its own data parallel group. If there is only one slice, uses two replicas"""
+#   if devices is None:
+#     devices = jax.devices()
+#   num_devices = len(devices)
+#   try:
+#     num_slices = 1 + max([d.slice_index for d in devices])
+#   except:
+#     num_slices = 1
+#   num_devices_per_slice = num_devices // num_slices
+#   max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
+
+#   multi_slice_env = num_slices > 1
+
+#   dcn_parallelism = [
+#       config.dcn_data_parallelism,
+#       config.dcn_fsdp_parallelism,
+#       config.dcn_tensor_parallelism,
+#   ]
+#   ici_parallelism = [
+#       config.ici_data_parallelism,
+#       config.ici_fsdp_parallelism,
+#       config.ici_tensor_parallelism,
+#   ]
+
+#   # Find possible unspecified parallelisms
+#   ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, "ICI")
+#   if multi_slice_env:
+#     dcn_parallelism = fill_unspecified_mesh_axes(dcn_parallelism, num_slices, "DCN")
+#     mesh = mesh_utils.create_hybrid_device_mesh(ici_parallelism, dcn_parallelism, devices)
+#   else:
+#     mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
+
+#   if logging:
+#     max_logging.log(f"Decided on mesh: {mesh}")
+
+#   return mesh
 
 
 def unbox_logicallypartioned_trainstate(boxed_train_state: train_state.TrainState):
@@ -402,7 +445,10 @@ def setup_initial_state(
           config.enable_single_replica_ckpt_restoring,
       )
       if state:
-        state = state[checkpoint_item]
+        if checkpoint_item == " ":
+          state = state
+        else:
+          state = state[checkpoint_item]
     if not state:
       max_logging.log(f"Could not find the item in orbax, creating state...")
       init_train_state_partial = functools.partial(

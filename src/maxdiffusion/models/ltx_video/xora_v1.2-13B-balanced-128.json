@@ -1,4 +1,5 @@
 {
+    "ckpt_path": "",
     "activation_fn": "gelu-approximate",
     "attention_bias": true,
     "attention_head_dim": 128,
@@ -20,5 +21,6 @@
     "positional_embedding_type": "rope",
     "positional_embedding_theta": 10000.0,
     "positional_embedding_max_pos": [20, 2048, 2048],
-    "timestep_scale_multiplier": 1000
+    "timestep_scale_multiplier": 1000,
+    "in_channels": 128
 }

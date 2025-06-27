@@ -41,6 +41,21 @@ _config = None
 config = None
 
 
+def create_parallelisms_list(raw_keys):
+  ici_parallelism = [
+      raw_keys["ici_data_parallelism"],
+      raw_keys["ici_fsdp_parallelism"],
+      raw_keys["ici_fsdp_transpose_parallelism"],
+      raw_keys["ici_sequence_parallelism"],
+      raw_keys["ici_tensor_parallelism"],
+      raw_keys["ici_tensor_transpose_parallelism"],
+      raw_keys["ici_expert_parallelism"],
+      raw_keys["ici_sequence_parallelism"],
+  ]
+  raw_keys["ici_parallelism"] = ici_parallelism
+  return raw_keys
+
+
 def print_system_information():
   max_logging.log(f"System Information: Jax Version: {jax.__version__}")
   max_logging.log(f"System Information: Jaxlib Version: {jax.lib.__version__}")
@@ -154,6 +169,7 @@ class _HyperParameters:
     raw_keys["total_train_batch_size"] = max_utils.get_global_batch_size(raw_keys["per_device_batch_size"])
     raw_keys["num_slices"] = get_num_slices(raw_keys)
     raw_keys["quantization_local_shard_count"] = get_quantization_local_shard_count(raw_keys)
+    raw_keys = create_parallelisms_list(raw_keys)
 
 
 def get_num_slices(raw_keys):

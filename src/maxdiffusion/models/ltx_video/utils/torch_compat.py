@@ -85,7 +85,7 @@ class ConvertAction:
   """
     If defined, splits the parameter by the given delimiter.
     Example: "ScanRepeatableCarryBlock.k1" assumes the parameter is a concatenation of multiple tensors (shaped: (n, ...)).
-    and splits them into individual tensors named as "ScanRepeatableCarryBlock.0.k1", "ScanRepeatableCarryBlock.n.k1". 
+    and splits them into individual tensors named as "ScanRepeatableCarryBlock.0.k1", "ScanRepeatableCarryBlock.n.k1".
     """
 
   group_by: Optional[str] = None
@@ -93,19 +93,19 @@ class ConvertAction:
     If defined, groups the parameter by the given delimiter.
     Example: "ScanRepeatableCarryBlock.0.k1", "ScanRepeatableCarryBlock.1.k1", "ScanRepeatableCarryBlock.2.k1"
     will be grouped into a single tensor named "ScanRepeatableCarryBlock.k1" shaped (n, ...).
-    
+
     *** Note:
     this is kind of the reverse of split_by, only a different behavior.
     it's easy to define "actions" that are reversible in base of context (jax->torch, torch->jax).
     but it's very wrong to do so, since it blocks modular behavior and makes the code harder to maintain.
-    
+
     """
 
   jax_groups: Optional[List[str]] = None
   """
     Generally used in group_by, this is a list of all possible keys that can be used to group the parameters.
     This must be defined if group_by is defined.
-    
+
     It's due to the un-reversibility nature of the group_by action.
     """
 
@@ -390,8 +390,8 @@ def jax_statedict_to_torch(
   if rulebook is None:
     rulebook = {
         is_scan_repeatable: ConvertAction(split_by=ScanRepeatableCarryBlock),
-        is_kernel_2d: ConvertAction(transpose=(1, 0), rename=dict(torch="weight", jax="kernel")),
-        affine_scale_search: ConvertAction(rename=dict(torch="weight", jax="scale")),
+        is_kernel_2d: ConvertAction(transpose=(1, 0), rename=dict(torch="weight", jax="kernel")),  # noqa C408
+        affine_scale_search: ConvertAction(rename=dict(torch="weight", jax="scale")),  # noqa C408
     }
   if "params" not in jax_params:
     raise ValueError('Expected "params" key in jax_params, are you sure you are passing the correct object?')
@@ -452,8 +452,8 @@ def torch_statedict_to_jax(
     affine_scale_search = partial(is_affine_scale_param, jax_flattened_keys=flattened_keys)
 
     rulebook = {
-        is_kernel_2d: ConvertAction(transpose=(1, 0), rename=dict(torch="weight", jax="kernel")),
-        affine_scale_search: ConvertAction(rename=dict(torch="weight", jax="scale")),
+        is_kernel_2d: ConvertAction(transpose=(1, 0), rename=dict(torch="weight", jax="kernel")),  # noqa C408
+        affine_scale_search: ConvertAction(rename=dict(torch="weight", jax="scale")),  # noqa C408
         scan_repeatable_cond: ConvertAction(group_by=ScanRepeatableCarryBlock, jax_groups=flattened_keys),
     }
 
