@@ -28,6 +28,8 @@ save_config_to_gcs: False
 log_period: 100
 
 pretrained_model_name_or_path: 'Wan-AI/Wan2.1-T2V-14B-Diffusers'
+# Overrides the transformer from pretrained_model_name_or_path
+transformer_pretrained_model_name_or_path: 'lightx2v/Wan2.1-T2V-14B-CausVid'
 
 unet_checkpoint: ''
 revision: ''

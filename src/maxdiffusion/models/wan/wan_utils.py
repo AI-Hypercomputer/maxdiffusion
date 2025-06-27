@@ -1,4 +1,5 @@
 import json
+import torch
 import jax
 import jax.numpy as jnp
 from maxdiffusion import max_logging
@@ -24,8 +25,66 @@ def rename_for_nnx(key):
     new_key = key[:-1] + ("scale",)
   return new_key
 
+def load_causvid_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
+  device = jax.devices(device)[0]
+  with jax.default_device(device):
+    if hf_download:
+      ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, filename="causal_model.pt")
+      loaded_state_dict = torch.load(ckpt_shard_path)
+      
+      tensors = {}
+      flax_state_dict = {}
+      cpu = jax.local_devices(backend="cpu")[0]
+      flattened_dict = flatten_dict(eval_shapes)
+      # turn all block numbers to strings just for matching weights.
+      # Later they will be turned back to ints.
+      random_flax_state_dict = {}
+      for key in flattened_dict:
+        string_tuple = tuple([str(item) for item in key])
+        random_flax_state_dict[string_tuple] = flattened_dict[key]
+      for pt_key, tensor in loaded_state_dict.items():
+        tensor = torch2jax(tensor)
+        renamed_pt_key = rename_key(pt_key)
+        renamed_pt_key = renamed_pt_key.replace("head.modulation", "scale_shift_table")
+        renamed_pt_key = renamed_pt_key.replace("head.head", "proj_out")
+        renamed_pt_key = renamed_pt_key.replace("text_embedding_0", "condition_embedder.text_embedder.linear_1")
+        renamed_pt_key = renamed_pt_key.replace("text_embedding_2", "condition_embedder.text_embedder.linear_2")
+        renamed_pt_key = renamed_pt_key.replace("time_embedding_0", "condition_embedder.time_embedder.linear_1")
+        renamed_pt_key = renamed_pt_key.replace("time_embedding_2", "condition_embedder.time_embedder.linear_2")
+        renamed_pt_key = renamed_pt_key.replace("time_projection_1", "condition_embedder.time_proj")
+
+        renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
+        renamed_pt_key = renamed_pt_key.replace("self_attn", "attn1")
+        renamed_pt_key = renamed_pt_key.replace("cross_attn", "attn2")
+        renamed_pt_key = renamed_pt_key.replace(".q.", ".query.")
+        renamed_pt_key = renamed_pt_key.replace(".k.", ".key.")
+        renamed_pt_key = renamed_pt_key.replace(".v.", ".value.")
+        renamed_pt_key = renamed_pt_key.replace(".o.", ".proj_attn.")
+        renamed_pt_key = renamed_pt_key.replace("ffn_0", "ffn.act_fn.proj")
+        renamed_pt_key = renamed_pt_key.replace("ffn_2", "ffn.proj_out")
+        renamed_pt_key = renamed_pt_key.replace(".modulation", ".scale_shift_table")
+        renamed_pt_key = renamed_pt_key.replace("norm3", "norm2.layer_norm")
+
+        pt_tuple_key = tuple(renamed_pt_key.split("."))
+
+        flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
+        flax_key = rename_for_nnx(flax_key)
+        flax_key = _tuple_str_to_int(flax_key)
+        flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+      validate_flax_state_dict(eval_shapes, flax_state_dict)
+      flax_state_dict = unflatten_dict(flax_state_dict)
+      del tensors
+      jax.clear_caches()
+      return flax_state_dict
 
 def load_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
+  
+  if "CausVid" in pretrained_model_name_or_path:
+    return load_causvid_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download)
+  else:
+    return load_base_wan_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download)
+
+def load_base_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
   with jax.default_device(device):
     if hf_download:
