@@ -77,8 +77,7 @@ def run(config):
   )
   transformer_param_shapes = transformer.init_weights(  # noqa: F841
       in_channels, key, model_config["caption_channels"], eval_only=True
-  )  # use this to test!
-
+  )  
   weights_init_fn = functools.partial(
       transformer.init_weights, in_channels, key, model_config["caption_channels"], eval_only=True
   )
@@ -115,7 +114,4 @@ if __name__ == "__main__":
   app.run(main)
 
 
-###setup_initial_state, can optionally load from checkpoint
 
-
-# end to end steps from ltx repo: pipeline_ltx_video.py
