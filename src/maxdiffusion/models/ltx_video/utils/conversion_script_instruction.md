@@ -1,6 +1,6 @@
 ### Transformer Pytorch Weight Downloading and Jax Weight Loading Instructions:
 1. Create new tansformers_pytorch folder under models/ltx_video.
-2. Move files attention.py, embeddings.py, symmetric_patchifier.py, transformer3d.py into the newly created folder.
+2. Move files from LTX repo, specifically, attention.py, embeddings.py, symmetric_patchifier.py, and transformer3d.py into the newly created folder. See here: https://github.com/Lightricks/LTX-Video/tree/main/ltx_video/models/transformers 
 3. Rename transformer3d.py to transformer_pt.py to distinguish from the pytorch version. Change classname to Transformer3DModel_PT. Also change classname in line "transformer = Transformer3DModel.from_config(transformer_config)"
 4. Weight Downloading and Conversion
     - If first time running (no local safetensors): \
