@@ -1,8 +1,6 @@
-from json import encoder
 from absl import app
 from typing import Sequence
 import jax
-from flax import linen as nn
 import json
 from flax.linen import partitioning as nn_partitioning
 from maxdiffusion.models.ltx_video.transformers.transformer3d import Transformer3DModel
@@ -19,7 +17,9 @@ from jax.sharding import Mesh, PartitionSpec as P
 import orbax.checkpoint as ocp
 
 
-def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids):
+def validate_transformer_inputs(
+    prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids
+):
   print("prompts_embeds.shape: ", prompt_embeds.shape, prompt_embeds.dtype)
   print("fractional_coords.shape: ", fractional_coords.shape, fractional_coords.dtype)
   print("latents.shape: ", latents.shape, latents.dtype)
@@ -29,15 +29,7 @@ def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise
   print("encoder_attention_segment_ids.shape: ", encoder_attention_segment_ids.shape, encoder_attention_segment_ids.dtype)
 
 
-def loop_body(
-    step,
-    args,
-    transformer,
-    fractional_cords,
-    prompt_embeds,
-    segment_ids,
-    encoder_attention_segment_ids
-):
+def loop_body(step, args, transformer, fractional_cords, prompt_embeds, segment_ids, encoder_attention_segment_ids):
   latents, state, noise_cond = args
   noise_pred = transformer.apply(
       {"params": state.params},
@@ -46,14 +38,22 @@ def loop_body(
       encoder_hidden_states=prompt_embeds,
       timestep=noise_cond,
       segment_ids=segment_ids,
-      encoder_attention_segment_ids=encoder_attention_segment_ids
+      encoder_attention_segment_ids=encoder_attention_segment_ids,
   )
-  return noise_pred, state, noise_cond 
-
+  return noise_pred, state, noise_cond
 
 
 def run_inference(
-    states, transformer, config, mesh, latents, fractional_cords, prompt_embeds, timestep, segment_ids, encoder_attention_segment_ids
+    states,
+    transformer,
+    config,
+    mesh,
+    latents,
+    fractional_cords,
+    prompt_embeds,
+    timestep,
+    segment_ids,
+    encoder_attention_segment_ids,
 ):
   transformer_state = states["transformer"]
   loop_body_p = functools.partial(
@@ -62,20 +62,19 @@ def run_inference(
       fractional_cords=fractional_cords,
       prompt_embeds=prompt_embeds,
       segment_ids=segment_ids,
-      encoder_attention_segment_ids=encoder_attention_segment_ids
+      encoder_attention_segment_ids=encoder_attention_segment_ids,
   )
-  ## TODO: add vae decode step
-  ## TODO: add loop
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-    latents, transformer_state, _ = jax.lax.fori_loop(0, 1, loop_body_p, (latents, transformer_state, timestep))   
-  return latents
-  
-def run(config):
-  key = jax.random.PRNGKey(0)
+    noise_pred, transformer_state, _ = jax.lax.fori_loop(0, 1, loop_body_p, (latents, transformer_state, timestep))
+  return noise_pred
 
-  devices_array = create_device_mesh(config) 
+
+def run(config):
+  key = jax.random.PRNGKey(42)
+
+  devices_array = create_device_mesh(config)
   mesh = Mesh(devices_array, config.mesh_axes)
-  
+
   base_dir = os.path.dirname(__file__)
 
   ##load in model config
@@ -84,41 +83,42 @@ def run(config):
     model_config = json.load(f)
   relative_ckpt_path = model_config["ckpt_path"]
 
-  ignored_keys = ["_class_name", "_diffusers_version", "_name_or_path", "causal_temporal_positioning", "in_channels", "ckpt_path"]
+  ignored_keys = [
+      "_class_name",
+      "_diffusers_version",
+      "_name_or_path",
+      "causal_temporal_positioning",
+      "in_channels",
+      "ckpt_path",
+  ]
   in_channels = model_config["in_channels"]
   for name in ignored_keys:
     if name in model_config:
       del model_config[name]
-  
- 
-  transformer = Transformer3DModel(**model_config, dtype=jnp.float32, gradient_checkpointing="matmul_without_batch", sharding_mesh=mesh)
-  transformer_param_shapes = transformer.init_weights(in_channels, model_config['caption_channels'], eval_only = True) 
-  
+
+  transformer = Transformer3DModel(
+      **model_config, dtype=jnp.float32, gradient_checkpointing="matmul_without_batch", sharding_mesh=mesh
+  )
+  transformer_param_shapes = transformer.init_weights(in_channels, key, model_config["caption_channels"], eval_only=True)  # noqa F841
   weights_init_fn = functools.partial(
-      transformer.init_weights, 
-      in_channels, 
-      model_config['caption_channels'],
-      eval_only = True
+      transformer.init_weights, in_channels, key, model_config["caption_channels"], eval_only=True
   )
 
   absolute_ckpt_path = os.path.abspath(relative_ckpt_path)
 
   checkpoint_manager = ocp.CheckpointManager(absolute_ckpt_path)
   transformer_state, transformer_state_shardings = setup_initial_state(
-    model=transformer,
-    tx=None,
-    config=config,
-    mesh=mesh,
-    weights_init_fn=weights_init_fn,
-    checkpoint_manager=checkpoint_manager,
-    checkpoint_item=" ",
-    model_params=None,
-    training=False,
+      model=transformer,
+      tx=None,
+      config=config,
+      mesh=mesh,
+      weights_init_fn=weights_init_fn,
+      checkpoint_manager=checkpoint_manager,
+      checkpoint_item=" ",
+      model_params=None,
+      training=False,
   )
 
-  
-  
-  
   transformer_state = jax.device_put(transformer_state, transformer_state_shardings)
   get_memory_allocations()
 
@@ -128,20 +128,20 @@ def run(config):
   state_shardings["transformer"] = transformer_state_shardings
   states["transformer"] = transformer_state
 
-  #create dummy inputs:
+  # create dummy inputs:
   example_inputs = {}
   batch_size, num_tokens = 4, 256
   input_shapes = {
-    "latents": (batch_size, num_tokens, in_channels),
-    "fractional_coords": (batch_size, 3, num_tokens),
-    "prompt_embeds": (batch_size, 128, model_config["caption_channels"]),
-    "timestep": (batch_size, 256), 
-    "segment_ids": (batch_size, 256),
-    "encoder_attention_segment_ids": (batch_size, 128),
+      "latents": (batch_size, num_tokens, in_channels),
+      "fractional_coords": (batch_size, 3, num_tokens),
+      "prompt_embeds": (batch_size, 128, model_config["caption_channels"]),
+      "timestep": (batch_size, 256),
+      "segment_ids": (batch_size, 256),
+      "encoder_attention_segment_ids": (batch_size, 128),
   }
   for name, shape in input_shapes.items():
     example_inputs[name] = jnp.ones(
-      shape, dtype=jnp.float32 if name not in ["attention_mask", "encoder_attention_mask"] else jnp.bool
+        shape, dtype=jnp.float32 if name not in ["attention_mask", "encoder_attention_mask"] else jnp.bool
     )
 
   data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
@@ -152,7 +152,9 @@ def run(config):
   segment_ids = jax.device_put(example_inputs["segment_ids"], data_sharding)
   encoder_attention_segment_ids = jax.device_put(example_inputs["encoder_attention_segment_ids"], data_sharding)
 
-  validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids)
+  validate_transformer_inputs(
+      prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids
+  )
   p_run_inference = jax.jit(
       functools.partial(
           run_inference,
@@ -162,16 +164,16 @@ def run(config):
           latents=latents,
           fractional_cords=fractional_coords,
           prompt_embeds=prompt_embeds,
-          timestep = noise_cond,
+          timestep=noise_cond,
           segment_ids=segment_ids,
-          encoder_attention_segment_ids=encoder_attention_segment_ids
+          encoder_attention_segment_ids=encoder_attention_segment_ids,
       ),
       in_shardings=(state_shardings,),
       out_shardings=None,
   )
 
   noise_pred = p_run_inference(states).block_until_ready()
-  print(noise_pred)  #(4, 256, 128)
+  print(noise_pred)  # (4, 256, 128)
 
 
 def main(argv: Sequence[str]) -> None:
@@ -181,18 +183,3 @@ def main(argv: Sequence[str]) -> None:
 
 if __name__ == "__main__":
   app.run(main)
-
-
-
-
-  
-
-
-
-
-
-
-
-
-  
-
