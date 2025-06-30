@@ -5,8 +5,6 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax.linen.initializers import lecun_normal
 
-from diffusers.utils.deprecation_utils import deprecate
-
 from maxdiffusion.models.ltx_video.linear import DenseGeneral, KernelInitializer
 
 
@@ -117,9 +115,9 @@ class GEGLU(nn.Module):
 
   @nn.compact
   def __call__(self, hidden_states, *args, **kwargs):
-    if len(args) > 0 or kwargs.get("scale", None) is not None:
-      deprecation_message = "The `scale` argument is deprecated and will be ignored. Please remove it, as passing it will raise an error in the future. `scale` should directly be passed while calling the underlying pipeline component i.e., via `cross_attention_kwargs`."
-      deprecate("scale", "1.0.0", deprecation_message)
+    # if len(args) > 0 or kwargs.get("scale", None) is not None:
+    #   deprecation_message = "The `scale` argument is deprecated and will be ignored. Please remove it, as passing it will raise an error in the future. `scale` should directly be passed while calling the underlying pipeline component i.e., via `cross_attention_kwargs`."
+    #   deprecate("scale", "1.0.0", deprecation_message)
 
     proj = DenseGeneral(
         features=self.dim_out * 2,
