@@ -114,19 +114,20 @@ class _HyperParameters:
 
   @staticmethod
   def wan_init(raw_keys):
-    transformer_pretrained_model_name_or_path = raw_keys["transformer_pretrained_model_name_or_path"]
-    if transformer_pretrained_model_name_or_path == "":
-      raw_keys["transformer_pretrained_model_name_or_path"] = raw_keys["pretrained_model_name_or_path"]
-    elif transformer_pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
-      # Set correct parameters for CausVid in case of user error.
-      raw_keys["guidance_scale"] = 1.0
-      num_inference_steps = raw_keys["num_inference_steps"]
-      if num_inference_steps > 10:
-        max_logging.log(
-            f"Warning: Try setting num_inference_steps to less than 8 steps when using CausVid, currently you are setting {num_inference_steps} steps."
-        )
-    else:
-      raise ValueError(f"{transformer_pretrained_model_name_or_path} transformer model is not supported for Wan 2.1")
+    if "wan_transformer_pretrained_model_name_or_path" in raw_keys:
+      transformer_pretrained_model_name_or_path = raw_keys["wan_transformer_pretrained_model_name_or_path"]
+      if transformer_pretrained_model_name_or_path == "":
+        raw_keys["wan_transformer_pretrained_model_name_or_path"] = raw_keys["pretrained_model_name_or_path"]
+      elif transformer_pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
+        # Set correct parameters for CausVid in case of user error.
+        raw_keys["guidance_scale"] = 1.0
+        num_inference_steps = raw_keys["num_inference_steps"]
+        if num_inference_steps > 10:
+          max_logging.log(
+              f"Warning: Try setting num_inference_steps to less than 8 steps when using CausVid, currently you are setting {num_inference_steps} steps."
+          )
+      else:
+        raise ValueError(f"{transformer_pretrained_model_name_or_path} transformer model is not supported for Wan 2.1")
 
   @staticmethod
   def user_init(raw_keys):
