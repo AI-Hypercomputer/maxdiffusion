@@ -8,6 +8,8 @@ from safetensors import safe_open
 from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
 
+CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH = "lightx2v/Wan2.1-T2V-14B-CausVid"
+
 
 def _tuple_str_to_int(in_tuple):
   out_list = []
@@ -25,13 +27,14 @@ def rename_for_nnx(key):
     new_key = key[:-1] + ("scale",)
   return new_key
 
+
 def load_causvid_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
   with jax.default_device(device):
     if hf_download:
       ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, filename="causal_model.pt")
       loaded_state_dict = torch.load(ckpt_shard_path)
-      
+
       tensors = {}
       flax_state_dict = {}
       cpu = jax.local_devices(backend="cpu")[0]
@@ -77,12 +80,14 @@ def load_causvid_transformer(pretrained_model_name_or_path: str, eval_shapes: di
       jax.clear_caches()
       return flax_state_dict
 
+
 def load_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
-  
-  if "CausVid" in pretrained_model_name_or_path:
+
+  if pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
     return load_causvid_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download)
   else:
     return load_base_wan_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download)
+
 
 def load_base_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]

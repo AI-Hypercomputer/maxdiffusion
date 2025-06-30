@@ -25,6 +25,7 @@ import jax
 import yaml
 from . import max_logging
 from . import max_utils
+from .models.wan.wan_utils import CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH
 
 
 def string_to_bool(s: str) -> bool:
@@ -102,6 +103,7 @@ class _HyperParameters:
       jax.config.update("jax_compilation_cache_dir", raw_keys["jax_cache_dir"])
 
     _HyperParameters.user_init(raw_keys)
+    _HyperParameters.wan_init(raw_keys)
     self.keys = raw_keys
     for k in sorted(raw_keys.keys()):
       max_logging.log(f"Config param {k}: {raw_keys[k]}")
@@ -109,6 +111,22 @@ class _HyperParameters:
   def _load_kwargs(self, argv: list[str]):
     args_dict = dict(a.split("=", 1) for a in argv[2:])
     return args_dict
+
+  @staticmethod
+  def wan_init(raw_keys):
+    transformer_pretrained_model_name_or_path = raw_keys["transformer_pretrained_model_name_or_path"]
+    if transformer_pretrained_model_name_or_path == "":
+      raw_keys["transformer_pretrained_model_name_or_path"] = raw_keys["pretrained_model_name_or_path"]
+    elif transformer_pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
+      # Set correct parameters for CausVid in case of user error.
+      raw_keys["guidance_scale"] = 1.0
+      num_inference_steps = raw_keys["num_inference_steps"]
+      if num_inference_steps > 10:
+        max_logging.log(
+            f"Warning: Try setting num_inference_steps to less than 8 steps when using CausVid, currently you are setting {num_inference_steps} steps."
+        )
+    else:
+      raise ValueError(f"{transformer_pretrained_model_name_or_path} transformer model is not supported for Wan 2.1")
 
   @staticmethod
   def user_init(raw_keys):
