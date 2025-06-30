@@ -1,4 +1,5 @@
 {
+    "ckpt_path": "",
     "activation_fn": "gelu-approximate",
     "attention_bias": true,
     "attention_head_dim": 128,
