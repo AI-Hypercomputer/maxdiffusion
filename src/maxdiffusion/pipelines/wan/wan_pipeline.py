@@ -95,7 +95,7 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   # 4. Load pretrained weights and move them to device using the state shardings from (3) above.
   # This helps with loading sharded weights directly into the accelerators without fist copying them
   # all to one device and then distributing them, thus using low HBM memory.
-  params = load_wan_transformer(config.pretrained_model_name_or_path, params, "cpu")
+  params = load_wan_transformer(config.wan_transformer_pretrained_model_name_or_path, params, "cpu")
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():
     sharding = logical_state_sharding[path].value
