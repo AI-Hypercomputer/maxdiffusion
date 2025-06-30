@@ -258,7 +258,7 @@ def create_device_mesh(config, devices=None, logging=True):
     devices = jax.devices()
   num_devices = len(devices)
   ##special case for ltx-video
-  if config.ici_fsdp_transpose_parallelism:
+  if "fsdp_transpose" in config.mesh_axes:
     num_slices = 1
     # if config.inference_benchmark_test else config.num_slices
     num_devices_per_slice = num_devices // num_slices
@@ -271,7 +271,7 @@ def create_device_mesh(config, devices=None, logging=True):
     max_logging.log(f"Num_devices: {num_devices}, shape {mesh.shape}")
 
     return mesh
-
+    
   try:
     num_slices = 1 + max([d.slice_index for d in devices])
   except:
@@ -303,7 +303,64 @@ def create_device_mesh(config, devices=None, logging=True):
   if logging:
     max_logging.log(f"Decided on mesh: {mesh}")
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   return mesh
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def unbox_logicallypartioned_trainstate(boxed_train_state: train_state.TrainState):
