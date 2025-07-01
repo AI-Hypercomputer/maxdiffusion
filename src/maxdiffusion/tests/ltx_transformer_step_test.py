@@ -39,7 +39,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def load_ref_prediction():
-  saved_prediction_path = "ltx_vid_transformer_test_ref_pred"
+  saved_prediction_path = "../ltx_vid_transformer_test_ref_pred"
   predict_dict = torch.load(saved_prediction_path)
   noise_pred_pt = predict_dict["noise_pred"].to(torch.float32)
   return noise_pred_pt
