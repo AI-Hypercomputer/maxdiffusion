@@ -28,6 +28,7 @@ def rename_for_nnx(key):
     new_key = key[:-1] + ("scale",)
   return new_key
 
+
 def rename_for_custom_trasformer(key):
   renamed_pt_key = key.replace("model.diffusion_model.", "")
 
@@ -53,6 +54,7 @@ def rename_for_custom_trasformer(key):
 
   return renamed_pt_key
 
+
 def load_fusionx_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
   with jax.default_device(device):
@@ -74,7 +76,7 @@ def load_fusionx_transformer(pretrained_model_name_or_path: str, eval_shapes: di
         random_flax_state_dict[string_tuple] = flattened_dict[key]
       for pt_key, tensor in tensors.items():
         renamed_pt_key = rename_key(pt_key)
-        
+
         renamed_pt_key = rename_for_custom_trasformer(renamed_pt_key)
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
@@ -88,6 +90,7 @@ def load_fusionx_transformer(pretrained_model_name_or_path: str, eval_shapes: di
       del tensors
       jax.clear_caches()
       return flax_state_dict
+
 
 def load_causvid_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
