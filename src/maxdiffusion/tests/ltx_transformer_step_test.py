@@ -105,7 +105,7 @@ class LTXTransformerTest(unittest.TestCase):
     mesh = Mesh(devices_array, config.mesh_axes)
     base_dir = os.path.dirname(__file__)
     config_path = os.path.join(base_dir,  "../models/ltx_video/xora_v1.2-13B-balanced-128.json")
-   
+
     with open(config_path, "r") as f:
       model_config = json.load(f)
     relative_ckpt_path = model_config["ckpt_path"]
