@@ -506,7 +506,23 @@ class InputPipelineInterface(unittest.TestCase):
         from_pt=config.from_pt,
     )
 
-    train_iterator = make_data_iterator(config, jax.process_index(), jax.process_count(), mesh, global_batch_size)
+    feature_description = {
+        "moments": tf.io.FixedLenFeature([], tf.string),
+        "clip_embeddings": tf.io.FixedLenFeature([], tf.string),
+    }
+
+    def _parse_tfrecord_fn(example):
+      return tf.io.parse_single_example(example, feature_description)
+
+    train_iterator = make_data_iterator(
+        config,
+        jax.process_index(),
+        jax.process_count(),
+        mesh,
+        global_batch_size,
+        feature_description=feature_description,
+        prepare_sample_fn=_parse_tfrecord_fn,
+    )
     data = next(train_iterator)
     device_count = jax.device_count()
 

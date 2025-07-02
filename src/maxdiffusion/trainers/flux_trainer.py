@@ -21,7 +21,7 @@ import time
 import numpy as np
 import jax
 import jax.numpy as jnp
-from jax.sharding import PositionalSharding, PartitionSpec as P
+from jax.sharding import NamedSharding, PartitionSpec as P
 from flax.linen import partitioning as nn_partitioning
 from maxdiffusion.checkpointing.flux_checkpointer import (
     FluxCheckpointer,
@@ -87,7 +87,7 @@ class FluxTrainer(FluxCheckpointer):
     state_shardings = {}
 
     # move params to accelerator
-    encoders_sharding = PositionalSharding(self.devices_array).replicate()
+    encoders_sharding = NamedSharding(self.mesh, P(None))
     partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=encoders_sharding)
     pipeline.clip_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), pipeline.clip_encoder.params)
     pipeline.clip_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.clip_encoder.params)

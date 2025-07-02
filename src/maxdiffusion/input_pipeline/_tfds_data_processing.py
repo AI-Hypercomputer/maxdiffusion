@@ -21,7 +21,7 @@ from datasets import load_dataset, load_from_disk
 
 from maxdiffusion import multihost_dataloading
 
-AUTOTUNE = tf.data.experimental.AUTOTUNE
+AUTOTUNE = tf.data.AUTOTUNE
 
 
 def load_as_tf_dataset(dataset, global_batch_size, shuffle, dataloading_host_count):
@@ -31,7 +31,7 @@ def load_as_tf_dataset(dataset, global_batch_size, shuffle, dataloading_host_cou
   if shuffle:
     tf_dataset = tf_dataset.shuffle(len(tf_dataset))
   tf_dataset = tf_dataset.batch(global_batch_size // dataloading_host_count, drop_remainder=True)
-  tf_dataset = tf_dataset.prefetch(tf.data.experimental.AUTOTUNE)
+  tf_dataset = tf_dataset.prefetch(AUTOTUNE)
   tf_dataset = tf_dataset.repeat(-1)
 
   return tf_dataset
@@ -74,18 +74,64 @@ def make_tf_iterator(
   return train_iter
 
 
+def make_cached_tfrecord_iterator(
+    config, dataloading_host_index, dataloading_host_count, mesh, global_batch_size, feature_description, prepare_sample_fn
+):
+  """
+  New iterator for TFRecords that contain the full 4 pre-computed latents and embeddings:
+  latents, input_ids, prompt_embeds, and text_embeds.
+  """
+
+  def _parse_tfrecord_fn(example):
+    return tf.io.parse_single_example(example, feature_description)
+
+  # This pipeline reads the sharded files and applies the parsing and preparation.
+  filenames = tf.io.gfile.glob(os.path.join(config.train_data_dir, "*"))
+
+  train_ds = (
+      tf.data.TFRecordDataset(filenames, num_parallel_reads=AUTOTUNE)
+      .shard(num_shards=dataloading_host_count, index=dataloading_host_index)
+      .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
+      .map(prepare_sample_fn, num_parallel_calls=AUTOTUNE)
+      .shuffle(global_batch_size * 10)
+      .batch(global_batch_size // dataloading_host_count, drop_remainder=True)
+      .repeat(-1)
+      .prefetch(AUTOTUNE)
+  )
+
+  # This wraps the tf.data.Dataset for use in the multi-host JAX environment.
+  train_iter = multihost_dataloading.MultiHostDataLoadIterator(train_ds, mesh)
+  return train_iter
+
+
 # TODO - https://github.com/google/array_record/blob/main/beam/examples/example_gcs_conversion.py
 def make_tfrecord_iterator(
-    config,
-    dataloading_host_index,
-    dataloading_host_count,
-    mesh,
-    global_batch_size,
+    config, dataloading_host_index, dataloading_host_count, mesh, global_batch_size, feature_description, prepare_sample_fn
 ):
   """Iterator for TFRecord format. For Laion dataset,
   check out preparation script
   maxdiffusion/pedagogical_examples/to_tfrecords.py
   """
+
+  # set load_tfrecord_cached to True in config to use pre-processed tfrecord dataset.
+  # pedagogical_examples/dataset_tf_cache_to_tfrecord.py to convert tf preprocessed dataset to tfrecord.
+  # Dataset cache in github runner test doesn't contain all the features since its shared, Use the default tfrecord iterator.
+  if (
+      config.cache_latents_text_encoder_outputs
+      and os.path.isdir(config.dataset_save_location)
+      and "load_tfrecord_cached" in config.get_keys()
+      and config.load_tfrecord_cached
+  ):
+    return make_cached_tfrecord_iterator(
+        config,
+        dataloading_host_index,
+        dataloading_host_count,
+        mesh,
+        global_batch_size,
+        feature_description,
+        prepare_sample_fn,
+    )
+
   feature_description = {
       "moments": tf.io.FixedLenFeature([], tf.string),
       "clip_embeddings": tf.io.FixedLenFeature([], tf.string),
