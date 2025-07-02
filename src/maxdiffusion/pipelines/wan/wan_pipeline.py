@@ -65,11 +65,6 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
 
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
-
-  def create_model(rngs: nnx.Rngs, wan_config: dict):
-    wan_transformer = WanModel(**wan_config, rngs=rngs)
-    return wan_transformer
-
   # 1. Load config.
   wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder="transformer")
   wan_config["mesh"] = mesh
@@ -79,22 +74,27 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   wan_config["precision"] = get_precision(config)
   wan_config["flash_block_sizes"] = get_flash_block_sizes(config)
 
-  # 2. eval_shape - will not use flops or create weights on device
-  # thus not using HBM memory.
-  p_model_factory = partial(create_model, wan_config=wan_config)
-  wan_transformer = nnx.eval_shape(p_model_factory, rngs=rngs)
-  graphdef, state, rest_of_state = nnx.split(wan_transformer, nnx.Param, ...)
+  # === START: MODIFIED CODE ===
+  # 2. Instantiate the model on CPU to get its structure without using `eval_shape`.
+  #    This avoids all tracer leak issues by not performing a JAX transform during initialization.
+  with jax.default_device(jax.devices('cpu')[0]):
+    cpu_model = WanModel(**wan_config, rngs=rngs)
 
-  # 3. retrieve the state shardings, mapping logical names to mesh axis names.
+  # 3. Split the CPU model to get the GraphDef and the State structure.
+  graphdef, state, rest_of_state = nnx.split(cpu_model, nnx.Param, ...)
+  
+  # Explicitly delete the CPU model to free up host memory.
+  del cpu_model
+  # === END: MODIFIED CODE ===
+
+  # 4. retrieve the state shardings, mapping logical names to mesh axis names.
   logical_state_spec = nnx.get_partition_spec(state)
   logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
   logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
   params = state.to_pure_dict()
   state = dict(nnx.to_flat_state(state))
 
-  # 4. Load pretrained weights and move them to device using the state shardings from (3) above.
-  # This helps with loading sharded weights directly into the accelerators without fist copying them
-  # all to one device and then distributing them, thus using low HBM memory.
+  # 5. Load pretrained weights and move them to device using the state shardings from (4) above.
   params = load_wan_transformer(config.wan_transformer_pretrained_model_name_or_path, params, "cpu")
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():

@@ -18,9 +18,10 @@ from typing import Optional, Callable, Tuple
 import flax.linen as nn
 from flax import nnx
 import jax
-from jax.sharding import PartitionSpec
+from jax.sharding import PartitionSpec, NamedSharding, Mesh as JaxMesh
 import jax.numpy as jnp
-from jax.experimental import shard_map
+from jax import lax
+from jax.experimental.shard_map import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 from einops import rearrange
@@ -42,6 +43,24 @@ HEAD = common_types.HEAD
 D_KV = common_types.D_KV
 EMBED = common_types.EMBED
 Quant = quantizations.AqtQuantization
+
+# =========== START: USP Integration Code ===========
+
+# --- Algorithm 2: Load Balancing for SP-Ring ---
+def prepare_load_balance_indices(global_seq_len, ring_degree):
+    """Computes the permutation indices for load balancing in ring attention."""
+    if ring_degree == 1:
+        return jnp.arange(global_seq_len)
+    num_chunks = 2 * ring_degree
+    chunk_size = global_seq_len // num_chunks
+    if global_seq_len % num_chunks != 0:
+        raise ValueError(f"Sequence length {global_seq_len} must be divisible by 2 * ring_degree {2*ring_degree} for load balancing.")
+    chunks = jnp.arange(global_seq_len).reshape(num_chunks, chunk_size)
+    reordered_indices = []
+    for i in range(ring_degree):
+        reordered_indices.append(chunks[i])
+        reordered_indices.append(chunks[num_chunks - 1 - i])
+    return jnp.concatenate(reordered_indices).flatten()
 
 
 def _maybe_aqt_einsum(quant: Quant):
@@ -167,7 +186,6 @@ def _tpu_flash_attention(
         block_q_dq=min(max_block_size, query.shape[2]),
         block_kv_dq=min(max_block_size, query.shape[2]),
     )
-
   query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q)
   key, _, _ = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute)
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute)
@@ -460,6 +478,156 @@ def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
 
   return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
 
+class NNXUSPAttentionOp(nnx.Module):
+  def __init__(
+      self,
+      mesh: Mesh,   
+      flash_block_sizes,
+      heads,
+      dtype = jnp.bfloat16,
+  ):
+    self.ulysses_degree = mesh.shape['fsdp']
+    self.ring_degree = mesh.shape['tensor']
+    self.mesh = mesh
+    self.flash_block_sizes = flash_block_sizes
+    self.heads = heads
+    self.dtype = dtype
+
+  def apply_attention(self, query: Array, key: Array, value: Array):
+    flash_min_seq_length = 4096
+    #breakpoint()
+    can_use_flash_attention = (
+        query.shape[2] >= flash_min_seq_length
+        and key.shape[2] >= flash_min_seq_length
+        and value.shape[2] >= flash_min_seq_length
+    )
+
+    if not can_use_flash_attention:
+      return _apply_attention_dot(
+          query, key, value, jnp.bfloat16, 40, 128, 128**-0.5, True, False, False
+      )
+
+    num_heads_local_ulysses = self.heads // self.ulysses_degree
+    # The mask shape should correspond to the local sequence length on each ring device
+    # and the global sequence length after ring communication
+    max_block_size = 1024 if self.dtype == jnp.bfloat16 else 512
+    if self.flash_block_sizes:
+      block_sizes = self.flash_block_sizes
+    else:
+      block_sizes = splash_attention_kernel.BlockSizes(
+          block_q=min(max_block_size, query.shape[2]),
+          block_kv_compute=min(max_block_size, key.shape[2]),
+          block_kv=min(max_block_size, key.shape[2]),
+          block_q_dkv=min(max_block_size, query.shape[2]),
+          block_kv_dkv=min(max_block_size, key.shape[2]),
+          block_kv_dkv_compute=min(max_block_size, query.shape[2]),
+          block_q_dq=min(max_block_size, query.shape[2]),
+          block_kv_dq=min(max_block_size, query.shape[2]),
+      )
+
+    q_len_local_unpadded = query.shape[2]
+    block_q_size = block_sizes.block_q
+    # Calculate the padded length for the local query sequence.
+    # This ensures q_len_padded is a multiple of block_q_size.
+    q_len_padded = (q_len_local_unpadded + block_q_size - 1) // block_q_size * block_q_size
+
+    k_len_global_padded = q_len_padded * self.ring_degree
+
+    mask = splash_attention_mask.FullMask(_shape=(q_len_padded, k_len_global_padded))
+    multi_head_mask = splash_attention_mask.MultiHeadMask(masks=[mask] * num_heads_local_ulysses)
+
+    query, kv_size, query_seq_len_original = _reshape_data_for_flash(query, self.heads, block_sizes.block_q)
+    key, _, _ = _reshape_data_for_flash(key, self.heads, block_sizes.block_kv_compute)
+    value, _, _ = _reshape_data_for_flash(value, self.heads, block_sizes.block_kv_compute)
+    #breakpoint()
+
+    splash_kernel = splash_attention_kernel.make_splash_mha(
+        mask=multi_head_mask,
+        head_shards=1,
+        q_seq_shards=1,
+        block_sizes=block_sizes
+    )
+
+    @functools.partial(shard_map,
+    mesh=self.mesh,
+    in_specs=(
+        PartitionSpec('data', None, ('fsdp', 'tensor'), None), # Q
+        PartitionSpec('data', None, ('fsdp', 'tensor'), None), # K
+        PartitionSpec('data', None, ('fsdp', 'tensor'), None), # V
+    ),
+    out_specs=PartitionSpec('data', None, ('fsdp', 'tensor'), None),
+    check_rep=False
+    )
+    def usp_attention(q, k, v):
+        """
+        Implements the Unified Sequence Parallelism attention following the standard order of operations.
+        fsdp -> ulysses axis, tensor -> ring axis.
+        """
+        # 1. Ulysses Forward: Swap sequence sharding for head sharding over the 'fsdp' axis.
+        # Input shape: [B, H, S_local, D], sharded on S (axis 2) over ('fsdp', 'tensor').
+        # We split axis 2 (Sequence) and concatenate axis 1 (Heads).
+        q_a2a = lax.all_to_all(q, 'fsdp', split_axis=2, concat_axis=1, tiled=True)
+        k_a2a = lax.all_to_all(k, 'fsdp', split_axis=2, concat_axis=1, tiled=True)
+        v_a2a = lax.all_to_all(v, 'fsdp', split_axis=2, concat_axis=1, tiled=True)
+        # Now, tensors are sharded on Heads (axis 1) over 'fsdp' and Sequence (axis 2) over 'tensor'.
+        # Shape is now [B, H * fsdp_degree, S_local / fsdp_degree, D].
+
+        # 2. Ring Attention: Gather the full K and V for each sequence chunk over the 'tensor' axis.
+        ring_axis_size = lax.psum(1, 'tensor')
+        k_ring, v_ring = k_a2a, v_a2a
+        all_k, all_v = [k_ring], [v_ring]
+        for _ in range(ring_axis_size - 1):
+            perm = [(j, (j - 1 + ring_axis_size) % ring_axis_size) for j in range(ring_axis_size)]
+            k_ring = lax.ppermute(k_ring, 'tensor', perm=perm)
+            v_ring = lax.ppermute(v_ring, 'tensor', perm=perm)
+            all_k.append(k_ring)
+            all_v.append(v_ring)
+
+        # Concatenate along the sequence axis (2) to create the full key/value for attention.
+        full_k_ring = jnp.concatenate(list(reversed(all_k)), axis=2)
+        full_v_ring = jnp.concatenate(list(reversed(all_v)), axis=2)
+
+        # 3. Local Attention Calculation
+        # The query (q_a2a) attends to the fully-gathered keys/values (full_k_ring).
+        attn_out_local = jax.vmap(splash_kernel)(q_a2a, full_k_ring, full_v_ring)
+        # The output shape is the same as the query q_a2a: [B, H * fsdp_degree, S_local / fsdp_degree, D].
+
+        # 4. Ulysses Backward: Swap back from head sharding to sequence sharding.
+        # This is the crucial step that reduces the head dimension.
+        # We split axis 1 (Heads) and concatenate axis 2 (Sequence).
+        attn_out_final = lax.all_to_all(attn_out_local, 'fsdp', split_axis=1, concat_axis=2, tiled=True)
+        # Final shape is [B, H, (S_local / fsdp_degree) * fsdp_degree, D] = [B, H, S_local, D].
+
+        return attn_out_final
+    
+    
+    # 1. Permute data for load balancing
+    global_seq_len = query.shape[2]
+    lb_permutation = prepare_load_balance_indices(global_seq_len, self.ring_degree)
+    
+    permuted_q = query[:, :, lb_permutation, :]
+    permuted_k = key[:, :, lb_permutation, :]
+    permuted_v = value[:, :, lb_permutation, :]
+    
+    # 2. Define sharding for USP input
+    # Input data is sharded across 'data' and 'fsdp' axes.
+    # The sequence dim (axis 2) is split for the 'fsdp' dimension.
+    # We assume the mesh is defined with ('data', 'fsdp', 'tensor') axes
+    # The tensor shape is [B, H, S, D], so we shard S (axis 2) on ('fsdp', 'tensor')
+    usp_input_sharding = NamedSharding(self.mesh, PartitionSpec('data', None, ('fsdp', 'tensor'), None))
+    
+    distributed_q = jax.device_put(permuted_q, usp_input_sharding)
+    distributed_k = jax.device_put(permuted_k, usp_input_sharding)
+    distributed_v = jax.device_put(permuted_v, usp_input_sharding)
+    
+    # 3. Call the USP attention function
+    attn_output = usp_attention(distributed_q, distributed_k, distributed_v)
+    inverse_lb_permutation = jnp.argsort(lb_permutation)
+    attn_output = attn_output[:, :, inverse_lb_permutation, :]
+    attn_output = attn_output[:, :, :query_seq_len_original, :kv_size]
+    # Reshape output back to [B, S, H*D]
+    attn_output = _reshape_heads_to_head_dim(attn_output)
+    return attn_output
 
 class NNXAttentionOp(nnx.Module):
 
@@ -574,6 +742,7 @@ class AttentionOp(nn.Module):
     )
 
 
+
 class FlaxWanAttention(nnx.Module):
 
   def __init__(
@@ -601,12 +770,15 @@ class FlaxWanAttention(nnx.Module):
       precision: jax.lax.Precision = None,
       qkv_bias: bool = False,
       quant: Quant = None,
+      # USP parameters
+      ulysses_degree: int = 1,
+      ring_degree: int = 1,
   ):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
 
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
-      raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
+      raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {mesh}")
     self.dim_head = dim_head
     self.heads = heads
     self.inner_dim = dim_head * heads
@@ -617,20 +789,28 @@ class FlaxWanAttention(nnx.Module):
     self.value_axis_names = value_axis_names
     self.out_axis_names = out_axis_names
 
-    self.attention_op = NNXAttentionOp(
-        mesh=mesh,
-        attention_kernel=attention_kernel,
-        scale=scale,
-        heads=heads,
-        dim_head=dim_head,
-        use_memory_efficient_attention=use_memory_efficient_attention,
-        split_head_dim=split_head_dim,
-        float32_qk_product=False,
-        flash_min_seq_length=flash_min_seq_length,
-        flash_block_sizes=flash_block_sizes,
-        dtype=dtype,
-        quant=quant,
-    )
+    # Store USP parameters
+    ulysses_degree = mesh.shape['fsdp']
+    ring_degree = mesh.shape['tensor']
+    use_usp = ulysses_degree > 1 or ring_degree > 1
+    if use_usp:
+      self.attention_op = NNXUSPAttentionOp(mesh=mesh,heads=heads,flash_block_sizes=flash_block_sizes)
+    else:
+      # Fallback to original attention op if not using USP
+      self.attention_op = NNXAttentionOp(
+          mesh=mesh,
+          attention_kernel=attention_kernel,
+          scale=scale,
+          heads=heads,
+          dim_head=dim_head,
+          use_memory_efficient_attention=use_memory_efficient_attention,
+          split_head_dim=split_head_dim,
+          float32_qk_product=False,
+          flash_min_seq_length=flash_min_seq_length,
+          flash_block_sizes=flash_block_sizes,
+          dtype=dtype,
+          quant=quant,
+      )
 
     kernel_axes = ("embed", "heads")
     qkv_init_kernel = nnx.with_partitioning(nnx.initializers.lecun_normal(), kernel_axes)
@@ -714,8 +894,11 @@ class FlaxWanAttention(nnx.Module):
   def __call__(
       self, hidden_states: jax.Array, encoder_hidden_states: jax.Array = None, rotary_emb: Optional[jax.Array] = None
   ) -> jax.Array:
+    
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
-    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+    if encoder_hidden_states is not None:
+        encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+    
     dtype = hidden_states.dtype
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
@@ -727,19 +910,24 @@ class FlaxWanAttention(nnx.Module):
     if self.qk_norm:
       query_proj = self.norm_q(query_proj)
       key_proj = self.norm_k(key_proj)
+
+    # All inputs are unflattened to [B, H, S, D]
+    query_proj = _unflatten_heads(query_proj, self.heads)
+    key_proj = _unflatten_heads(key_proj, self.heads)
+    value_proj = _unflatten_heads(value_proj, self.heads)
+
     if rotary_emb is not None:
-      query_proj = _unflatten_heads(query_proj, self.heads)
-      key_proj = _unflatten_heads(key_proj, self.heads)
-      value_proj = _unflatten_heads(value_proj, self.heads)
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
-      query_proj = jax.lax.with_sharding_constraint(query_proj, PartitionSpec("data", "tensor", None, None))
-      key_proj = jax.lax.with_sharding_constraint(key_proj, PartitionSpec("data", "tensor", None, None))
-      value_proj = jax.lax.with_sharding_constraint(value_proj, PartitionSpec("data", "tensor", None, None))
+      query_proj = jax.lax.with_sharding_constraint(query_proj, PartitionSpec("data", None, "fsdp", None))
+      key_proj = jax.lax.with_sharding_constraint(key_proj, PartitionSpec("data", None, "fsdp", None))
+      value_proj = jax.lax.with_sharding_constraint(value_proj, PartitionSpec("data", None, "fsdp", None))
 
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
-    attn_output = jax.lax.with_sharding_constraint(attn_output, PartitionSpec("data", None, None))
+    #breakpoint()
+    #attn_output = jax.lax.with_sharding_constraint(attn_output, PartitionSpec("data", None, "fsdp", None))
 
     attn_output = attn_output.astype(dtype=dtype)
+    #breakpoint()
 
     hidden_states = self.proj_attn(attn_output)
     return hidden_states
