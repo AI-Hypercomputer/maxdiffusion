@@ -16,7 +16,7 @@ from typing import Sequence
 import jax
 import time
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
-from maxdiffusion import pyconfig, max_logging
+from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
 from maxdiffusion.utils import export_to_video
 
@@ -59,8 +59,12 @@ def run(config, pipeline=None, filename_prefix=""):
   )
 
   print("compile time: ", (time.perf_counter() - s0))
+  saved_video_path = []
   for i in range(len(videos)):
-    export_to_video(videos[i], f"{filename_prefix}wan_output_{config.seed}_{i}.mp4", fps=config.fps)
+    video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
+    export_to_video(videos[i], video_path, fps=config.fps)
+    saved_video_path.append(video_path)
+
   s0 = time.perf_counter()
   videos = pipeline(
       prompt=prompt,
@@ -74,12 +78,11 @@ def run(config, pipeline=None, filename_prefix=""):
       slg_start=slg_start,
       slg_end=slg_end,
   )
-  print("generation time: ", (time.perf_counter() - s0))
-  for i in range(len(videos)):
-    export_to_video(videos[i], f"wan_output_{config.seed}_{i}.mp4", fps=config.fps)
+  print("compile time: ", (time.perf_counter() - s0))
 
   s0 = time.perf_counter()
-  with jax.profiler.trace("/tmp/trace/"):
+  if config.enable_profiler:
+    max_utils.activate_profiler(config)
     videos = pipeline(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -92,7 +95,9 @@ def run(config, pipeline=None, filename_prefix=""):
         slg_start=slg_start,
         slg_end=slg_end,
     )
-  print("generation time: ", (time.perf_counter() - s0))
+    max_utils.deactivate_profiler(config)
+    print("generation time: ", (time.perf_counter() - s0))
+  return saved_video_path
 
 
 def main(argv: Sequence[str]) -> None:
