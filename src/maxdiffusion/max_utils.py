@@ -271,7 +271,7 @@ def create_device_mesh(config, devices=None, logging=True):
     max_logging.log(f"Num_devices: {num_devices}, shape {mesh.shape}")
 
     return mesh
-    
+
   try:
     num_slices = 1 + max([d.slice_index for d in devices])
   except:
@@ -303,64 +303,7 @@ def create_device_mesh(config, devices=None, logging=True):
   if logging:
     max_logging.log(f"Decided on mesh: {mesh}")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   return mesh
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def unbox_logicallypartioned_trainstate(boxed_train_state: train_state.TrainState):
