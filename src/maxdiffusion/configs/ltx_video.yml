@@ -6,7 +6,6 @@ jax_cache_dir: ''
 weights_dtype: 'bfloat16'
 activations_dtype: 'bfloat16'
 
-
 run_name: ''
 output_dir: 'ltx-video-output'
 save_config_to_gcs: False
@@ -21,9 +20,9 @@ frame_rate: 30
 
 
 # Generation parameters
+ckpt_path: "/mnt/disks/diffusionproj"
 prompt: "A man in a dimly lit room talks on a vintage telephone, hangs up, and looks down with a sad expression. He holds the black rotary phone to his right ear with his right hand, his left hand holding a rocks glass with amber liquid. He wears a brown suit jacket over a white shirt, and a gold ring on his left ring finger. His short hair is neatly combed, and he has light skin with visible wrinkles around his eyes. The camera remains stationary, focused on his face and upper body. The room is dark, lit only by a warm light source off-screen to the left, casting shadows on the wall behind him. The scene appears to be from a movie."
 #negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
-#do_classifier_free_guidance: True
 height: 512
 width: 512
 num_frames: 88
@@ -63,7 +62,7 @@ ici_sequence_parallelism: 1
 
 
 learning_rate_schedule_steps: -1
-max_train_steps: 500 #TODO: change this
+max_train_steps: 500 
 pretrained_model_name_or_path: ''
 unet_checkpoint: ''
 dataset_name: 'diffusers/pokemon-gpt4-captions'

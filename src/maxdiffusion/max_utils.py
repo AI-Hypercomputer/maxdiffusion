@@ -251,6 +251,7 @@ def fill_unspecified_mesh_axes(parallelism_vals, target_product, parallelism_typ
 
   return parallelism_vals
 
+
 def create_device_mesh(config, devices=None):
   """Creates a device mesh with each slice in its own data parallel group. If there is only one slice, uses two replicas"""
   if devices is None:
@@ -268,6 +269,7 @@ def create_device_mesh(config, devices=None):
   max_logging.log(f"Num_devices: {num_devices}, shape {mesh.shape}")
 
   return mesh
+
 
 def unbox_logicallypartioned_trainstate(boxed_train_state: train_state.TrainState):
   """Unboxes the flax.LogicallyPartitioned pieces in a train state.
