@@ -25,7 +25,7 @@ import jax
 import yaml
 from . import max_logging
 from . import max_utils
-from .models.wan.wan_utils import CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH
+from .models.wan.wan_utils import CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH, WAN_21_FUSION_X_MODEL_NAME_OR_PATH
 
 
 def string_to_bool(s: str) -> bool:
@@ -118,7 +118,10 @@ class _HyperParameters:
       transformer_pretrained_model_name_or_path = raw_keys["wan_transformer_pretrained_model_name_or_path"]
       if transformer_pretrained_model_name_or_path == "":
         raw_keys["wan_transformer_pretrained_model_name_or_path"] = raw_keys["pretrained_model_name_or_path"]
-      elif transformer_pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
+      elif (
+          transformer_pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH
+          or transformer_pretrained_model_name_or_path == WAN_21_FUSION_X_MODEL_NAME_OR_PATH
+      ):
         # Set correct parameters for CausVid in case of user error.
         raw_keys["guidance_scale"] = 1.0
         num_inference_steps = raw_keys["num_inference_steps"]
