@@ -24,15 +24,15 @@ import tensorflow as tf
 import jax.numpy as jnp
 import jax
 from flax import nnx
-from ..schedulers import FlaxFlowMatchScheduler
+from maxdiffusion.schedulers import FlaxFlowMatchScheduler
 from flax.linen import partitioning as nn_partitioning
-from .. import max_utils, max_logging, train_utils
-from ..checkpointing.wan_checkpointer import (WanCheckpointer, WAN_CHECKPOINT)
+from maxdiffusion import max_utils, max_logging, train_utils
+from maxdiffusion.checkpointing.wan_checkpointer import (WanCheckpointer, WAN_CHECKPOINT)
 from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
 from maxdiffusion.generate_wan import run as generate_wan
 from maxdiffusion.train_utils import (_tensorboard_writer_worker, load_next_batch, _metrics_queue)
-from ..video_processor import VideoProcessor
-from ..utils import load_video
+from maxdiffusion.video_processor import VideoProcessor
+from maxdiffusion.utils import load_video
 from skimage.metrics import structural_similarity as ssim
 
 
