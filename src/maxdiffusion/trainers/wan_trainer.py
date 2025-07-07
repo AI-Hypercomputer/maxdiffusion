@@ -24,20 +24,39 @@ import tensorflow as tf
 import jax.numpy as jnp
 import jax
 from flax import nnx
-from ..schedulers import FlaxFlowMatchScheduler
+from maxdiffusion.schedulers import FlaxFlowMatchScheduler
 from flax.linen import partitioning as nn_partitioning
-from .. import max_utils, max_logging, train_utils
-from ..checkpointing.wan_checkpointer import (WanCheckpointer, WAN_CHECKPOINT)
+from maxdiffusion import max_utils, max_logging, train_utils
+from maxdiffusion.checkpointing.wan_checkpointer import (WanCheckpointer, WAN_CHECKPOINT)
 from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
 from maxdiffusion.generate_wan import run as generate_wan
 from maxdiffusion.train_utils import (_tensorboard_writer_worker, load_next_batch, _metrics_queue)
+from maxdiffusion.video_processor import VideoProcessor
+from maxdiffusion.utils import load_video
+from skimage.metrics import structural_similarity as ssim
 
 
 def generate_sample(config, pipeline, filename_prefix):
   """
   Generates a video to validate training did not corrupt the model
   """
-  generate_wan(config, pipeline, filename_prefix)
+  return generate_wan(config, pipeline, filename_prefix)
+
+
+def print_ssim(pretrained_video_path, posttrained_video_path):
+  video_processor = VideoProcessor()
+  pretrained_video = load_video(pretrained_video_path[0])
+  pretrained_video = video_processor.preprocess_video(pretrained_video)
+  pretrained_video = np.array(pretrained_video)
+  pretrained_video = np.transpose(pretrained_video, (0, 2, 3, 4, 1))
+
+  posttrained_video = load_video(posttrained_video_path[0])
+  posttrained_video = video_processor.preprocess_video(posttrained_video)
+  posttrained_video = np.array(posttrained_video)
+  posttrained_video = np.transpose(posttrained_video, (0, 2, 3, 4, 1))
+  ssim_compare = ssim(pretrained_video[0], posttrained_video[0], multichannel=True, channel_axis=-1, data_range=255)
+
+  max_logging.log(f"SSIM score after training is {ssim_compare}")
 
 
 class WanTrainer(WanCheckpointer):
@@ -105,7 +124,7 @@ class WanTrainer(WanCheckpointer):
     # del pipeline.vae
 
     # Generate a sample before training to compare against generated sample after training.
-    generate_sample(self.config, pipeline, filename_prefix="pre-training-")
+    pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
     mesh = pipeline.mesh
     data_iterator = self.load_dataset(mesh)
 
@@ -115,7 +134,12 @@ class WanTrainer(WanCheckpointer):
     pipeline.scheduler_state = scheduler_state
 
     optimizer, learning_rate_scheduler = self._create_optimizer(pipeline.transformer, self.config, 1e-5)
-    self.training_loop(pipeline, optimizer, learning_rate_scheduler, data_iterator)
+
+    # Returns pipeline with trained transformer state
+    pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, data_iterator)
+
+    posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
+    print_ssim(pretrained_video_path, posttrained_video_path)
 
   def training_loop(self, pipeline, optimizer, learning_rate_scheduler, data_iterator):
 
@@ -189,8 +213,7 @@ class WanTrainer(WanCheckpointer):
       # load new state for trained tranformer
       graphdef, _, rest_of_state = nnx.split(pipeline.transformer, nnx.Param, ...)
       pipeline.transformer = nnx.merge(graphdef, state[0], rest_of_state)
-
-      generate_sample(self.config, pipeline, filename_prefix="post-training-")
+      return pipeline
 
 
 def train_step(state, graphdef, scheduler_state, data, rng, scheduler):
