@@ -52,7 +52,17 @@ from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
 
-flash_block_sizes: {}
+#flash_block_sizes: {}
+flash_block_sizes: {
+  "block_q" : 2048,
+  "block_kv_compute" : 2048,
+  "block_kv" : 2048,
+  "block_q_dkv" : 2048,
+  "block_kv_dkv" : 2048,
+  "block_kv_dkv_compute" : 2048,
+  "block_q_dq" : 2048,
+  "block_kv_dq" : 2048
+}
 # GroupNorm groups
 norm_num_groups: 32
 
@@ -112,7 +122,7 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      #['activation_heads', 'fsdp'],
+                      ['activation_heads', 'tensor'],
                       ['activation_length', 'fsdp'],
                       #['activation_heads', 'fsdp'],
                       #['activation_heads', 'fsdp'],

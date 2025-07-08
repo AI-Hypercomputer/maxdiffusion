@@ -162,7 +162,7 @@ def _tpu_flash_attention(
 ) -> jax.Array:
   """TPU Flash Attention"""
 
-  max_block_size = 768#1024 if dtype == jnp.bfloat16 else 512
+  max_block_size = 1024 if dtype == jnp.bfloat16 else 512
   if flash_block_sizes:
     block_sizes = flash_block_sizes
   else:
@@ -205,8 +205,8 @@ def _tpu_flash_attention(
     )
     return splash_kernel
 
-  shard_head_size = 1
-  mask = splash_attention_mask.FullMask(_shape=(query.shape[2], query.shape[2]))
+  shard_head_size = mesh.shape["tensor"]
+  mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
   multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
   splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
   segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
@@ -223,7 +223,10 @@ def _tpu_flash_attention(
     check_rep=False
   )
   def wrap_flash_attention(query, key, value, splash_kernel):
+    #full_k = jax.lax.all_to_all(key, axis_name='fsdp', split_axis=2, concat_axis=2, tiled=True)
+    #full_v = jax.lax.all_to_all(value, axis_name='fsdp', split_axis=2, concat_axis=2, tiled=True)
     attention_output = jax.vmap(splash_kernel)(query, key, value)
+    #attention_output = jax.vmap(splash_kernel)(query, full_k, full_v)
     return attention_output
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
