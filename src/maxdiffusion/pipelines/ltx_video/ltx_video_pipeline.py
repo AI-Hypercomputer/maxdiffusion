@@ -335,7 +335,7 @@ class LTXVideoPipeline:
       untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
 
       if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
-        removed_text = self.tokenizer.batch_decode(untruncated_ids[:, max_length - 1 : -1]) #noqa: F841
+        removed_text = self.tokenizer.batch_decode(untruncated_ids[:, max_length - 1 : -1])  # noqa: F841
 
       prompt_attention_mask = text_inputs.attention_mask
       prompt_embeds = self.text_encoder(text_input_ids, attention_mask=prompt_attention_mask)
@@ -346,7 +346,7 @@ class LTXVideoPipeline:
     elif self.transformer is not None:
       dtype = self.transformer.dtype
     else:
-      dtype = None #noqa: F841
+      dtype = None  # noqa: F841
     bs_embed, seq_len, _ = prompt_embeds.shape
     # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
     prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
@@ -707,7 +707,7 @@ class LTXVideoPipeline:
     scheduler_state = self.scheduler.set_timesteps(
         state=self.scheduler_state, shape=latents.shape, num_inference_steps=num_inference_steps
     )
-    extra_step_kwargs = prepare_extra_step_kwargs(generator=jax.random.PRNGKey(0)) #noqa: F841
+    extra_step_kwargs = prepare_extra_step_kwargs(generator=jax.random.PRNGKey(0))  # noqa: F841
 
     pixel_coords = torch.cat([pixel_coords] * num_conds)
     fractional_coords = pixel_coords.to(torch.float32)
