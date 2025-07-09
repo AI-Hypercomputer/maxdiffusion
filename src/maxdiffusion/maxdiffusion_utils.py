@@ -287,6 +287,34 @@ def get_dummy_flux_inputs(config, pipeline, batch_size):
   return (latents, timesteps, latents_ids, guidance_vec, t5_hidden_states, t5_ids, clip_hidden_states)
 
 
+def get_dummy_wan_inputs(config, pipeline, batch_size):
+  latents = pipeline.prepare_latents(
+      batch_size,
+      vae_scale_factor_temporal=pipeline.vae_scale_factor_temporal,
+      vae_scale_factor_spatial=pipeline.vae_scale_factor_spatial,
+      height=config.height,
+      width=config.width,
+      num_frames=config.num_frames,
+      num_channels_latents=pipeline.transformer.config.in_channels,
+  )
+  bsz = latents.shape[0]
+  prompt_embeds = jax.random.normal(jax.random.key(config.seed), (batch_size, 512, 4096))
+  timesteps = jnp.array([0] * bsz, dtype=jnp.int32)
+  return (latents, prompt_embeds, timesteps)
+
+
+def calculate_wan_tflops(config, pipeline, batch_size, rngs, train):
+  """
+  Calculates jflux tflops.
+  batch_size should be per_device_batch_size * jax.local_device_count() or attention's shard_map won't
+  cache the compilation when flash is enabled.
+  """
+  (latents, prompt_embeds, timesteps) = get_dummy_wan_inputs(config, pipeline, batch_size)
+  return max_utils.calculate_model_tflops(
+      pipeline.transformer,
+  )
+
+
 def calculate_flux_tflops(config, pipeline, batch_size, rngs, train):
   """
   Calculates jflux tflops.

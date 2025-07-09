@@ -623,13 +623,13 @@ class AttentionOp(nn.Module):
       # Based on: ("activation_kv_batch", "activation_kv_heads", "activation_length", "activation_kv_head_dim")
       # Computation of the spec based on the logical constraints can be found in logical_axes_to_spec.py.
       qkvo_sharding_spec = jax.sharding.PartitionSpec(
-          ("data", "fsdp", "fsdp_transpose", "expert"),
-          ("tensor", "tensor_transpose", "sequence", "tensor_sequence"),
+          "data",
+          "fsdp",
           None,
-          None,
+          "tensor",
       )
       # Based on: ("activation_kv_batch", "activation_length")
-      qkv_segment_ids_spec = jax.sharding.PartitionSpec(("data", "fsdp", "fsdp_transpose", "expert"), "sequence")
+      qkv_segment_ids_spec = jax.sharding.PartitionSpec("data", None)
       wrapped_flash_attention = shard_map(
           partial_flash_attention,
           mesh=sharding_mesh,

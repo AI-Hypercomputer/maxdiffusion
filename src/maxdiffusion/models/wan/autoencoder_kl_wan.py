@@ -20,22 +20,13 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from ...configuration_utils import ConfigMixin
-from ..modeling_flax_utils import FlaxModelMixin
+from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
 from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput)
 
 BlockSizes = common_types.BlockSizes
 
 CACHE_T = 2
-
-_ACTIVATIONS = {"swish": jax.nn.silu, "silu": jax.nn.silu, "relu": jax.nn.relu, "gelu": jax.nn.gelu, "mish": jax.nn.mish}
-
-
-def get_activation(name: str):
-  func = _ACTIVATIONS.get(name)
-  if func is None:
-    raise ValueError(f"Unknown activation function: {name}")
-  return func
 
 
 # Helper to ensure kernel_size, stride, padding are tuples of 3 integers
@@ -60,6 +51,10 @@ class WanCausalConv3d(nnx.Module):
       stride: Union[int, Tuple[int, int, int]] = 1,
       padding: Union[int, Tuple[int, int, int]] = 0,
       use_bias: bool = True,
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
   ):
     self.kernel_size = _canonicalize_tuple(kernel_size, 3, "kernel_size")
     self.stride = _canonicalize_tuple(stride, 3, "stride")
@@ -76,6 +71,12 @@ class WanCausalConv3d(nnx.Module):
     # Store the amount of padding needed *before* the depth dimension for caching logic
     self._depth_padding_before = self._causal_padding[1][0]  # 2 * padding_tuple[0]
 
+    # Set sharding dynamically based on out_channels.
+    num_fsdp_axis_devices = mesh.device_ids.shape[1]
+    kernel_sharding = (None, None, None, None, None)
+    if out_channels % num_fsdp_axis_devices == 0:
+      kernel_sharding = (None, None, None, None, "conv_out")
+
     self.conv = nnx.Conv(
         in_features=in_channels,
         out_features=out_channels,
@@ -84,6 +85,10 @@ class WanCausalConv3d(nnx.Module):
         use_bias=use_bias,
         padding="VALID",  # Handle padding manually
         rngs=rngs,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), kernel_sharding),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        precision=precision,
     )
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None, idx=-1) -> jax.Array:
@@ -184,8 +189,23 @@ class ZeroPaddedConv2D(nnx.Module):
       rngs: nnx.Rngs,
       kernel_size: Union[int, Tuple[int, int, int]],
       stride: Union[int, Tuple[int, int, int]] = 1,
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
   ):
-    self.conv = nnx.Conv(dim, dim, kernel_size=kernel_size, strides=stride, use_bias=True, rngs=rngs)
+    self.conv = nnx.Conv(
+        dim,
+        dim,
+        kernel_size=kernel_size,
+        strides=stride,
+        use_bias=True,
+        rngs=rngs,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, None)),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        precision=precision,
+    )
 
   def __call__(self, x):
     return self.conv(x)
@@ -198,6 +218,10 @@ class WanResample(nnx.Module):
       dim: int,
       mode: str,
       rngs: nnx.Rngs,
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
   ):
     self.dim = dim
     self.mode = mode
@@ -213,6 +237,10 @@ class WanResample(nnx.Module):
               padding="SAME",
               use_bias=True,
               rngs=rngs,
+              kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")),
+              dtype=dtype,
+              param_dtype=weights_dtype,
+              precision=precision,
           ),
       )
     elif mode == "upsample3d":
@@ -225,6 +253,10 @@ class WanResample(nnx.Module):
               padding="SAME",
               use_bias=True,
               rngs=rngs,
+              kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")),
+              dtype=dtype,
+              param_dtype=weights_dtype,
+              precision=precision,
           ),
       )
       self.time_conv = WanCausalConv3d(
@@ -233,13 +265,44 @@ class WanResample(nnx.Module):
           out_channels=dim * 2,
           kernel_size=(3, 1, 1),
           padding=(1, 0, 0),
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
       )
     elif mode == "downsample2d":
-      self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2))
+      self.resample = ZeroPaddedConv2D(
+          dim=dim,
+          rngs=rngs,
+          kernel_size=(3, 3),
+          stride=(2, 2),
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
+      )
     elif mode == "downsample3d":
-      self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2))
+      self.resample = ZeroPaddedConv2D(
+          dim=dim,
+          rngs=rngs,
+          kernel_size=(3, 3),
+          stride=(2, 2),
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
+      )
       self.time_conv = WanCausalConv3d(
-          rngs=rngs, in_channels=dim, out_channels=dim, kernel_size=(3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0)
+          rngs=rngs,
+          in_channels=dim,
+          out_channels=dim,
+          kernel_size=(3, 1, 1),
+          stride=(2, 1, 1),
+          padding=(0, 0, 0),
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
       )
     else:
       self.resample = Identity()
@@ -301,16 +364,49 @@ class WanResidualBlock(nnx.Module):
       rngs: nnx.Rngs,
       dropout: float = 0.0,
       non_linearity: str = "silu",
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
   ):
     self.nonlinearity = get_activation(non_linearity)
 
     # layers
     self.norm1 = WanRMS_norm(dim=in_dim, rngs=rngs, images=False, channel_first=False)
-    self.conv1 = WanCausalConv3d(rngs=rngs, in_channels=in_dim, out_channels=out_dim, kernel_size=3, padding=1)
+    self.conv1 = WanCausalConv3d(
+        rngs=rngs,
+        in_channels=in_dim,
+        out_channels=out_dim,
+        kernel_size=3,
+        padding=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
+    )
     self.norm2 = WanRMS_norm(dim=out_dim, rngs=rngs, images=False, channel_first=False)
-    self.conv2 = WanCausalConv3d(rngs=rngs, in_channels=out_dim, out_channels=out_dim, kernel_size=3, padding=1)
+    self.conv2 = WanCausalConv3d(
+        rngs=rngs,
+        in_channels=out_dim,
+        out_channels=out_dim,
+        kernel_size=3,
+        padding=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
+    )
     self.conv_shortcut = (
-        WanCausalConv3d(rngs=rngs, in_channels=in_dim, out_channels=out_dim, kernel_size=1)
+        WanCausalConv3d(
+            rngs=rngs,
+            in_channels=in_dim,
+            out_channels=out_dim,
+            kernel_size=1,
+            mesh=mesh,
+            dtype=dtype,
+            weights_dtype=weights_dtype,
+            precision=precision,
+        )
         if in_dim != out_dim
         else Identity()
     )
@@ -353,11 +449,37 @@ class WanResidualBlock(nnx.Module):
 
 class WanAttentionBlock(nnx.Module):
 
-  def __init__(self, dim: int, rngs: nnx.Rngs):
+  def __init__(
+      self,
+      dim: int,
+      rngs: nnx.Rngs,
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
+  ):
     self.dim = dim
     self.norm = WanRMS_norm(rngs=rngs, dim=dim, channel_first=False)
-    self.to_qkv = nnx.Conv(in_features=dim, out_features=dim * 3, kernel_size=(1, 1), rngs=rngs)
-    self.proj = nnx.Conv(in_features=dim, out_features=dim, kernel_size=(1, 1), rngs=rngs)
+    self.to_qkv = nnx.Conv(
+        in_features=dim,
+        out_features=dim * 3,
+        kernel_size=(1, 1),
+        rngs=rngs,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        precision=precision,
+    )
+    self.proj = nnx.Conv(
+        in_features=dim,
+        out_features=dim,
+        kernel_size=(1, 1),
+        rngs=rngs,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, "conv_in", None)),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        precision=precision,
+    )
 
   def __call__(self, x: jax.Array):
 
@@ -371,7 +493,6 @@ class WanAttentionBlock(nnx.Module):
     # qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
     qkv = qkv.reshape(batch_size * time, 1, -1, channels * 3)
     qkv = jnp.transpose(qkv, (0, 1, 3, 2))
-    # q, k, v = jnp.split(qkv, 3, axis=-1)
     q, k, v = jnp.split(qkv, 3, axis=-2)
     q = jnp.transpose(q, (0, 1, 3, 2))
     k = jnp.transpose(k, (0, 1, 3, 2))
@@ -389,13 +510,50 @@ class WanAttentionBlock(nnx.Module):
 
 class WanMidBlock(nnx.Module):
 
-  def __init__(self, dim: int, rngs: nnx.Rngs, dropout: float = 0.0, non_linearity: str = "silu", num_layers: int = 1):
+  def __init__(
+      self,
+      dim: int,
+      rngs: nnx.Rngs,
+      dropout: float = 0.0,
+      non_linearity: str = "silu",
+      num_layers: int = 1,
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
+  ):
     self.dim = dim
-    resnets = [WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs, dropout=dropout, non_linearity=non_linearity)]
+    resnets = [
+        WanResidualBlock(
+            in_dim=dim,
+            out_dim=dim,
+            rngs=rngs,
+            dropout=dropout,
+            non_linearity=non_linearity,
+            mesh=mesh,
+            dtype=dtype,
+            weights_dtype=weights_dtype,
+            precision=precision,
+        )
+    ]
     attentions = []
     for _ in range(num_layers):
-      attentions.append(WanAttentionBlock(dim=dim, rngs=rngs))
-      resnets.append(WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs, dropout=dropout, non_linearity=non_linearity))
+      attentions.append(
+          WanAttentionBlock(dim=dim, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
+      )
+      resnets.append(
+          WanResidualBlock(
+              in_dim=dim,
+              out_dim=dim,
+              rngs=rngs,
+              dropout=dropout,
+              non_linearity=non_linearity,
+              mesh=mesh,
+              dtype=dtype,
+              weights_dtype=weights_dtype,
+              precision=precision,
+          )
+      )
     self.attentions = attentions
     self.resnets = resnets
 
@@ -419,6 +577,10 @@ class WanUpBlock(nnx.Module):
       dropout: float = 0.0,
       upsample_mode: Optional[str] = None,
       non_linearity: str = "silu",
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
   ):
     # Create layers list
     resnets = []
@@ -426,7 +588,17 @@ class WanUpBlock(nnx.Module):
     current_dim = in_dim
     for _ in range(num_res_blocks + 1):
       resnets.append(
-          WanResidualBlock(in_dim=current_dim, out_dim=out_dim, dropout=dropout, non_linearity=non_linearity, rngs=rngs)
+          WanResidualBlock(
+              in_dim=current_dim,
+              out_dim=out_dim,
+              dropout=dropout,
+              non_linearity=non_linearity,
+              rngs=rngs,
+              mesh=mesh,
+              dtype=dtype,
+              weights_dtype=weights_dtype,
+              precision=precision,
+          )
       )
       current_dim = out_dim
     self.resnets = resnets
@@ -434,7 +606,17 @@ class WanUpBlock(nnx.Module):
     # Add upsampling layer if needed.
     self.upsamplers = None
     if upsample_mode is not None:
-      self.upsamplers = [WanResample(dim=out_dim, mode=upsample_mode, rngs=rngs)]
+      self.upsamplers = [
+          WanResample(
+              dim=out_dim,
+              mode=upsample_mode,
+              rngs=rngs,
+              mesh=mesh,
+              weights_dtype=weights_dtype,
+              dtype=dtype,
+              precision=precision,
+          )
+      ]
 
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
     for resnet in self.resnets:
@@ -464,6 +646,10 @@ class WanEncoder3d(nnx.Module):
       temperal_downsample=[True, True, False],
       dropout=0.0,
       non_linearity: str = "silu",
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
   ):
     self.dim = dim
     self.z_dim = z_dim
@@ -484,6 +670,10 @@ class WanEncoder3d(nnx.Module):
         out_channels=dims[0],
         kernel_size=3,
         padding=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
     )
 
     # downsample blocks
@@ -491,15 +681,34 @@ class WanEncoder3d(nnx.Module):
     for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
       # residual (+attention) blocks
       for _ in range(num_res_blocks):
-        self.down_blocks.append(WanResidualBlock(in_dim=in_dim, out_dim=out_dim, dropout=dropout, rngs=rngs))
+        self.down_blocks.append(
+            WanResidualBlock(
+                in_dim=in_dim,
+                out_dim=out_dim,
+                dropout=dropout,
+                rngs=rngs,
+                mesh=mesh,
+                dtype=dtype,
+                weights_dtype=weights_dtype,
+                precision=precision,
+            )
+        )
         if scale in attn_scales:
-          self.down_blocks.append(WanAttentionBlock(dim=out_dim, rngs=rngs))
+          self.down_blocks.append(
+              WanAttentionBlock(
+                  dim=out_dim, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision
+              )
+          )
         in_dim = out_dim
 
       # downsample block
       if i != len(dim_mult) - 1:
         mode = "downsample3d" if temperal_downsample[i] else "downsample2d"
-        self.down_blocks.append(WanResample(out_dim, mode=mode, rngs=rngs))
+        self.down_blocks.append(
+            WanResample(
+                out_dim, mode=mode, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision
+            )
+        )
         scale /= 2.0
 
     # middle_blocks
@@ -509,11 +718,25 @@ class WanEncoder3d(nnx.Module):
         dropout=dropout,
         non_linearity=non_linearity,
         num_layers=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
     )
 
     # output blocks
     self.norm_out = WanRMS_norm(out_dim, channel_first=False, images=False, rngs=rngs)
-    self.conv_out = WanCausalConv3d(rngs=rngs, in_channels=out_dim, out_channels=z_dim, kernel_size=3, padding=1)
+    self.conv_out = WanCausalConv3d(
+        rngs=rngs,
+        in_channels=out_dim,
+        out_channels=z_dim,
+        kernel_size=3,
+        padding=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
+    )
 
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
     if feat_cache is not None:
@@ -576,6 +799,10 @@ class WanDecoder3d(nnx.Module):
       temperal_upsample=[False, True, True],
       dropout=0.0,
       non_linearity: str = "silu",
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
   ):
     self.dim = dim
     self.z_dim = z_dim
@@ -591,10 +818,30 @@ class WanDecoder3d(nnx.Module):
     scale = 1.0 / 2 ** (len(dim_mult) - 2)
 
     # init block
-    self.conv_in = WanCausalConv3d(rngs=rngs, in_channels=z_dim, out_channels=dims[0], kernel_size=3, padding=1)
+    self.conv_in = WanCausalConv3d(
+        rngs=rngs,
+        in_channels=z_dim,
+        out_channels=dims[0],
+        kernel_size=3,
+        padding=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
+    )
 
     # middle_blocks
-    self.mid_block = WanMidBlock(dim=dims[0], rngs=rngs, dropout=dropout, non_linearity=non_linearity, num_layers=1)
+    self.mid_block = WanMidBlock(
+        dim=dims[0],
+        rngs=rngs,
+        dropout=dropout,
+        non_linearity=non_linearity,
+        num_layers=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
+    )
 
     # upsample blocks
     self.up_blocks = []
@@ -616,6 +863,10 @@ class WanDecoder3d(nnx.Module):
           upsample_mode=upsample_mode,
           non_linearity=non_linearity,
           rngs=rngs,
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
       )
       self.up_blocks.append(up_block)
 
@@ -625,7 +876,17 @@ class WanDecoder3d(nnx.Module):
 
     # output blocks
     self.norm_out = WanRMS_norm(dim=out_dim, images=False, rngs=rngs, channel_first=False)
-    self.conv_out = WanCausalConv3d(rngs=rngs, in_channels=out_dim, out_channels=3, kernel_size=3, padding=1)
+    self.conv_out = WanCausalConv3d(
+        rngs=rngs,
+        in_channels=out_dim,
+        out_channels=3,
+        kernel_size=3,
+        padding=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
+    )
 
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
     if feat_cache is not None:
@@ -737,6 +998,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
           2.8251,
           1.9160,
       ],
+      mesh: jax.sharding.Mesh = None,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: jax.lax.Precision = None,
   ):
     self.z_dim = z_dim
     self.temperal_downsample = temperal_downsample
@@ -753,13 +1018,31 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         attn_scales=attn_scales,
         temperal_downsample=temperal_downsample,
         dropout=dropout,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
     )
-    self.quant_conv = WanCausalConv3d(rngs=rngs, in_channels=z_dim * 2, out_channels=z_dim * 2, kernel_size=1)
+    self.quant_conv = WanCausalConv3d(
+        rngs=rngs,
+        in_channels=z_dim * 2,
+        out_channels=z_dim * 2,
+        kernel_size=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
+    )
+
     self.post_quant_conv = WanCausalConv3d(
         rngs=rngs,
         in_channels=z_dim,
         out_channels=z_dim,
         kernel_size=1,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
     )
 
     self.decoder = WanDecoder3d(
@@ -771,6 +1054,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         attn_scales=attn_scales,
         temperal_upsample=self.temporal_upsample,
         dropout=dropout,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
     )
 
   def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
@@ -826,12 +1113,17 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
         # Most likely due to an incorrect reshaping in the decoder.
         fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
-        if len(fm1.shape) == 4:
-          fm1 = jnp.expand_dims(fm1, axis=0)
-          fm2 = jnp.expand_dims(fm2, axis=0)
-          fm3 = jnp.expand_dims(fm3, axis=0)
-          fm4 = jnp.expand_dims(fm4, axis=0)
+        # When batch_size is 0, expand batch dim for contatenation
+        # else, expand frame dim for concatenation so that batch dim stays intact.
+        axis = 0
+        if fm1.shape[0] > 1:
+          axis = 1
 
+        if len(fm1.shape) == 4:
+          fm1 = jnp.expand_dims(fm1, axis=axis)
+          fm2 = jnp.expand_dims(fm2, axis=axis)
+          fm3 = jnp.expand_dims(fm3, axis=axis)
+          fm4 = jnp.expand_dims(fm4, axis=axis)
         out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
     out = jnp.clip(out, min=-1.0, max=1.0)
     feat_cache.clear_cache()
