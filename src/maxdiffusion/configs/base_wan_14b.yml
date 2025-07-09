@@ -29,6 +29,9 @@ log_period: 100
 
 pretrained_model_name_or_path: 'Wan-AI/Wan2.1-T2V-14B-Diffusers'
 
+# Overrides the transformer from pretrained_model_name_or_path
+wan_transformer_pretrained_model_name_or_path: ''
+
 unet_checkpoint: ''
 revision: ''
 # This will convert the weights to this dtype.

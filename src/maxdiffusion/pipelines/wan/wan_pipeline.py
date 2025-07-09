@@ -41,6 +41,7 @@ import torch
 def basic_clean(text):
   if is_ftfy_available():
     import ftfy
+
     text = ftfy.fix_text(text)
   text = html.unescape(html.unescape(text))
   return text.strip()
@@ -94,7 +95,7 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   # 4. Load pretrained weights and move them to device using the state shardings from (3) above.
   # This helps with loading sharded weights directly into the accelerators without fist copying them
   # all to one device and then distributing them, thus using low HBM memory.
-  params = load_wan_transformer(config.pretrained_model_name_or_path, params, "cpu")
+  params = load_wan_transformer(config.wan_transformer_pretrained_model_name_or_path, params, "cpu")
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():
     sharding = logical_state_sharding[path].value
@@ -221,7 +222,7 @@ class WanPipeline:
     return scheduler, scheduler_state
 
   @classmethod
-  def from_pretrained(cls, config: HyperParameters, vae_only=False):
+  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
@@ -232,8 +233,9 @@ class WanPipeline:
     scheduler_state = None
     text_encoder = None
     if not vae_only:
-      with mesh:
-        transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+      if load_transformer:
+        with mesh:
+          transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
       text_encoder = cls.load_text_encoder(config=config)
       tokenizer = cls.load_tokenizer(config=config)

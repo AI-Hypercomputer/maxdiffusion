@@ -187,7 +187,7 @@ def _tpu_flash_attention(
   axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
   named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
   
-  cp_size=1
+  shard_head_size=mesh.shape['tensor']
 
   @functools.partial(
       jax.jit,
@@ -200,12 +200,11 @@ def _tpu_flash_attention(
     splash_kernel = splash_attention_kernel.make_splash_mha(
       mask=multi_head_mask,
       head_shards=shard_head_size, # the sizes of the axis is sharding over heads
-      q_seq_shards=cp_size,
+      q_seq_shards=num_fsdp_shards,
       block_sizes=block_sizes,
     )
     return splash_kernel
 
-  shard_head_size = mesh.shape["tensor"]
   mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
   multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
   splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
@@ -223,10 +222,7 @@ def _tpu_flash_attention(
     check_rep=False
   )
   def wrap_flash_attention(query, key, value, splash_kernel):
-    #full_k = jax.lax.all_to_all(key, axis_name='fsdp', split_axis=2, concat_axis=2, tiled=True)
-    #full_v = jax.lax.all_to_all(value, axis_name='fsdp', split_axis=2, concat_axis=2, tiled=True)
     attention_output = jax.vmap(splash_kernel)(query, key, value)
-    #attention_output = jax.vmap(splash_kernel)(query, full_k, full_v)
     return attention_output
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
