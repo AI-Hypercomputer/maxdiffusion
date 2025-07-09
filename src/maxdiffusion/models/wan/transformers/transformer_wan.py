@@ -43,13 +43,6 @@ def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
     freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float64, use_real=False)
     freqs.append(freq)
   freqs = jnp.concatenate(freqs, axis=1)
-  # sizes = jnp.array([
-  #     attention_head_dim // 2 - 2 * (attention_head_dim // 6),
-  #     attention_head_dim // 6,
-  #     attention_head_dim // 6,
-  # ])
-  # cumulative_sizes = jnp.cumsum(jnp.array(sizes))
-  # split_indices = cumulative_sizes[:-1]
   t_size = attention_head_dim // 2 - 2 * (attention_head_dim // 6)
   hw_size = attention_head_dim // 6
 

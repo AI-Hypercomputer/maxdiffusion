@@ -38,6 +38,7 @@ BlockSizes = common_types.BlockSizes
 AxisNames = common_types.AxisNames
 BATCH = common_types.BATCH
 LENGTH = common_types.LENGTH
+KV_LENGTH = common_types.KV_LENGTH
 HEAD = common_types.HEAD
 D_KV = common_types.D_KV
 EMBED = common_types.EMBED
@@ -156,7 +157,8 @@ def _tpu_flash_attention(
     value: jax.Array,
     heads: int,
     mesh: Mesh,
-    flash_axis_names: AxisNames,
+    axis_names_q: AxisNames,
+    axis_names_kv: AxisNames,
     flash_block_sizes: BlockSizes,
     dtype: jnp.dtype = jnp.float32,
 ) -> jax.Array:
@@ -181,8 +183,8 @@ def _tpu_flash_attention(
   query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q, num_fsdp_shards)
   key, _, _ = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute, num_fsdp_shards)
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
-  axis_names = nn.logical_to_mesh_axes(flash_axis_names)
-  kv_axis_names = nn.logical_to_mesh_axes((BATCH, HEAD, None, D_KV))
+  q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
+  kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
   flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH)
   axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
   named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
@@ -200,7 +202,7 @@ def _tpu_flash_attention(
     splash_kernel = splash_attention_kernel.make_splash_mha(
       mask=multi_head_mask,
       head_shards=shard_head_size, # the sizes of the axis is sharding over heads
-      q_seq_shards=num_fsdp_shards,
+      q_seq_shards=num_fsdp_shards, # the sizes of the axis is sharding over seq_len
       block_sizes=block_sizes,
     )
     return splash_kernel
@@ -213,12 +215,12 @@ def _tpu_flash_attention(
     shard_map.shard_map,
     mesh=mesh,
     in_specs=(
-      axis_names,
+      q_axis_names,
       kv_axis_names,
       kv_axis_names,
       segment_axis_names_splash_kernel,
     ),
-    out_specs=axis_names,
+    out_specs=q_axis_names,
     check_rep=False
   )
   def wrap_flash_attention(query, key, value, splash_kernel):
@@ -359,7 +361,8 @@ def _apply_attention(
     scale: float,
     dtype: jnp.dtype,
     mesh: Mesh,
-    flash_axis_names: AxisNames,
+    axis_names_q: AxisNames,
+    axis_names_kv: AxisNames,
     flash_block_sizes: BlockSizes,
     dpa_layer: Callable,
 ):
@@ -382,7 +385,7 @@ def _apply_attention(
         query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
     )
   elif attention_kernel == "flash":
-    return _tpu_flash_attention(query, key * scale, value, heads, mesh, flash_axis_names, flash_block_sizes, dtype)
+    return _tpu_flash_attention(query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype)
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:
@@ -505,7 +508,8 @@ class NNXAttentionOp(nnx.Module):
       use_memory_efficient_attention: bool = False,
       split_head_dim: bool = False,
       float32_qk_product: bool = True,
-      flash_axis_names: AxisNames = (BATCH, HEAD, LENGTH, D_KV),
+      axis_names_q: AxisNames = (BATCH, HEAD, LENGTH, D_KV),
+      axis_names_kv: AxisNames = (BATCH, HEAD, KV_LENGTH, D_KV),
       flash_min_seq_length: int = 4096,
       flash_block_sizes: BlockSizes = None,
       dtype: DType = jnp.float32,
@@ -523,7 +527,8 @@ class NNXAttentionOp(nnx.Module):
     self.use_memory_efficient_attention = use_memory_efficient_attention
     self.split_head_dim = split_head_dim
     self.float32_qk_product = float32_qk_product
-    self.flash_axis_names = flash_axis_names
+    self.axis_names_q = axis_names_q
+    self.axis_names_kv = axis_names_kv
     self.flash_min_seq_length = flash_min_seq_length
     self.flash_block_sizes = flash_block_sizes
     self.dtype = dtype
@@ -544,7 +549,8 @@ class NNXAttentionOp(nnx.Module):
         scale=self.scale,
         dtype=self.dtype,
         mesh=self.mesh,
-        flash_axis_names=self.flash_axis_names,
+        axis_names_q=self.axis_names_q,
+        axis_names_kv=self.axis_names_kv,
         flash_block_sizes=self.flash_block_sizes,
         dpa_layer=self.dpa_layer,
     )
@@ -559,7 +565,8 @@ class AttentionOp(nn.Module):
   use_memory_efficient_attention: bool = False
   split_head_dim: bool = False
   float32_qk_product: bool = True
-  flash_axis_names: AxisNames = (BATCH, HEAD, LENGTH, D_KV)
+  axis_names_q: AxisNames = (BATCH, HEAD, LENGTH, D_KV),
+  axis_names_kv: AxisNames = (BATCH, HEAD, KV_LENGTH, D_KV),
   flash_min_seq_length: int = 4096
   flash_block_sizes: BlockSizes = None
   dtype: DType = jnp.float32
@@ -600,7 +607,8 @@ class AttentionOp(nn.Module):
         scale=self.scale,
         dtype=self.dtype,
         mesh=self.mesh,
-        flash_axis_names=self.flash_axis_names,
+        axis_names_q=self.axis_names_q,
+        axis_names_kv=self.axis_names_kv,
         flash_block_sizes=self.flash_block_sizes,
         dpa_layer=self.dpa_layer,
     )
@@ -764,9 +772,6 @@ class FlaxWanAttention(nnx.Module):
       key_proj = _unflatten_heads(key_proj, self.heads)
       value_proj = _unflatten_heads(value_proj, self.heads)
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
-      query_proj = jax.lax.with_sharding_constraint(query_proj, PartitionSpec("data", "tensor", None, None))
-      key_proj = jax.lax.with_sharding_constraint(key_proj, PartitionSpec("data", "tensor", None, None))
-      value_proj = jax.lax.with_sharding_constraint(value_proj, PartitionSpec("data", "tensor", None, None))
 
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
     attn_output = jax.lax.with_sharding_constraint(attn_output, PartitionSpec("data", None, None))
