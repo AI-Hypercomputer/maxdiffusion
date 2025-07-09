@@ -20,7 +20,8 @@ from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
 from maxdiffusion.utils import export_to_video
 
-jax.config.update('jax_use_shardy_partitioner', True)
+jax.config.update("jax_use_shardy_partitioner", True)
+
 
 def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)

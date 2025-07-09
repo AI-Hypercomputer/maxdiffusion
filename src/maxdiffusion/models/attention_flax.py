@@ -76,8 +76,8 @@ def _reshape_batch_dim_to_heads(tensor, heads):
   head_size = heads
   tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
-  tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
-  return tensor
+  reshaped_tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
+  return jax.lax.with_sharding_constraint(reshaped_tensor, PartitionSpec("data", "fsdp", "tensor"))
 
 
 def _reshape_heads_to_batch_dim(tensor, heads):
@@ -86,12 +86,12 @@ def _reshape_heads_to_batch_dim(tensor, heads):
     head_size = heads
     tensor = tensor.reshape(batch_size, seq_len, head_size, dim // head_size)
     tensor = jnp.transpose(tensor, (0, 2, 1, 3))
-    tensor = tensor.reshape(batch_size * head_size, seq_len, dim // head_size)
+    reshaped_tensor = tensor.reshape(batch_size * head_size, seq_len, dim // head_size)
   else:
     batch_size, head_size, seq_len, head_dim = tensor.shape
-    tensor = tensor.reshape(batch_size * head_size, seq_len, head_dim)
+    reshaped_tensor = tensor.reshape(batch_size * head_size, seq_len, head_dim)
 
-  return tensor
+  return jax.lax.with_sharding_constraint(reshaped_tensor, PartitionSpec("data", "fsdp", "tensor"))
 
 
 def _reshape_heads_to_head_dim(tensor):
@@ -140,14 +140,15 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1
   # 2. Ensure num_blocks is divisible by num_shards
   num_blocks = seq_len_padded_pre // flash_block_size
   if num_blocks % num_shards != 0:
-    num_blocks += (num_shards - (num_blocks % num_shards))
+    num_blocks += num_shards - (num_blocks % num_shards)
 
   final_padded_len = num_blocks * flash_block_size
   seq_len_pad = final_padded_len - seq_len
 
   if kv_size < 128 or seq_len_pad != 0:
     npad = ((0, 0), (0, 0), (0, seq_len_pad), (0, head_dim_pad))
-    tensor = jnp.pad(tensor, npad)
+    padded_tensor = jnp.pad(tensor, npad)
+    tensor = jax.lax.with_sharding_constraint(padded_tensor, PartitionSpec("data", "fsdp", "tensor"))
 
   return tensor, kv_size, seq_len
 
@@ -189,22 +190,19 @@ def _tpu_flash_attention(
   flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH)
   axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
   named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
-  
-  shard_head_size=mesh.shape['tensor']
+
+  shard_head_size = mesh.shape["tensor"]
 
   @functools.partial(
       jax.jit,
-      static_argnames=[
-        "multi_head_mask",
-        "shard_head_size"
-      ],
+      static_argnames=["multi_head_mask", "shard_head_size"],
   )
   def wrap_splash_kernel(multi_head_mask, shard_head_size=1):
     splash_kernel = splash_attention_kernel.make_splash_mha(
-      mask=multi_head_mask,
-      head_shards=shard_head_size, # the sizes of the axis is sharding over heads
-      q_seq_shards=num_fsdp_shards, # the sizes of the axis is sharding over seq_len
-      block_sizes=block_sizes,
+        mask=multi_head_mask,
+        head_shards=shard_head_size,  # the sizes of the axis is sharding over heads
+        q_seq_shards=num_fsdp_shards,  # the sizes of the axis is sharding over seq_len
+        block_sizes=block_sizes,
     )
     return splash_kernel
 
@@ -212,17 +210,18 @@ def _tpu_flash_attention(
   multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
   splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
   segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
+
   @functools.partial(
-    shard_map.shard_map,
-    mesh=mesh,
-    in_specs=(
-      q_axis_names,
-      kv_axis_names,
-      kv_axis_names,
-      segment_axis_names_splash_kernel,
-    ),
-    out_specs=q_axis_names,
-    check_rep=False
+      shard_map.shard_map,
+      mesh=mesh,
+      in_specs=(
+          q_axis_names,
+          kv_axis_names,
+          kv_axis_names,
+          segment_axis_names_splash_kernel,
+      ),
+      out_specs=q_axis_names,
+      check_rep=False,
   )
   def wrap_flash_attention(query, key, value, splash_kernel):
     attention_output = jax.vmap(splash_kernel)(query, key, value)
@@ -386,7 +385,9 @@ def _apply_attention(
         query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
     )
   elif attention_kernel == "flash":
-    return _tpu_flash_attention(query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype)
+    return _tpu_flash_attention(
+        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype
+    )
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:
@@ -566,8 +567,8 @@ class AttentionOp(nn.Module):
   use_memory_efficient_attention: bool = False
   split_head_dim: bool = False
   float32_qk_product: bool = True
-  axis_names_q: AxisNames = (BATCH, HEAD, LENGTH, D_KV),
-  axis_names_kv: AxisNames = (BATCH, HEAD, KV_LENGTH, D_KV),
+  axis_names_q: AxisNames = ((BATCH, HEAD, LENGTH, D_KV),)
+  axis_names_kv: AxisNames = ((BATCH, HEAD, KV_LENGTH, D_KV),)
   flash_min_seq_length: int = 4096
   flash_block_sizes: BlockSizes = None
   dtype: DType = jnp.float32
@@ -775,7 +776,6 @@ class FlaxWanAttention(nnx.Module):
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
-    attn_output = jax.lax.with_sharding_constraint(attn_output, PartitionSpec("data", None, None))
 
     attn_output = attn_output.astype(dtype=dtype)
 

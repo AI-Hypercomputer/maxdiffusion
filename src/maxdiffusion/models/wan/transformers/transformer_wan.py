@@ -462,6 +462,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     if encoder_hidden_states_image is not None:
       raise NotImplementedError("img2vid is not yet implemented.")
+
     def skip_block_true(hidden_states):
       split_bs = hidden_states.shape[0] // 2
       prev_neg_hidden_states = hidden_states[split_bs:]

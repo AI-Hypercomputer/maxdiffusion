@@ -438,7 +438,7 @@ class WanPipeline:
         latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
         latents = latents / latents_std + latents_mean
         latents = latents.astype(self.config.weights_dtype)
-    
+
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       video = self.vae.decode(latents, self.vae_cache)[0]
 
