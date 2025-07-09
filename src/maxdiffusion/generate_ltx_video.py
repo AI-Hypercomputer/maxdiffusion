@@ -64,10 +64,6 @@ def run_inference(
       segment_ids=segment_ids,
       encoder_attention_segment_ids=encoder_attention_segment_ids,
   )
-  prof = profiler.Profiler(config)
-  prof.activate(optional_postfix="transformer step")
-  prof.deactivate()
-  
 
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
     noise_pred, transformer_state, _ = jax.lax.fori_loop(0, 1, loop_body_p, (latents, transformer_state, timestep))
@@ -176,8 +172,8 @@ def run(config):
       in_shardings=(state_shardings,),
       out_shardings=None,
   )
-  with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
-    noise_pred = p_run_inference(states).block_until_ready()
+
+  noise_pred = p_run_inference(states).block_until_ready()
   print(noise_pred)  # (4, 256, 128)
 
 

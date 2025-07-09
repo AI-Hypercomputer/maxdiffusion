@@ -191,7 +191,7 @@ class LTXTransformerTest(unittest.TestCase):
         in_shardings=(state_shardings,),
         out_shardings=None,
     )
-   
+
     noise_pred = p_run_inference(states).block_until_ready()
     noise_pred = torch.from_numpy(np.array(noise_pred))
 
