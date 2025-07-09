@@ -99,7 +99,8 @@ def _reshape_heads_to_head_dim(tensor):
   # This is used to transform the output of flash attention back into the format of other attention outputs
   b, h, s, d = tensor.shape
   tensor = jnp.transpose(tensor, axes=[0, 2, 1, 3])
-  return jnp.reshape(tensor, (b, -1, h * d))
+  reshaped_tensor = jnp.reshape(tensor, (b, -1, h * d))
+  return jax.lax.with_sharding_constraint(reshaped_tensor, PartitionSpec("data", "fsdp", "tensor"))
 
 
 def _unflatten_heads(tensor, heads):

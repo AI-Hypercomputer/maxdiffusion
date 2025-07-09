@@ -434,12 +434,13 @@ class WanPipeline:
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
         )
-      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
-      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
-      latents = latents / latents_std + latents_mean
-      latents = latents.astype(self.config.weights_dtype)
-
-    video = self.vae.decode(latents, self.vae_cache)[0]
+        latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
+        latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
+        latents = latents / latents_std + latents_mean
+        latents = latents.astype(self.config.weights_dtype)
+    
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      video = self.vae.decode(latents, self.vae_cache)[0]
 
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
     video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
