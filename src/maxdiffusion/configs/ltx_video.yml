@@ -26,19 +26,6 @@ run_name: ''
 output_dir: 'ltx-video-output'
 save_config_to_gcs: False
 
-#hardware
-hardware: 'tpu'
-skip_jax_distributed_system: False
-
-jax_cache_dir: ''
-weights_dtype: 'bfloat16'
-activations_dtype: 'bfloat16'
-
-
-run_name: ''
-output_dir: 'ltx-video-output'
-save_config_to_gcs: False
-
 #parallelism
 mesh_axes: ['data', 'fsdp', 'tensor']
 logical_axis_rules: [
