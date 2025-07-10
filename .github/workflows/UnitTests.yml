@@ -50,7 +50,7 @@ jobs:
         ruff check .
     - name: PyTest
       run: | 
-        HF_HUB_CACHE=/mnt/disks/github-runner-disk/ HF_HOME=/mnt/disks/github-runner-disk/ python3 -m pytest
+        HF_HUB_CACHE=/mnt/disks/github-runner-disk/ HF_HOME=/mnt/disks/github-runner-disk/ python3 -m pytest -x
 #  add_pull_ready:
 #    if: github.ref != 'refs/heads/main'
 #    permissions:
