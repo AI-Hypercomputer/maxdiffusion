@@ -201,17 +201,13 @@ def _tpu_flash_attention(
     splash_kernel = splash_attention_kernel.make_splash_mha(
         mask=multi_head_mask,
         head_shards=shard_head_size,  # the sizes of the axis is sharding over heads
-        q_seq_shards=num_fsdp_shards,  # the sizes of the axis is sharding over seq_len
+        q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
         block_sizes=block_sizes,
     )
     return splash_kernel
 
   mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
-  mask &= splash_attention_mask.LocalMask(
-    shape=(query.shape[2], key.shape[2]),
-    window_size=(query.shape[2], key.shape[2]),
-    offset=0
-  )
+
   multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
   splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
   segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
