@@ -148,7 +148,7 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1
   if kv_size < 128 or seq_len_pad != 0:
     npad = ((0, 0), (0, 0), (0, seq_len_pad), (0, head_dim_pad))
     padded_tensor = jnp.pad(tensor, npad)
-    tensor = jax.lax.with_sharding_constraint(padded_tensor, PartitionSpec("data", "fsdp", "tensor"))
+    tensor = jax.lax.with_sharding_constraint(padded_tensor, PartitionSpec("data", "tensor", "fsdp", None))
 
   return tensor, kv_size, seq_len
 
