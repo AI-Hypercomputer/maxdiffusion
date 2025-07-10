@@ -207,6 +207,11 @@ def _tpu_flash_attention(
     return splash_kernel
 
   mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
+  mask &= splash_attention_mask.LocalMask(
+    shape=(query.shape[2], key.shape[2]),
+    window_size=(query.shape[2], key.shape[2]),
+    offset=0
+  )
   multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
   splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
   segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
