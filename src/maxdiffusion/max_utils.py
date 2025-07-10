@@ -257,21 +257,6 @@ def create_device_mesh(config, devices=None, logging=True):
   if devices is None:
     devices = jax.devices()
   num_devices = len(devices)
-  ##special case for ltx-video
-  if "fsdp_transpose" in config.mesh_axes:
-    num_slices = 1
-    # if config.inference_benchmark_test else config.num_slices
-    num_devices_per_slice = num_devices // num_slices
-    # Find possible unspecified parallelisms
-    ici_parallelism = fill_unspecified_mesh_axes(config.ici_parallelism.copy(), num_devices_per_slice, "ICI")
-    mesh = mesh_utils.create_device_mesh(
-        ici_parallelism,
-        devices,
-    )
-    max_logging.log(f"Num_devices: {num_devices}, shape {mesh.shape}")
-
-    return mesh
-
   try:
     num_slices = 1 + max([d.slice_index for d in devices])
   except:
@@ -417,11 +402,7 @@ def setup_initial_state(
           config.enable_single_replica_ckpt_restoring,
       )
       if state:
-        ###!Edited
-        if checkpoint_item == " ":
-          state = state
-        else:
-          state = state[checkpoint_item]
+        state = state[checkpoint_item]
     if not state:
       max_logging.log(f"Could not find the item in orbax, creating state...")
       init_train_state_partial = functools.partial(

@@ -18,6 +18,7 @@ from functools import partial
 import math
 from typing import Any, Dict, Optional, Tuple
 from enum import Enum, auto
+
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
@@ -213,7 +214,8 @@ class BasicTransformerBlock(nn.Module):
 
     # Adaptive Norm
     if self.adaptive_norm in ["single_scale_shift", "single_scale"]:
-      assert timestep.ndim == 3  # [batch, 1 or num_tokens, embedding_dim]
+      # [batch, 1 or num_tokens, embedding_dim]
+      assert timestep.ndim == 3
       num_ada_params = self.scale_shift_table.shape[0]
       ada_values = self.scale_shift_table[None, None].astype(self.weight_dtype) + timestep.reshape(
           batch_size, timestep.shape[1], num_ada_params, -1
@@ -452,7 +454,7 @@ class Attention(nn.Module):
       deterministic: bool = True,
       **cross_attention_kwargs,
   ) -> jnp.ndarray:
-    cross_attention_kwargs = {k: w for k, w in cross_attention_kwargs.items() if k in attn_parameters}  # noqa: F821
+    cross_attention_kwargs = {k: w for k, w in cross_attention_kwargs.items() if k in attn_parameters}  # noqa F821
     assert cross_attention_kwargs.get("scale", None) is None, "Not supported"
 
     input_axis_names = ("activation_batch", "activation_length", "activation_embed")
@@ -636,27 +638,20 @@ class AttentionOp(nn.Module):
         raise ValueError(f"Expected mask with 2 dims, got {q_segment_ids.ndim}.")
       # Based on: ("activation_kv_batch", "activation_kv_heads", "activation_length", "activation_kv_head_dim")
       # Computation of the spec based on the logical constraints can be found in logical_axes_to_spec.py.
-      qkvo_sharding_spec = jax.sharding.PartitionSpec(
-          ("data", "fsdp", "fsdp_transpose", "expert"),
-          ("tensor", "tensor_transpose", "sequence", "tensor_sequence"),
-          None,
-          None,
-      )
       # qkvo_sharding_spec = jax.sharding.PartitionSpec(
       #     ("data", "fsdp", "fsdp_transpose", "expert"),
       #     ("tensor", "tensor_transpose", "sequence", "tensor_sequence"),
       #     None,
       #     None,
       # )
-      # qkvo_sharding_spec = jax.sharding.PartitionSpec(
-      #     None,
-      #     None,
-      #     None,
-      #     None,
-      # )
+      qkvo_sharding_spec = jax.sharding.PartitionSpec(
+          "data",
+          "fsdp",
+          None,
+          "tensor",
+      )
       # Based on: ("activation_kv_batch", "activation_length")
-      qkv_segment_ids_spec = jax.sharding.PartitionSpec(("data", "fsdp", "fsdp_transpose", "expert"), "sequence")
-      # qkv_segment_ids_spec = jax.sharding.PartitionSpec(None, None)
+      qkv_segment_ids_spec = jax.sharding.PartitionSpec("data", None)
       wrapped_flash_attention = shard_map(
           partial_flash_attention,
           mesh=sharding_mesh,
@@ -841,7 +836,8 @@ class FeedForward(nn.Module):
       inner_dim = dim * self.mult
       if inner_dim < 256:
         raise ValueError("inner_dim must be at least 256")
-      inner_dim = round(inner_dim / 256) * 256  # round to nearest multiple of 256
+      # round to nearest multiple of 256
+      inner_dim = round(inner_dim / 256) * 256
     else:
       inner_dim = self.inner_dim
 
