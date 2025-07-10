@@ -23,7 +23,6 @@ pytest==8.2.2
 tensorflow>=2.17.0
 tensorflow-datasets>=4.9.6
 ruff>=0.1.5,<=0.2
-git+https://github.com/mlperf/logging.git
 opencv-python-headless==4.10.0.84
 orbax-checkpoint==0.10.3
 tokenizers==0.21.0
