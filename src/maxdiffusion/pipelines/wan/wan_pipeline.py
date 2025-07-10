@@ -25,7 +25,7 @@ from flax.linen import partitioning as nn_partitioning
 from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
-from ...max_utils import get_flash_block_sizes, get_precision
+from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
 from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
 from ...models.wan.transformers.transformer_wan import WanModel
 from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
@@ -99,7 +99,7 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():
     sharding = logical_state_sharding[path].value
-    state[path].value = jax.device_put(val, sharding)
+    state[path].value = device_put_replicated(val, sharding)
   state = nnx.from_flat_state(state)
 
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
@@ -183,27 +183,41 @@ class WanPipeline:
 
   @classmethod
   def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
-    wan_vae = AutoencoderKLWan.from_config(
-        config.pretrained_model_name_or_path,
-        subfolder="vae",
-        rngs=rngs,
-        mesh=mesh,
-        dtype=config.activations_dtype,
-        weights_dtype=config.weights_dtype,
-    )
-    vae_cache = AutoencoderKLWanCache(wan_vae)
-
+    
+    def create_model(rngs: nnx.Rngs, config: HyperParameters):
+      wan_vae = AutoencoderKLWan.from_config(
+          config.pretrained_model_name_or_path,
+          subfolder="vae",
+          rngs=rngs,
+          mesh=mesh,
+          dtype=config.activations_dtype,
+          weights_dtype=config.weights_dtype,
+      )
+      return wan_vae
+    # 1. eval shape    
+    p_model_factory = partial(create_model, config=config)
+    wan_vae = nnx.eval_shape(p_model_factory, rngs=rngs)
     graphdef, state = nnx.split(wan_vae, nnx.Param)
+    
+    # 2. retrieve the state shardings, mapping logical names to mesh axis names.
+    logical_state_spec = nnx.get_partition_spec(state)
+    logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
+    logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
     params = state.to_pure_dict()
-    # This replaces random params with the model.
+    state = dict(nnx.to_flat_state(state))
+
+    # 4. Load pretrained weights and move them to device using the state shardings from (3) above.
+    # This helps with loading sharded weights directly into the accelerators without fist copying them
+    # all to one device and then distributing them, thus using low HBM memory.
     params = load_wan_vae(config.pretrained_model_name_or_path, params, "cpu")
     params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
-    params = jax.device_put(params, NamedSharding(mesh, P()))
-    wan_vae = nnx.merge(graphdef, params)
-    p_create_sharded_logical_model = partial(create_sharded_logical_model, logical_axis_rules=config.logical_axis_rules)
-    # Shard
-    with mesh:
-      wan_vae = p_create_sharded_logical_model(model=wan_vae)
+    for path, val in flax.traverse_util.flatten_dict(params).items():
+      sharding = logical_state_sharding[path].value
+      state[path].value = device_put_replicated(val, sharding)
+    state = nnx.from_flat_state(state)
+    
+    wan_vae = nnx.merge(graphdef, state)
+    vae_cache = AutoencoderKLWanCache(wan_vae)
     return wan_vae, vae_cache
 
   @classmethod
