@@ -1,3 +1,4 @@
+import os
 import json
 import torch
 import jax
@@ -136,15 +137,22 @@ def load_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, 
   else:
     return load_base_wan_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download)
 
-
 def load_base_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
-  with jax.default_device(device):
-    if hf_download:
-      # download the index file for sharded models.
-      index_file_path = hf_hub_download(
-          pretrained_model_name_or_path, subfolder="transformer", filename="diffusion_pytorch_model.safetensors.index.json"
-      )
+  subfolder="transformer"
+  filename="diffusion_pytorch_model.safetensors.index.json"
+  local_files = False
+  if os.path.isdir(pretrained_model_name_or_path):
+    index_file_path = os.path.join(pretrained_model_name_or_path, subfolder, filename)
+    if not os.path.isfile(index_file_path):
+      raise FileNotFoundError(f"File {index_file_path} not found for local directory.")
+    local_files = True
+  elif hf_download:
+    # download the index file for sharded models.
+    index_file_path = hf_hub_download(
+        pretrained_model_name_or_path, subfolder, filename,
+    )
+  with jax.default_device(device):  
       # open the index file.
       with open(index_file_path, "r") as f:
         index_dict = json.load(f)
@@ -155,7 +163,10 @@ def load_base_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: d
       model_files = list(model_files)
       tensors = {}
       for model_file in model_files:
-        ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder="transformer", filename=model_file)
+        if local_files:
+          ckpt_shard_path = os.path.join(pretrained_model_name_or_path, subfolder, model_file)
+        else:
+          ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder="transformer", filename=model_file)
         # now get all the filenames for the model that need downloading
         max_logging.log(f"Load and port Wan 2.1 transformer on {device}")
 
@@ -195,13 +206,18 @@ def load_base_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: d
 
 def load_wan_vae(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
+  subfolder="vae"
+  filename="diffusion_pytorch_model.safetensors"
+  if os.path.isdir(pretrained_model_name_or_path):
+    ckpt_path = os.path.join(pretrained_model_name_or_path, subfolder, filename)
+    if not os.path.isfile(ckpt_path):
+      raise FileNotFoundError(f"File {ckpt_path} not found for local directory.")
+  elif hf_download:
+    ckpt_path = hf_hub_download(
+        pretrained_model_name_or_path, subfolder, filename
+    )
+  max_logging.log(f"Load and port Wan 2.1 VAE on {device}")
   with jax.default_device(device):
-    if hf_download:
-      ckpt_path = hf_hub_download(
-          pretrained_model_name_or_path, subfolder="vae", filename="diffusion_pytorch_model.safetensors"
-      )
-    max_logging.log(f"Load and port Wan 2.1 VAE on {device}")
-
     if ckpt_path is not None:
       tensors = {}
       with safe_open(ckpt_path, framework="pt") as f:
