@@ -80,7 +80,7 @@ def run(config, pipeline=None, filename_prefix=""):
       slg_start=slg_start,
       slg_end=slg_end,
   )
-  print("compile time: ", (time.perf_counter() - s0))
+  print("generation time: ", (time.perf_counter() - s0))
 
   s0 = time.perf_counter()
   if config.enable_profiler:
