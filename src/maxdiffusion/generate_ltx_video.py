@@ -1,202 +1,196 @@
-"""
- Copyright 2025 Google LLC
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
-      https://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
-
+import numpy as np
 from absl import app
 from typing import Sequence
-import jax
-import json
-from flax.linen import partitioning as nn_partitioning
-from maxdiffusion.models.ltx_video.transformers.transformer3d import Transformer3DModel
-import os
-import functools
-import jax.numpy as jnp
+from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXVideoPipeline
+from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXMultiScalePipeline
 from maxdiffusion import pyconfig
-from maxdiffusion.max_utils import (
-    create_device_mesh,
-    setup_initial_state,
-    get_memory_allocations,
-)
-from jax.sharding import Mesh, PartitionSpec as P
-import orbax.checkpoint as ocp
+import jax.numpy as jnp
+from maxdiffusion.models.ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
+from maxdiffusion.models.ltx_video.autoencoders.latent_upsampler import LatentUpsampler
+from huggingface_hub import hf_hub_download
+import imageio
+from datetime import datetime
+from maxdiffusion.utils import export_to_video
+
+import os
+import json
+import torch
+from pathlib import Path
 
 
-def validate_transformer_inputs(
-    prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids
-):
-  print("prompts_embeds.shape: ", prompt_embeds.shape, prompt_embeds.dtype)
-  print("fractional_coords.shape: ", fractional_coords.shape, fractional_coords.dtype)
-  print("latents.shape: ", latents.shape, latents.dtype)
-  print("noise_cond.shape: ", noise_cond.shape, noise_cond.dtype)
-  print("noise_cond.shape: ", noise_cond.shape, noise_cond.dtype)
-  print("segment_ids.shape: ", segment_ids.shape, segment_ids.dtype)
-  print("encoder_attention_segment_ids.shape: ", encoder_attention_segment_ids.shape, encoder_attention_segment_ids.dtype)
+def calculate_padding(
+    source_height: int, source_width: int, target_height: int, target_width: int
+) -> tuple[int, int, int, int]:
+
+    # Calculate total padding needed
+    pad_height = target_height - source_height
+    pad_width = target_width - source_width
+
+    # Calculate padding for each side
+    pad_top = pad_height // 2
+    pad_bottom = pad_height - pad_top  # Handles odd padding
+    pad_left = pad_width // 2
+    pad_right = pad_width - pad_left  # Handles odd padding
+
+    # Return padded tensor
+    # Padding format is (left, right, top, bottom)
+    padding = (pad_left, pad_right, pad_top, pad_bottom)
+    return padding
 
 
-def loop_body(step, args, transformer, fractional_cords, prompt_embeds, segment_ids, encoder_attention_segment_ids):
-  latents, state, noise_cond = args
-  noise_pred = transformer.apply(
-      {"params": state.params},
-      hidden_states=latents,
-      indices_grid=fractional_cords,
-      encoder_hidden_states=prompt_embeds,
-      timestep=noise_cond,
-      segment_ids=segment_ids,
-      encoder_attention_segment_ids=encoder_attention_segment_ids,
-  )
-  return noise_pred, state, noise_cond
+def convert_prompt_to_filename(text: str, max_len: int = 20) -> str:
+    # Remove non-letters and convert to lowercase
+    clean_text = "".join(
+        char.lower() for char in text if char.isalpha() or char.isspace()
+    )
 
+    # Split into words
+    words = clean_text.split()
 
-def run_inference(
-    states,
-    transformer,
-    config,
-    mesh,
-    latents,
-    fractional_cords,
-    prompt_embeds,
-    timestep,
-    segment_ids,
-    encoder_attention_segment_ids,
-):
-  transformer_state = states["transformer"]
-  loop_body_p = functools.partial(
-      loop_body,
-      transformer=transformer,
-      fractional_cords=fractional_cords,
-      prompt_embeds=prompt_embeds,
-      segment_ids=segment_ids,
-      encoder_attention_segment_ids=encoder_attention_segment_ids,
-  )
+    # Build result string keeping track of length
+    result = []
+    current_length = 0
 
-  with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-    noise_pred, transformer_state, _ = jax.lax.fori_loop(0, 1, loop_body_p, (latents, transformer_state, timestep))
-  return noise_pred
+    for word in words:
+        # Add word length plus 1 for underscore (except for first word)
+        new_length = current_length + len(word)
+
+        if new_length <= max_len:
+            result.append(word)
+            current_length += len(word)
+        else:
+            break
+
+    return "-".join(result)
+
+def create_latent_upsampler(latent_upsampler_model_path: str, device: str):
+    latent_upsampler = LatentUpsampler.from_pretrained(latent_upsampler_model_path)
+    latent_upsampler.to(device)
+    latent_upsampler.eval()
+    return latent_upsampler
+
+def get_unique_filename(
+    base: str,
+    ext: str,
+    prompt: str,
+    seed: int,
+    resolution: tuple[int, int, int],
+    dir: Path,
+    endswith=None,
+    index_range=1000,
+) -> Path:
+    base_filename = f"{base}_{convert_prompt_to_filename(prompt, max_len=30)}_{seed}_{resolution[0]}x{resolution[1]}x{resolution[2]}"
+    for i in range(index_range):
+        filename = dir / \
+            f"{base_filename}_{i}{endswith if endswith else ''}{ext}"
+        if not os.path.exists(filename):
+            return filename
+    raise FileExistsError(
+        f"Could not find a unique filename after {index_range} attempts."
+    )
 
 
 def run(config):
-  key = jax.random.PRNGKey(42)
+    height_padded = ((config.height - 1) // 32 + 1) * 32
+    width_padded = ((config.width - 1) // 32 + 1) * 32
+    num_frames_padded = ((config.num_frames - 2) // 8 + 1) * 8 + 1
+    padding = calculate_padding(
+        config.height, config.width, height_padded, width_padded)
+    # prompt_enhancement_words_threshold = config.prompt_enhancement_words_threshold
+    # prompt_word_count = len(config.prompt.split())
+    # enhance_prompt = (
+    #     prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
+    # )
 
-  devices_array = create_device_mesh(config)
-  mesh = Mesh(devices_array, config.mesh_axes)
-
-  base_dir = os.path.dirname(__file__)
-
-  ##load in model config
-  config_path = os.path.join(base_dir, "models/ltx_video/xora_v1.2-13B-balanced-128.json")
-  with open(config_path, "r") as f:
-    model_config = json.load(f)
-  relative_ckpt_path = model_config["ckpt_path"]
-
-  ignored_keys = [
-      "_class_name",
-      "_diffusers_version",
-      "_name_or_path",
-      "causal_temporal_positioning",
-      "in_channels",
-      "ckpt_path",
-  ]
-  in_channels = model_config["in_channels"]
-  for name in ignored_keys:
-    if name in model_config:
-      del model_config[name]
-
-  transformer = Transformer3DModel(
-      **model_config, dtype=jnp.float32, gradient_checkpointing="matmul_without_batch", sharding_mesh=mesh
-  )
-  transformer_param_shapes = transformer.init_weights(in_channels, key, model_config["caption_channels"], eval_only=True)  # noqa F841
-  weights_init_fn = functools.partial(
-      transformer.init_weights, in_channels, key, model_config["caption_channels"], eval_only=True
-  )
-
-  absolute_ckpt_path = os.path.abspath(relative_ckpt_path)
-
-  checkpoint_manager = ocp.CheckpointManager(absolute_ckpt_path)
-  transformer_state, transformer_state_shardings = setup_initial_state(
-      model=transformer,
-      tx=None,
-      config=config,
-      mesh=mesh,
-      weights_init_fn=weights_init_fn,
-      checkpoint_manager=checkpoint_manager,
-      checkpoint_item=" ",
-      model_params=None,
-      training=False,
-  )
-
-  transformer_state = jax.device_put(transformer_state, transformer_state_shardings)
-  get_memory_allocations()
-
-  states = {}
-  state_shardings = {}
-
-  state_shardings["transformer"] = transformer_state_shardings
-  states["transformer"] = transformer_state
-
-  # create dummy inputs:
-  example_inputs = {}
-  batch_size, num_tokens = 4, 256
-  input_shapes = {
-      "latents": (batch_size, num_tokens, in_channels),
-      "fractional_coords": (batch_size, 3, num_tokens),
-      "prompt_embeds": (batch_size, 128, model_config["caption_channels"]),
-      "timestep": (batch_size, 256),
-      "segment_ids": (batch_size, 256),
-      "encoder_attention_segment_ids": (batch_size, 128),
-  }
-  for name, shape in input_shapes.items():
-    example_inputs[name] = jnp.ones(
-        shape, dtype=jnp.float32 if name not in ["attention_mask", "encoder_attention_mask"] else jnp.bool
-    )
-
-  data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
-  latents = jax.device_put(example_inputs["latents"], data_sharding)
-  prompt_embeds = jax.device_put(example_inputs["prompt_embeds"], data_sharding)
-  fractional_coords = jax.device_put(example_inputs["fractional_coords"], data_sharding)
-  noise_cond = jax.device_put(example_inputs["timestep"], data_sharding)
-  segment_ids = jax.device_put(example_inputs["segment_ids"], data_sharding)
-  encoder_attention_segment_ids = jax.device_put(example_inputs["encoder_attention_segment_ids"], data_sharding)
-
-  validate_transformer_inputs(
-      prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids
-  )
-  p_run_inference = jax.jit(
-      functools.partial(
-          run_inference,
-          transformer=transformer,
-          config=config,
-          mesh=mesh,
-          latents=latents,
-          fractional_cords=fractional_coords,
-          prompt_embeds=prompt_embeds,
-          timestep=noise_cond,
-          segment_ids=segment_ids,
-          encoder_attention_segment_ids=encoder_attention_segment_ids,
-      ),
-      in_shardings=(state_shardings,),
-      out_shardings=None,
-  )
-
-  noise_pred = p_run_inference(states).block_until_ready()
-  print(noise_pred)  # (4, 256, 128)
+    seed = 10  # change this, generator in pytorch, used in prepare_latents
+    generator = torch.Generator().manual_seed(seed)
+    pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt = False)
+    if config.pipeline_type == "multi-scale":   #move this to pipeline file??
+        spatial_upscaler_model_name_or_path = config.spatial_upscaler_model_path
+    
+        if spatial_upscaler_model_name_or_path and not os.path.isfile(
+            spatial_upscaler_model_name_or_path
+        ):
+            spatial_upscaler_model_path = hf_hub_download(
+                repo_id="Lightricks/LTX-Video",
+                filename=spatial_upscaler_model_name_or_path,
+                local_dir= "/mnt/disks/diffusionproj",
+                repo_type="model",
+            )
+        else:
+            spatial_upscaler_model_path = spatial_upscaler_model_name_or_path
+        if not config.spatial_upscaler_model_path:
+            raise ValueError(
+                "spatial upscaler model path is missing from pipeline config file and is required for multi-scale rendering"
+            )
+        latent_upsampler = create_latent_upsampler(
+            spatial_upscaler_model_path, "cpu"  #device set to cpu for now
+        )
+        pipeline = LTXMultiScalePipeline(pipeline, latent_upsampler=latent_upsampler)
+    stg_mode = config.stg_mode
+    if stg_mode.lower() == "stg_av" or stg_mode.lower() == "attention_values":
+        skip_layer_strategy = SkipLayerStrategy.AttentionValues
+    elif stg_mode.lower() == "stg_as" or stg_mode.lower() == "attention_skip":
+        skip_layer_strategy = SkipLayerStrategy.AttentionSkip
+    elif stg_mode.lower() == "stg_r" or stg_mode.lower() == "residual":
+        skip_layer_strategy = SkipLayerStrategy.Residual
+    elif stg_mode.lower() == "stg_t" or stg_mode.lower() == "transformer_block":
+        skip_layer_strategy = SkipLayerStrategy.TransformerBlock
+    else:
+        raise ValueError(f"Invalid spatiotemporal guidance mode: {stg_mode}")
+    # images = pipeline(height=height_padded, width=width_padded, num_frames=num_frames_padded,
+    #                   is_video=True, output_type='pt', generator=generator, guidance_scale = config.first_pass.guidance_scale, stg_scale = config.stg_scale, rescaling_scale = config.rescaling_scale, skip_initial_inference_steps= config.skip_initial_inference_steps, skip_final_inference_steps= config.skip_final_inference_steps, num_inference_steps = config.num_inference_steps,
+    #                   guidance_timesteps = config.guidance_timesteps, cfg_star_rescale = config.cfg_star_rescale, skip_layer_strategy = None, skip_block_list=config.skip_block_list).images
+    images = pipeline(height=height_padded, width=width_padded, num_frames=num_frames_padded, is_video=True, output_type='pt', generator=generator, config = config)
+    (pad_left, pad_right, pad_top, pad_bottom) = padding
+    pad_bottom = -pad_bottom
+    pad_right = -pad_right
+    if pad_bottom == 0:
+        pad_bottom = images.shape[3]
+    if pad_right == 0:
+        pad_right = images.shape[4]
+    images = images[:, :, :config.num_frames,
+                    pad_top:pad_bottom, pad_left:pad_right]
+    output_dir = Path(f"outputs/{datetime.today().strftime('%Y-%m-%d')}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(images.shape[0]):
+        # Gathering from B, C, F, H, W to C, F, H, W and then permuting to F, H, W, C
+        video_np = images[i].permute(1, 2, 3, 0).detach().float().numpy()
+        # Unnormalizing images to [0, 255] range
+        video_np = (video_np * 255).astype(np.uint8)
+        fps = config.frame_rate
+        height, width = video_np.shape[1:3]
+        # In case a single image is generated
+        if video_np.shape[0] == 1:
+            output_filename = get_unique_filename(
+                f"image_output_{i}",
+                ".png",
+                prompt=config.prompt,
+                seed=seed,
+                resolution=(height, width, config.num_frames),
+                dir=output_dir,
+            )
+            imageio.imwrite(output_filename, video_np[0])
+        else:
+            output_filename = get_unique_filename(
+                f"video_output_{i}",
+                ".mp4",
+                prompt=config.prompt,
+                seed=seed,
+                resolution=(height, width, config.num_frames),
+                dir=output_dir,
+            )
+            print(output_filename)
+            # Write video
+            with imageio.get_writer(output_filename, fps=fps) as video:
+                for frame in video_np:
+                    video.append_data(frame)
 
 
 def main(argv: Sequence[str]) -> None:
-  pyconfig.initialize(argv)
-  run(pyconfig.config)
+    pyconfig.initialize(argv)
+    run(pyconfig.config)
 
 
 if __name__ == "__main__":
-  app.run(main)
+    app.run(main)
