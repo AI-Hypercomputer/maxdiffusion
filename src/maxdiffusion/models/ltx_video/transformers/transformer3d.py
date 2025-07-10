@@ -153,7 +153,7 @@ class Transformer3DModel(nn.Module):
                 weight_dtype=self.weight_dtype,
                 matmul_precision=self.matmul_precision,
             )
-    def init_weights(self, in_channels, caption_channels, eval_only=True):
+    def init_weights(self, key, in_channels, caption_channels, eval_only=True):
         example_inputs = {}
         batch_size, num_tokens = 4, 256
         input_shapes = {
@@ -172,11 +172,11 @@ class Transformer3DModel(nn.Module):
         if eval_only:
             return jax.eval_shape(
                 self.init,
-                jax.random.PRNGKey(42), ##need to change?
+                key, ##need to change?
                 **example_inputs,
             )["params"]
         else:
-            return self.init(jax.random.PRNGKey(42), **example_inputs)['params']
+            return self.init(key, **example_inputs)['params']
     
     def create_skip_layer_mask(
         self,

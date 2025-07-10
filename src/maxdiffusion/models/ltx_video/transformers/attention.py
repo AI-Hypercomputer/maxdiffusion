@@ -670,12 +670,13 @@ class AttentionOp(nn.Module):
             # )
             # qkv_segment_ids_spec = jax.sharding.PartitionSpec(("data", "fsdp", "fsdp_transpose", "expert"), "sequence")
             qkvo_sharding_spec = jax.sharding.PartitionSpec(
-                None, 
+                "data",
+                "fsdp",
                 None,
-                None,
-                None,
+                "tensor",
             )
-            qkv_segment_ids_spec = jax.sharding.PartitionSpec(None, None)
+            # Based on: ("activation_kv_batch", "activation_length")
+            qkv_segment_ids_spec = jax.sharding.PartitionSpec("data", None)
             wrapped_flash_attention = shard_map(
                 partial_flash_attention,
                 mesh=sharding_mesh,
