@@ -240,7 +240,7 @@ class LTXVideoPipeline:
             tx=None,
             config=config,
             mesh=mesh,
-            weights_init_fn=weights_init_fn,
+            weights_init_fn=None,
             checkpoint_manager=checkpoint_manager,
             checkpoint_item=" ",
             model_params=None,

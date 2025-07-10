@@ -154,6 +154,7 @@ class Transformer3DModel(nn.Module):
                 matmul_precision=self.matmul_precision,
             )
     def init_weights(self, key, in_channels, caption_channels, eval_only=True):
+        import pdb; pdb.set_trace()
         example_inputs = {}
         batch_size, num_tokens = 4, 256
         input_shapes = {
