@@ -686,6 +686,7 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
     self.key = nnx.Linear(
@@ -696,6 +697,7 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
     self.value = nnx.Linear(
@@ -706,6 +708,7 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
     self.proj_attn = nnx.Linear(

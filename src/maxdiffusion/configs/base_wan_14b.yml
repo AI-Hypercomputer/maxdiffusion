@@ -132,11 +132,10 @@ logical_axis_rules: [
                       ['mlp','tensor'],
                       ['embed','fsdp'],
                       ['heads', 'tensor'],
-                      ['norm', 'fsdp'],
+                      ['norm', 'tensor'],
                       ['conv_batch', ['data','fsdp']],
                       ['out_channels', 'tensor'],
-                      ['conv_out', 'fsdp'],
-                      ['conv_in', 'fsdp']
+                      ['conv_in', 'fsdp'],
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
