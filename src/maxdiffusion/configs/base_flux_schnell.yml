@@ -170,6 +170,8 @@ ici_data_parallelism: -1
 ici_fsdp_parallelism: 1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
+allow_split_physical_axes: False
+
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
 dataset_name: 'diffusers/pokemon-gpt4-captions'
