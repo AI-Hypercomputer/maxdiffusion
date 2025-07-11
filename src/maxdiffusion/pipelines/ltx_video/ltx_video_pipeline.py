@@ -11,37 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import argparse
 import math
 import os
-import random
 from jax import Array
-from datetime import datetime
-from pathlib import Path
+from maxdiffusion.models.ltx_video.autoencoders.latent_upsampler import LatentUpsampler
 from diffusers import AutoencoderKL
 from typing import Optional, List, Union, Tuple
 from einops import rearrange
 import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
-# from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
-import yaml
-from transformers import (CLIPTokenizer, FlaxCLIPTextModel,
-                          T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
-
-
-import imageio
+from transformers import (
+    FlaxT5EncoderModel, 
+    AutoTokenizer, 
+    AutoModelForCausalLM,
+    AutoProcessor,
+    AutoTokenizer,)
 import json
 import numpy as np
 import torch
-from safetensors import safe_open
-from PIL import Image
-from transformers import (
-    T5EncoderModel,
-    T5Tokenizer,
-    AutoModelForCausalLM,
-    AutoProcessor,
-    AutoTokenizer,
-)
 from huggingface_hub import hf_hub_download
 from maxdiffusion.models.ltx_video.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
@@ -55,27 +42,19 @@ from maxdiffusion.models.ltx_video.autoencoders.vae_encode import (
     normalize_latents,
 )
 from diffusers.image_processor import VaeImageProcessor
-from ltx_video.schedulers.rf import RectifiedFlowScheduler
 from maxdiffusion.models.ltx_video.autoencoders.latent_upsampler import LatentUpsampler
-import ltx_video.pipelines.crf_compressor as crf_compressor
 from maxdiffusion.models.ltx_video.utils.prompt_enhance_utils import generate_cinematic_prompt
 from math import e
 from types import NoneType
 from typing import Any, Dict
 import numpy as np
-import inspect
 
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, PartitionSpec as P
 from typing import Optional, Union, List
-import torch
-from maxdiffusion.checkpointing import checkpointing_utils
-from flax.linen import partitioning as nn_partitioning
 from maxdiffusion.models.ltx_video.transformers.symmetric_patchifier import SymmetricPatchifier
-from maxdiffusion.models.ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 from ...pyconfig import HyperParameters
-# from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
 from ...schedulers.scheduling_rectified_flow import FlaxRectifiedFlowMultistepScheduler, RectifiedFlowSchedulerState
 from ...max_utils import (
     create_device_mesh,
@@ -83,50 +62,9 @@ from ...max_utils import (
     get_memory_allocations
 )
 from maxdiffusion.models.ltx_video.transformers.transformer3d import Transformer3DModel
-import os
 import json
 import functools
 import orbax.checkpoint as ocp
-import pickle
-
-
-class PickleCheckpointHandler(ocp.CheckpointHandler):
-    def save(self, directory: str, item, args=None):
-        os.makedirs(directory, exist_ok=True)
-        with open(os.path.join(directory, 'checkpoint.pkl'), 'wb') as f:
-            pickle.dump(item, f)
-
-    def restore(self, directory: str, args=None):
-        with open(os.path.join(directory, 'checkpoint.pkl'), 'rb') as f:
-            return pickle.load(f)
-
-    def structure(self, directory: str):
-        return {}  # not needed for simple pickle-based handling
-
-
-def save_tensor_dict(tensor_dict, timestep):
-    base_dir = os.path.dirname(__file__)
-    local_path = os.path.join(base_dir, f"schedulerTest{timestep}")
-
-    try:
-        torch.save(tensor_dict, local_path)
-        print(f"Dictionary of tensors saved to: {local_path}")
-    except Exception as e:
-        print(f"Error saving dictionary: {e}")
-        raise
-
-
-def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids):
-    print("prompts_embeds.shape: ", prompt_embeds.shape, prompt_embeds.dtype)
-    print("fractional_coords.shape: ",
-          fractional_coords.shape, fractional_coords.dtype)
-    print("latents.shape: ", latents.shape, latents.dtype)
-    print("noise_cond.shape: ", noise_cond.shape, noise_cond.dtype)
-    print("noise_cond.shape: ", noise_cond.shape, noise_cond.dtype)
-    # print("segment_ids.shape: ", segment_ids.shape, segment_ids.dtype)
-    print("encoder_attention_segment_ids.shape: ",
-          encoder_attention_segment_ids.shape, encoder_attention_segment_ids.dtype)
-
 
 def prepare_extra_step_kwargs(generator):
     extra_step_kwargs = {}
@@ -817,7 +755,6 @@ class LTXVideoPipeline:
         skip_initial_inference_steps: int = 0,
         skip_final_inference_steps: int = 0,
         cfg_star_rescale: bool = False,
-        skip_layer_strategy: Optional[SkipLayerStrategy] = None,
         skip_block_list: Optional[Union[List[List[int]], List[int]]] = None,
         **kwargs,
     ):
@@ -1076,7 +1013,6 @@ class LTXVideoPipeline:
             rescaling_scale = rescaling_scale,
             batch_size=batch_size,
             skip_layer_masks = skip_layer_masks,
-            skip_layer_strategy = skip_layer_strategy,
             cfg_star_rescale = cfg_star_rescale
         )
 
@@ -1149,7 +1085,6 @@ def transformer_forward_pass(  # need to jit this? wan didnt
     segment_ids,
     encoder_attention_segment_ids,
     skip_layer_mask,
-    skip_layer_strategy,
 ):
     noise_pred = transformer.apply(
         {"params": state.params},
@@ -1160,13 +1095,12 @@ def transformer_forward_pass(  # need to jit this? wan didnt
         segment_ids=segment_ids,
         encoder_attention_segment_ids=encoder_attention_segment_ids,
         skip_layer_mask=skip_layer_mask,
-        skip_layer_strategy=skip_layer_strategy
-    )  # need .param here?
+    )  
     return noise_pred, state
 
 
 def run_inference(
-    transformer_state, transformer, config, mesh, latents, fractional_cords, prompt_embeds, timestep, num_inference_steps, scheduler, segment_ids, encoder_attention_segment_ids, scheduler_state, do_classifier_free_guidance, num_conds, guidance_scale, do_spatio_temporal_guidance, stg_scale, do_rescaling, rescaling_scale, batch_size, skip_layer_masks, skip_layer_strategy, cfg_star_rescale
+    transformer_state, transformer, config, mesh, latents, fractional_cords, prompt_embeds, timestep, num_inference_steps, scheduler, segment_ids, encoder_attention_segment_ids, scheduler_state, do_classifier_free_guidance, num_conds, guidance_scale, do_spatio_temporal_guidance, stg_scale, do_rescaling, rescaling_scale, batch_size, skip_layer_masks,cfg_star_rescale
 ):
     # do_classifier_free_guidance = guidance_scale > 1.0
     # for step in range(num_inference_steps):
@@ -1206,7 +1140,7 @@ def run_inference(
                             skip_layer_masks[i]
                             if skip_layer_masks is not None
                             else None
-                        ), skip_layer_strategy = skip_layer_strategy)
+                        ))
         # ValueError: One of pjit outputs with pytree key path result was given the sharding of NamedSharding(mesh=Mesh('data': 4, 'fsdp': 1, 'tensor': 1, 'fsdp_transpose': 1, 'expert': 1, 'tensor_transpose': 1, 'tensor_sequence': 1, 'sequence': 1, axis_types=(Auto, Auto, Auto, Auto, Auto, Auto, Auto, Auto)), spec=PartitionSpec(('data', 'fsdp'), None, None), memory_kind=device), which implies that the global size of its dimension 0 should be divisible by 4, but it is equal to 1 (full shape: (1, 1, 128))
 
         # # latents = self.denoising
@@ -1294,6 +1228,31 @@ def adain_filter_latent(
     return result
 
 class LTXMultiScalePipeline:
+   
+    @classmethod
+    def load_latent_upsampler(cls, config):
+        spatial_upscaler_model_name_or_path = config.spatial_upscaler_model_path
+    
+        if spatial_upscaler_model_name_or_path and not os.path.isfile(
+            spatial_upscaler_model_name_or_path
+        ):
+            spatial_upscaler_model_path = hf_hub_download(
+                repo_id="Lightricks/LTX-Video",
+                filename=spatial_upscaler_model_name_or_path,
+                local_dir= "/mnt/disks/diffusionproj",
+                repo_type="model",
+            )
+        else:
+            spatial_upscaler_model_path = spatial_upscaler_model_name_or_path
+        if not config.spatial_upscaler_model_path:
+            raise ValueError(
+                "spatial upscaler model path is missing from pipeline config file and is required for multi-scale rendering"
+            )
+        latent_upsampler = LatentUpsampler.from_pretrained(spatial_upscaler_model_path)
+        latent_upsampler.eval()
+        return latent_upsampler
+        
+    
     def _upsample_latents(
         self, latest_upsampler: LatentUpsampler, latents: torch.Tensor
     ):
@@ -1309,37 +1268,29 @@ class LTXMultiScalePipeline:
         return upsampled_latents
 
     def __init__(
-        self, video_pipeline: LTXVideoPipeline, latent_upsampler: LatentUpsampler
+        self, video_pipeline: LTXVideoPipeline
     ):
         self.video_pipeline = video_pipeline
         self.vae = video_pipeline.vae
-        self.latent_upsampler = latent_upsampler
-
+    
     def __call__(
         self,
         height,
         width,
         num_frames, 
-        is_video, 
         output_type, 
         generator, 
         config
     ) -> Any:
 
+        latent_upsampler = self.load_latent_upsampler(config)
         original_output_type = output_type
-        original_width = width
-        original_height = height
-        x_width = int(width * config.downscale_factor)
-        downscaled_width = x_width - (x_width % self.video_pipeline.vae_scale_factor)
-        x_height = int(height * config.downscale_factor)
-        downscaled_height = x_height - (x_height % self.video_pipeline.vae_scale_factor)
-        #use original height and width here to see
         output_type = 'latent'
-        result = self.video_pipeline(height=original_height, width=original_width, num_frames=num_frames,
+        result = self.video_pipeline(height=height, width=width, num_frames=num_frames,
         is_video=True, output_type=output_type, generator=generator, guidance_scale = config.first_pass["guidance_scale"], stg_scale = config.first_pass["stg_scale"], rescaling_scale = config.first_pass["rescaling_scale"], skip_initial_inference_steps= config.first_pass["skip_initial_inference_steps"], skip_final_inference_steps= config.first_pass["skip_final_inference_steps"], 
-        num_inference_steps = config.first_pass["num_inference_steps"], guidance_timesteps = config.first_pass["guidance_timesteps"], cfg_star_rescale = config.first_pass["cfg_star_rescale"], skip_layer_strategy = None, skip_block_list=config.first_pass["skip_block_list"])
+        num_inference_steps = config.first_pass["num_inference_steps"], guidance_timesteps = config.first_pass["guidance_timesteps"], cfg_star_rescale = config.first_pass["cfg_star_rescale"], skip_block_list=config.first_pass["skip_block_list"])
         latents = result
-        upsampled_latents = self._upsample_latents(self.latent_upsampler, latents)
+        upsampled_latents = self._upsample_latents(latent_upsampler, latents)
         upsampled_latents = adain_filter_latent(
             latents=upsampled_latents, reference_latents=latents
         )
@@ -1348,12 +1299,11 @@ class LTXMultiScalePipeline:
 
         latents = upsampled_latents
         output_type = original_output_type
-        width = downscaled_width * 2
-        height = downscaled_height * 2
+        
     
-        result = self.video_pipeline(height=original_height*2, width=original_width*2, num_frames=num_frames,
+        result = self.video_pipeline(height=height*2, width=width*2, num_frames=num_frames,
         is_video=True, output_type=output_type, latents = latents, generator=generator, guidance_scale = config.second_pass["guidance_scale"], stg_scale = config.second_pass["stg_scale"], rescaling_scale = config.second_pass["rescaling_scale"], skip_initial_inference_steps= config.second_pass["skip_initial_inference_steps"], skip_final_inference_steps= config.second_pass["skip_final_inference_steps"], 
-        num_inference_steps = config.second_pass["num_inference_steps"], guidance_timesteps = config.second_pass["guidance_timesteps"], cfg_star_rescale = config.second_pass["cfg_star_rescale"], skip_layer_strategy = None, skip_block_list=config.second_pass["skip_block_list"])
+        num_inference_steps = config.second_pass["num_inference_steps"], guidance_timesteps = config.second_pass["guidance_timesteps"], cfg_star_rescale = config.second_pass["cfg_star_rescale"], skip_block_list=config.second_pass["skip_block_list"])
 
         if original_output_type != "latent":
             num_frames = result.shape[2]
@@ -1361,7 +1311,7 @@ class LTXMultiScalePipeline:
 
             videos = F.interpolate(
                 videos,
-                size=(original_height, original_width),
+                size=(height, width),
                 mode="bilinear",
                 align_corners=False,
             )
