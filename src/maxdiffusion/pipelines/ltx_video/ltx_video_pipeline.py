@@ -117,21 +117,6 @@ class LTXVideoPipeline:
 
     @classmethod
     def load_scheduler(cls, ckpt_path, config):
-        # scheduler, scheduler_state = FlaxUniPCMultistepScheduler.from_pretrained(
-        #     "Wan-AI/Wan2.1-T2V-14B-Diffusers",
-        #     subfolder="scheduler",
-        #     flow_shift=5.0  # 5.0 for 720p, 3.0 for 480p
-        # )
-        # scheduler, scheduler_state = FlaxRectifiedFlowMultistepScheduler.from_pretrained(
-        #     "Lightricks/LTX-Video",
-        #     subfolder="scheduler",
-        #     flow_shift=5.0  # 5.0 for 720p, 3.0 for 480p
-        # )
-        # import pdb; pdb.set_trace()
-        # scheduler = FlaxRectifiedFlowMultistepScheduler(
-        #     sampler="LinearQuadratic"
-        # )
-        # scheduler_state = scheduler.create_state()
         if config.sampler == "from_checkpoint" or not config.sampler:
             scheduler = FlaxRectifiedFlowMultistepScheduler.from_pretrained_jax(ckpt_path)
         else:
@@ -159,14 +144,14 @@ class LTXVideoPipeline:
         for name in ignored_keys:
             if name in model_config:
                 del model_config[name]
+        
         transformer = Transformer3DModel(
-            # change this sharding back
             **model_config, dtype=jnp.float32, gradient_checkpointing="matmul_without_batch", sharding_mesh=mesh)
         
         weights_init_fn = functools.partial(
             transformer.init_weights, in_channels, jax.random.PRNGKey(42), model_config["caption_channels"], eval_only=True
         )
-        import pdb; pdb.set_trace()
+        ##load in jax weights checkpoint
         absolute_ckpt_path = os.path.abspath(relative_ckpt_path)
 
         checkpoint_manager = ocp.CheckpointManager(absolute_ckpt_path)
@@ -194,17 +179,11 @@ class LTXVideoPipeline:
 
     @classmethod
     def load_text_encoder(cls, ckpt_path):
-        # text_encoder = T5EncoderModel.from_pretrained(
-        #     ckpt_path, subfolder="text_encoder"
-        # )
         t5_encoder = FlaxT5EncoderModel.from_pretrained(ckpt_path)
         return t5_encoder
 
     @classmethod
     def load_tokenizer(cls, config, ckpt_path):
-        # tokenizer = T5Tokenizer.from_pretrained(
-        #   ckpt_path, subfolder="tokenizer"
-        # )
         t5_tokenizer = AutoTokenizer.from_pretrained(
             ckpt_path, max_length=config.max_sequence_length, use_fast=True
         )
@@ -235,7 +214,7 @@ class LTXVideoPipeline:
             config)
 
         # load from pytorch version
-        models_dir = "/mnt/disks/diffusionproj"  #edit this!
+        models_dir = config.models_dir
         ltxv_model_name_or_path = "ltxv-13b-0.9.7-dev.safetensors"
         if not os.path.isfile(ltxv_model_name_or_path):
             ltxv_model_path = hf_hub_download(
@@ -292,6 +271,7 @@ class LTXVideoPipeline:
             return text
 
         return [process(t) for t in text]
+    
     def denoising_step(
         scheduler,
         latents: Array,
@@ -303,14 +283,6 @@ class LTXVideoPipeline:
         t_eps: float = 1e-6,
         stochastic_sampling: bool = False,
     ) -> Array:
-        """
-        Perform the denoising step for the required tokens, based on the current timestep and
-        conditioning mask:
-        Conditioning latents have an initial timestep and noising level of (1.0 - conditioning_mask)
-        and will start to be denoised when the current timestep is equal or lower than their
-        conditioning timestep.
-        (hard-conditioning latents with conditioning_mask = 1.0 are never denoised)
-        """
         # Denoise the latents using the scheduler
         denoised_latents = scheduler.step(
             noise_pred,
@@ -343,7 +315,7 @@ class LTXVideoPipeline:
             skip_initial_inference_steps < 0
             or skip_final_inference_steps < 0
             or skip_initial_inference_steps + skip_final_inference_steps
-            >= num_inference_steps # Use the original num_inference_steps here for the check
+            >= num_inference_steps
         ):
             raise ValueError(
                 "invalid skip inference step values: must be non-negative and the sum of skip_initial_inference_steps and skip_final_inference_steps must be less than the number of inference steps"
@@ -378,13 +350,13 @@ class LTXVideoPipeline:
             batch_size = prompt_embeds.shape[0]
 
         max_length = (
-            text_encoder_max_tokens  # TPU supports only lengths multiple of 128
+            text_encoder_max_tokens  
         )
         if prompt_embeds is None:
             assert (
                 self.text_encoder is not None
             ), "You should provide either prompt_embeds or self.text_encoder should not be None,"
-            # text_enc_device = next(self.text_encoder.parameters())
+          
             prompt = self._text_preprocessing(prompt)
             text_inputs = self.tokenizer(
                 prompt,
@@ -419,25 +391,15 @@ class LTXVideoPipeline:
         else:
             dtype = None
         bs_embed, seq_len, _ = prompt_embeds.shape
-        # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
-        print(isinstance(prompt_embeds, Array))
-        # prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
         prompt_embeds = jnp.tile(prompt_embeds, (1, num_images_per_prompt, 1))
-        # prompt_embeds = prompt_embeds.view(
-        #     bs_embed * num_images_per_prompt, seq_len, -1
-        # )
         prompt_embeds = jnp.reshape(
             prompt_embeds, (bs_embed * num_images_per_prompt, seq_len, -1))
         prompt_attention_mask = jnp.tile(
             prompt_attention_mask, (1, num_images_per_prompt))
-        # prompt_attention_mask = prompt_attention_mask.repeat(1, num_images_per_prompt)
-        # prompt_attention_mask = prompt_attention_mask.view(
-        #     bs_embed * num_images_per_prompt, -1
-        # )
         prompt_attention_mask = jnp.reshape(
             prompt_attention_mask, (bs_embed * num_images_per_prompt, -1))
 
-        # get unconditional embeddings for classifier free guidance  hasn't changed yet
+        # get unconditional embeddings for classifier free guidance 
         if do_classifier_free_guidance and negative_prompt_embeds is None:
             uncond_tokens = self._text_preprocessing(negative_prompt)
             uncond_tokens = uncond_tokens * batch_size
@@ -460,7 +422,6 @@ class LTXVideoPipeline:
             negative_prompt_embeds = negative_prompt_embeds[0]
 
         if do_classifier_free_guidance:
-            # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
             seq_len = negative_prompt_embeds.shape[1]
 
             negative_prompt_embeds = jnp.tile(negative_prompt_embeds,
@@ -481,13 +442,13 @@ class LTXVideoPipeline:
             negative_prompt_attention_mask = None
 
         return (
-            prompt_embeds,#(1, 256, 4096)
-            prompt_attention_mask, #1, 256
+            prompt_embeds,
+            prompt_attention_mask, 
             negative_prompt_embeds,
             negative_prompt_attention_mask,
         )
 
-    def prepare_latents(
+    def prepare_latents(  ## this is in pytorch
         self,
         latents: torch.Tensor | None,
         media_items: torch.Tensor | None,
@@ -556,123 +517,123 @@ class LTXVideoPipeline:
 
         assert isinstance(self.vae, CausalVideoAutoencoder)
 
-        # if conditioning_items:
-        #     batch_size, _, num_latent_frames = init_latents.shape[:3]
+        if conditioning_items:
+            batch_size, _, num_latent_frames = init_latents.shape[:3]
 
-        #     init_conditioning_mask = torch.zeros(
-        #         init_latents[:, 0, :, :, :].shape,
-        #         dtype=torch.float32,
-        #         device=init_latents.device,
-        #     )
+            init_conditioning_mask = torch.zeros(
+                init_latents[:, 0, :, :, :].shape,
+                dtype=torch.float32,
+                device=init_latents.device,
+            )
 
-        #     extra_conditioning_latents = []
-        #     extra_conditioning_pixel_coords = []
-        #     extra_conditioning_mask = []
-        #     extra_conditioning_num_latents = 0  # Number of extra conditioning latents added (should be removed before decoding)
+            extra_conditioning_latents = []
+            extra_conditioning_pixel_coords = []
+            extra_conditioning_mask = []
+            extra_conditioning_num_latents = 0  # Number of extra conditioning latents added (should be removed before decoding)
 
-        #     # Process each conditioning item
-        #     for conditioning_item in conditioning_items:
-        #         conditioning_item = self._resize_conditioning_item(
-        #             conditioning_item, height, width
-        #         )
-        #         media_item = conditioning_item.media_item
-        #         media_frame_number = conditioning_item.media_frame_number
-        #         strength = conditioning_item.conditioning_strength
-        #         assert media_item.ndim == 5  # (b, c, f, h, w)
-        #         b, c, n_frames, h, w = media_item.shape
-        #         assert (
-        #             height == h and width == w
-        #         ) or media_frame_number == 0, f"Dimensions do not match: {height}x{width} != {h}x{w} - allowed only when media_frame_number == 0"
-        #         assert n_frames % 8 == 1
-        #         assert (
-        #             media_frame_number >= 0
-        #             and media_frame_number + n_frames <= num_frames
-        #         )
+            # Process each conditioning item
+            for conditioning_item in conditioning_items:
+                conditioning_item = self._resize_conditioning_item(
+                    conditioning_item, height, width
+                )
+                media_item = conditioning_item.media_item
+                media_frame_number = conditioning_item.media_frame_number
+                strength = conditioning_item.conditioning_strength
+                assert media_item.ndim == 5  # (b, c, f, h, w)
+                b, c, n_frames, h, w = media_item.shape
+                assert (
+                    height == h and width == w
+                ) or media_frame_number == 0, f"Dimensions do not match: {height}x{width} != {h}x{w} - allowed only when media_frame_number == 0"
+                assert n_frames % 8 == 1
+                assert (
+                    media_frame_number >= 0
+                    and media_frame_number + n_frames <= num_frames
+                )
 
-        #         # Encode the provided conditioning media item
-        #         media_item_latents = vae_encode(
-        #             media_item.to(dtype=self.vae.dtype, device=self.vae.device),
-        #             self.vae,
-        #             vae_per_channel_normalize=vae_per_channel_normalize,
-        #         ).to(dtype=init_latents.dtype)
+                # Encode the provided conditioning media item
+                media_item_latents = vae_encode(
+                    media_item.to(dtype=self.vae.dtype, device=self.vae.device),
+                    self.vae,
+                    vae_per_channel_normalize=vae_per_channel_normalize,
+                ).to(dtype=init_latents.dtype)
 
-        #         # Handle the different conditioning cases
-        #         if media_frame_number == 0:
-        #             # Get the target spatial position of the latent conditioning item
-        #             media_item_latents, l_x, l_y = self._get_latent_spatial_position(
-        #                 media_item_latents,
-        #                 conditioning_item,
-        #                 height,
-        #                 width,
-        #                 strip_latent_border=True,
-        #             )
-        #             b, c_l, f_l, h_l, w_l = media_item_latents.shape
+                # Handle the different conditioning cases
+                if media_frame_number == 0:
+                    # Get the target spatial position of the latent conditioning item
+                    media_item_latents, l_x, l_y = self._get_latent_spatial_position(
+                        media_item_latents,
+                        conditioning_item,
+                        height,
+                        width,
+                        strip_latent_border=True,
+                    )
+                    b, c_l, f_l, h_l, w_l = media_item_latents.shape
 
-        #             # First frame or sequence - just update the initial noise latents and the mask
-        #             init_latents[:, :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l] = (
-        #                 torch.lerp(
-        #                     init_latents[:, :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l],
-        #                     media_item_latents,
-        #                     strength,
-        #                 )
-        #             )
-        #             init_conditioning_mask[
-        #                 :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l
-        #             ] = strength
-        #         else:
-        #             # Non-first frame or sequence
-        #             if n_frames > 1:
-        #                 # Handle non-first sequence.
-        #                 # Encoded latents are either fully consumed, or the prefix is handled separately below.
-        #                 (
-        #                     init_latents,
-        #                     init_conditioning_mask,
-        #                     media_item_latents,
-        #                 ) = self._handle_non_first_conditioning_sequence(
-        #                     init_latents,
-        #                     init_conditioning_mask,
-        #                     media_item_latents,
-        #                     media_frame_number,
-        #                     strength,
-        #                 )
+                    # First frame or sequence - just update the initial noise latents and the mask
+                    init_latents[:, :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l] = (
+                        torch.lerp(
+                            init_latents[:, :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l],
+                            media_item_latents,
+                            strength,
+                        )
+                    )
+                    init_conditioning_mask[
+                        :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l
+                    ] = strength
+                else:
+                    # Non-first frame or sequence
+                    if n_frames > 1:
+                        # Handle non-first sequence.
+                        # Encoded latents are either fully consumed, or the prefix is handled separately below.
+                        (
+                            init_latents,
+                            init_conditioning_mask,
+                            media_item_latents,
+                        ) = self._handle_non_first_conditioning_sequence(
+                            init_latents,
+                            init_conditioning_mask,
+                            media_item_latents,
+                            media_frame_number,
+                            strength,
+                        )
 
-        #             # Single frame or sequence-prefix latents
-        #             if media_item_latents is not None:
-        #                 noise = randn_tensor(
-        #                     media_item_latents.shape,
-        #                     generator=generator,
-        #                     device=media_item_latents.device,
-        #                     dtype=media_item_latents.dtype,
-        #                 )
+                    # Single frame or sequence-prefix latents
+                    if media_item_latents is not None:
+                        noise = randn_tensor(
+                            media_item_latents.shape,
+                            generator=generator,
+                            device=media_item_latents.device,
+                            dtype=media_item_latents.dtype,
+                        )
 
-        #                 media_item_latents = torch.lerp(
-        #                     noise, media_item_latents, strength
-        #                 )
+                        media_item_latents = torch.lerp(
+                            noise, media_item_latents, strength
+                        )
 
-        #                 # Patchify the extra conditioning latents and calculate their pixel coordinates
-        #                 media_item_latents, latent_coords = self.patchifier.patchify(
-        #                     latents=media_item_latents
-        #                 )
-        #                 pixel_coords = latent_to_pixel_coords(
-        #                     latent_coords,
-        #                     self.vae,
-        #                     causal_fix=self.transformer.config.causal_temporal_positioning,
-        #                 )
+                        # Patchify the extra conditioning latents and calculate their pixel coordinates
+                        media_item_latents, latent_coords = self.patchifier.patchify(
+                            latents=media_item_latents
+                        )
+                        pixel_coords = latent_to_pixel_coords(
+                            latent_coords,
+                            self.vae,
+                            causal_fix=self.transformer.config.causal_temporal_positioning,
+                        )
 
-        #                 # Update the frame numbers to match the target frame number
-        #                 pixel_coords[:, 0] += media_frame_number
-        #                 extra_conditioning_num_latents += media_item_latents.shape[1]
+                        # Update the frame numbers to match the target frame number
+                        pixel_coords[:, 0] += media_frame_number
+                        extra_conditioning_num_latents += media_item_latents.shape[1]
 
-        #                 conditioning_mask = torch.full(
-        #                     media_item_latents.shape[:2],
-        #                     strength,
-        #                     dtype=torch.float32,
-        #                     device=init_latents.device,
-        #                 )
+                        conditioning_mask = torch.full(
+                            media_item_latents.shape[:2],
+                            strength,
+                            dtype=torch.float32,
+                            device=init_latents.device,
+                        )
 
-        #                 extra_conditioning_latents.append(media_item_latents)
-        #                 extra_conditioning_pixel_coords.append(pixel_coords)
-        #                 extra_conditioning_mask.append(conditioning_mask)
+                        extra_conditioning_latents.append(media_item_latents)
+                        extra_conditioning_pixel_coords.append(pixel_coords)
+                        extra_conditioning_mask.append(conditioning_mask)
 
         # Patchify the updated latents and calculate their pixel coordinates
         init_latents, init_latent_coords = self.patchifier.patchify(
@@ -683,46 +644,45 @@ class LTXVideoPipeline:
             self.vae,
             # causal_fix=self.transformer.config.causal_temporal_positioning, set to false now
             causal_fix=True
-
         )
 
         if not conditioning_items:
             return init_latents, init_pixel_coords, None, 0
 
-        # init_conditioning_mask, _ = self.patchifier.patchify(
-        #     latents=init_conditioning_mask.unsqueeze(1)
-        # )
-        # init_conditioning_mask = init_conditioning_mask.squeeze(-1)
+        init_conditioning_mask, _ = self.patchifier.patchify(
+            latents=init_conditioning_mask.unsqueeze(1)
+        )
+        init_conditioning_mask = init_conditioning_mask.squeeze(-1)
 
-        # if extra_conditioning_latents:
-        #     # Stack the extra conditioning latents, pixel coordinates and mask
-        #     init_latents = torch.cat([*extra_conditioning_latents, init_latents], dim=1)
-        #     init_pixel_coords = torch.cat(
-        #         [*extra_conditioning_pixel_coords, init_pixel_coords], dim=2
-        #     )
-        #     init_conditioning_mask = torch.cat(
-        #         [*extra_conditioning_mask, init_conditioning_mask], dim=1
-        #     )
+        if extra_conditioning_latents:
+            # Stack the extra conditioning latents, pixel coordinates and mask
+            init_latents = torch.cat([*extra_conditioning_latents, init_latents], dim=1)
+            init_pixel_coords = torch.cat(
+                [*extra_conditioning_pixel_coords, init_pixel_coords], dim=2
+            )
+            init_conditioning_mask = torch.cat(
+                [*extra_conditioning_mask, init_conditioning_mask], dim=1
+            )
 
-        #     if self.transformer.use_tpu_flash_attention:
-        #         # When flash attention is used, keep the original number of tokens by removing
-        #         #   tokens from the end.
-        #         init_latents = init_latents[:, :-extra_conditioning_num_latents]
-        #         init_pixel_coords = init_pixel_coords[
-        #             :, :, :-extra_conditioning_num_latents
-        #         ]
-        #         init_conditioning_mask = init_conditioning_mask[
-        #             :, :-extra_conditioning_num_latents
-        #         ]
+            if self.transformer.use_tpu_flash_attention:
+                # When flash attention is used, keep the original number of tokens by removing
+                #   tokens from the end.
+                init_latents = init_latents[:, :-extra_conditioning_num_latents]
+                init_pixel_coords = init_pixel_coords[
+                    :, :, :-extra_conditioning_num_latents
+                ]
+                init_conditioning_mask = init_conditioning_mask[
+                    :, :-extra_conditioning_num_latents
+                ]
 
-        # return (
-        #     init_latents,
-        #     init_pixel_coords,
-        #     init_conditioning_mask,
-        #     extra_conditioning_num_latents,
-        # )
+        return (
+            init_latents,
+            init_pixel_coords,
+            init_conditioning_mask,
+            extra_conditioning_num_latents,
+        )
 
-    # change the paramters of these, currently pass in dummy inputs
+  
 
     def __call__(
         self,
@@ -881,8 +841,7 @@ class LTXVideoPipeline:
         prompt_attention_mask_batch = prompt_attention_mask
         if do_classifier_free_guidance:
             prompt_embeds_batch = jnp.concatenate(
-                [negative_prompt_embeds, prompt_embeds], axis=0 #check negative_prompt_embeds dimension
-            )
+                [negative_prompt_embeds, prompt_embeds], axis=0)
             prompt_attention_mask_batch = jnp.concatenate(
                 [negative_prompt_attention_mask, prompt_attention_mask], axis=0
             )
@@ -898,7 +857,7 @@ class LTXVideoPipeline:
         latents = self.prepare_latents(
             latents=latents,
             media_items=None,  # set to None
-            timestep=scheduler_state.timesteps[0],  # set to 1.0 for now TODO: fix this
+            timestep=scheduler_state.timesteps[0],  
             latent_shape=latent_shape,
             dtype=None,
             device=None,
@@ -925,73 +884,10 @@ class LTXVideoPipeline:
         fractional_coords = pixel_coords.to(torch.float32)
         fractional_coords[:, 0] = fractional_coords[:, 0] * (1.0 / frame_rate)
 
-        # if not isinstance(guidance_scale, List):
-        #   guidance_scale = [guidance_scale] * len(self.scheduler_state.timesteps)
-        # guidance_scale = [x if x > 1.0 else 0.0 for x in guidance_scale]
-        # data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
-        # latents = jax.device_put(example_inputs["latents"], data_sharding)
-        # prompt_embeds = jax.device_put(example_inputs["prompt_embeds"], data_sharding)
-        # fractional_coords = jax.device_put(example_inputs["fractional_coords"], data_sharding)
-        # noise_cond = jax.device_put(example_inputs["timestep"], data_sharding)
-        # segment_ids = jax.device_put(example_inputs["segment_ids"], data_sharding)
-        # encoder_attention_segment_ids = jax.device_put(example_inputs["encoder_attention_segment_ids"], data_sharding)
-        # validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids)
         noise_cond = jnp.ones(  # initialize first round with this!
             (1, 1)
         )
-
-        # # noise_cond = None
-        # saved_tensor_path = "/home/serenagu_google_com/LTX-Video/ltx_video/pipelines/schedulerTest1.0"
-        # tensor_dict = torch.load(saved_tensor_path)
-
-        # for key, value in tensor_dict.items():
-        #   if value is not None:
-        #     tensor_dict[key] = jnp.array(value.to(torch.float32).cpu().numpy())
-        # example_inputs = tensor_dict
-        # latents = jax.device_put(example_inputs["latent_model_input"])
-        # # prompt_embeds = jax.device_put(example_inputs["encoder_hidden_states"])
-        # fractional_coords = jax.device_put(example_inputs["indices_grid"])
-        # encoder_attention_segment_ids = jax.device_put(example_inputs["encoder_attention_segment_ids"])
-        # segment_ids = None
-        # # validate_transformer_inputs(prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids)
-
-        # #only run this for the first time!
-        # scheduler_state = self.scheduler.set_timesteps(state=self.scheduler_state, shape=latents.shape, num_inference_steps=num_inference_steps)
-        # extra_step_kwargs = prepare_extra_step_kwargs(generator = jax.random.PRNGKey(0)) #check if this value needs to be changed, for unipc eta is not taken
-        # scheduler_state = self.scheduler_state
-        # num_warmup_steps = max(len(self.scheduler_state.timesteps) - num_inference_steps * self.scheduler.order, 0) #no paramter order here
-        # p_run_inference = jax.jit(
-        #   functools.partial(
-        #       run_inference,
-        #       transformer=self.transformer,
-        #       config=self.config,
-        #       mesh=self.mesh,
-        #       fractional_cords=fractional_coords,
-        #       prompt_embeds = prompt_embeds,
-        #       segment_ids=segment_ids,
-
-        #       encoder_attention_segment_ids=encoder_attention_segment_ids,
-        #       num_inference_steps=num_inference_steps,
-        #       scheduler=self.scheduler,
-        #   ),
-        #   in_shardings=(self.state_shardings, data_sharding, data_sharding, None),   #not sure if this sharding is correct
-        #   out_shardings=None,
-        # )
-        segment_ids = None
-        # num_warmup_steps = max(len(self.scheduler_state.timesteps) - num_inference_steps * self.scheduler.order, 0) #no paramter order here
-        # p_run_inference = functools.partial(
-        #       run_inference,
-        #       transformer=self.transformer,
-        #       config=self.config,
-        #       mesh=self.mesh,
-        #       fractional_cords=fractional_coords,
-        #       prompt_embeds = prompt_embeds,
-        #       segment_ids=segment_ids,
-        #       encoder_attention_segment_ids=encoder_attention_segment_ids,
-        #       num_inference_steps=num_inference_steps,
-        #       scheduler=self.scheduler,
-        #       # guidance_scale=guidance_scale
-        #   )
+        segment_ids = None  #how is this created?
         p_run_inference = functools.partial(
             run_inference,
             transformer=self.transformer,
@@ -1018,7 +914,6 @@ class LTXVideoPipeline:
 
         with self.mesh:
             latents, scheduler_state = p_run_inference(transformer_state=self.transformer_state, latents=jnp.array(latents.to(
-                # add scheduler state back in
                 torch.float32).detach().numpy()), timestep=noise_cond, scheduler_state=scheduler_state)
         latents = torch.from_numpy(np.array(latents))
         latents = latents[:, num_cond_latents:]
@@ -1061,7 +956,7 @@ class LTXVideoPipeline:
                 timestep=decode_timestep,
             )
             image = self.image_processor.postprocess(
-                image, output_type=output_type)  # shape mismatch here
+                image, output_type=output_type) 
 
         else:
             image = latents
@@ -1072,7 +967,7 @@ class LTXVideoPipeline:
             return (image,)
 
         return image
-    # save states here
+    
 
 
 def transformer_forward_pass(  # need to jit this? wan didnt
@@ -1102,21 +997,13 @@ def transformer_forward_pass(  # need to jit this? wan didnt
 def run_inference(
     transformer_state, transformer, config, mesh, latents, fractional_cords, prompt_embeds, timestep, num_inference_steps, scheduler, segment_ids, encoder_attention_segment_ids, scheduler_state, do_classifier_free_guidance, num_conds, guidance_scale, do_spatio_temporal_guidance, stg_scale, do_rescaling, rescaling_scale, batch_size, skip_layer_masks,cfg_star_rescale
 ):
-    # do_classifier_free_guidance = guidance_scale > 1.0
-    # for step in range(num_inference_steps):
     for i, t in enumerate(scheduler_state.timesteps):
         current_timestep = t
         latent_model_input = (
             jnp.concatenate([latents] * num_conds) if num_conds > 1 else latents
         )
-        # t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
-        # # timestep = jnp.broadcast_to(t, timestep.shape)  # (4, 256)
-        # timestep = jnp.broadcast_to(
-        #     t, (latent_model_input.shape[0],)
-        # ).reshape(-1, 1)
         if not isinstance(current_timestep, (jnp.ndarray, jax.Array)):
-        # Determine the correct dtype based on the device (similar to PyTorch)
-            is_mps = False  # MPS is not a JAX concept, remove it. JAX handles devices automatically.
+            is_mps = False 
             if isinstance(current_timestep, float):
                 dtype = jnp.float32 
             else:
@@ -1129,49 +1016,43 @@ def run_inference(
         elif current_timestep.ndim == 0:
             current_timestep = jnp.expand_dims(current_timestep, axis=0)
 
-    # Broadcast to batch dimension (compatible with ONNX/Core ML)
+        # Broadcast to batch dimension
         current_timestep = jnp.broadcast_to(
             current_timestep, (latent_model_input.shape[0],1)
         )
 
-        # with mesh, nn_partitioning.axis_rules(config.logical_axis_rules): #error out with this line
-        noise_pred, transformer_state = transformer_forward_pass(
-            latent_model_input, transformer_state, current_timestep, transformer, fractional_cords, prompt_embeds, segment_ids, encoder_attention_segment_ids, skip_layer_mask=(
-                            skip_layer_masks[i]
-                            if skip_layer_masks is not None
-                            else None
-                        ))
+        with mesh, nn_partitioning.axis_rules(config.logical_axis_rules): #error out with this line
+            noise_pred, transformer_state = transformer_forward_pass(
+                latent_model_input, transformer_state, current_timestep, transformer, fractional_cords, prompt_embeds, segment_ids, encoder_attention_segment_ids, skip_layer_mask=(
+                                skip_layer_masks[i]
+                                if skip_layer_masks is not None
+                                else None
+                            ))
         # ValueError: One of pjit outputs with pytree key path result was given the sharding of NamedSharding(mesh=Mesh('data': 4, 'fsdp': 1, 'tensor': 1, 'fsdp_transpose': 1, 'expert': 1, 'tensor_transpose': 1, 'tensor_sequence': 1, 'sequence': 1, axis_types=(Auto, Auto, Auto, Auto, Auto, Auto, Auto, Auto)), spec=PartitionSpec(('data', 'fsdp'), None, None), memory_kind=device), which implies that the global size of its dimension 0 should be divisible by 4, but it is equal to 1 (full shape: (1, 1, 128))
 
-        # # latents = self.denoising
-        #   latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
-        # with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-        # noise_pred, transformer_state = transformer_forward_pass(latents, transformer_state, timestep, transformer, fractional_cords, prompt_embeds, segment_ids, encoder_attention_segment_ids) #need to check if transformer_state is successfully updated
+        
         if do_spatio_temporal_guidance:
-        # JAX uses jnp.split for splitting along an axis.
-        # Equivalent to .chunk() for equal-sized chunks
             chunks = jnp.split(noise_pred, num_conds, axis=0)
             noise_pred_text = chunks[-2]
             noise_pred_text_perturb = chunks[-1]
 
         if do_classifier_free_guidance:
-            
             chunks = jnp.split(noise_pred, num_conds, axis=0)
             noise_pred_uncond = chunks[0]
             noise_pred_text = chunks[1]
             if cfg_star_rescale:
                 positive_flat = noise_pred_text.reshape(batch_size, -1)
                 negative_flat = noise_pred_uncond.reshape(batch_size, -1)
-                dot_product = jnp.sum(   #(1, 1)
+                dot_product = jnp.sum( 
                     positive_flat * negative_flat, axis=1, keepdims=True
                 )
-                squared_norm = ( #(1, 1)
+                squared_norm = ( 
                     jnp.sum(negative_flat**2, axis=1, keepdims=True) + 1e-8
                 )
-                alpha = dot_product / squared_norm  #might need to reshape this (1, 1)
+                alpha = dot_product / squared_norm 
                 alpha = alpha.reshape(batch_size, 1, 1)
 
-                noise_pred_uncond = alpha * noise_pred_uncond   #error here (1, 3072, 128)
+                noise_pred_uncond = alpha * noise_pred_uncond   
             noise_pred = noise_pred_uncond + guidance_scale[i] * (
                 noise_pred_text - noise_pred_uncond
             )
@@ -1191,7 +1072,7 @@ def run_inference(
 
                 
                 noise_pred = noise_pred * factor.reshape(batch_size, 1, 1) 
-        current_timestep = current_timestep[:1] # JAX slicing is similar
+        current_timestep = current_timestep[:1] 
         latents, scheduler_state = scheduler.step(
             scheduler_state, noise_pred, current_timestep[0][0], latents).to_tuple()
 
@@ -1294,8 +1175,6 @@ class LTXMultiScalePipeline:
         upsampled_latents = adain_filter_latent(
             latents=upsampled_latents, reference_latents=latents
         )
-
-       
 
         latents = upsampled_latents
         output_type = original_output_type

@@ -4,16 +4,12 @@ from typing import Sequence
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXVideoPipeline
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXMultiScalePipeline
 from maxdiffusion import pyconfig
-import jax.numpy as jnp
-from maxdiffusion.models.ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 from maxdiffusion.models.ltx_video.autoencoders.latent_upsampler import LatentUpsampler
 from huggingface_hub import hf_hub_download
 import imageio
 from datetime import datetime
-from maxdiffusion.utils import export_to_video
 
 import os
-import json
 import torch
 from pathlib import Path
 
@@ -96,52 +92,12 @@ def run(config):
     num_frames_padded = ((config.num_frames - 2) // 8 + 1) * 8 + 1
     padding = calculate_padding(
         config.height, config.width, height_padded, width_padded)
-    # prompt_enhancement_words_threshold = config.prompt_enhancement_words_threshold
-    # prompt_word_count = len(config.prompt.split())
-    # enhance_prompt = (
-    #     prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
-    # )
 
-    seed = 10  # change this, generator in pytorch, used in prepare_latents
+    seed = 10 
     generator = torch.Generator().manual_seed(seed)
     pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt = False)
-    if config.pipeline_type == "multi-scale":   #move this to pipeline file??
-        spatial_upscaler_model_name_or_path = config.spatial_upscaler_model_path
-    
-        if spatial_upscaler_model_name_or_path and not os.path.isfile(
-            spatial_upscaler_model_name_or_path
-        ):
-            spatial_upscaler_model_path = hf_hub_download(
-                repo_id="Lightricks/LTX-Video",
-                filename=spatial_upscaler_model_name_or_path,
-                local_dir= "/mnt/disks/diffusionproj",
-                repo_type="model",
-            )
-        else:
-            spatial_upscaler_model_path = spatial_upscaler_model_name_or_path
-        if not config.spatial_upscaler_model_path:
-            raise ValueError(
-                "spatial upscaler model path is missing from pipeline config file and is required for multi-scale rendering"
-            )
-        latent_upsampler = create_latent_upsampler(
-            spatial_upscaler_model_path, "cpu"  #device set to cpu for now
-        )
-        pipeline = LTXMultiScalePipeline(pipeline, latent_upsampler=latent_upsampler)
-    stg_mode = config.stg_mode
-    if stg_mode.lower() == "stg_av" or stg_mode.lower() == "attention_values":
-        skip_layer_strategy = SkipLayerStrategy.AttentionValues
-    elif stg_mode.lower() == "stg_as" or stg_mode.lower() == "attention_skip":
-        skip_layer_strategy = SkipLayerStrategy.AttentionSkip
-    elif stg_mode.lower() == "stg_r" or stg_mode.lower() == "residual":
-        skip_layer_strategy = SkipLayerStrategy.Residual
-    elif stg_mode.lower() == "stg_t" or stg_mode.lower() == "transformer_block":
-        skip_layer_strategy = SkipLayerStrategy.TransformerBlock
-    else:
-        raise ValueError(f"Invalid spatiotemporal guidance mode: {stg_mode}")
-    # images = pipeline(height=height_padded, width=width_padded, num_frames=num_frames_padded,
-    #                   is_video=True, output_type='pt', generator=generator, guidance_scale = config.first_pass.guidance_scale, stg_scale = config.stg_scale, rescaling_scale = config.rescaling_scale, skip_initial_inference_steps= config.skip_initial_inference_steps, skip_final_inference_steps= config.skip_final_inference_steps, num_inference_steps = config.num_inference_steps,
-    #                   guidance_timesteps = config.guidance_timesteps, cfg_star_rescale = config.cfg_star_rescale, skip_layer_strategy = None, skip_block_list=config.skip_block_list).images
-    images = pipeline(height=height_padded, width=width_padded, num_frames=num_frames_padded, is_video=True, output_type='pt', generator=generator, config = config)
+    pipeline = LTXMultiScalePipeline(pipeline)
+    images = pipeline(height=height_padded, width=width_padded, num_frames=num_frames_padded, output_type='pt', generator=generator, config = config)
     (pad_left, pad_right, pad_top, pad_bottom) = padding
     pad_bottom = -pad_bottom
     pad_right = -pad_right

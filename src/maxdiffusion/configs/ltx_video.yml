@@ -32,18 +32,10 @@ flow_shift: 5.0
 downscale_factor: 0.6666666
 spatial_upscaler_model_path: "ltxv-spatial-upscaler-0.9.7.safetensors"
 prompt_enhancement_words_threshold: 120
-# guidance_scale: [1, 1, 6, 8, 6, 1, 1] #4.5
-# stg_scale: [0, 0, 4, 4, 4, 2, 1] #1.0
-# rescaling_scale: [1, 1, 0.5, 0.5, 1, 1, 1] #0.7
-# num_inference_steps: 30
-# skip_final_inference_steps: 3
-# skip_initial_inference_steps: 0
-# guidance_timesteps: [1.0, 0.996,  0.9933, 0.9850, 0.9767, 0.9008, 0.6180]
-# skip_block_list: [[], [11, 25, 35, 39], [22, 35, 39], [28], [28], [28], [28]]
 stg_mode: "attention_values"
 decode_timestep: 0.05
 decode_noise_scale: 0.025
-# cfg_star_rescale: True
+models_dir: "/mnt/disks/diffusionproj" #where safetensor file is
 
 
 first_pass:

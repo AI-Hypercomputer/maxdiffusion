@@ -25,8 +25,7 @@ class RepeatableCarryBlock(nn.Module):
 
         mod = self.module(*self.module_init_args, **self.module_init_kwargs)
 
-        # block_args are the static arguments passed to each individual block
-        output_data = mod(index_input, data_input, *block_args) # Pass block_args to the module
+        output_data = mod(index_input, data_input, *block_args) # Pass index_input to facilitate skip layers
 
         next_index = index_input + 1
         new_carry = (output_data, next_index)
@@ -76,14 +75,14 @@ class RepeatableLayer(nn.Module):
     """
 
     @nn.compact
-    def __call__(self, *args): # args is now the full input to RepeatableLayer
+    def __call__(self, *args): 
         if not args:
             raise ValueError("RepeatableLayer expects at least one argument for initial data input.")
 
-        initial_data_input = args[0] # The first element is your main data input
-        static_block_args = args[1:] # Any subsequent elements are static args for each block
+        initial_data_input = args[0]
+        static_block_args = args[1:] 
 
-        initial_index = jnp.array(0, dtype=jnp.int32)
+        initial_index = jnp.array(0, dtype=jnp.int32) #index of current transformer block
 
         scan_kwargs = {}
         if self.pspec_name is not None:
@@ -92,9 +91,6 @@ class RepeatableLayer(nn.Module):
         initializing = self.is_mutable_collection("params")
         params_spec = self.param_scan_axis if initializing else partitioning.ScanIn(self.param_scan_axis)
 
-        # in_axes for the scanned function (RepeatableCarryBlock.__call__):
-        # 1. The 'carry' tuple ((0, 0))
-        # 2. Then, nn.broadcast for each of the `static_block_args`
         in_axes_for_scan = (nn.broadcast,) * (len(args)-1)
 
         scan_fn = nn.scan(
@@ -117,5 +113,4 @@ class RepeatableLayer(nn.Module):
         # Call wrapped_function with the initial carry tuple and the static_block_args
         (final_data, final_index), _ = wrapped_function((initial_data_input, initial_index), *static_block_args)
 
-        # Typically, you only want the final data output from the sequence of layers
         return final_data
