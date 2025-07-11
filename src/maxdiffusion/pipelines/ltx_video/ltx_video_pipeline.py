@@ -228,7 +228,7 @@ class LTXVideoPipeline:
         weights_init_fn = functools.partial(
             transformer.init_weights, in_channels, jax.random.PRNGKey(42), model_config["caption_channels"], eval_only=True
         )
-        
+        import pdb; pdb.set_trace()
         absolute_ckpt_path = os.path.abspath(relative_ckpt_path)
 
         checkpoint_manager = ocp.CheckpointManager(absolute_ckpt_path)
