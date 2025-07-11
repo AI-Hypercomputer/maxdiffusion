@@ -150,7 +150,7 @@ def load_base_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: d
   elif hf_download:
     # download the index file for sharded models.
     index_file_path = hf_hub_download(
-        pretrained_model_name_or_path, subfolder, filename,
+        pretrained_model_name_or_path, subfolder=subfolder, filename=filename,
     )
   with jax.default_device(device):  
       # open the index file.
@@ -166,7 +166,7 @@ def load_base_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: d
         if local_files:
           ckpt_shard_path = os.path.join(pretrained_model_name_or_path, subfolder, model_file)
         else:
-          ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder="transformer", filename=model_file)
+          ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
         # now get all the filenames for the model that need downloading
         max_logging.log(f"Load and port Wan 2.1 transformer on {device}")
 
@@ -214,7 +214,7 @@ def load_wan_vae(pretrained_model_name_or_path: str, eval_shapes: dict, device: 
       raise FileNotFoundError(f"File {ckpt_path} not found for local directory.")
   elif hf_download:
     ckpt_path = hf_hub_download(
-        pretrained_model_name_or_path, subfolder, filename
+        pretrained_model_name_or_path, subfolder=subfolder, filename=filename
     )
   max_logging.log(f"Load and port Wan 2.1 VAE on {device}")
   with jax.default_device(device):
