@@ -153,8 +153,7 @@ class Transformer3DModel(nn.Module):
                 weight_dtype=self.weight_dtype,
                 matmul_precision=self.matmul_precision,
             )
-    def init_weights(self, key, in_channels, caption_channels, eval_only=True):
-        import pdb; pdb.set_trace()
+    def init_weights(self, in_channels, key, caption_channels, eval_only=True):
         example_inputs = {}
         batch_size, num_tokens = 4, 256
         input_shapes = {
@@ -169,16 +168,15 @@ class Transformer3DModel(nn.Module):
             example_inputs[name] = jnp.ones(
                 shape, dtype=jnp.float32 if name not in ["attention_mask", "encoder_attention_mask"] else jnp.bool
             )
-    
+
         if eval_only:
             return jax.eval_shape(
                 self.init,
-                key, ##need to change?
+                key,
                 **example_inputs,
             )["params"]
         else:
-            return self.init(key, **example_inputs)['params']
-    
+            return self.init(key, **example_inputs)["params"]
     def create_skip_layer_mask(
         self,
         batch_size: int,

@@ -226,12 +226,9 @@ class LTXVideoPipeline:
             **model_config, dtype=jnp.float32, gradient_checkpointing="matmul_without_batch", sharding_mesh=mesh)
         
         weights_init_fn = functools.partial(
-            transformer.init_weights,
-            jax.random.PRNGKey(42),
-            in_channels,
-            model_config['caption_channels'],
-            eval_only=True
+            transformer.init_weights, in_channels, jax.random.PRNGKey(42), model_config["caption_channels"], eval_only=True
         )
+        
         absolute_ckpt_path = os.path.abspath(relative_ckpt_path)
 
         checkpoint_manager = ocp.CheckpointManager(absolute_ckpt_path)
@@ -240,7 +237,7 @@ class LTXVideoPipeline:
             tx=None,
             config=config,
             mesh=mesh,
-            weights_init_fn=None,
+            weights_init_fn=weights_init_fn,
             checkpoint_manager=checkpoint_manager,
             checkpoint_item=" ",
             model_params=None,
