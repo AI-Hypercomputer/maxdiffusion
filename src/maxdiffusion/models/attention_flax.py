@@ -568,8 +568,8 @@ class AttentionOp(nn.Module):
   use_memory_efficient_attention: bool = False
   split_head_dim: bool = False
   float32_qk_product: bool = True
-  axis_names_q: AxisNames = ((BATCH, HEAD, LENGTH, D_KV),)
-  axis_names_kv: AxisNames = ((BATCH, HEAD, KV_LENGTH, D_KV),)
+  axis_names_q: AxisNames = (BATCH, HEAD, LENGTH, D_KV)
+  axis_names_kv: AxisNames = (BATCH, HEAD, KV_LENGTH, D_KV)
   flash_min_seq_length: int = 4096
   flash_block_sizes: BlockSizes = None
   dtype: DType = jnp.float32

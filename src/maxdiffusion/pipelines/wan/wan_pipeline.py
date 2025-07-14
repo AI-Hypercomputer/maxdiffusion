@@ -183,7 +183,7 @@ class WanPipeline:
 
   @classmethod
   def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
-    
+
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
       wan_vae = AutoencoderKLWan.from_config(
           config.pretrained_model_name_or_path,
@@ -194,11 +194,12 @@ class WanPipeline:
           weights_dtype=config.weights_dtype,
       )
       return wan_vae
-    # 1. eval shape    
+
+    # 1. eval shape
     p_model_factory = partial(create_model, config=config)
     wan_vae = nnx.eval_shape(p_model_factory, rngs=rngs)
     graphdef, state = nnx.split(wan_vae, nnx.Param)
-    
+
     # 2. retrieve the state shardings, mapping logical names to mesh axis names.
     logical_state_spec = nnx.get_partition_spec(state)
     logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
@@ -215,7 +216,7 @@ class WanPipeline:
       sharding = logical_state_sharding[path].value
       state[path].value = device_put_replicated(val, sharding)
     state = nnx.from_flat_state(state)
-    
+
     wan_vae = nnx.merge(graphdef, state)
     vae_cache = AutoencoderKLWanCache(wan_vae)
     return wan_vae, vae_cache
@@ -463,7 +464,18 @@ class WanPipeline:
 
 
 @partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
-def transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, prompt_embeds, is_uncond, slg_mask, do_classifier_free_guidance, guidance_scale):
+def transformer_forward_pass(
+    graphdef,
+    sharded_state,
+    rest_of_state,
+    latents,
+    timestep,
+    prompt_embeds,
+    is_uncond,
+    slg_mask,
+    do_classifier_free_guidance,
+    guidance_scale,
+):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   noise_pred = wan_transformer(
       hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds, is_uncond=is_uncond, slg_mask=slg_mask
@@ -474,7 +486,7 @@ def transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, ti
     noise_pred = noise_pred[:bsz]
     noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
     latents = latents[:bsz]
-  
+
   return noise_pred, latents
 
 
@@ -516,7 +528,7 @@ def run_inference(
         is_uncond=jnp.array(True, dtype=jnp.bool_),
         slg_mask=slg_mask,
         do_classifier_free_guidance=do_classifier_free_guidance,
-        guidance_scale=guidance_scale
+        guidance_scale=guidance_scale,
     )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

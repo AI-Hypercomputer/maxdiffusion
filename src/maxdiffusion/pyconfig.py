@@ -36,8 +36,10 @@ def string_to_bool(s: str) -> bool:
     return False
   raise ValueError(f"Can't convert {s} to bool")
 
+
 def string_to_list(string_list: str) -> list:
   return ast.literal_eval(string_list)
+
 
 _yaml_types_to_parser = {str: str, int: int, float: float, bool: string_to_bool, list: string_to_list}
 

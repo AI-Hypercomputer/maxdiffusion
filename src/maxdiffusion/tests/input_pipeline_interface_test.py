@@ -151,34 +151,35 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        dtype=config.activations_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        from_pt=config.from_pt,
-    )
-    p_encode = None
-    p_vae_apply = None
-    rng = None
-    tokenize_fn = partial(
-        tokenize_captions, caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode
-    )
-    image_transforms_fn = partial(
-        transform_images,
-        image_column=config.image_column,
-        image_resolution=config.resolution,
-        rng=rng,
-        global_batch_size=global_batch_size,
-        p_vae_apply=p_vae_apply,
-    )
+    with mesh:
+      pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+          config.pretrained_model_name_or_path,
+          revision=config.revision,
+          dtype=config.activations_dtype,
+          safety_checker=None,
+          feature_extractor=None,
+          from_pt=config.from_pt,
+      )
+      p_encode = None
+      p_vae_apply = None
+      rng = None
+      tokenize_fn = partial(
+          tokenize_captions, caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode
+      )
+      image_transforms_fn = partial(
+          transform_images,
+          image_column=config.image_column,
+          image_resolution=config.resolution,
+          rng=rng,
+          global_batch_size=global_batch_size,
+          p_vae_apply=p_vae_apply,
+      )
 
-    train_iterator = make_data_iterator(
-        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
-    )
-    data = next(train_iterator)
-    device_count = jax.device_count()
+      train_iterator = make_data_iterator(
+          config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+      )
+      data = next(train_iterator)
+      device_count = jax.device_count()
 
     assert data["input_ids"].shape == (device_count, 77)
     assert data["pixel_values"].shape == (device_count, 3, config.resolution, config.resolution)
@@ -200,37 +201,38 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        dtype=config.activations_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        from_pt=config.from_pt,
-    )
-    p_encode = None
-    p_vae_apply = None
-    rng = None
-    tokenize_fn = partial(
-        tokenize_captions_xl,
-        caption_column=config.caption_column,
-        tokenizers=[pipeline.tokenizer, pipeline.tokenizer_2],
-        p_encode=p_encode,
-    )
-    image_transforms_fn = partial(
-        transform_images,
-        image_column=config.image_column,
-        image_resolution=config.resolution,
-        rng=rng,
-        global_batch_size=global_batch_size,
-        p_vae_apply=p_vae_apply,
-    )
+    with mesh:
+      pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+          config.pretrained_model_name_or_path,
+          revision=config.revision,
+          dtype=config.activations_dtype,
+          safety_checker=None,
+          feature_extractor=None,
+          from_pt=config.from_pt,
+      )
+      p_encode = None
+      p_vae_apply = None
+      rng = None
+      tokenize_fn = partial(
+          tokenize_captions_xl,
+          caption_column=config.caption_column,
+          tokenizers=[pipeline.tokenizer, pipeline.tokenizer_2],
+          p_encode=p_encode,
+      )
+      image_transforms_fn = partial(
+          transform_images,
+          image_column=config.image_column,
+          image_resolution=config.resolution,
+          rng=rng,
+          global_batch_size=global_batch_size,
+          p_vae_apply=p_vae_apply,
+      )
 
-    train_iterator = make_data_iterator(
-        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
-    )
-    data = next(train_iterator)
-    device_count = jax.device_count()
+      train_iterator = make_data_iterator(
+          config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+      )
+      data = next(train_iterator)
+      device_count = jax.device_count()
 
     assert data["input_ids"].shape == (device_count, 2, 77)
     assert data["pixel_values"].shape == (device_count, 3, config.resolution, config.resolution)
@@ -253,40 +255,41 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        dtype=config.activations_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        from_pt=config.from_pt,
-    )
-    rng = jax.random.PRNGKey(config.seed)
-    p_encode = None
-    p_vae_apply = None
-    if config.cache_latents_text_encoder_outputs:
-      p_encode = jax.jit(partial(encode, text_encoder=pipeline.text_encoder, text_encoder_params=params["text_encoder"]))
-      p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
-    tokenize_fn = partial(
-        tokenize_captions, caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode
-    )
-    image_transforms_fn = partial(
-        transform_images,
-        image_column=config.image_column,
-        image_resolution=config.resolution,
-        rng=rng,
-        global_batch_size=global_batch_size,
-        p_vae_apply=p_vae_apply,
-    )
+    with mesh:
+      pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+          config.pretrained_model_name_or_path,
+          revision=config.revision,
+          dtype=config.activations_dtype,
+          safety_checker=None,
+          feature_extractor=None,
+          from_pt=config.from_pt,
+      )
+      rng = jax.random.PRNGKey(config.seed)
+      p_encode = None
+      p_vae_apply = None
+      if config.cache_latents_text_encoder_outputs:
+        p_encode = jax.jit(partial(encode, text_encoder=pipeline.text_encoder, text_encoder_params=params["text_encoder"]))
+        p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+      tokenize_fn = partial(
+          tokenize_captions, caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode
+      )
+      image_transforms_fn = partial(
+          transform_images,
+          image_column=config.image_column,
+          image_resolution=config.resolution,
+          rng=rng,
+          global_batch_size=global_batch_size,
+          p_vae_apply=p_vae_apply,
+      )
 
-    train_iterator = make_data_iterator(
-        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
-    )
-    data = next(train_iterator)
-    device_count = jax.device_count()
+      train_iterator = make_data_iterator(
+          config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+      )
+      data = next(train_iterator)
+      device_count = jax.device_count()
 
-    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-    encoder_hidden_states = data["input_ids"]
+      vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+      encoder_hidden_states = data["input_ids"]
 
     assert encoder_hidden_states.shape == (device_count, 77, 1024)
     assert data["pixel_values"].shape == (
@@ -316,37 +319,38 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        dtype=config.activations_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        from_pt=config.from_pt,
-    )
-    rng = jax.random.PRNGKey(config.seed)
-    p_encode = None
-    p_vae_apply = None
-    if config.cache_latents_text_encoder_outputs:
-      p_encode = jax.jit(partial(encode, text_encoder=pipeline.text_encoder, text_encoder_params=params["text_encoder"]))
-      p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
-    tokenize_fn = partial(
-        tokenize_captions, caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode
-    )
-    image_transforms_fn = partial(
-        transform_images,
-        image_column=config.image_column,
-        image_resolution=config.resolution,
-        rng=rng,
-        global_batch_size=global_batch_size,
-        p_vae_apply=p_vae_apply,
-    )
+    with mesh:
+      pipeline, params = FlaxStableDiffusionPipeline.from_pretrained(
+          config.pretrained_model_name_or_path,
+          revision=config.revision,
+          dtype=config.activations_dtype,
+          safety_checker=None,
+          feature_extractor=None,
+          from_pt=config.from_pt,
+      )
+      rng = jax.random.PRNGKey(config.seed)
+      p_encode = None
+      p_vae_apply = None
+      if config.cache_latents_text_encoder_outputs:
+        p_encode = jax.jit(partial(encode, text_encoder=pipeline.text_encoder, text_encoder_params=params["text_encoder"]))
+        p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+      tokenize_fn = partial(
+          tokenize_captions, caption_column=config.caption_column, tokenizer=pipeline.tokenizer, p_encode=p_encode
+      )
+      image_transforms_fn = partial(
+          transform_images,
+          image_column=config.image_column,
+          image_resolution=config.resolution,
+          rng=rng,
+          global_batch_size=global_batch_size,
+          p_vae_apply=p_vae_apply,
+      )
 
-    train_iterator = make_data_iterator(
-        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
-    )
-    data = next(train_iterator)
-    device_count = jax.device_count()
+      train_iterator = make_data_iterator(
+          config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+      )
+      data = next(train_iterator)
+      device_count = jax.device_count()
 
     encoder_hidden_states = data["input_ids"]
     assert encoder_hidden_states.shape == (device_count, 77)
@@ -372,51 +376,52 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        dtype=config.activations_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        from_pt=config.from_pt,
-    )
-    rng = jax.random.PRNGKey(config.seed)
-    p_encode = None
-    p_vae_apply = None
-    if config.cache_latents_text_encoder_outputs:
-      p_encode = jax.jit(
-          partial(
-              encode_xl,
-              text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
-              text_encoder_params=[params["text_encoder"], params["text_encoder_2"]],
-          )
+    with mesh:
+      pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
+          config.pretrained_model_name_or_path,
+          revision=config.revision,
+          dtype=config.activations_dtype,
+          safety_checker=None,
+          feature_extractor=None,
+          from_pt=config.from_pt,
       )
-      p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
-    tokenize_fn = partial(
-        tokenize_captions_xl,
-        caption_column=config.caption_column,
-        tokenizers=[pipeline.tokenizer, pipeline.tokenizer_2],
-        p_encode=p_encode,
-    )
-    image_transforms_fn = partial(
-        transform_images,
-        image_column=config.image_column,
-        image_resolution=config.resolution,
-        rng=rng,
-        global_batch_size=global_batch_size,
-        p_vae_apply=p_vae_apply,
-    )
+      rng = jax.random.PRNGKey(config.seed)
+      p_encode = None
+      p_vae_apply = None
+      if config.cache_latents_text_encoder_outputs:
+        p_encode = jax.jit(
+            partial(
+                encode_xl,
+                text_encoders=[pipeline.text_encoder, pipeline.text_encoder_2],
+                text_encoder_params=[params["text_encoder"], params["text_encoder_2"]],
+            )
+        )
+        p_vae_apply = jax.jit(partial(vae_apply, vae=pipeline.vae, vae_params=params["vae"]))
+      tokenize_fn = partial(
+          tokenize_captions_xl,
+          caption_column=config.caption_column,
+          tokenizers=[pipeline.tokenizer, pipeline.tokenizer_2],
+          p_encode=p_encode,
+      )
+      image_transforms_fn = partial(
+          transform_images,
+          image_column=config.image_column,
+          image_resolution=config.resolution,
+          rng=rng,
+          global_batch_size=global_batch_size,
+          p_vae_apply=p_vae_apply,
+      )
 
-    train_iterator = make_data_iterator(
-        config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
-    )
-    data = next(train_iterator)
-    device_count = jax.device_count()
+      train_iterator = make_data_iterator(
+          config, jax.process_index(), jax.process_count(), mesh, global_batch_size, tokenize_fn, image_transforms_fn
+      )
+      data = next(train_iterator)
+      device_count = jax.device_count()
 
-    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+      vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
 
-    prompt_embeds = data["prompt_embeds"]
-    text_embeds = data["text_embeds"]
+      prompt_embeds = data["prompt_embeds"]
+      text_embeds = data["text_embeds"]
     assert prompt_embeds.shape == (device_count, 77, 2048)
     assert text_embeds.shape == (device_count, 1280)
     assert data["pixel_values"].shape == (
@@ -452,27 +457,27 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
+    with mesh:
+      pipeline, _ = FlaxStableDiffusionPipeline.from_pretrained(
+          config.pretrained_model_name_or_path,
+          revision=config.revision,
+          dtype=config.activations_dtype,
+          safety_checker=None,
+          feature_extractor=None,
+          from_pt=config.from_pt,
+      )
 
-    pipeline, _ = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        dtype=config.activations_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        from_pt=config.from_pt,
-    )
+      train_iterator = make_data_iterator(config, jax.process_index(), jax.process_count(), mesh, global_batch_size)
+      data = next(train_iterator)
+      device_count = jax.device_count()
 
-    train_iterator = make_data_iterator(config, jax.process_index(), jax.process_count(), mesh, global_batch_size)
-    data = next(train_iterator)
-    device_count = jax.device_count()
+      vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+      encoder_hidden_states = data["input_ids"]
 
-    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-    encoder_hidden_states = data["input_ids"]
-
-    # TODO - laion dataset was prepared with an extra dim.
-    # need to preprocess the dataset with dim removed.
-    if len(encoder_hidden_states.shape) == 4:
-      encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
+      # TODO - laion dataset was prepared with an extra dim.
+      # need to preprocess the dataset with dim removed.
+      if len(encoder_hidden_states.shape) == 4:
+        encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
 
     assert encoder_hidden_states.shape == (device_count, 77, 1024)
     assert data["pixel_values"].shape == (
@@ -496,43 +501,43 @@ class InputPipelineInterface(unittest.TestCase):
     global_batch_size = config.per_device_batch_size * jax.device_count()
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
+    with mesh:
+      pipeline, _ = FlaxStableDiffusionPipeline.from_pretrained(
+          config.pretrained_model_name_or_path,
+          revision=config.revision,
+          dtype=config.activations_dtype,
+          safety_checker=None,
+          feature_extractor=None,
+          from_pt=config.from_pt,
+      )
 
-    pipeline, _ = FlaxStableDiffusionPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        dtype=config.activations_dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        from_pt=config.from_pt,
-    )
+      feature_description = {
+          "moments": tf.io.FixedLenFeature([], tf.string),
+          "clip_embeddings": tf.io.FixedLenFeature([], tf.string),
+      }
 
-    feature_description = {
-        "moments": tf.io.FixedLenFeature([], tf.string),
-        "clip_embeddings": tf.io.FixedLenFeature([], tf.string),
-    }
+      def _parse_tfrecord_fn(example):
+        return tf.io.parse_single_example(example, feature_description)
 
-    def _parse_tfrecord_fn(example):
-      return tf.io.parse_single_example(example, feature_description)
+      train_iterator = make_data_iterator(
+          config,
+          jax.process_index(),
+          jax.process_count(),
+          mesh,
+          global_batch_size,
+          feature_description=feature_description,
+          prepare_sample_fn=_parse_tfrecord_fn,
+      )
+      data = next(train_iterator)
+      device_count = jax.device_count()
 
-    train_iterator = make_data_iterator(
-        config,
-        jax.process_index(),
-        jax.process_count(),
-        mesh,
-        global_batch_size,
-        feature_description=feature_description,
-        prepare_sample_fn=_parse_tfrecord_fn,
-    )
-    data = next(train_iterator)
-    device_count = jax.device_count()
+      vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
+      encoder_hidden_states = data["input_ids"]
 
-    vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
-    encoder_hidden_states = data["input_ids"]
-
-    # TODO - laion dataset was prepared with an extra dim.
-    # need to preprocess the dataset with dim removed.
-    if len(encoder_hidden_states.shape) == 4:
-      encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
+      # TODO - laion dataset was prepared with an extra dim.
+      # need to preprocess the dataset with dim removed.
+      if len(encoder_hidden_states.shape) == 4:
+        encoder_hidden_states = jnp.squeeze(encoder_hidden_states)
 
     assert encoder_hidden_states.shape == (device_count, 77, 1024)
     assert data["pixel_values"].shape == (
