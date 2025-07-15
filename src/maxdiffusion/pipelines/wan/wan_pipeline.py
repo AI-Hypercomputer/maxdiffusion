@@ -25,7 +25,7 @@ from flax.linen import partitioning as nn_partitioning
 from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
-from ...max_utils import get_flash_block_sizes, get_precision
+from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
 from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
 from ...models.wan.transformers.transformer_wan import WanModel
 from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
@@ -99,7 +99,7 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():
     sharding = logical_state_sharding[path].value
-    state[path].value = jax.device_put(val, sharding)
+    state[path].value = device_put_replicated(val, sharding)
   state = nnx.from_flat_state(state)
 
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
@@ -183,27 +183,42 @@ class WanPipeline:
 
   @classmethod
   def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
-    wan_vae = AutoencoderKLWan.from_config(
-        config.pretrained_model_name_or_path,
-        subfolder="vae",
-        rngs=rngs,
-        mesh=mesh,
-        dtype=config.activations_dtype,
-        weights_dtype=config.weights_dtype,
-    )
-    vae_cache = AutoencoderKLWanCache(wan_vae)
 
+    def create_model(rngs: nnx.Rngs, config: HyperParameters):
+      wan_vae = AutoencoderKLWan.from_config(
+          config.pretrained_model_name_or_path,
+          subfolder="vae",
+          rngs=rngs,
+          mesh=mesh,
+          dtype=config.activations_dtype,
+          weights_dtype=config.weights_dtype,
+      )
+      return wan_vae
+
+    # 1. eval shape
+    p_model_factory = partial(create_model, config=config)
+    wan_vae = nnx.eval_shape(p_model_factory, rngs=rngs)
     graphdef, state = nnx.split(wan_vae, nnx.Param)
+
+    # 2. retrieve the state shardings, mapping logical names to mesh axis names.
+    logical_state_spec = nnx.get_partition_spec(state)
+    logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
+    logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
     params = state.to_pure_dict()
-    # This replaces random params with the model.
+    state = dict(nnx.to_flat_state(state))
+
+    # 4. Load pretrained weights and move them to device using the state shardings from (3) above.
+    # This helps with loading sharded weights directly into the accelerators without fist copying them
+    # all to one device and then distributing them, thus using low HBM memory.
     params = load_wan_vae(config.pretrained_model_name_or_path, params, "cpu")
     params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
-    params = jax.device_put(params, NamedSharding(mesh, P()))
-    wan_vae = nnx.merge(graphdef, params)
-    p_create_sharded_logical_model = partial(create_sharded_logical_model, logical_axis_rules=config.logical_axis_rules)
-    # Shard
-    with mesh:
-      wan_vae = p_create_sharded_logical_model(model=wan_vae)
+    for path, val in flax.traverse_util.flatten_dict(params).items():
+      sharding = logical_state_sharding[path].value
+      state[path].value = device_put_replicated(val, sharding)
+    state = nnx.from_flat_state(state)
+
+    wan_vae = nnx.merge(graphdef, state)
+    vae_cache = AutoencoderKLWanCache(wan_vae)
     return wan_vae, vae_cache
 
   @classmethod
@@ -434,12 +449,13 @@ class WanPipeline:
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
         )
-      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
-      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
-      latents = latents / latents_std + latents_mean
-      latents = latents.astype(self.config.weights_dtype)
+        latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
+        latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
+        latents = latents / latents_std + latents_mean
+        latents = latents.astype(self.config.weights_dtype)
 
-    video = self.vae.decode(latents, self.vae_cache)[0]
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      video = self.vae.decode(latents, self.vae_cache)[0]
 
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
     video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
@@ -447,12 +463,31 @@ class WanPipeline:
     return video
 
 
-@jax.jit
-def transformer_forward_pass(graphdef, sharded_state, rest_of_state, latents, timestep, prompt_embeds, is_uncond, slg_mask):
+@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
+def transformer_forward_pass(
+    graphdef,
+    sharded_state,
+    rest_of_state,
+    latents,
+    timestep,
+    prompt_embeds,
+    is_uncond,
+    slg_mask,
+    do_classifier_free_guidance,
+    guidance_scale,
+):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  return wan_transformer(
+  noise_pred = wan_transformer(
       hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds, is_uncond=is_uncond, slg_mask=slg_mask
   )
+  if do_classifier_free_guidance:
+    bsz = latents.shape[0] // 2
+    noise_uncond = noise_pred[bsz:]
+    noise_pred = noise_pred[:bsz]
+    noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+    latents = latents[:bsz]
+
+  return noise_pred, latents
 
 
 def run_inference(
@@ -472,35 +507,29 @@ def run_inference(
     slg_end: float = 1.0,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
+  if do_classifier_free_guidance:
+    prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
   for step in range(num_inference_steps):
     slg_mask = jnp.zeros(num_transformer_layers, dtype=jnp.bool_)
     if slg_layers and int(slg_start * num_inference_steps) <= step < int(slg_end * num_inference_steps):
       slg_mask = slg_mask.at[jnp.array(slg_layers)].set(True)
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+    if do_classifier_free_guidance:
+      latents = jnp.concatenate([latents] * 2)
     timestep = jnp.broadcast_to(t, latents.shape[0])
 
-    noise_pred = transformer_forward_pass(
+    noise_pred, latents = transformer_forward_pass(
         graphdef,
         sharded_state,
         rest_of_state,
         latents,
         timestep,
         prompt_embeds,
-        is_uncond=jnp.array(False, dtype=jnp.bool_),
+        is_uncond=jnp.array(True, dtype=jnp.bool_),
         slg_mask=slg_mask,
+        do_classifier_free_guidance=do_classifier_free_guidance,
+        guidance_scale=guidance_scale,
     )
 
-    if do_classifier_free_guidance:
-      noise_uncond = transformer_forward_pass(
-          graphdef,
-          sharded_state,
-          rest_of_state,
-          latents,
-          timestep,
-          negative_prompt_embeds,
-          is_uncond=jnp.array(True, dtype=jnp.bool_),
-          slg_mask=slg_mask,
-      )
-      noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
   return latents

@@ -1,3 +1,4 @@
+import os
 import json
 import torch
 import jax
@@ -139,69 +140,85 @@ def load_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, 
 
 def load_base_wan_transformer(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
+  subfolder = "transformer"
+  filename = "diffusion_pytorch_model.safetensors.index.json"
+  local_files = False
+  if os.path.isdir(pretrained_model_name_or_path):
+    index_file_path = os.path.join(pretrained_model_name_or_path, subfolder, filename)
+    if not os.path.isfile(index_file_path):
+      raise FileNotFoundError(f"File {index_file_path} not found for local directory.")
+    local_files = True
+  elif hf_download:
+    # download the index file for sharded models.
+    index_file_path = hf_hub_download(
+        pretrained_model_name_or_path,
+        subfolder=subfolder,
+        filename=filename,
+    )
   with jax.default_device(device):
-    if hf_download:
-      # download the index file for sharded models.
-      index_file_path = hf_hub_download(
-          pretrained_model_name_or_path, subfolder="transformer", filename="diffusion_pytorch_model.safetensors.index.json"
-      )
-      # open the index file.
-      with open(index_file_path, "r") as f:
-        index_dict = json.load(f)
-      model_files = set()
-      for key in index_dict["weight_map"].keys():
-        model_files.add(index_dict["weight_map"][key])
+    # open the index file.
+    with open(index_file_path, "r") as f:
+      index_dict = json.load(f)
+    model_files = set()
+    for key in index_dict["weight_map"].keys():
+      model_files.add(index_dict["weight_map"][key])
 
-      model_files = list(model_files)
-      tensors = {}
-      for model_file in model_files:
-        ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder="transformer", filename=model_file)
-        # now get all the filenames for the model that need downloading
-        max_logging.log(f"Load and port Wan 2.1 transformer on {device}")
+    model_files = list(model_files)
+    tensors = {}
+    for model_file in model_files:
+      if local_files:
+        ckpt_shard_path = os.path.join(pretrained_model_name_or_path, subfolder, model_file)
+      else:
+        ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
+      # now get all the filenames for the model that need downloading
+      max_logging.log(f"Load and port Wan 2.1 transformer on {device}")
 
-        if ckpt_shard_path is not None:
-          with safe_open(ckpt_shard_path, framework="pt") as f:
-            for k in f.keys():
-              tensors[k] = torch2jax(f.get_tensor(k))
-      flax_state_dict = {}
-      cpu = jax.local_devices(backend="cpu")[0]
-      flattened_dict = flatten_dict(eval_shapes)
-      # turn all block numbers to strings just for matching weights.
-      # Later they will be turned back to ints.
-      random_flax_state_dict = {}
-      for key in flattened_dict:
-        string_tuple = tuple([str(item) for item in key])
-        random_flax_state_dict[string_tuple] = flattened_dict[key]
-      del flattened_dict
-      for pt_key, tensor in tensors.items():
-        renamed_pt_key = rename_key(pt_key)
-        renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
-        renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
-        renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
-        renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
-        renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
-        pt_tuple_key = tuple(renamed_pt_key.split("."))
+      if ckpt_shard_path is not None:
+        with safe_open(ckpt_shard_path, framework="pt") as f:
+          for k in f.keys():
+            tensors[k] = torch2jax(f.get_tensor(k))
+    flax_state_dict = {}
+    cpu = jax.local_devices(backend="cpu")[0]
+    flattened_dict = flatten_dict(eval_shapes)
+    # turn all block numbers to strings just for matching weights.
+    # Later they will be turned back to ints.
+    random_flax_state_dict = {}
+    for key in flattened_dict:
+      string_tuple = tuple([str(item) for item in key])
+      random_flax_state_dict[string_tuple] = flattened_dict[key]
+    del flattened_dict
+    for pt_key, tensor in tensors.items():
+      renamed_pt_key = rename_key(pt_key)
+      renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
+      renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
+      renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
+      renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
+      renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
+      pt_tuple_key = tuple(renamed_pt_key.split("."))
 
-        flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
-        flax_key = rename_for_nnx(flax_key)
-        flax_key = _tuple_str_to_int(flax_key)
-        flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
-      validate_flax_state_dict(eval_shapes, flax_state_dict)
-      flax_state_dict = unflatten_dict(flax_state_dict)
-      del tensors
-      jax.clear_caches()
-      return flax_state_dict
+      flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
+      flax_key = rename_for_nnx(flax_key)
+      flax_key = _tuple_str_to_int(flax_key)
+      flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+    validate_flax_state_dict(eval_shapes, flax_state_dict)
+    flax_state_dict = unflatten_dict(flax_state_dict)
+    del tensors
+    jax.clear_caches()
+    return flax_state_dict
 
 
 def load_wan_vae(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
+  subfolder = "vae"
+  filename = "diffusion_pytorch_model.safetensors"
+  if os.path.isdir(pretrained_model_name_or_path):
+    ckpt_path = os.path.join(pretrained_model_name_or_path, subfolder, filename)
+    if not os.path.isfile(ckpt_path):
+      raise FileNotFoundError(f"File {ckpt_path} not found for local directory.")
+  elif hf_download:
+    ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
+  max_logging.log(f"Load and port Wan 2.1 VAE on {device}")
   with jax.default_device(device):
-    if hf_download:
-      ckpt_path = hf_hub_download(
-          pretrained_model_name_or_path, subfolder="vae", filename="diffusion_pytorch_model.safetensors"
-      )
-    max_logging.log(f"Load and port Wan 2.1 VAE on {device}")
-
     if ckpt_path is not None:
       tensors = {}
       with safe_open(ckpt_path, framework="pt") as f:

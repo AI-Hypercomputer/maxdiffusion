@@ -281,9 +281,13 @@ def create_device_mesh(config, devices=None, logging=True):
   ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, "ICI")
   if multi_slice_env:
     dcn_parallelism = fill_unspecified_mesh_axes(dcn_parallelism, num_slices, "DCN")
-    mesh = mesh_utils.create_hybrid_device_mesh(ici_parallelism, dcn_parallelism, devices)
+    mesh = mesh_utils.create_hybrid_device_mesh(
+        ici_parallelism, dcn_parallelism, devices, allow_split_physical_axes=config.allow_split_physical_axes
+    )
   else:
-    mesh = mesh_utils.create_device_mesh(ici_parallelism, devices)
+    mesh = mesh_utils.create_device_mesh(
+        ici_parallelism, devices, allow_split_physical_axes=config.allow_split_physical_axes
+    )
 
   if logging:
     max_logging.log(f"Decided on mesh: {mesh}")

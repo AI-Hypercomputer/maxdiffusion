@@ -20,6 +20,8 @@ from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
 from maxdiffusion.utils import export_to_video
 
+jax.config.update("jax_use_shardy_partitioner", True)
+
 
 def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)
@@ -78,7 +80,7 @@ def run(config, pipeline=None, filename_prefix=""):
       slg_start=slg_start,
       slg_end=slg_end,
   )
-  print("compile time: ", (time.perf_counter() - s0))
+  print("generation time: ", (time.perf_counter() - s0))
 
   s0 = time.perf_counter()
   if config.enable_profiler:

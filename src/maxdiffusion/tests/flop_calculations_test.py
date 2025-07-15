@@ -1,15 +1,24 @@
 import os
 import unittest
 import jax
+from jax.sharding import Mesh
 import flax.linen as nn
 from absl.testing import absltest
 from maxdiffusion.max_utils import calculate_model_tflops
 from maxdiffusion.models.attention_flax import FlaxAttention
+from .. import pyconfig, max_utils
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class FlopCalculation(unittest.TestCase):
+
+  def setUp(self):
+    FlopCalculation.dummy_data = {}
+    pyconfig.initialize([None, os.path.join(THIS_DIR, "..", "configs", "base21.yml")], unittest=True)
+    self.config = pyconfig.config
+    devices_array = max_utils.create_device_mesh(self.config)
+    self.mesh = Mesh(devices_array, self.config.mesh_axes)
 
   def test_dense_layer_model_flops(self):
     class SimpleLinearModel(nn.Module):
@@ -45,8 +54,8 @@ class FlopCalculation(unittest.TestCase):
     model = SimpleConv()
     rng = jax.random.PRNGKey(0)
     x = jax.random.normal(rng, (1, 28, 28, 1))
-
-    training_tflops = calculate_model_tflops(model, rng, train=True, x=x)
+    with self.mesh:
+      training_tflops = calculate_model_tflops(model, rng, train=True, x=x)
     macs = (3 * 3 * 28 * 28 * 16) + (3 * 3 * 28 * 28 * 32 * 16) + (28 * 28 * 32 * 10)
     forward_tflops = (2 * macs) / 10**12
     calculated_training_tflops = 3 * forward_tflops
@@ -67,8 +76,8 @@ class FlopCalculation(unittest.TestCase):
     model = SimpleAttn()
     rng = jax.random.PRNGKey(0)
     x = jax.random.normal(rng, (1, 9216, 320))
-
-    training_tflops = calculate_model_tflops(model, rng, train=True, x=x)
+    with self.mesh:
+      training_tflops = calculate_model_tflops(model, rng, train=True, x=x)
     # For linears before attn
     qkv_macs = 3 * (320 * 320 * 9216)
     qkv_tflops = 2 * qkv_macs / 10**12
