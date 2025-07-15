@@ -187,9 +187,9 @@ def _tpu_flash_attention(
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
-  #flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH)
-  #axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
-  #named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
+  flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH)
+  axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
+  named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
 
   shard_head_size = mesh.shape["tensor"]
 
@@ -210,7 +210,7 @@ def _tpu_flash_attention(
 
   multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
   splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
-  #segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
+  segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
 
   @functools.partial(
       shard_map.shard_map,
@@ -219,7 +219,7 @@ def _tpu_flash_attention(
           q_axis_names,
           kv_axis_names,
           kv_axis_names,
-          None,
+          segment_axis_names_splash_kernel,
       ),
       out_specs=q_axis_names,
       check_rep=False,
@@ -511,8 +511,8 @@ class NNXAttentionOp(nnx.Module):
       use_memory_efficient_attention: bool = False,
       split_head_dim: bool = False,
       float32_qk_product: bool = True,
-      axis_names_q: AxisNames = (BATCH, HEAD, LENGTH, D_KV),
-      axis_names_kv: AxisNames = (BATCH, HEAD, KV_LENGTH, D_KV),
+      axis_names_q: AxisNames = (BATCH, HEAD, LENGTH, None),
+      axis_names_kv: AxisNames = (BATCH, HEAD, KV_LENGTH, None),
       flash_min_seq_length: int = 4096,
       flash_block_sizes: BlockSizes = None,
       dtype: DType = jnp.float32,
@@ -675,7 +675,7 @@ class FlaxWanAttention(nnx.Module):
         quant=quant,
     )
 
-    kernel_axes = ("embed", "heads")
+    kernel_axes = ("embed", None)
     qkv_init_kernel = nnx.with_partitioning(nnx.initializers.lecun_normal(), kernel_axes)
 
     self.query = nnx.Linear(
@@ -715,7 +715,7 @@ class FlaxWanAttention(nnx.Module):
         rngs=rngs,
         in_features=self.inner_dim,
         out_features=self.inner_dim,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), (None, "embed")),
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,

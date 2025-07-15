@@ -110,7 +110,7 @@ hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
 skip_jax_distributed_system: False
 
 # Parallelism
-mesh_axes: ['data', 'fsdp', 'tensor']
+mesh_axes: ['tensor', 'data', 'fsdp']
 
 # batch : batch dimension of data and activations
 # hidden :
@@ -126,11 +126,9 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_length', ['fsdp','tensor']],
-                      ['activation_kv_length', 'fsdp'],
+                      ['activation_length', ['fsdp']],
                       ['activation_heads', 'tensor'],
                       ['activation_batch', 'data'],
-                      #['mlp','tensor'],
                       ['embed',['fsdp', 'tensor']],
                       ['heads', ['tensor', 'fsdp']],
                       ['norm', 'tensor'],
