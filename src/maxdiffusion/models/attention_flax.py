@@ -187,9 +187,9 @@ def _tpu_flash_attention(
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
-  flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH)
-  axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
-  named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
+  #flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH)
+  #axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
+  #named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
 
   shard_head_size = mesh.shape["tensor"]
 
@@ -210,7 +210,7 @@ def _tpu_flash_attention(
 
   multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
   splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
-  segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
+  #segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
 
   @functools.partial(
       shard_map.shard_map,
@@ -219,7 +219,7 @@ def _tpu_flash_attention(
           q_axis_names,
           kv_axis_names,
           kv_axis_names,
-          segment_axis_names_splash_kernel,
+          None,
       ),
       out_specs=q_axis_names,
       check_rep=False,
@@ -686,7 +686,7 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        #bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
     self.key = nnx.Linear(
@@ -697,7 +697,7 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        #bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
     self.value = nnx.Linear(
@@ -708,7 +708,7 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        #bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
     self.proj_attn = nnx.Linear(

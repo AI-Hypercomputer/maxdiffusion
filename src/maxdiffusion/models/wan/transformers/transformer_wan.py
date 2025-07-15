@@ -123,7 +123,7 @@ class WanTimeTextImageEmbedding(nnx.Module):
                 "mlp",
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+        #bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
     )
     self.text_embedder = NNXPixArtAlphaTextProjection(
         rngs=rngs,
@@ -170,6 +170,13 @@ class ApproximateGELU(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
+        kernel_init=nnx.with_partitioning(
+            nnx.initializers.xavier_uniform(),
+            (
+                "embed",
+                "mlp",
+            ),
+        ),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
