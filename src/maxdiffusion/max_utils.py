@@ -26,7 +26,6 @@ import yaml
 import os
 from pathlib import Path
 import subprocess
-from ctypes import cdll
 import numpy as np
 
 import flax
@@ -63,8 +62,6 @@ from tensorboardX import writer
 
 from google.cloud import storage
 
-libcudart = cdll.LoadLibrary("libcudart.so")
-
 FrozenDict = core.frozen_dict.FrozenDict
 
 
@@ -81,18 +78,12 @@ def l2norm_pytree(x):
 
 def activate_profiler(config):
   if jax.process_index() == 0 and config.enable_profiler:
-    if config.profiler == 'nsys':
-      libcudart.cudaProfilerStart()
-    else:
-      jax.profiler.start_trace(config.tensorboard_dir)
+    jax.profiler.start_trace(config.tensorboard_dir)
 
 
 def deactivate_profiler(config):
   if jax.process_index() == 0 and config.enable_profiler:
-    if config.profiler == 'nsys':
-      libcudart.cudaProfilerStop()
-    else:
-      jax.profiler.stop_trace()
+    jax.profiler.stop_trace()
 
 
 def initialize_summary_writer(config):
