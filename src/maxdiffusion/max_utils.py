@@ -26,7 +26,6 @@ import yaml
 import os
 from pathlib import Path
 import subprocess
-
 import numpy as np
 
 import flax
