@@ -217,7 +217,7 @@ def load_state_if_possible(
           return checkpoint_manager.restore(latest_step, args=ocp.args.StandardRestore(abstract_unboxed_pre_state))
         else:
           item = {checkpoint_item: orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state)}
-          return checkpoint_manager.restore(latest_step, args=orbax.checkpoint.args.Composite(**item)) 
+          return checkpoint_manager.restore(latest_step, args=orbax.checkpoint.args.Composite(**item))
 
       def map_to_pspec(data):
         pspec = data.sharding.spec
