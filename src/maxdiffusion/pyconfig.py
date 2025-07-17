@@ -132,7 +132,7 @@ class _HyperParameters:
         num_inference_steps = raw_keys["num_inference_steps"]
         if num_inference_steps > 10:
           max_logging.log(
-              f"Warning: Try setting num_inference_steps to less than 8 steps when using CausVid, currently you are setting {num_inference_steps} steps."
+              f"Warning: Try setting num_inference_steps to less than 10 steps when using CausVid, currently you are setting {num_inference_steps} steps."
           )
       else:
         raise ValueError(f"{transformer_pretrained_model_name_or_path} transformer model is not supported for Wan 2.1")
