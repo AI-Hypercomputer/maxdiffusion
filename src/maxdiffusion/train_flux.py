@@ -18,7 +18,10 @@ from typing import Sequence
 
 import jax
 from absl import app
-from maxdiffusion import (max_logging, pyconfig)
+from maxdiffusion import (
+    max_logging,
+    pyconfig,
+)
 
 from maxdiffusion.train_utils import (
     validate_train_config,
