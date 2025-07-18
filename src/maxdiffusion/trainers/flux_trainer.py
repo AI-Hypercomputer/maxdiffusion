@@ -80,70 +80,71 @@ class FluxTrainer(FluxCheckpointer):
     # Hook
     # self.pre_training_steps()
     # Load checkpoint - will load or create states
-    pipeline, params = self.load_checkpoint()
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      pipeline, params = self.load_checkpoint()
 
-    # create train states
-    train_states = {}
-    state_shardings = {}
+      # create train states
+      train_states = {}
+      state_shardings = {}
 
-    # move params to accelerator
-    encoders_sharding = NamedSharding(self.mesh, P(None))
-    partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=encoders_sharding)
-    pipeline.clip_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), pipeline.clip_encoder.params)
-    pipeline.clip_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.clip_encoder.params)
-    pipeline.t5_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), pipeline.t5_encoder.params)
-    pipeline.t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.t5_encoder.params)
+      # move params to accelerator
+      encoders_sharding = NamedSharding(self.mesh, P(None))
+      partial_device_put_replicated = partial(max_utils.device_put_replicated, sharding=encoders_sharding)
+      pipeline.clip_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), pipeline.clip_encoder.params)
+      pipeline.clip_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.clip_encoder.params)
+      pipeline.t5_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), pipeline.t5_encoder.params)
+      pipeline.t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, pipeline.t5_encoder.params)
 
-    vae_state, vae_state_mesh_shardings = self.create_vae_state(
-        pipeline=pipeline, params=params, checkpoint_item_name=VAE_STATE_KEY, is_training=False
-    )
-    train_states[VAE_STATE_KEY] = vae_state
-    state_shardings[VAE_STATE_SHARDINGS_KEY] = vae_state_mesh_shardings
+      vae_state, vae_state_mesh_shardings = self.create_vae_state(
+          pipeline=pipeline, params=params, checkpoint_item_name=VAE_STATE_KEY, is_training=False
+      )
+      train_states[VAE_STATE_KEY] = vae_state
+      state_shardings[VAE_STATE_SHARDINGS_KEY] = vae_state_mesh_shardings
 
-    # Load dataset
-    data_iterator = self.load_dataset(pipeline, params, train_states)
-    if self.config.dataset_type == "grain":
-      data_iterator = self.restore_data_iterator_state(data_iterator)
+      # Load dataset
+      data_iterator = self.load_dataset(pipeline, params, train_states)
+      if self.config.dataset_type == "grain":
+        data_iterator = self.restore_data_iterator_state(data_iterator)
 
-    # don't need this anymore, clear some memory.
-    del pipeline.t5_encoder
+      # don't need this anymore, clear some memory.
+      del pipeline.t5_encoder
 
-    # evaluate shapes
+      # evaluate shapes
 
-    flux_state, flux_state_mesh_shardings, flux_learning_rate_scheduler = self.create_flux_state(
-        # ambiguous here, but if params=None
-        # Then its 1 of 2 scenarios:
-        # 1. flux state will be loaded directly from orbax
-        # 2. a new flux is being trained from scratch.
-        pipeline=pipeline,
-        params=None,  # Params are loaded inside create_flux_state
-        checkpoint_item_name=FLUX_STATE_KEY,
-        is_training=True,
-    )
-    flux_state = jax.device_put(flux_state, flux_state_mesh_shardings)
-    train_states[FLUX_STATE_KEY] = flux_state
-    state_shardings[FLUX_STATE_SHARDINGS_KEY] = flux_state_mesh_shardings
-    # self.post_training_steps(pipeline, params, train_states, msg="before_training")
+      flux_state, flux_state_mesh_shardings, flux_learning_rate_scheduler = self.create_flux_state(
+          # ambiguous here, but if params=None
+          # Then its 1 of 2 scenarios:
+          # 1. flux state will be loaded directly from orbax
+          # 2. a new flux is being trained from scratch.
+          pipeline=pipeline,
+          params=None,  # Params are loaded inside create_flux_state
+          checkpoint_item_name=FLUX_STATE_KEY,
+          is_training=True,
+      )
+      flux_state = jax.device_put(flux_state, flux_state_mesh_shardings)
+      train_states[FLUX_STATE_KEY] = flux_state
+      state_shardings[FLUX_STATE_SHARDINGS_KEY] = flux_state_mesh_shardings
+      # self.post_training_steps(pipeline, params, train_states, msg="before_training")
 
-    # Create scheduler
-    noise_scheduler, noise_scheduler_state = self.create_scheduler(pipeline, params)
-    pipeline.scheduler = noise_scheduler
-    train_states["scheduler"] = noise_scheduler_state
+      # Create scheduler
+      noise_scheduler, noise_scheduler_state = self.create_scheduler(pipeline, params)
+      pipeline.scheduler = noise_scheduler
+      train_states["scheduler"] = noise_scheduler_state
 
-    # Calculate tflops
-    per_device_tflops = self.calculate_tflops(pipeline)
-    self.per_device_tflops = per_device_tflops
+      # Calculate tflops
+      per_device_tflops = self.calculate_tflops(pipeline)
+      self.per_device_tflops = per_device_tflops
 
-    data_shardings = self.get_data_shardings()
-    # Compile train_step
-    p_train_step = self.compile_train_step(pipeline, params, train_states, state_shardings, data_shardings)
-    # Start training
-    train_states = self.training_loop(
-        p_train_step, pipeline, params, train_states, data_iterator, flux_learning_rate_scheduler
-    )
-    # 6. save final checkpoint
-    # Hook
-    self.post_training_steps(pipeline, params, train_states, "after_training")
+      data_shardings = self.get_data_shardings()
+      # Compile train_step
+      p_train_step = self.compile_train_step(pipeline, params, train_states, state_shardings, data_shardings)
+      # Start training
+      train_states = self.training_loop(
+          p_train_step, pipeline, params, train_states, data_iterator, flux_learning_rate_scheduler
+      )
+      # 6. save final checkpoint
+      # Hook
+      self.post_training_steps(pipeline, params, train_states, "after_training")
 
   def get_shaped_batch(self, config, pipeline=None):
     """Return the shape of the batch - this is what eval_shape would return for the
@@ -349,7 +350,7 @@ class FluxTrainer(FluxCheckpointer):
       example_batch = load_next_batch(data_iterator, example_batch, self.config)
       example_batch = {key: jnp.asarray(value, dtype=self.config.activations_dtype) for key, value in example_batch.items()}
 
-      if self.config.profiler == 'nsys':
+      if self.config.profiler == "nsys":
         with self.mesh:
           flux_state, train_metric, train_rngs = p_train_step(flux_state, example_batch, train_rngs)
       else:
