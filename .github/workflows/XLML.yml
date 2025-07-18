@@ -1,0 +1,22 @@
+name: Add Testgrid Link to PR
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  add_testgrid_link:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Add link to PR description
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
+            -d '{ "body": "e2e testgrid: https://8bcf50593faf4ea38060e236169827e5-dot-us-central1.composer.googleusercontent.com/dags/maxdiffusion_tpu_e2e/grid" }'
