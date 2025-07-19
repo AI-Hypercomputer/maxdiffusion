@@ -213,7 +213,10 @@ def load_state_if_possible(
     max_logging.log(f"restoring from this run's directory latest step {latest_step}")
     try:
       if not enable_single_replica_ckpt_restoring:
-        item = {checkpoint_item: orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state)}
+        if checkpoint_item == " ":
+          return checkpoint_manager.restore(latest_step, args=ocp.args.StandardRestore(abstract_unboxed_pre_state))
+        else:
+          item = {checkpoint_item: orbax.checkpoint.args.PyTreeRestore(item=abstract_unboxed_pre_state)}
         return checkpoint_manager.restore(latest_step, args=orbax.checkpoint.args.Composite(**item))
 
       def map_to_pspec(data):
