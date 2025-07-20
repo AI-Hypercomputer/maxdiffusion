@@ -892,31 +892,36 @@ def run_inference(
   return latents, scheduler_state
 
 
-def adain_filter_latent(latents: torch.Tensor, reference_latents: torch.Tensor, factor=1.0):
-  """
-  Applies Adaptive Instance Normalization (AdaIN) to a latent tensor based on
-  statistics from a reference latent tensor.
+def adain_filter_latent(
+    latents: torch.Tensor, reference_latents: torch.Tensor, factor=1.0
+):
+    """
+    Applies Adaptive Instance Normalization (AdaIN) to a latent tensor based on
+    statistics from a reference latent tensor.
 
-  Args:
-      latent (torch.Tensor): Input latents to normalize
-      reference_latent (torch.Tensor): The reference latents providing style statistics.
-      factor (float): Blending factor between original and transformed latent.
-                     Range: -10.0 to 10.0, Default: 1.0
+    Args:
+        latent (torch.Tensor): Input latents to normalize
+        reference_latent (torch.Tensor): The reference latents providing style statistics.
+        factor (float): Blending factor between original and transformed latent.
+                       Range: -10.0 to 10.0, Default: 1.0
 
-  Returns:
-      torch.Tensor: The transformed latent tensor
-  """
-  result = latents.clone()
+    Returns:
+        torch.Tensor: The transformed latent tensor
+    """
+    with default_env():
+        result = latents.clone()
 
-  for i in range(latents.size(0)):
-    for c in range(latents.size(1)):
-      r_sd, r_mean = torch.std_mean(reference_latents[i, c], dim=None)  # index by original dim order
-      i_sd, i_mean = torch.std_mean(result[i, c], dim=None)
+        for i in range(latents.size(0)):
+            for c in range(latents.size(1)):
+                r_sd, r_mean = torch.std_mean(
+                    reference_latents[i, c], dim=None
+                )  # index by original dim order
+                i_sd, i_mean = torch.std_mean(result[i, c], dim=None)
 
-      result[i, c] = ((result[i, c] - i_mean) / i_sd) * r_sd + r_mean
+                result[i, c] = ((result[i, c] - i_mean) / i_sd) * r_sd + r_mean
 
-  result = torch.lerp(latents, result, factor)
-  return result
+        result = torch.lerp(latents, result, factor)
+    return result
 
 
 class LTXMultiScalePipeline:
