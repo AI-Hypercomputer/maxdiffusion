@@ -14,8 +14,8 @@
 import math
 import os
 from jax import Array
-from maxdiffusion.models.ltx_video.models.autoencoders.latent_upsampler import LatentUpsampler
-from diffusers import AutoencoderKL
+from maxdiffusion.models.ltx_video.autoencoders.latent_upsampler import LatentUpsampler
+from torchax import interop, default_env
 from typing import Optional, List, Union, Tuple
 from einops import rearrange
 import torch.nn.functional as F
@@ -30,10 +30,10 @@ import json
 import numpy as np
 import torch
 from huggingface_hub import hf_hub_download
-from maxdiffusion.models.ltx_video.models.autoencoders.causal_video_autoencoder import (
+from maxdiffusion.models.ltx_video.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
 )
-from maxdiffusion.models.ltx_video.models.autoencoders.vae_encode import (
+from maxdiffusion.models.ltx_video.autoencoders.vae_encode import (
     get_vae_size_scale_factor,
     latent_to_pixel_coords,
     vae_decode,
@@ -51,6 +51,7 @@ import jax.numpy as jnp
 from jax.sharding import Mesh
 from maxdiffusion.models.ltx_video.transformers.symmetric_patchifier import SymmetricPatchifier
 from ...pyconfig import HyperParameters
+from maxdiffusion.models.ltx_video.autoencoders.vae_torchax import TorchaxCausalVideoAutoencoder
 from ...schedulers.scheduling_rectified_flow import FlaxRectifiedFlowMultistepScheduler, RectifiedFlowSchedulerState
 from ...max_utils import (create_device_mesh, setup_initial_state, get_memory_allocations)
 from maxdiffusion.models.ltx_video.transformers.transformer3d import Transformer3DModel
@@ -71,7 +72,7 @@ class LTXVideoPipeline:
       transformer: Transformer3DModel,
       scheduler: FlaxRectifiedFlowMultistepScheduler,
       scheduler_state: RectifiedFlowSchedulerState,
-      vae: AutoencoderKL,
+      vae: TorchaxCausalVideoAutoencoder,
       text_encoder,
       patchifier,
       tokenizer,
@@ -169,8 +170,11 @@ class LTXVideoPipeline:
 
   @classmethod
   def load_vae(cls, ckpt_path):
-    vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
-    return vae
+    torch_vae = CausalVideoAutoencoder.from_pretrained(ckpt_path, torch_dtype = torch.bfloat16)
+    with default_env():
+        torch_vae = torch_vae.to('jax')
+        jax_vae = TorchaxCausalVideoAutoencoder(torch_vae)
+    return jax_vae
 
   @classmethod
   def load_text_encoder(cls, ckpt_path):
@@ -550,9 +554,6 @@ class LTXVideoPipeline:
     else:
       batch_size = prompt_embeds.shape[0]
     vae_per_channel_normalize = kwargs.get("vae_per_channel_normalize", True)
-    import pdb
-
-    pdb.set_trace()
 
     latent_height = height // self.vae_scale_factor
     latent_width = width // self.vae_scale_factor
@@ -943,11 +944,16 @@ class LTXMultiScalePipeline:
     return latent_upsampler
 
   def _upsample_latents(self, latest_upsampler: LatentUpsampler, latents: torch.Tensor):
-    assert latents.device == latest_upsampler.device
-
-    latents = un_normalize_latents(latents, self.vae, vae_per_channel_normalize=True)
-    upsampled_latents = latest_upsampler(latents)
-    upsampled_latents = normalize_latents(upsampled_latents, self.vae, vae_per_channel_normalize=True)
+    latents = jax.device_put(latents, jax.devices('tpu')[0])
+    #assert latents.device == latest_upsampler.device
+    with default_env():
+        latents = un_normalize_latents(  #need to switch this out?
+            interop.torch_view(latents), self.vae, vae_per_channel_normalize=True
+        )
+        upsampled_latents = latest_upsampler(torch.from_numpy(np.array(latents))) #here converted back to torch, cause upsampler in pytorch
+        upsampled_latents = normalize_latents(
+            interop.torch_view(jnp.array(upsampled_latents.detach().numpy())), self.vae, vae_per_channel_normalize=True
+        )
     return upsampled_latents
 
   def __init__(self, video_pipeline: LTXVideoPipeline):
