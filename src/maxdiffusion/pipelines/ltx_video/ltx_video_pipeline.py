@@ -762,7 +762,7 @@ class LTXVideoPipeline:
           vae_per_channel_normalize=kwargs.get("vae_per_channel_normalize", True),
           timestep=decode_timestep,
       )
-      image = self.image_processor.postprocess(image, output_type=output_type)
+      image = self.image_processor.postprocess(torch.from_numpy(np.array(image.astype(jnp.float16))), output_type=output_type)
 
     else:
       image = latents
@@ -983,9 +983,13 @@ class LTXMultiScalePipeline:
         skip_block_list=config.first_pass["skip_block_list"],
     )
     latents = result
-    upsampled_latents = self._upsample_latents(latent_upsampler, latents)
-    upsampled_latents = adain_filter_latent(latents=upsampled_latents, reference_latents=latents)
-
+    upsampled_latents = self._upsample_latents(latent_upsampler, latents) #convert back to pytorch here
+       
+    latents = torch.from_numpy(np.array(latents)) #.to(torch.device('cpu'))
+    upsampled_latents = torch.from_numpy(np.array(upsampled_latents)) #.to(torch.device('cpu'))
+    upsampled_latents = adain_filter_latent(
+        latents=upsampled_latents, reference_latents=latents
+    )
     latents = upsampled_latents
     output_type = original_output_type
 
