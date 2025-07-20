@@ -731,7 +731,6 @@ class LTXVideoPipeline:
           timestep=noise_cond,
           scheduler_state=scheduler_state,
       )
-    latents = torch.from_numpy(np.array(latents))
     latents = latents[:, num_cond_latents:]
 
     latents = self.patchifier.unpatchify(
