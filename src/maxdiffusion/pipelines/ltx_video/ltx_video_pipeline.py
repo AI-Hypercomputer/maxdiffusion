@@ -27,6 +27,7 @@ import yaml
 from transformers import (CLIPTokenizer, FlaxCLIPTextModel,
                           T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
 
+from maxdiffusion.models.ltx_video.autoencoders.latent_upsampler import LatentUpsampler
 from torchax import interop
 from torchax import default_env
 import imageio
@@ -1360,6 +1361,28 @@ def adain_filter_latent(
     return result
 
 class LTXMultiScalePipeline:  ##figure these methods out
+    
+    @classmethod
+    def load_latent_upsampler(cls, config):
+        spatial_upscaler_model_name_or_path = config.spatial_upscaler_model_path
+
+        if spatial_upscaler_model_name_or_path and not os.path.isfile(spatial_upscaler_model_name_or_path):
+            spatial_upscaler_model_path = hf_hub_download(
+                repo_id="Lightricks/LTX-Video",
+                filename=spatial_upscaler_model_name_or_path,
+                local_dir=config.models_dir,
+                repo_type="model",
+            )
+        else:
+            spatial_upscaler_model_path = spatial_upscaler_model_name_or_path
+        if not config.spatial_upscaler_model_path:
+            raise ValueError(
+                "spatial upscaler model path is missing from pipeline config file and is required for multi-scale rendering"
+            )
+        latent_upsampler = LatentUpsampler.from_pretrained(spatial_upscaler_model_path)
+        latent_upsampler.eval()
+        return latent_upsampler
+    
     def _upsample_latents(
         self, latest_upsampler: LatentUpsampler, latents: torch.Tensor
     ):
@@ -1376,23 +1399,20 @@ class LTXMultiScalePipeline:  ##figure these methods out
         return upsampled_latents
 
     def __init__(
-        self, video_pipeline: LTXVideoPipeline, latent_upsampler: LatentUpsampler
+        self, video_pipeline: LTXVideoPipeline
     ):
         self.video_pipeline = video_pipeline
         self.vae = video_pipeline.vae
-        self.latent_upsampler = latent_upsampler
 
     def __call__(
         self,
         height,
         width,
         num_frames, 
-        is_video, 
         output_type, 
         generator, 
         config
     ) -> Any:
-
         original_output_type = output_type
         original_width = width
         original_height = height
@@ -1407,7 +1427,8 @@ class LTXMultiScalePipeline:  ##figure these methods out
         num_inference_steps = config.first_pass["num_inference_steps"], guidance_timesteps = config.first_pass["guidance_timesteps"], cfg_star_rescale = config.first_pass["cfg_star_rescale"], skip_layer_strategy = None, skip_block_list=config.first_pass["skip_block_list"])
         latents = result
         print("done")
-        upsampled_latents = self._upsample_latents(self.latent_upsampler, latents) #convert back to pytorch here
+        latent_upsampler = self.load_latent_upsampler(config)
+        upsampled_latents = self._upsample_latents(latent_upsampler, latents) #convert back to pytorch here
         ##maybe change this?
         latents = torch.from_numpy(np.array(latents)) #.to(torch.device('cpu'))
         upsampled_latents = torch.from_numpy(np.array(upsampled_latents)) #.to(torch.device('cpu'))
