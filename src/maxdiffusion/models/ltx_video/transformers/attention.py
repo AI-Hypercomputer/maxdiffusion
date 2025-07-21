@@ -458,7 +458,7 @@ class Attention(nn.Module):
       deterministic: bool = True,
       **cross_attention_kwargs,
   ) -> jnp.ndarray:
-    cross_attention_kwargs = {k: w for k, w in cross_attention_kwargs.items() if k in attn_parameters}  #noqa: F821
+    cross_attention_kwargs = {k: w for k, w in cross_attention_kwargs.items() if k in attn_parameters}  # noqa: F821
     assert cross_attention_kwargs.get("scale", None) is None, "Not supported"
 
     input_axis_names = ("activation_batch", "activation_length", "activation_embed")

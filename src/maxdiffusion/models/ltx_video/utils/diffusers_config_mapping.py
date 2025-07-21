@@ -1,13 +1,13 @@
 def make_hashable_key(dict_key):
-    def convert_value(value):
-        if isinstance(value, list):
-            return tuple(value)
-        elif isinstance(value, dict):
-            return tuple(sorted((k, convert_value(v)) for k, v in value.items()))
-        else:
-            return value
+  def convert_value(value):
+    if isinstance(value, list):
+      return tuple(value)
+    elif isinstance(value, dict):
+      return tuple(sorted((k, convert_value(v)) for k, v in value.items()))
+    else:
+      return value
 
-    return tuple(sorted((k, convert_value(v)) for k, v in dict_key.items()))
+  return tuple(sorted((k, convert_value(v)) for k, v in dict_key.items()))
 
 
 DIFFUSERS_SCHEDULER_CONFIG = {

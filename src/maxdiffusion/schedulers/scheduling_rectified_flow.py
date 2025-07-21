@@ -295,7 +295,7 @@ class FlaxRectifiedFlowMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     timesteps_padded = jnp.concatenate([state.timesteps, jnp.array([0.0], dtype=self.dtype)])
 
     if timestep.ndim == 0:
-      idx = jnp.searchsorted(timesteps_padded, timestep - t_eps, side="right")  #noqa: F841
+      idx = jnp.searchsorted(timesteps_padded, timestep - t_eps, side="right")  # noqa: F841
       current_t_idx = jnp.where(state.timesteps == timestep, size=1, fill_value=len(state.timesteps))[0][0]
       lower_timestep = jnp.where(current_t_idx + 1 < len(timesteps_padded), timesteps_padded[current_t_idx + 1], 0.0)
       dt = timestep - lower_timestep

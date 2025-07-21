@@ -2,8 +2,8 @@ from typing import Tuple, Union
 
 import torch
 
-from ltx_video.models.autoencoders.dual_conv3d import DualConv3d
-from ltx_video.models.autoencoders.causal_conv3d import CausalConv3d
+from maxdiffusion.models.ltx_video.autoencoders.dual_conv3d import DualConv3d
+from maxdiffusion.models.ltx_video.autoencoders.causal_conv3d import CausalConv3d
 
 
 def make_conv_nd(
@@ -20,56 +20,56 @@ def make_conv_nd(
     spatial_padding_mode="zeros",
     temporal_padding_mode="zeros",
 ):
-    if not (spatial_padding_mode == temporal_padding_mode or causal):
-        raise NotImplementedError("spatial and temporal padding modes must be equal")
-    if dims == 2:
-        return torch.nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            dilation=dilation,
-            groups=groups,
-            bias=bias,
-            padding_mode=spatial_padding_mode,
-        )
-    elif dims == 3:
-        if causal:
-            return CausalConv3d(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                kernel_size=kernel_size,
-                stride=stride,
-                padding=padding,
-                dilation=dilation,
-                groups=groups,
-                bias=bias,
-                spatial_padding_mode=spatial_padding_mode,
-            )
-        return torch.nn.Conv3d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            dilation=dilation,
-            groups=groups,
-            bias=bias,
-            padding_mode=spatial_padding_mode,
-        )
-    elif dims == (2, 1):
-        return DualConv3d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            bias=bias,
-            padding_mode=spatial_padding_mode,
-        )
-    else:
-        raise ValueError(f"unsupported dimensions: {dims}")
+  if not (spatial_padding_mode == temporal_padding_mode or causal):
+    raise NotImplementedError("spatial and temporal padding modes must be equal")
+  if dims == 2:
+    return torch.nn.Conv2d(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+        bias=bias,
+        padding_mode=spatial_padding_mode,
+    )
+  elif dims == 3:
+    if causal:
+      return CausalConv3d(
+          in_channels=in_channels,
+          out_channels=out_channels,
+          kernel_size=kernel_size,
+          stride=stride,
+          padding=padding,
+          dilation=dilation,
+          groups=groups,
+          bias=bias,
+          spatial_padding_mode=spatial_padding_mode,
+      )
+    return torch.nn.Conv3d(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+        bias=bias,
+        padding_mode=spatial_padding_mode,
+    )
+  elif dims == (2, 1):
+    return DualConv3d(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        bias=bias,
+        padding_mode=spatial_padding_mode,
+    )
+  else:
+    raise ValueError(f"unsupported dimensions: {dims}")
 
 
 def make_linear_nd(
@@ -78,13 +78,9 @@ def make_linear_nd(
     out_channels: int,
     bias=True,
 ):
-    if dims == 2:
-        return torch.nn.Conv2d(
-            in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=bias
-        )
-    elif dims == 3 or dims == (2, 1):
-        return torch.nn.Conv3d(
-            in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=bias
-        )
-    else:
-        raise ValueError(f"unsupported dimensions: {dims}")
+  if dims == 2:
+    return torch.nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=bias)
+  elif dims == 3 or dims == (2, 1):
+    return torch.nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=bias)
+  else:
+    raise ValueError(f"unsupported dimensions: {dims}")

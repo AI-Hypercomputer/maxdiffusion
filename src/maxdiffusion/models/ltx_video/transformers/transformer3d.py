@@ -112,7 +112,7 @@ class Transformer3DModel(nn.Module):
       self.transformer_blocks = RepeatableLayer(
           RemattedBasicTransformerBlock,
           num_layers=self.num_layers,
-          module_init_kwargs=dict( #noqa: C408
+          module_init_kwargs=dict(  # noqa: C408
               dim=self.inner_dim,
               num_attention_heads=self.num_attention_heads,
               attention_head_dim=self.attention_head_dim,
