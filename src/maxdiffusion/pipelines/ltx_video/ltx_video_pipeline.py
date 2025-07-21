@@ -740,31 +740,45 @@ class LTXVideoPipeline:
         out_channels=model_config["in_channels"] // math.prod(self.patchifier.patch_size),
     )
     if output_type != "latent":
-      if self.vae.decoder.timestep_conditioning:
-        noise = torch.randn_like(latents)
-        if not isinstance(decode_timestep, list):
-          decode_timestep = [decode_timestep] * latents.shape[0]
-        if decode_noise_scale is None:
-          decode_noise_scale = decode_timestep
-        elif not isinstance(decode_noise_scale, list):
-          decode_noise_scale = [decode_noise_scale] * latents.shape[0]
+        if self.vae.decoder.timestep_conditioning:
+            noise = jax.random.normal(jax.random.PRNGKey(5), latents.shape, dtype=latents.dtype)  #move the key to outer layer
 
-        decode_timestep = torch.tensor(decode_timestep).to(latents.device)
-        decode_noise_scale = torch.tensor(decode_noise_scale).to(latents.device)[:, None, None, None, None]
-        latents = latents * (1 - decode_noise_scale) + noise * decode_noise_scale
-      else:
-        decode_timestep = None
-      image = vae_decode(
-          latents,
-          self.vae,
-          is_video,
-          vae_per_channel_normalize=kwargs.get("vae_per_channel_normalize", True),
-          timestep=decode_timestep,
-      )
-      image = self.image_processor.postprocess(torch.from_numpy(np.array(image.astype(jnp.float16))), output_type=output_type)
+            # Convert decode_timestep to a list if it's not already one
+            if not isinstance(decode_timestep, (list, jnp.ndarray)):
+                decode_timestep = [decode_timestep] * latents.shape[0]
+
+            # Handle decode_noise_scale
+            if decode_noise_scale is None:
+                decode_noise_scale = decode_timestep
+            elif not isinstance(decode_noise_scale, (list, jnp.ndarray)):
+                decode_noise_scale = [decode_noise_scale] * latents.shape[0]
+
+            # Convert lists to JAX arrays
+            decode_timestep = jnp.array(decode_timestep, dtype=jnp.float32)
+            
+            # Reshape decode_noise_scale for broadcasting
+            decode_noise_scale = jnp.array(decode_noise_scale, dtype=jnp.float32)
+            decode_noise_scale = jnp.reshape(decode_noise_scale, (latents.shape[0],) + (1,) * (latents.ndim - 1))
+
+            # Apply the noise and scale
+            latents = (
+                latents * (1 - decode_noise_scale) +
+                noise * decode_noise_scale
+            )
+        else:
+            decode_timestep = None
+        image = self.vae.decode(
+            latents = jax.device_put(latents, jax.devices('tpu')[0]), #.astype(jnp.bfloat16), #jax.device_put(latents, jax.devices('cpu')[0]),
+            is_video = is_video,
+            vae_per_channel_normalize=kwargs.get(
+                "vae_per_channel_normalize", True),
+            timestep=decode_timestep #.astype(jnp.bfloat16),
+        )
+        image = self.postprocess_to_output_type(    #swap this out!
+            torch.from_numpy(np.asarray(image.astype(jnp.float16))), output_type=output_type) 
 
     else:
-      image = latents
+        image = latents
 
     # Offload all models
 
