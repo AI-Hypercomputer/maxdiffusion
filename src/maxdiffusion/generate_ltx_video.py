@@ -11,6 +11,7 @@ from datetime import datetime
 
 import os
 import torch
+import time
 from pathlib import Path
 
 
@@ -93,6 +94,7 @@ def run(config):
   pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt=enhance_prompt)
   if config.pipeline_type == "multi-scale": 
     pipeline = LTXMultiScalePipeline(pipeline)
+  s0 = time.perf_counter()
   images = pipeline(
       height=height_padded,
       width=width_padded,
@@ -102,6 +104,19 @@ def run(config):
       config=config,
       enhance_prompt = False
   )
+  print("compile time: ", (time.perf_counter() - s0))
+  s0 = time.perf_counter()
+  images = pipeline(
+      height=height_padded,
+      width=width_padded,
+      num_frames=num_frames_padded,
+      is_video=True,
+      output_type="pt",
+      config=config,
+      enhance_prompt = False
+  )
+  print("generation time: ", (time.perf_counter() - s0))
+  
   (pad_left, pad_right, pad_top, pad_bottom) = padding
   pad_bottom = -pad_bottom
   pad_right = -pad_right

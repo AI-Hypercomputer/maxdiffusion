@@ -561,7 +561,6 @@ class LTXVideoPipeline:
       skip_block_list: Optional[Union[List[List[int]], List[int]]] = None,
       **kwargs,
   ):
-    import pdb; pdb.set_trace()
     prompt = self.config.prompt
     is_video = kwargs.get("is_video", False)
     if prompt is not None and isinstance(prompt, str):
