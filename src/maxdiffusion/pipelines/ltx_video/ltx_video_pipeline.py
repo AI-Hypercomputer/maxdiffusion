@@ -13,6 +13,7 @@
 # limitations under the License.
 import math
 import os
+from xmlrpc.client import Boolean
 from jax import Array
 from typing import Optional, List, Union, Tuple
 from einops import rearrange
@@ -242,7 +243,6 @@ class LTXVideoPipeline:
     patchifier = SymmetricPatchifier(patch_size=1)
     tokenizer = cls.load_tokenizer(config, config.text_encoder_model_name_or_path)
 
-    enhance_prompt = False
     if enhance_prompt:
       (
           prompt_enhancer_image_caption_model,
@@ -343,16 +343,12 @@ class LTXVideoPipeline:
 
     return scheduler_state
 
-  def encode_prompt(
+  def encode_prompt( #input changed
       self,
       prompt: Union[str, List[str]],
       do_classifier_free_guidance: bool = True,
       negative_prompt: str = "",
       num_images_per_prompt: int = 1,
-      prompt_embeds: Optional[torch.FloatTensor] = None,
-      negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-      prompt_attention_mask: Optional[torch.FloatTensor] = None,
-      negative_prompt_attention_mask: Optional[torch.FloatTensor] = None,
       text_encoder_max_tokens: int = 256,
       **kwargs,
   ):
@@ -364,28 +360,28 @@ class LTXVideoPipeline:
       batch_size = prompt_embeds.shape[0]
 
     max_length = text_encoder_max_tokens  # TPU supports only lengths multiple of 128
-    if prompt_embeds is None:
-      assert (
-          self.text_encoder is not None
-      ), "You should provide either prompt_embeds or self.text_encoder should not be None,"
-      prompt = self._text_preprocessing(prompt)
-      text_inputs = self.tokenizer(
-          prompt,
-          padding="max_length",
-          max_length=max_length,
-          truncation=True,
-          add_special_tokens=True,
-          return_tensors="pt",
-      )
-      text_input_ids = jnp.array(text_inputs.input_ids)
-      untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
+    
+    assert (
+        self.text_encoder is not None
+    ), "You should provide either prompt_embeds or self.text_encoder should not be None,"
+    prompt = self._text_preprocessing(prompt)
+    text_inputs = self.tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=max_length,
+        truncation=True,
+        add_special_tokens=True,
+        return_tensors="pt",
+    )
+    text_input_ids = jnp.array(text_inputs.input_ids)
+    untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
 
-      if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
-        removed_text = self.tokenizer.batch_decode(untruncated_ids[:, max_length - 1 : -1])
+    if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
+      removed_text = self.tokenizer.batch_decode(untruncated_ids[:, max_length - 1 : -1])
 
-      prompt_attention_mask = jnp.array(text_inputs.attention_mask)
-      prompt_embeds = self.text_encoder(text_input_ids, attention_mask=prompt_attention_mask)
-      prompt_embeds = prompt_embeds[0]
+    prompt_attention_mask = jnp.array(text_inputs.attention_mask)
+    prompt_embeds = self.text_encoder(text_input_ids, attention_mask=prompt_attention_mask)
+    prompt_embeds = prompt_embeds[0]
 
     bs_embed, seq_len, _ = prompt_embeds.shape
     prompt_embeds = jnp.tile(prompt_embeds, (1, num_images_per_prompt, 1))
@@ -394,7 +390,7 @@ class LTXVideoPipeline:
     prompt_attention_mask = jnp.reshape(prompt_attention_mask, (bs_embed * num_images_per_prompt, -1))
 
     # get unconditional embeddings for classifier free guidance
-    if do_classifier_free_guidance and negative_prompt_embeds is None:
+    if do_classifier_free_guidance:
       uncond_tokens = self._text_preprocessing(negative_prompt)
       uncond_tokens = uncond_tokens * batch_size
       max_length = prompt_embeds.shape[1]
@@ -546,11 +542,7 @@ class LTXVideoPipeline:
       negative_prompt: str = "",
       num_images_per_prompt: Optional[int] = 1,
       frame_rate: int = 30,
-      latents: Optional[torch.FloatTensor] = None,
-      prompt_embeds: Optional[torch.FloatTensor] = None,
-      prompt_attention_mask: Optional[torch.FloatTensor] = None,
-      negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-      negative_prompt_attention_mask: Optional[torch.FloatTensor] = None,
+      latents: Optional[jnp.ndarray] = None,
       output_type: Optional[str] = "pil",
       return_dict: bool = True,
       guidance_timesteps: Optional[List[int]] = None,
@@ -569,7 +561,7 @@ class LTXVideoPipeline:
       skip_block_list: Optional[Union[List[List[int]], List[int]]] = None,
       **kwargs,
   ):
-    enhance_prompt = False
+    import pdb; pdb.set_trace()
     prompt = self.config.prompt
     is_video = kwargs.get("is_video", False)
     if prompt is not None and isinstance(prompt, str):
@@ -681,10 +673,6 @@ class LTXVideoPipeline:
         do_classifier_free_guidance,
         negative_prompt=negative_prompt,
         num_images_per_prompt=num_images_per_prompt,
-        prompt_embeds=prompt_embeds,
-        negative_prompt_embeds=negative_prompt_embeds,
-        prompt_attention_mask=prompt_attention_mask,
-        negative_prompt_attention_mask=negative_prompt_attention_mask,
         text_encoder_max_tokens=text_encoder_max_tokens,
     )
     prompt_embeds_batch = prompt_embeds
@@ -732,7 +720,6 @@ class LTXVideoPipeline:
         prompt_embeds=prompt_embeds_batch,
         segment_ids=None,
         encoder_attention_segment_ids=prompt_attention_mask_batch,
-        num_inference_steps=num_inference_steps,
         scheduler=self.scheduler,
         do_classifier_free_guidance=do_classifier_free_guidance,
         num_conds=num_conds,
@@ -749,7 +736,7 @@ class LTXVideoPipeline:
 
     with self.mesh:
       latents, scheduler_state = p_run_inference(
-          transformer_state=self.transformer_state, latents=latents, timestep=noise_cond, scheduler_state=scheduler_state
+          transformer_state=self.transformer_state, latents=latents, scheduler_state=scheduler_state
       )
     
     latents = latents[:, num_cond_latents:]
@@ -934,41 +921,104 @@ def run_inference(
 
 
 #up to here
-def adain_filter_latent(latents: torch.Tensor, reference_latents: torch.Tensor, factor=1.0):
-  """
-  Applies Adaptive Instance Normalization (AdaIN) to a latent tensor based on
-  statistics from a reference latent tensor.
+# def adain_filter_latent(latents: torch.Tensor, reference_latents: torch.Tensor, factor=1.0):
+#   """
+#   Applies Adaptive Instance Normalization (AdaIN) to a latent tensor based on
+#   statistics from a reference latent tensor.
 
-  Args:
-      latent (torch.Tensor): Input latents to normalize
-      reference_latent (torch.Tensor): The reference latents providing style statistics.
-      factor (float): Blending factor between original and transformed latent.
-                     Range: -10.0 to 10.0, Default: 1.0
+#   Args:
+#       latent (torch.Tensor): Input latents to normalize
+#       reference_latent (torch.Tensor): The reference latents providing style statistics.
+#       factor (float): Blending factor between original and transformed latent.
+#                      Range: -10.0 to 10.0, Default: 1.0
 
-  Returns:
-      torch.Tensor: The transformed latent tensor
-  """
-  with default_env():
-    result = latents.clone()
+#   Returns:
+#       torch.Tensor: The transformed latent tensor
+#   """
+#   with default_env():
+#     result = latents.clone()
 
-    for i in range(latents.size(0)):
-      for c in range(latents.size(1)):
-        r_sd, r_mean = torch.std_mean(reference_latents[i, c], dim=None)  # index by original dim order
-        i_sd, i_mean = torch.std_mean(result[i, c], dim=None)
+#     for i in range(latents.size(0)):
+#       for c in range(latents.size(1)):
+#         r_sd, r_mean = torch.std_mean(reference_latents[i, c], dim=None)  # index by original dim order
+#         i_sd, i_mean = torch.std_mean(result[i, c], dim=None)
 
-        result[i, c] = ((result[i, c] - i_mean) / i_sd) * r_sd + r_mean
+#         result[i, c] = ((result[i, c] - i_mean) / i_sd) * r_sd + r_mean
 
-    result = torch.lerp(latents, result, factor)
-  return result
+#     result = torch.lerp(latents, result, factor)
+#   return result
 
+def adain_filter_latent(latents: jnp.ndarray, reference_latents: jnp.ndarray, factor: float = 1.0) -> jnp.ndarray:
+    """
+    Applies Adaptive Instance Normalization (AdaIN) to a latent tensor based on
+    statistics from a reference latent tensor, implemented in JAX.
 
-class LTXMultiScalePipeline:  ##figure these methods out
+    Args:
+        latents (jax.Array): Input latents to normalize. Expected shape (B, C, F, H, W).
+        reference_latents (jax.Array): The reference latents providing style statistics.
+                                       Expected shape (B, C, F, H, W).
+        factor (float): Blending factor between original and transformed latent.
+                       Range: -10.0 to 10.0, Default: 1.0
 
-  def _upsample_latents(self, latest_upsampler: LatentUpsampler, latents: torch.Tensor):
-    latents = jax.device_put(latents, jax.devices("tpu")[0])
-    # assert latents.device == latest_upsampler.device
+    Returns:
+        jax.Array: The transformed latent tensor.
+    """
     with default_env():
-      latents = un_normalize_latents(  # need to switch this out?
+      latents = jax.device_put(latents, jax.devices("tpu")[0])
+      reference_latents = jax.device_put(reference_latents, jax.devices("tpu")[0])
+      # Define the core AdaIN operation for a single (F, H, W) slice.
+      # This function will be vmapped over batch (B) and channel (C) dimensions.
+      def _adain_single_slice(latent_slice: jnp.ndarray, ref_latent_slice: jnp.ndarray) -> jnp.ndarray:
+          """
+          Applies AdaIN to a single latent slice (F, H, W) based on a reference slice.
+          """
+          r_mean = jnp.mean(ref_latent_slice)
+          r_sd = jnp.std(ref_latent_slice)
+
+          # Calculate standard deviation and mean for the input latent slice
+          i_mean = jnp.mean(latent_slice)
+          i_sd = jnp.std(latent_slice)
+          i_sd_safe = jnp.where(i_sd < 1e-6, 1.0, i_sd)
+          normalized_latent = (latent_slice - i_mean) / i_sd_safe
+          transformed_latent_slice = normalized_latent * r_sd + r_mean
+          return transformed_latent_slice
+
+      transformed_latents_core = jax.vmap(
+          jax.vmap(_adain_single_slice, in_axes=(0, 0)),
+          in_axes=(0, 0) # Vmap over batch (axis 0)
+      )(latents, reference_latents)
+      result_blended = latents * (1.0 - factor) + transformed_latents_core * factor
+
+    return result_blended
+
+
+class LTXMultiScalePipeline: 
+  @classmethod
+  def load_latent_upsampler(cls, config):
+    spatial_upscaler_model_name_or_path = config.spatial_upscaler_model_path
+
+    if spatial_upscaler_model_name_or_path and not os.path.isfile(spatial_upscaler_model_name_or_path):
+      spatial_upscaler_model_path = hf_hub_download(
+          repo_id="Lightricks/LTX-Video",
+          filename=spatial_upscaler_model_name_or_path,
+          local_dir=config.models_dir,
+          repo_type="model",
+      )
+    else:
+      spatial_upscaler_model_path = spatial_upscaler_model_name_or_path
+    if not config.spatial_upscaler_model_path:
+      raise ValueError(
+          "spatial upscaler model path is missing from pipeline config file and is required for multi-scale rendering"
+      )
+    latent_upsampler = LatentUpsampler.from_pretrained(spatial_upscaler_model_path)
+    latent_upsampler.eval()
+    return latent_upsampler
+
+
+  def _upsample_latents(self, latest_upsampler: LatentUpsampler, latents: jnp.ndarray):
+    latents = jax.device_put(latents, jax.devices("tpu")[0])
+    with default_env():
+      latents = un_normalize_latents(
           interop.torch_view(latents), self.vae, vae_per_channel_normalize=True
       )
       upsampled_latents = latest_upsampler(
@@ -979,29 +1029,21 @@ class LTXMultiScalePipeline:  ##figure these methods out
       )
     return upsampled_latents
 
-  def __init__(self, video_pipeline: LTXVideoPipeline, latent_upsampler: LatentUpsampler):
+  def __init__(self, video_pipeline: LTXVideoPipeline):
     self.video_pipeline = video_pipeline
     self.vae = video_pipeline.vae
-    self.latent_upsampler = latent_upsampler
 
-  def __call__(self, height, width, num_frames, is_video, output_type, generator, config) -> Any:
-
+  def __call__(self, height, width, num_frames, is_video, output_type, config, enhance_prompt: bool = False) -> Any:
+    #first pass
     original_output_type = output_type
-    original_width = width
-    original_height = height
-    x_width = int(width * config.downscale_factor)
-    downscaled_width = x_width - (x_width % self.video_pipeline.vae_scale_factor)
-    x_height = int(height * config.downscale_factor)
-    downscaled_height = x_height - (x_height % self.video_pipeline.vae_scale_factor)
-    # #use original height and width here to see
     output_type = "latent"
     result = self.video_pipeline(
-        height=original_height,
-        width=original_width,
+        height=height,
+        width=width,
+        enhance_prompt=enhance_prompt,
         num_frames=num_frames,
-        is_video=True,
+        is_video=is_video,
         output_type=output_type,
-        generator=generator,
         guidance_scale=config.first_pass["guidance_scale"],
         stg_scale=config.first_pass["stg_scale"],
         rescaling_scale=config.first_pass["rescaling_scale"],
@@ -1015,25 +1057,23 @@ class LTXMultiScalePipeline:  ##figure these methods out
     )
     latents = result
     print("done")
-    upsampled_latents = self._upsample_latents(self.latent_upsampler, latents)  # convert back to pytorch here
-    ##maybe change this?
-    latents = torch.from_numpy(np.array(latents))  # .to(torch.device('cpu'))
-    upsampled_latents = torch.from_numpy(np.array(upsampled_latents))  # .to(torch.device('cpu'))
+    latent_upsampler = self.load_latent_upsampler(config)
+    upsampled_latents = self._upsample_latents(latent_upsampler, latents)
+    # upsampled_latents = torch.from_numpy(np.array(upsampled_latents))  # .to(torch.device('cpu'))
     upsampled_latents = adain_filter_latent(latents=upsampled_latents, reference_latents=latents)
+    
+    #second pass
     latents = upsampled_latents
     output_type = original_output_type
-    width = downscaled_width * 2
-    height = downscaled_height * 2
-    # import pdb; pdb.set_trace()
-    latents = jnp.array(latents)
+    # latents = jnp.array(latents)
     result = self.video_pipeline(
-        height=original_height * 2,
-        width=original_width * 2,
+        height=height * 2,
+        width=width * 2,
+        enhance_prompt=enhance_prompt,
         num_frames=num_frames,
-        is_video=True,
+        is_video=is_video,
         output_type=original_output_type,
         latents=latents,
-        generator=generator,
         guidance_scale=config.second_pass["guidance_scale"],
         stg_scale=config.second_pass["stg_scale"],
         rescaling_scale=config.second_pass["rescaling_scale"],
@@ -1052,7 +1092,7 @@ class LTXMultiScalePipeline:  ##figure these methods out
 
       videos = F.interpolate(
           videos,
-          size=(original_height, original_width),
+          size=(height, width),
           mode="bilinear",
           align_corners=False,
       )

@@ -19,16 +19,12 @@ frame_rate: 30
 max_sequence_length: 512
 sampler: "from_checkpoint"
 
-
-
-
-
 # Generation parameters
-pipeline_type: None
-prompt: "A man in a dimly lit room talks on a vintage telephone, hangs up, and looks down with a sad expression. He holds the black rotary phone to his right ear with his right hand, his left hand holding a rocks glass with amber liquid. He wears a brown suit jacket over a white shirt, and a gold ring on his left ring finger. His short hair is neatly combed, and he has light skin with visible wrinkles around his eyes. The camera remains stationary, focused on his face and upper body. The room is dark, lit only by a warm light source off-screen to the left, casting shadows on the wall behind him. The scene appears to be from a movie."
+pipeline_type: multi-scale
+prompt: "A woman with light skin, wearing a blue jacket and a black hat with a veil, looks down and to her right, then back up as she speaks; she has brown hair styled in an updo, light brown eyebrows, and is wearing a white collared shirt under her jacket; the camera remains stationary on her face as she speaks; the background is out of focus, but shows trees and people in period clothing; the scene is captured in real-life footage."
 height: 512
 width: 512
-num_frames: 88 #344
+num_frames: 344 #344
 flow_shift: 5.0
 fps: 24
 downscale_factor: 0.6666666
