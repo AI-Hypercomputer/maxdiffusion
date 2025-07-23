@@ -380,7 +380,6 @@ def _apply_attention(
     )
   else:
     can_use_flash_attention = True
-  can_use_flash_attention=True
   if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
     return _apply_attention_dot(
         query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
@@ -513,7 +512,8 @@ class NNXAttentionOp(nnx.Module):
       float32_qk_product: bool = True,
       axis_names_q: AxisNames = (BATCH, HEAD, LENGTH, D_KV),
       axis_names_kv: AxisNames = (BATCH, HEAD, KV_LENGTH, D_KV),
-      flash_min_seq_length: int = 4096,
+      # Uses splash attention on cross attention.
+      flash_min_seq_length: int = 0,
       flash_block_sizes: BlockSizes = None,
       dtype: DType = jnp.float32,
       quant: Quant = None,
