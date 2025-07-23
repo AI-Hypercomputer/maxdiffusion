@@ -1,12 +1,26 @@
+# Copyright 2025 Lightricks Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://github.com/Lightricks/LTX-Video/blob/main/LICENSE
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This implementation is based on the Torch version available at:
+# https://github.com/Lightricks/LTX-Video/tree/main
 from maxdiffusion.models.ltx_video.autoencoders.causal_video_autoencoder import CausalVideoAutoencoder
 from maxdiffusion.models.ltx_video.autoencoders import causal_conv3d
 from maxdiffusion.models.ltx_video.autoencoders.vae_encode import vae_encode, vae_decode
 
 import jax
 from torchax import interop
-import os
 from torchax import default_env
-import jax.numpy as jnp
 
 # remove weight attribute to avoid error in JittableModule
 # in the future, this will be fixed in ltxv public repo
@@ -16,7 +30,7 @@ delattr(causal_conv3d.CausalConv3d, "weight")
 class TorchaxCausalVideoAutoencoder(interop.JittableModule):
 
   def __init__(self, vae: CausalVideoAutoencoder):
-    super().__init__(vae, extra_jit_args=dict(static_argnames=["split_size", "vae_per_channel_normalize"]))
+    super().__init__(vae, extra_jit_args=dict(static_argnames=["split_size", "vae_per_channel_normalize"]))  # noqa: C408
 
   def encode(self, media_items: jax.Array, split_size: int = 1, vae_per_channel_normalize: bool = True) -> jax.Array:
     if media_items.ndim != 5:

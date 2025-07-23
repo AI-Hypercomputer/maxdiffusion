@@ -1,5 +1,4 @@
 {
-    "ckpt_path": "/mnt/disks/diffusionproj/jax_weights",
     "activation_fn": "gelu-approximate",
     "attention_bias": true,
     "attention_head_dim": 128,

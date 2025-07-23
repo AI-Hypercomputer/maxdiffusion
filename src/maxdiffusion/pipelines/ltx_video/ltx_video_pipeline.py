@@ -13,7 +13,6 @@
 # limitations under the License.
 import math
 import os
-from xmlrpc.client import Boolean
 from jax import Array
 from typing import Optional, List, Union, Tuple
 from einops import rearrange
@@ -28,7 +27,6 @@ import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoProcessor,
-    AutoTokenizer,
 )
 from huggingface_hub import hf_hub_download
 from maxdiffusion.models.ltx_video.autoencoders.causal_video_autoencoder import (
@@ -42,16 +40,12 @@ from maxdiffusion.models.ltx_video.autoencoders.vae_encode import (
 )
 from maxdiffusion.models.ltx_video.autoencoders.latent_upsampler import LatentUpsampler
 from maxdiffusion.models.ltx_video.utils.prompt_enhance_utils import generate_cinematic_prompt
-from math import e
 from types import NoneType
 from typing import Any, Dict
-import numpy as np
 
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, PartitionSpec as P
-from typing import Optional, Union, List
-import torch
+from jax.sharding import Mesh
 from flax.linen import partitioning as nn_partitioning
 from maxdiffusion.models.ltx_video.transformers.symmetric_patchifier import SymmetricPatchifier
 from maxdiffusion.models.ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
@@ -59,22 +53,18 @@ from ...pyconfig import HyperParameters
 from ...schedulers.scheduling_rectified_flow import FlaxRectifiedFlowMultistepScheduler, RectifiedFlowSchedulerState
 from ...max_utils import (create_device_mesh, setup_initial_state, get_memory_allocations)
 from maxdiffusion.models.ltx_video.transformers.transformer3d import Transformer3DModel
-import os
-import json
 import functools
 import orbax.checkpoint as ocp
-import pickle
 
 
-def validate_transformer_inputs(
-    prompt_embeds, fractional_coords, latents, noise_cond, segment_ids, encoder_attention_segment_ids
-):
-  print("prompts_embeds.shape: ", prompt_embeds.shape, prompt_embeds.dtype)
-  print("fractional_coords.shape: ", fractional_coords.shape, fractional_coords.dtype)
-  print("latents.shape: ", latents.shape, latents.dtype)
-  print("noise_cond.shape: ", noise_cond.shape, noise_cond.dtype)
-  print("noise_cond.shape: ", noise_cond.shape, noise_cond.dtype)
-  print("encoder_attention_segment_ids.shape: ", encoder_attention_segment_ids.shape, encoder_attention_segment_ids.dtype)
+def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, encoder_attention_segment_ids):
+  # Note: reference shape annotated for first pass default inference parameters
+  print("prompts_embeds.shape: ", prompt_embeds.shape, prompt_embeds.dtype)  # (3, 256, 4096) float32
+  print("fractional_coords.shape: ", fractional_coords.shape, fractional_coords.dtype)  # (3, 3, 3072) float32
+  print("latents.shape: ", latents.shape, latents.dtype)  # (1, 3072, 128) float 32
+  print(
+      "encoder_attention_segment_ids.shape: ", encoder_attention_segment_ids.shape, encoder_attention_segment_ids.dtype
+  )  # (3, 256) int32
 
 
 class LTXVideoPipeline:
@@ -137,7 +127,6 @@ class LTXVideoPipeline:
     config_path = os.path.join(base_dir, "../../models/ltx_video/xora_v1.2-13B-balanced-128.json")
     with open(config_path, "r") as f:
       model_config = json.load(f)
-    relative_ckpt_path = model_config["ckpt_path"]
 
     ignored_keys = [
         "_class_name",
@@ -145,7 +134,6 @@ class LTXVideoPipeline:
         "_name_or_path",
         "causal_temporal_positioning",
         "in_channels",
-        "ckpt_path",
     ]
     in_channels = model_config["in_channels"]
     for name in ignored_keys:
@@ -154,12 +142,15 @@ class LTXVideoPipeline:
     transformer = Transformer3DModel(
         **model_config, dtype=jnp.float32, gradient_checkpointing="matmul_without_batch", sharding_mesh=mesh
     )
+    key = jax.random.PRNGKey(config.seed)
+    key, subkey = jax.random.split(key)
     weights_init_fn = functools.partial(
-        transformer.init_weights, in_channels, jax.random.PRNGKey(0), model_config["caption_channels"], eval_only=True
+        transformer.init_weights, in_channels, subkey, model_config["caption_channels"], eval_only=True
     )
     # loading from weight checkpoint
-    absolute_ckpt_path = os.path.abspath(relative_ckpt_path)
-    checkpoint_manager = ocp.CheckpointManager(absolute_ckpt_path)
+    models_dir = config.output_dir
+    jax_weights_dir = os.path.join(models_dir, "jax_weights")
+    checkpoint_manager = ocp.CheckpointManager(jax_weights_dir)
     transformer_state, transformer_state_shardings = setup_initial_state(
         model=transformer,
         tx=None,
@@ -224,7 +215,7 @@ class LTXVideoPipeline:
 
     transformer, transformer_state, transformer_state_shardings = cls.load_transformer(config)
 
-    models_dir = config.models_dir
+    models_dir = config.output_dir
     ltxv_model_name_or_path = "ltxv-13b-0.9.7-dev.safetensors"
     if not os.path.isfile(ltxv_model_name_or_path):
       ltxv_model_path = hf_hub_download(
@@ -343,7 +334,7 @@ class LTXVideoPipeline:
 
     return scheduler_state
 
-  def encode_prompt( #input changed
+  def encode_prompt(  # currently only supports passing in a prompt
       self,
       prompt: Union[str, List[str]],
       do_classifier_free_guidance: bool = True,
@@ -356,14 +347,10 @@ class LTXVideoPipeline:
       batch_size = 1
     elif prompt is not None and isinstance(prompt, list):
       batch_size = len(prompt)
-    else:
-      batch_size = prompt_embeds.shape[0]
 
     max_length = text_encoder_max_tokens  # TPU supports only lengths multiple of 128
-    
-    assert (
-        self.text_encoder is not None
-    ), "You should provide either prompt_embeds or self.text_encoder should not be None,"
+
+    assert self.text_encoder is not None, "You should provide either prompt_embeds or self.text_encoder should not be None,"
     prompt = self._text_preprocessing(prompt)
     text_inputs = self.tokenizer(
         prompt,
@@ -374,10 +361,6 @@ class LTXVideoPipeline:
         return_tensors="pt",
     )
     text_input_ids = jnp.array(text_inputs.input_ids)
-    untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
-
-    if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
-      removed_text = self.tokenizer.batch_decode(untruncated_ids[:, max_length - 1 : -1])
 
     prompt_attention_mask = jnp.array(text_inputs.attention_mask)
     prompt_embeds = self.text_encoder(text_input_ids, attention_mask=prompt_attention_mask)
@@ -463,13 +446,12 @@ class LTXVideoPipeline:
       latents = noise
     else:
       # Noise the latents to the required (first) timestep
-      # Ensure timestep is a jnp.array with the correct dtype
       timestep_array = jnp.array(timestep, dtype=dtype)
       latents = timestep_array * noise + (1 - timestep_array) * latents
 
     return latents
 
-  def prepare_conditioning(  # no support for conditioning items, conditioning mask, needs to conver to torch before patchifier
+  def prepare_conditioning(  # no support for conditioning items, conditioning mask, needs to convert to torch before patchifier
       self,
       init_latents: jnp.ndarray,
   ) -> Tuple[jnp.ndarray, jnp.ndarray, int]:
@@ -483,10 +465,9 @@ class LTXVideoPipeline:
         0,
     )
 
-
   def denormalize(self, images: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
     r"""
-    Borrowed from diffusers.image_processor 
+    Borrowed from diffusers.image_processor
     Denormalize an image array to [0,1].
 
     Args:
@@ -516,12 +497,11 @@ class LTXVideoPipeline:
 
     return torch.stack([self.denormalize(images[i]) if do_denormalize[i] else images[i] for i in range(images.shape[0])])
 
-  # same as diffusers image_processor.postprocess
-
-  def postprocess_to_output_type(self, image, output_type):  
-    '''
+  def postprocess_to_output_type(self, image, output_type):
+    """
+    Borrowed from diffusers.image_processor
     Currrently supporting output type latent and pt
-    '''
+    """
     if not isinstance(image, torch.Tensor):
       raise ValueError(f"Input for postprocessing is in incorrect format: {type(image)}. We only support pytorch tensor")
 
@@ -530,7 +510,7 @@ class LTXVideoPipeline:
 
     if output_type == "latent":
       return image
-    image = self._denormalize_conditionally(image, None) 
+    image = self._denormalize_conditionally(image, None)
     if output_type == "pt":
       return image
 
@@ -557,18 +537,18 @@ class LTXVideoPipeline:
       skip_initial_inference_steps: int = 0,
       skip_final_inference_steps: int = 0,
       cfg_star_rescale: bool = False,
+      seed: int = 0,
       skip_layer_strategy: Optional[SkipLayerStrategy] = None,
       skip_block_list: Optional[Union[List[List[int]], List[int]]] = None,
       **kwargs,
   ):
+    key = jax.random.PRNGKey(seed)
     prompt = self.config.prompt
     is_video = kwargs.get("is_video", False)
     if prompt is not None and isinstance(prompt, str):
       batch_size = 1
     elif prompt is not None and isinstance(prompt, list):
       batch_size = len(prompt)
-    else:
-      batch_size = prompt_embeds.shape[0]
 
     latent_height = height // self.vae_scale_factor
     latent_width = width // self.vae_scale_factor
@@ -597,7 +577,7 @@ class LTXVideoPipeline:
         skip_final_inference_steps,
     )
 
-    #set up guidance
+    # set up guidance
     guidance_mapping = []
 
     if guidance_timesteps:
@@ -631,8 +611,7 @@ class LTXVideoPipeline:
     if do_spatio_temporal_guidance:
       num_conds += 1
 
-
-    #prepare skip block list
+    # prepare skip block list
     is_list_of_lists = bool(skip_block_list) and isinstance(skip_block_list[0], list)
 
     if not is_list_of_lists:
@@ -650,7 +629,7 @@ class LTXVideoPipeline:
             self.transformer.create_skip_layer_mask(batch_size, num_conds, num_conds - 1, skip_blocks)
             for skip_blocks in skip_block_list
         ]
-    
+
     if enhance_prompt:
       prompt = generate_cinematic_prompt(
           self.prompt_enhancer_image_caption_model,
@@ -676,7 +655,7 @@ class LTXVideoPipeline:
     )
     prompt_embeds_batch = prompt_embeds
     prompt_attention_mask_batch = prompt_attention_mask
-    
+
     if do_classifier_free_guidance:
       prompt_embeds_batch = jnp.concatenate([negative_prompt_embeds, prompt_embeds], axis=0)
       prompt_attention_mask_batch = jnp.concatenate([negative_prompt_attention_mask, prompt_attention_mask], axis=0)
@@ -689,14 +668,14 @@ class LTXVideoPipeline:
           ],
           axis=0,
       )
-    
-    #optionally pass in a latent here
+
+    # optionally pass in a latent here
     latents = self.prepare_latents(
         latents=latents,
         timestep=scheduler_state.timesteps[0],
         latent_shape=latent_shape,
         dtype=jnp.float32,
-        key=jax.random.PRNGKey(0),
+        key=key,
     )
 
     latents, pixel_coords, num_cond_latents = self.prepare_conditioning(
@@ -706,9 +685,7 @@ class LTXVideoPipeline:
     pixel_coords = jnp.concatenate([pixel_coords] * num_conds, axis=0)
     fractional_coords = pixel_coords.astype(jnp.float32)
     fractional_coords = fractional_coords.at[:, 0].set(fractional_coords[:, 0] * (1.0 / frame_rate))
-
-    # initialize dummy noise
-    noise_cond = jnp.ones((1, 1))
+    validate_transformer_inputs(prompt_embeds_batch, fractional_coords, latents, prompt_attention_mask_batch)
 
     p_run_inference = functools.partial(
         run_inference,
@@ -737,7 +714,7 @@ class LTXVideoPipeline:
       latents, scheduler_state = p_run_inference(
           transformer_state=self.transformer_state, latents=latents, scheduler_state=scheduler_state
       )
-    
+
     latents = latents[:, num_cond_latents:]
 
     latents = self.patchifier.unpatchify(
@@ -749,8 +726,7 @@ class LTXVideoPipeline:
 
     if output_type != "latent":
       if self.vae.decoder.timestep_conditioning:
-        noise = jax.random.normal(jax.random.PRNGKey(5), latents.shape, dtype=latents.dtype)
-
+        noise = jax.random.normal(key, latents.shape, dtype=latents.dtype)
         # Convert decode_timestep to a list if it's not already one
         if not isinstance(decode_timestep, (list, jnp.ndarray)):
           decode_timestep = [decode_timestep] * latents.shape[0]
@@ -761,7 +737,6 @@ class LTXVideoPipeline:
         elif not isinstance(decode_noise_scale, (list, jnp.ndarray)):
           decode_noise_scale = [decode_noise_scale] * latents.shape[0]
 
-        # Convert lists to JAX arrays
         decode_timestep = jnp.array(decode_timestep, dtype=jnp.float32)
 
         # Reshape decode_noise_scale for broadcasting
@@ -778,7 +753,7 @@ class LTXVideoPipeline:
           vae_per_channel_normalize=kwargs.get("vae_per_channel_normalize", True),
           timestep=decode_timestep,
       )
-      # convert back to torch to post process using the diffusers library
+      # convert back to torch to postprocess using the diffusers library
       image = self.postprocess_to_output_type(
           torch.from_numpy(np.asarray(image.astype(jnp.float16))), output_type=output_type
       )
@@ -786,16 +761,13 @@ class LTXVideoPipeline:
     else:
       image = latents
 
-    # Offload all models
-
     if not return_dict:
       return (image,)
 
     return image
 
 
-
-def transformer_forward_pass(  
+def transformer_forward_pass(
     latents,
     state,
     noise_cond,
@@ -818,7 +790,7 @@ def transformer_forward_pass(
       encoder_attention_segment_ids=encoder_attention_segment_ids,
       skip_layer_mask=skip_layer_mask,
       skip_layer_strategy=skip_layer_strategy,
-  ) 
+  )
   return noise_pred, state
 
 
@@ -862,10 +834,10 @@ def run_inference(
     elif current_timestep.ndim == 0:
       current_timestep = jnp.expand_dims(current_timestep, axis=0)
 
-    # Broadcast to batch dimension (compatible with ONNX/Core ML)
+    # Broadcast to batch dimension
     current_timestep = jnp.broadcast_to(current_timestep, (latent_model_input.shape[0], 1))
 
-    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):  
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
       noise_pred, transformer_state = transformer_forward_pass(
           latent_model_input,
           transformer_state,
@@ -878,8 +850,8 @@ def run_inference(
           skip_layer_mask=(skip_layer_masks[i] if skip_layer_masks is not None else None),
           skip_layer_strategy=skip_layer_strategy,
       )
-    
-    #perform guidance on noise prediction
+
+    # perform guidance on noise prediction
     if do_spatio_temporal_guidance:
       chunks = jnp.split(noise_pred, num_conds, axis=0)
       noise_pred_text = chunks[-2]
@@ -892,11 +864,11 @@ def run_inference(
       if cfg_star_rescale:
         positive_flat = noise_pred_text.reshape(batch_size, -1)
         negative_flat = noise_pred_uncond.reshape(batch_size, -1)
-        dot_product = jnp.sum(positive_flat * negative_flat, axis=1, keepdims=True) 
-        squared_norm = jnp.sum(negative_flat**2, axis=1, keepdims=True) + 1e-8 
-        alpha = dot_product / squared_norm  
+        dot_product = jnp.sum(positive_flat * negative_flat, axis=1, keepdims=True)
+        squared_norm = jnp.sum(negative_flat**2, axis=1, keepdims=True) + 1e-8
+        alpha = dot_product / squared_norm
         alpha = alpha.reshape(batch_size, 1, 1)
-        noise_pred_uncond = alpha * noise_pred_uncond  
+        noise_pred_uncond = alpha * noise_pred_uncond
       noise_pred = noise_pred_uncond + guidance_scale[i] * (noise_pred_text - noise_pred_uncond)
     elif do_spatio_temporal_guidance:
       noise_pred = noise_pred_text
@@ -911,87 +883,58 @@ def run_inference(
         factor = rescaling_scale[i] * factor + (1 - rescaling_scale[i])
 
         noise_pred = noise_pred * factor.reshape(batch_size, 1, 1)
-    current_timestep = current_timestep[:1] 
+    current_timestep = current_timestep[:1]
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, current_timestep[0][0], latents).to_tuple()
 
   return latents, scheduler_state
 
 
-
-
-#up to here
-# def adain_filter_latent(latents: torch.Tensor, reference_latents: torch.Tensor, factor=1.0):
-#   """
-#   Applies Adaptive Instance Normalization (AdaIN) to a latent tensor based on
-#   statistics from a reference latent tensor.
-
-#   Args:
-#       latent (torch.Tensor): Input latents to normalize
-#       reference_latent (torch.Tensor): The reference latents providing style statistics.
-#       factor (float): Blending factor between original and transformed latent.
-#                      Range: -10.0 to 10.0, Default: 1.0
-
-#   Returns:
-#       torch.Tensor: The transformed latent tensor
-#   """
-#   with default_env():
-#     result = latents.clone()
-
-#     for i in range(latents.size(0)):
-#       for c in range(latents.size(1)):
-#         r_sd, r_mean = torch.std_mean(reference_latents[i, c], dim=None)  # index by original dim order
-#         i_sd, i_mean = torch.std_mean(result[i, c], dim=None)
-
-#         result[i, c] = ((result[i, c] - i_mean) / i_sd) * r_sd + r_mean
-
-#     result = torch.lerp(latents, result, factor)
-#   return result
-
 def adain_filter_latent(latents: jnp.ndarray, reference_latents: jnp.ndarray, factor: float = 1.0) -> jnp.ndarray:
-    """
-    Applies Adaptive Instance Normalization (AdaIN) to a latent tensor based on
-    statistics from a reference latent tensor, implemented in JAX.
+  """
+  Applies Adaptive Instance Normalization (AdaIN) to a latent tensor based on
+  statistics from a reference latent tensor, implemented in JAX.
 
-    Args:
-        latents (jax.Array): Input latents to normalize. Expected shape (B, C, F, H, W).
-        reference_latents (jax.Array): The reference latents providing style statistics.
-                                       Expected shape (B, C, F, H, W).
-        factor (float): Blending factor between original and transformed latent.
-                       Range: -10.0 to 10.0, Default: 1.0
+  Args:
+      latents (jax.Array): Input latents to normalize. Expected shape (B, C, F, H, W).
+      reference_latents (jax.Array): The reference latents providing style statistics.
+                                     Expected shape (B, C, F, H, W).
+      factor (float): Blending factor between original and transformed latent.
+                     Range: -10.0 to 10.0, Default: 1.0
 
-    Returns:
-        jax.Array: The transformed latent tensor.
-    """
-    with default_env():
-      latents = jax.device_put(latents, jax.devices("tpu")[0])
-      reference_latents = jax.device_put(reference_latents, jax.devices("tpu")[0])
-      # Define the core AdaIN operation for a single (F, H, W) slice.
-      # This function will be vmapped over batch (B) and channel (C) dimensions.
-      def _adain_single_slice(latent_slice: jnp.ndarray, ref_latent_slice: jnp.ndarray) -> jnp.ndarray:
-          """
-          Applies AdaIN to a single latent slice (F, H, W) based on a reference slice.
-          """
-          r_mean = jnp.mean(ref_latent_slice)
-          r_sd = jnp.std(ref_latent_slice)
+  Returns:
+      jax.Array: The transformed latent tensor.
+  """
+  with default_env():
+    latents = jax.device_put(latents, jax.devices("tpu")[0])
+    reference_latents = jax.device_put(reference_latents, jax.devices("tpu")[0])
 
-          # Calculate standard deviation and mean for the input latent slice
-          i_mean = jnp.mean(latent_slice)
-          i_sd = jnp.std(latent_slice)
-          i_sd_safe = jnp.where(i_sd < 1e-6, 1.0, i_sd)
-          normalized_latent = (latent_slice - i_mean) / i_sd_safe
-          transformed_latent_slice = normalized_latent * r_sd + r_mean
-          return transformed_latent_slice
+    # Define the core AdaIN operation for a single (F, H, W) slice.
+    # This function will be vmapped over batch (B) and channel (C) dimensions.
+    def _adain_single_slice(latent_slice: jnp.ndarray, ref_latent_slice: jnp.ndarray) -> jnp.ndarray:
+      """
+      Applies AdaIN to a single latent slice (F, H, W) based on a reference slice.
+      """
+      r_mean = jnp.mean(ref_latent_slice)
+      r_sd = jnp.std(ref_latent_slice)
 
-      transformed_latents_core = jax.vmap(
-          jax.vmap(_adain_single_slice, in_axes=(0, 0)),
-          in_axes=(0, 0) # Vmap over batch (axis 0)
-      )(latents, reference_latents)
-      result_blended = latents * (1.0 - factor) + transformed_latents_core * factor
+      # Calculate standard deviation and mean for the input latent slice
+      i_mean = jnp.mean(latent_slice)
+      i_sd = jnp.std(latent_slice)
+      i_sd_safe = jnp.where(i_sd < 1e-6, 1.0, i_sd)
+      normalized_latent = (latent_slice - i_mean) / i_sd_safe
+      transformed_latent_slice = normalized_latent * r_sd + r_mean
+      return transformed_latent_slice
 
-    return result_blended
+    transformed_latents_core = jax.vmap(
+        jax.vmap(_adain_single_slice, in_axes=(0, 0)), in_axes=(0, 0)  # Vmap over batch (axis 0)
+    )(latents, reference_latents)
+    result_blended = latents * (1.0 - factor) + transformed_latents_core * factor
+
+  return result_blended
 
 
-class LTXMultiScalePipeline: 
+class LTXMultiScalePipeline:
+
   @classmethod
   def load_latent_upsampler(cls, config):
     spatial_upscaler_model_name_or_path = config.spatial_upscaler_model_path
@@ -1000,7 +943,7 @@ class LTXMultiScalePipeline:
       spatial_upscaler_model_path = hf_hub_download(
           repo_id="Lightricks/LTX-Video",
           filename=spatial_upscaler_model_name_or_path,
-          local_dir=config.models_dir,
+          local_dir=config.output_dir,
           repo_type="model",
       )
     else:
@@ -1013,16 +956,11 @@ class LTXMultiScalePipeline:
     latent_upsampler.eval()
     return latent_upsampler
 
-
   def _upsample_latents(self, latest_upsampler: LatentUpsampler, latents: jnp.ndarray):
     latents = jax.device_put(latents, jax.devices("tpu")[0])
     with default_env():
-      latents = un_normalize_latents(
-          interop.torch_view(latents), self.vae, vae_per_channel_normalize=True
-      )
-      upsampled_latents = latest_upsampler(
-          torch.from_numpy(np.array(latents))
-      )  # here converted back to torch, cause upsampler in pytorch
+      latents = un_normalize_latents(interop.torch_view(latents), self.vae, vae_per_channel_normalize=True)
+      upsampled_latents = latest_upsampler(torch.from_numpy(np.array(latents)))  # converted back to torch before upsampler
       upsampled_latents = normalize_latents(
           interop.torch_view(jnp.array(upsampled_latents.detach().numpy())), self.vae, vae_per_channel_normalize=True
       )
@@ -1032,8 +970,10 @@ class LTXMultiScalePipeline:
     self.video_pipeline = video_pipeline
     self.vae = video_pipeline.vae
 
-  def __call__(self, height, width, num_frames, is_video, output_type, config, enhance_prompt: bool = False) -> Any:
-    #first pass
+  def __call__(
+      self, height, width, num_frames, is_video, output_type, config, seed: int = 0, enhance_prompt: bool = False
+  ) -> Any:
+    # first pass
     original_output_type = output_type
     output_type = "latent"
     result = self.video_pipeline(
@@ -1043,6 +983,7 @@ class LTXMultiScalePipeline:
         num_frames=num_frames,
         is_video=is_video,
         output_type=output_type,
+        seed=seed,
         guidance_scale=config.first_pass["guidance_scale"],
         stg_scale=config.first_pass["stg_scale"],
         rescaling_scale=config.first_pass["rescaling_scale"],
@@ -1055,22 +996,20 @@ class LTXMultiScalePipeline:
         skip_block_list=config.first_pass["skip_block_list"],
     )
     latents = result
-    print("done")
+    print("first pass done")
     latent_upsampler = self.load_latent_upsampler(config)
     upsampled_latents = self._upsample_latents(latent_upsampler, latents)
-    # upsampled_latents = torch.from_numpy(np.array(upsampled_latents))  # .to(torch.device('cpu'))
     upsampled_latents = adain_filter_latent(latents=upsampled_latents, reference_latents=latents)
-    
-    #second pass
+
+    # second pass
     latents = upsampled_latents
-    output_type = original_output_type
-    # latents = jnp.array(latents)
     result = self.video_pipeline(
         height=height * 2,
         width=width * 2,
         enhance_prompt=enhance_prompt,
         num_frames=num_frames,
         is_video=is_video,
+        seed=seed,
         output_type=original_output_type,
         latents=latents,
         guidance_scale=config.second_pass["guidance_scale"],

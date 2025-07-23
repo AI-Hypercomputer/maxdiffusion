@@ -1,3 +1,19 @@
+# Copyright 2025 Lightricks Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://github.com/Lightricks/LTX-Video/blob/main/LICENSE
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This implementation is based on the Torch version available at:
+# https://github.com/Lightricks/LTX-Video/tree/main
 from dataclasses import field
 from typing import Any, Callable, Dict, List, Tuple, Optional
 
@@ -8,13 +24,6 @@ from flax.linen import partitioning
 
 
 class RepeatableCarryBlock(nn.Module):
-  """
-  Integrates an input module in a jax carry format
-
-  ergo, the module assumes the role of a building block
-  and returns both input and output across all blocks
-  """
-
   module: Callable[[Any], nn.Module]
   module_init_args: List[Any]
   module_init_kwargs: Dict[str, Any]

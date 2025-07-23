@@ -1,16 +1,28 @@
+"""
+ Copyright 2025 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+      https://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ """
+
 import numpy as np
 from absl import app
 from typing import Sequence
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXVideoPipeline
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXMultiScalePipeline
 from maxdiffusion import pyconfig
-from maxdiffusion.models.ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
-from huggingface_hub import hf_hub_download
 import imageio
 from datetime import datetime
-
 import os
-import torch
 import time
 from pathlib import Path
 
@@ -28,9 +40,6 @@ def calculate_padding(
   pad_bottom = pad_height - pad_top  # Handles odd padding
   pad_left = pad_width // 2
   pad_right = pad_width - pad_left  # Handles odd padding
-
-  # Return padded tensor
-  # Padding format is (left, right, top, bottom)
   padding = (pad_left, pad_right, pad_top, pad_bottom)
   return padding
 
@@ -59,8 +68,6 @@ def convert_prompt_to_filename(text: str, max_len: int = 20) -> str:
   return "-".join(result)
 
 
-
-
 def get_unique_filename(
     base: str,
     ext: str,
@@ -70,9 +77,7 @@ def get_unique_filename(
     endswith=None,
     index_range=1000,
 ) -> Path:
-  base_filename = (
-      f"{base}_{convert_prompt_to_filename(prompt, max_len=30)}_{resolution[0]}x{resolution[1]}x{resolution[2]}"
-  )
+  base_filename = f"{base}_{convert_prompt_to_filename(prompt, max_len=30)}_{resolution[0]}x{resolution[1]}x{resolution[2]}"
   for i in range(index_range):
     filename = dir / f"{base_filename}_{i}{endswith if endswith else ''}{ext}"
     if not os.path.exists(filename):
@@ -87,13 +92,23 @@ def run(config):
   padding = calculate_padding(config.height, config.width, height_padded, width_padded)
   prompt_enhancement_words_threshold = config.prompt_enhancement_words_threshold
   prompt_word_count = len(config.prompt.split())
-  enhance_prompt = (
-      prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
-  )
+  enhance_prompt = prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
 
   pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt=enhance_prompt)
-  if config.pipeline_type == "multi-scale": 
+  if config.pipeline_type == "multi-scale":
     pipeline = LTXMultiScalePipeline(pipeline)
+  # s0 = time.perf_counter()
+  # images = pipeline(
+  #     height=height_padded,
+  #     width=width_padded,
+  #     num_frames=num_frames_padded,
+  #     is_video=True,
+  #     output_type="pt",
+  #     config=config,
+  #     enhance_prompt=enhance_prompt,
+  #     seed = config.seed
+  # )
+  # print("compile time: ", (time.perf_counter() - s0))
   s0 = time.perf_counter()
   images = pipeline(
       height=height_padded,
@@ -102,21 +117,11 @@ def run(config):
       is_video=True,
       output_type="pt",
       config=config,
-      enhance_prompt = False
-  )
-  print("compile time: ", (time.perf_counter() - s0))
-  s0 = time.perf_counter()
-  images = pipeline(
-      height=height_padded,
-      width=width_padded,
-      num_frames=num_frames_padded,
-      is_video=True,
-      output_type="pt",
-      config=config,
-      enhance_prompt = False
+      enhance_prompt=enhance_prompt,
+      seed=config.seed,
   )
   print("generation time: ", (time.perf_counter() - s0))
-  
+
   (pad_left, pad_right, pad_top, pad_bottom) = padding
   pad_bottom = -pad_bottom
   pad_right = -pad_right
@@ -127,6 +132,7 @@ def run(config):
   images = images[:, :, : config.num_frames, pad_top:pad_bottom, pad_left:pad_right]
   output_dir = Path(f"outputs/{datetime.today().strftime('%Y-%m-%d')}")
   output_dir.mkdir(parents=True, exist_ok=True)
+
   for i in range(images.shape[0]):
     # Gathering from B, C, F, H, W to C, F, H, W and then permuting to F, H, W, C
     video_np = images[i].permute(1, 2, 3, 0).detach().float().numpy()

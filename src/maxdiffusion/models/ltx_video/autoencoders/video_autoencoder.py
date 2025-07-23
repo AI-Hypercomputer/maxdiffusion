@@ -1,3 +1,19 @@
+# Copyright 2025 Lightricks Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://github.com/Lightricks/LTX-Video/blob/main/LICENSE
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This implementation is based on the Torch version available at:
+# https://github.com/Lightricks/LTX-Video/tree/main
 import json
 import os
 from functools import partial
@@ -135,7 +151,7 @@ class VideoAutoencoder(AutoencoderKLWrapper):
     return json.dumps(self.config.__dict__)
 
   def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
-    model_keys = set(name for name, _ in self.named_parameters())
+    model_keys = set(name for name, _ in self.named_parameters())  # noqa: C401
 
     key_mapping = {
         ".resnets.": ".res_blocks.",

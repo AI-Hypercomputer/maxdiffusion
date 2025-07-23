@@ -458,7 +458,6 @@ class Attention(nn.Module):
       deterministic: bool = True,
       **cross_attention_kwargs,
   ) -> jnp.ndarray:
-    cross_attention_kwargs = {k: w for k, w in cross_attention_kwargs.items() if k in attn_parameters}  # noqa: F821
     assert cross_attention_kwargs.get("scale", None) is None, "Not supported"
 
     input_axis_names = ("activation_batch", "activation_length", "activation_embed")
@@ -476,9 +475,7 @@ class Attention(nn.Module):
 
     batch_size, _, _ = hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
     if skip_layer_mask is not None:
-      skip_layer_mask = jnp.reshape(
-          skip_layer_mask[block_index], (batch_size, 1, 1)
-      )  # here skip_layer_mask is (48,3), changed this currently!
+      skip_layer_mask = jnp.reshape(skip_layer_mask[block_index], (batch_size, 1, 1))
 
     query = self.to_q(hidden_states)
     query = self.q_norm(query)
@@ -645,14 +642,6 @@ class AttentionOp(nn.Module):
       if q_segment_ids is not None and q_segment_ids.ndim != 2:
         raise ValueError(f"Expected mask with 2 dims, got {q_segment_ids.ndim}.")
       # Based on: ("activation_kv_batch", "activation_kv_heads", "activation_length", "activation_kv_head_dim")
-      # Computation of the spec based on the logical constraints can be found in logical_axes_to_spec.py.
-      # qkvo_sharding_spec = jax.sharding.PartitionSpec(
-      #     ("data", "fsdp", "fsdp_transpose", "expert"),
-      #     ("tensor", "tensor_transpose", "sequence", "tensor_sequence"),
-      #     None,
-      #     None,
-      # )
-      # qkv_segment_ids_spec = jax.sharding.PartitionSpec(("data", "fsdp", "fsdp_transpose", "expert"), "sequence")
       qkvo_sharding_spec = jax.sharding.PartitionSpec(
           "data",
           "fsdp",

@@ -1,3 +1,19 @@
+# Copyright 2025 Lightricks Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://github.com/Lightricks/LTX-Video/blob/main/LICENSE
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This implementation is based on the Torch version available at:
+# https://github.com/Lightricks/LTX-Video/tree/main
 import json
 import os
 from functools import partial
@@ -218,11 +234,11 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
     return json.dumps(self.config.__dict__)
 
   def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
-    if any([key.startswith("vae.") for key in state_dict.keys()]):
+    if any([key.startswith("vae.") for key in state_dict.keys()]):  # noqa: C419
       state_dict = {key.replace("vae.", ""): value for key, value in state_dict.items() if key.startswith("vae.")}
     ckpt_state_dict = {key: value for key, value in state_dict.items() if not key.startswith(PER_CHANNEL_STATISTICS_PREFIX)}
 
-    model_keys = set(name for name, _ in self.named_modules())
+    model_keys = set(name for name, _ in self.named_modules())  # noqa: C401
 
     key_mapping = {
         ".resnets.": ".res_blocks.",
