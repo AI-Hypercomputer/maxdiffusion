@@ -230,18 +230,16 @@ def main(args):
   weight_file = "ltxv-13b-0.9.7-dev.safetensors"
 
   # download from huggingface, otherwise load from local
-  if args.local_ckpt_path is None:
-    print("Loading from HF", flush=True)
-    model_name = "Lightricks/LTX-Video"
-    local_file_path = hf_hub_download(
-        repo_id=model_name,
-        filename=weight_file,
-        local_dir=args.download_ckpt_path,
-        local_dir_use_symlinks=False,
-    )
-  else:
-    base_dir = args.local_ckpt_path
-    local_file_path = os.path.join(base_dir, weight_file)
+
+  print("Loading from HF", flush=True)
+  model_name = "Lightricks/LTX-Video"
+  absolute_ckpt_path = os.path.abspath(args.ckpt_path)
+  local_file_path = hf_hub_download(
+      repo_id=model_name,
+      filename=weight_file,
+      local_dir=absolute_ckpt_path,
+      local_dir_use_symlinks=False,
+  )
   torch_state_dict = load_file(local_file_path)
 
   print("Initializing pytorch transformer..", flush=True)
@@ -284,7 +282,7 @@ def main(args):
   params_jax = torch_statedict_to_jax(params_jax, torch_state_dict)
 
   print("Creating checkpointer and jax state for saving..", flush=True)
-  relative_ckpt_path = args.output_dir
+  relative_ckpt_path = os.path.join(args.ckpt_path, "jax_weights")
   absolute_ckpt_path = os.path.abspath(relative_ckpt_path)
   tx = optax.adamw(learning_rate=1e-5)
   with jax.default_device("cpu"):
@@ -303,25 +301,12 @@ def main(args):
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Convert Torch checkpoints to Jax format.")
   parser.add_argument(
-      "--local_ckpt_path",
+      "--ckpt_path",
       type=str,
       required=False,
       help="Local path of the checkpoint to convert. If not provided, will download from huggingface for example '/mnt/ckpt/00536000' or '/opt/dmd-torch-model/ema.pt'",
   )
 
-  parser.add_argument(
-      "--download_ckpt_path",
-      type=str,
-      required=False,
-      help="Location to download safetensors from huggingface",
-  )
-
-  parser.add_argument(
-      "--output_dir",
-      type=str,
-      required=True,
-      help="Path to save the checkpoint to. for example 'gs://lt-research-mm-europe-west4/jax_trainings/converted-from-torch'",
-  )
   parser.add_argument(
       "--output_step_num",
       default=1,
