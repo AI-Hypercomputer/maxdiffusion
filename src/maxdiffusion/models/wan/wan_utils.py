@@ -83,9 +83,20 @@ def load_fusionx_transformer(pretrained_model_name_or_path: str, eval_shapes: di
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
 
+        if "blocks" in pt_tuple_key:
+          new_key = ("blocks",) + pt_tuple_key[2:]
+          block_index = int(pt_tuple_key[1])
+          pt_tuple_key = new_key
         flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, model_type=WAN_MODEL)
         flax_key = rename_for_nnx(flax_key)
         flax_key = _tuple_str_to_int(flax_key)
+
+        if "blocks" in flax_key:
+          if flax_key in flax_state_dict:
+            new_tensor = flax_state_dict[flax_key]
+          else:
+            new_tensor = jnp.zeros((40,) + flax_tensor.shape)
+          flax_tensor = new_tensor.at[block_index].set(flax_tensor)
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
       validate_flax_state_dict(eval_shapes, flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)
@@ -118,9 +129,21 @@ def load_causvid_transformer(pretrained_model_name_or_path: str, eval_shapes: di
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
 
+        if "blocks" in pt_tuple_key:
+          new_key = ("blocks",) + pt_tuple_key[2:]
+          block_index = int(pt_tuple_key[1])
+          pt_tuple_key = new_key
         flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, model_type=WAN_MODEL)
         flax_key = rename_for_nnx(flax_key)
         flax_key = _tuple_str_to_int(flax_key)
+
+        
+        if "blocks" in flax_key:
+          if flax_key in flax_state_dict:
+            new_tensor = flax_state_dict[flax_key]
+          else:
+            new_tensor = jnp.zeros((40,) + flax_tensor.shape)
+          flax_tensor = new_tensor.at[block_index].set(flax_tensor)
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
       validate_flax_state_dict(eval_shapes, flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)

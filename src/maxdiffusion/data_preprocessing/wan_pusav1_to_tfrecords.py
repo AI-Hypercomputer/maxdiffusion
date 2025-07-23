@@ -101,7 +101,7 @@ def generate_dataset(config):
       video_name = row[0]
       pth_path = os.path.join(config.train_data_dir,"train", f"{video_name}.tensors.pth")
       loaded_state_dict = torch.load(pth_path, map_location=torch.device('cpu'))
-      prompt_embeds = loaded_state_dict["prompt_emb"]["context"]
+      prompt_embeds = loaded_state_dict["prompt_emb"]["context"].squeeze()
       latent = loaded_state_dict["latents"]
       
       # Format we want(Batch, channels, Frames, Height, Width)

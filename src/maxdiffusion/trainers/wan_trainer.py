@@ -229,8 +229,6 @@ def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng, confi
   def loss_fn(model):
     latents = data["latents"].astype(config.weights_dtype)
     encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
-    # TODO - fix tf record conversion.
-    encoder_hidden_states = jax.numpy.squeeze(encoder_hidden_states, axis=1)
     bsz = latents.shape[0]
     timesteps = jax.random.randint(
         timestep_rng,
