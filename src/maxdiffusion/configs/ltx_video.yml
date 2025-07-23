@@ -8,7 +8,7 @@ activations_dtype: 'bfloat16'
 
 
 run_name: ''
-output_dir: '/mnt/disks/diffusionproj'
+output_dir: ''
 save_config_to_gcs: False
 
 #Checkpoints
