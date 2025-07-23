@@ -398,7 +398,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     # 3. Transformer blocks
     @nnx.split_rngs(splits=num_layers)
-    @nnx.vmap
+    @nnx.vmap(in_axes=0, out_axes=0)
     def init_block(rngs):
       return WanTransformerBlock(
           rngs=rngs,
@@ -416,6 +416,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           precision=precision,
           attention=attention,
       )
+
     self.blocks = init_block(rngs)
 
     self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
@@ -471,10 +472,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     initial_carry = (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
     final_carry = nnx.scan(
-      scan_fn,
-      length=self.num_layers,
-      in_axes=(nnx.Carry, 0),
-      out_axes=nnx.Carry,
+        scan_fn,
+        length=self.num_layers,
+        in_axes=(nnx.Carry, 0),
+        out_axes=nnx.Carry,
     )(initial_carry, self.blocks)
 
     hidden_states = final_carry[0]

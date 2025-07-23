@@ -20,18 +20,11 @@ Prepare tfrecords with latents and text embeddings preprocessed.
 """
 
 import os
-import functools
 from absl import app
-from typing import Sequence, Union, List
-from datasets import load_dataset
+from typing import Sequence
 import csv
-import numpy as np
-import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh
-from maxdiffusion import pyconfig, max_utils
-from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
-from maxdiffusion.video_processor import VideoProcessor
+from maxdiffusion import pyconfig
 
 import torch
 import tensorflow as tf
@@ -72,6 +65,7 @@ def create_example(latent, hidden_states):
   example = tf.train.Example(features=tf.train.Features(feature=feature))
   return example.SerializeToString()
 
+
 def generate_dataset(config):
 
   tfrecords_dir = config.tfrecords_dir
@@ -88,7 +82,7 @@ def generate_dataset(config):
 
   # Load dataset
   metadata_path = os.path.join(config.train_data_dir, "metadata.csv")
-  with open(metadata_path, 'r', newline='') as file:
+  with open(metadata_path, "r", newline="") as file:
     # Create a csv.reader object
     csv_reader = csv.reader(file)
     next(csv_reader)
@@ -99,11 +93,11 @@ def generate_dataset(config):
     # Iterate over each row in the CSV file
     for row in csv_reader:
       video_name = row[0]
-      pth_path = os.path.join(config.train_data_dir,"train", f"{video_name}.tensors.pth")
-      loaded_state_dict = torch.load(pth_path, map_location=torch.device('cpu'))
+      pth_path = os.path.join(config.train_data_dir, "train", f"{video_name}.tensors.pth")
+      loaded_state_dict = torch.load(pth_path, map_location=torch.device("cpu"))
       prompt_embeds = loaded_state_dict["prompt_emb"]["context"].squeeze()
       latent = loaded_state_dict["latents"]
-      
+
       # Format we want(Batch, channels, Frames, Height, Width)
       # Save them as float32 because numpy cannot read bfloat16.
       latent = jnp.array(latent.float().numpy(), dtype=jnp.float32)
@@ -119,6 +113,7 @@ def generate_dataset(config):
             tfrecords_dir + "/file_%.2i-%i.tfrec" % (tf_rec_num, (global_record_count + no_records_per_shard))
         )
         shard_record_count = 0
+
 
 def run(config):
   generate_dataset(config)

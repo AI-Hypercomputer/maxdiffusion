@@ -674,8 +674,10 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         quant=quant,
     )
-
-    kernel_axes = ("embed", "heads")
+    # None axes corresponds to the stacked weights across all blocks
+    # because of the use of nnx.vmap and nnx.scan.
+    # Dims are [num_blocks, embed, heads]
+    kernel_axes = (None, "embed", "heads")
     qkv_init_kernel = nnx.with_partitioning(nnx.initializers.lecun_normal(), kernel_axes)
 
     self.query = nnx.Linear(
@@ -686,7 +688,7 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed",)),
     )
 
     self.key = nnx.Linear(
@@ -697,7 +699,7 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed",)),
     )
 
     self.value = nnx.Linear(
@@ -708,14 +710,14 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed",)),
     )
 
     self.proj_attn = nnx.Linear(
         rngs=rngs,
         in_features=self.inner_dim,
         out_features=self.inner_dim,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), (None, "heads", "embed")),
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
@@ -729,7 +731,7 @@ class FlaxWanAttention(nnx.Module):
           rngs=rngs,
           epsilon=eps,
           dtype=dtype,
-          scale_init=nnx.with_partitioning(nnx.initializers.ones, ("norm",)),
+          scale_init=nnx.with_partitioning(nnx.initializers.ones, (None, "norm",)),
           param_dtype=weights_dtype,
       )
 
@@ -737,7 +739,7 @@ class FlaxWanAttention(nnx.Module):
           num_features=self.inner_dim,
           rngs=rngs,
           dtype=dtype,
-          scale_init=nnx.with_partitioning(nnx.initializers.ones, ("norm",)),
+          scale_init=nnx.with_partitioning(nnx.initializers.ones, (None, "norm",)),
           param_dtype=weights_dtype,
       )
 
