@@ -359,6 +359,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
+    self.num_layers = num_layers
 
     # 1. Patch & position embedding
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
@@ -396,9 +397,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
     # 3. Transformer blocks
-    blocks = []
-    for _ in range(num_layers):
-      block = WanTransformerBlock(
+    @nnx.split_rngs(splits=num_layers)
+    @nnx.vmap
+    def init_block(rngs):
+      return WanTransformerBlock(
           rngs=rngs,
           dim=inner_dim,
           ffn_dim=ffn_dim,
@@ -414,8 +416,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           precision=precision,
           attention=attention,
       )
-      blocks.append(block)
-    self.blocks = blocks
+    self.blocks = init_block(rngs)
 
     self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
     self.proj_out = nnx.Linear(
@@ -463,21 +464,21 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if encoder_hidden_states_image is not None:
       raise NotImplementedError("img2vid is not yet implemented.")
 
-    def skip_block_true(hidden_states):
-      split_bs = hidden_states.shape[0] // 2
-      prev_neg_hidden_states = hidden_states[split_bs:]
+    def scan_fn(carry, block):
+      hidden_states, encoder_hidden_states, timestep_proj, rotary_emb = carry
       hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
-      hidden_states = jnp.concatenate([hidden_states[:split_bs], prev_neg_hidden_states], axis=0)
-      return hidden_states
+      return (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
 
-    for block_idx, block in enumerate(self.blocks):
-      should_skip_block = slg_mask[block_idx] & is_uncond
-      hidden_states = jax.lax.cond(
-          should_skip_block,
-          lambda _: skip_block_true(hidden_states),  # If true, pass through original hidden_states (skip block)
-          lambda _: block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb),
-          hidden_states,
-      )
+    initial_carry = (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
+    final_carry = nnx.scan(
+      scan_fn,
+      length=self.num_layers,
+      in_axes=(nnx.Carry, 0),
+      out_axes=nnx.Carry,
+    )(initial_carry, self.blocks)
+
+    hidden_states = final_carry[0]
+
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 
     hidden_states = (self.norm_out(hidden_states) * (1 + scale) + shift).astype(hidden_states.dtype)
