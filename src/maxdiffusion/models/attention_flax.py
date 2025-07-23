@@ -688,7 +688,13 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed",)),
+        bias_init=nnx.with_partitioning(
+            nnx.initializers.zeros,
+            (
+                None,
+                "embed",
+            ),
+        ),
     )
 
     self.key = nnx.Linear(
@@ -699,7 +705,13 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed",)),
+        bias_init=nnx.with_partitioning(
+            nnx.initializers.zeros,
+            (
+                None,
+                "embed",
+            ),
+        ),
     )
 
     self.value = nnx.Linear(
@@ -710,7 +722,13 @@ class FlaxWanAttention(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed",)),
+        bias_init=nnx.with_partitioning(
+            nnx.initializers.zeros,
+            (
+                None,
+                "embed",
+            ),
+        ),
     )
 
     self.proj_attn = nnx.Linear(
@@ -731,7 +749,13 @@ class FlaxWanAttention(nnx.Module):
           rngs=rngs,
           epsilon=eps,
           dtype=dtype,
-          scale_init=nnx.with_partitioning(nnx.initializers.ones, (None, "norm",)),
+          scale_init=nnx.with_partitioning(
+              nnx.initializers.ones,
+              (
+                  None,
+                  "norm",
+              ),
+          ),
           param_dtype=weights_dtype,
       )
 
@@ -739,7 +763,13 @@ class FlaxWanAttention(nnx.Module):
           num_features=self.inner_dim,
           rngs=rngs,
           dtype=dtype,
-          scale_init=nnx.with_partitioning(nnx.initializers.ones, (None, "norm",)),
+          scale_init=nnx.with_partitioning(
+              nnx.initializers.ones,
+              (
+                  None,
+                  "norm",
+              ),
+          ),
           param_dtype=weights_dtype,
       )
 
