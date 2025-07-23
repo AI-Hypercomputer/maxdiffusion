@@ -165,7 +165,7 @@ class WanTrainer(WanCheckpointer):
 
     state = state.to_pure_dict()
     p_train_step = jax.jit(
-        functools.partial(train_step, scheduler=pipeline.scheduler),
+        functools.partial(train_step, scheduler=pipeline.scheduler, config=self.config),
         donate_argnums=(0,),
     )
     rng = jax.random.key(self.config.seed)
@@ -219,16 +219,18 @@ class WanTrainer(WanCheckpointer):
       return pipeline
 
 
-def train_step(state, graphdef, scheduler_state, data, rng, scheduler):
-  return step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng)
+def train_step(state, graphdef, scheduler_state, data, rng, scheduler, config):
+  return step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng, config)
 
 
-def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng):
+def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng, config):
   _, new_rng, timestep_rng = jax.random.split(rng, num=3)
 
   def loss_fn(model):
-    latents = data["latents"]
-    encoder_hidden_states = data["encoder_hidden_states"]
+    latents = data["latents"].astype(config.weights_dtype)
+    encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
+    # TODO - fix tf record conversion.
+    encoder_hidden_states = jax.numpy.squeeze(encoder_hidden_states, axis=1)
     bsz = latents.shape[0]
     timesteps = jax.random.randint(
         timestep_rng,

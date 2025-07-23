@@ -103,9 +103,11 @@ def generate_dataset(config):
       loaded_state_dict = torch.load(pth_path, map_location=torch.device('cpu'))
       prompt_embeds = loaded_state_dict["prompt_emb"]["context"]
       latent = loaded_state_dict["latents"]
-      # Format we want(4, 16, 1, 64, 64)
-      latent = jnp.array(latent.float().numpy(), dtype=config.weights_dtype)
-      prompt_embeds = jnp.array(prompt_embeds.float().numpy(), dtype=config.weights_dtype)
+      
+      # Format we want(Batch, channels, Frames, Height, Width)
+      # Save them as float32 because numpy cannot read bfloat16.
+      latent = jnp.array(latent.float().numpy(), dtype=jnp.float32)
+      prompt_embeds = jnp.array(prompt_embeds.float().numpy(), dtype=jnp.float32)
       writer.write(create_example(latent, prompt_embeds))
       shard_record_count += 1
       global_record_count += 1
