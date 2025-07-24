@@ -49,13 +49,13 @@ def print_ssim(pretrained_video_path, posttrained_video_path):
   pretrained_video = video_processor.preprocess_video(pretrained_video)
   pretrained_video = np.array(pretrained_video)
   pretrained_video = np.transpose(pretrained_video, (0, 2, 3, 4, 1))
-  pretrained_video = np.uint8(255 * pretrained_video)
+  pretrained_video = np.uint8((pretrained_video + 1) * 255 / 2)
 
   posttrained_video = load_video(posttrained_video_path[0])
   posttrained_video = video_processor.preprocess_video(posttrained_video)
   posttrained_video = np.array(posttrained_video)
   posttrained_video = np.transpose(posttrained_video, (0, 2, 3, 4, 1))
-  posttrained_video = np.uint8(255 * posttrained_video)
+  posttrained_video = np.uint8((posttrained_video + 1) * 255 / 2)
 
   ssim_compare = ssim(pretrained_video[0], posttrained_video[0], multichannel=True, channel_axis=-1, data_range=255)
 
@@ -243,8 +243,6 @@ def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng, confi
         hidden_states=noisy_latents,
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
-        is_uncond=jnp.array(False, dtype=jnp.bool_),
-        slg_mask=jnp.zeros(1, dtype=jnp.bool_),
     )
 
     training_target = scheduler.training_target(latents, noise, timesteps)

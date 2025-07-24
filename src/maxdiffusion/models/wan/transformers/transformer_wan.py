@@ -440,8 +440,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       hidden_states: jax.Array,
       timestep: jax.Array,
       encoder_hidden_states: jax.Array,
-      is_uncond: jax.Array,  # jnp.bool_ scalar
-      slg_mask: jax.Array,  # jnp.bool_ array of shape (num_blocks,)
       encoder_hidden_states_image: Optional[jax.Array] = None,
       return_dict: bool = True,
       attention_kwargs: Optional[Dict[str, Any]] = None,
