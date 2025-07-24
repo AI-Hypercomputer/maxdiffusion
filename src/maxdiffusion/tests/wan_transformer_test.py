@@ -269,11 +269,7 @@ class WanTransformerTest(unittest.TestCase):
     dummy_encoder_hidden_states = jnp.ones((batch_size, 512, 4096))
     with mesh:
       dummy_output = wan_model(
-          hidden_states=dummy_hidden_states,
-          timestep=dummy_timestep,
-          encoder_hidden_states=dummy_encoder_hidden_states,
-          is_uncond=jnp.array(True, dtype=jnp.bool_),
-          slg_mask=jnp.zeros(num_layers, dtype=jnp.bool_),
+          hidden_states=dummy_hidden_states, timestep=dummy_timestep, encoder_hidden_states=dummy_encoder_hidden_states
       )
     assert dummy_output.shape == hidden_states_shape
 

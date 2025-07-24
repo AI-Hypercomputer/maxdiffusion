@@ -376,9 +376,6 @@ class WanPipeline:
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
       vae_only: bool = False,
-      slg_layers: List[int] = None,
-      slg_start: float = 0.0,
-      slg_end: float = 1.0,
   ):
     if not vae_only:
       if num_frames % self.vae_scale_factor_temporal != 1:
@@ -434,9 +431,6 @@ class WanPipeline:
           num_inference_steps=num_inference_steps,
           scheduler=self.scheduler,
           scheduler_state=scheduler_state,
-          slg_layers=slg_layers,
-          slg_start=slg_start,
-          slg_end=slg_end,
           num_transformer_layers=self.transformer.config.num_layers,
       )
 
@@ -471,15 +465,11 @@ def transformer_forward_pass(
     latents,
     timestep,
     prompt_embeds,
-    is_uncond,
-    slg_mask,
     do_classifier_free_guidance,
     guidance_scale,
 ):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  noise_pred = wan_transformer(
-      hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds, is_uncond=is_uncond, slg_mask=slg_mask
-  )
+  noise_pred = wan_transformer(hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds)
   if do_classifier_free_guidance:
     bsz = latents.shape[0] // 2
     noise_uncond = noise_pred[bsz:]
@@ -502,17 +492,11 @@ def run_inference(
     scheduler: FlaxUniPCMultistepScheduler,
     num_transformer_layers: int,
     scheduler_state,
-    slg_layers: List[int] = None,
-    slg_start: float = 0.0,
-    slg_end: float = 1.0,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
   if do_classifier_free_guidance:
     prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
   for step in range(num_inference_steps):
-    slg_mask = jnp.zeros(num_transformer_layers, dtype=jnp.bool_)
-    if slg_layers and int(slg_start * num_inference_steps) <= step < int(slg_end * num_inference_steps):
-      slg_mask = slg_mask.at[jnp.array(slg_layers)].set(True)
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
     if do_classifier_free_guidance:
       latents = jnp.concatenate([latents] * 2)
@@ -525,8 +509,6 @@ def run_inference(
         latents,
         timestep,
         prompt_embeds,
-        is_uncond=jnp.array(True, dtype=jnp.bool_),
-        slg_mask=slg_mask,
         do_classifier_free_guidance=do_classifier_free_guidance,
         guidance_scale=guidance_scale,
     )

@@ -49,11 +49,14 @@ def print_ssim(pretrained_video_path, posttrained_video_path):
   pretrained_video = video_processor.preprocess_video(pretrained_video)
   pretrained_video = np.array(pretrained_video)
   pretrained_video = np.transpose(pretrained_video, (0, 2, 3, 4, 1))
+  pretrained_video = np.uint8((pretrained_video + 1) * 255 / 2)
 
   posttrained_video = load_video(posttrained_video_path[0])
   posttrained_video = video_processor.preprocess_video(posttrained_video)
   posttrained_video = np.array(posttrained_video)
   posttrained_video = np.transpose(posttrained_video, (0, 2, 3, 4, 1))
+  posttrained_video = np.uint8((posttrained_video + 1) * 255 / 2)
+
   ssim_compare = ssim(pretrained_video[0], posttrained_video[0], multichannel=True, channel_axis=-1, data_range=255)
 
   max_logging.log(f"SSIM score after training is {ssim_compare}")
@@ -162,7 +165,7 @@ class WanTrainer(WanCheckpointer):
 
     state = state.to_pure_dict()
     p_train_step = jax.jit(
-        functools.partial(train_step, scheduler=pipeline.scheduler),
+        functools.partial(train_step, scheduler=pipeline.scheduler, config=self.config),
         donate_argnums=(0,),
     )
     rng = jax.random.key(self.config.seed)
@@ -216,16 +219,16 @@ class WanTrainer(WanCheckpointer):
       return pipeline
 
 
-def train_step(state, graphdef, scheduler_state, data, rng, scheduler):
-  return step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng)
+def train_step(state, graphdef, scheduler_state, data, rng, scheduler, config):
+  return step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng, config)
 
 
-def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng):
+def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng, config):
   _, new_rng, timestep_rng = jax.random.split(rng, num=3)
 
   def loss_fn(model):
-    latents = data["latents"]
-    encoder_hidden_states = data["encoder_hidden_states"]
+    latents = data["latents"].astype(config.weights_dtype)
+    encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
     bsz = latents.shape[0]
     timesteps = jax.random.randint(
         timestep_rng,
@@ -240,8 +243,6 @@ def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng):
         hidden_states=noisy_latents,
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
-        is_uncond=jnp.array(False, dtype=jnp.bool_),
-        slg_mask=jnp.zeros(1, dtype=jnp.bool_),
     )
 
     training_target = scheduler.training_target(latents, noise, timesteps)

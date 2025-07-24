@@ -29,10 +29,6 @@ def run(config, pipeline=None, filename_prefix=""):
     pipeline = WanPipeline.from_pretrained(config)
   s0 = time.perf_counter()
 
-  # Skip layer guidance
-  slg_layers = config.slg_layers
-  slg_start = config.slg_start
-  slg_end = config.slg_end
   # If global_batch_size % jax.device_count is not 0, use FSDP sharding.
   global_batch_size = config.global_batch_size
   if global_batch_size != 0:
@@ -55,9 +51,6 @@ def run(config, pipeline=None, filename_prefix=""):
       num_frames=config.num_frames,
       num_inference_steps=config.num_inference_steps,
       guidance_scale=config.guidance_scale,
-      slg_layers=slg_layers,
-      slg_start=slg_start,
-      slg_end=slg_end,
   )
 
   print("compile time: ", (time.perf_counter() - s0))
@@ -76,9 +69,6 @@ def run(config, pipeline=None, filename_prefix=""):
       num_frames=config.num_frames,
       num_inference_steps=config.num_inference_steps,
       guidance_scale=config.guidance_scale,
-      slg_layers=slg_layers,
-      slg_start=slg_start,
-      slg_end=slg_end,
   )
   print("generation time: ", (time.perf_counter() - s0))
 
@@ -93,9 +83,6 @@ def run(config, pipeline=None, filename_prefix=""):
         num_frames=config.num_frames,
         num_inference_steps=config.num_inference_steps,
         guidance_scale=config.guidance_scale,
-        slg_layers=slg_layers,
-        slg_start=slg_start,
-        slg_end=slg_end,
     )
     max_utils.deactivate_profiler(config)
     print("generation time: ", (time.perf_counter() - s0))

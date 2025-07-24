@@ -234,10 +234,6 @@ num_frames: 81
 guidance_scale: 5.0
 flow_shift: 3.0
 
-# skip layer guidance
-slg_layers: [9]
-slg_start: 0.2
-slg_end: 1.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 30
