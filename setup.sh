@@ -110,4 +110,4 @@ else
 fi
 
 # Install maxdiffusion
-pip3 install -U . || echo "Failed to install maxdiffusion" >&2
+pip3 install -e . || echo "Failed to install maxdiffusion" >&2

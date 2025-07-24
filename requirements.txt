@@ -1,5 +1,5 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-jax==0.5.3
+jax==0.6.2
 jaxlib>=0.4.30
 grain-nightly==0.0.10
 google-cloud-storage==2.17.0
@@ -24,6 +24,8 @@ tensorflow>=2.17.0
 tensorflow-datasets>=4.9.6
 ruff>=0.1.5,<=0.2
 git+https://github.com/mlperf/logging.git
+git+https://github.com/Lightricks/LTX-Video
+git+https://github.com/zmelumian972/xla@torchax/jittable_module_callable#subdirectory=torchax
 opencv-python-headless==4.10.0.84
 orbax-checkpoint==0.10.3
 tokenizers==0.21.0
