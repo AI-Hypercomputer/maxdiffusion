@@ -167,9 +167,9 @@ class FlaxRectifiedFlowSchedulerOutput(FlaxSchedulerOutput):
 
 
 class FlaxRectifiedFlowMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
-  '''
+  """
   Note: shifting and stochastic sampling not tested
-  '''
+  """
 
   dtype: jnp.dtype
   order = 1
