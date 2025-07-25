@@ -217,103 +217,105 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
 
 def run(config):
   checkpoint_loader = GenerateSDXL(config)
-  pipeline, params = checkpoint_loader.load_checkpoint()
+  mesh = checkpoint_loader.mesh
+  with mesh:
+    pipeline, params = checkpoint_loader.load_checkpoint()
 
-  noise_scheduler, noise_scheduler_state = create_scheduler(pipeline.scheduler.config, config)
+    noise_scheduler, noise_scheduler_state = create_scheduler(pipeline.scheduler.config, config)
 
-  weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=checkpoint_loader.rng)
-  unboxed_abstract_state, _, _ = max_utils.get_abstract_state(
-      pipeline.unet, None, config, checkpoint_loader.mesh, weights_init_fn, False
-  )
-
-  # load unet params from orbax checkpoint
-  unet_params = load_params_from_path(
-      config, checkpoint_loader.checkpoint_manager, unboxed_abstract_state.params, "unet_state"
-  )
-  if unet_params:
-    params["unet"] = unet_params
-
-  # maybe load lora and create interceptor
-  params, lora_interceptors = maybe_load_sdxl_lora(config, pipeline, params)
-
-  if config.lightning_repo:
-    pipeline, params = load_sdxllightning_unet(config, pipeline, params)
-
-  # Don't restore the full train state, instead, just restore params
-  # and create an inference state.
-  with ExitStack() as stack:
-    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
-    unet_state, unet_state_shardings = max_utils.setup_initial_state(
-        model=pipeline.unet,
-        tx=None,
-        config=config,
-        mesh=checkpoint_loader.mesh,
-        weights_init_fn=weights_init_fn,
-        model_params=None,
-        training=False,
-    )
-    unet_state = unet_state.replace(params=params.get("unet", None))
-    unet_state = jax.device_put(unet_state, unet_state_shardings)
-
-  vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
-      pipeline, params, checkpoint_item_name="vae_state", is_training=False
-  )
-  with ExitStack() as stack:
-    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
-    text_encoder_state, text_encoder_state_shardings = checkpoint_loader.create_text_encoder_state(
-        pipeline, params, checkpoint_item_name="text_encoder_state", is_training=False
+    weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=checkpoint_loader.rng)
+    unboxed_abstract_state, _, _ = max_utils.get_abstract_state(
+        pipeline.unet, None, config, checkpoint_loader.mesh, weights_init_fn, False
     )
 
-    text_encoder_2_state, text_encoder_2_state_shardings = checkpoint_loader.create_text_encoder_2_state(
-        pipeline, params, checkpoint_item_name="text_encoder_2_state", is_training=False
+    # load unet params from orbax checkpoint
+    unet_params = load_params_from_path(
+        config, checkpoint_loader.checkpoint_manager, unboxed_abstract_state.params, "unet_state"
     )
-  states = {}
-  state_shardings = {}
+    if unet_params:
+      params["unet"] = unet_params
 
-  state_shardings["vae_state"] = vae_state_shardings
-  state_shardings["unet_state"] = unet_state_shardings
-  state_shardings["text_encoder_state"] = text_encoder_state_shardings
-  state_shardings["text_encoder_2_state"] = text_encoder_2_state_shardings
+    # maybe load lora and create interceptor
+    params, lora_interceptors = maybe_load_sdxl_lora(config, pipeline, params)
 
-  states["unet_state"] = unet_state
-  states["vae_state"] = vae_state
-  states["text_encoder_state"] = text_encoder_state
-  states["text_encoder_2_state"] = text_encoder_2_state
+    if config.lightning_repo:
+      pipeline, params = load_sdxllightning_unet(config, pipeline, params)
 
-  pipeline.scheduler = noise_scheduler
-  params["scheduler"] = noise_scheduler_state
-
-  p_run_inference = jax.jit(
-      functools.partial(
-          run_inference,
-          pipeline=pipeline,
-          params=params,
+    # Don't restore the full train state, instead, just restore params
+    # and create an inference state.
+    with ExitStack() as stack:
+      _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+      unet_state, unet_state_shardings = max_utils.setup_initial_state(
+          model=pipeline.unet,
+          tx=None,
           config=config,
-          rng=checkpoint_loader.rng,
           mesh=checkpoint_loader.mesh,
-          batch_size=checkpoint_loader.total_train_batch_size,
-      ),
-      in_shardings=(state_shardings,),
-      out_shardings=None,
-  )
+          weights_init_fn=weights_init_fn,
+          model_params=None,
+          training=False,
+      )
+      unet_state = unet_state.replace(params=params.get("unet", None))
+      unet_state = jax.device_put(unet_state, unet_state_shardings)
 
-  s = time.time()
-  with ExitStack() as stack:
-    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
-    p_run_inference(states).block_until_ready()
-  print("compile time: ", (time.time() - s))
-  s = time.time()
-  with ExitStack() as stack:
-    _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
-    images = p_run_inference(states).block_until_ready()
-  print("inference time: ", (time.time() - s))
-  images = jax.experimental.multihost_utils.process_allgather(images, tiled=True)
-  numpy_images = np.array(images)
-  images = VaeImageProcessor.numpy_to_pil(numpy_images)
-  for i, image in enumerate(images):
-    image.save(f"image_sdxl_{i}.png")
+    vae_state, vae_state_shardings = checkpoint_loader.create_vae_state(
+        pipeline, params, checkpoint_item_name="vae_state", is_training=False
+    )
+    with ExitStack() as stack:
+      _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+      text_encoder_state, text_encoder_state_shardings = checkpoint_loader.create_text_encoder_state(
+          pipeline, params, checkpoint_item_name="text_encoder_state", is_training=False
+      )
 
-  return images
+      text_encoder_2_state, text_encoder_2_state_shardings = checkpoint_loader.create_text_encoder_2_state(
+          pipeline, params, checkpoint_item_name="text_encoder_2_state", is_training=False
+      )
+    states = {}
+    state_shardings = {}
+
+    state_shardings["vae_state"] = vae_state_shardings
+    state_shardings["unet_state"] = unet_state_shardings
+    state_shardings["text_encoder_state"] = text_encoder_state_shardings
+    state_shardings["text_encoder_2_state"] = text_encoder_2_state_shardings
+
+    states["unet_state"] = unet_state
+    states["vae_state"] = vae_state
+    states["text_encoder_state"] = text_encoder_state
+    states["text_encoder_2_state"] = text_encoder_2_state
+
+    pipeline.scheduler = noise_scheduler
+    params["scheduler"] = noise_scheduler_state
+
+    p_run_inference = jax.jit(
+        functools.partial(
+            run_inference,
+            pipeline=pipeline,
+            params=params,
+            config=config,
+            rng=checkpoint_loader.rng,
+            mesh=checkpoint_loader.mesh,
+            batch_size=checkpoint_loader.total_train_batch_size,
+        ),
+        in_shardings=(state_shardings,),
+        out_shardings=None,
+    )
+
+    s = time.time()
+    with ExitStack() as stack:
+      _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+      p_run_inference(states).block_until_ready()
+    print("compile time: ", (time.time() - s))
+    s = time.time()
+    with ExitStack() as stack:
+      _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
+      images = p_run_inference(states).block_until_ready()
+    print("inference time: ", (time.time() - s))
+    images = jax.experimental.multihost_utils.process_allgather(images, tiled=True)
+    numpy_images = np.array(images)
+    images = VaeImageProcessor.numpy_to_pil(numpy_images)
+    for i, image in enumerate(images):
+      image.save(f"image_sdxl_{i}.png")
+
+    return images
 
 
 def main(argv: Sequence[str]) -> None:
