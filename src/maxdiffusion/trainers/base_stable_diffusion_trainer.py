@@ -19,6 +19,7 @@ import time
 from typing import Any, Callable
 import jax
 from maxdiffusion import (max_utils, maxdiffusion_utils, max_logging)
+from flax.linen import partitioning as nn_partitioning
 
 from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import (BaseStableDiffusionCheckpointer)
 
@@ -113,83 +114,84 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
 
   def start_training(self):
     # Hook
-    self.pre_training_steps()
-    # Load checkpoint - will load or create states
-    pipeline, params = self._time_and_log_call(self.load_checkpoint)
-    # create train states
-    train_states = {}
-    state_shardings = {}
-    vae_state, vae_state_mesh_shardings = self._time_and_log_call(
-        self.create_vae_state,
-        # Arguments for create_vae_state
-        pipeline=pipeline,
-        params=params,
-        checkpoint_item_name="vae_state",
-        is_training=False,
-    )
-
-    train_states["vae_state"] = vae_state
-    state_shardings["vae_state_shardings"] = vae_state_mesh_shardings
-
-    text_encoder_state, text_encoder_state_mesh_shardings = self._time_and_log_call(
-        self.create_text_encoder_state,
-        # Arguments for create_text_encoder_state
-        pipeline=pipeline,
-        params=params,
-        checkpoint_item_name="text_encoder_state",
-        is_training=self.config.train_text_encoder,
-    )
-    train_states["text_encoder_state"] = text_encoder_state
-    state_shardings["text_encoder_state_shardings"] = text_encoder_state_mesh_shardings
-    if hasattr(pipeline, "text_encoder_2"):
-      text_encoder_2_state, text_encoder_2_state_mesh_shardings = self._time_and_log_call(
-          self.create_text_encoder_2_state,
-          # Arguments for create_text_encoder_2_state
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      self.pre_training_steps()
+      # Load checkpoint - will load or create states
+      pipeline, params = self._time_and_log_call(self.load_checkpoint)
+      # create train states
+      train_states = {}
+      state_shardings = {}
+      vae_state, vae_state_mesh_shardings = self._time_and_log_call(
+          self.create_vae_state,
+          # Arguments for create_vae_state
           pipeline=pipeline,
           params=params,
-          checkpoint_item_name="text_encoder_2_state",
+          checkpoint_item_name="vae_state",
+          is_training=False,
+      )
+
+      train_states["vae_state"] = vae_state
+      state_shardings["vae_state_shardings"] = vae_state_mesh_shardings
+
+      text_encoder_state, text_encoder_state_mesh_shardings = self._time_and_log_call(
+          self.create_text_encoder_state,
+          # Arguments for create_text_encoder_state
+          pipeline=pipeline,
+          params=params,
+          checkpoint_item_name="text_encoder_state",
           is_training=self.config.train_text_encoder,
       )
-      train_states["text_encoder_2_state"] = text_encoder_2_state
-      state_shardings["text_encoder_2_state_shardings"] = text_encoder_2_state_mesh_shardings
+      train_states["text_encoder_state"] = text_encoder_state
+      state_shardings["text_encoder_state_shardings"] = text_encoder_state_mesh_shardings
+      if hasattr(pipeline, "text_encoder_2"):
+        text_encoder_2_state, text_encoder_2_state_mesh_shardings = self._time_and_log_call(
+            self.create_text_encoder_2_state,
+            # Arguments for create_text_encoder_2_state
+            pipeline=pipeline,
+            params=params,
+            checkpoint_item_name="text_encoder_2_state",
+            is_training=self.config.train_text_encoder,
+        )
+        train_states["text_encoder_2_state"] = text_encoder_2_state
+        state_shardings["text_encoder_2_state_shardings"] = text_encoder_2_state_mesh_shardings
 
-    # Create scheduler
-    noise_scheduler, noise_scheduler_state = self.create_scheduler(pipeline, params)
-    pipeline.scheduler = noise_scheduler
-    params["scheduler"] = noise_scheduler_state
+      # Create scheduler
+      noise_scheduler, noise_scheduler_state = self.create_scheduler(pipeline, params)
+      pipeline.scheduler = noise_scheduler
+      params["scheduler"] = noise_scheduler_state
 
-    # Calculate tflops
-    per_device_tflops = self.calculate_tflops(pipeline, params)
-    self.per_device_tflops = per_device_tflops
+      # Calculate tflops
+      per_device_tflops = self.calculate_tflops(pipeline, params)
+      self.per_device_tflops = per_device_tflops
 
-    # Load dataset
-    data_iterator = self._time_and_log_call(self.load_dataset, pipeline, params, train_states)
-    if self.config.dataset_type == "grain":
-      data_iterator = self._time_and_log_call(self.restore_data_iterator_state, data_iterator=data_iterator)
+      # Load dataset
+      data_iterator = self._time_and_log_call(self.load_dataset, pipeline, params, train_states)
+      if self.config.dataset_type == "grain":
+        data_iterator = self._time_and_log_call(self.restore_data_iterator_state, data_iterator=data_iterator)
 
-    unet_state, unet_state_mesh_shardings, unet_learning_rate_scheduler = self._time_and_log_call(
-        self.create_unet_state,
-        # ambiguous here, but if self.params.get("unet") doesn't exist
-        # Then its 1 of 2 scenarios:
-        # 1. unet state will be loaded directly from orbax
-        # 2. a new unet is being trained from scratch.
-        pipeline=pipeline,
-        params=params,
-        checkpoint_item_name="unet_state",
-        is_training=True,
-    )
-    train_states["unet_state"] = unet_state
-    state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
+      unet_state, unet_state_mesh_shardings, unet_learning_rate_scheduler = self._time_and_log_call(
+          self.create_unet_state,
+          # ambiguous here, but if self.params.get("unet") doesn't exist
+          # Then its 1 of 2 scenarios:
+          # 1. unet state will be loaded directly from orbax
+          # 2. a new unet is being trained from scratch.
+          pipeline=pipeline,
+          params=params,
+          checkpoint_item_name="unet_state",
+          is_training=True,
+      )
+      train_states["unet_state"] = unet_state
+      state_shardings["unet_state_shardings"] = unet_state_mesh_shardings
 
-    data_shardings = self.get_data_shardings()
-    # Compile train_step
-    p_train_step = self._time_and_log_call(
-        self.compile_train_step, pipeline, params, train_states, state_shardings, data_shardings
-    )
-    # Start training
-    train_states = self._time_and_log_call(
-        self.training_loop, p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler
-    )
-    # 6. save final checkpoint
-    # Hook
-    self._time_and_log_call(self.post_training_steps, pipeline, params, train_states)
+      data_shardings = self.get_data_shardings()
+      # Compile train_step
+      p_train_step = self._time_and_log_call(
+          self.compile_train_step, pipeline, params, train_states, state_shardings, data_shardings
+      )
+      # Start training
+      train_states = self._time_and_log_call(
+          self.training_loop, p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler
+      )
+      # 6. save final checkpoint
+      # Hook
+      self._time_and_log_call(self.post_training_steps, pipeline, params, train_states)
