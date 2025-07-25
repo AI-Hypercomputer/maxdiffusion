@@ -56,6 +56,17 @@ split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
 
 flash_block_sizes: {}
+# Use on v6e
+# flash_block_sizes: {
+#   "block_q" : 3024,
+#   "block_kv_compute" : 1024,
+#   "block_kv" : 2048,
+#   "block_q_dkv" : 3024,
+#   "block_kv_dkv" : 2048,
+#   "block_kv_dkv_compute" : 2048,
+#   "block_q_dq" : 3024,
+#   "block_kv_dq" : 2048
+# }
 # GroupNorm groups
 norm_num_groups: 32
 
@@ -115,17 +126,15 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_heads', 'fsdp'],
-                      ['activation_batch', ['data','fsdp']],
-                      ['activation_kv', 'tensor'],
+                      ['activation_length', 'fsdp'],
+                      ['activation_heads', 'tensor'],
+                      ['activation_batch', 'data'],
                       ['mlp','tensor'],
                       ['embed','fsdp'],
-                      ['heads', 'tensor'],
-                      ['norm', 'fsdp'],
+                      ['norm', 'tensor'],
                       ['conv_batch', ['data','fsdp']],
                       ['out_channels', 'tensor'],
-                      ['conv_out', 'fsdp'],
-                      ['conv_in', 'fsdp']
+                      ['conv_in', 'fsdp'],
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
@@ -139,6 +148,8 @@ dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
 ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
+
+allow_split_physical_axes: False
 
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
@@ -223,10 +234,6 @@ num_frames: 81
 guidance_scale: 5.0
 flow_shift: 3.0
 
-# skip layer guidance
-slg_layers: [9]
-slg_start: 0.2
-slg_end: 1.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 30

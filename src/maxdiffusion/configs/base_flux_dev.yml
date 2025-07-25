@@ -162,6 +162,8 @@ ici_data_parallelism: -1
 ici_fsdp_parallelism: 1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
+allow_split_physical_axes: False
+
 # Dataset
 # Replace with dataset path or train_data_dir. One has to be set.
 dataset_name: 'diffusers/pokemon-gpt4-captions'
@@ -226,6 +228,7 @@ enable_profiler: False
 # the iteration time a chance to stabilize.
 skip_first_n_steps_for_profiler: 5
 profiler_steps: 10
+profiler: ""
 
 # Generation parameters
 prompt: "A magical castle in the middle of a forest, artistic drawing"

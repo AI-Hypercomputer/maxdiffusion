@@ -51,31 +51,34 @@ class UnetTest(unittest.TestCase):
         unittest=True,
     )
     config = pyconfig.config
-    unet, params = FlaxUNet2DConditionModel.from_pretrained(
-        config.pretrained_model_name_or_path,
-        revision=config.revision,
-        subfolder="unet",
-        dtype=jnp.bfloat16,
-        from_pt=config.from_pt,
-    )
     devices_array = max_utils.create_device_mesh(config)
-
-    rng = jax.random.PRNGKey(config.seed)
     mesh = Mesh(devices_array, config.mesh_axes)
-    k = jax.random.key(0)
-    tx = optax.adam(learning_rate=0.001)
-    latents = jnp.ones((4, 4, 64, 64), dtype=jnp.float32)
-    timesteps = jnp.ones((4,))
-    encoder_hidden_states = jnp.ones((4, 77, 1024))
+    with mesh:
+      unet, params = FlaxUNet2DConditionModel.from_pretrained(
+          config.pretrained_model_name_or_path,
+          revision=config.revision,
+          subfolder="unet",
+          dtype=jnp.bfloat16,
+          from_pt=config.from_pt,
+      )
+      devices_array = max_utils.create_device_mesh(config)
 
-    variables = jax.jit(unet.init)(k, latents, timesteps, encoder_hidden_states)
-    weights_init_fn = functools.partial(unet.init_weights, rng=rng)
-    _, state_mesh_annotations, _ = max_utils.get_abstract_state(unet, tx, config, mesh, weights_init_fn, False)
-    del variables
-    conv_sharding = PartitionSpec(None, None, None, "fsdp")
-    qkv_sharding = PartitionSpec("fsdp", "tensor")
-    to_out_sharding = PartitionSpec("tensor", "fsdp")
-    time_emb_proj_sharding = PartitionSpec()
+      rng = jax.random.PRNGKey(config.seed)
+      mesh = Mesh(devices_array, config.mesh_axes)
+      k = jax.random.key(0)
+      tx = optax.adam(learning_rate=0.001)
+      latents = jnp.ones((4, 4, 64, 64), dtype=jnp.float32)
+      timesteps = jnp.ones((4,))
+      encoder_hidden_states = jnp.ones((4, 77, 1024))
+
+      variables = jax.jit(unet.init)(k, latents, timesteps, encoder_hidden_states)
+      weights_init_fn = functools.partial(unet.init_weights, rng=rng)
+      _, state_mesh_annotations, _ = max_utils.get_abstract_state(unet, tx, config, mesh, weights_init_fn, False)
+      del variables
+      conv_sharding = PartitionSpec(None, None, None, "fsdp")
+      qkv_sharding = PartitionSpec("fsdp", "tensor")
+      to_out_sharding = PartitionSpec("tensor", "fsdp")
+      time_emb_proj_sharding = PartitionSpec()
 
     assert state_mesh_annotations.params["down_blocks_0"]["resnets_0"]["time_emb_proj"]["kernel"] == time_emb_proj_sharding
     assert state_mesh_annotations.params["down_blocks_0"]["downsamplers_0"]["conv"]["kernel"] == conv_sharding
@@ -97,10 +100,10 @@ class UnetTest(unittest.TestCase):
         state_mesh_annotations.params["down_blocks_1"]["attentions_1"]["transformer_blocks_0"]["attn1"]["to_out_0"]["kernel"]
         == to_out_sharding
     )
-
-    state, state_mesh_shardings = max_utils.setup_initial_state(
-        unet, tx, config, mesh, weights_init_fn, None, None, None, False
-    )
+    with mesh:
+      state, state_mesh_shardings = max_utils.setup_initial_state(
+          unet, tx, config, mesh, weights_init_fn, None, None, None, False
+      )
 
     # Validate named shardings.
     conv_named_sharding = NamedSharding(mesh, conv_sharding)

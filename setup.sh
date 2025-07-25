@@ -24,6 +24,8 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 
 (sudo bash || bash) <<'EOF'
+mkdir -p /etc/needrestart/conf.d
+echo '$nrconf{restart} = "a";' > /etc/needrestart/conf.d/99-noninteractive.conf
 apt update && \
 apt install -y numactl lsb-release gnupg curl net-tools iproute2 procps lsof git ethtool && \
 export GCSFUSE_REPO=gcsfuse-`lsb_release -c -s`

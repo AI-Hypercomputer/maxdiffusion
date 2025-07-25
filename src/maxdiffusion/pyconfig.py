@@ -16,6 +16,7 @@
 
 # pylint: disable=missing-module-docstring
 import os
+import ast
 import json
 import sys
 from collections import OrderedDict
@@ -36,7 +37,11 @@ def string_to_bool(s: str) -> bool:
   raise ValueError(f"Can't convert {s} to bool")
 
 
-_yaml_types_to_parser = {str: str, int: int, float: float, bool: string_to_bool}
+def string_to_list(string_list: str) -> list:
+  return ast.literal_eval(string_list)
+
+
+_yaml_types_to_parser = {str: str, int: int, float: float, bool: string_to_bool, list: string_to_list}
 
 _config = None
 config = None
@@ -127,7 +132,7 @@ class _HyperParameters:
         num_inference_steps = raw_keys["num_inference_steps"]
         if num_inference_steps > 10:
           max_logging.log(
-              f"Warning: Try setting num_inference_steps to less than 8 steps when using CausVid, currently you are setting {num_inference_steps} steps."
+              f"Warning: Try setting num_inference_steps to less than 10 steps when using CausVid, currently you are setting {num_inference_steps} steps."
           )
       else:
         raise ValueError(f"{transformer_pretrained_model_name_or_path} transformer model is not supported for Wan 2.1")

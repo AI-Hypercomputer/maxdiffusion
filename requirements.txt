@@ -1,18 +1,18 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-jax==0.6.2
+jax>=0.6.2
 jaxlib>=0.4.30
-grain-nightly==0.0.10
-google-cloud-storage==2.17.0
+grain
+google-cloud-storage>=2.17.0
 absl-py
 datasets
 flax>=0.10.2
 optax>=0.2.3
-torch==2.6.0
+torch>=2.6.0
 torchvision>=0.20.1
 ftfy
 tensorboard>=2.17.0
-tensorboardx==2.6.2.2
-tensorboard-plugin-profile==2.15.2
+tensorboardx>=2.6.2.2
+tensorboard-plugin-profile>=2.15.2
 Jinja2
 scikit-image
 parameterized
@@ -29,10 +29,11 @@ git+https://github.com/zmelumian972/xla@torchax/jittable_module_callable#subdire
 opencv-python-headless==4.10.0.84
 orbax-checkpoint==0.10.3
 tokenizers==0.21.0
-huggingface_hub==0.30.2
+huggingface_hub>=0.30.2
 transformers==4.48.1
 einops==0.8.0
 sentencepiece
 aqtp
 imageio==2.37.0
 imageio-ffmpeg==0.6.0
+hf_transfer>=0.1.9

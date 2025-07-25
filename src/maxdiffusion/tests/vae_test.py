@@ -47,7 +47,6 @@ class VaeTest(unittest.TestCase):
     image = 2.0 * image - 1.0
     image = np.expand_dims(image, 0)
     image = np.transpose(image, (0, 3, 1, 2))  # (1, 3, 1024, 1024), BCWH
-
     vae, vae_params = FlaxAutoencoderKL.from_pretrained(
         "black-forest-labs/FLUX.1-dev", subfolder="vae", from_pt=True, use_safetensors=True, dtype="bfloat16"
     )

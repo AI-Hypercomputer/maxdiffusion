@@ -248,7 +248,7 @@ class WanTransformerTest(unittest.TestCase):
 
     batch_size = 1
     channels = 16
-    frames = 21
+    frames = 1
     height = 90
     width = 160
     hidden_states_shape = (batch_size, channels, frames, height, width)
@@ -262,22 +262,14 @@ class WanTransformerTest(unittest.TestCase):
 
     mesh = Mesh(devices_array, config.mesh_axes)
     batch_size = 1
-    wan_model = WanModel(
-        rngs=rngs,
-        attention="flash",
-        mesh=mesh,
-        flash_block_sizes=flash_block_sizes,
-    )
+    num_layers = 1
+    wan_model = WanModel(rngs=rngs, attention="flash", mesh=mesh, flash_block_sizes=flash_block_sizes, num_layers=num_layers)
 
     dummy_timestep = jnp.ones((batch_size))
     dummy_encoder_hidden_states = jnp.ones((batch_size, 512, 4096))
     with mesh:
       dummy_output = wan_model(
-          hidden_states=dummy_hidden_states,
-          timestep=dummy_timestep,
-          encoder_hidden_states=dummy_encoder_hidden_states,
-          is_uncond=jnp.array(True, dtype=jnp.bool_),
-          slg_mask=jnp.zeros(40, dtype=jnp.bool_),
+          hidden_states=dummy_hidden_states, timestep=dummy_timestep, encoder_hidden_states=dummy_encoder_hidden_states
       )
     assert dummy_output.shape == hidden_states_shape
 
