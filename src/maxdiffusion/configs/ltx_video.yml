@@ -9,6 +9,7 @@ activations_dtype: 'bfloat16'
 
 run_name: ''
 output_dir: ''
+config_path: ''
 save_config_to_gcs: False
 
 #Checkpoints

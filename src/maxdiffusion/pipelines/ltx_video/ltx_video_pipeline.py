@@ -123,9 +123,7 @@ class LTXVideoPipeline:
   def load_transformer(cls, config):
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
-    base_dir = os.path.dirname(__file__)
-    config_path = os.path.join(base_dir, "../../models/ltx_video/xora_v1.2-13B-balanced-128.json")
-    with open(config_path, "r") as f:
+    with open(config.config_path, "r") as f:
       model_config = json.load(f)
 
     ignored_keys = [
@@ -516,6 +514,7 @@ class LTXVideoPipeline:
 
   def __call__(
       self,
+      config,
       height: int,
       width: int,
       num_frames: int,
@@ -555,11 +554,8 @@ class LTXVideoPipeline:
     latent_num_frames = num_frames // self.video_scale_factor
     if isinstance(self.vae, TorchaxCausalVideoAutoencoder) and is_video:
       latent_num_frames += 1
-    base_dir = os.path.dirname(__file__)
-    config_path = os.path.join(base_dir, "../../models/ltx_video/xora_v1.2-13B-balanced-128.json")
-    with open(config_path, "r") as f:
+    with open(config.config_path, "r") as f:
       model_config = json.load(f)
-
     latent_shape = (
         batch_size * num_images_per_prompt,
         model_config["in_channels"],
@@ -977,6 +973,7 @@ class LTXMultiScalePipeline:
     original_output_type = output_type
     output_type = "latent"
     result = self.video_pipeline(
+        config=config,
         height=height,
         width=width,
         enhance_prompt=enhance_prompt,
@@ -1004,6 +1001,7 @@ class LTXMultiScalePipeline:
     # second pass
     latents = upsampled_latents
     result = self.video_pipeline(
+        config=config,
         height=height * 2,
         width=width * 2,
         enhance_prompt=enhance_prompt,
