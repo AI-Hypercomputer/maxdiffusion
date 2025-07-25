@@ -95,8 +95,6 @@ class DenseGeneral(nn.Module):
     axis = _normalize_axes(axis, inputs.ndim)
 
     kernel_shape = tuple(inputs.shape[ax] for ax in axis) + features
-    # kernel_in_axis = np.arange(len(axis))
-    # kernel_out_axis = np.arange(len(axis), len(axis) + len(features))
     kernel = self.param(
         "kernel",
         nn.with_logical_partitioning(self.kernel_init, self.kernel_axes),

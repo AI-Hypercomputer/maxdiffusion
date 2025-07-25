@@ -126,7 +126,6 @@ class Timesteps(nn.Module):
 
 
 class AlphaCombinedTimestepSizeEmbeddings(nn.Module):
-  """ """
 
   embedding_dim: int
   size_emb_dim: int

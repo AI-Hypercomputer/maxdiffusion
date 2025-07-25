@@ -28,6 +28,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoProcessor,
 )
+from maxdiffusion import max_logging
 from huggingface_hub import hf_hub_download
 from maxdiffusion.models.ltx_video.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
@@ -59,10 +60,10 @@ import orbax.checkpoint as ocp
 
 def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, encoder_attention_segment_ids):
   # Note: reference shape annotated for first pass default inference parameters
-  print("prompts_embeds.shape: ", prompt_embeds.shape, prompt_embeds.dtype)  # (3, 256, 4096) float32
-  print("fractional_coords.shape: ", fractional_coords.shape, fractional_coords.dtype)  # (3, 3, 3072) float32
-  print("latents.shape: ", latents.shape, latents.dtype)  # (1, 3072, 128) float 32
-  print(
+  max_logging.log("prompts_embeds.shape: ", prompt_embeds.shape, prompt_embeds.dtype)  # (3, 256, 4096) float32
+  max_logging.log("fractional_coords.shape: ", fractional_coords.shape, fractional_coords.dtype)  # (3, 3, 3072) float32
+  max_logging.log("latents.shape: ", latents.shape, latents.dtype)  # (1, 3072, 128) float 32
+  max_logging.log(
       "encoder_attention_segment_ids.shape: ", encoder_attention_segment_ids.shape, encoder_attention_segment_ids.dtype
   )  # (3, 256) int32
 
@@ -156,7 +157,7 @@ class LTXVideoPipeline:
         mesh=mesh,
         weights_init_fn=weights_init_fn,
         checkpoint_manager=checkpoint_manager,
-        checkpoint_item=" ",
+        checkpoint_item="ltxvid_transformer",
         model_params=None,
         training=False,
     )
@@ -993,7 +994,7 @@ class LTXMultiScalePipeline:
         skip_block_list=config.first_pass["skip_block_list"],
     )
     latents = result
-    print("first pass done")
+    max_logging.log("first pass done")
     latent_upsampler = self.load_latent_upsampler(config)
     upsampled_latents = self._upsample_latents(latent_upsampler, latents)
     upsampled_latents = adain_filter_latent(latents=upsampled_latents, reference_latents=latents)

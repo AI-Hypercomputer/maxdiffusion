@@ -19,7 +19,7 @@ from absl import app
 from typing import Sequence
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXVideoPipeline
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXMultiScalePipeline
-from maxdiffusion import pyconfig
+from maxdiffusion import pyconfig, max_logging
 import imageio
 from datetime import datetime
 import os
@@ -108,7 +108,7 @@ def run(config):
       enhance_prompt=enhance_prompt,
       seed=config.seed,
   )
-  print("generation time: ", (time.perf_counter() - s0))
+  max_logging.log(f"Compile time: {time.perf_counter() - s0:.1f}s.")
 
   (pad_left, pad_right, pad_top, pad_bottom) = padding
   pad_bottom = -pad_bottom
@@ -146,7 +146,6 @@ def run(config):
           resolution=(height, width, config.num_frames),
           dir=output_dir,
       )
-      print(output_filename)
       # Write video
       with imageio.get_writer(output_filename, fps=fps) as video:
         for frame in video_np:

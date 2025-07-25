@@ -405,7 +405,7 @@ def setup_initial_state(
           config.enable_single_replica_ckpt_restoring,
       )
       if state:
-        if checkpoint_item == " ":
+        if checkpoint_item == "ltxvid_transformer":
           state = state
         else:
           state = state[checkpoint_item]

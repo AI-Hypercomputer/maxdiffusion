@@ -25,8 +25,6 @@ from flax.training import train_state
 import optax
 import orbax.checkpoint as ocp
 from safetensors.torch import load_file
-import requests
-from urllib.parse import urljoin
 
 from maxdiffusion.models.ltx_video.transformers.transformer3d import Transformer3DModel as JaxTranformer3DModel
 from maxdiffusion.models.ltx_video.transformers_pytorch.transformer3d import Transformer3DModel as Transformer3DModel
@@ -34,69 +32,6 @@ from maxdiffusion.models.ltx_video.utils.torch_compat import torch_statedict_to_
 
 from huggingface_hub import hf_hub_download
 import os
-import importlib
-
-
-def download_and_move_files(github_base_url, base_path, target_folder_name, files_to_move, module_to_import):
-  """
-  Downloads files from a GitHub repo, moves them to a local folder, and then dynamically imports a module.
-
-  Args:
-      github_base_url (str): The base URL of the GitHub repo.
-      base_path (str): The base path where the new folder will be created.
-      target_folder_name (str): The name of the folder to create.
-      files_to_move (list): A list of file names to download and move.
-      module_to_import (str): The full module path to import.
-  """
-
-  target_path = os.path.join(base_path, target_folder_name)
-
-  try:
-    # Create the target directory
-    os.makedirs(target_path, exist_ok=True)
-    print(f"Created directory: {target_path}")
-
-    # Download and move files
-    for file_name in files_to_move:
-      file_url = urljoin(github_base_url, file_name)
-      destination_path = os.path.join(target_path, file_name)
-
-      try:
-        response = requests.get(file_url, stream=True)
-        response.raise_for_status()
-
-        with open(destination_path, "wb") as f:
-          for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
-
-        print(f"Downloaded and moved: {file_name} -> {destination_path}")
-
-      except requests.exceptions.RequestException as e:
-        print(f"Error downloading {file_name}: {e}")
-      except OSError as e:
-        print(f"Error writing file {file_name}: {e}")
-    print("Files downloaded and moved successfully.")
-
-    # Verify that the folder exists
-    if not os.path.exists(target_path):
-      print(f"Error: Target folder {target_path} does not exist after files download.")
-    # Dynamically import the module
-    try:
-      imported_module = importlib.import_module(module_to_import)
-      print(f"Module '{module_to_import}' imported successfully.")
-      # Access the class
-      transformer_class = getattr(imported_module, "Transformer3DModel")
-      print(f"Class 'Transformer3DModel' accessed successfully: {transformer_class}")
-      return transformer_class
-    except ImportError as e:
-      print(f"Error importing module '{module_to_import}': {e}")
-    except AttributeError as e:
-      print(f"Error accessing class 'Transformer3DModel': {e}")
-
-  except OSError as e:
-    print(f"Error during file system operation: {e}")
-  except Exception as e:
-    print(f"An unexpected error occurred: {e}")
 
 
 class Checkpointer:
