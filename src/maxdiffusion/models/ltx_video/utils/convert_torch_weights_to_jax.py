@@ -218,14 +218,6 @@ def main(args):
         "the model parameters and optimizer state. This can affect optimizer moments and may result in a spike in "
         "training loss when resuming from the converted checkpoint."
     )
-  # print("Downloading files from GitHub...")
-  # github_url = "https://raw.githubusercontent.com/Lightricks/LTX-Video/main/ltx_video/models/transformers/"
-  # ltx_repo_path = "../"
-  # target_folder = "transformers_pytorch"
-  # files = ["attention.py", "embeddings.py", "symmetric_patchifier.py", "transformer3d.py"]
-  # module_path = "maxdiffusion.models.ltx_video.transformers_pytorch.transformer3d"
-
-  # Transformer3DModel = download_and_move_files(github_url, ltx_repo_path, target_folder, files, module_path)
 
   print("Loading safetensors, flush = True")
   weight_file = "ltxv-13b-0.9.7-dev.safetensors"
