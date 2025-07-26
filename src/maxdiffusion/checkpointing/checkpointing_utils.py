@@ -28,7 +28,7 @@ from etils import epath
 from flax.training import train_state
 import orbax
 import orbax.checkpoint as ocp
-from orbax.checkpoint.logging import abstract_logger
+from orbax.checkpoint.logging import AbstractLogger
 from orbax.checkpoint.checkpoint_manager import CheckpointManager, CheckpointManagerOptions
 
 STABLE_DIFFUSION_CHECKPOINT = "STABLE_DIFFUSION_CHECKPOINT"
@@ -43,7 +43,7 @@ def create_orbax_checkpoint_manager(
     checkpoint_type: str,
     dataset_type: str = "tf",
     use_async: bool = True,
-    orbax_logger: Optional[abstract_logger.AbstractLogger] = None,
+    orbax_logger: Optional[AbstractLogger] = None,
 ):
   """
   Returns specified Orbax (async or not) CheckpointManager or None if checkpointing is disabled.
