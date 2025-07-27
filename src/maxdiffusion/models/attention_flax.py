@@ -18,8 +18,9 @@ from typing import Optional, Callable, Tuple
 import flax.linen as nn
 from flax import nnx
 import jax
+from jax.experimental.pjit import pjit
 from jax.ad_checkpoint import checkpoint_name
-from jax.sharding import PartitionSpec
+from jax.sharding import NamedSharding, PartitionSpec
 import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
@@ -153,6 +154,198 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1
 
   return tensor, kv_size, seq_len
 
+
+def _tpu_ring_flash_attention_v1(
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    heads: int,
+    mesh: Mesh,
+    axis_names_q: AxisNames,
+    axis_names_kv: AxisNames,
+    flash_block_sizes: BlockSizes,
+    dtype: jnp.dtype = jnp.float32,
+) -> jax.Array:
+    """TPU Ring Flash Attention with correct padding, transposition, and sharding."""
+    from ringattention import ringattention
+    from einops import rearrange
+
+    max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+    blockwise_kwargs = {
+        # FullMask
+        "causal_block_size": None,
+        "deterministic": True,
+        "dropout_rng": None,
+        "attn_pdrop": 0.0,
+        "policy": jax.checkpoint_policies.nothing_saveable,
+        "dtype": dtype,
+        "precision": None,
+        "prevent_cse": True,
+    }
+    if flash_block_sizes:
+        blockwise_kwargs["query_chunk_size"] = flash_block_sizes.block_q
+        blockwise_kwargs["key_chunk_size"] = flash_block_sizes.block_kv
+    else:
+        blockwise_kwargs["query_chunk_size"] = min(max_block_size, query.shape[2])
+        blockwise_kwargs["key_chunk_size"] = min(max_block_size, key.shape[2])
+
+    num_fsdp_shards = mesh.shape["fsdp"]
+    query_padded, kv_size, query_seq_len = _reshape_data_for_flash(
+        query, heads, blockwise_kwargs["query_chunk_size"], num_fsdp_shards
+    )
+    key_padded, _, _ = _reshape_data_for_flash(
+        key, heads, blockwise_kwargs["key_chunk_size"], num_fsdp_shards
+    )
+    value_padded, _, _ = _reshape_data_for_flash(
+        value, heads, blockwise_kwargs["key_chunk_size"], num_fsdp_shards
+    )
+
+    #  (b, s, h, d) shape expected
+    query_t = rearrange(query_padded, 'b h s d -> b s h d')
+    key_t = rearrange(key_padded, 'b h s d -> b s h d')
+    value_t = rearrange(value_padded, 'b h s d -> b s h d')
+
+    q_axis_names_physical = nn.logical_to_mesh_axes(axis_names_q)
+    transposed_spec = PartitionSpec(
+        q_axis_names_physical[0],  # BATCH -> 'data'
+        q_axis_names_physical[2],  # LENGTH -> 'fsdp'
+        q_axis_names_physical[1],  # HEAD -> 'tensor'
+        q_axis_names_physical[3],  # D_KV -> None
+    )
+    ring_axis_name = q_axis_names_physical[2]
+
+    ring_attention_sharded = shard_map.shard_map(
+        functools.partial(
+            ringattention,
+            attn_bias=None,
+            segment_ids=None,
+            axis_name=ring_axis_name,
+            float32_logits=True,
+            cache_idx=None,
+            blockwise_kwargs=blockwise_kwargs,
+        ),
+        mesh=mesh,
+        in_specs=(transposed_spec, transposed_spec, transposed_spec),
+        # output is (b,s,h,d)
+        out_specs=transposed_spec,
+        check_rep=False,
+    )
+
+    attention_output = ring_attention_sharded(query_t, key_t, value_t)
+
+    attention_output_t = rearrange(attention_output, 'b s h d -> b h s d')
+
+    # Unpad the output to get back original sequence
+    attention_output_cropped = attention_output_t[:, :, :query_seq_len, :kv_size]
+
+    # Reshape to (b, s, h*d)
+    final_output = _reshape_heads_to_head_dim(attention_output_cropped)
+
+    return final_output
+
+def _tpu_ring_flash_attention(
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    heads: int,
+    mesh: Mesh,
+    axis_names_q: AxisNames,
+    axis_names_kv: AxisNames,
+    flash_block_sizes: BlockSizes,
+    dtype: jnp.dtype = jnp.float32,
+    usp_degree: Optional[int] = 1,
+) -> jax.Array:
+  """TPU Ring/USP Flash Attention with correct padding, transposition, and sharding."""
+  from ringattention import ringattention
+  
+  max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  blockwise_kwargs = {
+      #FullMask
+      "causal_block_size": None,
+      "deterministic": True,
+      "dropout_rng": None,
+      "attn_pdrop": 0.0,
+      "policy": jax.checkpoint_policies.nothing_saveable,
+      "dtype": dtype,
+      "precision": None,
+      "prevent_cse": True,
+  }
+  if flash_block_sizes:
+      blockwise_kwargs["query_chunk_size"] = flash_block_sizes.block_q
+      blockwise_kwargs["key_chunk_size"] = flash_block_sizes.block_kv
+  else:
+      # Get seq_len from shape[2] of the original (b, h, s, d) tensor
+      blockwise_kwargs["query_chunk_size"] = min(max_block_size, query.shape[2])
+      blockwise_kwargs["key_chunk_size"] = min(max_block_size, key.shape[2])
+
+  # Pad sequence to be divisible by block size
+  num_fsdp_shards = mesh.shape["fsdp"]
+  query_padded, kv_size, query_seq_len = _reshape_data_for_flash(
+      query, heads, blockwise_kwargs["query_chunk_size"], num_fsdp_shards
+  )
+  key_padded, _, _ = _reshape_data_for_flash(
+      key, heads, blockwise_kwargs["key_chunk_size"], num_fsdp_shards
+  )
+  value_padded, _, _ = _reshape_data_for_flash(
+      value, heads, blockwise_kwargs["key_chunk_size"], num_fsdp_shards
+  )
+  
+  num_fsdp_devices = mesh.shape["fsdp"]
+  if num_fsdp_devices % usp_degree != 0:
+      raise ValueError("fsdp axis size must be divisible by usp_degree")
+  ring_degree = num_fsdp_devices // usp_degree
+  logical_mesh_shape = (mesh.shape['data'], usp_degree, ring_degree, mesh.shape["tensor"])
+  reshaped_devices = mesh.devices.reshape(logical_mesh_shape)
+  logical_mesh = Mesh(reshaped_devices, ('data', 'usp', 'ring', 'tensor'))
+
+  def _kernel(q_padded, k_padded, v_padded):
+      # All-to-All Swap  NO-OP if usp_degree=1)
+      q_swapped = jax.lax.all_to_all(q_padded, 'usp', split_axis=1, concat_axis=2, tiled=True)
+      k_swapped = jax.lax.all_to_all(k_padded, 'usp', split_axis=1, concat_axis=2, tiled=True)
+      v_swapped = jax.lax.all_to_all(v_padded, 'usp', split_axis=1, concat_axis=2, tiled=True)
+      
+      q_t = rearrange(q_swapped, 'b h s d -> b s h d')
+      k_t = rearrange(k_swapped, 'b h s d -> b s h d')
+      v_t = rearrange(v_swapped, 'b h s d -> b s h d')
+
+      attn_out_t = ringattention(q_t, k_t, v_t, axis_name='ring', 
+                                 blockwise_kwargs=blockwise_kwargs, 
+                                 attn_bias=None,
+                                 segment_ids=None,
+                                 cache_idx=None,
+                                 float32_logits=True,
+                                 )
+      return attn_out_t
+
+  
+  initial_spec = PartitionSpec('data', 'tensor', ('usp', 'ring'), None)
+  
+  output_spec = PartitionSpec('data', 'ring', ('usp', 'tensor'), None)
+
+  sharded_attention_fn = shard_map.shard_map(
+      _kernel,
+      mesh=logical_mesh,
+      in_specs=(initial_spec, initial_spec, initial_spec),
+      out_specs=output_spec,
+      check_rep=False
+  )
+
+  attention_output_t = sharded_attention_fn(query_padded, key_padded, value_padded)
+
+  attention_output = rearrange(attention_output_t, 'b s h d -> b h s d')
+
+  # Back to original sharding using original physical mesh
+  physical_spec = PartitionSpec('data', 'tensor', 'fsdp', None)
+  attention_output_resharded = jax.lax.with_sharding_constraint(
+      attention_output,
+      NamedSharding(mesh, physical_spec)
+  )
+  
+  # Unpad sequence and reshape to head x head_dim
+  attention_output_cropped = attention_output_resharded[:, :, :query_seq_len, :kv_size]
+  final_output = _reshape_heads_to_head_dim(attention_output_cropped)
+  
+  return final_output
 
 def _tpu_flash_attention(
     query: jax.Array,
@@ -358,7 +551,7 @@ def _apply_attention(
   seq_len_idx = 1
   if query.ndim == 4:
     seq_len_idx = 2
-  if attention_kernel == "flash":
+  if attention_kernel in ["flash","ring_flash"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -373,6 +566,11 @@ def _apply_attention(
   elif attention_kernel == "flash":
     return _tpu_flash_attention(
         query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype
+    )
+  elif attention_kernel == "ring_flash":
+    max_logging.log("USING RING ATTENTION")
+    return _tpu_ring_flash_attention_v1(
+        query, key , value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype
     )
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
