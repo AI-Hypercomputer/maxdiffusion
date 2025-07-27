@@ -15,8 +15,9 @@
 from typing import Sequence
 import jax
 import time
-from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 from maxdiffusion import pyconfig, max_logging, max_utils
+from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
+
 from absl import app
 from maxdiffusion.utils import export_to_video
 
