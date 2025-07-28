@@ -120,10 +120,10 @@ def make_tfrecord_iterator(
   # set load_tfrecord_cached to True in config to use pre-processed tfrecord dataset.
   # pedagogical_examples/dataset_tf_cache_to_tfrecord.py to convert tf preprocessed dataset to tfrecord.
   # Dataset cache in github runner test doesn't contain all the features since its shared, Use the default tfrecord iterator.
-  
+
   # checks that the dataset path is valid. In case of gcs, the existance of the dir is not checked.
   is_dataset_dir_valid = "gs://" in config.dataset_save_location or os.path.isdir(config.dataset_save_location)
-  
+
   if (
       config.cache_latents_text_encoder_outputs
       and is_dataset_dir_valid
