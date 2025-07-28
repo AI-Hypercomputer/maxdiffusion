@@ -172,6 +172,19 @@ To generate images, run the following command:
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
   ```
   
+- **LTX Video**
+  1. In the folder src/maxdiffusion/models/ltx_video/utils, run:
+    ```bash
+    python convert_torch_weights_to_jax.py --ckpt_path [LOCAL DIRECTORY FOR WEIGHTS] --transformer_config_path ../xora_v1.2-13B-balanced-128.json
+    ```
+  2. In the repo folder, run:
+    ```bash
+    python src/maxdiffusion/generate_ltx_video.py src/maxdiffusion/configs/ltx_video.yml output_dir="[SAME DIRECTORY]" config_path="src/maxdiffusion/models/ltx_video/xora_v1.2-13B-balanced-128.json"
+    ```
+  3. Other generation parameters can be set in ltx_video.yml file.
+ 
+
+
   ## Flux
 
   First make sure you have permissions to access the Flux repos in Huggingface.
