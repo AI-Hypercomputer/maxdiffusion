@@ -1,12 +1,12 @@
-# Use Python 3.10-slim-bullseye as the base image
-FROM python:3.10-slim-bullseye
+# Use Python 3.12-slim-bullseye as the base image
+FROM python:3.12-slim-bullseye
 
 # Environment variable for no-cache-dir and pip root user warning
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_ROOT_USER_ACTION=ignore
 
 # Set environment variables for Google Cloud SDK and Python 3.10
-ENV PYTHON_VERSION=3.10
+ENV PYTHON_VERSION=3.12
 ENV CLOUD_SDK_VERSION=latest
 
 # Set DEBIAN_FRONTEND to noninteractive to avoid frontend errors
