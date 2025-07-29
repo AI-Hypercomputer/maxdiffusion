@@ -31,6 +31,7 @@ from ...embeddings_flax import (
 )
 from ...normalization_flax import FP32LayerNorm
 from ...attention_flax import FlaxWanAttention
+from ...gradient_checkpoint import GradientCheckpointType
 
 BlockSizes = common_types.BlockSizes
 
@@ -356,6 +357,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
+      remat_policy: str = "None"
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
@@ -417,6 +419,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           attention=attention,
       )
 
+    self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
+
     self.blocks = init_block(rngs)
 
     self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
@@ -469,8 +473,9 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       return (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
 
     initial_carry = (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
+    rematted_block_forward = self.gradient_checkpoint.apply(scan_fn)
     final_carry = nnx.scan(
-        scan_fn,
+        rematted_block_forward,
         length=self.num_layers,
         in_axes=(nnx.Carry, 0),
         out_axes=nnx.Carry,
