@@ -24,6 +24,7 @@
 - **`2024/10/22`**: LoRA support for Hyper SDXL.
 - **`2024/8/1`**: Orbax is the new default checkpointer. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
 - **`2024/7/20`**: Dreambooth training for Stable Diffusion 1.x,2.x is now supported.
+- **`2025/7/29`**: LTX-Video text2video generation is now supported.
 
 # Overview
 
@@ -41,6 +42,7 @@ MaxDiffusion supports
 * Load Multiple LoRA (SDXL inference).
 * ControlNet inference (Stable Diffusion 1.4 & SDXL).
 * Dreambooth training support for Stable Diffusion 1.x,2.x.
+* LTX-Video (inference).
 
 
 # Table of Contents
@@ -172,15 +174,15 @@ To generate images, run the following command:
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
   ```
 - **LTX Video**
-  1. In the folder src/maxdiffusion/models/ltx_video/utils, run:
+  - In the folder src/maxdiffusion/models/ltx_video/utils, run:
     ```bash
     python convert_torch_weights_to_jax.py --ckpt_path [LOCAL DIRECTORY FOR WEIGHTS] --transformer_config_path ../xora_v1.2-13B-balanced-128.json
     ```
-  2. In the repo folder, run:
+  - In the repo folder, run:
     ```bash
     python src/maxdiffusion/generate_ltx_video.py src/maxdiffusion/configs/ltx_video.yml output_dir="[SAME DIRECTORY]" config_path="src/maxdiffusion/models/ltx_video/xora_v1.2-13B-balanced-128.json"
     ```
-  3. Other generation parameters can be set in ltx_video.yml file.
+  - Other generation parameters can be set in ltx_video.yml file.
   ## Flux
 
   First make sure you have permissions to access the Flux repos in Huggingface.
