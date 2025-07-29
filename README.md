@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2025/7/29`**: LTX-Video text2vid generation is now supported.
 - **`2025/04/17`**: Flux Finetuning.
 - **`2025/02/12`**: Flux LoRA for inference.
 - **`2025/02/08`**: Flux schnell & dev inference.
@@ -24,7 +25,6 @@
 - **`2024/10/22`**: LoRA support for Hyper SDXL.
 - **`2024/8/1`**: Orbax is the new default checkpointer. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
 - **`2024/7/20`**: Dreambooth training for Stable Diffusion 1.x,2.x is now supported.
-- **`2025/7/29`**: LTX-Video text2vid generation is now supported.
 
 # Overview
 
