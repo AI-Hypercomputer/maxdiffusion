@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2025/7/29`**: LTX-Video text2vid generation is now supported.
 - **`2025/04/17`**: Flux Finetuning.
 - **`2025/02/12`**: Flux LoRA for inference.
 - **`2025/02/08`**: Flux schnell & dev inference.
@@ -41,6 +42,7 @@ MaxDiffusion supports
 * Load Multiple LoRA (SDXL inference).
 * ControlNet inference (Stable Diffusion 1.4 & SDXL).
 * Dreambooth training support for Stable Diffusion 1.x,2.x.
+* LTX-Video text2vid (inference).
 
 
 # Table of Contents
@@ -53,6 +55,7 @@ MaxDiffusion supports
   - [Training](#training)
   - [Dreambooth](#dreambooth)
   - [Inference](#inference)
+  - [LTX-Video](#ltx-video)
   - [Flux](#flux)
     - [Fused Attention for GPU:](#fused-attention-for-gpu)
   - [Hyper SDXL LoRA](#hyper-sdxl-lora)
@@ -171,7 +174,16 @@ To generate images, run the following command:
   ```bash
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
   ```
-  
+  ## LTX-Video
+  - In the folder src/maxdiffusion/models/ltx_video/utils, run:
+    ```bash
+    python convert_torch_weights_to_jax.py --ckpt_path [LOCAL DIRECTORY FOR WEIGHTS] --transformer_config_path ../xora_v1.2-13B-balanced-128.json
+    ```
+  - In the repo folder, run:
+    ```bash
+    python src/maxdiffusion/generate_ltx_video.py src/maxdiffusion/configs/ltx_video.yml output_dir="[SAME DIRECTORY]" config_path="src/maxdiffusion/models/ltx_video/xora_v1.2-13B-balanced-128.json"
+    ```
+  - Other generation parameters can be set in ltx_video.yml file.
   ## Flux
 
   First make sure you have permissions to access the Flux repos in Huggingface.
@@ -205,7 +217,6 @@ To generate images, run the following command:
   ```bash
   python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
   ```
-
     ## Fused Attention for GPU:
     Fused Attention for GPU is supported via TransformerEngine. Installation instructions:
 
@@ -322,3 +333,5 @@ This script will automatically format your code with `pyink` and help you identi
 
 
 The full suite of -end-to end tests is in `tests` and `src/maxdiffusion/tests`. We run them with a nightly cadance.
+
+
