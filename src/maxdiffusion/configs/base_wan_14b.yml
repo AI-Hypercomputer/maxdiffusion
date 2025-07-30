@@ -54,6 +54,7 @@ jit_initializers: True
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
+flash_min_seq_length: 4096
 
 flash_block_sizes: {}
 # Use on v6e
@@ -131,6 +132,7 @@ logical_axis_rules: [
                       ['activation_batch', 'data'],
                       ['mlp','tensor'],
                       ['embed','fsdp'],
+                      ['heads', 'tensor'],
                       ['norm', 'tensor'],
                       ['conv_batch', ['data','fsdp']],
                       ['out_channels', 'tensor'],

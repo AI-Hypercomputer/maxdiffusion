@@ -105,7 +105,7 @@ def make_cached_tfrecord_iterator(
   )
 
   # This wraps the tf.data.Dataset for use in the multi-host JAX environment.
-  train_iter = multihost_dataloading.MultiHostDataLoadIterator(train_ds, mesh)
+  train_iter = multihost_dataloading.MultiHostDataLoadIterator(train_ds, mesh, config.global_batch_size)
   return train_iter
 
 

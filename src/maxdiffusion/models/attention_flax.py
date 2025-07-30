@@ -187,11 +187,6 @@ def _tpu_flash_attention(
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
-  flash_axis_names_splash_kernel: AxisNames = (HEAD, KV_LENGTH)
-  axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
-  named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
-
-  shard_head_size = mesh.shape["tensor"]
 
   @functools.partial(
       shard_map.shard_map,
@@ -215,6 +210,9 @@ def _tpu_flash_attention(
         q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
         block_sizes=block_sizes,
     )
+    # jax.debug.print("query.shape: {x}", x=query.shape)
+    # jax.debug.print("key.shape: {x}", x=key.shape)
+    # jax.debug.print("value.shape: {x}", x=value.shape)
     attention_output = jax.vmap(splash_kernel)(query, key, value)
     return attention_output
 
@@ -799,6 +797,7 @@ class FlaxWanAttention(nnx.Module):
       query_proj = _unflatten_heads(query_proj, self.heads)
       key_proj = _unflatten_heads(key_proj, self.heads)
       value_proj = _unflatten_heads(value_proj, self.heads)
+      # output of _unflatten_heads Batch, heads, seq_len, head_dim
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)

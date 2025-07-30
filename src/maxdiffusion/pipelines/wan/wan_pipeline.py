@@ -79,6 +79,7 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   wan_config["precision"] = get_precision(config)
   wan_config["flash_block_sizes"] = get_flash_block_sizes(config)
   wan_config["remat_policy"] = config.remat_policy
+  wan_config["flash_min_seq_length"] = config.flash_min_seq_length
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.
