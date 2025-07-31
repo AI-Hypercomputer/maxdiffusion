@@ -167,7 +167,8 @@ def _tpu_ring_flash_attention_v1(
     dtype: jnp.dtype = jnp.float32,
 ) -> jax.Array:
     """TPU Ring Flash Attention with correct padding, transposition, and sharding."""
-    from ringattention import ringattention
+    # from ringattention import ringattention
+    from maxdiffusion.models.ringattention.ringattention_pallas_tpu import ring_flash_attention_tpu as ringattention
     from einops import rearrange
 
     max_block_size = 1024 if dtype == jnp.bfloat16 else 512
@@ -256,7 +257,7 @@ def _tpu_ring_flash_attention(
     usp_degree: Optional[int] = 1,
 ) -> jax.Array:
   """TPU Ring/USP Flash Attention with correct padding, transposition, and sharding."""
-  from ringattention import ringattention
+  from maxdiffusion.models.ringattention.ringattention_pallas_tpu import ring_flash_attention_tpu as ringattention
   
   max_block_size = 1024 if dtype == jnp.bfloat16 else 512
   blockwise_kwargs = {
