@@ -80,7 +80,7 @@ class WanTrainer(WanCheckpointer):
       raise ValueError("this script currently doesn't support training text_encoders")
 
     #self.global_batch_size = self.config.per_device_batch_size * jax.device_count()
-    self.global_batch_size = config.global_batch_size if config.global_batch_size > 0 else config.per_device_batch_size * jax.device_count()
+    self.global_batch_size = config.per_device_batch_size * jax.device_count()
 
   def post_training_steps(self, pipeline, params, train_states, msg=""):
     pass
@@ -97,7 +97,7 @@ class WanTrainer(WanCheckpointer):
     return 0
   
   def get_data_shardings(self, mesh):
-    data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding[0]))
+    data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
     data_sharding = {
       "latents" : data_sharding,
       "encoder_hidden_states" : data_sharding

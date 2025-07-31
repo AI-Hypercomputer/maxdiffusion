@@ -171,6 +171,13 @@ class ApproximateGELU(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
+        kernel_init=nnx.with_partitioning(
+            nnx.initializers.xavier_uniform(),
+            (
+                "mlp",
+                "embed",
+            ),
+        ),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -374,6 +381,16 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
+        kernel_init=nnx.with_partitioning(
+            nnx.initializers.xavier_uniform(),
+            (
+                None,
+                None,
+                None,
+                None,
+                "conv_out"
+            ),
+        ),
     )
 
     # 2. Condition embeddings
