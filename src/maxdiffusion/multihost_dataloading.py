@@ -37,23 +37,20 @@ from maxdiffusion import max_logging
 
 
 def _build_global_shape_and_sharding(
-    local_shape: tuple[int, ...], global_mesh: Mesh, global_batch_size: int = 0
+    local_shape: tuple[int, ...], global_mesh: Mesh
 ) -> tuple[tuple[int, ...], NamedSharding]:
-  #Handle sharding for setting a gbs < jax.device_count
-  if global_batch_size > 0:
-    sharding = NamedSharding(global_mesh, PartitionSpec(*global_mesh.axis_names))
-  else:
-    sharding = NamedSharding(global_mesh, PartitionSpec(global_mesh.axis_names))
+  sharding = NamedSharding(global_mesh, PartitionSpec(global_mesh.axis_names))
 
   global_shape = (jax.process_count() * local_shape[0],) + local_shape[1:]
+
   return global_shape, sharding
 
 
-def _form_global_array(path, array: np.ndarray, global_mesh: Mesh, global_batch_size: int = 0, split_axis_index: int = 0) -> jax.Array:
+def _form_global_array(path, array: np.ndarray, global_mesh: Mesh) -> jax.Array:
   """Put local sharded array into local devices"""
-  global_shape, sharding = _build_global_shape_and_sharding(np.shape(array), global_mesh, global_batch_size)
+  global_shape, sharding = _build_global_shape_and_sharding(np.shape(array), global_mesh)
   try:
-    local_device_arrays = np.split(array, len(global_mesh.local_devices), axis=split_axis_index)
+    local_device_arrays = np.split(array, len(global_mesh.local_devices), axis=0)
   except ValueError as array_split_error:
     raise ValueError(
         f"Unable to put to devices shape {array.shape} with "
@@ -65,7 +62,7 @@ def _form_global_array(path, array: np.ndarray, global_mesh: Mesh, global_batch_
   return jax.make_array_from_single_device_arrays(global_shape, sharding, local_device_buffers)
 
 
-def get_next_batch_sharded(local_dataset: Iterator, global_mesh: Mesh, global_batch_size: int = 0, split_axis_index: int = 0) -> jax.Array:
+def get_next_batch_sharded(local_dataset: Iterator, global_mesh: Mesh) -> jax.Array:
   """Splits the host loaded data equally over all devices."""
 
   SLEEP_TIME = 10
@@ -86,7 +83,7 @@ def get_next_batch_sharded(local_dataset: Iterator, global_mesh: Mesh, global_ba
   if not loaded_data_success:
     local_data = local_dataset.next()
 
-  input_gdas = jtu.tree_map_with_path(partial(_form_global_array, global_mesh=global_mesh, global_batch_size=global_batch_size, split_axis_index=split_axis_index), local_data)
+  input_gdas = jtu.tree_map_with_path(partial(_form_global_array, global_mesh=global_mesh), local_data)
 
   return input_gdas
 
@@ -94,25 +91,9 @@ def get_next_batch_sharded(local_dataset: Iterator, global_mesh: Mesh, global_ba
 class MultiHostDataLoadIterator:
   """fold get_next_batch_sharded into a iterator class"""
 
-  def __init__(self, dataloader: Union[tf.data.Dataset, Iterable], global_mesh: Mesh, global_batch_size: int = 0):
+  def __init__(self, dataloader: Union[tf.data.Dataset, Iterable], global_mesh: Mesh):
     self.global_mesh = global_mesh
     self.dataloader = dataloader
-    # Handles sharding for when gbs < number of devices
-    self.global_batch_size = global_batch_size
-    # Use the correct axis for splitting the data across when using global_batch_size
-    split_axis_name = max(global_mesh.shape, key=global_mesh.shape.get)
-    split_axis_index = 0
-    if global_batch_size > 0:
-      max_logging.log(f"global_batch_size was set to {global_batch_size}, splitting data across {split_axis_name}.")
-      if split_axis_name == "data":
-        split_axis_index = 0
-      elif split_axis_name == "fsdp":
-        split_axis_index = 1
-      elif split_axis_name == "tensor":
-        split_axis_index = 2
-      else:
-        raise ValueError(f"Could not find {split_axis_name} to split data over.") 
-    self.split_axis_index = split_axis_index
     if isinstance(self.dataloader, tf.data.Dataset):
       self.local_iterator = self.dataloader.as_numpy_iterator()
     elif isinstance(self.dataloader, Iterable):
@@ -133,4 +114,4 @@ class MultiHostDataLoadIterator:
     return self
 
   def __next__(self):
-    return get_next_batch_sharded(self.local_iterator, self.global_mesh, self.global_batch_size, self.split_axis_index)
+    return get_next_batch_sharded(self.local_iterator, self.global_mesh)
