@@ -97,7 +97,7 @@ class WanTrainer(WanCheckpointer):
     return 0
   
   def get_data_shardings(self, mesh):
-    data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
+    data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding[0]))
     data_sharding = {
       "latents" : data_sharding,
       "encoder_hidden_states" : data_sharding
@@ -146,7 +146,7 @@ class WanTrainer(WanCheckpointer):
     # del pipeline.vae
 
     # Generate a sample before training to compare against generated sample after training.
-    pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
+    #pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
     mesh = pipeline.mesh
     data_iterator = self.load_dataset(mesh)
 
