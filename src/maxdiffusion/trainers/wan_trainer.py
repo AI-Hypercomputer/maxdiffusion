@@ -146,7 +146,7 @@ class WanTrainer(WanCheckpointer):
     # del pipeline.vae
 
     # Generate a sample before training to compare against generated sample after training.
-    #pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
+    pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
     mesh = pipeline.mesh
     data_iterator = self.load_dataset(mesh)
 
