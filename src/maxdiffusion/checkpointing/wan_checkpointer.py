@@ -15,7 +15,6 @@
 """
 
 from abc import ABC
-from flax import nnx
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
 from ..pipelines.wan.wan_pipeline import WanPipeline
 from .. import max_logging, max_utils

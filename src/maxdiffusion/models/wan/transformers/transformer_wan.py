@@ -364,7 +364,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
-      remat_policy: str = "None"
+      remat_policy: str = "None",
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
@@ -383,13 +383,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
-            (
-                None,
-                None,
-                None,
-                None,
-                "conv_out"
-            ),
+            (None, None, None, None, "conv_out"),
         ),
     )
 

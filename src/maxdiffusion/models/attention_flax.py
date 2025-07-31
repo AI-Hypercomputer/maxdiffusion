@@ -202,7 +202,7 @@ def _tpu_flash_attention(
   def wrap_flash_attention(query, key, value):
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
-    # make_splash_mha is wrapped around shardmap and seq and head is already 
+    # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
     splash_kernel = splash_attention_kernel.make_splash_mha(
         mask=multi_head_mask,

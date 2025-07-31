@@ -37,14 +37,17 @@ from maxdiffusion.utils import load_video
 from skimage.metrics import structural_similarity as ssim
 from flax.training import train_state
 
+
 class TrainState(train_state.TrainState):
   graphdef: nnx.GraphDef
   rest_of_state: nnx.State
+
 
 def _to_array(x):
   if not isinstance(x, jax.Array):
     x = jnp.asarray(x)
   return x
+
 
 def generate_sample(config, pipeline, filename_prefix):
   """
@@ -79,7 +82,6 @@ class WanTrainer(WanCheckpointer):
     if config.train_text_encoder:
       raise ValueError("this script currently doesn't support training text_encoders")
 
-    #self.global_batch_size = self.config.per_device_batch_size * jax.device_count()
     self.global_batch_size = config.per_device_batch_size * jax.device_count()
 
   def post_training_steps(self, pipeline, params, train_states, msg=""):
@@ -95,13 +97,10 @@ class WanTrainer(WanCheckpointer):
   def calculate_tflops(self, pipeline):
     max_logging.log("WARNING : Calculting tflops is not implemented in Wan 2.1. Returning 0...")
     return 0
-  
+
   def get_data_shardings(self, mesh):
     data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
-    data_sharding = {
-      "latents" : data_sharding,
-      "encoder_hidden_states" : data_sharding
-    }
+    data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding}
     return data_sharding
 
   def load_dataset(self, mesh):
@@ -167,11 +166,7 @@ class WanTrainer(WanCheckpointer):
 
     with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       state = TrainState.create(
-        apply_fn=graphdef.apply,
-        params=params,
-        tx=optimizer,
-        graphdef=graphdef,
-        rest_of_state=rest_of_state
+          apply_fn=graphdef.apply, params=params, tx=optimizer, graphdef=graphdef, rest_of_state=rest_of_state
       )
       state = jax.tree.map(_to_array, state)
       state_spec = nnx.get_partition_spec(state)
@@ -196,8 +191,8 @@ class WanTrainer(WanCheckpointer):
 
     p_train_step = jax.jit(
         functools.partial(train_step, scheduler=pipeline.scheduler, config=self.config),
-        in_shardings = (state_shardings, data_shardings, None, None),
-        out_shardings = (state_shardings, None, None, None),
+        in_shardings=(state_shardings, data_shardings, None, None),
+        out_shardings=(state_shardings, None, None, None),
         donate_argnums=(0,),
     )
     rng = jax.random.key(self.config.seed)
@@ -284,6 +279,7 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
     loss = jnp.mean(loss)
 
     return loss
+
   grad_fn = nnx.value_and_grad(loss_fn)
   loss, grads = grad_fn(state.params)
   new_state = state.apply_gradients(grads=grads)

@@ -6,7 +6,8 @@ from flax import nnx
 
 SKIP_GRADIENT_CHECKPOINT_KEY = "skip"
 
-# This class only works with NNX modules. 
+
+# This class only works with NNX modules.
 class GradientCheckpointType(Enum):
   """
   Defines the type of the gradient checkpoint we will have
