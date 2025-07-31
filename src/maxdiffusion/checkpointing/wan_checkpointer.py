@@ -42,7 +42,7 @@ class WanCheckpointer(ABC):
         learning_rate, config.learning_rate_schedule_steps, config.warmup_steps_fraction, config.max_train_steps
     )
     tx = max_utils.create_optimizer(config, learning_rate_scheduler)
-    return nnx.Optimizer(model, tx), learning_rate_scheduler
+    return tx, learning_rate_scheduler
 
   def load_wan_configs_from_orbax(self, step):
     max_logging.log("Restoring stable diffusion configs")
