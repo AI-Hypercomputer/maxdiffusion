@@ -171,6 +171,17 @@ class ApproximateGELU(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
+        # kernel_init=nnx.with_partitioning(
+        #     nnx.initializers.xavier_uniform(),
+        #     ("blockwise", None, None),
+        # ),
+        # bias_init=nnx.with_partitioning(
+        #     nnx.initializers.zeros,
+        #     (
+        #         "blockwise",
+        #         None,
+        #     ),
+        # ),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -218,10 +229,18 @@ class WanFeedForward(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
+#                "blockwise",
                 "mlp",
                 "embed",
             ),
         ),
+        # bias_init=nnx.with_partitioning(
+        #     nnx.initializers.zeros,
+        #     (
+        #         "blockwise",
+        #         "mlp",
+        #     ),
+        # ),
     )
 
   def __call__(self, hidden_states: jax.Array) -> jax.Array:
@@ -389,10 +408,9 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
     # 3. Transformer blocks
-    @nnx.split_rngs(splits=num_layers)
-    @nnx.vmap(in_axes=0, out_axes=0)
-    def init_block(rngs):
-      return WanTransformerBlock(
+    blocks = []
+    for _ in range(num_layers):
+      block = WanTransformerBlock(
           rngs=rngs,
           dim=inner_dim,
           ffn_dim=ffn_dim,
@@ -408,10 +426,15 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           precision=precision,
           attention=attention,
       )
+      blocks.append(block)
+    self.blocks = blocks
+
+    # 2. Use a predicate to create a "state-free" version.
+    # The lambda function `lambda _: False` simply tells nnx.state_if
+    # to filter out ALL state components (params, variables, etc.).
+    # self.block_template = nnx.state_if(lambda _: False, template_block_with_state)
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
-
-    self.blocks = init_block(rngs)
 
     self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
     self.proj_out = nnx.Linear(
@@ -426,7 +449,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     key = rngs.params()
     self.scale_shift_table = nnx.Param(
         jax.random.normal(key, (1, 2, inner_dim)) / inner_dim**0.5,
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, "embed")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
     )
 
   def __call__(
@@ -456,22 +479,12 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     if encoder_hidden_states_image is not None:
       raise NotImplementedError("img2vid is not yet implemented.")
-
-    def scan_fn(carry, block):
-      hidden_states, encoder_hidden_states, timestep_proj, rotary_emb = carry
-      hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
-      return (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
-
-    initial_carry = (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
-    rematted_block_forward = self.gradient_checkpoint.apply(scan_fn)
-    final_carry = nnx.scan(
-        rematted_block_forward,
-        length=self.num_layers,
-        in_axes=(nnx.Carry, 0),
-        out_axes=nnx.Carry,
-    )(initial_carry, self.blocks)
-
-    hidden_states = final_carry[0]
+    
+    for block in self.blocks:
+      def block_forward(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb):
+        return block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
+      rematted_block_forward = self.gradient_checkpoint.apply(block_forward)
+      hidden_states = rematted_block_forward(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
 
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 

@@ -79,8 +79,7 @@ class WanTrainer(WanCheckpointer):
     if config.train_text_encoder:
       raise ValueError("this script currently doesn't support training text_encoders")
 
-    #self.global_batch_size = self.config.per_device_batch_size * jax.device_count()
-    self.global_batch_size = config.global_batch_size if config.global_batch_size > 0 else config.per_device_batch_size * jax.device_count()
+    self.global_batch_size = config.per_device_batch_size * jax.device_count()
 
   def post_training_steps(self, pipeline, params, train_states, msg=""):
     pass
@@ -97,7 +96,8 @@ class WanTrainer(WanCheckpointer):
     return 0
   
   def get_data_shardings(self, mesh):
-    data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding[0]))
+    p_spec = P(*self.config.data_sharding)
+    data_sharding = jax.sharding.NamedSharding(mesh, p_spec)
     data_sharding = {
       "latents" : data_sharding,
       "encoder_hidden_states" : data_sharding
@@ -143,7 +143,6 @@ class WanTrainer(WanCheckpointer):
   def start_training(self):
 
     pipeline = self.load_checkpoint()
-    # del pipeline.vae
 
     # Generate a sample before training to compare against generated sample after training.
     #pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
@@ -178,6 +177,7 @@ class WanTrainer(WanCheckpointer):
       state = jax.lax.with_sharding_constraint(state, state_spec)
       state_shardings = nnx.get_named_sharding(state, mesh)
     data_shardings = self.get_data_shardings(mesh)
+    #breakpoint()
 
     writer = max_utils.initialize_summary_writer(self.config)
     writer_thread = threading.Thread(target=_tensorboard_writer_worker, args=(writer, self.config), daemon=True)
