@@ -210,9 +210,6 @@ def _tpu_flash_attention(
         q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
         block_sizes=block_sizes,
     )
-    # jax.debug.print("query.shape: {x}", x=query.shape)
-    # jax.debug.print("key.shape: {x}", x=key.shape)
-    # jax.debug.print("value.shape: {x}", x=value.shape)
     attention_output = jax.vmap(splash_kernel)(query, key, value)
     return attention_output
 
