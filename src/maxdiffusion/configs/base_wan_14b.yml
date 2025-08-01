@@ -54,6 +54,7 @@ jit_initializers: True
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
+flash_min_seq_length: 4096
 
 flash_block_sizes: {}
 # Use on v6e
@@ -131,10 +132,11 @@ logical_axis_rules: [
                       ['activation_batch', 'data'],
                       ['mlp','tensor'],
                       ['embed','fsdp'],
+                      ['heads', 'tensor'],
                       ['norm', 'tensor'],
                       ['conv_batch', ['data','fsdp']],
                       ['out_channels', 'tensor'],
-                      ['conv_in', 'fsdp'],
+                      ['conv_out', 'fsdp'],
                     ]
 data_sharding: [['data', 'fsdp', 'tensor']]
 
@@ -181,6 +183,14 @@ tokenize_captions_num_proc: 4
 transform_images_num_proc: 4
 reuse_example_batch: False
 enable_data_shuffling: True
+
+# Defines the type of gradient checkpoint to enable.
+# NONE - means no gradient checkpoint
+# FULL - means full gradient checkpoint, whenever possible (minimum memory usage)
+# MATMUL_WITHOUT_BATCH - means gradient checkpoint for every linear/matmul operation,
+# except for ones that involve batch dimension - that means that all attention and projection
+# layers will have gradient checkpoint, but not the backward with respect to the parameters
+remat_policy: "NONE"
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1

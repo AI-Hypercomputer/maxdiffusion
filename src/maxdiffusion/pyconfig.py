@@ -181,6 +181,8 @@ class _HyperParameters:
     raw_keys["total_train_batch_size"] = max_utils.get_global_batch_size(raw_keys["per_device_batch_size"])
     raw_keys["num_slices"] = get_num_slices(raw_keys)
     raw_keys["quantization_local_shard_count"] = get_quantization_local_shard_count(raw_keys)
+    if "global_batch_size" not in raw_keys.keys():
+      raw_keys["global_batch_size"] = 0
 
 
 def get_num_slices(raw_keys):

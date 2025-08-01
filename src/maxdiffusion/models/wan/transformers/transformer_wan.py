@@ -18,6 +18,7 @@ from typing import Tuple, Optional, Dict, Union, Any
 import math
 import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec
 from flax import nnx
 import numpy as np
 from .... import common_types
@@ -31,6 +32,7 @@ from ...embeddings_flax import (
 )
 from ...normalization_flax import FP32LayerNorm
 from ...attention_flax import FlaxWanAttention
+from ...gradient_checkpoint import GradientCheckpointType
 
 BlockSizes = common_types.BlockSizes
 
@@ -170,6 +172,17 @@ class ApproximateGELU(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
+        kernel_init=nnx.with_partitioning(
+            nnx.initializers.xavier_uniform(),
+            (
+                None,
+                "mlp",
+                "embed",
+            ),
+        ),
+        bias_init=nnx.with_partitioning(
+          nnx.initializers.zeros, (None, "embed")
+        )
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -217,8 +230,9 @@ class WanFeedForward(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "mlp",
+                None,
                 "embed",
+                "mlp",
             ),
         ),
     )
@@ -306,7 +320,18 @@ class WanTransformerBlock(nnx.Module):
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
         (self.scale_shift_table + temb), 6, axis=1
     )
+    
+    # shift_msa = jax.lax.with_sharding_constraint(shift_msa, PartitionSpec("data", None, "tensor"))
+    # scale_msa = jax.lax.with_sharding_constraint(scale_msa, PartitionSpec("data", None, "tensor"))
+    # gate_msa = jax.lax.with_sharding_constraint(gate_msa, PartitionSpec("data", None, "tensor"))
+    # c_shift_msa = jax.lax.with_sharding_constraint(c_shift_msa, PartitionSpec("data", None, "tensor"))
+    # c_scale_msa = jax.lax.with_sharding_constraint(c_scale_msa, PartitionSpec("data", None, "tensor"))
+    # c_gate_msa = jax.lax.with_sharding_constraint(c_gate_msa, PartitionSpec("data", None, "tensor"))
 
+    # hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+    # encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", None, "tensor"))
+    # temb = jax.lax.with_sharding_constraint(temb, PartitionSpec("data", None, "tensor"))
+    
     # 1. Self-attention
     norm_hidden_states = (self.norm1(hidden_states) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
     attn_output = self.attn1(
@@ -356,6 +381,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
+      remat_policy: str = "None",
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
@@ -374,13 +400,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
-            (
-                None,
-                None,
-                None,
-                None,
-                "conv_out",
-            ),
+            (None, None, None, None, "conv_out"),
         ),
     )
 
@@ -417,6 +437,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           attention=attention,
       )
 
+    self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
+
     self.blocks = init_block(rngs)
 
     self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
@@ -452,6 +474,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
     rotary_emb = self.rope(hidden_states)
+    #rotary_emb = jax.lax.with_sharding_constraint(rotary_emb, PartitionSpec(None, None, "fsdp", None))
     hidden_states = self.patch_embedding(hidden_states)
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
 
@@ -459,18 +482,18 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         timestep, encoder_hidden_states, encoder_hidden_states_image
     )
     timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
-
+    #hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
     if encoder_hidden_states_image is not None:
       raise NotImplementedError("img2vid is not yet implemented.")
-
     def scan_fn(carry, block):
       hidden_states, encoder_hidden_states, timestep_proj, rotary_emb = carry
       hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
       return (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
 
     initial_carry = (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
+    rematted_block_forward = self.gradient_checkpoint.apply(scan_fn)
     final_carry = nnx.scan(
-        scan_fn,
+        rematted_block_forward,
         length=self.num_layers,
         in_axes=(nnx.Carry, 0),
         out_axes=nnx.Carry,
