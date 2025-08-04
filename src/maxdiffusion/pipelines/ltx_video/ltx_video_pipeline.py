@@ -203,11 +203,10 @@ class LTXVideoPipeline:
         transformer = Transformer3DModel(
             # change this sharding back
             **model_config, dtype=jnp.float32, gradient_checkpointing="matmul_without_batch", sharding_mesh=mesh)
-        transformer_param_shapes = transformer.init_weights(
-            in_channels, model_config['caption_channels'], eval_only=True)
         weights_init_fn = functools.partial(
             transformer.init_weights,
             in_channels,
+            jax.random.PRNGKey(config.seed),
             model_config['caption_channels'],
             eval_only=True
         )
@@ -221,7 +220,7 @@ class LTXVideoPipeline:
             mesh=mesh,
             weights_init_fn=weights_init_fn,
             checkpoint_manager=checkpoint_manager,
-            checkpoint_item=" ",
+            checkpoint_item="ltxvid_transformer",
             model_params=None,
             training=False,
         )
@@ -759,7 +758,6 @@ class LTXVideoPipeline:
             base_dir, "../../models/ltx_video/xora_v1.2-13B-balanced-128.json")
         with open(config_path, "r") as f:
             model_config = json.load(f)
-        import pdb; pdb.set_trace()
         latent_shape = (
             batch_size * num_images_per_prompt,
             model_config["in_channels"],
