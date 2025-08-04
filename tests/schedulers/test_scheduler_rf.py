@@ -5,23 +5,17 @@ from huggingface_hub import hf_hub_download
 import torch
 import unittest
 from absl.testing import absltest
-from absl import flags # Import absl.flags
+from absl import flags
 import numpy as np
-import torch
 
-# Define a command-line flag for models_dir
 FLAGS = flags.FLAGS
 flags.DEFINE_string('models_dir', None, 'Directory to load scheduler config.')
 flags.mark_flag_as_required('models_dir')
 
 
-
 class rfTest(unittest.TestCase):
 
     def test_rf_steps(self):
-        # --- Configuration Parameters for the Scheduler ---
-        # You can modify these parameters to test different scheduler behaviors
-
         # --- Simulation Parameters ---
         latent_tensor_shape = (1, 256, 128) # Example latent tensor shape (Batch, Channels, Height, Width)
         inference_steps_count = 5     # Number of steps for the denoising process
@@ -29,7 +23,7 @@ class rfTest(unittest.TestCase):
         # --- Run the Simulation ---
         # Use the value from the command-line flag
         models_dir = FLAGS.models_dir
-        
+
         # Ensure the directory exists before downloading
         os.makedirs(models_dir, exist_ok=True)
 
@@ -39,7 +33,7 @@ class rfTest(unittest.TestCase):
             local_dir=models_dir,
             repo_type="model",
         )
-        print(f"\n--- Simulating RectifiedFlowMultistepScheduler ---")
+        print("\n--- Simulating RectifiedFlowMultistepScheduler ---")
 
         seed = 42
         device = 'cpu'
@@ -87,9 +81,6 @@ class rfTest(unittest.TestCase):
             base_dir = os.path.dirname(__file__)
             ref_dir = os.path.join(base_dir, "rf_scheduler_test_ref")
             ref_filename = os.path.join(ref_dir, f"step_{i+1:02d}.npy")
-            # Ensure the reference directory exists for tests that might write to it,
-            # or handle its absence if it's meant to be pre-existing.
-            # For this example, assuming 'rf_scheduler_test_ref' exists with pre-saved .npy files.
             if os.path.exists(ref_filename):
                 pt_sample = np.load(ref_filename)
                 torch.testing.assert_close(np.array(sample), pt_sample)
@@ -105,5 +96,4 @@ class rfTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-  # absltest.main() automatically parses flags defined by absl.flags
   absltest.main()
