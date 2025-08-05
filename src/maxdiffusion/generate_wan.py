@@ -29,15 +29,9 @@ def run(config, pipeline=None, filename_prefix=""):
     pipeline = WanPipeline.from_pretrained(config)
   s0 = time.perf_counter()
 
-  # If global_batch_size % jax.device_count is not 0, use FSDP sharding.
-  global_batch_size = config.global_batch_size
-  if global_batch_size != 0:
-    batch_multiplier = global_batch_size
-  else:
-    batch_multiplier = jax.device_count() * config.per_device_batch_size
-
-  prompt = [config.prompt] * batch_multiplier
-  negative_prompt = [config.negative_prompt] * batch_multiplier
+  # Using global_batch_size_to_train_on so not to create more config variables
+  prompt = [config.prompt] * config.global_batch_size_to_train_on
+  negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
 
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"

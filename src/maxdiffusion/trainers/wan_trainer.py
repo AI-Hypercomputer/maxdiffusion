@@ -82,8 +82,6 @@ class WanTrainer(WanCheckpointer):
     if config.train_text_encoder:
       raise ValueError("this script currently doesn't support training text_encoders")
 
-    self.global_batch_size = config.per_device_batch_size * jax.device_count()
-
   def post_training_steps(self, pipeline, params, train_states, msg=""):
     pass
 
@@ -133,7 +131,7 @@ class WanTrainer(WanCheckpointer):
         jax.process_index(),
         jax.process_count(),
         mesh,
-        self.global_batch_size,
+        config.global_batch_size_to_load,
         feature_description=feature_description,
         prepare_sample_fn=prepare_sample,
     )
@@ -186,7 +184,7 @@ class WanTrainer(WanCheckpointer):
     if jax.process_index() == 0:
       max_logging.log("***** Running training *****")
       max_logging.log(f"  Instantaneous batch size per device = {self.config.per_device_batch_size}")
-      max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.global_batch_size}")
+      max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.config.global_batch_size_to_train_on}")
       max_logging.log(f"  Total optimization steps = {self.config.max_train_steps}")
 
     p_train_step = jax.jit(
@@ -251,6 +249,9 @@ def train_step(state, data, rng, scheduler_state, scheduler, config):
 
 def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
   _, new_rng, timestep_rng = jax.random.split(rng, num=3)
+
+  for k, v in data.items():
+    data[k] = v[: config.global_batch_size_to_train_on, :]
 
   def loss_fn(params):
     model = nnx.merge(state.graphdef, params, state.rest_of_state)

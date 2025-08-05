@@ -180,9 +180,7 @@ class ApproximateGELU(nnx.Module):
                 "embed",
             ),
         ),
-        bias_init=nnx.with_partitioning(
-          nnx.initializers.zeros, (None, "embed")
-        )
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -314,24 +312,15 @@ class WanTransformerBlock(nnx.Module):
     self.norm3 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=False)
 
     key = rngs.params()
-    self.scale_shift_table = nnx.Param(jax.random.normal(key, (1, 6, dim)) / dim**0.5)
+    self.adaln_scale_shift_table = nnx.Param(jax.random.normal(key, (1, 6, dim)) / dim**0.5)
 
   def __call__(self, hidden_states: jax.Array, encoder_hidden_states: jax.Array, temb: jax.Array, rotary_emb: jax.Array):
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
-        (self.scale_shift_table + temb), 6, axis=1
+        (self.adaln_scale_shift_table + temb), 6, axis=1
     )
-    
-    # shift_msa = jax.lax.with_sharding_constraint(shift_msa, PartitionSpec("data", None, "tensor"))
-    # scale_msa = jax.lax.with_sharding_constraint(scale_msa, PartitionSpec("data", None, "tensor"))
-    # gate_msa = jax.lax.with_sharding_constraint(gate_msa, PartitionSpec("data", None, "tensor"))
-    # c_shift_msa = jax.lax.with_sharding_constraint(c_shift_msa, PartitionSpec("data", None, "tensor"))
-    # c_scale_msa = jax.lax.with_sharding_constraint(c_scale_msa, PartitionSpec("data", None, "tensor"))
-    # c_gate_msa = jax.lax.with_sharding_constraint(c_gate_msa, PartitionSpec("data", None, "tensor"))
+    hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", None))
 
-    # hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
-    # encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", None, "tensor"))
-    # temb = jax.lax.with_sharding_constraint(temb, PartitionSpec("data", None, "tensor"))
-    
     # 1. Self-attention
     norm_hidden_states = (self.norm1(hidden_states) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
     attn_output = self.attn1(
@@ -474,7 +463,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
     rotary_emb = self.rope(hidden_states)
-    #rotary_emb = jax.lax.with_sharding_constraint(rotary_emb, PartitionSpec(None, None, "fsdp", None))
+
     hidden_states = self.patch_embedding(hidden_states)
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
 
@@ -482,9 +471,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         timestep, encoder_hidden_states, encoder_hidden_states_image
     )
     timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
-    #hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+
     if encoder_hidden_states_image is not None:
       raise NotImplementedError("img2vid is not yet implemented.")
+
     def scan_fn(carry, block):
       hidden_states, encoder_hidden_states, timestep_proj, rotary_emb = carry
       hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)

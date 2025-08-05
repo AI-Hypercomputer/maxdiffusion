@@ -18,6 +18,7 @@ from enum import Enum, auto
 from typing import Optional
 
 import jax
+from jax import checkpoint_policies as cp
 from flax import nnx
 
 SKIP_GRADIENT_CHECKPOINT_KEY = "skip"
@@ -38,6 +39,7 @@ class GradientCheckpointType(Enum):
   NONE = auto()
   FULL = auto()
   MATMUL_WITHOUT_BATCH = auto()
+  ATTN = auto()
 
   @classmethod
   def from_str(cls, s: Optional[str] = None) -> "GradientCheckpointType":
@@ -63,6 +65,10 @@ class GradientCheckpointType(Enum):
         return SKIP_GRADIENT_CHECKPOINT_KEY
       case GradientCheckpointType.FULL:
         return None
+      case GradientCheckpointType.ATTN:
+        return cp.save_and_offload_only_these_names(
+            names_which_can_be_saved=[], names_which_can_be_offloaded=[], offload_src="device", offload_dst="pinned_host"
+        )
       case GradientCheckpointType.MATMUL_WITHOUT_BATCH:
         return jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
 

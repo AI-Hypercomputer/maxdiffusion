@@ -241,6 +241,7 @@ def load_base_wan_transformer(
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
+      renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
       renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
       renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")

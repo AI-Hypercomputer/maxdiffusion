@@ -18,6 +18,7 @@ from typing import Optional, Callable, Tuple
 import flax.linen as nn
 from flax import nnx
 import jax
+from jax.ad_checkpoint import checkpoint_name
 from jax.sharding import PartitionSpec
 import jax.numpy as jnp
 from jax.experimental import shard_map
@@ -797,10 +798,13 @@ class FlaxWanAttention(nnx.Module):
       # output of _unflatten_heads Batch, heads, seq_len, head_dim
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
+    query_proj = checkpoint_name(query_proj, "query_proj")
+    key_proj = checkpoint_name(key_proj, "key_proj")
+    value_proj = checkpoint_name(value_proj, "value_proj")
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
     attn_output = attn_output.astype(dtype=dtype)
-
+    attn_output = checkpoint_name(attn_output, "attn_output")
     hidden_states = self.proj_attn(attn_output)
     return hidden_states
 
