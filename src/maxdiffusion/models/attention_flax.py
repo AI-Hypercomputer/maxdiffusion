@@ -18,6 +18,7 @@ from typing import Optional, Callable, Tuple
 import flax.linen as nn
 from flax import nnx
 import jax
+from jax.ad_checkpoint import checkpoint_name
 from jax.sharding import PartitionSpec
 import jax.numpy as jnp
 from jax.experimental import shard_map
@@ -187,30 +188,6 @@ def _tpu_flash_attention(
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
-  flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH)
-  axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
-  named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
-
-  shard_head_size = mesh.shape["tensor"]
-
-  @functools.partial(
-      jax.jit,
-      static_argnames=["multi_head_mask", "shard_head_size"],
-  )
-  def wrap_splash_kernel(multi_head_mask, shard_head_size=1):
-    splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask,
-        head_shards=shard_head_size,  # the sizes of the axis is sharding over heads
-        q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
-        block_sizes=block_sizes,
-    )
-    return splash_kernel
-
-  mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
-
-  multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
-  splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
-  segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
 
   @functools.partial(
       shard_map.shard_map,
@@ -219,12 +196,21 @@ def _tpu_flash_attention(
           q_axis_names,
           kv_axis_names,
           kv_axis_names,
-          segment_axis_names_splash_kernel,
       ),
       out_specs=q_axis_names,
       check_rep=False,
   )
-  def wrap_flash_attention(query, key, value, splash_kernel):
+  def wrap_flash_attention(query, key, value):
+    mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
+    multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+    # make_splash_mha is wrapped around shardmap and seq and head is already
+    # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
+    splash_kernel = splash_attention_kernel.make_splash_mha(
+        mask=multi_head_mask,
+        head_shards=1,  # the sizes of the axis is sharding over heads
+        q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+        block_sizes=block_sizes,
+    )
     attention_output = jax.vmap(splash_kernel)(query, key, value)
     return attention_output
 
@@ -236,7 +222,7 @@ def _tpu_flash_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
     )
-  x = wrap_flash_attention(query, key, value, splash_kernel)
+  x = wrap_flash_attention(query, key, value)
   x = x[:, :, :query_seq_len, :kv_size]
   x = _reshape_heads_to_head_dim(x)
 
@@ -632,7 +618,7 @@ class FlaxWanAttention(nnx.Module):
       use_memory_efficient_attention: bool = False,
       split_head_dim: bool = False,
       attention_kernel: str = "flash",
-      flash_min_seq_length: int = 4096,
+      flash_min_seq_length: int = 0,
       flash_block_sizes: BlockSizes = None,
       mesh: jax.sharding.Mesh = None,
       dtype: jnp.dtype = jnp.float32,
@@ -809,12 +795,16 @@ class FlaxWanAttention(nnx.Module):
       query_proj = _unflatten_heads(query_proj, self.heads)
       key_proj = _unflatten_heads(key_proj, self.heads)
       value_proj = _unflatten_heads(value_proj, self.heads)
+      # output of _unflatten_heads Batch, heads, seq_len, head_dim
       query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
+    query_proj = checkpoint_name(query_proj, "query_proj")
+    key_proj = checkpoint_name(key_proj, "key_proj")
+    value_proj = checkpoint_name(value_proj, "value_proj")
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
     attn_output = attn_output.astype(dtype=dtype)
-
+    attn_output = checkpoint_name(attn_output, "attn_output")
     hidden_states = self.proj_attn(attn_output)
     return hidden_states
 

@@ -78,6 +78,8 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   wan_config["attention"] = config.attention
   wan_config["precision"] = get_precision(config)
   wan_config["flash_block_sizes"] = get_flash_block_sizes(config)
+  wan_config["remat_policy"] = config.remat_policy
+  wan_config["flash_min_seq_length"] = config.flash_min_seq_length
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.
@@ -414,7 +416,8 @@ class WanPipeline:
         )
 
       data_sharding = NamedSharding(self.mesh, P())
-      if len(prompt) % jax.device_count() == 0:
+      # Using global_batch_size_to_train_on so not to create more config variables
+      if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
         data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
 
       latents = jax.device_put(latents, data_sharding)

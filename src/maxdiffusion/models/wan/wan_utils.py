@@ -1,3 +1,19 @@
+"""
+ Copyright 2025 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+      https://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+"""
+
 import os
 import json
 import torch
@@ -225,6 +241,7 @@ def load_base_wan_transformer(
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
+      renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
       renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
       renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")

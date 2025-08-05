@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import tensorflow as tf
 import jax.numpy as jnp
 import jax
+from jax.sharding import PartitionSpec as P
 from flax import nnx
 from maxdiffusion.schedulers import FlaxFlowMatchScheduler
 from flax.linen import partitioning as nn_partitioning
@@ -34,6 +35,18 @@ from maxdiffusion.train_utils import (_tensorboard_writer_worker, load_next_batc
 from maxdiffusion.video_processor import VideoProcessor
 from maxdiffusion.utils import load_video
 from skimage.metrics import structural_similarity as ssim
+from flax.training import train_state
+
+
+class TrainState(train_state.TrainState):
+  graphdef: nnx.GraphDef
+  rest_of_state: nnx.State
+
+
+def _to_array(x):
+  if not isinstance(x, jax.Array):
+    x = jnp.asarray(x)
+  return x
 
 
 def generate_sample(config, pipeline, filename_prefix):
@@ -69,8 +82,6 @@ class WanTrainer(WanCheckpointer):
     if config.train_text_encoder:
       raise ValueError("this script currently doesn't support training text_encoders")
 
-    self.global_batch_size = self.config.per_device_batch_size * jax.device_count()
-
   def post_training_steps(self, pipeline, params, train_states, msg=""):
     pass
 
@@ -84,6 +95,11 @@ class WanTrainer(WanCheckpointer):
   def calculate_tflops(self, pipeline):
     max_logging.log("WARNING : Calculting tflops is not implemented in Wan 2.1. Returning 0...")
     return 0
+
+  def get_data_shardings(self, mesh):
+    data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
+    data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding}
+    return data_sharding
 
   def load_dataset(self, mesh):
     # Stages of training as described in the Wan 2.1 paper - https://arxiv.org/pdf/2503.20314
@@ -115,7 +131,7 @@ class WanTrainer(WanCheckpointer):
         jax.process_index(),
         jax.process_count(),
         mesh,
-        self.global_batch_size,
+        config.global_batch_size_to_load,
         feature_description=feature_description,
         prepare_sample_fn=prepare_sample,
     )
@@ -135,9 +151,7 @@ class WanTrainer(WanCheckpointer):
     scheduler, scheduler_state = self.create_scheduler()
     pipeline.scheduler = scheduler
     pipeline.scheduler_state = scheduler_state
-
     optimizer, learning_rate_scheduler = self._create_optimizer(pipeline.transformer, self.config, 1e-5)
-
     # Returns pipeline with trained transformer state
     pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, data_iterator)
 
@@ -145,14 +159,24 @@ class WanTrainer(WanCheckpointer):
     print_ssim(pretrained_video_path, posttrained_video_path)
 
   def training_loop(self, pipeline, optimizer, learning_rate_scheduler, data_iterator):
+    mesh = pipeline.mesh
+    graphdef, params, rest_of_state = nnx.split(pipeline.transformer, nnx.Param, ...)
 
-    graphdef, state = nnx.split((pipeline.transformer, optimizer))
+    with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      state = TrainState.create(
+          apply_fn=graphdef.apply, params=params, tx=optimizer, graphdef=graphdef, rest_of_state=rest_of_state
+      )
+      state = jax.tree.map(_to_array, state)
+      state_spec = nnx.get_partition_spec(state)
+      state = jax.lax.with_sharding_constraint(state, state_spec)
+      state_shardings = nnx.get_named_sharding(state, mesh)
+    data_shardings = self.get_data_shardings(mesh)
 
     writer = max_utils.initialize_summary_writer(self.config)
     writer_thread = threading.Thread(target=_tensorboard_writer_worker, args=(writer, self.config), daemon=True)
     writer_thread.start()
 
-    num_model_parameters = max_utils.calculate_num_params_from_pytree(state[0])
+    num_model_parameters = max_utils.calculate_num_params_from_pytree(state.params)
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ.get("LIBTPU_INIT_ARGS", ""), writer)
     max_utils.add_config_to_summary_writer(self.config, writer)
@@ -160,12 +184,13 @@ class WanTrainer(WanCheckpointer):
     if jax.process_index() == 0:
       max_logging.log("***** Running training *****")
       max_logging.log(f"  Instantaneous batch size per device = {self.config.per_device_batch_size}")
-      max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.global_batch_size}")
+      max_logging.log(f"  Total train batch size (w. parallel & distributed) = {self.config.global_batch_size_to_train_on}")
       max_logging.log(f"  Total optimization steps = {self.config.max_train_steps}")
 
-    state = state.to_pure_dict()
     p_train_step = jax.jit(
         functools.partial(train_step, scheduler=pipeline.scheduler, config=self.config),
+        in_shardings=(state_shardings, data_shardings, None, None),
+        out_shardings=(state_shardings, None, None, None),
         donate_argnums=(0,),
     )
     rng = jax.random.key(self.config.seed)
@@ -194,7 +219,7 @@ class WanTrainer(WanCheckpointer):
         with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(
             self.config.logical_axis_rules
         ):
-          state, scheduler_state, train_metric, rng = p_train_step(state, graphdef, scheduler_state, example_batch, rng)
+          state, scheduler_state, train_metric, rng = p_train_step(state, example_batch, rng, scheduler_state)
           train_metric["scalar"]["learning/loss"].block_until_ready()
         last_step_completion = datetime.datetime.now()
 
@@ -214,19 +239,22 @@ class WanTrainer(WanCheckpointer):
         writer.flush()
 
       # load new state for trained tranformer
-      graphdef, _, rest_of_state = nnx.split(pipeline.transformer, nnx.Param, ...)
-      pipeline.transformer = nnx.merge(graphdef, state[0], rest_of_state)
+      pipeline.transformer = nnx.merge(state.graphdef, state.params, state.rest_of_state)
       return pipeline
 
 
-def train_step(state, graphdef, scheduler_state, data, rng, scheduler, config):
-  return step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng, config)
+def train_step(state, data, rng, scheduler_state, scheduler, config):
+  return step_optimizer(state, data, rng, scheduler_state, scheduler, config)
 
 
-def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng, config):
+def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
   _, new_rng, timestep_rng = jax.random.split(rng, num=3)
 
-  def loss_fn(model):
+  for k, v in data.items():
+    data[k] = v[: config.global_batch_size_to_train_on, :]
+
+  def loss_fn(params):
+    model = nnx.merge(state.graphdef, params, state.rest_of_state)
     latents = data["latents"].astype(config.weights_dtype)
     encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
     bsz = latents.shape[0]
@@ -253,10 +281,8 @@ def step_optimizer(graphdef, state, scheduler, scheduler_state, data, rng, confi
 
     return loss
 
-  model, optimizer = nnx.merge(graphdef, state)
-  loss, grads = nnx.value_and_grad(loss_fn)(model)
-  optimizer.update(grads)
-  state = nnx.state((model, optimizer))
-  state = state.to_pure_dict()
+  grad_fn = nnx.value_and_grad(loss_fn)
+  loss, grads = grad_fn(state.params)
+  new_state = state.apply_gradients(grads=grads)
   metrics = {"scalar": {"learning/loss": loss}, "scalars": {}}
-  return state, scheduler_state, metrics, new_rng
+  return new_state, scheduler_state, metrics, new_rng
