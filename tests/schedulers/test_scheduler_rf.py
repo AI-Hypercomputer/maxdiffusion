@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from maxdiffusion.schedulers.scheduling_rectified_flow import FlaxRectifiedFlowMultistepScheduler
 import os
+from maxdiffusion import max_logging
 import torch
 import unittest
 from absl.testing import absltest
@@ -16,11 +17,11 @@ class rfTest(unittest.TestCase):
         inference_steps_count = 5     # Number of steps for the denoising process
 
         # --- Run the Simulation ---
-        print("\n--- Simulating RectifiedFlowMultistepScheduler ---")
+        max_logging.log("\n--- Simulating RectifiedFlowMultistepScheduler ---")
 
         seed = 42
         device = 'cpu'
-        print(f"Sample shape: {latent_tensor_shape}, Inference steps: {inference_steps_count}, Seed: {seed}")
+        max_logging.log(f"Sample shape: {latent_tensor_shape}, Inference steps: {inference_steps_count}, Seed: {seed}")
 
         generator = torch.Generator(device=device).manual_seed(seed)
 
@@ -31,20 +32,20 @@ class rfTest(unittest.TestCase):
         # 2. Create and set initial state for the scheduler
         flax_state = flax_scheduler.create_state()
         flax_state = flax_scheduler.set_timesteps(flax_state, inference_steps_count, latent_tensor_shape)
-        print("\nScheduler initialized.")
-        print(f"  flax_state timesteps shape: {flax_state.timesteps.shape}")
+        max_logging.log("\nScheduler initialized.")
+        max_logging.log(f"  flax_state timesteps shape: {flax_state.timesteps.shape}")
 
         # 3. Prepare the initial noisy latent sample
         # In a real scenario, this would typically be pure random noise (e.g., N(0,1))
         # For simulation, we'll generate it.
 
         sample = jnp.array(torch.randn(latent_tensor_shape, generator=generator, dtype=torch.float32).to(device).numpy())
-        print(f"\nInitial sample shape: {sample.shape}, dtype: {sample.dtype}")
+        max_logging.log(f"\nInitial sample shape: {sample.shape}, dtype: {sample.dtype}")
 
         # 4. Simulate the denoising loop
-        print("\nStarting denoising loop:")
+        max_logging.log("\nStarting denoising loop:")
         for i, t in enumerate(flax_state.timesteps):
-            print(f"  Step {i+1}/{inference_steps_count}, Timestep: {t.item()}")
+            max_logging.log(f"  Step {i+1}/{inference_steps_count}, Timestep: {t.item()}")
 
             # Simulate model_output (e.g., noise prediction from a UNet)
             model_output = jnp.array(torch.randn(latent_tensor_shape, generator=generator, dtype=torch.float32).to(device).numpy())
@@ -69,14 +70,14 @@ class rfTest(unittest.TestCase):
                 pt_sample = np.load(ref_filename)
                 torch.testing.assert_close(np.array(sample), pt_sample)
             else:
-                print(f"Warning: Reference file not found: {ref_filename}")
+                max_logging.log(f"Warning: Reference file not found: {ref_filename}")
 
 
-        print("\nDenoising loop completed.")
-        print(f"Final sample shape: {sample.shape}, dtype: {sample.dtype}")
-        print(f"Final sample min: {sample.min().item():.4f}, max: {sample.max().item():.4f}")
+        max_logging.log("\nDenoising loop completed.")
+        max_logging.log(f"Final sample shape: {sample.shape}, dtype: {sample.dtype}")
+        max_logging.log(f"Final sample min: {sample.min().item():.4f}, max: {sample.max().item():.4f}")
 
-        print("\nSimulation of RectifiedMultistepScheduler usage complete.")
+        max_logging.log("\nSimulation of RectifiedMultistepScheduler usage complete.")
 
 
 if __name__ == "__main__":
