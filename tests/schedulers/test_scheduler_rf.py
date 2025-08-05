@@ -1,16 +1,11 @@
 import jax.numpy as jnp
 from maxdiffusion.schedulers.scheduling_rectified_flow import FlaxRectifiedFlowMultistepScheduler
 import os
-from huggingface_hub import hf_hub_download
 import torch
 import unittest
 from absl.testing import absltest
-from absl import flags
 import numpy as np
 
-FLAGS = flags.FLAGS
-flags.DEFINE_string('models_dir', None, 'Directory to load scheduler config.')
-flags.mark_flag_as_required('models_dir')
 
 
 class rfTest(unittest.TestCase):
@@ -21,18 +16,6 @@ class rfTest(unittest.TestCase):
         inference_steps_count = 5     # Number of steps for the denoising process
 
         # --- Run the Simulation ---
-        # Use the value from the command-line flag
-        models_dir = FLAGS.models_dir
-
-        # Ensure the directory exists before downloading
-        os.makedirs(models_dir, exist_ok=True)
-
-        ltxv_model_path = hf_hub_download(
-            repo_id="Lightricks/LTX-Video",
-            filename="ltxv-13b-0.9.7-dev.safetensors",
-            local_dir=models_dir,
-            repo_type="model",
-        )
         print("\n--- Simulating RectifiedFlowMultistepScheduler ---")
 
         seed = 42
@@ -42,7 +25,8 @@ class rfTest(unittest.TestCase):
         generator = torch.Generator(device=device).manual_seed(seed)
 
         # 1. Instantiate the scheduler
-        flax_scheduler = FlaxRectifiedFlowMultistepScheduler.from_pretrained_jax(ltxv_model_path)
+        config = {'_class_name': 'RectifiedFlowScheduler', '_diffusers_version': '0.25.1', 'num_train_timesteps': 1000, 'shifting': None, 'base_resolution': None, 'sampler': 'LinearQuadratic'}
+        flax_scheduler = FlaxRectifiedFlowMultistepScheduler.from_config(config)
 
         # 2. Create and set initial state for the scheduler
         flax_state = flax_scheduler.create_state()
