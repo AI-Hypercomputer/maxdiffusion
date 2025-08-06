@@ -60,12 +60,10 @@ import orbax.checkpoint as ocp
 
 def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, encoder_attention_segment_ids):
   # Note: reference shape annotated for first pass default inference parameters
-  max_logging.log("prompts_embeds.shape: ", prompt_embeds.shape, prompt_embeds.dtype)  # (3, 256, 4096) float32
-  max_logging.log("fractional_coords.shape: ", fractional_coords.shape, fractional_coords.dtype)  # (3, 3, 3072) float32
-  max_logging.log("latents.shape: ", latents.shape, latents.dtype)  # (1, 3072, 128) float 32
-  max_logging.log(
-      "encoder_attention_segment_ids.shape: ", encoder_attention_segment_ids.shape, encoder_attention_segment_ids.dtype
-  )  # (3, 256) int32
+  max_logging.log(f"prompts_embeds.shape: {prompt_embeds.shape}")  # (3, 256, 4096) float32
+  max_logging.log(f"fractional_coords.shape: {fractional_coords.shape}")  # (3, 3, 3072) float32
+  max_logging.log(f"latents.shape: {latents.shape}")  # (1, 3072, 128) float 32
+  max_logging.log(f"encoder_attention_segment_ids.shape: {encoder_attention_segment_ids.shape}")  # (3, 256) int32
 
 
 class LTXVideoPipeline:
