@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Sequence
 import jax
 import time
@@ -49,9 +50,11 @@ def run(config, pipeline=None, filename_prefix=""):
 
   print("compile time: ", (time.perf_counter() - s0))
   saved_video_path = []
-  for i in range(len(videos)):
+  for i, video in enumerate(videos):
     video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
-    export_to_video(videos[i], video_path, fps=config.fps)
+    if os.path.exists(f"{config.base_output_dir}"):
+      video_path = f"{config.base_output_dir}/{video_path}"
+    export_to_video(video, video_path, fps=config.fps)
     saved_video_path.append(video_path)
 
   s0 = time.perf_counter()
