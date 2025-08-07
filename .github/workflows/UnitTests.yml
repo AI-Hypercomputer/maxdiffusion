@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tpu-type: ["v4-8"]
+        tpu-type: ["v5-8"]
     name: "TPU test (${{ matrix.tpu-type }})"
     runs-on: ["self-hosted", "tpu", "${{ matrix.tpu-type }}"]
     steps:
