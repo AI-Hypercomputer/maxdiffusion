@@ -1102,6 +1102,7 @@ def _splash_attention_forward(
     grid_width = kv_seq_len // bkv
 
   axis_name = ('axis', 'sp')
+  axis_name = ('fsdp')
   # axis_name = 'axis'
   axis_size = lax.psum(1, axis_name)
 
