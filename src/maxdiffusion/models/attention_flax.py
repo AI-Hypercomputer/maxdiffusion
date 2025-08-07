@@ -154,6 +154,94 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1
 
   return tensor, kv_size, seq_len
 
+def _tpu_ring_splash(
+  query: jax.Array,
+  key: jax.Array,
+  value: jax.Array,
+  heads: int,
+  mesh: Mesh,
+  axis_names_q: AxisNames,
+  axis_names_kv: AxisNames,
+  flash_block_sizes: BlockSizes,
+  dtype: jnp.dtype = jnp.float32,
+) -> jax.Array:
+  """TPU Ring Splash Attention"""
+  from maxdiffusion.models.ringattention import ringattention_splash
+  max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  if flash_block_sizes:
+    block_sizes = flash_block_sizes
+  else:
+    block_sizes = splash_attention_kernel.BlockSizes(
+        block_q=min(max_block_size, query.shape[2]),
+        block_kv_compute=min(max_block_size, key.shape[2]),
+        block_kv=min(max_block_size, key.shape[2]),
+        block_q_dkv=min(max_block_size, query.shape[2]),
+        block_kv_dkv=min(max_block_size, key.shape[2]),
+        block_kv_dkv_compute=min(max_block_size, query.shape[2]),
+        block_q_dq=min(max_block_size, query.shape[2]),
+        block_kv_dq=min(max_block_size, query.shape[2]),
+    )
+
+  num_fsdp_shards = mesh.shape["fsdp"]
+  query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q, num_fsdp_shards)
+  key, _, _ = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute, num_fsdp_shards)
+  value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
+  q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
+  kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+  flash_axis_names_splash_kernel: AxisNames = (HEAD, LENGTH)
+  axis_names_splash_kernel = nn.logical_to_mesh_axes(flash_axis_names_splash_kernel)
+  named_sharding = jax.sharding.NamedSharding(mesh, axis_names_splash_kernel)
+
+  shard_head_size = mesh.shape["tensor"]
+
+  @functools.partial(
+      jax.jit,
+      static_argnames=["multi_head_mask", "shard_head_size"],
+  )
+  def wrap_splash_kernel(multi_head_mask, shard_head_size=1):
+    splash_kernel = ringattention_splash.make_splash_mha(
+        mask=multi_head_mask,
+        head_shards=shard_head_size,  # the sizes of the axis is sharding over heads
+        q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+        block_sizes=block_sizes,
+    )
+    return splash_kernel
+
+  mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
+
+  multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+  splash_kernel = wrap_splash_kernel(multi_head_mask, int(shard_head_size))
+  segment_axis_names_splash_kernel = splash_kernel.manual_sharding_spec(named_sharding)
+
+  @functools.partial(
+      shard_map.shard_map,
+      mesh=mesh,
+      in_specs=(
+          q_axis_names,
+          kv_axis_names,
+          kv_axis_names,
+          segment_axis_names_splash_kernel,
+      ),
+      out_specs=q_axis_names,
+      check_rep=False,
+  )
+  def wrap_flash_attention(query, key, value, splash_kernel):
+    attention_output = jax.vmap(splash_kernel)(query, key, value)
+    return attention_output
+
+  devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
+  # This warning might show up when doing model eval for example, when calculating model flops
+  # and that is expected.
+  if not (query.shape[0] / devices_in_data_fsdp).is_integer():
+    max_logging.log(
+        "Warning, batch dimension should be shardable among the devices in data and fsdp"
+        f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
+    )
+  x = wrap_flash_attention(query, key, value, splash_kernel)
+  x = x[:, :, :query_seq_len, :kv_size]
+  x = _reshape_heads_to_head_dim(x)
+
+  return x
 
 def _tpu_ring_flash_attention_v1(
     query: jax.Array,
@@ -552,7 +640,7 @@ def _apply_attention(
   seq_len_idx = 1
   if query.ndim == 4:
     seq_len_idx = 2
-  if attention_kernel in ["flash","ring_flash"]:
+  if attention_kernel in ["flash","ring_flash", "ring_splash"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -573,6 +661,20 @@ def _apply_attention(
     return _tpu_ring_flash_attention_v1(
         query, key , value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype
     )
+  elif attention_kernel == "ring_splash":
+    max_logging.log("USING RING SPLASH ATTENTION")
+    return _tpu_ring_splash(
+      query=query,
+      key=key*scale,
+      value=value,
+      heads=heads,
+      mesh=mesh,
+      axis_names_kv=axis_names_kv,
+      axis_names_q=axis_names_q,
+      flash_block_sizes=flash_block_sizes,
+      dtype=dtype
+    )
+
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:
