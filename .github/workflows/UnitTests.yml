@@ -48,7 +48,7 @@ jobs:
         export PATH=$PATH:$HOME/.local/bin
         pip install ruff
         pip install isort
-        pip install pytest
+        pip install pytest==8.2.2
     - name: Analysing the code with ruff
       run: |
         ruff check .
