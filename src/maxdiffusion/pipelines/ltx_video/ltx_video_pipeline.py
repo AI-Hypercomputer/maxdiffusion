@@ -59,6 +59,7 @@ import functools
 import orbax.checkpoint as ocp
 from jax.lax import dynamic_update_slice
 
+
 def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, encoder_attention_segment_ids):
   # Note: reference shape annotated for first pass default inference parameters
   max_logging.log(f"prompts_embeds.shape: {prompt_embeds.shape}")  # (3, 256, 4096) float32
@@ -66,24 +67,27 @@ def validate_transformer_inputs(prompt_embeds, fractional_coords, latents, encod
   max_logging.log(f"latents.shape: {latents.shape}")  # (1, 3072, 128) float 32
   max_logging.log(f"encoder_attention_segment_ids.shape: {encoder_attention_segment_ids.shape}")  # (3, 256) int32
 
+
 @dataclass
 class ConditioningItem:
-    """
-    Defines a single frame-conditioning item - a single frame or a sequence of frames.
+  """
+  Defines a single frame-conditioning item - a single frame or a sequence of frames.
 
-    Attributes:
-        media_item (torch.Tensor): shape=(b, 3, f, h, w). The media item to condition on.
-        media_frame_number (int): The start-frame number of the media item in the generated video.
-        conditioning_strength (float): The strength of the conditioning (1.0 = full conditioning).
-        media_x (Optional[int]): Optional left x coordinate of the media item in the generated frame.
-        media_y (Optional[int]): Optional top y coordinate of the media item in the generated frame.
-    """
+  Attributes:
+      media_item (torch.Tensor): shape=(b, 3, f, h, w). The media item to condition on.
+      media_frame_number (int): The start-frame number of the media item in the generated video.
+      conditioning_strength (float): The strength of the conditioning (1.0 = full conditioning).
+      media_x (Optional[int]): Optional left x coordinate of the media item in the generated frame.
+      media_y (Optional[int]): Optional top y coordinate of the media item in the generated frame.
+  """
 
-    media_item: torch.Tensor
-    media_frame_number: int
-    conditioning_strength: float
-    media_x: Optional[int] = None
-    media_y: Optional[int] = None
+  media_item: torch.Tensor
+  media_frame_number: int
+  conditioning_strength: float
+  media_x: Optional[int] = None
+  media_y: Optional[int] = None
+
+
 class LTXVideoPipeline:
 
   def __init__(
@@ -294,8 +298,6 @@ class LTXVideoPipeline:
 
     return [process(t) for t in text]
 
-
-
   def retrieve_timesteps(  # currently doesn't support custom timesteps
       self,
       scheduler: FlaxRectifiedFlowMultistepScheduler,
@@ -402,7 +404,7 @@ class LTXVideoPipeline:
         negative_prompt_embeds,
         negative_prompt_attention_mask,
     )
- 
+
   def prepare_latents(  # currently no support for media item encoding, since encoder isn't tested
       self,
       latents: Optional[jnp.ndarray],
@@ -441,89 +443,85 @@ class LTXVideoPipeline:
 
     return latents
 
-  def prepare_conditioning(  # no support for conditioning items, conditioning mask, needs to convert to torch before patchifier
+  def prepare_conditioning(  # needs to convert to torch before patchifier
       self,
       init_latents: jnp.ndarray,
       conditioning_items: Optional[List[ConditioningItem]] = None,
       height: int = None,
       width: int = None,
       num_frames: int = None,
-      vae_per_channel_normalize: bool = False
-  ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray,int]:
+      vae_per_channel_normalize: bool = False,
+  ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
     if conditioning_items:
-            init_conditioning_mask = jnp.zeros(init_latents[:, 0, :, :, :].shape)  # in jax
+      init_conditioning_mask = jnp.zeros(init_latents[:, 0, :, :, :].shape)  # in jax
 
-            # Process each conditioning item
-            for conditioning_item in conditioning_items:
-              #resize conditioning_item
-              media_items = conditioning_item.media_item
-              n_frames = media_items.shape[2]
-              if media_items.shape[-2:] != (height, width):
-                  media_items = rearrange(media_items, "b c n h w -> (b n) c h w")
-                  media_items = F.interpolate(
-                      media_items,
-                      size=(height, width),
-                      mode="bilinear",
-                      align_corners=False,
-                  )
-              media_items = rearrange(media_items, "(b n) c h w -> b c n h w", n=n_frames)
-              conditioning_item.media_item = media_items
-              media_item = conditioning_item.media_item
-              media_frame_number = conditioning_item.media_frame_number
-              strength = conditioning_item.conditioning_strength
-              assert media_item.ndim == 5  # (b, c, f, h, w)
-              b, c, n_frames, h, w = media_item.shape
-              assert (
-                  height == h and width == w
-              ) or media_frame_number == 0, f"Dimensions do not match: {height}x{width} != {h}x{w} - allowed only when media_frame_number == 0"
-              assert n_frames % 8 == 1
-              assert (
-                  media_frame_number >= 0
-                  and media_frame_number + n_frames <= num_frames
-              )
+      # Process each conditioning item
+      for conditioning_item in conditioning_items:
+        # resize conditioning_item
+        media_items = conditioning_item.media_item
+        n_frames = media_items.shape[2]
+        if media_items.shape[-2:] != (height, width):
+          media_items = rearrange(media_items, "b c n h w -> (b n) c h w")
+          media_items = F.interpolate(
+              media_items,
+              size=(height, width),
+              mode="bilinear",
+              align_corners=False,
+          )
+        media_items = rearrange(media_items, "(b n) c h w -> b c n h w", n=n_frames)
+        conditioning_item.media_item = media_items
+        media_item = conditioning_item.media_item
+        media_frame_number = conditioning_item.media_frame_number
+        strength = conditioning_item.conditioning_strength
+        assert media_item.ndim == 5  # (b, c, f, h, w)
+        b, c, n_frames, h, w = media_item.shape
+        assert (
+            height == h and width == w
+        ) or media_frame_number == 0, (
+            f"Dimensions do not match: {height}x{width} != {h}x{w} - allowed only when media_frame_number == 0"
+        )
+        assert n_frames % 8 == 1
+        assert media_frame_number >= 0 and media_frame_number + n_frames <= num_frames
 
-              # Encode the provided conditioning media item
-              media_item_latents = self.vae.encode(jax.device_put(jnp.array(np.array(media_item)), jax.devices("tpu")[0]).astype(jnp.bfloat16),vae_per_channel_normalize=vae_per_channel_normalize)
+        # Encode the provided conditioning media item
+        media_item_latents = self.vae.encode(
+            jax.device_put(jnp.array(np.array(media_item)), jax.devices("tpu")[0]).astype(jnp.bfloat16),
+            vae_per_channel_normalize=vae_per_channel_normalize,
+        )
 
-                # # Handle the different conditioning cases
-              if media_frame_number == 0:
-                  # Get the target spatial position of the latent conditioning item
-                  media_item_latents, l_x, l_y = self.get_latent_spatial_position(
-                      media_item_latents,
-                      conditioning_item,
-                      height,
-                      width,
-                      strip_latent_border=True,
-                  )
-                  b, c_l, f_l, h_l, w_l = media_item_latents.shape
-                  latent_slice = init_latents[:, :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l]
-                  lerp_result = (1.0 - strength) * latent_slice + strength * media_item_latents
-                  updated_latents = dynamic_update_slice(
-                    init_latents,
-                    lerp_result,
-                    (0, 0, 0, l_y, l_x)
-                  )
-                  updated_conditioning_mask = dynamic_update_slice(
-                      init_conditioning_mask,
-                      jnp.full((1, f_l, h_l, w_l), strength),
-                      (0, 0, l_y, l_x)
-                  )
-                  init_latents = updated_latents
-                  init_conditioning_mask = updated_conditioning_mask
-              
+        # # Handle the different conditioning cases
+        if media_frame_number == 0:
+          # Get the target spatial position of the latent conditioning item
+          media_item_latents, l_x, l_y = self.get_latent_spatial_position(
+              media_item_latents,
+              conditioning_item,
+              height,
+              width,
+              strip_latent_border=True,
+          )
+          b, c_l, f_l, h_l, w_l = media_item_latents.shape
+          latent_slice = init_latents[:, :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l]
+          lerp_result = (1.0 - strength) * latent_slice + strength * media_item_latents
+          updated_latents = dynamic_update_slice(init_latents, lerp_result, (0, 0, 0, l_y, l_x))
+          updated_conditioning_mask = dynamic_update_slice(
+              init_conditioning_mask, jnp.full((1, f_l, h_l, w_l), strength), (0, 0, l_y, l_x)
+          )
+          init_latents = updated_latents
+          init_conditioning_mask = updated_conditioning_mask
+
     init_latents = torch.from_numpy(np.array(init_latents))
     init_latents, init_latent_coords = self.patchifier.patchify(latents=init_latents)
     init_pixel_coords = latent_to_pixel_coords(init_latent_coords, self.vae, causal_fix=True)
     if not conditioning_items:
       return (
-        jnp.array(init_latents.to(torch.float32).detach().numpy()),
-        jnp.array(init_pixel_coords.to(torch.float32).detach().numpy()),
-        None,
-        0,
+          jnp.array(init_latents.to(torch.float32).detach().numpy()),
+          jnp.array(init_pixel_coords.to(torch.float32).detach().numpy()),
+          None,
+          0,
       )
     init_conditioning_mask, _ = self.patchifier.patchify(
-            latents=torch.from_numpy(np.array(init_conditioning_mask)).unsqueeze(1)
-        )
+        latents=torch.from_numpy(np.array(init_conditioning_mask)).unsqueeze(1)
+    )
     init_conditioning_mask = init_conditioning_mask.squeeze(-1)
     return (
         jnp.array(init_latents.to(torch.float32).detach().numpy()),
@@ -531,22 +529,14 @@ class LTXVideoPipeline:
         jnp.array(init_conditioning_mask.to(torch.float32).detach().numpy()),
         0,
     )
-      
-    
-    
-    
-    
 
-    
-    
-    
   def get_latent_spatial_position(
-    self,
-    latents: jnp.ndarray,
-    conditioning_item: ConditioningItem,
-    height: int,
-    width: int,
-    strip_latent_border: bool,  
+      self,
+      latents: jnp.ndarray,
+      conditioning_item: ConditioningItem,
+      height: int,
+      width: int,
+      strip_latent_border: bool,
   ) -> Tuple[jnp.ndarray, int, int]:
     """
     Get the spatial position of the conditioning item in the latent space.
@@ -555,7 +545,7 @@ class LTXVideoPipeline:
     """
     scale = self.vae_scale_factor
     h, w = conditioning_item.media_item.shape[-2:]
-    
+
     # Assertions are for verification and should be handled outside a JIT-compiled
     # function or with jax.debug.check.
     # The checks here are for shape and alignment validation.
@@ -567,23 +557,23 @@ class LTXVideoPipeline:
     x_start = (width - w) // 2 if x_start is None else x_start
     y_start = (height - h) // 2 if y_start is None else y_start
     x_end, y_end = x_start + w, y_start + h
-    
+
     # JAX-friendly way to handle conditional stripping
     if strip_latent_border:
-        # Determine slice indices based on the position
-        # JAX's slicing can handle negative and dynamic indices
-        x_slice_start = 1 if x_start > 0 else 0
-        x_slice_end = -1 if x_end < width else None
-        
-        y_slice_start = 1 if y_start > 0 else 0
-        y_slice_end = -1 if y_end < height else None
+      # Determine slice indices based on the position
+      # JAX's slicing can handle negative and dynamic indices
+      x_slice_start = 1 if x_start > 0 else 0
+      x_slice_end = -1 if x_end < width else None
 
-        # Update latents with a single, combined slice
-        latents = latents[..., y_slice_start:y_slice_end, x_slice_start:x_slice_end]
-        
-        # Adjust start positions
-        x_start = x_start + jnp.where(x_start > 0, scale, 0)
-        y_start = y_start + jnp.where(y_start > 0, scale, 0)
+      y_slice_start = 1 if y_start > 0 else 0
+      y_slice_end = -1 if y_end < height else None
+
+      # Update latents with a single, combined slice
+      latents = latents[..., y_slice_start:y_slice_end, x_slice_start:x_slice_end]
+
+      # Adjust start positions
+      x_start = x_start + jnp.where(x_start > 0, scale, 0)
+      y_start = y_start + jnp.where(y_start > 0, scale, 0)
 
     # Return the modified latents and the scaled start positions
     return latents, x_start // scale, y_start // scale
@@ -806,12 +796,12 @@ class LTXVideoPipeline:
         num_frames=num_frames,
         height=height,
         width=width,
-        vae_per_channel_normalize=kwargs.get("vae_per_channel_normalize", True)
+        vae_per_channel_normalize=kwargs.get("vae_per_channel_normalize", True),
     )
 
     pixel_coords = jnp.concatenate([pixel_coords] * num_conds, axis=0)
     orig_conditioning_mask = conditioning_mask
-    if (conditioning_mask is not None and is_video):
+    if conditioning_mask is not None and is_video:
       conditioning_mask = jnp.concatenate([conditioning_mask] * num_conds, axis=0)
     fractional_coords = pixel_coords.astype(jnp.float32)
     fractional_coords = fractional_coords.at[:, 0].set(fractional_coords[:, 0] * (1.0 / frame_rate))
@@ -839,7 +829,7 @@ class LTXVideoPipeline:
         skip_layer_strategy=skip_layer_strategy,
         cfg_star_rescale=cfg_star_rescale,
         conditioning_mask=conditioning_mask,
-        original_conditioning_mask=orig_conditioning_mask
+        original_conditioning_mask=orig_conditioning_mask,
     )
 
     with self.mesh:
@@ -925,6 +915,7 @@ def transformer_forward_pass(
   )
   return noise_pred, state
 
+
 def add_noise_to_image_conditioning_latents_jax(
     key: Array,
     t: Union[float, Array],
@@ -934,15 +925,17 @@ def add_noise_to_image_conditioning_latents_jax(
     conditioning_mask: Array,
     eps: float = 1e-6,
 ) -> Array:
-    """
-    Add timestep-dependent noise to the hard-conditioning latents in a JAX-compatible way.
-    """
-    noise = jax.random.normal(key, latents.shape, dtype=latents.dtype)
-    need_to_noise = (conditioning_mask > 1.0 - eps)[jnp.newaxis, :, jnp.newaxis, :, :]
-    noised_latents = init_latents + noise_scale * noise * (t**2)
-    latents = jnp.where(need_to_noise, noised_latents, latents)
+  """
+  Add timestep-dependent noise to the hard-conditioning latents in a JAX-compatible way.
+  """
+  noise = jax.random.normal(key, latents.shape, dtype=latents.dtype)
+  need_to_noise = (conditioning_mask > 1.0 - eps)[jnp.newaxis, :, jnp.newaxis, :, :]
+  noised_latents = init_latents + noise_scale * noise * (t**2)
+  latents = jnp.where(need_to_noise, noised_latents, latents)
 
-    return latents
+  return latents
+
+
 def denoising_step(
     scheduler,
     scheduler_state,
@@ -952,14 +945,9 @@ def denoising_step(
     t: float,
     latents: Array,
     t_eps: float = 1e-6,
-) ->Union[FlaxRectifiedFlowSchedulerOutput, Tuple[jnp.ndarray, RectifiedFlowSchedulerState]]:
+) -> Union[FlaxRectifiedFlowSchedulerOutput, Tuple[jnp.ndarray, RectifiedFlowSchedulerState]]:
   # Denoise the latents using the scheduler
-  denoised_latents, scheduler_state = scheduler.step(
-      scheduler_state, 
-      noise_pred,
-      current_timestep[0][0], 
-      latents 
-  ).to_tuple()
+  denoised_latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, current_timestep[0][0], latents).to_tuple()
 
   if conditioning_mask is None:
     return denoised_latents, scheduler_state
@@ -967,6 +955,8 @@ def denoising_step(
   tokens_to_denoise_mask = (t - t_eps < (1.0 - conditioning_mask)).astype(jnp.bool_)
   tokens_to_denoise_mask = jnp.expand_dims(tokens_to_denoise_mask, axis=-1)
   return jnp.where(tokens_to_denoise_mask, denoised_latents, latents), scheduler_state
+
+
 def run_inference(
     transformer_state,
     transformer,
@@ -991,13 +981,13 @@ def run_inference(
     skip_layer_strategy,
     cfg_star_rescale,
     conditioning_mask,
-    original_conditioning_mask
+    original_conditioning_mask,
 ):
   for i, t in enumerate(scheduler_state.timesteps):
     current_timestep = t
 
     latent_model_input = jnp.concatenate([latents] * num_conds) if num_conds > 1 else latents
-    
+
     if not isinstance(current_timestep, (jnp.ndarray, jax.Array)):
       if isinstance(current_timestep, float):
         dtype = jnp.float32
@@ -1018,7 +1008,6 @@ def run_inference(
     #   current_timestep =jnp.where(
     #   conditioning_timestep < current_timestep, conditioning_timestep, current_timestep
     #   )
-    
 
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
       noise_pred, transformer_state = transformer_forward_pass(
@@ -1067,7 +1056,9 @@ def run_inference(
 
         noise_pred = noise_pred * factor.reshape(batch_size, 1, 1)
     current_timestep = current_timestep[:1]
-    latents, scheduler_state = denoising_step(scheduler, scheduler_state, noise_pred, current_timestep, original_conditioning_mask, t, latents)
+    latents, scheduler_state = denoising_step(
+        scheduler, scheduler_state, noise_pred, current_timestep, original_conditioning_mask, t, latents
+    )
 
   return latents, scheduler_state
 
@@ -1154,7 +1145,16 @@ class LTXMultiScalePipeline:
     self.vae = video_pipeline.vae
 
   def __call__(
-      self, height, width, num_frames, is_video, output_type, config, seed: int = 0, enhance_prompt: bool = False,  conditioning_items: Optional[List[ConditioningItem]] = None,
+      self,
+      height,
+      width,
+      num_frames,
+      is_video,
+      output_type,
+      config,
+      seed: int = 0,
+      enhance_prompt: bool = False,
+      conditioning_items: Optional[List[ConditioningItem]] = None,
   ) -> Any:
     # first pass
     original_output_type = output_type

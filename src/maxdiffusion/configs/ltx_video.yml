@@ -35,9 +35,8 @@ stg_mode: "attention_values"
 decode_timestep: 0.05
 decode_noise_scale: 0.025
 seed: 10
-conditioning_media_paths: ['/home/serenagu_google_com/maxdiffusion/dim_man.png']
+conditioning_media_paths: [""]
 conditioning_start_frames: [0]
-# conditioning_strengths: [1.0]
 
 
 first_pass:
