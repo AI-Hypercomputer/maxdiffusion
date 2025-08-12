@@ -2,7 +2,7 @@ name: Add Testgrid Link to PR
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened]
 
 jobs:
   add_testgrid_link:
