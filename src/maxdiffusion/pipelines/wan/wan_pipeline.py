@@ -457,6 +457,7 @@ class WanPipeline:
       video = self.vae.decode(latents, self.vae_cache)[0]
 
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
+    video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
     video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
     video = self.video_processor.postprocess_video(video, output_type="np")
     return video
