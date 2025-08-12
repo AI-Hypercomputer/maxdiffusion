@@ -31,9 +31,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tpu-type: ["v5-8"]
+        tpu-type: ["v5p-8"]
     name: "TPU test (${{ matrix.tpu-type }})"
-    runs-on: ["self-hosted", "tpu", "${{ matrix.tpu-type }}","maxdiffusion-github-runner-2"]
+    runs-on: ["self-hosted", "tpu", "${{ matrix.tpu-type }}", "maxdiffusion-github-runner-2"]
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python 3.12
