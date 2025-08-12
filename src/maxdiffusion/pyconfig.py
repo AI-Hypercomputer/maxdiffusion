@@ -136,6 +136,14 @@ class _HyperParameters:
           )
       else:
         raise ValueError(f"{transformer_pretrained_model_name_or_path} transformer model is not supported for Wan 2.1")
+    if "use_qwix_quantization" not in raw_keys:
+      raise ValueError(f"use_qwix_quantization is not set.")
+    elif raw_keys["use_qwix_quantization"]:
+      if "quantization" not in raw_keys:
+        raise ValueError(f"Quantization type is not set when use_qwix_quantization is enabled.")
+      elif raw_keys["quantization"] not in ["int8", "fp8", "fp8_full"]:
+        raise ValueError(f"Quantization type is not supported when use_qwix_quantization is enabled: {raw_keys['quantization']}")
+      
 
   @staticmethod
   def calculate_global_batch_sizes(per_device_batch_size):
