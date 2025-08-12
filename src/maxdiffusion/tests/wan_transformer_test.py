@@ -19,6 +19,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 import unittest
+from unittest.mock import Mock, patch, MagicMock
 from absl.testing import absltest
 from flax import nnx
 from jax.sharding import Mesh
@@ -34,6 +35,9 @@ from ..models.wan.transformers.transformer_wan import (
 from ..models.embeddings_flax import NNXTimestepEmbedding, NNXPixArtAlphaTextProjection
 from ..models.normalization_flax import FP32LayerNorm
 from ..models.attention_flax import FlaxWanAttention
+from maxdiffusion.pyconfig import HyperParameters
+from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
+
 
 IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
@@ -272,6 +276,96 @@ class WanTransformerTest(unittest.TestCase):
           hidden_states=dummy_hidden_states, timestep=dummy_timestep, encoder_hidden_states=dummy_encoder_hidden_states
       )
     assert dummy_output.shape == hidden_states_shape
+  
+  def test_get_qt_provider(self):
+    """
+    Tests the provider logic for all config branches.
+    """
+    # Case 1: Quantization disabled
+    config_disabled = Mock(spec=HyperParameters)
+    config_disabled.use_qwix_quantization = False
+    self.assertIsNone(WanPipeline.get_qt_provider(config_disabled))
+
+    # Case 2: Quantization enabled, type 'int8'
+    config_int8 = Mock(spec=HyperParameters)
+    config_int8.use_qwix_quantization = True
+    config_int8.quantization = "int8"
+    provider_int8 = WanPipeline.get_qt_provider(config_int8)
+    self.assertIsNotNone(provider_int8)
+    self.assertEqual(provider_int8.rules[0].kwargs['weight_qtype'], jnp.int8)
+
+    # Case 3: Quantization enabled, type 'fp8'
+    config_fp8 = Mock(spec=HyperParameters)
+    config_fp8.use_qwix_quantization = True
+    config_fp8.quantization = "fp8"
+    provider_fp8 = WanPipeline.get_qt_provider(config_fp8)
+    self.assertIsNotNone(provider_fp8)
+    self.assertEqual(provider_fp8.rules[0].kwargs['weight_qtype'], jnp.float8_e4m3fn)
+    
+    # Case 4: Quantization enabled, type 'fp8_full'
+    config_fp8_full = Mock(spec=HyperParameters)
+    config_fp8_full.use_qwix_quantization = True
+    config_fp8_full.quantization = "fp8_full"
+    config_fp8_full.quantization_calibration_method = "absmax"
+    provider_fp8_full = WanPipeline.get_qt_provider(config_fp8_full)
+    self.assertIsNotNone(provider_fp8_full)
+    self.assertEqual(provider_fp8_full.rules[0].kwargs['bwd_qtype'], jnp.float8_e5m2)
+
+    # Case 5: Invalid quantization type
+    config_invalid = Mock(spec=HyperParameters)
+    config_invalid.use_qwix_quantization = True
+    config_invalid.quantization = "invalid_type"
+    self.assertIsNone(WanPipeline.get_qt_provider(config_invalid))
+
+  # To test quantize_transformer, we patch its external dependencies
+  @patch('maxdiffusion.pipelines.wan.wan_pipeline.qwix.quantize_model')
+  @patch('maxdiffusion.pipelines.wan.wan_pipeline.get_dummy_wan_inputs')
+  def test_quantize_transformer_enabled(self, mock_get_dummy_inputs, mock_quantize_model):
+    """
+    Tests that quantize_transformer calls qwix when quantization is enabled.
+    """
+    # Setup Mocks
+    mock_config = Mock(spec=HyperParameters)
+    mock_config.use_qwix_quantization = True
+    mock_config.quantization = "fp8_full"
+    mock_config.per_device_batch_size = 1
+    
+    mock_model = Mock(spec=WanModel)
+    mock_pipeline = Mock()
+    mock_mesh = Mock()
+    
+    # Mock the return values of dependencies
+    mock_get_dummy_inputs.return_value = (Mock(), Mock(), Mock())
+    mock_quantized_model_obj = Mock(spec=WanModel)
+    mock_quantize_model.return_value = mock_quantized_model_obj
+
+    # Call the method under test
+    result = WanPipeline.quantize_transformer(mock_config, mock_model, mock_pipeline, mock_mesh)
+
+    # Assertions
+    mock_get_dummy_inputs.assert_called_once()
+    mock_quantize_model.assert_called_once()
+    # Check that the model returned is the new quantized model
+    self.assertIs(result, mock_quantized_model_obj)
+
+  @patch('maxdiffusion.pipelines.wan.wan_pipeline.qwix.quantize_model')
+  def test_quantize_transformer_disabled(self, mock_quantize_model):
+    """
+    Tests that quantize_transformer is skipped when quantization is disabled.
+    """
+    # Setup Mocks
+    mock_config = Mock(spec=HyperParameters)
+    mock_config.use_qwix_quantization = False # Main condition for this test
+    
+    mock_model = Mock(spec=WanModel)
+    
+    # Call the method under test
+    result = WanPipeline.quantize_transformer(mock_config, mock_model, Mock(), Mock())
+
+    # Assertions
+    mock_quantize_model.assert_not_called()
+    # Check that the model returned is the original model instance
+    self.assertIs(result, mock_model)
 
 
 if __name__ == "__main__":

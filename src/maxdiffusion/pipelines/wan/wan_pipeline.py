@@ -33,7 +33,7 @@ from maxdiffusion.video_processor import VideoProcessor
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
 from transformers import AutoTokenizer, UMT5EncoderModel
 from maxdiffusion.utils.import_utils import is_ftfy_available
-from ...maxdiffusion_utils import get_dummy_wan_inputs
+from maxdiffusion.maxdiffusion_utils import get_dummy_wan_inputs
 import html
 import re
 import torch
@@ -240,7 +240,10 @@ class WanPipeline:
 
   @classmethod
   def get_fp8_config(cls, quantization_calibration_method: str):
-    """ fp8 config rules with per-tensor calibration.
+    """
+    fp8 config rules with per-tensor calibration.
+    FLAX API (https://flax-linen.readthedocs.io/en/v0.10.6/guides/quantization/fp8_basics.html#flax-low-level-api):
+    The autodiff does not automatically use E5M2 for gradients and E4M3 for activations/weights during training, which is the recommended practice.
     """
     rules = [
         qwix.QtRule(
@@ -343,7 +346,6 @@ class WanPipeline:
 
     pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, mesh)
     return pipeline
-
 
   def _get_t5_prompt_embeds(
       self,
