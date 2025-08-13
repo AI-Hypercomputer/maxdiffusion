@@ -274,5 +274,6 @@ controlnet_image: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Goo
 quantization: ''
 # Shard the range finding operation for quantization. By default this is set to number of slices.
 quantization_local_shard_count: -1
+use_qwix_quantization: False 
 compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
 

@@ -334,3 +334,7 @@ This script will automatically format your code with `pyink` and help you identi
 
 The full suite of -end-to end tests is in `tests` and `src/maxdiffusion/tests`. We run them with a nightly cadance.
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> c44f0e5f87c97e48f68d0f55ffc563b1035fe8f2
