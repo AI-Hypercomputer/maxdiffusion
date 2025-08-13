@@ -292,7 +292,7 @@ class WanTransformerTest(unittest.TestCase):
     config_int8.quantization = "int8"
     provider_int8:QtProvider = WanPipeline.get_qt_provider(config_int8)
     self.assertIsNotNone(provider_int8)
-    self.assertEqual(provider_int8._rules[0].kwargs['weight_qtype'], jnp.int8)
+    self.assertEqual(provider_int8._rules[0].weight_qtype, jnp.int8)
 
     # Case 3: Quantization enabled, type 'fp8'
     config_fp8 = Mock(spec=HyperParameters)
