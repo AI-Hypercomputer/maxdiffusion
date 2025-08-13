@@ -310,7 +310,7 @@ class WanTransformerTest(unittest.TestCase):
       weight_qtype=jnp.float8_e4m3fn,
       act_qtype=jnp.float8_e4m3fn
     )
-    
+
     # Case 4: Quantization enabled, type 'fp8_full'
     mock_qt_rule.reset_mock()
     config_fp8_full = Mock(spec=HyperParameters)
@@ -354,7 +354,7 @@ class WanTransformerTest(unittest.TestCase):
     mock_pipeline = Mock()
     mock_mesh = Mock()
     mock_mesh.__enter__ = Mock(return_value=None)
-    mock_mesh.__exit__ = Mock(return_value=None) 
+    mock_mesh.__exit__ = Mock(return_value=None)
 
     # Mock the return values of dependencies
     mock_get_dummy_inputs.return_value = (Mock(), Mock(), Mock())
