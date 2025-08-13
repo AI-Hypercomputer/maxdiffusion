@@ -33,9 +33,11 @@ from maxdiffusion.video_processor import VideoProcessor
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
 from transformers import AutoTokenizer, UMT5EncoderModel
 from maxdiffusion.utils.import_utils import is_ftfy_available
+from maxdiffusion.maxdiffusion_utils import get_dummy_wan_inputs
 import html
 import re
 import torch
+import qwix
 
 
 def basic_clean(text):
@@ -78,6 +80,8 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   wan_config["attention"] = config.attention
   wan_config["precision"] = get_precision(config)
   wan_config["flash_block_sizes"] = get_flash_block_sizes(config)
+  wan_config["remat_policy"] = config.remat_policy
+  wan_config["flash_min_seq_length"] = config.flash_min_seq_length
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.
@@ -224,6 +228,71 @@ class WanPipeline:
     return wan_vae, vae_cache
 
   @classmethod
+  def get_basic_config(cls, dtype):
+    rules = [
+        qwix.QtRule(
+          module_path='.*',  # Apply to all modules
+          weight_qtype=dtype,
+          act_qtype=dtype,
+        )
+      ]
+    return rules
+
+  @classmethod
+  def get_fp8_config(cls, quantization_calibration_method: str):
+    """
+    fp8 config rules with per-tensor calibration.
+    FLAX API (https://flax-linen.readthedocs.io/en/v0.10.6/guides/quantization/fp8_basics.html#flax-low-level-api):
+    The autodiff does not automatically use E5M2 for gradients and E4M3 for activations/weights during training, which is the recommended practice.
+    """
+    rules = [
+        qwix.QtRule(
+          module_path='.*',  # Apply to all modules
+          weight_qtype=jnp.float8_e4m3fn,
+          act_qtype=jnp.float8_e4m3fn,
+          bwd_qtype=jnp.float8_e5m2,
+          bwd_use_original_residuals=True,
+          disable_channelwise_axes=True, # per_tensor calibration
+          weight_calibration_method = quantization_calibration_method,
+          act_calibration_method = quantization_calibration_method,
+          bwd_calibration_method = quantization_calibration_method,
+        )
+      ]
+    return rules
+
+  @classmethod
+  def get_qt_provider(cls, config: HyperParameters) -> Optional[qwix.QtProvider]:
+    """Get quantization rules based on the config."""
+    if not getattr(config, "use_qwix_quantization", False):
+      return None
+
+    quantization_calibration_method = getattr(config, "quantization_calibration_method", "absmax")
+    match config.quantization:
+      case "int8":
+        return qwix.QtProvider(cls.get_basic_config(jnp.int8))
+      case "fp8":
+        return qwix.QtProvider(cls.get_basic_config(jnp.float8_e4m3fn))
+      case "fp8_full":
+        return qwix.QtProvider(cls.get_fp8_config(quantization_calibration_method))
+    return None
+
+  @classmethod
+  def quantize_transformer(cls, config: HyperParameters, model: WanModel, pipeline: "WanPipeline", mesh: Mesh):
+    """Quantizes the transformer model."""
+    q_rules = cls.get_qt_provider(config)
+    if not q_rules:
+      return model
+    max_logging.log("Quantizing transformer with Qwix.")
+
+    batch_size = int(config.per_device_batch_size * jax.local_device_count())
+    latents, prompt_embeds, timesteps = get_dummy_wan_inputs(config, pipeline, batch_size)
+    model_inputs= (latents, timesteps, prompt_embeds)
+    with mesh:
+      quantized_model = qwix.quantize_model(model, q_rules, *model_inputs)
+    max_logging.log("Qwix Quantization complete.")
+    return quantized_model
+
+  @classmethod
   def load_transformer(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     with mesh:
       wan_transformer = create_sharded_logical_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
@@ -262,7 +331,7 @@ class WanPipeline:
     with mesh:
       wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
-    return WanPipeline(
+    pipeline = WanPipeline(
         tokenizer=tokenizer,
         text_encoder=text_encoder,
         transformer=transformer,
@@ -274,6 +343,9 @@ class WanPipeline:
         mesh=mesh,
         config=config,
     )
+
+    pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, mesh)
+    return pipeline
 
   def _get_t5_prompt_embeds(
       self,
@@ -414,7 +486,8 @@ class WanPipeline:
         )
 
       data_sharding = NamedSharding(self.mesh, P())
-      if len(prompt) % jax.device_count() == 0:
+      # Using global_batch_size_to_train_on so not to create more config variables
+      if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
         data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
 
       latents = jax.device_put(latents, data_sharding)
@@ -454,6 +527,7 @@ class WanPipeline:
       video = self.vae.decode(latents, self.vae_cache)[0]
 
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
+    video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
     video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
     video = self.video_processor.postprocess_video(video, output_type="np")
     return video

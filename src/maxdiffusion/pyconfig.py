@@ -136,6 +136,25 @@ class _HyperParameters:
           )
       else:
         raise ValueError(f"{transformer_pretrained_model_name_or_path} transformer model is not supported for Wan 2.1")
+    if "use_qwix_quantization" not in raw_keys:
+      raise ValueError("use_qwix_quantization is not set.")
+    elif raw_keys["use_qwix_quantization"]:
+      if "quantization" not in raw_keys:
+        raise ValueError("Quantization type is not set when use_qwix_quantization is enabled.")
+      elif raw_keys["quantization"] not in ["int8", "fp8", "fp8_full"]:
+        raise ValueError(f"Quantization type is not supported when use_qwix_quantization is enabled: {raw_keys['quantization']}")
+
+  @staticmethod
+  def calculate_global_batch_sizes(per_device_batch_size):
+    num_devices = len(jax.devices())
+    if per_device_batch_size < 1:
+      # For per_device_batch_size<1, we load the data as if per_device_batch_size=1
+      global_batch_size_to_load = num_devices
+    else:
+      global_batch_size_to_load = int(num_devices * per_device_batch_size)
+
+    global_batch_size_to_train_on = int(num_devices * per_device_batch_size)
+    return global_batch_size_to_load, global_batch_size_to_train_on
 
   @staticmethod
   def user_init(raw_keys):
@@ -181,6 +200,9 @@ class _HyperParameters:
     raw_keys["total_train_batch_size"] = max_utils.get_global_batch_size(raw_keys["per_device_batch_size"])
     raw_keys["num_slices"] = get_num_slices(raw_keys)
     raw_keys["quantization_local_shard_count"] = get_quantization_local_shard_count(raw_keys)
+    raw_keys["global_batch_size_to_load"], raw_keys["global_batch_size_to_train_on"] = (
+        _HyperParameters.calculate_global_batch_sizes(raw_keys["per_device_batch_size"])
+    )
 
 
 def get_num_slices(raw_keys):
