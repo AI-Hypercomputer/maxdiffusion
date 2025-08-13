@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 import unittest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from absl.testing import absltest
 from flax import nnx
 from jax.sharding import Mesh
@@ -276,7 +276,7 @@ class WanTransformerTest(unittest.TestCase):
           hidden_states=dummy_hidden_states, timestep=dummy_timestep, encoder_hidden_states=dummy_encoder_hidden_states
       )
     assert dummy_output.shape == hidden_states_shape
-  
+
   def test_get_qt_provider(self):
     """
     Tests the provider logic for all config branches.
@@ -301,7 +301,7 @@ class WanTransformerTest(unittest.TestCase):
     provider_fp8 = WanPipeline.get_qt_provider(config_fp8)
     self.assertIsNotNone(provider_fp8)
     self.assertEqual(provider_fp8.rules[0].kwargs['weight_qtype'], jnp.float8_e4m3fn)
-    
+
     # Case 4: Quantization enabled, type 'fp8_full'
     config_fp8_full = Mock(spec=HyperParameters)
     config_fp8_full.use_qwix_quantization = True
@@ -329,11 +329,11 @@ class WanTransformerTest(unittest.TestCase):
     mock_config.use_qwix_quantization = True
     mock_config.quantization = "fp8_full"
     mock_config.per_device_batch_size = 1
-    
+
     mock_model = Mock(spec=WanModel)
     mock_pipeline = Mock()
     mock_mesh = Mock()
-    
+
     # Mock the return values of dependencies
     mock_get_dummy_inputs.return_value = (Mock(), Mock(), Mock())
     mock_quantized_model_obj = Mock(spec=WanModel)
@@ -356,9 +356,9 @@ class WanTransformerTest(unittest.TestCase):
     # Setup Mocks
     mock_config = Mock(spec=HyperParameters)
     mock_config.use_qwix_quantization = False # Main condition for this test
-    
+
     mock_model = Mock(spec=WanModel)
-    
+
     # Call the method under test
     result = WanPipeline.quantize_transformer(mock_config, mock_model, Mock(), Mock())
 
