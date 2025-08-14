@@ -293,3 +293,6 @@ use_qwix_quantization: False # Whether to use qwix for quantization. If set to T
 # Quantization calibration method used for weights and activations. Supported methods can be found in https://github.com/google/qwix/blob/dc2a0770351c740e5ab3cce7c0efe9f7beacce9e/qwix/qconfig.py#L70-L80
 quantization_calibration_method: "absmax"
 
+# Eval model on per eval_every steps. -1 means don't eval.
+eval_every: -1
+eval_data_dir: ""
