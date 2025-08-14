@@ -335,7 +335,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   def loss_fn(params):
       # Reconstruct the model from its definition and parameters
       model = nnx.merge(state.graphdef, params, state.rest_of_state)
-      
+
       # Prepare inputs
       latents = data["latents"].astype(config.weights_dtype)
       encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
