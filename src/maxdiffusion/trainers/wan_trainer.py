@@ -251,7 +251,7 @@ class WanTrainer(WanCheckpointer):
               with mesh:
                 eval_batch = load_next_batch(eval_data_iterator, None, self.config)
                 metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
-                eval_metrics.append(metrics["scalar"]["eval/loss"])
+                eval_metrics.append(metrics["scalar"]["learning/eval_loss"])
             except StopIteration:
               # This block is executed when the iterator has no more data
               break
@@ -260,7 +260,7 @@ class WanTrainer(WanCheckpointer):
             eval_loss = jnp.mean(jnp.array(eval_metrics))
             max_logging.log(f"Step {step}, Eval loss: {eval_loss:.4f}")
             if writer:
-              writer.add_scalar("eval/loss", eval_loss, step)
+              writer.add_scalar("learning/eval_loss", eval_loss, step)
           else:
             max_logging.log(f"Step {step}, evaluation dataset was empty.")
         example_batch = next_batch_future.result()
@@ -373,7 +373,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   loss = loss_fn(state.params)
 
   # Structure the metrics for logging and aggregation
-  metrics = {"scalar": {"eval/loss": loss}}
+  metrics = {"scalar": {"learning/eval_loss": loss}}
 
   # Return the computed metrics and the new RNG key for the next eval step
   return metrics, new_rng
