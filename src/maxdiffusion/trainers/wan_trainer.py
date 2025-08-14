@@ -55,7 +55,9 @@ def generate_sample(config, pipeline, filename_prefix):
   Generates a video to validate training did not corrupt the model
   """
   if not hasattr(pipeline, "vae"):
-    wan_vae, vae_cache = WanPipeline.load_vae(pipeline.mesh.devices, pipeline.mesh, nnx.Rngs(jax.random.key(config.seed)), config)
+    wan_vae, vae_cache = WanPipeline.load_vae(
+        pipeline.mesh.devices, pipeline.mesh, nnx.Rngs(jax.random.key(config.seed)), config
+    )
     pipeline.vae = wan_vae
     pipeline.vae_cache = vae_cache
   return generate_wan(config, pipeline, filename_prefix)
@@ -147,7 +149,7 @@ class WanTrainer(WanCheckpointer):
     pipeline = self.load_checkpoint()
     # Generate a sample before training to compare against generated sample after training.
     pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
-    
+
     # save some memory.
     del pipeline.vae
     del pipeline.vae_cache

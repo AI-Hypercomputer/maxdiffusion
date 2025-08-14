@@ -13,6 +13,7 @@
  See the License for the specific language governing permissions and
  limitations under the License.
  """
+
 from qwix import QtProvider
 import os
 import jax
@@ -290,7 +291,7 @@ class WanTransformerTest(unittest.TestCase):
     config_int8 = Mock(spec=HyperParameters)
     config_int8.use_qwix_quantization = True
     config_int8.quantization = "int8"
-    provider_int8:QtProvider = WanPipeline.get_qt_provider(config_int8)
+    provider_int8: QtProvider = WanPipeline.get_qt_provider(config_int8)
     self.assertIsNotNone(provider_int8)
     self.assertEqual(provider_int8._rules[0].weight_qtype, jnp.int8)
 
@@ -300,7 +301,7 @@ class WanTransformerTest(unittest.TestCase):
     config_fp8.quantization = "fp8"
     provider_fp8 = WanPipeline.get_qt_provider(config_fp8)
     self.assertIsNotNone(provider_fp8)
-    self.assertEqual(provider_fp8.rules[0].kwargs['weight_qtype'], jnp.float8_e4m3fn)
+    self.assertEqual(provider_fp8.rules[0].kwargs["weight_qtype"], jnp.float8_e4m3fn)
 
     # Case 4: Quantization enabled, type 'fp8_full'
     config_fp8_full = Mock(spec=HyperParameters)
@@ -309,7 +310,7 @@ class WanTransformerTest(unittest.TestCase):
     config_fp8_full.quantization_calibration_method = "absmax"
     provider_fp8_full = WanPipeline.get_qt_provider(config_fp8_full)
     self.assertIsNotNone(provider_fp8_full)
-    self.assertEqual(provider_fp8_full.rules[0].kwargs['bwd_qtype'], jnp.float8_e5m2)
+    self.assertEqual(provider_fp8_full.rules[0].kwargs["bwd_qtype"], jnp.float8_e5m2)
 
     # Case 5: Invalid quantization type
     config_invalid = Mock(spec=HyperParameters)
@@ -318,8 +319,8 @@ class WanTransformerTest(unittest.TestCase):
     self.assertIsNone(WanPipeline.get_qt_provider(config_invalid))
 
   # To test quantize_transformer, we patch its external dependencies
-  @patch('maxdiffusion.pipelines.wan.wan_pipeline.qwix.quantize_model')
-  @patch('maxdiffusion.pipelines.wan.wan_pipeline.get_dummy_wan_inputs')
+  @patch("maxdiffusion.pipelines.wan.wan_pipeline.qwix.quantize_model")
+  @patch("maxdiffusion.pipelines.wan.wan_pipeline.get_dummy_wan_inputs")
   def test_quantize_transformer_enabled(self, mock_get_dummy_inputs, mock_quantize_model):
     """
     Tests that quantize_transformer calls qwix when quantization is enabled.
@@ -348,14 +349,14 @@ class WanTransformerTest(unittest.TestCase):
     # Check that the model returned is the new quantized model
     self.assertIs(result, mock_quantized_model_obj)
 
-  @patch('maxdiffusion.pipelines.wan.wan_pipeline.qwix.quantize_model')
+  @patch("maxdiffusion.pipelines.wan.wan_pipeline.qwix.quantize_model")
   def test_quantize_transformer_disabled(self, mock_quantize_model):
     """
     Tests that quantize_transformer is skipped when quantization is disabled.
     """
     # Setup Mocks
     mock_config = Mock(spec=HyperParameters)
-    mock_config.use_qwix_quantization = False # Main condition for this test
+    mock_config.use_qwix_quantization = False  # Main condition for this test
 
     mock_model = Mock(spec=WanModel)
 

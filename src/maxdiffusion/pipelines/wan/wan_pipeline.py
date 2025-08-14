@@ -233,11 +233,11 @@ class WanPipeline:
   def get_basic_config(cls, dtype):
     rules = [
         qwix.QtRule(
-          module_path='.*',  # Apply to all modules
-          weight_qtype=dtype,
-          act_qtype=dtype,
+            module_path=".*",  # Apply to all modules
+            weight_qtype=dtype,
+            act_qtype=dtype,
         )
-      ]
+    ]
     return rules
 
   @classmethod
@@ -249,17 +249,17 @@ class WanPipeline:
     """
     rules = [
         qwix.QtRule(
-          module_path='.*',  # Apply to all modules
-          weight_qtype=jnp.float8_e4m3fn,
-          act_qtype=jnp.float8_e4m3fn,
-          bwd_qtype=jnp.float8_e5m2,
-          bwd_use_original_residuals=True,
-          disable_channelwise_axes=True, # per_tensor calibration
-          weight_calibration_method = quantization_calibration_method,
-          act_calibration_method = quantization_calibration_method,
-          bwd_calibration_method = quantization_calibration_method,
+            module_path=".*",  # Apply to all modules
+            weight_qtype=jnp.float8_e4m3fn,
+            act_qtype=jnp.float8_e4m3fn,
+            bwd_qtype=jnp.float8_e5m2,
+            bwd_use_original_residuals=True,
+            disable_channelwise_axes=True,  # per_tensor calibration
+            weight_calibration_method=quantization_calibration_method,
+            act_calibration_method=quantization_calibration_method,
+            bwd_calibration_method=quantization_calibration_method,
         )
-      ]
+    ]
     return rules
 
   @classmethod
@@ -288,7 +288,7 @@ class WanPipeline:
 
     batch_size = int(config.per_device_batch_size * jax.local_device_count())
     latents, prompt_embeds, timesteps = get_dummy_wan_inputs(config, pipeline, batch_size)
-    model_inputs= (latents, timesteps, prompt_embeds)
+    model_inputs = (latents, timesteps, prompt_embeds)
     with mesh:
       quantized_model = qwix.quantize_model(model, q_rules, *model_inputs)
     max_logging.log("Qwix Quantization complete.")
