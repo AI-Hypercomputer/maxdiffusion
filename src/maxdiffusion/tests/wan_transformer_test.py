@@ -278,7 +278,8 @@ class WanTransformerTest(unittest.TestCase):
       )
     assert dummy_output.shape == hidden_states_shape
 
-  def test_get_qt_provider(self):
+  @patch('maxdiffusion.pipelines.wan.wan_pipeline.qwix.QtRule')
+  def test_get_qt_provider(self, mock_qt_rule):
     """
     Tests the provider logic for all config branches.
     """
@@ -293,9 +294,14 @@ class WanTransformerTest(unittest.TestCase):
     config_int8.quantization = "int8"
     provider_int8: QtProvider = WanPipeline.get_qt_provider(config_int8)
     self.assertIsNotNone(provider_int8)
-    self.assertEqual(provider_int8._rules[0].weight_qtype, jnp.int8)
+    mock_qt_rule.assert_called_once_with(
+      module_path='.*',
+      weight_qtype=jnp.int8,
+      act_qtype=jnp.int8
+    )
 
     # Case 3: Quantization enabled, type 'fp8'
+    mock_qt_rule.reset_mock()
     config_fp8 = Mock(spec=HyperParameters)
     config_fp8.use_qwix_quantization = True
     config_fp8.quantization = "fp8"
@@ -304,6 +310,7 @@ class WanTransformerTest(unittest.TestCase):
     self.assertEqual(provider_fp8.rules[0].kwargs["weight_qtype"], jnp.float8_e4m3fn)
 
     # Case 4: Quantization enabled, type 'fp8_full'
+    mock_qt_rule.reset_mock()
     config_fp8_full = Mock(spec=HyperParameters)
     config_fp8_full.use_qwix_quantization = True
     config_fp8_full.quantization = "fp8_full"
@@ -334,6 +341,8 @@ class WanTransformerTest(unittest.TestCase):
     mock_model = Mock(spec=WanModel)
     mock_pipeline = Mock()
     mock_mesh = Mock()
+    mock_mesh.__enter__ = Mock(return_value=None)
+    mock_mesh.__exit__ = Mock(return_value=None)
 
     # Mock the return values of dependencies
     mock_get_dummy_inputs.return_value = (Mock(), Mock(), Mock())
