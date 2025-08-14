@@ -220,6 +220,8 @@ class WanPipeline:
     params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
     for path, val in flax.traverse_util.flatten_dict(params).items():
       sharding = logical_state_sharding[path].value
+      if config.replicate_vae:
+        sharding = NamedSharding(mesh, P())
       state[path].value = device_put_replicated(val, sharding)
     state = nnx.from_flat_state(state)
 
