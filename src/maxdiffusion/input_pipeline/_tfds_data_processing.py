@@ -19,7 +19,7 @@ import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
 from datasets import load_dataset, load_from_disk
 import jax
-from maxdiffusion import multihost_dataloading
+from maxdiffusion import multihost_dataloading, max_logging
 
 AUTOTUNE = tf.data.AUTOTUNE
 
@@ -130,7 +130,7 @@ def _make_tfrecord_iterator(
         padding_ds = ds.take(num_to_pad)
         # Add the padding samples to the end
         ds = ds.concatenate(padding_ds)
-        print(f"Padded evaluation dataset with {num_to_pad} samples.")
+        max_logging.log(f"Padded evaluation dataset with {num_to_pad} samples.")
 
   used_prepare_sample = prepare_sample_fn if make_cached_tfrecord_iterator else prepare_sample
   ds = (
