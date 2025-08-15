@@ -206,9 +206,6 @@ def _tpu_flash_attention(
       check_rep=False,
   )
   def wrap_flash_attention(query, key, value):
-    jax.debug.print("query.shape: {x}", x=query.shape)
-    jax.debug.print("key.shape: {x}", x=key.shape)
-    jax.debug.print("value.shape: {x}", x=value.shape)
 
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
@@ -250,11 +247,6 @@ def _tpu_flash_attention(
 
       m = m_new
       l = l_new
-      jax.debug.print("Loop {i}: max(m)={m_max}, max(l)={l_max}, max(o)={o_max}",
-                    i=i,
-                    m_max=m.max(),
-                    l_max=l.max(),
-                    o_max=o.max())
 
     attention_output = o / l[..., None]
 
