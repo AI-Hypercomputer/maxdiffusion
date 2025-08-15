@@ -183,7 +183,6 @@ def run(config):
   prompt_enhancement_words_threshold = config.prompt_enhancement_words_threshold
   prompt_word_count = len(config.prompt.split())
   enhance_prompt = prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
-  enhance_prompt = False
 
   pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt=enhance_prompt)
   if config.pipeline_type == "multi-scale":

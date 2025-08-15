@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2025/8/14`**: LTX-Video img2vid generation is now supported.
 - **`2025/7/29`**: LTX-Video text2vid generation is now supported.
 - **`2025/04/17`**: Flux Finetuning.
 - **`2025/02/12`**: Flux LoRA for inference.
@@ -42,7 +43,7 @@ MaxDiffusion supports
 * Load Multiple LoRA (SDXL inference).
 * ControlNet inference (Stable Diffusion 1.4 & SDXL).
 * Dreambooth training support for Stable Diffusion 1.x,2.x.
-* LTX-Video text2vid (inference).
+* LTX-Video text2vid, img2vid (inference).
 
 
 # Table of Contents
@@ -183,7 +184,7 @@ To generate images, run the following command:
     ```bash
     python src/maxdiffusion/generate_ltx_video.py src/maxdiffusion/configs/ltx_video.yml output_dir="[SAME DIRECTORY]" config_path="src/maxdiffusion/models/ltx_video/ltxv-13B.json"
     ```
-  - Other generation parameters can be set in ltx_video.yml file.
+  - For img2video generation, add conditioning image along with ther generation parameters in the ltx_video.yml file.
   ## Flux
 
   First make sure you have permissions to access the Flux repos in Huggingface.
