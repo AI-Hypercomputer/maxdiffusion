@@ -188,8 +188,8 @@ def _tpu_flash_attention(
     )
 
   num_fsdp_shards = mesh.shape["fsdp"]
-  query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q, num_fsdp_shards)
-  key, _, _ = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute, num_fsdp_shards)
+  query, kv_size, original_query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q, num_fsdp_shards)
+  key, _, original_key_seq_len = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute, num_fsdp_shards)
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
@@ -206,6 +206,10 @@ def _tpu_flash_attention(
       check_rep=False,
   )
   def wrap_flash_attention(query, key, value):
+    jax.debug.print("query.shape: {x}", x=query.shape)
+    jax.debug.print("key.shape: {x}", x=key.shape)
+    jax.debug.print("value.shape: {x}", x=value.shape)
+
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
     # make_splash_mha is wrapped around shardmap and seq and head is already
@@ -215,8 +219,45 @@ def _tpu_flash_attention(
         head_shards=1,  # the sizes of the axis is sharding over heads
         q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
         block_sizes=block_sizes,
+        save_residuals=True
     )
-    attention_output = jax.vmap(splash_kernel)(query, key, value)
+    out, (lse,) = jax.vmap(splash_kernel)(query, key, value)
+    #breakpoint()
+    m = lse.astype(jnp.float32)
+    l = jnp.exp(lse.astype(jnp.float32) - m)
+    o = out.astype(jnp.float32) * l[..., None]
+
+    k_ring = key
+    v_ring = value
+
+    for i in range(1, num_fsdp_shards):
+      k_ring = jax.lax.ppermute(k_ring, axis_name='fsdp', perm=[(j, (j+1) % num_fsdp_shards) for j in range(num_fsdp_shards)])
+      v_ring = jax.lax.ppermute(v_ring, axis_name='fsdp', perm=[(j, (j+1) % num_fsdp_shards) for j in range(num_fsdp_shards)])
+
+      out_chunk, (lse_chunk,) = jax.vmap(splash_kernel)(query, k_ring, v_ring)
+      m_chunk = lse_chunk.astype(jnp.float32)
+      p_chunk = jnp.exp(lse_chunk.astype(jnp.float32) - m_chunk)
+
+      m_new = jnp.maximum(m, m_chunk)
+
+      l = l * jnp.exp(m - m_new)
+      p_chunk_rescaled = p_chunk * jnp.exp(m_chunk - m_new)
+
+      l_new = l + p_chunk_rescaled
+
+      o = o * jnp.exp(m - m_new)[..., None]
+      o += p_chunk_rescaled[..., None] * out_chunk
+
+      m = m_new
+      l = l_new
+      jax.debug.print("Loop {i}: max(m)={m_max}, max(l)={l_max}, max(o)={o_max}",
+                    i=i,
+                    m_max=m.max(),
+                    l_max=l.max(),
+                    o_max=o.max())
+
+    attention_output = o / l[..., None]
+
     return attention_output
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
@@ -228,7 +269,7 @@ def _tpu_flash_attention(
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
     )
   x = wrap_flash_attention(query, key, value)
-  x = x[:, :, :query_seq_len, :kv_size]
+  x = x[:, :, :original_query_seq_len, :kv_size]
   x = _reshape_heads_to_head_dim(x)
 
   return x
