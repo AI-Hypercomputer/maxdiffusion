@@ -142,7 +142,9 @@ class _HyperParameters:
       if "quantization" not in raw_keys:
         raise ValueError("Quantization type is not set when use_qwix_quantization is enabled.")
       elif raw_keys["quantization"] not in ["int8", "fp8", "fp8_full"]:
-        raise ValueError(f"Quantization type is not supported when use_qwix_quantization is enabled: {raw_keys['quantization']}")
+        raise ValueError(
+            f"Quantization type is not supported when use_qwix_quantization is enabled: {raw_keys['quantization']}"
+        )
 
   @staticmethod
   def calculate_global_batch_sizes(per_device_batch_size):

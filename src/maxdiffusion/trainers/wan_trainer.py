@@ -36,6 +36,7 @@ from maxdiffusion.video_processor import VideoProcessor
 from maxdiffusion.utils import load_video
 from skimage.metrics import structural_similarity as ssim
 from flax.training import train_state
+from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 
 
 class TrainState(train_state.TrainState):
@@ -53,6 +54,12 @@ def generate_sample(config, pipeline, filename_prefix):
   """
   Generates a video to validate training did not corrupt the model
   """
+  if not hasattr(pipeline, "vae"):
+    wan_vae, vae_cache = WanPipeline.load_vae(
+        pipeline.mesh.devices, pipeline.mesh, nnx.Rngs(jax.random.key(config.seed)), config
+    )
+    pipeline.vae = wan_vae
+    pipeline.vae_cache = vae_cache
   return generate_wan(config, pipeline, filename_prefix)
 
 
@@ -141,10 +148,13 @@ class WanTrainer(WanCheckpointer):
   def start_training(self):
 
     pipeline = self.load_checkpoint()
-    # del pipeline.vae
-
     # Generate a sample before training to compare against generated sample after training.
     pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
+
+    # save some memory.
+    del pipeline.vae
+    del pipeline.vae_cache
+
     mesh = pipeline.mesh
     train_data_iterator = self.load_dataset(mesh, is_training=True)
 

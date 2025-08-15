@@ -166,20 +166,25 @@ def _tpu_flash_attention(
     dtype: jnp.dtype = jnp.float32,
 ) -> jax.Array:
   """TPU Flash Attention"""
-
-  max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  # Cross-attention where kv dims are much smaller due to encoder_hidden_states.
+  # If kv seq_len is padded too much, it causes issues in attention calculations.
+  if key.shape[1] != query.shape[1]:
+    kv_max_block_size = key.shape[1]
+  else:
+    kv_max_block_size = q_max_block_size
   if flash_block_sizes:
     block_sizes = flash_block_sizes
   else:
     block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=min(max_block_size, query.shape[2]),
-        block_kv_compute=min(max_block_size, key.shape[2]),
-        block_kv=min(max_block_size, key.shape[2]),
-        block_q_dkv=min(max_block_size, query.shape[2]),
-        block_kv_dkv=min(max_block_size, key.shape[2]),
-        block_kv_dkv_compute=min(max_block_size, query.shape[2]),
-        block_q_dq=min(max_block_size, query.shape[2]),
-        block_kv_dq=min(max_block_size, query.shape[2]),
+        block_q=min(q_max_block_size, query.shape[2]),
+        block_kv_compute=min(kv_max_block_size, key.shape[2]),
+        block_kv=min(kv_max_block_size, key.shape[2]),
+        block_q_dkv=min(q_max_block_size, query.shape[2]),
+        block_kv_dkv=min(kv_max_block_size, key.shape[2]),
+        block_kv_dkv_compute=min(kv_max_block_size, query.shape[2]),
+        block_q_dq=min(q_max_block_size, query.shape[2]),
+        block_kv_dq=min(kv_max_block_size, query.shape[2]),
     )
 
   num_fsdp_shards = mesh.shape["fsdp"]
