@@ -187,13 +187,12 @@ def run(config):
   pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt=enhance_prompt)
   if config.pipeline_type == "multi-scale":
     pipeline = LTXMultiScalePipeline(pipeline)
-  conditioning_media_paths = config.conditioning_media_paths
+  conditioning_media_paths = config.conditioning_media_paths if isinstance(config.conditioning_media_paths, List) else None
   conditioning_start_frames = config.conditioning_start_frames
   conditioning_strengths = None
   if conditioning_media_paths:
     if not conditioning_strengths:
       conditioning_strengths = [1.0] * len(conditioning_media_paths)
-
   conditioning_items = (
       prepare_conditioning(
           conditioning_media_paths=conditioning_media_paths,

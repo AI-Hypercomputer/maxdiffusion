@@ -184,7 +184,8 @@ To generate images, run the following command:
     ```bash
     python src/maxdiffusion/generate_ltx_video.py src/maxdiffusion/configs/ltx_video.yml output_dir="[SAME DIRECTORY]" config_path="src/maxdiffusion/models/ltx_video/ltxv-13B.json"
     ```
-  - For img2video generation, add conditioning image along with ther generation parameters in the ltx_video.yml file.
+  - Img2video Generation: 
+    Add conditioning image path as conditioning_media_paths in the form of ["IMAGE_PATH"] along with other generation parameters in the ltx_video.yml file. Then follow same instruction as above.
   ## Flux
 
   First make sure you have permissions to access the Flux repos in Huggingface.
