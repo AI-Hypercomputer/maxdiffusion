@@ -189,34 +189,39 @@ def _tpu_flash_attention(
 
   num_fsdp_shards = mesh.shape["fsdp"]
   query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q, num_fsdp_shards)
-  key, _, _ = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute, num_fsdp_shards)
+  key, _, key_seq_len = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute, num_fsdp_shards)
   value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
 
+  # To only attend to non-padded tokens.
+  segment_axis_names_q = nn.logical_to_mesh_axes((BATCH, LENGTH))
+  segment_axis_names_kv = nn.logical_to_mesh_axes((BATCH, KV_LENGTH))
+  q_segment_ids = jnp.where(jnp.arange(query.shape[2]) < query_seq_len, 1, 0)
+  q_segment_ids = jnp.broadcast_to(q_segment_ids, (query.shape[0], q_segment_ids.shape[0]))
+  kv_segment_ids = jnp.where(jnp.arange(key.shape[2]) < key_seq_len, 1, 0)
+  kv_segment_ids = jnp.broadcast_to(kv_segment_ids, (query.shape[0], kv_segment_ids.shape[0]))
+
   @functools.partial(
       shard_map.shard_map,
       mesh=mesh,
-      in_specs=(
-          q_axis_names,
-          kv_axis_names,
-          kv_axis_names,
-      ),
+      in_specs=(q_axis_names, kv_axis_names, kv_axis_names, segment_axis_names_q, segment_axis_names_kv),
       out_specs=q_axis_names,
       check_rep=False,
   )
-  def wrap_flash_attention(query, key, value):
+  def wrap_flash_attention(query, key, value, q_segment_ids, kv_segment_ids):
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
+    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
     splash_kernel = splash_attention_kernel.make_splash_mha(
         mask=multi_head_mask,
         head_shards=1,  # the sizes of the axis is sharding over heads
         q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
         block_sizes=block_sizes,
     )
-    attention_output = jax.vmap(splash_kernel)(query, key, value)
+    attention_output = jax.vmap(splash_kernel)(query, key, value, segment_ids=segment_ids)
     return attention_output
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
@@ -227,7 +232,7 @@ def _tpu_flash_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
     )
-  x = wrap_flash_attention(query, key, value)
+  x = wrap_flash_attention(query, key, value, q_segment_ids, kv_segment_ids)
   x = x[:, :, :query_seq_len, :kv_size]
   x = _reshape_heads_to_head_dim(x)
 
