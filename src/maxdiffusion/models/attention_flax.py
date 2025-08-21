@@ -195,7 +195,7 @@ def _tpu_flash_attention(
         block_q_dq=min(q_max_block_size, query.shape[2]),
         block_kv_dq=min(kv_max_block_size, query.shape[2]),
     )
-  
+  num_fsdp_shards = mesh.shape["fsdp"]
   query = _reshape_data_for_flash(query, heads)
   key = _reshape_data_for_flash(key, heads)
   value = _reshape_data_for_flash(value, heads)
@@ -218,9 +218,7 @@ def _tpu_flash_attention(
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
     q_segment_ids = jnp.where(jnp.arange(query.shape[2]) < query_seq_len, 1, 0)
-    q_segment_ids = jnp.broadcast_to(q_segment_ids, (query.shape[0], q_segment_ids.shape[0]))
     kv_segment_ids = jnp.where(jnp.arange(key.shape[2]) < key_seq_len, 1, 0)
-    kv_segment_ids = jnp.broadcast_to(kv_segment_ids, (query.shape[0], kv_segment_ids.shape[0]))
     segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
@@ -230,9 +228,51 @@ def _tpu_flash_attention(
         head_shards=1,  # the sizes of the axis is sharding over heads
         q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
         block_sizes=block_sizes,
+        save_residuals=True
     )
-    attention_output = jax.vmap(splash_kernel)(query, key, value, segment_ids=segment_ids)
-    return attention_output[:,:,:query_seq_len,:kv_size]
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0,0,0, None))
+
+    def ring_scan_body(carry, _):
+      m, l, o, k_current, v_current = carry
+      perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
+      k_next = jax.lax.ppermute(k_current, axis_name='fsdp', perm=perm)
+      v_next = jax.lax.ppermute(v_current, axis_name='fsdp', perm=perm)
+
+      out_chunk, (lse_chunk,) = vmapped_splash(
+        query, k_current, v_current, segment_ids
+      )
+
+      m_chunk = lse_chunk.astype(jnp.float32)
+      m_old = m
+      m = jnp.maximum(m_old, m_chunk)
+      
+      exp_m_diff = jnp.exp(m_old - m)
+      exp_m_chunk_diff = jnp.exp(m_chunk - m)
+
+      l = l * exp_m_diff + jnp.exp(lse_chunk - m)
+      o = o * exp_m_diff[..., None]
+      o += (exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32))
+
+      # Return the updated state for the next iteration
+      return (m, l, o, k_next, v_next), None
+
+    lse_shape = query.shape[:-1]
+    m_init = jnp.full(lse_shape, -jnp.inf, dtype=jnp.float32)
+    l_init = jnp.zeros(lse_shape, dtype=jnp.float32)
+    o_init = jnp.zeros_like(query, dtype=jnp.float32)
+
+    initial_carry = (m_init, l_init, o_init, key, value)
+
+    (m_final, l_final, o_final, _, _), _ = jax.lax.scan(
+      ring_scan_body,
+      initial_carry,
+      None,
+      length=num_fsdp_shards
+    )
+
+    attention_output = o_final / l_final[..., None]
+
+    return attention_output[:,:,:query_seq_len,:kv_size].astype(query.dtype)
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
   # This warning might show up when doing model eval for example, when calculating model flops
