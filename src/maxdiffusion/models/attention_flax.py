@@ -112,8 +112,7 @@ def _unflatten_heads(tensor, heads):
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
   return tensor
 
-
-def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
+def _reshape_data_for_flash(tensor, heads):
   """
   Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
   Pads seq_len to a multiple of flash_block_size, and ensures the resulting number of
@@ -121,6 +120,15 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1
   """
   if tensor.ndim != 4:
     tensor = _unflatten_heads(tensor, heads)
+  return tensor
+
+def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
+  """
+  Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
+  Pads seq_len to a multiple of flash_block_size, and ensures the resulting number of
+  blocks is divisible by the number of shards.
+  """
+  tensor = _reshape_data_for_flash(tensor, heads)
 
   # Pad head_dim to 128 if less than that.
   kv_size = tensor.shape[-1]
@@ -148,8 +156,7 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1
 
   if kv_size < 128 or seq_len_pad != 0:
     npad = ((0, 0), (0, 0), (0, seq_len_pad), (0, head_dim_pad))
-    padded_tensor = jnp.pad(tensor, npad)
-    tensor = jax.lax.with_sharding_constraint(padded_tensor, PartitionSpec("data", "tensor", "fsdp", None))
+    tensor = jnp.pad(tensor, npad)
 
   return tensor, kv_size, seq_len
 
@@ -166,11 +173,13 @@ def _tpu_flash_attention(
     dtype: jnp.dtype = jnp.float32,
 ) -> jax.Array:
   """TPU Flash Attention"""
+
   q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
-  # Cross-attention where kv dims are much smaller due to encoder_hidden_states.
-  # If kv seq_len is padded too much, it causes issues in attention calculations.
+  # This is the case for cross-attn.
   if key.shape[1] != query.shape[1]:
+    assert key.shape[1] % 128 == 0
     kv_max_block_size = key.shape[1]
+    #q_max_block_size = kv_max_block_size
   else:
     kv_max_block_size = q_max_block_size
   if flash_block_sizes:
@@ -186,35 +195,36 @@ def _tpu_flash_attention(
         block_q_dq=min(q_max_block_size, query.shape[2]),
         block_kv_dq=min(kv_max_block_size, query.shape[2]),
     )
-
-  num_fsdp_shards = mesh.shape["fsdp"]
-  query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q, num_fsdp_shards)
-  key, _, key_seq_len = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute, num_fsdp_shards)
-  value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
+  
+  query = _reshape_data_for_flash(query, heads)
+  key = _reshape_data_for_flash(key, heads)
+  value = _reshape_data_for_flash(value, heads)
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
-
-  # To only attend to non-padded tokens.
-  segment_axis_names_q = nn.logical_to_mesh_axes((BATCH, LENGTH))
-  segment_axis_names_kv = nn.logical_to_mesh_axes((BATCH, KV_LENGTH))
-  q_segment_ids = jnp.where(jnp.arange(query.shape[2]) < query_seq_len, 1, 0)
-  q_segment_ids = jnp.broadcast_to(q_segment_ids, (query.shape[0], q_segment_ids.shape[0]))
-  kv_segment_ids = jnp.where(jnp.arange(key.shape[2]) < key_seq_len, 1, 0)
-  kv_segment_ids = jnp.broadcast_to(kv_segment_ids, (query.shape[0], kv_segment_ids.shape[0]))
 
   @functools.partial(
       shard_map.shard_map,
       mesh=mesh,
-      in_specs=(q_axis_names, kv_axis_names, kv_axis_names, segment_axis_names_q, segment_axis_names_kv),
+      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
       out_specs=q_axis_names,
       check_rep=False,
   )
-  def wrap_flash_attention(query, key, value, q_segment_ids, kv_segment_ids):
+  def wrap_flash_attention(query, key, value):
+
+    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_sizes.block_q)
+    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_sizes.block_kv_compute)
+    value, _, _ = _pad_data_for_flash(value, heads, block_sizes.block_kv_compute)
+
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+    q_segment_ids = jnp.where(jnp.arange(query.shape[2]) < query_seq_len, 1, 0)
+    q_segment_ids = jnp.broadcast_to(q_segment_ids, (query.shape[0], q_segment_ids.shape[0]))
+    kv_segment_ids = jnp.where(jnp.arange(key.shape[2]) < key_seq_len, 1, 0)
+    kv_segment_ids = jnp.broadcast_to(kv_segment_ids, (query.shape[0], kv_segment_ids.shape[0]))
+    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
+
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
-    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
     splash_kernel = splash_attention_kernel.make_splash_mha(
         mask=multi_head_mask,
         head_shards=1,  # the sizes of the axis is sharding over heads
@@ -222,7 +232,7 @@ def _tpu_flash_attention(
         block_sizes=block_sizes,
     )
     attention_output = jax.vmap(splash_kernel)(query, key, value, segment_ids=segment_ids)
-    return attention_output
+    return attention_output[:,:,:query_seq_len,:kv_size]
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
   # This warning might show up when doing model eval for example, when calculating model flops
@@ -232,8 +242,7 @@ def _tpu_flash_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
     )
-  x = wrap_flash_attention(query, key, value, q_segment_ids, kv_segment_ids)
-  x = x[:, :, :query_seq_len, :kv_size]
+  x = wrap_flash_attention(query, key, value)
   x = _reshape_heads_to_head_dim(x)
 
   return x
