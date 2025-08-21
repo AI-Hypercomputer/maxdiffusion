@@ -27,6 +27,7 @@ import yaml
 from . import max_logging
 from . import max_utils
 from .models.wan.wan_utils import CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH, WAN_21_FUSION_X_MODEL_NAME_OR_PATH
+from maxdiffusion.common_types import LENGTH, KV_LENGTH
 
 
 def string_to_bool(s: str) -> bool:
@@ -175,6 +176,17 @@ class _HyperParameters:
     max_utils.write_config_raw_keys_for_gcs(raw_keys)
 
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
+    # Verify qkv is sharded across sequence.
+    if raw_keys["attention"] == "ring":
+      logical_axis_rules = list(raw_keys["logical_axis_rules"])
+      q_seq_sharding = (LENGTH, "fsdp")
+      kv_seq_sharding = (KV_LENGTH, "fsdp")
+      if q_seq_sharding not in logical_axis_rules:
+        logical_axis_rules.append(q_seq_sharding)
+      if kv_seq_sharding not in logical_axis_rules:
+        logical_axis_rules.append(kv_seq_sharding)
+      raw_keys["logical_axis_rules"] = tuple(logical_axis_rules)
+
     raw_keys["data_sharding"] = _lists_to_tuples(raw_keys["data_sharding"])
 
     if raw_keys["learning_rate_schedule_steps"] == -1:

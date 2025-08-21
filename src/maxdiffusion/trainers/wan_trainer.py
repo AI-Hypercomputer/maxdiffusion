@@ -255,7 +255,7 @@ class WanTrainer(WanCheckpointer):
           eval_data_iterator = self.load_dataset(mesh, is_training=False)
           eval_rng = jax.random.key(self.config.seed + step)
           eval_metrics = []
-           # Loop indefinitely until the iterator is exhausted
+          # Loop indefinitely until the iterator is exhausted
           while True:
             try:
               with mesh:
@@ -329,6 +329,7 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
   metrics = {"scalar": {"learning/loss": loss}, "scalars": {}}
   return new_state, scheduler_state, metrics, new_rng
 
+
 def eval_step(state, data, rng, scheduler_state, scheduler, config):
   """
   Computes the evaluation loss for a single batch without updating model weights.
@@ -338,44 +339,44 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   # This ensures the batch size is consistent, though it might be redundant
   # if the evaluation dataloader is already configured correctly.
   for k, v in data.items():
-      data[k] = v[: config.global_batch_size_to_train_on, :]
+    data[k] = v[: config.global_batch_size_to_train_on, :]
 
   # The loss function logic is identical to training. We are evaluating the model's
   # ability to perform its core training objective (e.g., denoising).
   def loss_fn(params):
-      # Reconstruct the model from its definition and parameters
-      model = nnx.merge(state.graphdef, params, state.rest_of_state)
+    # Reconstruct the model from its definition and parameters
+    model = nnx.merge(state.graphdef, params, state.rest_of_state)
 
-      # Prepare inputs
-      latents = data["latents"].astype(config.weights_dtype)
-      encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
-      bsz = latents.shape[0]
+    # Prepare inputs
+    latents = data["latents"].astype(config.weights_dtype)
+    encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
+    bsz = latents.shape[0]
 
-      # Sample random timesteps and noise, just as in a training step
-      timesteps = jax.random.randint(
-          timestep_rng,
-          (bsz,),
-          0,
-          scheduler.config.num_train_timesteps,
-      )
-      noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
-      noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
+    # Sample random timesteps and noise, just as in a training step
+    timesteps = jax.random.randint(
+        timestep_rng,
+        (bsz,),
+        0,
+        scheduler.config.num_train_timesteps,
+    )
+    noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
+    noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
 
-      # Get the model's prediction
-      model_pred = model(
-          hidden_states=noisy_latents,
-          timestep=timesteps,
-          encoder_hidden_states=encoder_hidden_states,
-      )
+    # Get the model's prediction
+    model_pred = model(
+        hidden_states=noisy_latents,
+        timestep=timesteps,
+        encoder_hidden_states=encoder_hidden_states,
+    )
 
-      # Calculate the loss against the target
-      training_target = scheduler.training_target(latents, noise, timesteps)
-      training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
-      loss = (training_target - model_pred) ** 2
-      loss = loss * training_weight
-      loss = jnp.mean(loss)
+    # Calculate the loss against the target
+    training_target = scheduler.training_target(latents, noise, timesteps)
+    training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
+    loss = (training_target - model_pred) ** 2
+    loss = loss * training_weight
+    loss = jnp.mean(loss)
 
-      return loss
+    return loss
 
   # --- Key Difference from train_step ---
   # Directly compute the loss without calculating gradients.

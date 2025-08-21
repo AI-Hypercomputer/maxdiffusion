@@ -112,6 +112,7 @@ def _unflatten_heads(tensor, heads):
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
   return tensor
 
+
 def _reshape_data_for_flash(tensor, heads):
   """
   Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
@@ -121,6 +122,7 @@ def _reshape_data_for_flash(tensor, heads):
   if tensor.ndim != 4:
     tensor = _unflatten_heads(tensor, heads)
   return tensor
+
 
 def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
   """
@@ -171,6 +173,7 @@ def _tpu_flash_attention(
     axis_names_kv: AxisNames,
     flash_block_sizes: BlockSizes,
     dtype: jnp.dtype = jnp.float32,
+    attention_kernel: str = "flash",
 ) -> jax.Array:
   """TPU Flash Attention"""
 
@@ -179,7 +182,6 @@ def _tpu_flash_attention(
   if key.shape[1] != query.shape[1]:
     assert key.shape[1] % 128 == 0
     kv_max_block_size = key.shape[1]
-    #q_max_block_size = kv_max_block_size
   else:
     kv_max_block_size = q_max_block_size
   if flash_block_sizes:
@@ -217,8 +219,14 @@ def _tpu_flash_attention(
 
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
-    q_segment_ids = jnp.where(jnp.arange(query.shape[2]) < query_seq_len, 1, 0)
-    kv_segment_ids = jnp.where(jnp.arange(key.shape[2]) < key_seq_len, 1, 0)
+
+    q_padded_len = query.shape[2]
+    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
+    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
+
+    kv_padded_len = key.shape[2]
+    kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
+    kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
     segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
@@ -228,51 +236,51 @@ def _tpu_flash_attention(
         head_shards=1,  # the sizes of the axis is sharding over heads
         q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
         block_sizes=block_sizes,
-        save_residuals=True
+        save_residuals=True if attention_kernel == "ring" else False,
     )
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0,0,0, None))
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
-    def ring_scan_body(carry, _):
-      m, l, o, k_current, v_current = carry
-      perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
-      k_next = jax.lax.ppermute(k_current, axis_name='fsdp', perm=perm)
-      v_next = jax.lax.ppermute(v_current, axis_name='fsdp', perm=perm)
+    if attention_kernel == "flash":
+      attention_output = vmapped_splash(query, key, value, segment_ids)
+    else:
+      if num_fsdp_shards > 1:
+        out, (lse,) = vmapped_splash(query, key, value, segment_ids)
+        m = lse.astype(jnp.float32)
+        l = jnp.exp(lse - m)
+        o = out.astype(jnp.float32) * l[..., None]
 
-      out_chunk, (lse_chunk,) = vmapped_splash(
-        query, k_current, v_current, segment_ids
-      )
+        perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
 
-      m_chunk = lse_chunk.astype(jnp.float32)
-      m_old = m
-      m = jnp.maximum(m_old, m_chunk)
-      
-      exp_m_diff = jnp.exp(m_old - m)
-      exp_m_chunk_diff = jnp.exp(m_chunk - m)
+        k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
+        v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
 
-      l = l * exp_m_diff + jnp.exp(lse_chunk - m)
-      o = o * exp_m_diff[..., None]
-      o += (exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32))
+        def ring_scan_body(carry, _):
+          m, l, o, k_current, v_current = carry
+          k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
+          v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
 
-      # Return the updated state for the next iteration
-      return (m, l, o, k_next, v_next), None
+          out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
 
-    lse_shape = query.shape[:-1]
-    m_init = jnp.full(lse_shape, -jnp.inf, dtype=jnp.float32)
-    l_init = jnp.zeros(lse_shape, dtype=jnp.float32)
-    o_init = jnp.zeros_like(query, dtype=jnp.float32)
+          m_chunk = lse_chunk.astype(jnp.float32)
+          m_old = m
+          m = jnp.maximum(m_old, m_chunk)
 
-    initial_carry = (m_init, l_init, o_init, key, value)
+          exp_m_diff = jnp.exp(m_old - m)
+          exp_m_chunk_diff = jnp.exp(m_chunk - m)
 
-    (m_final, l_final, o_final, _, _), _ = jax.lax.scan(
-      ring_scan_body,
-      initial_carry,
-      None,
-      length=num_fsdp_shards
-    )
+          l = l * exp_m_diff + jnp.exp(lse_chunk - m)
+          o = o * exp_m_diff[..., None]
+          o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
 
-    attention_output = o_final / l_final[..., None]
+          # Return the updated state for the next iteration
+          return (m, l, o, k_next, v_next), None
 
-    return attention_output[:,:,:query_seq_len,:kv_size].astype(query.dtype)
+        initial_carry = (m, l, o, k1, v1)
+        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
+
+        attention_output = o_final / l_final[..., None]
+
+    return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
   # This warning might show up when doing model eval for example, when calculating model flops
@@ -432,6 +440,10 @@ def _apply_attention(
   elif attention_kernel == "flash":
     return _tpu_flash_attention(
         query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype
+    )
+  elif attention_kernel == "ring":
+    return _tpu_flash_attention(
+        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel
     )
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
