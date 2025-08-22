@@ -25,6 +25,9 @@ jax.config.update("jax_use_shardy_partitioner", True)
 
 def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)
+  from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
+  checkpoint_loader = WanCheckpointer(config, "WAN_CHECKPOINT")
+  pipeline = checkpoint_loader.load_checkpoint()
   if pipeline is None:
     pipeline = WanPipeline.from_pretrained(config)
   s0 = time.perf_counter()
