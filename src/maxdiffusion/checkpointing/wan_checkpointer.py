@@ -23,6 +23,7 @@ from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpo
 from ..pipelines.wan.wan_pipeline import WanPipeline
 from .. import max_logging, max_utils
 import orbax.checkpoint as ocp
+from etils import epath
 
 WAN_CHECKPOINT = "WAN_CHECKPOINT"
 
@@ -33,7 +34,7 @@ class WanCheckpointer(ABC):
     self.config = config
     self.checkpoint_type = checkpoint_type
 
-    self.checkpoint_manager = create_orbax_checkpoint_manager(
+    self.checkpoint_manager: ocp.CheckpointManager = create_orbax_checkpoint_manager(
         self.config.checkpoint_dir,
         enable_checkpointing=True,
         save_interval_steps=1,
@@ -68,17 +69,10 @@ class WanCheckpointer(ABC):
         )
     )
     
-    params_restore_util_way = load_params_from_path(
-        self.config, 
-        self.checkpoint_manager, 
-        abstract_tree_structure_params, 
-        "wan_state",
-        step
-    )
-    
     max_logging.log("Restoring WAN checkpoint")
     restored_checkpoint = self.checkpoint_manager.restore(
-        step,
+        directory=epath.Path(self.config.checkpoint_dir),
+        step=step,
         args=ocp.args.Composite(
             wan_state=params_restore,
             # wan_state=params_restore_util_way,
