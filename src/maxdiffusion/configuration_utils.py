@@ -610,11 +610,6 @@ class ConfigMixin:
       json_str = json.dumps(config_dict, indent=2, sort_keys=True, cls=CustomEncoder)
     except Exception as e:
       max_logging.log(f"Error serializing config to JSON: {e}")
-      non_serializable_keys = []
-      for key in config_dict.keys():
-          if not isinstance(key, str):
-              non_serializable_keys.append(key)
-      print(f"Non-serializable keys: {non_serializable_keys}")
       raise e
       json_str = "{}"
 
