@@ -63,7 +63,7 @@ class CustomEncoder(json.JSONEncoder):
             return float(o)
         # Let the base class default method raise the TypeError for other types
         return super().default(o)
-      
+
 class FrozenDict(OrderedDict):
 
   def __init__(self, *args, **kwargs):
@@ -605,9 +605,9 @@ class ConfigMixin:
         max_logging.log(f"Skipping non-serializable config keys: {keys_to_remove}")
         for key in keys_to_remove:
             config_dict.pop(key)
-            
+
     try:
-      
+
       json_str = json.dumps(config_dict, indent=2, sort_keys=True, cls=CustomEncoder)
     except Exception as e:
       max_logging.log(f"Error serializing config to JSON: {e}")
