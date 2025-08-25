@@ -78,9 +78,18 @@ def make_tf_iterator(
   train_iter = multihost_dataloading.MultiHostDataLoadIterator(train_ds, mesh)
   return train_iter
 
+
 # TODO - https://github.com/google/array_record/blob/main/beam/examples/example_gcs_conversion.py
 def _make_tfrecord_iterator(
-    config, dataloading_host_index, dataloading_host_count, mesh, global_batch_size, feature_description_fn, prepare_sample_fn, dataset_path, is_training: bool
+    config,
+    dataloading_host_index,
+    dataloading_host_count,
+    mesh,
+    global_batch_size,
+    feature_description_fn,
+    prepare_sample_fn,
+    dataset_path,
+    is_training: bool,
 ):
   # set load_tfrecord_cached to True in config to use pre-processed tfrecord dataset.
   # pedagogical_examples/dataset_tf_cache_to_tfrecord.py to convert tf preprocessed dataset to tfrecord.
@@ -93,10 +102,10 @@ def _make_tfrecord_iterator(
   # Determine whether to use the "cached" dataset, which requires externally
   # provided parsing functions, or the default one with its internal parsing logic.
   make_cached_tfrecord_iterator = (
-    config.cache_latents_text_encoder_outputs
-    and is_dataset_dir_valid
-    and "load_tfrecord_cached" in config.get_keys()
-    and config.load_tfrecord_cached
+      config.cache_latents_text_encoder_outputs
+      and is_dataset_dir_valid
+      and "load_tfrecord_cached" in config.get_keys()
+      and config.load_tfrecord_cached
   )
 
   feature_description = {
@@ -121,42 +130,47 @@ def _make_tfrecord_iterator(
   if not is_training:
     num_eval_samples = 0
     for _ in ds:
-        num_eval_samples += 1
+      num_eval_samples += 1
 
     remainder = num_eval_samples % global_batch_size
     if remainder != 0:
-        num_to_pad = global_batch_size - remainder
-        # Create a dataset of padding samples from the beginning
-        padding_ds = ds.take(num_to_pad)
-        # Add the padding samples to the end
-        ds = ds.concatenate(padding_ds)
-        max_logging.log(f"Padded evaluation dataset with {num_to_pad} samples.")
+      num_to_pad = global_batch_size - remainder
+      # Create a dataset of padding samples from the beginning
+      padding_ds = ds.take(num_to_pad)
+      # Add the padding samples to the end
+      ds = ds.concatenate(padding_ds)
+      max_logging.log(f"Padded evaluation dataset with {num_to_pad} samples.")
 
   used_prepare_sample = prepare_sample_fn if make_cached_tfrecord_iterator else prepare_sample
   ds = (
-    ds.shard(num_shards=dataloading_host_count, index=dataloading_host_index)
-    .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
-    .map(used_prepare_sample, num_parallel_calls=AUTOTUNE)
+      ds.shard(num_shards=dataloading_host_count, index=dataloading_host_index)
+      .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
+      .map(used_prepare_sample, num_parallel_calls=AUTOTUNE)
   )
   if is_training:
     ds = (
-      ds.shuffle(global_batch_size * 10)
-      .batch(global_batch_size // dataloading_host_count, drop_remainder=True)
-      .repeat(-1)
-      .prefetch(AUTOTUNE)
+        ds.shuffle(global_batch_size * 10)
+        .batch(global_batch_size // dataloading_host_count, drop_remainder=True)
+        .repeat(-1)
+        .prefetch(AUTOTUNE)
     )
   # For Evaluation
   else:
-    ds = (
-      ds.batch(global_batch_size // dataloading_host_count, drop_remainder=False)
-      .prefetch(AUTOTUNE)
-    )
+    ds = ds.batch(global_batch_size // dataloading_host_count, drop_remainder=False).prefetch(AUTOTUNE)
 
   iter = multihost_dataloading.MultiHostDataLoadIterator(ds, mesh)
   return iter
 
+
 def make_tfrecord_iterator(
-    config, dataloading_host_index, dataloading_host_count, mesh, global_batch_size, feature_description, prepare_sample_fn, is_training
+    config,
+    dataloading_host_index,
+    dataloading_host_count,
+    mesh,
+    global_batch_size,
+    feature_description,
+    prepare_sample_fn,
+    is_training,
 ):
   """Iterator for TFRecord format. For Laion dataset,
   check out preparation script
@@ -165,4 +179,14 @@ def make_tfrecord_iterator(
   # Currently only support evaluation on tfrecord. To avoid influencing previous reference, judge whether is training dataset.
   # TODO: refactor to support evaluation on all dataset format.
   dataset_path = config.train_data_dir if is_training else config.eval_data_dir
-  return _make_tfrecord_iterator(config, dataloading_host_index, dataloading_host_count, mesh, global_batch_size, feature_description, prepare_sample_fn, dataset_path, is_training)
+  return _make_tfrecord_iterator(
+      config,
+      dataloading_host_index,
+      dataloading_host_count,
+      mesh,
+      global_batch_size,
+      feature_description,
+      prepare_sample_fn,
+      dataset_path,
+      is_training,
+  )

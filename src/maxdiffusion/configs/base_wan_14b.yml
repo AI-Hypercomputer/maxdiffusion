@@ -56,8 +56,9 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
+attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring
 flash_min_seq_length: 4096
+dropout: 0.1
 
 flash_block_sizes: {}
 # Use on v6e
