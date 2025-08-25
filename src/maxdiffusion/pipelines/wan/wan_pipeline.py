@@ -286,7 +286,7 @@ class WanPipeline:
       return model
     max_logging.log("Quantizing transformer with Qwix.")
 
-    batch_size = int(config.per_device_batch_size * jax.local_device_count())
+    batch_size = jnp.ceil(config.per_device_batch_size * jax.local_device_count()).astype(jnp.int32)
     latents, prompt_embeds, timesteps = get_dummy_wan_inputs(config, pipeline, batch_size)
     model_inputs = (latents, timesteps, prompt_embeds)
     with mesh:
