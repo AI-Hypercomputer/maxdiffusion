@@ -27,6 +27,7 @@ import yaml
 from . import max_logging
 from . import max_utils
 from .models.wan.wan_utils import CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH, WAN_21_FUSION_X_MODEL_NAME_OR_PATH
+from maxdiffusion.common_types import LENGTH, KV_LENGTH
 
 
 def string_to_bool(s: str) -> bool:
@@ -142,7 +143,9 @@ class _HyperParameters:
       if "quantization" not in raw_keys:
         raise ValueError("Quantization type is not set when use_qwix_quantization is enabled.")
       elif raw_keys["quantization"] not in ["int8", "fp8", "fp8_full"]:
-        raise ValueError(f"Quantization type is not supported when use_qwix_quantization is enabled: {raw_keys['quantization']}")
+        raise ValueError(
+            f"Quantization type is not supported when use_qwix_quantization is enabled: {raw_keys['quantization']}"
+        )
 
   @staticmethod
   def calculate_global_batch_sizes(per_device_batch_size):
@@ -173,6 +176,17 @@ class _HyperParameters:
     max_utils.write_config_raw_keys_for_gcs(raw_keys)
 
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
+    # Verify qkv is sharded across sequence.
+    if raw_keys["attention"] == "ring":
+      logical_axis_rules = list(raw_keys["logical_axis_rules"])
+      q_seq_sharding = (LENGTH, "fsdp")
+      kv_seq_sharding = (KV_LENGTH, "fsdp")
+      if q_seq_sharding not in logical_axis_rules:
+        logical_axis_rules.append(q_seq_sharding)
+      if kv_seq_sharding not in logical_axis_rules:
+        logical_axis_rules.append(kv_seq_sharding)
+      raw_keys["logical_axis_rules"] = tuple(logical_axis_rules)
+
     raw_keys["data_sharding"] = _lists_to_tuples(raw_keys["data_sharding"])
 
     if raw_keys["learning_rate_schedule_steps"] == -1:

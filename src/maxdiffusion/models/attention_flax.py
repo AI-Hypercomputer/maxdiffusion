@@ -113,7 +113,7 @@ def _unflatten_heads(tensor, heads):
   return tensor
 
 
-def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
+def _reshape_data_for_flash(tensor, heads):
   """
   Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
   Pads seq_len to a multiple of flash_block_size, and ensures the resulting number of
@@ -121,6 +121,16 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1
   """
   if tensor.ndim != 4:
     tensor = _unflatten_heads(tensor, heads)
+  return tensor
+
+
+def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
+  """
+  Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
+  Pads seq_len to a multiple of flash_block_size, and ensures the resulting number of
+  blocks is divisible by the number of shards.
+  """
+  tensor = _reshape_data_for_flash(tensor, heads)
 
   # Pad head_dim to 128 if less than that.
   kv_size = tensor.shape[-1]
@@ -148,8 +158,7 @@ def _reshape_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1
 
   if kv_size < 128 or seq_len_pad != 0:
     npad = ((0, 0), (0, 0), (0, seq_len_pad), (0, head_dim_pad))
-    padded_tensor = jnp.pad(tensor, npad)
-    tensor = jax.lax.with_sharding_constraint(padded_tensor, PartitionSpec("data", "tensor", "fsdp", None))
+    tensor = jnp.pad(tensor, npad)
 
   return tensor, kv_size, seq_len
 
@@ -164,45 +173,62 @@ def _tpu_flash_attention(
     axis_names_kv: AxisNames,
     flash_block_sizes: BlockSizes,
     dtype: jnp.dtype = jnp.float32,
+    attention_kernel: str = "flash",
 ) -> jax.Array:
   """TPU Flash Attention"""
 
-  max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  # This is the case for cross-attn.
+  if key.shape[1] != query.shape[1]:
+    assert key.shape[1] % 128 == 0
+    kv_max_block_size = key.shape[1]
+  else:
+    kv_max_block_size = q_max_block_size
   if flash_block_sizes:
     block_sizes = flash_block_sizes
   else:
     block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=min(max_block_size, query.shape[2]),
-        block_kv_compute=min(max_block_size, key.shape[2]),
-        block_kv=min(max_block_size, key.shape[2]),
-        block_q_dkv=min(max_block_size, query.shape[2]),
-        block_kv_dkv=min(max_block_size, key.shape[2]),
-        block_kv_dkv_compute=min(max_block_size, query.shape[2]),
-        block_q_dq=min(max_block_size, query.shape[2]),
-        block_kv_dq=min(max_block_size, query.shape[2]),
+        block_q=min(q_max_block_size, query.shape[2]),
+        block_kv_compute=min(kv_max_block_size, key.shape[2]),
+        block_kv=min(kv_max_block_size, key.shape[2]),
+        block_q_dkv=min(q_max_block_size, query.shape[2]),
+        block_kv_dkv=min(kv_max_block_size, key.shape[2]),
+        block_kv_dkv_compute=min(kv_max_block_size, query.shape[2]),
+        block_q_dq=min(q_max_block_size, query.shape[2]),
+        block_kv_dq=min(kv_max_block_size, query.shape[2]),
     )
-
   num_fsdp_shards = mesh.shape["fsdp"]
-  query, kv_size, query_seq_len = _reshape_data_for_flash(query, heads, block_sizes.block_q, num_fsdp_shards)
-  key, _, _ = _reshape_data_for_flash(key, heads, block_sizes.block_kv_compute, num_fsdp_shards)
-  value, _, _ = _reshape_data_for_flash(value, heads, block_sizes.block_kv_compute, num_fsdp_shards)
+  query = _reshape_data_for_flash(query, heads)
+  key = _reshape_data_for_flash(key, heads)
+  value = _reshape_data_for_flash(value, heads)
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
 
   @functools.partial(
       shard_map.shard_map,
       mesh=mesh,
-      in_specs=(
-          q_axis_names,
-          kv_axis_names,
-          kv_axis_names,
-      ),
+      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
       out_specs=q_axis_names,
       check_rep=False,
   )
   def wrap_flash_attention(query, key, value):
+
+    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_sizes.block_q)
+    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_sizes.block_kv_compute)
+    value, _, _ = _pad_data_for_flash(value, heads, block_sizes.block_kv_compute)
+
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+
+    q_padded_len = query.shape[2]
+    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
+    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
+
+    kv_padded_len = key.shape[2]
+    kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
+    kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
+
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
     splash_kernel = splash_attention_kernel.make_splash_mha(
@@ -210,9 +236,51 @@ def _tpu_flash_attention(
         head_shards=1,  # the sizes of the axis is sharding over heads
         q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
         block_sizes=block_sizes,
+        save_residuals=True if attention_kernel == "ring" else False,
     )
-    attention_output = jax.vmap(splash_kernel)(query, key, value)
-    return attention_output
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
+
+    if attention_kernel == "flash":
+      attention_output = vmapped_splash(query, key, value, segment_ids)
+    else:
+      if num_fsdp_shards > 1:
+        out, (lse,) = vmapped_splash(query, key, value, segment_ids)
+        m = lse.astype(jnp.float32)
+        l = jnp.exp(lse - m)
+        o = out.astype(jnp.float32) * l[..., None]
+
+        perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
+
+        k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
+        v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
+
+        def ring_scan_body(carry, _):
+          m, l, o, k_current, v_current = carry
+          k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
+          v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
+
+          out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
+
+          m_chunk = lse_chunk.astype(jnp.float32)
+          m_old = m
+          m = jnp.maximum(m_old, m_chunk)
+
+          exp_m_diff = jnp.exp(m_old - m)
+          exp_m_chunk_diff = jnp.exp(m_chunk - m)
+
+          l = l * exp_m_diff + jnp.exp(lse_chunk - m)
+          o = o * exp_m_diff[..., None]
+          o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
+
+          # Return the updated state for the next iteration
+          return (m, l, o, k_next, v_next), None
+
+        initial_carry = (m, l, o, k1, v1)
+        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
+
+        attention_output = o_final / l_final[..., None]
+
+    return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
   # This warning might show up when doing model eval for example, when calculating model flops
@@ -223,7 +291,6 @@ def _tpu_flash_attention(
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
     )
   x = wrap_flash_attention(query, key, value)
-  x = x[:, :, :query_seq_len, :kv_size]
   x = _reshape_heads_to_head_dim(x)
 
   return x
@@ -373,6 +440,10 @@ def _apply_attention(
   elif attention_kernel == "flash":
     return _tpu_flash_attention(
         query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype
+    )
+  elif attention_kernel == "ring":
+    return _tpu_flash_attention(
+        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel
     )
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)

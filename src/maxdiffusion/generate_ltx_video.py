@@ -16,15 +16,19 @@
 
 import numpy as np
 from absl import app
-from typing import Sequence
+from typing import Sequence, List, Optional, Union
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXVideoPipeline
-from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXMultiScalePipeline
+from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXMultiScalePipeline, ConditioningItem
+import maxdiffusion.pipelines.ltx_video.crf_compressor as crf_compressor
 from maxdiffusion import pyconfig, max_logging
+import torchvision.transforms.functional as TVF
 import imageio
 from datetime import datetime
 import os
 import time
 from pathlib import Path
+from PIL import Image
+import torch
 
 
 def calculate_padding(
@@ -42,6 +46,79 @@ def calculate_padding(
   pad_right = pad_width - pad_left  # Handles odd padding
   padding = (pad_left, pad_right, pad_top, pad_bottom)
   return padding
+
+
+def load_image_to_tensor_with_resize_and_crop(
+    image_input: Union[str, Image.Image],
+    target_height: int = 512,
+    target_width: int = 768,
+    just_crop: bool = False,
+) -> torch.Tensor:
+  """Load and process an image into a tensor.
+
+  Args:
+      image_input: Either a file path (str) or a PIL Image object
+      target_height: Desired height of output tensor
+      target_width: Desired width of output tensor
+      just_crop: If True, only crop the image to the target size without resizing
+  """
+  if isinstance(image_input, str):
+    image = Image.open(image_input).convert("RGB")
+  elif isinstance(image_input, Image.Image):
+    image = image_input
+  else:
+    raise ValueError("image_input must be either a file path or a PIL Image object")
+
+  input_width, input_height = image.size
+  aspect_ratio_target = target_width / target_height
+  aspect_ratio_frame = input_width / input_height
+  if aspect_ratio_frame > aspect_ratio_target:
+    new_width = int(input_height * aspect_ratio_target)
+    new_height = input_height
+    x_start = (input_width - new_width) // 2
+    y_start = 0
+  else:
+    new_width = input_width
+    new_height = int(input_width / aspect_ratio_target)
+    x_start = 0
+    y_start = (input_height - new_height) // 2
+
+  image = image.crop((x_start, y_start, x_start + new_width, y_start + new_height))
+  if not just_crop:
+    image = image.resize((target_width, target_height))
+
+  frame_tensor = TVF.to_tensor(image)  # PIL -> tensor (C, H, W), [0,1]
+  frame_tensor = TVF.gaussian_blur(frame_tensor, kernel_size=3, sigma=1.0)
+  frame_tensor_hwc = frame_tensor.permute(1, 2, 0)  # (C, H, W) -> (H, W, C)
+  frame_tensor_hwc = crf_compressor.compress(frame_tensor_hwc)
+  frame_tensor = frame_tensor_hwc.permute(2, 0, 1) * 255.0  # (H, W, C) -> (C, H, W)
+  frame_tensor = (frame_tensor / 127.5) - 1.0
+  # Create 5D tensor: (batch_size=1, channels=3, num_frames=1, height, width)
+  return frame_tensor.unsqueeze(0).unsqueeze(2)
+
+
+def prepare_conditioning(
+    conditioning_media_paths: List[str],
+    conditioning_strengths: List[float],
+    conditioning_start_frames: List[int],
+    height: int,
+    width: int,
+    padding: tuple[int, int, int, int],
+) -> Optional[List[ConditioningItem]]:
+  """Prepare conditioning items based on input media paths and their parameters."""
+  conditioning_items = []
+  for path, strength, start_frame in zip(conditioning_media_paths, conditioning_strengths, conditioning_start_frames):
+    num_input_frames = 1
+    media_tensor = load_media_file(
+        media_path=path,
+        height=height,
+        width=width,
+        max_frames=num_input_frames,
+        padding=padding,
+        just_crop=True,
+    )
+    conditioning_items.append(ConditioningItem(media_tensor, start_frame, strength))
+  return conditioning_items
 
 
 def convert_prompt_to_filename(text: str, max_len: int = 20) -> str:
@@ -66,6 +143,19 @@ def convert_prompt_to_filename(text: str, max_len: int = 20) -> str:
       break
 
   return "-".join(result)
+
+
+def load_media_file(
+    media_path: str,
+    height: int,
+    width: int,
+    max_frames: int,
+    padding: tuple[int, int, int, int],
+    just_crop: bool = False,
+) -> torch.Tensor:
+  media_tensor = load_image_to_tensor_with_resize_and_crop(media_path, height, width, just_crop=just_crop)
+  media_tensor = torch.nn.functional.pad(media_tensor, padding)
+  return media_tensor
 
 
 def get_unique_filename(
@@ -97,6 +187,25 @@ def run(config):
   pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt=enhance_prompt)
   if config.pipeline_type == "multi-scale":
     pipeline = LTXMultiScalePipeline(pipeline)
+  conditioning_media_paths = config.conditioning_media_paths if isinstance(config.conditioning_media_paths, List) else None
+  conditioning_start_frames = config.conditioning_start_frames
+  conditioning_strengths = None
+  if conditioning_media_paths:
+    if not conditioning_strengths:
+      conditioning_strengths = [1.0] * len(conditioning_media_paths)
+  conditioning_items = (
+      prepare_conditioning(
+          conditioning_media_paths=conditioning_media_paths,
+          conditioning_strengths=conditioning_strengths,
+          conditioning_start_frames=conditioning_start_frames,
+          height=config.height,
+          width=config.width,
+          padding=padding,
+      )
+      if conditioning_media_paths
+      else None
+  )
+
   s0 = time.perf_counter()
   images = pipeline(
       height=height_padded,
@@ -106,6 +215,7 @@ def run(config):
       output_type="pt",
       config=config,
       enhance_prompt=enhance_prompt,
+      conditioning_items=conditioning_items,
       seed=config.seed,
   )
   max_logging.log(f"Compile time: {time.perf_counter() - s0:.1f}s.")
