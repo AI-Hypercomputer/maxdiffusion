@@ -24,13 +24,12 @@ import re
 from collections import OrderedDict
 from pathlib import PosixPath
 from typing import Any, Dict, Tuple, Union
-
+from . import max_logging
 import numpy as np
 
 from huggingface_hub import create_repo, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
 from requests import HTTPError
-import max_logging
 import jax.numpy as jnp
 from . import __version__
 from .utils import (
