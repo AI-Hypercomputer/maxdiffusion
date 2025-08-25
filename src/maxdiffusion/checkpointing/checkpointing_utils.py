@@ -21,7 +21,6 @@ from typing import Optional, Tuple
 import jax
 import numpy as np
 import os
-from jaxtyping import PyTree
 import orbax.checkpoint
 from maxdiffusion import max_logging
 from etils import epath
