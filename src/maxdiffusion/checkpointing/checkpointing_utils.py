@@ -17,11 +17,11 @@
 
 """Create an Orbax CheckpointManager with specified (Async or not) Checkpointer."""
 
-from typing import Optional,  Tuple
+from typing import Optional, Tuple
 import jax
 import numpy as np
 import os
-from jaxtyping import PyTree 
+from jaxtyping import PyTree
 import orbax.checkpoint
 from maxdiffusion import max_logging
 from etils import epath
@@ -137,7 +137,7 @@ def load_params_from_path(
     unboxed_abstract_params,
     checkpoint_item: str,
     step: Optional[int] = None,
-    checkpoint_item_config: Optional[str] = None
+    checkpoint_item_config: Optional[str] = None,
 ):
   ckptr = ocp.PyTreeCheckpointer()
 
@@ -153,11 +153,7 @@ def load_params_from_path(
 
   restore_args = ocp.checkpoint_utils.construct_restore_args(unboxed_abstract_params)
   restored = ckptr.restore(
-      ckpt_path, 
-      item={"params": unboxed_abstract_params}, 
-      transforms={}, 
-      restore_args={
-        "params": restore_args}
+      ckpt_path, item={"params": unboxed_abstract_params}, transforms={}, restore_args={"params": restore_args}
   )
   return restored["params"]
 

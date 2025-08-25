@@ -66,7 +66,9 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
 
 
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
-def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None):
+def create_sharded_logical_transformer(
+    devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None
+):
 
   def create_model(rngs: nnx.Rngs, wan_config: dict):
     wan_transformer = WanModel(**wan_config, rngs=rngs)
@@ -110,7 +112,7 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
     )
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():
-    if restored_checkpoint: 
+    if restored_checkpoint:
       path = path[:-1]
     sharding = logical_state_sharding[path].value
     state[path].value = device_put_replicated(val, sharding)
@@ -303,9 +305,13 @@ class WanPipeline:
     return quantized_model
 
   @classmethod
-  def load_transformer(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None):
+  def load_transformer(
+      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None
+  ):
     with mesh:
-      wan_transformer = create_sharded_logical_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint)
+      wan_transformer = create_sharded_logical_transformer(
+          devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint
+      )
     return wan_transformer
 
   @classmethod
@@ -331,7 +337,9 @@ class WanPipeline:
     if not vae_only:
       if load_transformer:
         with mesh:
-          transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint)
+          transformer = cls.load_transformer(
+              devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint
+          )
 
       text_encoder = cls.load_text_encoder(config=config)
       tokenizer = cls.load_tokenizer(config=config)
@@ -353,7 +361,7 @@ class WanPipeline:
         mesh=mesh,
         config=config,
     )
-    
+
   @classmethod
   def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
     devices_array = max_utils.create_device_mesh(config)

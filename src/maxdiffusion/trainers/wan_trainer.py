@@ -149,8 +149,7 @@ class WanTrainer(WanCheckpointer):
 
     pipeline = self.load_checkpoint()
     # Generate a sample before training to compare against generated sample after training.
-    # UNCOMMENT
-    # pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
+    pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
 
     # save some memory.
     del pipeline.vae
@@ -168,7 +167,7 @@ class WanTrainer(WanCheckpointer):
     pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, train_data_iterator)
 
     posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
-    # print_ssim(pretrained_video_path, posttrained_video_path)
+    print_ssim(pretrained_video_path, posttrained_video_path)
 
   def training_loop(self, pipeline, optimizer, learning_rate_scheduler, train_data_iterator):
     mesh = pipeline.mesh
