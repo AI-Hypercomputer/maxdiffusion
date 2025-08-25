@@ -611,7 +611,6 @@ class ConfigMixin:
     except Exception as e:
       max_logging.log(f"Error serializing config to JSON: {e}")
       raise e
-      json_str = "{}"
 
     return json_str + "\n"
 
