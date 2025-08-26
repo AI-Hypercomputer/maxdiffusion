@@ -198,6 +198,7 @@ remat_policy: "NONE"
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1
+checkpoint_dir: ""
 # enables one replica to read the ckpt then broadcast to the rest
 enable_single_replica_ckpt_restoring: False
 

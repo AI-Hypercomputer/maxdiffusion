@@ -224,7 +224,6 @@ class WanTrainer(WanCheckpointer):
     # TODO - 0 needs to be changed to last step if continuing from an orbax checkpoint.
     start_step = 0
     per_device_tflops = self.calculate_tflops(pipeline)
-
     scheduler_state = pipeline.scheduler_state
     example_batch = load_next_batch(train_data_iterator, None, self.config)
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -274,12 +273,18 @@ class WanTrainer(WanCheckpointer):
           else:
             max_logging.log(f"Step {step}, evaluation dataset was empty.")
         example_batch = next_batch_future.result()
+        if step != 0 and self.config.checkpoint_every != -1 and step % self.config.checkpoint_every == 0:
+          max_logging.log(f"Saving checkpoint for step {step}")
+          self.save_checkpoint(step, pipeline, state.params)
 
       _metrics_queue.put(None)
       writer_thread.join()
       if writer:
         writer.flush()
-
+      if self.config.save_final_checkpoint:
+        max_logging.log(f"Saving final checkpoint for step {step}")
+        self.save_checkpoint(self.config.max_train_steps - 1, pipeline, state.params)
+        self.checkpoint_manager.wait_until_finished()
       # load new state for trained tranformer
       pipeline.transformer = nnx.merge(state.graphdef, state.params, state.rest_of_state)
       return pipeline

@@ -17,15 +17,15 @@
 
 """Create an Orbax CheckpointManager with specified (Async or not) Checkpointer."""
 
-from typing import Optional, Any
+from typing import Optional, Tuple
 import jax
 import numpy as np
 import os
-
 import orbax.checkpoint
 from maxdiffusion import max_logging
 from etils import epath
 from flax.training import train_state
+from flax.traverse_util import flatten_dict, unflatten_dict
 import orbax
 import orbax.checkpoint as ocp
 from orbax.checkpoint.logging import AbstractLogger
@@ -34,6 +34,7 @@ from orbax.checkpoint.checkpoint_manager import CheckpointManager, CheckpointMan
 STABLE_DIFFUSION_CHECKPOINT = "STABLE_DIFFUSION_CHECKPOINT"
 STABLE_DIFFUSION_XL_CHECKPOINT = "STABLE_DIFUSSION_XL_CHECKPOINT"
 FLUX_CHECKPOINT = "FLUX_CHECKPOINT"
+WAN_CHECKPOINT = "WAN_CHECKPOINT"
 
 
 def create_orbax_checkpoint_manager(
@@ -59,6 +60,8 @@ def create_orbax_checkpoint_manager(
 
   if checkpoint_type == FLUX_CHECKPOINT:
     item_names = ("flux_state", "flux_config", "vae_state", "vae_config", "scheduler", "scheduler_config")
+  elif checkpoint_type == WAN_CHECKPOINT:
+    item_names = ("wan_state", "wan_config")
   else:
     item_names = (
         "unet_config",
@@ -78,7 +81,7 @@ def create_orbax_checkpoint_manager(
   if dataset_type == "grain":
     item_names += ("iter",)
 
-  print("item_names: ", item_names)
+  max_logging.log(f"item_names: {item_names}")
 
   mngr = CheckpointManager(
       p,
@@ -133,6 +136,7 @@ def load_params_from_path(
     unboxed_abstract_params,
     checkpoint_item: str,
     step: Optional[int] = None,
+    checkpoint_item_config: Optional[str] = None,
 ):
   ckptr = ocp.PyTreeCheckpointer()
 
