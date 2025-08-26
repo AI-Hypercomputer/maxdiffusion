@@ -175,11 +175,12 @@ class ApproximateGELU(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "embed",
                 None,
                 "mlp",
+                "embed",
             ),
         ),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -217,7 +218,6 @@ class WanFeedForward(nnx.Module):
       raise NotImplementedError(f"{activation_fn} is not implemented.")
 
     self.drop_out = nnx.Dropout(dropout)
-
     self.proj_out = nnx.Linear(
         rngs=rngs,
         in_features=inner_dim,
@@ -229,9 +229,9 @@ class WanFeedForward(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
+                None,
                 "embed",
                 "mlp",
-                None,
             ),
         ),
     )
@@ -319,8 +319,7 @@ class WanTransformerBlock(nnx.Module):
 
     key = rngs.params()
     self.adaln_scale_shift_table = nnx.Param(
-      jax.random.normal(key, (1, 6, dim)) / dim**0.5,
-      sharding=("embed",))
+      jax.random.normal(key, (1, 6, dim)) / dim**0.5,)
 
   def __call__(self, hidden_states: jax.Array, encoder_hidden_states: jax.Array, temb: jax.Array, rotary_emb: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None,):
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(

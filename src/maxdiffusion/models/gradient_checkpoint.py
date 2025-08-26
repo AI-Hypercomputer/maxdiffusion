@@ -39,6 +39,7 @@ class GradientCheckpointType(Enum):
   NONE = auto()
   FULL = auto()
   MATMUL_WITHOUT_BATCH = auto()
+  OFFLOAD_MATMUL_WITHOUT_BATCH = auto()
   ATTN = auto()
 
   @classmethod
@@ -65,10 +66,16 @@ class GradientCheckpointType(Enum):
         return SKIP_GRADIENT_CHECKPOINT_KEY
       case GradientCheckpointType.FULL:
         return None
-      case GradientCheckpointType.ATTN:
-        return cp.save_and_offload_only_these_names(
-            names_which_can_be_saved=[], names_which_can_be_offloaded=[], offload_src="device", offload_dst="pinned_host"
+      case GradientCheckpointType.OFFLOAD_MATMUL_WITHOUT_BATCH:
+        return cp.offload_dot_with_no_batch_dims(
+           offload_src="device", offload_dst="pinned_host"
         )
+      case GradientCheckpointType.ATTN:
+        offload_policy = cp.save_and_offload_only_these_names(
+              names_which_can_be_saved=[], names_which_can_be_offloaded=["attn_output"], offload_src="device", offload_dst="pinned_host"
+          )
+        policy = jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
+        return cp.save_from_both_policies(offload_policy, policy)
       case GradientCheckpointType.MATMUL_WITHOUT_BATCH:
         return jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
 
