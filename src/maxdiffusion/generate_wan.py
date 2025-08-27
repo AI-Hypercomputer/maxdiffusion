@@ -32,20 +32,14 @@ def upload_video_to_gcs(output_dir: str, video_path: str):
         bucket_name = parts[0]
         folder_name = parts[1] if len(parts) > 1 else ''
 
-        # Initialize the GCS client
         storage_client = storage.Client()
-
-        # Get the bucket object
         bucket = storage_client.bucket(bucket_name)
 
-        # Define the source and destination paths
         source_file_path = f"./{video_path}"
         destination_blob_name = os.path.join(folder_name, "videos", video_path)
 
-        # Create a blob object
         blob = bucket.blob(destination_blob_name)
 
-        # Upload the file
         max_logging.log(f"Uploading {source_file_path} to {bucket_name}/{destination_blob_name}...")
         blob.upload_from_filename(source_file_path)
         max_logging.log(f"Upload complete {source_file_path}.")
@@ -54,13 +48,11 @@ def upload_video_to_gcs(output_dir: str, video_path: str):
         max_logging.log(f"An error occurred: {e}")
 
 def delete_file(file_path: str):
-   # Best practice: Check if the file exists before trying to delete it.
   if os.path.exists(file_path):
       try:
           os.remove(file_path)
           max_logging.log(f"Successfully deleted file: {file_path}")
       except OSError as e:
-          # This catches other issues like permission errors
           max_logging.log(f"Error deleting file '{file_path}': {e}")
   else:
       max_logging.log(f"The file '{file_path}' does not exist.")
@@ -92,7 +84,7 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
     export_to_video(videos[i], video_path, fps=config.fps)
     if config.output_dir.startswith("gs://"):
       upload_video_to_gcs(config.output_dir, video_path)
-      # Delete local files to avoid storing too manys videoss
+      # Delete local files to avoid storing too manys videos
       delete_file(f"./{video_path}")
   return
 
