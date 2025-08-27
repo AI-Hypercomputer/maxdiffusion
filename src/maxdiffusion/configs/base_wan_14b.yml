@@ -298,3 +298,4 @@ quantization_calibration_method: "absmax"
 # Eval model on per eval_every steps. -1 means don't eval.
 eval_every: -1
 eval_data_dir: ""
+enable_generate_video_for_eval: False # This will increase the used TPU memory.
