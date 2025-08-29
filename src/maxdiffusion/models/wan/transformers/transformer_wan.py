@@ -19,6 +19,7 @@ import math
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec
+from jax.ad_checkpoint import checkpoint_name
 from flax import nnx
 import numpy as np
 from .... import common_types
@@ -42,7 +43,7 @@ def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
   t_dim = attention_head_dim - h_dim - w_dim
   freqs = []
   for dim in [t_dim, h_dim, w_dim]:
-    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float64, use_real=False)
+    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float32, use_real=False)
     freqs.append(freq)
   freqs = jnp.concatenate(freqs, axis=1)
   t_size = attention_head_dim // 2 - 2 * (attention_head_dim // 6)
@@ -180,7 +181,7 @@ class ApproximateGELU(nnx.Module):
                 "embed",
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed",)),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -237,9 +238,10 @@ class WanFeedForward(nnx.Module):
     )
 
   def __call__(self, hidden_states: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None) -> jax.Array:
-    hidden_states = self.act_fn(hidden_states)
+    hidden_states = self.act_fn(hidden_states) # Output is (4, 75600, 13824)
+    hidden_states = checkpoint_name(hidden_states, "ffn_activation")
     hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
-    return self.proj_out(hidden_states)
+    return self.proj_out(hidden_states) # output is (4, 75600, 5120)
 
 
 class WanTransformerBlock(nnx.Module):

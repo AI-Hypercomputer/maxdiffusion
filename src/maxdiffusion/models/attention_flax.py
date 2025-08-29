@@ -800,7 +800,7 @@ class FlaxWanAttention(nnx.Module):
             nnx.initializers.zeros,
             (
                 None,
-                "heads"
+                "heads",
             ),
         ),
     )

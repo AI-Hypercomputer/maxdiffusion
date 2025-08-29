@@ -71,15 +71,25 @@ class GradientCheckpointType(Enum):
            offload_src="device", offload_dst="pinned_host"
         )
       case GradientCheckpointType.ATTN:
-        offload_policy = cp.save_and_offload_only_these_names(
-              names_which_can_be_saved=[], names_which_can_be_offloaded=["attn_output"], offload_src="device", offload_dst="pinned_host"
+        policy = cp.save_and_offload_only_these_names(
+              names_which_can_be_saved=[], 
+              names_which_can_be_offloaded=[
+                #"attn_output",
+                #"query_proj",
+                #"key_proj",
+                #"value_proj",
+                #"xq_out",
+                #"xk_out",
+                "ffn_activation"
+              ],
+              offload_src="device",
+              offload_dst="pinned_host"
           )
-        policy = jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
-        return cp.save_from_both_policies(offload_policy, policy)
+        return policy
       case GradientCheckpointType.MATMUL_WITHOUT_BATCH:
         return jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
 
-  def apply(self, module: nnx.Module) -> nnx.Module:
+  def apply(self, module: nnx.Module, static_argnums=()) -> nnx.Module:
     """
     Applies a gradient checkpoint policy to a module
     if no policy is needed, it will return the module as is
@@ -97,4 +107,5 @@ class GradientCheckpointType(Enum):
         module,
         prevent_cse=False,
         policy=policy,
+        static_argnums=static_argnums
     )
