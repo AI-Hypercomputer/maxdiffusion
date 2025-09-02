@@ -205,6 +205,7 @@ names_which_can_be_offloaded: []
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1
+checkpoint_dir: ""
 # enables one replica to read the ckpt then broadcast to the rest
 enable_single_replica_ckpt_restoring: False
 
@@ -304,3 +305,4 @@ quantization_calibration_method: "absmax"
 # Eval model on per eval_every steps. -1 means don't eval.
 eval_every: -1
 eval_data_dir: ""
+enable_generate_video_for_eval: False # This will increase the used TPU memory.

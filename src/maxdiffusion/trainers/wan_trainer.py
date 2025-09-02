@@ -31,6 +31,7 @@ from maxdiffusion import max_utils, max_logging, train_utils
 from maxdiffusion.checkpointing.wan_checkpointer import (WanCheckpointer, WAN_CHECKPOINT)
 from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
 from maxdiffusion.generate_wan import run as generate_wan
+from maxdiffusion.generate_wan import inference_generate_video
 from maxdiffusion.train_utils import (_tensorboard_writer_worker, load_next_batch, _metrics_queue)
 from maxdiffusion.video_processor import VideoProcessor
 from maxdiffusion.utils import load_video
@@ -151,9 +152,10 @@ class WanTrainer(WanCheckpointer):
     # Generate a sample before training to compare against generated sample after training.
     pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
 
-    # save some memory.
-    del pipeline.vae
-    del pipeline.vae_cache
+    if self.config.eval_every == -1 or (not self.config.enable_generate_video_for_eval):
+      # save some memory.
+      del pipeline.vae
+      del pipeline.vae_cache
 
     mesh = pipeline.mesh
     train_data_iterator = self.load_dataset(mesh, is_training=True)
@@ -224,7 +226,6 @@ class WanTrainer(WanCheckpointer):
     # TODO - 0 needs to be changed to last step if continuing from an orbax checkpoint.
     start_step = 0
     per_device_tflops = self.calculate_tflops(pipeline)
-
     scheduler_state = pipeline.scheduler_state
     example_batch = load_next_batch(train_data_iterator, None, self.config)
 
@@ -251,6 +252,9 @@ class WanTrainer(WanCheckpointer):
           train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
 
         if self.config.eval_every > 0 and (step + 1) % self.config.eval_every == 0:
+          if self.config.enable_generate_video_for_eval:
+            pipeline.transformer = nnx.merge(state.graphdef, state.params, state.rest_of_state)
+            inference_generate_video(self.config, pipeline, filename_prefix=f"{step+1}-train_steps-")
           # Re-create the iterator each time you start evaluation to reset it
           # This assumes your data loading logic can be called to get a fresh iterator.
           eval_data_iterator = self.load_dataset(mesh, is_training=False)
@@ -275,12 +279,18 @@ class WanTrainer(WanCheckpointer):
           else:
             max_logging.log(f"Step {step}, evaluation dataset was empty.")
         example_batch = next_batch_future.result()
+        if step != 0 and self.config.checkpoint_every != -1 and step % self.config.checkpoint_every == 0:
+          max_logging.log(f"Saving checkpoint for step {step}")
+          self.save_checkpoint(step, pipeline, state.params)
 
       _metrics_queue.put(None)
       writer_thread.join()
       if writer:
         writer.flush()
-
+      if self.config.save_final_checkpoint:
+        max_logging.log(f"Saving final checkpoint for step {step}")
+        self.save_checkpoint(self.config.max_train_steps - 1, pipeline, state.params)
+        self.checkpoint_manager.wait_until_finished()
       # load new state for trained tranformer
       pipeline.transformer = nnx.merge(state.graphdef, state.params, state.rest_of_state)
       return pipeline

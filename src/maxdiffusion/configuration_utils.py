@@ -24,13 +24,13 @@ import re
 from collections import OrderedDict
 from pathlib import PosixPath
 from typing import Any, Dict, Tuple, Union
-
+from . import max_logging
 import numpy as np
 
 from huggingface_hub import create_repo, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
 from requests import HTTPError
-
+import jax.numpy as jnp
 from . import __version__
 from .utils import (
     DIFFUSERS_CACHE,
@@ -47,6 +47,21 @@ logger = logging.get_logger(__name__)
 
 _re_configuration_file = re.compile(r"config\.(.*)\.json")
 
+class CustomEncoder(json.JSONEncoder):
+    """
+    Custom JSON encoder to handle non-serializable types like JAX/Numpy dtypes.
+    """
+    def default(self, o):
+        # This will catch the `dtype[bfloat16]` object and convert it to the string "bfloat16"
+        if isinstance(o, type(jnp.dtype('bfloat16'))):
+            return str(o)
+        # Add fallbacks for other numpy types if needed
+        if isinstance(o, np.integer):
+            return int(o)
+        if isinstance(o, np.floating):
+            return float(o)
+        # Let the base class default method raise the TypeError for other types
+        return super().default(o)
 
 class FrozenDict(OrderedDict):
 
@@ -579,8 +594,25 @@ class ConfigMixin:
     config_dict.pop("precision", None)
     config_dict.pop("weights_dtype", None)
     config_dict.pop("quant", None)
+    keys_to_remove = []
+    for key, value in config_dict.items():
+        # Check the type of the value by its class name to avoid import issues
+        if type(value).__name__ == 'Rngs':
+            keys_to_remove.append(key)
 
-    return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
+    if keys_to_remove:
+        max_logging.log(f"Skipping non-serializable config keys: {keys_to_remove}")
+        for key in keys_to_remove:
+            config_dict.pop(key)
+
+    try:
+
+      json_str = json.dumps(config_dict, indent=2, sort_keys=True, cls=CustomEncoder)
+    except Exception as e:
+      max_logging.log(f"Error serializing config to JSON: {e}")
+      raise e
+
+    return json_str + "\n"
 
   def to_json_file(self, json_file_path: Union[str, os.PathLike]):
     """

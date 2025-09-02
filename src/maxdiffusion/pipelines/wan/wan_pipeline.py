@@ -66,14 +66,19 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
 
 
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
-def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+def create_sharded_logical_transformer(
+    devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None
+):
 
   def create_model(rngs: nnx.Rngs, wan_config: dict):
     wan_transformer = WanModel(**wan_config, rngs=rngs)
     return wan_transformer
 
   # 1. Load config.
-  wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder="transformer")
+  if restored_checkpoint:
+    wan_config = restored_checkpoint["wan_config"]
+  else:
+    wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder="transformer")
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
   wan_config["weights_dtype"] = config.weights_dtype
@@ -102,11 +107,16 @@ def create_sharded_logical_transformer(devices_array: np.array, mesh: Mesh, rngs
   # 4. Load pretrained weights and move them to device using the state shardings from (3) above.
   # This helps with loading sharded weights directly into the accelerators without fist copying them
   # all to one device and then distributing them, thus using low HBM memory.
-  params = load_wan_transformer(
-      config.wan_transformer_pretrained_model_name_or_path, params, "cpu", num_layers=wan_config["num_layers"]
-  )
+  if restored_checkpoint:
+    params = restored_checkpoint["wan_state"]
+  else:
+    params = load_wan_transformer(
+        config.wan_transformer_pretrained_model_name_or_path, params, "cpu", num_layers=wan_config["num_layers"]
+    )
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():
+    if restored_checkpoint:
+      path = path[:-1]
     sharding = logical_state_sharding[path].value
     state[path].value = device_put_replicated(val, sharding)
   state = nnx.from_flat_state(state)
@@ -289,7 +299,7 @@ class WanPipeline:
       return model
     max_logging.log("Quantizing transformer with Qwix.")
 
-    batch_size = int(config.per_device_batch_size * jax.local_device_count())
+    batch_size = jnp.ceil(config.per_device_batch_size * jax.local_device_count()).astype(jnp.int32)
     latents, prompt_embeds, timesteps = get_dummy_wan_inputs(config, pipeline, batch_size)
     model_inputs = (latents, timesteps, prompt_embeds)
     with mesh:
@@ -298,9 +308,13 @@ class WanPipeline:
     return quantized_model
 
   @classmethod
-  def load_transformer(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+  def load_transformer(
+      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None
+  ):
     with mesh:
-      wan_transformer = create_sharded_logical_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+      wan_transformer = create_sharded_logical_transformer(
+          devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint
+      )
     return wan_transformer
 
   @classmethod
@@ -311,6 +325,45 @@ class WanPipeline:
         flow_shift=config.flow_shift,  # 5.0 for 720p, 3.0 for 480p
     )
     return scheduler, scheduler_state
+
+  @classmethod
+  def from_checkpoint(cls, config: HyperParameters, restored_checkpoint=None, vae_only=False, load_transformer=True):
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+    rng = jax.random.key(config.seed)
+    rngs = nnx.Rngs(rng)
+    transformer = None
+    tokenizer = None
+    scheduler = None
+    scheduler_state = None
+    text_encoder = None
+    if not vae_only:
+      if load_transformer:
+        with mesh:
+          transformer = cls.load_transformer(
+              devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint
+          )
+
+      text_encoder = cls.load_text_encoder(config=config)
+      tokenizer = cls.load_tokenizer(config=config)
+
+      scheduler, scheduler_state = cls.load_scheduler(config=config)
+
+    with mesh:
+      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+
+    return WanPipeline(
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        transformer=transformer,
+        vae=wan_vae,
+        vae_cache=vae_cache,
+        scheduler=scheduler,
+        scheduler_state=scheduler_state,
+        devices_array=devices_array,
+        mesh=mesh,
+        config=config,
+    )
 
   @classmethod
   def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
