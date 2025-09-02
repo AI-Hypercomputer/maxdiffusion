@@ -236,10 +236,10 @@ class WanFeedForward(nnx.Module):
     )
 
   def __call__(self, hidden_states: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None) -> jax.Array:
-    hidden_states = self.act_fn(hidden_states) # Output is (4, 75600, 13824)
+    hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
     hidden_states = checkpoint_name(hidden_states, "ffn_activation")
     hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
-    return self.proj_out(hidden_states) # output is (4, 75600, 5120)
+    return self.proj_out(hidden_states)  # output is (4, 75600, 5120)
 
 
 class WanTransformerBlock(nnx.Module):
@@ -281,7 +281,7 @@ class WanTransformerBlock(nnx.Module):
         weights_dtype=weights_dtype,
         precision=precision,
         attention_kernel=attention,
-        dropout=dropout
+        dropout=dropout,
     )
 
     # 1. Cross-attention
@@ -299,7 +299,7 @@ class WanTransformerBlock(nnx.Module):
         weights_dtype=weights_dtype,
         precision=precision,
         attention_kernel=attention,
-        dropout=dropout
+        dropout=dropout,
     )
     assert cross_attn_norm is True
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
@@ -313,15 +313,24 @@ class WanTransformerBlock(nnx.Module):
         dtype=dtype,
         weights_dtype=weights_dtype,
         precision=precision,
-        dropout=dropout
+        dropout=dropout,
     )
     self.norm3 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=False)
 
     key = rngs.params()
     self.adaln_scale_shift_table = nnx.Param(
-      jax.random.normal(key, (1, 6, dim)) / dim**0.5,)
+        jax.random.normal(key, (1, 6, dim)) / dim**0.5,
+    )
 
-  def __call__(self, hidden_states: jax.Array, encoder_hidden_states: jax.Array, temb: jax.Array, rotary_emb: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None,):
+  def __call__(
+      self,
+      hidden_states: jax.Array,
+      encoder_hidden_states: jax.Array,
+      temb: jax.Array,
+      rotary_emb: jax.Array,
+      deterministic: bool = True,
+      rngs: nnx.Rngs = None,
+  ):
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
         (self.adaln_scale_shift_table + temb), 6, axis=1
     )
@@ -331,13 +340,19 @@ class WanTransformerBlock(nnx.Module):
     # 1. Self-attention
     norm_hidden_states = (self.norm1(hidden_states) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
     attn_output = self.attn1(
-        hidden_states=norm_hidden_states, encoder_hidden_states=norm_hidden_states, rotary_emb=rotary_emb, deterministic=deterministic, rngs=rngs
+        hidden_states=norm_hidden_states,
+        encoder_hidden_states=norm_hidden_states,
+        rotary_emb=rotary_emb,
+        deterministic=deterministic,
+        rngs=rngs,
     )
     hidden_states = (hidden_states + attn_output * gate_msa).astype(hidden_states.dtype)
 
     # 2. Cross-attention
     norm_hidden_states = self.norm2(hidden_states)
-    attn_output = self.attn2(hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs)
+    attn_output = self.attn2(
+        hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs
+    )
     hidden_states = hidden_states + attn_output
 
     # 3. Feed-forward
@@ -380,7 +395,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       attention: str = "dot_product",
       remat_policy: str = "None",
       names_which_can_be_saved: list = [],
-      names_which_can_be_offloaded: list = []
+      names_which_can_be_offloaded: list = [],
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
@@ -417,7 +432,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     # 3. Transformer blocks
     @nnx.split_rngs(splits=num_layers)
-    @nnx.vmap(in_axes=0, out_axes=0, transform_metadata= {nnx.PARTITION_NAME: "layers_per_stage"} )
+    @nnx.vmap(in_axes=0, out_axes=0, transform_metadata={nnx.PARTITION_NAME: "layers_per_stage"})
     def init_block(rngs):
       return WanTransformerBlock(
           rngs=rngs,
@@ -496,7 +511,9 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       new_carry = (hidden_states, rngs_carry)
       return new_carry, None
 
-    rematted_block_forward = self.gradient_checkpoint.apply(scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded)
+    rematted_block_forward = self.gradient_checkpoint.apply(
+        scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded
+    )
     initial_carry = (hidden_states, rngs)
     final_carry, _ = nnx.scan(
         rematted_block_forward,

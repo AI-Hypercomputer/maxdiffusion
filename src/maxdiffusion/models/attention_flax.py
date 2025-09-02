@@ -747,9 +747,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            (
-                "embed",
-            ),
+            ("embed",),
         ),
     )
 
@@ -763,9 +761,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            (
-                "embed",
-            ),
+            ("embed",),
         ),
     )
 
@@ -779,9 +775,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            (
-                "embed",
-            ),
+            ("embed",),
         ),
     )
 
@@ -795,9 +789,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            (
-                "heads",
-            ),
+            ("heads",),
         ),
     )
 
@@ -813,9 +805,7 @@ class FlaxWanAttention(nnx.Module):
           dtype=dtype,
           scale_init=nnx.with_partitioning(
               nnx.initializers.ones,
-              (
-                  "norm",
-              ),
+              ("norm",),
           ),
           param_dtype=weights_dtype,
       )
@@ -826,9 +816,7 @@ class FlaxWanAttention(nnx.Module):
           dtype=dtype,
           scale_init=nnx.with_partitioning(
               nnx.initializers.ones,
-              (
-                  "norm",
-              ),
+              ("norm",),
           ),
           param_dtype=weights_dtype,
       )
@@ -850,8 +838,12 @@ class FlaxWanAttention(nnx.Module):
     return xq_out, xk_out
 
   def __call__(
-      self, hidden_states: jax.Array, encoder_hidden_states: jax.Array = None, rotary_emb: Optional[jax.Array] = None,
-      deterministic: bool = True, rngs: nnx.Rngs = None,
+      self,
+      hidden_states: jax.Array,
+      encoder_hidden_states: jax.Array = None,
+      rotary_emb: Optional[jax.Array] = None,
+      deterministic: bool = True,
+      rngs: nnx.Rngs = None,
   ) -> jax.Array:
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", "tensor"))

@@ -325,7 +325,7 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
         deterministic=False,
-        rngs=nnx.Rngs(dropout_rng)
+        rngs=nnx.Rngs(dropout_rng),
     )
 
     training_target = scheduler.training_target(latents, noise, timesteps)

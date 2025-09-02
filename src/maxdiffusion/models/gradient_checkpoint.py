@@ -67,21 +67,25 @@ class GradientCheckpointType(Enum):
       case GradientCheckpointType.FULL:
         return None
       case GradientCheckpointType.OFFLOAD_MATMUL_WITHOUT_BATCH:
-        return cp.offload_dot_with_no_batch_dims(
-           offload_src="device", offload_dst="pinned_host"
-        )
+        return cp.offload_dot_with_no_batch_dims(offload_src="device", offload_dst="pinned_host")
       case GradientCheckpointType.CUSTOM:
         policy = cp.save_and_offload_only_these_names(
-              names_which_can_be_saved=names_which_can_be_saved, 
-              names_which_can_be_offloaded=names_which_can_be_offloaded,
-              offload_src="device",
-              offload_dst="pinned_host"
-          )
+            names_which_can_be_saved=names_which_can_be_saved,
+            names_which_can_be_offloaded=names_which_can_be_offloaded,
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
         return policy
       case GradientCheckpointType.MATMUL_WITHOUT_BATCH:
         return jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
 
-  def apply(self, module: nnx.Module, names_which_can_be_saved: list = [], names_which_can_be_offloaded: list = [], static_argnums=()) -> nnx.Module:
+  def apply(
+      self,
+      module: nnx.Module,
+      names_which_can_be_saved: list = [],
+      names_which_can_be_offloaded: list = [],
+      static_argnums=(),
+  ) -> nnx.Module:
     """
     Applies a gradient checkpoint policy to a module
     if no policy is needed, it will return the module as is
@@ -95,9 +99,4 @@ class GradientCheckpointType(Enum):
     policy = self.to_jax_policy(names_which_can_be_saved, names_which_can_be_offloaded)
     if policy == SKIP_GRADIENT_CHECKPOINT_KEY:
       return module
-    return nnx.remat(  # pylint: disable=invalid-name
-        module,
-        prevent_cse=False,
-        policy=policy,
-        static_argnums=static_argnums
-    )
+    return nnx.remat(module, prevent_cse=False, policy=policy, static_argnums=static_argnums)  # pylint: disable=invalid-name

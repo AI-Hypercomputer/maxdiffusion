@@ -22,42 +22,46 @@ from absl import app
 from maxdiffusion.utils import export_to_video
 from google.cloud import storage
 
+
 def upload_video_to_gcs(output_dir: str, video_path: str):
-    """
-    Uploads a local video file to a specified Google Cloud Storage bucket.
-    """
-    try:
-        path_without_scheme = output_dir.removeprefix("gs://")
-        parts = path_without_scheme.split('/', 1)
-        bucket_name = parts[0]
-        folder_name = parts[1] if len(parts) > 1 else ''
+  """
+  Uploads a local video file to a specified Google Cloud Storage bucket.
+  """
+  try:
+    path_without_scheme = output_dir.removeprefix("gs://")
+    parts = path_without_scheme.split("/", 1)
+    bucket_name = parts[0]
+    folder_name = parts[1] if len(parts) > 1 else ""
 
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
 
-        source_file_path = f"./{video_path}"
-        destination_blob_name = os.path.join(folder_name, "videos", video_path)
+    source_file_path = f"./{video_path}"
+    destination_blob_name = os.path.join(folder_name, "videos", video_path)
 
-        blob = bucket.blob(destination_blob_name)
+    blob = bucket.blob(destination_blob_name)
 
-        max_logging.log(f"Uploading {source_file_path} to {bucket_name}/{destination_blob_name}...")
-        blob.upload_from_filename(source_file_path)
-        max_logging.log(f"Upload complete {source_file_path}.")
+    max_logging.log(f"Uploading {source_file_path} to {bucket_name}/{destination_blob_name}...")
+    blob.upload_from_filename(source_file_path)
+    max_logging.log(f"Upload complete {source_file_path}.")
 
-    except Exception as e:
-        max_logging.log(f"An error occurred: {e}")
+  except Exception as e:
+    max_logging.log(f"An error occurred: {e}")
+
 
 def delete_file(file_path: str):
   if os.path.exists(file_path):
-      try:
-          os.remove(file_path)
-          max_logging.log(f"Successfully deleted file: {file_path}")
-      except OSError as e:
-          max_logging.log(f"Error deleting file '{file_path}': {e}")
+    try:
+      os.remove(file_path)
+      max_logging.log(f"Successfully deleted file: {file_path}")
+    except OSError as e:
+      max_logging.log(f"Error deleting file '{file_path}': {e}")
   else:
-      max_logging.log(f"The file '{file_path}' does not exist.")
+    max_logging.log(f"The file '{file_path}' does not exist.")
+
 
 jax.config.update("jax_use_shardy_partitioner", True)
+
 
 def inference_generate_video(config, pipeline, filename_prefix=""):
   s0 = time.perf_counter()
@@ -87,6 +91,7 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
       # Delete local files to avoid storing too manys videos
       delete_file(f"./{video_path}")
   return
+
 
 def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)

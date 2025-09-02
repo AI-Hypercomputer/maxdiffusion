@@ -15,45 +15,46 @@
 """
 
 import unittest
-from types import SimpleNamespace
 from absl.testing import absltest
 
 import jax
 
 from maxdiffusion.models.gradient_checkpoint import GradientCheckpointType
 
+
 class GradientCheckpointTest(unittest.TestCase):
-    """Unit test suite for GradientCheckpointType policies."""
+  """Unit test suite for GradientCheckpointType policies."""
 
-    def test_none_policy(self):
-        policy = GradientCheckpointType.from_str("NONE")
-        self.assertEqual(policy.to_jax_policy(), "skip")
+  def test_none_policy(self):
+    policy = GradientCheckpointType.from_str("NONE")
+    self.assertEqual(policy.to_jax_policy(), "skip")
 
-    def test_full_policy(self):
-        policy = GradientCheckpointType.from_str("FULL")
-        self.assertIsNone(policy.to_jax_policy())
+  def test_full_policy(self):
+    policy = GradientCheckpointType.from_str("FULL")
+    self.assertIsNone(policy.to_jax_policy())
 
-    def test_matmul_without_batch_policy(self):
-        policy = GradientCheckpointType.from_str("MATMUL_WITHOUT_BATCH")
-        jax_policy_fn = policy.to_jax_policy()
-        self.assertIs(jax_policy_fn, jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims)
+  def test_matmul_without_batch_policy(self):
+    policy = GradientCheckpointType.from_str("MATMUL_WITHOUT_BATCH")
+    jax_policy_fn = policy.to_jax_policy()
+    self.assertIs(jax_policy_fn, jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims)
 
-    def test_offload_matmul_without_batch_policy(self):
-        """
-        Tests the offload variant by checking the class name of the return value.
-        """
-        policy = GradientCheckpointType.from_str("OFFLOAD_MATMUL_WITHOUT_BATCH")
-        jax_policy_fn = policy.to_jax_policy()
-        self.assertTrue(callable(jax_policy_fn))
+  def test_offload_matmul_without_batch_policy(self):
+    """
+    Tests the offload variant by checking the class name of the return value.
+    """
+    policy = GradientCheckpointType.from_str("OFFLOAD_MATMUL_WITHOUT_BATCH")
+    jax_policy_fn = policy.to_jax_policy()
+    self.assertTrue(callable(jax_policy_fn))
 
-    def test_custom_policy(self):
-        """
-        Tests the custom policy by checking the class name of the return value.
-        """
-        policy = GradientCheckpointType.from_str("CUSTOM")
-        names_to_offload = ["attn_output"]
-        jax_policy_fn = policy.to_jax_policy(names_which_can_be_offloaded=names_to_offload)
-        self.assertTrue(callable(jax_policy_fn))
+  def test_custom_policy(self):
+    """
+    Tests the custom policy by checking the class name of the return value.
+    """
+    policy = GradientCheckpointType.from_str("CUSTOM")
+    names_to_offload = ["attn_output"]
+    jax_policy_fn = policy.to_jax_policy(names_which_can_be_offloaded=names_to_offload)
+    self.assertTrue(callable(jax_policy_fn))
+
 
 if __name__ == "__main__":
-    absltest.main()
+  absltest.main()
