@@ -194,8 +194,14 @@ enable_data_shuffling: True
 # FULL - means full gradient checkpoint, whenever possible (minimum memory usage)
 # MATMUL_WITHOUT_BATCH - means gradient checkpoint for every linear/matmul operation,
 # except for ones that involve batch dimension - that means that all attention and projection
-# layers will have gradient checkpoint, but not the backward with respect to the parameters
+# layers will have gradient checkpoint, but not the backward with respect to the parameters.
+# OFFLOAD_MATMUL_WITHOUT_BATCH - same as MATMUL_WITHOUT_BATCH but offload instead of recomputing.
+# CUSTOM - set names to offload and save.
 remat_policy: "NONE"
+# For CUSTOM policy set below, current annotations are for: attn_output, query_proj, key_proj, value_proj
+# xq_out, xk_out, ffn_activation
+names_which_can_be_saved: []
+names_which_can_be_offloaded: []
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1

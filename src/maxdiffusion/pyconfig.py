@@ -120,6 +120,8 @@ class _HyperParameters:
 
   @staticmethod
   def wan_init(raw_keys):
+    if not any("layers_per_stage" in inner_tuple for inner_tuple in raw_keys["logical_axis_rules"]):
+      raw_keys["logical_axis_rules"]+= (("layers_per_stage", None),)
     if "wan_transformer_pretrained_model_name_or_path" in raw_keys:
       transformer_pretrained_model_name_or_path = raw_keys["wan_transformer_pretrained_model_name_or_path"]
       if transformer_pretrained_model_name_or_path == "":

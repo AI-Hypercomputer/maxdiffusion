@@ -734,7 +734,7 @@ class FlaxWanAttention(nnx.Module):
     # None axes corresponds to the stacked weights across all blocks
     # because of the use of nnx.vmap and nnx.scan.
     # Dims are [num_blocks, embed, heads]
-    kernel_axes = (None, "embed", "heads")
+    kernel_axes = ("embed", "heads")
     qkv_init_kernel = nnx.with_partitioning(nnx.initializers.lecun_normal(), kernel_axes)
 
     self.query = nnx.Linear(
@@ -748,7 +748,6 @@ class FlaxWanAttention(nnx.Module):
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
             (
-                None,
                 "embed",
             ),
         ),
@@ -765,7 +764,6 @@ class FlaxWanAttention(nnx.Module):
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
             (
-                None,
                 "embed",
             ),
         ),
@@ -782,7 +780,6 @@ class FlaxWanAttention(nnx.Module):
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
             (
-                None,
                 "embed",
             ),
         ),
@@ -792,14 +789,13 @@ class FlaxWanAttention(nnx.Module):
         rngs=rngs,
         in_features=self.inner_dim,
         out_features=self.inner_dim,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), (None, "heads", "embed")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
             (
-                None,
                 "heads",
             ),
         ),
@@ -818,7 +814,6 @@ class FlaxWanAttention(nnx.Module):
           scale_init=nnx.with_partitioning(
               nnx.initializers.ones,
               (
-                  None,
                   "norm",
               ),
           ),
@@ -832,7 +827,6 @@ class FlaxWanAttention(nnx.Module):
           scale_init=nnx.with_partitioning(
               nnx.initializers.ones,
               (
-                  None,
                   "norm",
               ),
           ),

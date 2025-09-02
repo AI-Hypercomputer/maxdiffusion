@@ -176,12 +176,11 @@ class ApproximateGELU(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                None,
                 "mlp",
                 "embed",
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -230,7 +229,6 @@ class WanFeedForward(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                None,
                 "embed",
                 "mlp",
             ),
@@ -381,6 +379,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
       remat_policy: str = "None",
+      names_which_can_be_saved: list = [],
+      names_which_can_be_offloaded: list = []
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
@@ -417,7 +417,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     # 3. Transformer blocks
     @nnx.split_rngs(splits=num_layers)
-    @nnx.vmap(in_axes=0, out_axes=0)
+    @nnx.vmap(in_axes=0, out_axes=0, transform_metadata= {nnx.PARTITION_NAME: "layers_per_stage"} )
     def init_block(rngs):
       return WanTransformerBlock(
           rngs=rngs,
@@ -438,6 +438,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
+    self.names_which_can_be_offloaded = names_which_can_be_offloaded
+    self.names_which_can_be_saved = names_which_can_be_saved
 
     self.blocks = init_block(rngs)
 
@@ -494,7 +496,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       new_carry = (hidden_states, rngs_carry)
       return new_carry, None
 
-    rematted_block_forward = self.gradient_checkpoint.apply(scan_fn)
+    rematted_block_forward = self.gradient_checkpoint.apply(scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded)
     initial_carry = (hidden_states, rngs)
     final_carry, _ = nnx.scan(
         rematted_block_forward,
