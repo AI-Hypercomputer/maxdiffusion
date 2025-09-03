@@ -39,7 +39,8 @@ class GradientCheckpointType(Enum):
   NONE = auto()
   FULL = auto()
   MATMUL_WITHOUT_BATCH = auto()
-  ATTN = auto()
+  OFFLOAD_MATMUL_WITHOUT_BATCH = auto()
+  CUSTOM = auto()
 
   @classmethod
   def from_str(cls, s: Optional[str] = None) -> "GradientCheckpointType":
@@ -56,7 +57,7 @@ class GradientCheckpointType(Enum):
       s = "none"
     return GradientCheckpointType[s.upper()]
 
-  def to_jax_policy(self):
+  def to_jax_policy(self, names_which_can_be_saved: list = [], names_which_can_be_offloaded: list = []):
     """
     Converts the gradient checkpoint type to a jax policy
     """
@@ -65,14 +66,26 @@ class GradientCheckpointType(Enum):
         return SKIP_GRADIENT_CHECKPOINT_KEY
       case GradientCheckpointType.FULL:
         return None
-      case GradientCheckpointType.ATTN:
-        return cp.save_and_offload_only_these_names(
-            names_which_can_be_saved=[], names_which_can_be_offloaded=[], offload_src="device", offload_dst="pinned_host"
+      case GradientCheckpointType.OFFLOAD_MATMUL_WITHOUT_BATCH:
+        return cp.offload_dot_with_no_batch_dims(offload_src="device", offload_dst="pinned_host")
+      case GradientCheckpointType.CUSTOM:
+        policy = cp.save_and_offload_only_these_names(
+            names_which_can_be_saved=names_which_can_be_saved,
+            names_which_can_be_offloaded=names_which_can_be_offloaded,
+            offload_src="device",
+            offload_dst="pinned_host",
         )
+        return policy
       case GradientCheckpointType.MATMUL_WITHOUT_BATCH:
         return jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
 
-  def apply(self, module: nnx.Module) -> nnx.Module:
+  def apply(
+      self,
+      module: nnx.Module,
+      names_which_can_be_saved: list = [],
+      names_which_can_be_offloaded: list = [],
+      static_argnums=(),
+  ) -> nnx.Module:
     """
     Applies a gradient checkpoint policy to a module
     if no policy is needed, it will return the module as is
@@ -83,11 +96,7 @@ class GradientCheckpointType(Enum):
     Returns:
         nn.Module: the module with the policy applied
     """
-    policy = self.to_jax_policy()
+    policy = self.to_jax_policy(names_which_can_be_saved, names_which_can_be_offloaded)
     if policy == SKIP_GRADIENT_CHECKPOINT_KEY:
       return module
-    return nnx.remat(  # pylint: disable=invalid-name
-        module,
-        prevent_cse=False,
-        policy=policy,
-    )
+    return nnx.remat(module, prevent_cse=False, policy=policy, static_argnums=static_argnums)  # pylint: disable=invalid-name

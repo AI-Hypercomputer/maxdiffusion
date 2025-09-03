@@ -107,7 +107,7 @@ def make_data_iterator(
         global_batch_size,
         feature_description,
         prepare_sample_fn,
-        is_training
+        is_training,
     )
   else:
     assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be in (tf, tfrecord, hf, grain)"

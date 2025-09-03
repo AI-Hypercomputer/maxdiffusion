@@ -734,7 +734,7 @@ class FlaxWanAttention(nnx.Module):
     # None axes corresponds to the stacked weights across all blocks
     # because of the use of nnx.vmap and nnx.scan.
     # Dims are [num_blocks, embed, heads]
-    kernel_axes = (None, "embed", "heads")
+    kernel_axes = ("embed", "heads")
     qkv_init_kernel = nnx.with_partitioning(nnx.initializers.lecun_normal(), kernel_axes)
 
     self.query = nnx.Linear(
@@ -747,10 +747,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            (
-                None,
-                "embed",
-            ),
+            ("embed",),
         ),
     )
 
@@ -764,10 +761,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            (
-                None,
-                "embed",
-            ),
+            ("embed",),
         ),
     )
 
@@ -781,10 +775,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            (
-                None,
-                "embed",
-            ),
+            ("embed",),
         ),
     )
 
@@ -792,11 +783,17 @@ class FlaxWanAttention(nnx.Module):
         rngs=rngs,
         in_features=self.inner_dim,
         out_features=self.inner_dim,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), (None, "heads", "embed")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
+        bias_init=nnx.with_partitioning(
+            nnx.initializers.zeros,
+            ("heads",),
+        ),
     )
+
+    self.drop_out = nnx.Dropout(dropout)
 
     self.norm_q = None
     self.norm_k = None
@@ -808,10 +805,7 @@ class FlaxWanAttention(nnx.Module):
           dtype=dtype,
           scale_init=nnx.with_partitioning(
               nnx.initializers.ones,
-              (
-                  None,
-                  "norm",
-              ),
+              ("norm",),
           ),
           param_dtype=weights_dtype,
       )
@@ -822,10 +816,7 @@ class FlaxWanAttention(nnx.Module):
           dtype=dtype,
           scale_init=nnx.with_partitioning(
               nnx.initializers.ones,
-              (
-                  None,
-                  "norm",
-              ),
+              ("norm",),
           ),
           param_dtype=weights_dtype,
       )
@@ -847,7 +838,12 @@ class FlaxWanAttention(nnx.Module):
     return xq_out, xk_out
 
   def __call__(
-      self, hidden_states: jax.Array, encoder_hidden_states: jax.Array = None, rotary_emb: Optional[jax.Array] = None
+      self,
+      hidden_states: jax.Array,
+      encoder_hidden_states: jax.Array = None,
+      rotary_emb: Optional[jax.Array] = None,
+      deterministic: bool = True,
+      rngs: nnx.Rngs = None,
   ) -> jax.Array:
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", "tensor"))
@@ -877,6 +873,7 @@ class FlaxWanAttention(nnx.Module):
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
     hidden_states = self.proj_attn(attn_output)
+    hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     return hidden_states
 
 

@@ -228,6 +228,7 @@ class WanTrainer(WanCheckpointer):
     per_device_tflops = self.calculate_tflops(pipeline)
     scheduler_state = pipeline.scheduler_state
     example_batch = load_next_batch(train_data_iterator, None, self.config)
+
     with ThreadPoolExecutor(max_workers=1) as executor:
       for step in np.arange(start_step, self.config.max_train_steps):
         if self.config.enable_profiler and step == first_profiling_step:
@@ -300,7 +301,7 @@ def train_step(state, data, rng, scheduler_state, scheduler, config):
 
 
 def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
-  _, new_rng, timestep_rng = jax.random.split(rng, num=3)
+  _, new_rng, timestep_rng, dropout_rng = jax.random.split(rng, num=4)
 
   for k, v in data.items():
     data[k] = v[: config.global_batch_size_to_train_on, :]
@@ -323,6 +324,8 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
         hidden_states=noisy_latents,
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
+        deterministic=False,
+        rngs=nnx.Rngs(dropout_rng),
     )
 
     training_target = scheduler.training_target(latents, noise, timesteps)

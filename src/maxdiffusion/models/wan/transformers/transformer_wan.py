@@ -19,6 +19,7 @@ import math
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec
+from jax.ad_checkpoint import checkpoint_name
 from flax import nnx
 import numpy as np
 from .... import common_types
@@ -42,7 +43,7 @@ def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
   t_dim = attention_head_dim - h_dim - w_dim
   freqs = []
   for dim in [t_dim, h_dim, w_dim]:
-    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float64, use_real=False)
+    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float32, use_real=False)
     freqs.append(freq)
   freqs = jnp.concatenate(freqs, axis=1)
   t_size = attention_head_dim // 2 - 2 * (attention_head_dim // 6)
@@ -175,12 +176,11 @@ class ApproximateGELU(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                None,
                 "mlp",
                 "embed",
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -217,6 +217,7 @@ class WanFeedForward(nnx.Module):
     else:
       raise NotImplementedError(f"{activation_fn} is not implemented.")
 
+    self.drop_out = nnx.Dropout(dropout)
     self.proj_out = nnx.Linear(
         rngs=rngs,
         in_features=inner_dim,
@@ -228,16 +229,17 @@ class WanFeedForward(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                None,
                 "embed",
                 "mlp",
             ),
         ),
     )
 
-  def __call__(self, hidden_states: jax.Array) -> jax.Array:
-    hidden_states = self.act_fn(hidden_states)
-    return self.proj_out(hidden_states)
+  def __call__(self, hidden_states: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None) -> jax.Array:
+    hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
+    hidden_states = checkpoint_name(hidden_states, "ffn_activation")
+    hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
+    return self.proj_out(hidden_states)  # output is (4, 75600, 5120)
 
 
 class WanTransformerBlock(nnx.Module):
@@ -260,6 +262,7 @@ class WanTransformerBlock(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
+      dropout: float = 0.0,
   ):
 
     # 1. Self-attention
@@ -278,6 +281,7 @@ class WanTransformerBlock(nnx.Module):
         weights_dtype=weights_dtype,
         precision=precision,
         attention_kernel=attention,
+        dropout=dropout,
     )
 
     # 1. Cross-attention
@@ -295,6 +299,7 @@ class WanTransformerBlock(nnx.Module):
         weights_dtype=weights_dtype,
         precision=precision,
         attention_kernel=attention,
+        dropout=dropout,
     )
     assert cross_attn_norm is True
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
@@ -308,13 +313,24 @@ class WanTransformerBlock(nnx.Module):
         dtype=dtype,
         weights_dtype=weights_dtype,
         precision=precision,
+        dropout=dropout,
     )
     self.norm3 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=False)
 
     key = rngs.params()
-    self.adaln_scale_shift_table = nnx.Param(jax.random.normal(key, (1, 6, dim)) / dim**0.5)
+    self.adaln_scale_shift_table = nnx.Param(
+        jax.random.normal(key, (1, 6, dim)) / dim**0.5,
+    )
 
-  def __call__(self, hidden_states: jax.Array, encoder_hidden_states: jax.Array, temb: jax.Array, rotary_emb: jax.Array):
+  def __call__(
+      self,
+      hidden_states: jax.Array,
+      encoder_hidden_states: jax.Array,
+      temb: jax.Array,
+      rotary_emb: jax.Array,
+      deterministic: bool = True,
+      rngs: nnx.Rngs = None,
+  ):
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
         (self.adaln_scale_shift_table + temb), 6, axis=1
     )
@@ -324,18 +340,24 @@ class WanTransformerBlock(nnx.Module):
     # 1. Self-attention
     norm_hidden_states = (self.norm1(hidden_states) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
     attn_output = self.attn1(
-        hidden_states=norm_hidden_states, encoder_hidden_states=norm_hidden_states, rotary_emb=rotary_emb
+        hidden_states=norm_hidden_states,
+        encoder_hidden_states=norm_hidden_states,
+        rotary_emb=rotary_emb,
+        deterministic=deterministic,
+        rngs=rngs,
     )
     hidden_states = (hidden_states + attn_output * gate_msa).astype(hidden_states.dtype)
 
     # 2. Cross-attention
     norm_hidden_states = self.norm2(hidden_states)
-    attn_output = self.attn2(hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states)
+    attn_output = self.attn2(
+        hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs
+    )
     hidden_states = hidden_states + attn_output
 
     # 3. Feed-forward
     norm_hidden_states = (self.norm3(hidden_states) * (1 + c_scale_msa) + c_shift_msa).astype(hidden_states.dtype)
-    ff_output = self.ffn(norm_hidden_states)
+    ff_output = self.ffn(norm_hidden_states, deterministic=deterministic, rngs=rngs)
     hidden_states = (hidden_states + ff_output * c_gate_msa).astype(hidden_states.dtype)
     return hidden_states
 
@@ -356,6 +378,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       freq_dim: int = 256,
       ffn_dim: int = 13824,
       num_layers: int = 40,
+      dropout: float = 0.0,
       cross_attn_norm: bool = True,
       qk_norm: Optional[str] = "rms_norm_across_heads",
       eps: float = 1e-6,
@@ -371,6 +394,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
       remat_policy: str = "None",
+      names_which_can_be_saved: list = [],
+      names_which_can_be_offloaded: list = [],
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
@@ -407,7 +432,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     # 3. Transformer blocks
     @nnx.split_rngs(splits=num_layers)
-    @nnx.vmap(in_axes=0, out_axes=0)
+    @nnx.vmap(in_axes=0, out_axes=0, transform_metadata={nnx.PARTITION_NAME: "layers_per_stage"})
     def init_block(rngs):
       return WanTransformerBlock(
           rngs=rngs,
@@ -424,9 +449,12 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           weights_dtype=weights_dtype,
           precision=precision,
           attention=attention,
+          dropout=dropout,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
+    self.names_which_can_be_offloaded = names_which_can_be_offloaded
+    self.names_which_can_be_saved = names_which_can_be_saved
 
     self.blocks = init_block(rngs)
 
@@ -454,6 +482,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       encoder_hidden_states_image: Optional[jax.Array] = None,
       return_dict: bool = True,
       attention_kwargs: Optional[Dict[str, Any]] = None,
+      deterministic: bool = True,
+      rngs: nnx.Rngs = None,
   ) -> Union[jax.Array, Dict[str, jax.Array]]:
     batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size
@@ -476,20 +506,23 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       raise NotImplementedError("img2vid is not yet implemented.")
 
     def scan_fn(carry, block):
-      hidden_states, encoder_hidden_states, timestep_proj, rotary_emb = carry
-      hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
-      return (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
+      hidden_states_carry, rngs_carry = carry
+      hidden_states = block(hidden_states_carry, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs_carry)
+      new_carry = (hidden_states, rngs_carry)
+      return new_carry, None
 
-    initial_carry = (hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
-    rematted_block_forward = self.gradient_checkpoint.apply(scan_fn)
-    final_carry = nnx.scan(
+    rematted_block_forward = self.gradient_checkpoint.apply(
+        scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded
+    )
+    initial_carry = (hidden_states, rngs)
+    final_carry, _ = nnx.scan(
         rematted_block_forward,
         length=self.num_layers,
         in_axes=(nnx.Carry, 0),
-        out_axes=nnx.Carry,
+        out_axes=(nnx.Carry, 0),
     )(initial_carry, self.blocks)
 
-    hidden_states = final_carry[0]
+    hidden_states, _ = final_carry
 
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 
