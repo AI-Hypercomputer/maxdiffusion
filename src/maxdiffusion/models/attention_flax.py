@@ -104,10 +104,10 @@ def _reshape_heads_to_head_dim(tensor):
   return jax.lax.with_sharding_constraint(reshaped_tensor, PartitionSpec("data", "fsdp", "tensor"))
 
 
-def _unflatten_heads(tensor, heads):
+def _unflatten_heads(tensor, heads, divisor=1):
   # reshapes from [b, s, h * d] to [b, h, s, d] (input format to flash format)
   batch, seq, heads_and_dim_head = tensor.shape
-  tensor = tensor.reshape(batch, seq, heads, heads_and_dim_head // heads)
+  tensor = tensor.reshape(batch, seq, heads // divisor, divisor * heads_and_dim_head // heads)
   # Transpose to ('batch', 'heads', 'length', 'kv')
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
   return tensor
@@ -120,7 +120,7 @@ def _reshape_data_for_flash(tensor, heads):
   blocks is divisible by the number of shards.
   """
   if tensor.ndim != 4:
-    tensor = _unflatten_heads(tensor, heads)
+    tensor = _unflatten_heads(tensor, heads, divisor=2)
   return tensor
 
 
