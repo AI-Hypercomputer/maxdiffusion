@@ -87,7 +87,7 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
     video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
     export_to_video(videos[i], video_path, fps=config.fps)
     if config.output_dir.startswith("gs://"):
-      upload_video_to_gcs(config.output_dir, video_path)
+      upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
       # Delete local files to avoid storing too manys videos
       delete_file(f"./{video_path}")
   return
@@ -128,7 +128,7 @@ def run(config, pipeline=None, filename_prefix=""):
     export_to_video(videos[i], video_path, fps=config.fps)
     saved_video_path.append(video_path)
     if config.output_dir.startswith("gs://"):
-      upload_video_to_gcs(config.output_dir, video_path)
+      upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
 
   s0 = time.perf_counter()
   videos = pipeline(
