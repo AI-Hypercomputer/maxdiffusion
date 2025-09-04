@@ -95,11 +95,11 @@ class NNXTimestepEmbedding(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "embed",
-                "mlp",
+                "timestep_ln1",
+                None,
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("timestep_ln1",),)
     )
 
     if cond_proj_dim is not None:
@@ -127,11 +127,10 @@ class NNXTimestepEmbedding(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "mlp",
-                "embed",
+                None,
+                "timestep_ln2"
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
     if post_act_fn is None:
@@ -275,11 +274,11 @@ class NNXPixArtAlphaTextProjection(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "embed",
-                "mlp",
+                "text_proj_ln1",
+                None,
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("text_proj_ln1",)),
     )
     self.act_1 = get_activation(act_fn)
 
@@ -294,11 +293,10 @@ class NNXPixArtAlphaTextProjection(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "mlp",
-                "embed",
+                None,
+                "text_proj_ln2"
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
   def __call__(self, caption):

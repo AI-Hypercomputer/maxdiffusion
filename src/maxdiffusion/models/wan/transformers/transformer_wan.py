@@ -176,11 +176,11 @@ class ApproximateGELU(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "mlp",
-                "embed",
+                "ffn_lin1",
+                None
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("ffn_lin1",)),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -229,8 +229,8 @@ class WanFeedForward(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "embed",
-                "mlp",
+                None,
+                "ffn_lin2",
             ),
         ),
     )
@@ -485,6 +485,9 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> Union[jax.Array, Dict[str, jax.Array]]:
+
+    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data",))
+
     batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size
     post_patch_num_frames = num_frames // p_t
@@ -496,6 +499,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     hidden_states = self.patch_embedding(hidden_states)
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
+
+    hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", ("tensor", "fsdp"), None))
 
     temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
         timestep, encoder_hidden_states, encoder_hidden_states_image
