@@ -120,7 +120,11 @@ def _reshape_data_for_flash(tensor, heads):
   blocks is divisible by the number of shards.
   """
   if tensor.ndim != 4:
-    tensor = _unflatten_heads(tensor, heads, divisor=2)
+    tensor = _unflatten_heads(tensor, heads)
+  else:
+    b, h, s, d = tensor.shape
+    if d != 256:
+      tensor = tensor.reshape(b, h//2, s, d*2)
   return tensor
 
 
