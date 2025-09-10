@@ -101,7 +101,7 @@ class WanTrainer(WanCheckpointer):
     return noise_scheduler, noise_scheduler_state
 
   def calculate_tflops(self, pipeline):
-    
+
     maxdiffusion_config = pipeline.config
     # Model configuration
     height = pipeline.config.height
@@ -129,10 +129,15 @@ class WanTrainer(WanCheckpointer):
     # Output_projection from attention
     attn_output_proj_flops = 2 * (2 * seq_len * hidden_dim**2)
 
-    total_attn_flops = (self_attn_qkv_proj_flops + self_attn_qk_v_flops +
-                        cross_attn_kv_proj_flops + cross_attn_q_proj_flops +
-                        cross_attention_qk_v_flops + attn_output_proj_flops)
-    
+    total_attn_flops = (
+        self_attn_qkv_proj_flops
+        + self_attn_qk_v_flops
+        + cross_attn_kv_proj_flops
+        + cross_attn_q_proj_flops
+        + cross_attention_qk_v_flops
+        + attn_output_proj_flops
+    )
+
     # FFN
     ffn_flops = 2 * (2 * seq_len * hidden_dim * ffn_dim)
 
@@ -140,7 +145,7 @@ class WanTrainer(WanCheckpointer):
 
     total_transformer_flops = flops_per_block * num_layers
 
-    tflops = pdbs * total_transformer_flops / 1e12
+    tflops = maxdiffusion_config.per_device_batch_size * total_transformer_flops / 1e12
     train_tflops = 3 * tflops
 
     max_logging.log(f"Calculated TFLOPs per pass: {train_tflops:.4f}")
