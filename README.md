@@ -71,7 +71,7 @@ MaxDiffusion supports
 
 We recommend starting with a single TPU host and then moving to multihost.
 
-Minimum requirements: Ubuntu Version 22.04, Python 3.10 and Tensorflow >= 2.12.0.
+Minimum requirements: Ubuntu Version 22.04, Python 3.11 and Tensorflow >= 2.12.0.
 
 ## Getting Started:
 
