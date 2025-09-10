@@ -795,8 +795,8 @@ class FlaxWanAttention(nnx.Module):
 
     self.drop_out = nnx.Dropout(dropout)
 
-    self.norm_q = None
-    self.norm_k = None
+    self.norm_q = nnx.data(None)
+    self.norm_k = nnx.data(None)
     if qk_norm is not None:
       self.norm_q = nnx.RMSNorm(
           num_features=self.inner_dim,

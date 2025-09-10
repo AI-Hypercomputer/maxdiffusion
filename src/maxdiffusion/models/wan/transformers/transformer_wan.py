@@ -209,7 +209,7 @@ class WanFeedForward(nnx.Module):
       inner_dim = int(dim * mult)
     dim_out = dim_out if dim_out is not None else dim
 
-    self.act_fn = None
+    self.act_fn = nnx.data(None)
     if activation_fn == "gelu-approximate":
       self.act_fn = ApproximateGELU(
           rngs=rngs, dim_in=dim, dim_out=inner_dim, bias=bias, dtype=dtype, weights_dtype=weights_dtype, precision=precision
