@@ -100,7 +100,8 @@ class WanTrainer(WanCheckpointer):
     noise_scheduler_state = noise_scheduler.set_timesteps(noise_scheduler_state, num_inference_steps=1000, training=True)
     return noise_scheduler, noise_scheduler_state
 
-  def calculate_tflops(self, pipeline):
+  @staticmethod
+  def calculate_tflops(pipeline):
 
     maxdiffusion_config = pipeline.config
     # Model configuration
@@ -113,21 +114,20 @@ class WanTrainer(WanCheckpointer):
     num_layers = transformer_config.num_layers
     heads = pipeline.transformer.config.num_attention_heads
     head_dim = pipeline.transformer.config.attention_head_dim
-    hidden_dim = heads * head_dim
     ffn_dim = transformer_config.ffn_dim
     seq_len = int(((height / 8) * (width / 8) * ((num_frames - 1) // pipeline.vae_scale_factor_temporal + 1)) / 4)
     text_encoder_dim = 512
     # Attention FLOPS
     # Self
-    self_attn_qkv_proj_flops = 3 * (2 * seq_len * hidden_dim**2)
-    self_attn_qk_v_flops = 2 * (2 * seq_len**2 * hidden_dim)
+    self_attn_qkv_proj_flops = 3 * (2 * seq_len * (heads * head_dim) ** 2)
+    self_attn_qk_v_flops = 2 * (2 * seq_len**2 * (heads * head_dim))
     # Cross
-    cross_attn_kv_proj_flops = 3 * (2 * text_encoder_dim * hidden_dim**2)
-    cross_attn_q_proj_flops = 1 * (2 * seq_len * hidden_dim**2)
-    cross_attention_qk_v_flops = 2 * (2 * seq_len * text_encoder_dim * hidden_dim)
+    cross_attn_kv_proj_flops = 3 * (2 * text_encoder_dim * (heads * head_dim) ** 2)
+    cross_attn_q_proj_flops = 1 * (2 * seq_len * (heads * head_dim) ** 2)
+    cross_attention_qk_v_flops = 2 * (2 * seq_len * text_encoder_dim * (heads * head_dim))
 
     # Output_projection from attention
-    attn_output_proj_flops = 2 * (2 * seq_len * hidden_dim**2)
+    attn_output_proj_flops = 2 * (2 * seq_len * (heads * head_dim) ** 2)
 
     total_attn_flops = (
         self_attn_qkv_proj_flops
@@ -139,7 +139,7 @@ class WanTrainer(WanCheckpointer):
     )
 
     # FFN
-    ffn_flops = 2 * (2 * seq_len * hidden_dim * ffn_dim)
+    ffn_flops = 2 * (2 * seq_len * (heads * head_dim) * ffn_dim)
 
     flops_per_block = total_attn_flops + ffn_flops
 
@@ -149,7 +149,7 @@ class WanTrainer(WanCheckpointer):
     train_tflops = 3 * tflops
 
     max_logging.log(f"Calculated TFLOPs per pass: {train_tflops:.4f}")
-    return train_tflops
+    return train_tflops, total_attn_flops, seq_len
 
   def get_data_shardings(self, mesh):
     data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
@@ -272,7 +272,7 @@ class WanTrainer(WanCheckpointer):
     )
     # TODO - 0 needs to be changed to last step if continuing from an orbax checkpoint.
     start_step = 0
-    per_device_tflops = self.calculate_tflops(pipeline)
+    per_device_tflops, _, _ = WanTrainer.calculate_tflops(pipeline)
     scheduler_state = pipeline.scheduler_state
     example_batch = load_next_batch(train_data_iterator, None, self.config)
 
