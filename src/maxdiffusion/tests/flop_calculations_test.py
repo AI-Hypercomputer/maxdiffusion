@@ -1,12 +1,15 @@
 import os
 import unittest
+from unittest.mock import Mock
 import jax
 from jax.sharding import Mesh
 import flax.linen as nn
 from absl.testing import absltest
 from maxdiffusion.max_utils import calculate_model_tflops
 from maxdiffusion.models.attention_flax import FlaxAttention
+from maxdiffusion.models.wan.transformers.transformer_wan import WanModel
 from .. import pyconfig, max_utils
+from maxdiffusion.trainers.wan_trainer import WanTrainer
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -19,6 +22,39 @@ class FlopCalculation(unittest.TestCase):
     self.config = pyconfig.config
     devices_array = max_utils.create_device_mesh(self.config)
     self.mesh = Mesh(devices_array, self.config.mesh_axes)
+
+  def assertFlopsAlmostEqual(self, flops1, flops2, rel_tol=5e-2):
+    """Assert that two FLOPs values are almost equal, within 5% relative tolerance."""
+    self.assertTrue(
+        abs(flops1 - flops2) / max(abs(flops1), abs(flops2)) <= rel_tol,
+        f"FLOPs values are not equal: {flops1} != {flops2} (rel_tol={rel_tol:.2e})",
+    )
+
+  def test_wan_21_flops(self):
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            "width=1280",
+            "height=720",
+            "num_frames=81",
+            "per_device_batch_size=1",
+        ],
+        unittest=True,
+    )
+    config = pyconfig.config
+    wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder="transformer")
+    pipeline = Mock()
+    pipeline.config = config
+    pipeline.vae_scale_factor_temporal = 4
+    transformer = Mock()
+    transformer.config = Mock()
+    transformer.config.configure_mock(**wan_config)
+    pipeline.transformer = transformer
+
+    calculated_tflops, attention_flops, seq_len = WanTrainer.calculate_tflops(pipeline)
+    golden_tflops = 19_573
+    self.assertFlopsAlmostEqual(calculated_tflops, golden_tflops)
 
   def test_dense_layer_model_flops(self):
     class SimpleLinearModel(nn.Module):

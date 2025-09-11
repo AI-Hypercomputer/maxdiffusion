@@ -214,8 +214,8 @@ def _tpu_flash_attention(
   def wrap_flash_attention(query, key, value):
 
     query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_sizes.block_q)
-    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_sizes.block_kv_compute)
-    value, _, _ = _pad_data_for_flash(value, heads, block_sizes.block_kv_compute)
+    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_sizes.block_kv)
+    value, _, _ = _pad_data_for_flash(value, heads, block_sizes.block_kv)
 
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
