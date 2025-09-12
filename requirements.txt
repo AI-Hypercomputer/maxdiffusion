@@ -5,7 +5,7 @@ grain
 google-cloud-storage>=2.17.0
 absl-py
 datasets
-flax>=0.10.2
+flax>=0.11.0
 optax>=0.2.3
 torch>=2.6.0
 torchvision>=0.20.1

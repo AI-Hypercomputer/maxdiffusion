@@ -225,7 +225,7 @@ class WanResample(nnx.Module):
   ):
     self.dim = dim
     self.mode = mode
-    self.time_conv = None
+    self.time_conv = nnx.data(None)
 
     if mode == "upsample2d":
       self.resample = nnx.Sequential(
@@ -554,8 +554,8 @@ class WanMidBlock(nnx.Module):
               precision=precision,
           )
       )
-    self.attentions = attentions
-    self.resnets = resnets
+    self.attentions = nnx.data(attentions)
+    self.resnets = nnx.data(resnets)
 
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
     x = self.resnets[0](x, feat_cache, feat_idx)
@@ -601,10 +601,10 @@ class WanUpBlock(nnx.Module):
           )
       )
       current_dim = out_dim
-    self.resnets = resnets
+    self.resnets = nnx.data(resnets)
 
     # Add upsampling layer if needed.
-    self.upsamplers = None
+    self.upsamplers = nnx.data(None)
     if upsample_mode is not None:
       self.upsamplers = [
           WanResample(
@@ -710,6 +710,7 @@ class WanEncoder3d(nnx.Module):
             )
         )
         scale /= 2.0
+    self.down_blocks = nnx.data(self.down_blocks)
 
     # middle_blocks
     self.mid_block = WanMidBlock(
@@ -873,6 +874,7 @@ class WanDecoder3d(nnx.Module):
       # Update scale for next iteration
       if upsample_mode is not None:
         scale *= 2.0
+    self.up_blocks = nnx.data(self.up_blocks)
 
     # output blocks
     self.norm_out = WanRMS_norm(dim=out_dim, images=False, rngs=rngs, channel_first=False)

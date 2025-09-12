@@ -23,6 +23,46 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
+echo "Checking Python version..."
+# This command will fail if the Python version is less than 3.12
+if ! python3 -c 'import sys; assert sys.version_info >= (3, 12)' 2>/dev/null; then
+    # If the command fails, print an error
+    CURRENT_VERSION=$(python3 --version 2>&1) # Get the full version string
+    echo -e "\n\e[31mERROR: Outdated Python Version! You are currently using $CURRENT_VERSION, but MaxDiffusion requires Python version 3.12 or higher.\e[0m"
+    # Ask the user if they want to create a virtual environment with uv
+    read -p "Would you like to create a Python 3.12 virtual environment using uv? (y/n) " -n 1 -r
+    echo # Move to a new line after input
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Check if uv is installed first; if not, install uv
+        if ! command -v uv &> /dev/null; then
+            pip install uv
+        fi
+        maxdiffusion_dir=$(pwd)
+        cd
+        # Ask for the venv name
+        read -p "Please enter a name for your new virtual environment (default: maxdiffusion_venv): " venv_name
+        # Use a default name if the user provides no input
+        if [ -z "$venv_name" ]; then
+            venv_name="maxdiffusion_venv"
+            echo "No name provided. Using default name: '$venv_name'"
+        fi
+        echo "Creating virtual environment '$venv_name' with Python 3.12..."
+        uv venv --python 3.12 "$venv_name" --seed
+        printf '%s\n' "$(realpath -- "$venv_name")" >> /tmp/venv_created
+        echo -e "\n\e[32mVirtual environment '$venv_name' created successfully!\e[0m"
+        echo "To activate it, run the following command:"
+        echo -e "\e[33m  source ~/$venv_name/bin/activate\e[0m"
+        echo "After activating the environment, please re-run this script."
+        cd $maxdiffusion_dir
+    else
+        echo "Exiting. Please upgrade your Python environment to continue."
+    fi
+    # Exit the script since the initial Python check failed
+    exit 1
+fi
+echo "Python version check passed. Continuing with script."
+echo "--------------------------------------------------"
+
 (sudo bash || bash) <<'EOF'
 mkdir -p /etc/needrestart/conf.d
 echo '$nrconf{restart} = "a";' > /etc/needrestart/conf.d/99-noninteractive.conf
