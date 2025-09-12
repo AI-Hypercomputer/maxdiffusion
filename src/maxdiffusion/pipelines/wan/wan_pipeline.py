@@ -265,7 +265,7 @@ class WanPipeline:
             module_path=".*",  # Apply to all modules
             weight_qtype=jnp.float8_e4m3fn,
             act_qtype=jnp.float8_e4m3fn,
-            bwd_qtype=jnp.float8_e5m2,
+            bwd_qtype=jnp.float8_e4m3fn,
             bwd_use_original_residuals=True,
             disable_channelwise_axes=True,  # per_tensor calibration
             weight_calibration_method=quantization_calibration_method,
