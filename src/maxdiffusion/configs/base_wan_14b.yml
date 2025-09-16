@@ -60,7 +60,16 @@ attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ri
 flash_min_seq_length: 4096
 dropout: 0.1
 
-flash_block_sizes: {}
+flash_block_sizes: {
+  "block_q" : 1024,
+  "block_kv_compute" : 256,
+  "block_kv" : 1024,
+  "block_q_dkv" : 1024,
+  "block_kv_dkv" : 1024,
+  "block_kv_dkv_compute" : 256,
+  "block_q_dq" : 1024,
+  "block_kv_dq" : 1024
+}
 # Use on v6e
 # flash_block_sizes: {
 #   "block_q" : 3024,
