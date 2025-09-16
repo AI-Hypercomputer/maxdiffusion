@@ -178,13 +178,14 @@ def _tpu_flash_attention(
   """TPU Flash Attention"""
 
   q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+
   # This is the case for cross-attn.
   if key.shape[1] != query.shape[1]:
     assert key.shape[1] % 128 == 0
     kv_max_block_size = key.shape[1]
   else:
     kv_max_block_size = q_max_block_size
-  if flash_block_sizes:
+  if flash_block_sizes and key.shape[1] == query.shape[1]:
     block_sizes = flash_block_sizes
   else:
     block_sizes = splash_attention_kernel.BlockSizes(
@@ -197,37 +198,40 @@ def _tpu_flash_attention(
         block_q_dq=min(q_max_block_size, query.shape[2]),
         block_kv_dq=min(kv_max_block_size, query.shape[2]),
     )
+
   num_fsdp_shards = mesh.shape["fsdp"]
-  query = _reshape_data_for_flash(query, heads)
-  key = _reshape_data_for_flash(key, heads)
-  value = _reshape_data_for_flash(value, heads)
+  shard_head_size = mesh.shape["tensor"]
+
+  query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_sizes.block_q, num_fsdp_shards)
+  key, _, key_seq_len = _pad_data_for_flash(key, heads, block_sizes.block_kv, num_fsdp_shards)
+  value, _, _ = _pad_data_for_flash(value, heads, block_sizes.block_kv, num_fsdp_shards)
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+
+  # qkv is padded to fit the number of fsdp shards during seq parallelism, Segment_ids are used
+  # to mask the padding tokens out of the attn calculations.
+  q_padded_len = query.shape[2]
+  q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
+  q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
+  q_segment_ids_axis_names = nn.logical_to_mesh_axes((LENGTH,))
+
+  kv_padded_len = key.shape[2]
+  kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
+  kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+  kv_segment_ids_axis_names = nn.logical_to_mesh_axes((KV_LENGTH,))
 
   @functools.partial(
       shard_map.shard_map,
       mesh=mesh,
-      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
+      in_specs=(q_axis_names, kv_axis_names, kv_axis_names, q_segment_ids_axis_names, kv_segment_ids_axis_names),
       out_specs=q_axis_names,
       check_rep=False,
   )
-  def wrap_flash_attention(query, key, value):
+  def wrap_flash_attention(query, key, value, q_segment_ids, kv_segment_ids):
 
-    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_sizes.block_q)
-    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_sizes.block_kv)
-    value, _, _ = _pad_data_for_flash(value, heads, block_sizes.block_kv)
-
+    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
-
-    q_padded_len = query.shape[2]
-    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
-    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
-
-    kv_padded_len = key.shape[2]
-    kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
-    kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
-    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
@@ -238,6 +242,7 @@ def _tpu_flash_attention(
         block_sizes=block_sizes,
         save_residuals=True if attention_kernel == "ring" else False,
     )
+
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
     if attention_kernel == "flash":
@@ -280,7 +285,7 @@ def _tpu_flash_attention(
 
         attention_output = o_final / l_final[..., None]
 
-    return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
+    return attention_output
 
   devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
   # This warning might show up when doing model eval for example, when calculating model flops
@@ -290,7 +295,8 @@ def _tpu_flash_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
     )
-  x = wrap_flash_attention(query, key, value)
+  x = wrap_flash_attention(query, key, value, q_segment_ids, kv_segment_ids)
+  x = x[:,:,:query_seq_len, :kv_size].astype(query.dtype)
   x = _reshape_heads_to_head_dim(x)
 
   return x
