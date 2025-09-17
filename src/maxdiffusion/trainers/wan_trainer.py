@@ -260,6 +260,7 @@ class WanTrainer(WanCheckpointer):
     )
 
     rng = jax.random.key(self.config.seed)
+    rng, eval_rng_key = jax.random.split(rng)
     start_step = 0
     last_step_completion = datetime.datetime.now()
     local_metrics_file = open(self.config.metrics_file, "a", encoding="utf8") if self.config.metrics_file else None
@@ -305,7 +306,7 @@ class WanTrainer(WanCheckpointer):
           # Re-create the iterator each time you start evaluation to reset it
           # This assumes your data loading logic can be called to get a fresh iterator.
           eval_data_iterator = self.load_dataset(mesh, is_training=False)
-          eval_rng = jax.random.key(self.config.seed + step)
+          eval_rng = eval_rng_key
           eval_metrics = []
           # Loop indefinitely until the iterator is exhausted
           while True:
@@ -394,7 +395,8 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   """
   Computes the evaluation loss for a single batch without updating model weights.
   """
-  _, new_rng, timestep_rng = jax.random.split(rng, num=3)
+  # These values are fixed for the evaluation dataset as the initial rng for each evluation is the same
+  noise_rng, timestep_rng, new_rng = jax.random.split(rng, num=3)
 
   # This ensures the batch size is consistent, though it might be redundant
   # if the evaluation dataloader is already configured correctly.
@@ -419,7 +421,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
         0,
         scheduler.config.num_train_timesteps,
     )
-    noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
+    noise = jax.random.normal(key=noise_rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
 
     # Get the model's prediction
@@ -427,6 +429,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
         hidden_states=noisy_latents,
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
+        deterministic=True,
     )
 
     # Calculate the loss against the target
