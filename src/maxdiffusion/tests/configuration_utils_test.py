@@ -16,7 +16,7 @@ def test_to_json_string_with_config():
     config_path = os.path.join(os.path.dirname(__file__), "..", "configs", "base_wan_14b.yml")
 
     # Initialize pyconfig with the YAML config
-    pyconfig.initialize([None, config_path])
+    pyconfig.initialize([None, config_path], unittest=True)
     config = pyconfig.config
 
     # Create a DummyConfigMixin instance
