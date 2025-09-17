@@ -20,7 +20,7 @@ cd maxdiffusion
 
 1. Within the root directory of the MaxDiffusion `git` repo, install dependencies by running:
 ```
-# If a Python 3.12+ virtual environment doesn't already exist, you'll need to run the install command twice.
+# If a Python 3.12+ virtual environment doesn't already exist, you'll need to run the install command three times.
 bash setup.sh MODE=stable DEVICE=tpu
 ```
 

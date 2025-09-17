@@ -35,7 +35,13 @@ if ! python3 -c 'import sys; assert sys.version_info >= (3, 12)' 2>/dev/null; th
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Check if uv is installed first; if not, install uv
         if ! command -v uv &> /dev/null; then
-            pip install uv
+            echo -e "\n'uv' command not found. Installing it now via the official installer..."
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+
+            echo -e "\n\e[33m'uv' has been installed.\e[0m"
+            echo "The installer likely printed instructions to update your shell's PATH."
+            echo "Please open a NEW terminal session (or 'source ~/.bashrc') and re-run this script."
+            exit 1
         fi
         maxdiffusion_dir=$(pwd)
         cd
