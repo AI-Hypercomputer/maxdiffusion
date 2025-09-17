@@ -23,6 +23,7 @@ import unittest
 from absl.testing import absltest
 
 import numpy as np
+import pytest
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
 import jax
