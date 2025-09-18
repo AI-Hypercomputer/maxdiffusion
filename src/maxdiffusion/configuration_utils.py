@@ -26,6 +26,7 @@ from pathlib import PosixPath
 from typing import Any, Dict, Tuple, Union
 from . import max_logging
 import numpy as np
+from dataclasses import asdict, is_dataclass
 
 from huggingface_hub import create_repo, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
@@ -54,16 +55,17 @@ class CustomEncoder(json.JSONEncoder):
   """
 
   def default(self, o):
-    # This will catch the `dtype[bfloat16]` object and convert it to the string "bfloat16"
     if isinstance(o, type(jnp.dtype("bfloat16"))):
       return str(o)
-    # Add fallbacks for other numpy types if needed
     if isinstance(o, np.integer):
       return int(o)
     if isinstance(o, np.floating):
       return float(o)
-    # Let the base class default method raise the TypeError for other types
-    return super().default(o)
+    if is_dataclass(o):
+      return asdict(o)
+    else:
+      max_logging.log(f"Warning: {o} of type {type(o)} is not JSON serializable")
+      return None
 
 
 class FrozenDict(OrderedDict):
