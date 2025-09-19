@@ -45,6 +45,13 @@ D_KV = common_types.D_KV
 EMBED = common_types.EMBED
 Quant = quantizations.AqtQuantization
 
+SELF_ATTN_HEAD = common_types.SELF_ATTN_HEAD
+SELF_ATTN_Q_LENGTH = common_types.SELF_ATTN_Q_LENGTH
+SELF_ATTN_KV_LENGTH = common_types.SELF_ATTN_KV_LENGTH
+CROSS_ATTN_HEAD = common_types.CROSS_ATTN_HEAD
+CROSS_ATTN_Q_LENGTH = common_types.CROSS_ATTN_Q_LENGTH
+CROSS_ATTN_KV_LENGTH = common_types.CROSS_ATTN_KV_LENGTH
+
 
 def _maybe_aqt_einsum(quant: Quant):
   return jnp.einsum if quant is None else quant.einsum()
@@ -184,7 +191,8 @@ def _tpu_flash_attention(
     kv_max_block_size = key.shape[1]
   else:
     kv_max_block_size = q_max_block_size
-  if flash_block_sizes:
+  # ensure that for cross attention we override the block sizes.
+  if flash_block_sizes and key.shape[1] == query.shape[1]:
     block_sizes = flash_block_sizes
   else:
     block_sizes = splash_attention_kernel.BlockSizes(
@@ -439,7 +447,16 @@ def _apply_attention(
     )
   elif attention_kernel == "flash":
     return _tpu_flash_attention(
-        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype
+        query,
+        key * scale,
+        value,
+        heads,
+        mesh,
+        axis_names_q,
+        axis_names_kv,
+        flash_block_sizes,
+        dtype,
+        attention_kernel,
     )
   elif attention_kernel == "ring":
     return _tpu_flash_attention(
@@ -701,6 +718,7 @@ class FlaxWanAttention(nnx.Module):
       precision: jax.lax.Precision = None,
       qkv_bias: bool = False,
       quant: Quant = None,
+      is_self_attention: bool = True,
   ):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
@@ -717,6 +735,13 @@ class FlaxWanAttention(nnx.Module):
     self.value_axis_names = value_axis_names
     self.out_axis_names = out_axis_names
 
+    if is_self_attention:
+      axis_names_q = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_Q_LENGTH, D_KV)
+      axis_names_kv = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_KV_LENGTH, D_KV)
+    else:
+      axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
+      axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
+
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
         attention_kernel=attention_kernel,
@@ -726,6 +751,8 @@ class FlaxWanAttention(nnx.Module):
         use_memory_efficient_attention=use_memory_efficient_attention,
         split_head_dim=split_head_dim,
         float32_qk_product=False,
+        axis_names_q=axis_names_q,
+        axis_names_kv=axis_names_kv,
         flash_min_seq_length=flash_min_seq_length,
         flash_block_sizes=flash_block_sizes,
         dtype=dtype,
