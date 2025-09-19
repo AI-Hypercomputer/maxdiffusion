@@ -53,7 +53,6 @@ CROSS_ATTN_Q_LENGTH = common_types.CROSS_ATTN_Q_LENGTH
 CROSS_ATTN_KV_LENGTH = common_types.CROSS_ATTN_KV_LENGTH
 
 
-
 def _maybe_aqt_einsum(quant: Quant):
   return jnp.einsum if quant is None else quant.einsum()
 
@@ -448,7 +447,16 @@ def _apply_attention(
     )
   elif attention_kernel == "flash":
     return _tpu_flash_attention(
-        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel,
+        query,
+        key * scale,
+        value,
+        heads,
+        mesh,
+        axis_names_q,
+        axis_names_kv,
+        flash_block_sizes,
+        dtype,
+        attention_kernel,
     )
   elif attention_kernel == "ring":
     return _tpu_flash_attention(
@@ -733,7 +741,7 @@ class FlaxWanAttention(nnx.Module):
     else:
       axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
       axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
-      
+
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
         attention_kernel=attention_kernel,

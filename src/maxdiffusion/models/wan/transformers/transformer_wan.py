@@ -353,7 +353,10 @@ class WanTransformerBlock(nnx.Module):
     # 2. Cross-attention
     norm_hidden_states = self.norm2(hidden_states)
     attn_output = self.attn2(
-        hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs,
+        hidden_states=norm_hidden_states,
+        encoder_hidden_states=encoder_hidden_states,
+        deterministic=deterministic,
+        rngs=rngs,
     )
     hidden_states = hidden_states + attn_output
 
