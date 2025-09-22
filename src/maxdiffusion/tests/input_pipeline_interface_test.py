@@ -21,9 +21,7 @@ import shutil
 import subprocess
 import unittest
 from absl.testing import absltest
-
 import numpy as np
-import pytest
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
 import jax
@@ -70,7 +68,6 @@ class InputPipelineInterface(unittest.TestCase):
   def setUp(self):
     InputPipelineInterface.dummy_data = {}
 
-  @pytest.mark.skip(reason="Debug segfault")
   def test_make_dreambooth_train_iterator(self):
 
     instance_class_gcs_dir = "gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/instance_class"
@@ -85,6 +82,7 @@ class InputPipelineInterface(unittest.TestCase):
             os.path.join(THIS_DIR, "..", "configs", "base14.yml"),
             "cache_latents_text_encoder_outputs=True",
             "dataset_name=my_dreambooth_dataset",
+            "transform_images_num_proc=1",
             f"instance_data_dir={instance_class_local_dir}",
             f"class_data_dir={class_class_local_dir}",
             "instance_prompt=photo of ohwx dog",

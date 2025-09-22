@@ -22,7 +22,7 @@ import jax
 from maxdiffusion import multihost_dataloading, max_logging
 
 AUTOTUNE = tf.data.AUTOTUNE
-
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def load_as_tf_dataset(dataset, global_batch_size, shuffle, dataloading_host_count):
   dataset = dataset.with_format("tensorflow")[:]
@@ -50,7 +50,7 @@ def make_tf_iterator(
         function=tokenize_fn,
         batched=True,
         remove_columns=[config.caption_column],
-        num_proc=1 if config.cache_latents_text_encoder_outputs else config.tokenize_captions_num_proc,
+        num_proc=None,
         desc="Running tokenizer on train dataset",
     )
     # need to do it before load_as_tf_dataset
@@ -60,7 +60,7 @@ def make_tf_iterator(
         function=image_transforms_fn,
         batched=True,
         remove_columns=[config.image_column],
-        num_proc=1 if config.cache_latents_text_encoder_outputs else config.transform_images_num_proc,
+        num_proc=None,
         desc="Transforming images",
     )
     if config.cache_latents_text_encoder_outputs:
