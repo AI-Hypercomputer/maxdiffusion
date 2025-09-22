@@ -40,7 +40,7 @@ from maxdiffusion.dreambooth.dreambooth_constants import (
 from PIL import Image
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
-
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def make_data_iterator(
     config,
@@ -159,7 +159,7 @@ def make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenizer, v
         function=tokenize_fn,
         batched=True,
         remove_columns=[INSTANCE_PROMPT_IDS],
-        num_proc=1,
+        num_proc=None,
         desc="Running tokenizer on instance dataset",
     )
     rng = jax.random.key(config.seed)
@@ -177,7 +177,7 @@ def make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenizer, v
         function=transform_images_fn,
         batched=True,
         remove_columns=[INSTANCE_IMAGES],
-        num_proc=1,
+        num_proc=None,
         desc="Running vae on instance dataset",
     )
 
@@ -188,7 +188,7 @@ def make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenizer, v
         function=tokenize_fn,
         batched=True,
         remove_columns=[CLASS_PROMPT_IDS],
-        num_proc=1,
+        num_proc=None,
         desc="Running tokenizer on class dataset",
     )
     transform_images_fn = partial(
@@ -204,7 +204,7 @@ def make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenizer, v
         function=transform_images_fn,
         batched=True,
         remove_columns=[CLASS_IMAGES],
-        num_proc=1,
+        num_proc=None,
         desc="Running vae on instance dataset",
     )
 
