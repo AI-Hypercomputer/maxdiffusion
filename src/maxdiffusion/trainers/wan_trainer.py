@@ -156,6 +156,11 @@ class WanTrainer(WanCheckpointer):
     data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding}
     return data_sharding
 
+  def get_eval_data_shardings(self, mesh):
+    data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
+    data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding, "timesteps": None}
+    return data_sharding
+
   def load_dataset(self, mesh, is_training=True):
     # Stages of training as described in the Wan 2.1 paper - https://arxiv.org/pdf/2503.20314
     # Image pre-training - txt2img 256px
@@ -170,16 +175,29 @@ class WanTrainer(WanCheckpointer):
       raise ValueError(
           "Wan 2.1 training only supports config.dataset_type set to tfrecords and config.cache_latents_text_encoder_outputs set to True"
       )
-
-    feature_description = {
+    
+    feature_description_train = {
         "latents": tf.io.FixedLenFeature([], tf.string),
         "encoder_hidden_states": tf.io.FixedLenFeature([], tf.string),
     }
 
-    def prepare_sample(features):
+    def prepare_sample_train(features):
       latents = tf.io.parse_tensor(features["latents"], out_type=tf.float32)
       encoder_hidden_states = tf.io.parse_tensor(features["encoder_hidden_states"], out_type=tf.float32)
       return {"latents": latents, "encoder_hidden_states": encoder_hidden_states}
+  
+    feature_description_eval = {
+        "latents": tf.io.FixedLenFeature([], tf.string),
+        "encoder_hidden_states": tf.io.FixedLenFeature([], tf.string),
+        "timesteps": tf.io.FixedLenFeature([], tf.int64),
+    }
+
+    def prepare_sample_eval(features):
+      latents = tf.io.parse_tensor(features["latents"], out_type=tf.float32)
+      encoder_hidden_states = tf.io.parse_tensor(features["encoder_hidden_states"], out_type=tf.float32)
+      timesteps = features["timesteps"]
+      print(f"timesteps in prepare_sample_eval: {timesteps}")
+      return {"latents": latents, "encoder_hidden_states": encoder_hidden_states, "timesteps": timesteps}
 
     data_iterator = make_data_iterator(
         config,
@@ -187,8 +205,8 @@ class WanTrainer(WanCheckpointer):
         jax.process_count(),
         mesh,
         config.global_batch_size_to_load,
-        feature_description=feature_description,
-        prepare_sample_fn=prepare_sample,
+        feature_description=feature_description_train if is_training else feature_description_eval,
+        prepare_sample_fn=prepare_sample_train if is_training else prepare_sample_eval,
         is_training=is_training,
     )
     return data_iterator
@@ -197,7 +215,7 @@ class WanTrainer(WanCheckpointer):
 
     pipeline = self.load_checkpoint()
     # Generate a sample before training to compare against generated sample after training.
-    pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
+    # pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
 
     if self.config.eval_every == -1 or (not self.config.enable_generate_video_for_eval):
       # save some memory.
@@ -215,8 +233,8 @@ class WanTrainer(WanCheckpointer):
     # Returns pipeline with trained transformer state
     pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, train_data_iterator)
 
-    posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
-    print_ssim(pretrained_video_path, posttrained_video_path)
+    # posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
+    # print_ssim(pretrained_video_path, posttrained_video_path)
 
   def training_loop(self, pipeline, optimizer, learning_rate_scheduler, train_data_iterator):
     mesh = pipeline.mesh
@@ -231,6 +249,7 @@ class WanTrainer(WanCheckpointer):
       state = jax.lax.with_sharding_constraint(state, state_spec)
       state_shardings = nnx.get_named_sharding(state, mesh)
     data_shardings = self.get_data_shardings(mesh)
+    eval_data_shardings = self.get_eval_data_shardings(mesh)
 
     writer = max_utils.initialize_summary_writer(self.config)
     writer_thread = threading.Thread(target=_tensorboard_writer_worker, args=(writer, self.config), daemon=True)
@@ -255,11 +274,12 @@ class WanTrainer(WanCheckpointer):
     )
     p_eval_step = jax.jit(
         functools.partial(eval_step, scheduler=pipeline.scheduler, config=self.config),
-        in_shardings=(state_shardings, data_shardings, None, None),
+        in_shardings=(state_shardings, eval_data_shardings, None, None),
         out_shardings=(None, None),
     )
 
     rng = jax.random.key(self.config.seed)
+    rng, eval_rng_key = jax.random.split(rng)
     start_step = 0
     last_step_completion = datetime.datetime.now()
     local_metrics_file = open(self.config.metrics_file, "a", encoding="utf8") if self.config.metrics_file else None
@@ -305,24 +325,36 @@ class WanTrainer(WanCheckpointer):
           # Re-create the iterator each time you start evaluation to reset it
           # This assumes your data loading logic can be called to get a fresh iterator.
           eval_data_iterator = self.load_dataset(mesh, is_training=False)
-          eval_rng = jax.random.key(self.config.seed + step)
-          eval_metrics = []
+          eval_rng = eval_rng_key
+          eval_losses_by_timestep = {}
           # Loop indefinitely until the iterator is exhausted
           while True:
             try:
               with mesh:
                 eval_batch = load_next_batch(eval_data_iterator, None, self.config)
                 metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
-                eval_metrics.append(metrics["scalar"]["learning/eval_loss"])
+                loss = metrics["scalar"]["learning/eval_loss"]
+                timestep = int(eval_batch["timesteps"][0])
+                if timestep not in eval_losses_by_timestep:
+                    eval_losses_by_timestep[timestep] = []
+                eval_losses_by_timestep[timestep].append(loss)
             except StopIteration:
               # This block is executed when the iterator has no more data
               break
           # Check if any evaluation was actually performed
-          if eval_metrics:
-            eval_loss = jnp.mean(jnp.array(eval_metrics))
-            max_logging.log(f"Step {step}, Eval loss: {eval_loss:.4f}")
+          if eval_losses_by_timestep:
+            mean_per_timestep = []
+            max_logging.log(f"Step {step}, calculating mean loss per timestep...")
+            for timestep, losses in sorted(eval_losses_by_timestep.items()):
+                losses = jnp.array(losses)
+                losses = losses[: min(60, len(losses))]
+                mean_loss = jnp.mean(losses)
+                max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}")
+                mean_per_timestep.append(mean_loss)
+            final_eval_loss = jnp.mean(jnp.array(mean_per_timestep))
+            max_logging.log(f"Step {step}, Final Average Eval loss: {final_eval_loss:.4f}")
             if writer:
-              writer.add_scalar("learning/eval_loss", eval_loss, step)
+              writer.add_scalar("learning/eval_loss", final_eval_loss, step)
           else:
             max_logging.log(f"Step {step}, evaluation dataset was empty.")
         example_batch = next_batch_future.result()
@@ -394,12 +426,15 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   """
   Computes the evaluation loss for a single batch without updating model weights.
   """
-  _, new_rng, timestep_rng = jax.random.split(rng, num=3)
+  _, new_rng = jax.random.split(rng, num=2)
 
   # This ensures the batch size is consistent, though it might be redundant
   # if the evaluation dataloader is already configured correctly.
   for k, v in data.items():
-    data[k] = v[: config.global_batch_size_to_train_on, :]
+    if k != "timesteps":
+      data[k] = v[: config.global_batch_size_to_train_on, :]
+    else:
+      data[k] = v[: config.global_batch_size_to_train_on]
 
   # The loss function logic is identical to training. We are evaluating the model's
   # ability to perform its core training objective (e.g., denoising).
@@ -410,15 +445,8 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
     # Prepare inputs
     latents = data["latents"].astype(config.weights_dtype)
     encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
-    bsz = latents.shape[0]
+    timesteps = data["timesteps"].astype("int64")
 
-    # Sample random timesteps and noise, just as in a training step
-    timesteps = jax.random.randint(
-        timestep_rng,
-        (bsz,),
-        0,
-        scheduler.config.num_train_timesteps,
-    )
     noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
 
@@ -427,6 +455,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
         hidden_states=noisy_latents,
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
+        deterministic=True,
     )
 
     # Calculate the loss against the target
@@ -447,4 +476,4 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   metrics = {"scalar": {"learning/eval_loss": loss}}
 
   # Return the computed metrics and the new RNG key for the next eval step
-  return metrics, new_rng
+  return metrics, new_rng, 
