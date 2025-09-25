@@ -22,43 +22,74 @@ on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
-  schedule:
-    # Run the job every 12 hours
-    - cron:  '0 */12 * * *'
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        tpu-type: ["v5p-8"]
-    name: "TPU test (${{ matrix.tpu-type }})"
-    runs-on: ["self-hosted","${{ matrix.tpu-type }}"]
+  # STAGE 1: PULL MAXDIFFUSION IMAGE AND RUN WORKLOAD
+  maxdiffusion_workload:
+    name: "Run MaxDiffusion Workload"
+    # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
+    runs-on: ["self-hosted", "linux-x86-a2-48-a100-4gpu"]
+    container:
+      image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python 3.12
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
-    - name: Install dependencies
-      run: |
-        pip install -e .
-        pip uninstall jax jaxlib libtpu-nightly libtpu -y
-        bash setup.sh MODE=stable
-        export PATH=$PATH:$HOME/.local/bin
-        pip install ruff
-        pip install isort
-        pip install pytest
-    - name: Analysing the code with ruff
-      run: |
-        ruff check .
-    - name: version check
-      run: |
-        python --version
-        pip show jax jaxlib flax transformers datasets tensorflow tensorflow_datasets
-    - name: PyTest
-      run: | #--deselect=src/maxdiffusion/tests/input_pipeline_interface_test.py
-        HF_HUB_CACHE=/mnt/disks/github-runner-disk/ HF_HOME=/mnt/disks/github-runner-disk/ TOKENIZERS_PARALLELISM=false python3 -m pytest --deselect=src/maxdiffusion/tests/ltx_transformer_step_test.py  -x
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run MaxDiffusion Training
+        run: |
+          # This command is adapted from your DAG for a single-slice configuration.
+          JAX_PLATFORMS=tpu,cpu ENABLE_PJRT_COMPATIBILITY=true \
+          TPU_SLICE_BUILDER_DUMP_CHIP_FORCE=true TPU_SLICE_BUILDER_DUMP_ICI=true \
+          JAX_FORCE_TPU_INIT=true ENABLE_TPUNETD_CLIENT=true && \
+          pip install . && \
+          python src/maxdiffusion/train_sdxl.py src/maxdiffusion/configs/base_xl.yml \
+            pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0 \
+            revision=refs/pr/95 \
+            activations_dtype=bfloat16 \
+            weights_dtype=bfloat16 \
+            dataset_name=gs://jfacevedo-maxdiffusion-v5p/pokemon-datasets/pokemon-gpt4-captions_sdxl \
+            resolution=1024 \
+            per_device_batch_size=1 \
+            jax_cache_dir=gs://jfacevedo-maxdiffusion/cache_dir/ \
+            max_train_steps=20 \
+            attention=flash \
+            enable_profiler=True \
+            run_name=1slice-maxdiffusion-stable-stack-${{ github.run_id }} \
+            output_dir=gs://your-output-bucket/maxdiffusion-jax-stable-stack/automated/${{ github.run_id }}
+
+# jobs:
+#   build:
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         tpu-type: ["v5p-8"]
+#     name: "TPU test (${{ matrix.tpu-type }})"
+#     runs-on: ["self-hosted","${{ matrix.tpu-type }}"]
+#     steps:
+#     - uses: actions/checkout@v4
+#     - name: Set up Python 3.12
+#       uses: actions/setup-python@v5
+#       with:
+#         python-version: '3.12'
+#     - name: Install dependencies
+#       run: |
+#         pip install -e .
+#         pip uninstall jax jaxlib libtpu-nightly libtpu -y
+#         bash setup.sh MODE=stable
+#         export PATH=$PATH:$HOME/.local/bin
+#         pip install ruff
+#         pip install isort
+#         pip install pytest
+#     - name: Analysing the code with ruff
+#       run: |
+#         ruff check .
+#     - name: version check
+#       run: |
+#         python --version
+#         pip show jax jaxlib flax transformers datasets tensorflow tensorflow_datasets
+#     - name: PyTest
+#       run: | #--deselect=src/maxdiffusion/tests/input_pipeline_interface_test.py
+#         HF_HUB_CACHE=/mnt/disks/github-runner-disk/ HF_HOME=/mnt/disks/github-runner-disk/ TOKENIZERS_PARALLELISM=false python3 -m pytest --deselect=src/maxdiffusion/tests/ltx_transformer_step_test.py  -x
 #  add_pull_ready:
 #    if: github.ref != 'refs/heads/main'
 #    permissions:

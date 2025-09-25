@@ -19,4 +19,4 @@ COPY . .
 RUN pip install -r /deps/requirements_with_jax_ai_image.txt
 
 # Run the script available in JAX-AI-Image base image to generate the manifest file
-RUN bash /jax-stable-stack/generate_manifest.sh PREFIX=maxdiffusion COMMIT_HASH=$COMMIT_HASH
+RUN bash /jax-ai-image/generate_manifest.sh PREFIX=maxdiffusion COMMIT_HASH=$COMMIT_HASH
