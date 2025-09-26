@@ -37,6 +37,8 @@ jobs:
 
       - name: Print dependencies
         run: |
+          pip uninstall -y transformer-engine
+          pip install transformer-engine
           pip freeze
 
       - name: Run MaxDiffusion Training
