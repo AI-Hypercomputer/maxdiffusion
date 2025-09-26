@@ -41,7 +41,7 @@ jobs:
       - name: Print dependencies
         run: |
           pip uninstall -y transformer-engine transformer-engine-jax
-          pip install -U transformer-engine[jax]=0.2.4
+          pip install -U transformer-engine[jax]==2.4.0
           pip freeze
 
       - name: Run MaxText Training
