@@ -37,6 +37,10 @@ jobs:
           repository: AI-Hypercomputer/maxtext
           path: maxtext
           ref: rbierneni-test-gpu-run
+      
+      - name: Print dependencies
+        run: |
+          pip freeze
 
       - name: Run MaxText Training
         run: |
@@ -50,7 +54,7 @@ jobs:
           python3 -m MaxText.train MaxText/configs/base.yml \
             steps=2 \
             enable_checkpointing=false \
-            attention=dot_product \
+            attention=cudnn_flash_te \
             dataset_type=synthetic \
             run_name=rbierneni-test-maxtext-gpu \
             base_output_directory=gs://rbierneni-multipod-dev/maxtext/${{ github.run_id }}
