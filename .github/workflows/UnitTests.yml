@@ -37,7 +37,7 @@ jobs:
 
       - name: Print dependencies
         run: |
-          pip uninstall -y transformer-engine
+          pip uninstall -y transformer-engine transformer-engine-jax
           pip install transformer-engine
           pip freeze
 
