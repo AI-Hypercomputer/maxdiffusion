@@ -51,7 +51,7 @@ jobs:
             train_text_encoder=false \
             cache_latents_text_encoder_outputs=true \
             per_device_batch_size=1 \
-            attention=cudnn_flash_te \
+            attention=dot_product \
             activations_dtype=bfloat16 \
             weights_dtype=bfloat16 \
             max_train_steps=200 \

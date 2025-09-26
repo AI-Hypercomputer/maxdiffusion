@@ -161,8 +161,8 @@ class BaseStableDiffusionTrainer(BaseStableDiffusionCheckpointer):
       params["scheduler"] = noise_scheduler_state
 
       # Calculate tflops
-      # per_device_tflops = self.calculate_tflops(pipeline, params)
-      # self.per_device_tflops = per_device_tflops
+      per_device_tflops = self.calculate_tflops(pipeline, params)
+      self.per_device_tflops = per_device_tflops
 
       # Load dataset
       data_iterator = self._time_and_log_call(self.load_dataset, pipeline, params, train_states)
