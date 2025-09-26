@@ -35,10 +35,15 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Print dependencies
+        run: |
+          pip freeze
+
       - name: Run MaxDiffusion Training
         run: |
           # This command is adapted from your DAG for a single-slice configuration.
-          NVTE_FUSED_ATTN=1 python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
+          NVTE_FUSED_ATTN=1 pip install . && \
+            python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
             hardware=gpu \
             train_new_unet=true \
             train_text_encoder=false \
