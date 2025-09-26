@@ -41,7 +41,7 @@ jobs:
         run: |
           # This command is adapted from your DAG for a single-slice configuration.
           cd maxtext && \
-          pip install .
+          pip install . --no-dependencies
 
           export XLA_PYTHON_CLIENT_MEM_FRACTION=0.65
           export TF_FORCE_GPU_ALLOW_GROWTH=true
