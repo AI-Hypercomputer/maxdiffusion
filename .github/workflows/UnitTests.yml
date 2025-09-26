@@ -51,6 +51,7 @@ jobs:
             steps=2 \
             enable_checkpointing=false \
             attention=dot_product \
+            dataset_type=synthetic \
             run_name=rbierneni-test-maxtext-gpu \
             base_output_directory=gs://rbierneni-multipod-dev/maxtext/${{ github.run_id }}
 
