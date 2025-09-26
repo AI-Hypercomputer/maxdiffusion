@@ -24,40 +24,66 @@ on:
   workflow_dispatch:
 
 jobs:
-  # STAGE 1: PULL MAXDIFFUSION IMAGE AND RUN WORKLOAD
-  maxdiffusion_workload:
-    name: "Run MaxDiffusion Workload"
+  maxtext_workload:
+    name: "Run MaxText Workload"
     # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:jax0.7.2_rev1_gpu
+      image: gcr.io/tpu-prod-env-multipod/maxtext_stable_stack_candidate_gpu:latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout MaxText Repo
         uses: actions/checkout@v4
+        with:
+          repository: AI-Hypercomputer/maxtext
+          path: maxtext
 
-      - name: Print dependencies
-        run: |
-          # pip uninstall -y transformer-engine transformer-engine-jax
-          # pip install -U transformer-engine[pytorch,jax]
-          pip freeze
-
-      - name: Run MaxDiffusion Training
+      - name: Run MaxText Training
         run: |
           # This command is adapted from your DAG for a single-slice configuration.
-          NVTE_FUSED_ATTN=1 pip install . && \
-            python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
-            hardware=gpu \
-            train_new_unet=true \
-            train_text_encoder=false \
-            cache_latents_text_encoder_outputs=true \
-            per_device_batch_size=1 \
-            attention=dot_product \
-            activations_dtype=bfloat16 \
-            weights_dtype=bfloat16 \
-            max_train_steps=200 \
-            enable_profiler=True \
-            run_name=1slice-VGpuVersion.XPK_H100_a3-maxdiffusion-jax-stable-stack-2025-09-26-04-12-02 \
-            output_dir=gs://rbierneni-multipod-dev/${{ github.run_id }}
+          cd maxtext && \
+          pip install -e . --no-dependencies \
+          XLA_PYTHON_CLIENT_MEM_FRACTION=0.65 TF_FORCE_GPU_ALLOW_GROWTH=true \
+          python3 -m MaxText.train MaxText/configs/base.yml \
+          steps=2 \
+          enable_checkpointing=false \
+          attention=dot_product \
+          run_name=rbierneni-test-maxtext-gpu \
+          base_output_directory=gs://rbierneni-multipod-dev/maxtext/${{ github.run_id }}
+
+  # # STAGE 1: PULL MAXDIFFUSION IMAGE AND RUN WORKLOAD
+  # maxdiffusion_workload:
+  #   name: "Run MaxDiffusion Workload"
+  #   # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
+  #   runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
+  #   container:
+  #     image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:jax0.7.2_rev1_gpu
+  #   steps:
+  #     - name: Checkout Repository
+  #       uses: actions/checkout@v4
+
+  #     - name: Print dependencies
+  #       run: |
+  #         # pip uninstall -y transformer-engine transformer-engine-jax
+  #         # pip install -U transformer-engine[pytorch,jax]
+  #         pip freeze
+
+  #     - name: Run MaxDiffusion Training
+  #       run: |
+  #         # This command is adapted from your DAG for a single-slice configuration.
+  #         NVTE_FUSED_ATTN=1 pip install . && \
+  #           python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
+  #           hardware=gpu \
+  #           train_new_unet=true \
+  #           train_text_encoder=false \
+  #           cache_latents_text_encoder_outputs=true \
+  #           per_device_batch_size=1 \
+  #           attention=dot_product \
+  #           activations_dtype=bfloat16 \
+  #           weights_dtype=bfloat16 \
+  #           max_train_steps=200 \
+  #           enable_profiler=True \
+  #           run_name=1slice-VGpuVersion.XPK_H100_a3-maxdiffusion-jax-stable-stack-2025-09-26-04-12-02 \
+  #           output_dir=gs://rbierneni-multipod-dev/${{ github.run_id }}
 
 # jobs:
 #   build:
