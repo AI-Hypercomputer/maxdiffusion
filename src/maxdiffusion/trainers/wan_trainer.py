@@ -480,4 +480,4 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   metrics = {"scalar": {"learning/eval_loss": loss}}
 
   # Return the computed metrics and the new RNG key for the next eval step
-  return metrics, new_rng, 
+  return metrics, new_rng
