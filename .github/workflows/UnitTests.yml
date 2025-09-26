@@ -37,8 +37,8 @@ jobs:
 
       - name: Print dependencies
         run: |
-          pip uninstall -y transformer-engine transformer-engine-jax
-          pip install -U transformer-engine[pytorch,jax]
+          # pip uninstall -y transformer-engine transformer-engine-jax
+          # pip install -U transformer-engine[pytorch,jax]
           pip freeze
 
       - name: Run MaxDiffusion Training
