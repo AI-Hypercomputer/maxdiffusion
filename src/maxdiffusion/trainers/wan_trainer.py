@@ -177,21 +177,18 @@ class WanTrainer(WanCheckpointer):
           "Wan 2.1 training only supports config.dataset_type set to tfrecords and config.cache_latents_text_encoder_outputs set to True"
       )
     
-    feature_description_train = {
+    feature_description = {
         "latents": tf.io.FixedLenFeature([], tf.string),
         "encoder_hidden_states": tf.io.FixedLenFeature([], tf.string),
     }
+
+    if not is_training:
+      feature_description["timesteps"] = tf.io.FixedLenFeature([], tf.int64)
 
     def prepare_sample_train(features):
       latents = tf.io.parse_tensor(features["latents"], out_type=tf.float32)
       encoder_hidden_states = tf.io.parse_tensor(features["encoder_hidden_states"], out_type=tf.float32)
       return {"latents": latents, "encoder_hidden_states": encoder_hidden_states}
-  
-    feature_description_eval = {
-        "latents": tf.io.FixedLenFeature([], tf.string),
-        "encoder_hidden_states": tf.io.FixedLenFeature([], tf.string),
-        "timesteps": tf.io.FixedLenFeature([], tf.int64),
-    }
 
     def prepare_sample_eval(features):
       latents = tf.io.parse_tensor(features["latents"], out_type=tf.float32)
@@ -206,7 +203,7 @@ class WanTrainer(WanCheckpointer):
         jax.process_count(),
         mesh,
         config.global_batch_size_to_load,
-        feature_description=feature_description_train if is_training else feature_description_eval,
+        feature_description=feature_description,
         prepare_sample_fn=prepare_sample_train if is_training else prepare_sample_eval,
         is_training=is_training,
     )
