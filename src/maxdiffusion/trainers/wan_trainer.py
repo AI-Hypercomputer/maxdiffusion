@@ -158,7 +158,8 @@ class WanTrainer(WanCheckpointer):
 
   def get_eval_data_shardings(self, mesh):
     data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
-    data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding, "timesteps": None}
+    timesteps_sharding = jax.sharding.NamedSharding(mesh, P('data'))
+    data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding, "timesteps": timesteps_sharding}
     return data_sharding
 
   def load_dataset(self, mesh, is_training=True):
@@ -196,7 +197,7 @@ class WanTrainer(WanCheckpointer):
       latents = tf.io.parse_tensor(features["latents"], out_type=tf.float32)
       encoder_hidden_states = tf.io.parse_tensor(features["encoder_hidden_states"], out_type=tf.float32)
       timesteps = features["timesteps"]
-      print(f"timesteps in prepare_sample_eval: {timesteps}")
+      tf.print("timesteps in prepare_sample_eval:", timesteps)
       return {"latents": latents, "encoder_hidden_states": encoder_hidden_states, "timesteps": timesteps}
 
     data_iterator = make_data_iterator(
@@ -332,9 +333,13 @@ class WanTrainer(WanCheckpointer):
             try:
               with mesh:
                 eval_batch = load_next_batch(eval_data_iterator, None, self.config)
+                eval_batch["timesteps"] = jax.device_put(
+                    eval_batch["timesteps"], eval_data_shardings["timesteps"]
+                )
                 metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
                 loss = metrics["scalar"]["learning/eval_loss"]
                 timestep = int(eval_batch["timesteps"][0])
+                jax.debug.print("timesteps in eval_step: {x}", x=timestep)
                 if timestep not in eval_losses_by_timestep:
                     eval_losses_by_timestep[timestep] = []
                 eval_losses_by_timestep[timestep].append(loss)
@@ -349,7 +354,7 @@ class WanTrainer(WanCheckpointer):
                 losses = jnp.array(losses)
                 losses = losses[: min(60, len(losses))]
                 mean_loss = jnp.mean(losses)
-                max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}")
+                max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}, num of losses: {len(losses)}")
                 mean_per_timestep.append(mean_loss)
             final_eval_loss = jnp.mean(jnp.array(mean_per_timestep))
             max_logging.log(f"Step {step}, Final Average Eval loss: {final_eval_loss:.4f}")
@@ -430,11 +435,13 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
 
   # This ensures the batch size is consistent, though it might be redundant
   # if the evaluation dataloader is already configured correctly.
+  jax.debug.print("timesteps before clip: {x}", x=data["timesteps"])
   for k, v in data.items():
     if k != "timesteps":
       data[k] = v[: config.global_batch_size_to_train_on, :]
     else:
       data[k] = v[: config.global_batch_size_to_train_on]
+  jax.debug.print("timesteps after clip: {x}", x=data["timesteps"])
 
   # The loss function logic is identical to training. We are evaluating the model's
   # ability to perform its core training objective (e.g., denoising).
