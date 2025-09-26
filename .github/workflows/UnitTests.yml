@@ -41,14 +41,17 @@ jobs:
         run: |
           # This command is adapted from your DAG for a single-slice configuration.
           cd maxtext && \
-          pip install -e . --no-dependencies \
-          XLA_PYTHON_CLIENT_MEM_FRACTION=0.65 TF_FORCE_GPU_ALLOW_GROWTH=true \
+          pip install .
+
+          export XLA_PYTHON_CLIENT_MEM_FRACTION=0.65
+          export TF_FORCE_GPU_ALLOW_GROWTH=true
+
           python3 -m MaxText.train MaxText/configs/base.yml \
-          steps=2 \
-          enable_checkpointing=false \
-          attention=dot_product \
-          run_name=rbierneni-test-maxtext-gpu \
-          base_output_directory=gs://rbierneni-multipod-dev/maxtext/${{ github.run_id }}
+            steps=2 \
+            enable_checkpointing=false \
+            attention=dot_product \
+            run_name=rbierneni-test-maxtext-gpu \
+            base_output_directory=gs://rbierneni-multipod-dev/maxtext/${{ github.run_id }}
 
   # # STAGE 1: PULL MAXDIFFUSION IMAGE AND RUN WORKLOAD
   # maxdiffusion_workload:
