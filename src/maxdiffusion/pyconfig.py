@@ -27,7 +27,7 @@ import yaml
 from . import max_logging
 from . import max_utils
 from .models.wan.wan_utils import CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH, WAN_21_FUSION_X_MODEL_NAME_OR_PATH
-from maxdiffusion.common_types import LENGTH, KV_LENGTH
+from maxdiffusion.common_types import LENGTH, KV_LENGTH, RING_ATTENTION_AXIS_RULES
 
 
 def string_to_bool(s: str) -> bool:
@@ -180,14 +180,22 @@ class _HyperParameters:
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
     # Verify qkv is sharded across sequence.
     if raw_keys["attention"] == "ring":
+      max_logging.log("Using ring attention, adding sequence sharding to q and kv if not already present.")
       logical_axis_rules = list(raw_keys["logical_axis_rules"])
+      max_logging.log(f"Initial logical axis rules: {logical_axis_rules}")
+      new_rules = []
       q_seq_sharding = (LENGTH, "fsdp")
       kv_seq_sharding = (KV_LENGTH, "fsdp")
       if q_seq_sharding not in logical_axis_rules:
         logical_axis_rules.append(q_seq_sharding)
       if kv_seq_sharding not in logical_axis_rules:
         logical_axis_rules.append(kv_seq_sharding)
-      raw_keys["logical_axis_rules"] = tuple(logical_axis_rules)
+      for ring_attention_axis_rule in RING_ATTENTION_AXIS_RULES:
+        if ring_attention_axis_rule not in logical_axis_rules:
+          max_logging.log(f"Adding ring attention axis rule {ring_attention_axis_rule}")
+          new_rules.append(ring_attention_axis_rule)
+      raw_keys["logical_axis_rules"] = tuple(new_rules) + tuple(logical_axis_rules)
+      max_logging.log(f"Final logical axis rules: {raw_keys['logical_axis_rules']}")
 
     raw_keys["data_sharding"] = _lists_to_tuples(raw_keys["data_sharding"])
 
