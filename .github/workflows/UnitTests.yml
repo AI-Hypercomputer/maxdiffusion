@@ -28,7 +28,7 @@ jobs:
   maxdiffusion_workload:
     name: "Run MaxDiffusion Workload"
     # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
-    runs-on: ["linux-x86-a2-48-a100-4gpu"]
+    runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
       image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:latest
     steps:
