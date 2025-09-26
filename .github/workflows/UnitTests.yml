@@ -38,24 +38,20 @@ jobs:
       - name: Run MaxDiffusion Training
         run: |
           # This command is adapted from your DAG for a single-slice configuration.
-          JAX_PLATFORMS=tpu,cpu ENABLE_PJRT_COMPATIBILITY=true \
-          TPU_SLICE_BUILDER_DUMP_CHIP_FORCE=true TPU_SLICE_BUILDER_DUMP_ICI=true \
-          JAX_FORCE_TPU_INIT=true ENABLE_TPUNETD_CLIENT=true && \
-          pip install . && \
-          python src/maxdiffusion/train_sdxl.py src/maxdiffusion/configs/base_xl.yml \
-            pretrained_model_name_or_path=gs://maxdiffusion-github-runner-test-assets/checkpoints/models--stabilityai--stable-diffusion-xl-base-1.0 \
-            revision=refs/pr/95 \
+          NVTE_FUSED_ATTN=1 pip install . && \
+            python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
+            hardware=gpu \
+            train_new_unet=true \
+            train_text_encoder=false \
+            cache_latents_text_encoder_outputs=true \
+            per_device_batch_size=1 \
+            attention=cudnn_flash_te \
             activations_dtype=bfloat16 \
             weights_dtype=bfloat16 \
-            dataset_name=gs://jfacevedo-maxdiffusion-v5p/pokemon-datasets/pokemon-gpt4-captions_sdxl \
-            resolution=1024 \
-            per_device_batch_size=1 \
-            jax_cache_dir=gs://jfacevedo-maxdiffusion/cache_dir/ \
-            max_train_steps=20 \
-            attention=flash \
+            max_train_steps=200 \
             enable_profiler=True \
-            run_name=1slice-maxdiffusion-stable-stack-${{ github.run_id }} \
-            output_dir=gs://your-output-bucket/maxdiffusion-jax-stable-stack/automated/${{ github.run_id }}
+            run_name=1slice-VGpuVersion.XPK_H100_a3-maxdiffusion-jax-stable-stack-2025-09-26-04-12-02 \
+            output_dir=gs://ml-auto-solutions/output/maxdiffusion/automated/maxdiffusion_sdxl/${{ github.run_id }}
 
 # jobs:
 #   build:
