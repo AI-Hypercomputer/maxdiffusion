@@ -55,7 +55,7 @@ jobs:
             max_train_steps=200 \
             enable_profiler=True \
             run_name=1slice-VGpuVersion.XPK_H100_a3-maxdiffusion-jax-stable-stack-2025-09-26-04-12-02 \
-            output_dir=gs://ml-auto-solutions/output/maxdiffusion/automated/maxdiffusion_sdxl/${{ github.run_id }}
+            output_dir=gs://rbierneni-multipod-dev/${{ github.run_id }}
 
 # jobs:
 #   build:
