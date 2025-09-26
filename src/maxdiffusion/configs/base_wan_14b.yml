@@ -234,6 +234,7 @@ global_batch_size: 0
 # For creating tfrecords from dataset
 tfrecords_dir: ''
 no_records_per_shard: 0
+enable_eval_timesteps: False
 
 warmup_steps_fraction: 0.1
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.

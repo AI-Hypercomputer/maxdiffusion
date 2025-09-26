@@ -112,14 +112,16 @@ def generate_dataset(config):
       latent = jnp.array(latent.float().numpy(), dtype=jnp.float32)
       prompt_embeds = jnp.array(prompt_embeds.float().numpy(), dtype=jnp.float32)
 
-      # Determine the timestep for the first 420 samples
       current_timestep = None
-      if global_record_count < num_samples_to_process:
-        bucket_index = global_record_count // bucket_size
-        current_timestep = timesteps_list[bucket_index]
-      else:
-        print(f"value {global_record_count} is greater than or equal to {num_samples_to_process}")
-        return
+      # Determine the timestep for the first 420 samples
+      if config.enable_eval_timesteps:
+        if global_record_count < num_samples_to_process:
+          print(f"global_record_count: {global_record_count}")
+          bucket_index = global_record_count // bucket_size
+          current_timestep = timesteps_list[bucket_index]
+        else:
+          print(f"value {global_record_count} is greater than or equal to {num_samples_to_process}")
+          return
 
       # Write the example, including the timestep if applicable
       writer.write(create_example(latent, prompt_embeds, timestep=current_timestep))
