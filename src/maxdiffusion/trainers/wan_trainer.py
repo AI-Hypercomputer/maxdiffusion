@@ -334,12 +334,14 @@ class WanTrainer(WanCheckpointer):
                     eval_batch["timesteps"], eval_data_shardings["timesteps"]
                 )
                 metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
-                loss = metrics["scalar"]["learning/eval_loss"]
-                timestep = int(eval_batch["timesteps"][0])
-                jax.debug.print("timesteps in eval_step: {x}", x=timestep)
-                if timestep not in eval_losses_by_timestep:
-                    eval_losses_by_timestep[timestep] = []
-                eval_losses_by_timestep[timestep].append(loss)
+                losses = metrics["scalar"]["learning/eval_loss"]
+                timesteps = eval_batch["timesteps"]
+                for t, l in zip(timesteps, losses):
+                  timestep = int(t)
+                  if timestep not in eval_losses_by_timestep:
+                      eval_losses_by_timestep[timestep] = []
+                  eval_losses_by_timestep[timestep].append(l)
+                  print(f"timesteps: {timestep}, losses: {l}")
             except StopIteration:
               # This block is executed when the iterator has no more data
               break
@@ -433,13 +435,6 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   # This ensures the batch size is consistent, though it might be redundant
   # if the evaluation dataloader is already configured correctly.
   jax.debug.print("timesteps before clip: {x}", x=data["timesteps"])
-  for k, v in data.items():
-    if k != "timesteps":
-      data[k] = v[: config.global_batch_size_to_train_on, :]
-    else:
-      data[k] = v[: config.global_batch_size_to_train_on]
-  jax.debug.print("timesteps after clip: {x}", x=data["timesteps"])
-
   # The loss function logic is identical to training. We are evaluating the model's
   # ability to perform its core training objective (e.g., denoising).
   def loss_fn(params):
@@ -467,7 +462,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
     training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
     loss = (training_target - model_pred) ** 2
     loss = loss * training_weight
-    loss = jnp.mean(loss)
+    loss = loss.reshape(loss.shape[0], -1).mean(axis=1)
 
     return loss
 
