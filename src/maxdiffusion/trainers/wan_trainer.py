@@ -158,8 +158,7 @@ class WanTrainer(WanCheckpointer):
 
   def get_eval_data_shardings(self, mesh):
     data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
-    timesteps_sharding = jax.sharding.NamedSharding(mesh, P('data'))
-    data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding, "timesteps": timesteps_sharding}
+    data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding, "timesteps": data_sharding}
     return data_sharding
 
   def load_dataset(self, mesh, is_training=True):
@@ -194,7 +193,6 @@ class WanTrainer(WanCheckpointer):
       latents = tf.io.parse_tensor(features["latents"], out_type=tf.float32)
       encoder_hidden_states = tf.io.parse_tensor(features["encoder_hidden_states"], out_type=tf.float32)
       timesteps = features["timesteps"]
-      tf.print("timesteps in prepare_sample_eval:", timesteps)
       return {"latents": latents, "encoder_hidden_states": encoder_hidden_states, "timesteps": timesteps}
 
     data_iterator = make_data_iterator(
@@ -330,9 +328,6 @@ class WanTrainer(WanCheckpointer):
             try:
               with mesh:
                 eval_batch = load_next_batch(eval_data_iterator, None, self.config)
-                eval_batch["timesteps"] = jax.device_put(
-                    eval_batch["timesteps"], eval_data_shardings["timesteps"]
-                )
                 metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
                 losses = metrics["scalar"]["learning/eval_loss"]
                 timesteps = eval_batch["timesteps"]
@@ -432,9 +427,6 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   """
   _, new_rng = jax.random.split(rng, num=2)
 
-  # This ensures the batch size is consistent, though it might be redundant
-  # if the evaluation dataloader is already configured correctly.
-  jax.debug.print("timesteps before clip: {x}", x=data["timesteps"])
   # The loss function logic is identical to training. We are evaluating the model's
   # ability to perform its core training objective (e.g., denoising).
   def loss_fn(params):
