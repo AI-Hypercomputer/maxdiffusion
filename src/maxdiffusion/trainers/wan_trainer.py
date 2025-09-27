@@ -342,15 +342,18 @@ class WanTrainer(WanCheckpointer):
           # Check if any evaluation was actually performed
           if eval_losses_by_timestep:
             mean_per_timestep = []
-            max_logging.log(f"Step {step}, calculating mean loss per timestep...")
+            if jax.process_index() == 0:
+              max_logging.log(f"Step {step}, calculating mean loss per timestep...")
             for timestep, losses in sorted(eval_losses_by_timestep.items()):
                 losses = jnp.array(losses)
                 losses = losses[: min(self.config.eval_max_number_of_samples_in_bucket, len(losses))]
                 mean_loss = jnp.mean(losses)
-                max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}, num of losses: {len(losses)}")
+                if jax.process_index() == 0:
+                  max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}, num of losses: {len(losses)}")
                 mean_per_timestep.append(mean_loss)
             final_eval_loss = jnp.mean(jnp.array(mean_per_timestep))
-            max_logging.log(f"Step {step}, Final Average Eval loss: {final_eval_loss:.4f}")
+            if jax.process_index() == 0:
+              max_logging.log(f"Step {step}, Final Average Eval loss: {final_eval_loss:.4f}")
             if writer:
               writer.add_scalar("learning/eval_loss", final_eval_loss, step)
           else:
@@ -428,14 +431,14 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
 
   # The loss function logic is identical to training. We are evaluating the model's
   # ability to perform its core training objective (e.g., denoising).
-  def loss_fn(params):
+  def loss_fn(params, latents, encoder_hidden_states, timesteps):
     # Reconstruct the model from its definition and parameters
     model = nnx.merge(state.graphdef, params, state.rest_of_state)
 
     # Prepare inputs
-    latents = data["latents"].astype(config.weights_dtype)
-    encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
-    timesteps = data["timesteps"].astype("int64")
+    # latents = data["latents"].astype(config.weights_dtype)
+    # encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
+    # timesteps = data["timesteps"].astype("int64")
 
     noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
@@ -460,10 +463,22 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   # --- Key Difference from train_step ---
   # Directly compute the loss without calculating gradients.
   # The model's state.params are used but not updated.
-  loss = loss_fn(state.params)
+  bs = len(data["latents"])
+  single_batch_size = min(8, config.global_batch_size_to_train_on)
+  losses = jnp.zeros(bs)
+  for i in range(0, bs, single_batch_size):
+    start = i
+    end = min(i + single_batch_size, bs)
+    jax.debug.print("Eval step processing samples {start} to {end}", start=start, end=end)
+    latents= data["latents"][start:end, :].astype(config.weights_dtype)
+    encoder_hidden_states = data["encoder_hidden_states"][start:end, :].astype(config.weights_dtype)
+    timesteps = data["timesteps"][start:end].astype("int64")
+    loss = loss_fn(state.params, latents, encoder_hidden_states, timesteps)
+    losses = losses.at[start:end].set(loss)
 
   # Structure the metrics for logging and aggregation
-  metrics = {"scalar": {"learning/eval_loss": loss}}
+  metrics = {"scalar": {"learning/eval_loss": losses}}
+  jax.debug.print("Eval step losses: {losses}", losses=losses)
 
   # Return the computed metrics and the new RNG key for the next eval step
   return metrics, new_rng
