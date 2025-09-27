@@ -212,7 +212,7 @@ class WanTrainer(WanCheckpointer):
 
     pipeline = self.load_checkpoint()
     # Generate a sample before training to compare against generated sample after training.
-    # pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
+    pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
 
     if self.config.eval_every == -1 or (not self.config.enable_generate_video_for_eval):
       # save some memory.
@@ -230,8 +230,8 @@ class WanTrainer(WanCheckpointer):
     # Returns pipeline with trained transformer state
     pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, train_data_iterator)
 
-    # posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
-    # print_ssim(pretrained_video_path, posttrained_video_path)
+    posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
+    print_ssim(pretrained_video_path, posttrained_video_path)
 
   def training_loop(self, pipeline, optimizer, learning_rate_scheduler, train_data_iterator):
     mesh = pipeline.mesh
@@ -440,11 +440,6 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
     # Reconstruct the model from its definition and parameters
     model = nnx.merge(state.graphdef, params, state.rest_of_state)
 
-    # Prepare inputs
-    # latents = data["latents"].astype(config.weights_dtype)
-    # encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
-    # timesteps = data["timesteps"].astype("int64")
-
     noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
 
@@ -469,12 +464,11 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   # Directly compute the loss without calculating gradients.
   # The model's state.params are used but not updated.
   bs = len(data["latents"])
-  single_batch_size = min(8, config.global_batch_size_to_train_on)
+  single_batch_size = min(config.eval_max_processed_batch_size, config.global_batch_size_to_train_on)
   losses = jnp.zeros(bs)
   for i in range(0, bs, single_batch_size):
     start = i
     end = min(i + single_batch_size, bs)
-    jax.debug.print("Eval step processing samples {start} to {end}", start=start, end=end)
     latents= data["latents"][start:end, :].astype(config.weights_dtype)
     encoder_hidden_states = data["encoder_hidden_states"][start:end, :].astype(config.weights_dtype)
     timesteps = data["timesteps"][start:end].astype("int64")
@@ -483,7 +477,6 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
 
   # Structure the metrics for logging and aggregation
   metrics = {"scalar": {"learning/eval_loss": losses}}
-  jax.debug.print("Eval step losses: {losses}", losses=losses)
 
   # Return the computed metrics and the new RNG key for the next eval step
   return metrics, new_rng
