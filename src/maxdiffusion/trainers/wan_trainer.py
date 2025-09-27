@@ -336,7 +336,6 @@ class WanTrainer(WanCheckpointer):
                   if timestep not in eval_losses_by_timestep:
                       eval_losses_by_timestep[timestep] = []
                   eval_losses_by_timestep[timestep].append(l)
-                  print(f"timesteps: {timestep}, losses: {l}")
             except StopIteration:
               # This block is executed when the iterator has no more data
               break
