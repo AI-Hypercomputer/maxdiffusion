@@ -85,9 +85,10 @@ def generate_dataset(config):
   shard_record_count = 0
 
   # Define timesteps and bucket configuration
-  timesteps_list = [125, 250, 375, 500, 625, 750, 875]
-  bucket_size = 60
-  num_samples_to_process = 420
+  num_eval_samples = config.num_eval_samples
+  timesteps_list = config.timesteps_list
+  assert num_eval_samples % len(timesteps_list) == 0
+  bucket_size = num_eval_samples // len(timesteps_list)
 
   # Load dataset
   metadata_path = os.path.join(config.train_data_dir, "metadata.csv")
@@ -115,12 +116,12 @@ def generate_dataset(config):
       current_timestep = None
       # Determine the timestep for the first 420 samples
       if config.enable_eval_timesteps:
-        if global_record_count < num_samples_to_process:
+        if global_record_count < num_eval_samples:
           print(f"global_record_count: {global_record_count}")
           bucket_index = global_record_count // bucket_size
           current_timestep = timesteps_list[bucket_index]
         else:
-          print(f"value {global_record_count} is greater than or equal to {num_samples_to_process}")
+          print(f"value {global_record_count} is greater than or equal to {num_eval_samples}")
           return
 
       # Write the example, including the timestep if applicable

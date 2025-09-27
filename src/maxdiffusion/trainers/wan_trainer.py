@@ -345,7 +345,7 @@ class WanTrainer(WanCheckpointer):
             max_logging.log(f"Step {step}, calculating mean loss per timestep...")
             for timestep, losses in sorted(eval_losses_by_timestep.items()):
                 losses = jnp.array(losses)
-                losses = losses[: min(60, len(losses))]
+                losses = losses[: min(self.config.eval_max_number_of_samples_in_bucket, len(losses))]
                 mean_loss = jnp.mean(losses)
                 max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}, num of losses: {len(losses)}")
                 mean_per_timestep.append(mean_loss)
