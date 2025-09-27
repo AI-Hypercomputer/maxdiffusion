@@ -38,6 +38,7 @@ from maxdiffusion.utils import load_video
 from skimage.metrics import structural_similarity as ssim
 from flax.training import train_state
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
+from jax.experimental import multihost_utils
 
 
 class TrainState(train_state.TrainState):
@@ -331,7 +332,11 @@ class WanTrainer(WanCheckpointer):
                 metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
                 losses = metrics["scalar"]["learning/eval_loss"]
                 timesteps = eval_batch["timesteps"]
-                for t, l in zip(timesteps, losses):
+                gathered_timesteps_on_device = multihost_utils.process_allgather(timesteps)
+                gathered_timesteps = jax.device_get(gathered_timesteps_on_device)
+                gathered_losses_on_device = multihost_utils.process_allgather(losses)
+                gathered_losses = jax.device_get(gathered_losses_on_device)
+                for t, l in zip(gathered_timesteps, gathered_losses):
                   timestep = int(t)
                   if timestep not in eval_losses_by_timestep:
                       eval_losses_by_timestep[timestep] = []
