@@ -432,15 +432,15 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   """
   Computes the evaluation loss for a single batch without updating model weights.
   """
-  _, new_rng = jax.random.split(rng, num=2)
 
   # The loss function logic is identical to training. We are evaluating the model's
   # ability to perform its core training objective (e.g., denoising).
-  def loss_fn(params, latents, encoder_hidden_states, timesteps):
+  @jax.jit
+  def loss_fn(params, latents, encoder_hidden_states, timesteps, rng):
     # Reconstruct the model from its definition and parameters
     model = nnx.merge(state.graphdef, params, state.rest_of_state)
 
-    noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
+    noise = jax.random.normal(key=rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
 
     # Get the model's prediction
@@ -472,7 +472,8 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
     latents= data["latents"][start:end, :].astype(config.weights_dtype)
     encoder_hidden_states = data["encoder_hidden_states"][start:end, :].astype(config.weights_dtype)
     timesteps = data["timesteps"][start:end].astype("int64")
-    loss = loss_fn(state.params, latents, encoder_hidden_states, timesteps)
+    _, new_rng = jax.random.split(rng, num=2)
+    loss = loss_fn(state.params, latents, encoder_hidden_states, timesteps, new_rng)
     losses = losses.at[start:end].set(loss)
 
   # Structure the metrics for logging and aggregation
