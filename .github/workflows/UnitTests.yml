@@ -17,6 +17,8 @@
 
 # This workflow will run a small SDXL training workload on a GPU runner.
 
+# This workflow will run a small SDXL training workload on a GPU runner.
+
 name: SDXL Workload Training on GPU
 
 on:
@@ -31,21 +33,39 @@ jobs:
     # IMPORTANT: Replace with the label for your specific GPU runner if different
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1
+      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1:latest
 
     steps:
+      - name: Create and Activate Swap File
+        run: |
+          echo "--- Verifying free space before changes ---"
+          free -h
+          echo "---"
+          echo "Creating and activating a 64GB swap file..."
+          # Deactivate any existing swap to be safe
+          sudo swapoff -a
+          # Allocate a 64GB file
+          sudo fallocate -l 64G /swapfile
+          # Set the correct permissions
+          sudo chmod 600 /swapfile
+          # Format the file as swap
+          sudo mkswap /swapfile
+          # Activate the swap file
+          sudo swapon /swapfile
+          echo "--- Swap file is now active ---"
+          sudo swapon --show
+          echo "--- Verifying free space after changes ---"
+          free -h
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Install Dependencies
         run: |
-          pip install -r requirements.txt
-          # Uninstall the full tensorflow package to prevent GPU conflicts
           pip uninstall -y tensorflow
-          # Install the CPU-only version of tensorflow
           pip install tensorflow-cpu
+          pip install -r requirements.txt
           pip install --upgrade torch torchvision
-          # Install the maxdiffusion package to make it available for execution
           pip install .
       
       - name: List Installed Libraries
