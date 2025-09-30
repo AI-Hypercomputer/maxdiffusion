@@ -40,6 +40,10 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
+          # Uninstall the full tensorflow package to prevent GPU conflicts
+          pip uninstall -y tensorflow
+          # Install the CPU-only version of tensorflow
+          pip install tensorflow-cpu
           pip install --upgrade torch torchvision
           # Install the maxdiffusion package to make it available for execution
           pip install .
