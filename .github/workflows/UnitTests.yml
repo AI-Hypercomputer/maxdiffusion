@@ -40,13 +40,6 @@ jobs:
       image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/maxtext-gpu-custom:latest
 
     steps:
-      - name: Pin Transformer Engine Version
-        run: |
-          echo "Uninstalling any existing Transformer Engine..."
-          pip uninstall -y transformer-engine
-          echo "Installing Transformer Engine version 2.6.0..."
-          pip install transformer-engine[jax]==2.6.0
-
       - name: Run MaxText Training
         working-directory: /deps/src
         env:
