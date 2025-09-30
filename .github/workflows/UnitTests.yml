@@ -16,9 +16,11 @@
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
 
 # This workflow will run a small SDXL training workload on a GPU runner.
-# This workflow will run a small SDXL training workload on a GPU runner.
 
-name: SDXL Workload Training on GPU
+# This workflow will run a small MaxText training workload on a GPU runner
+# by checking out the MaxText repo inside the MaxDiffusion environment.
+
+name: MaxText Workload on MaxDiffusion Runner
 
 on:
   pull_request:
@@ -27,53 +29,112 @@ on:
   workflow_dispatch:
 
 jobs:
-  sdxl_training_workload:
-    name: "Run SDXL Training Workload"
-    # IMPORTANT: Replace with the label for your specific GPU runner if different
+  maxtext_training_workload:
+    name: "Run MaxText Training Workload"
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1
+      # Using the MaxDiffusion container as requested
+      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1:latest
 
     steps:
-      - name: Verify Environment
-        run: |
-          echo "--- Verifying free space ---"
-          free -h
-          echo "--- Verifying shared memory size ---"
-          df -h /dev/shm
-
-      - name: Checkout Repository
+      - name: Checkout MaxText Repository
         uses: actions/checkout@v4
+        with:
+          repository: 'AI-Hypercomputer/maxtext'
+          ref: 'main'
+          path: 'maxtext' # Clone it into a 'maxtext' subdirectory
 
       - name: Install Dependencies
+        working-directory: ./maxtext # Run all subsequent commands inside the new directory
         run: |
-          pip install -r requirements.txt
+          # Uninstall full tensorflow to prevent GPU conflicts with JAX
           pip uninstall -y tensorflow
+          # Install the CPU-only version for data loading
           pip install tensorflow-cpu
-          pip install --upgrade torch torchvision
+          # Install MaxText's dependencies
+          pip install -r requirements.txt
+          # Install the MaxText package itself
           pip install .
-      
+
       - name: List Installed Libraries
+        working-directory: ./maxtext
         run: |
           echo "--- Installed Python packages ---"
           pip freeze
-      
-      - name: Hugging Face Login
-        run: huggingface-cli login --token ${{ secrets.HUGGINGFACE_TOKEN }}
 
-      - name: Run SDXL Training
+      - name: Run MaxText Training
+        working-directory: ./maxtext
         env:
+          # Set the correct framework for Transformer Engine
           NVTE_FRAMEWORK: jax
+          # Prevent TensorFlow from grabbing all GPU memory
           TF_FORCE_GPU_ALLOW_GROWTH: "true"
         run: |
-          python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
-            run_name="sdxl-ci-test-${{ github.run_id }}" \
-            output_dir="/tmp/sdxl-output/" \
-            max_train_steps=5 \
-            hardware=gpu \
-            attention="cudnn_flash_te" \
-            resolution=512 \
-            per_device_batch_size=1 \
-            train_new_unet=true \
-            train_text_encoder=false \
-            cache_latents_text_encoder_outputs=true
+          # Run the main training script with a base configuration
+          python MaxText/train.py MaxText/configs/base.yml \
+            run_name="maxtext-ci-test-${{ github.run_id }}" \
+            steps=5 \
+            enable_checkpointing=false \
+            attention='cudnn_flash_te' \
+            dataset_type='synthetic'
+
+
+# name: SDXL Workload Training on GPU
+
+# on:
+#   pull_request:
+#   push:
+#     branches: [ "main" ]
+#   workflow_dispatch:
+
+# jobs:
+#   sdxl_training_workload:
+#     name: "Run SDXL Training Workload"
+#     # IMPORTANT: Replace with the label for your specific GPU runner if different
+#     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
+#     container:
+#       image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1
+
+#     steps:
+#       - name: Verify Environment
+#         run: |
+#           echo "--- Verifying free space ---"
+#           free -h
+#           echo "--- Verifying shared memory size ---"
+#           df -h /dev/shm
+
+#       - name: Checkout Repository
+#         uses: actions/checkout@v4
+
+#       - name: Install Dependencies
+#         run: |
+#           pip install -r requirements.txt
+#           pip uninstall -y tensorflow
+#           pip install tensorflow-cpu
+#           pip install --upgrade torch torchvision
+#           pip install .
+      
+#       - name: List Installed Libraries
+#         run: |
+#           echo "--- Installed Python packages ---"
+#           pip freeze
+      
+#       - name: Hugging Face Login
+#         run: huggingface-cli login --token ${{ secrets.HUGGINGFACE_TOKEN }}
+
+#       - name: Run SDXL Training
+#         env:
+#           NVTE_FRAMEWORK: jax
+#           TF_FORCE_GPU_ALLOW_GROWTH: "true"
+#         run: |
+#           python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
+#             run_name="sdxl-ci-test-${{ github.run_id }}" \
+#             output_dir="/tmp/sdxl-output/" \
+#             max_train_steps=5 \
+#             hardware=gpu \
+#             attention="cudnn_flash_te" \
+#             resolution=512 \
+#             per_device_batch_size=1 \
+#             train_new_unet=true \
+#             train_text_encoder=false \
+#             cache_latents_text_encoder_outputs=true
