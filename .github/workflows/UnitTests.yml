@@ -74,6 +74,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Check Host CUDA and GPU Environment
+        run: |
+          echo "--- Checking NVIDIA driver and supported CUDA version ---"
+          nvidia-smi || echo "nvidia-smi command not found. No GPU or NVIDIA driver detected."
+          
+          echo ""
+          echo "--- Checking for default CUDA toolkit installation ---"
+          ls -l /usr/local/ | grep cuda || echo "No default CUDA toolkit found in /usr/local/"
+          
+          echo ""
+          echo "--- Checking dynamic linker library path ---"
+          echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-'Not Set'}"
+
       - name: Print dependencies
         run: |
           # pip uninstall -y transformer-engine transformer-engine-jax transformer-engine-cu12
