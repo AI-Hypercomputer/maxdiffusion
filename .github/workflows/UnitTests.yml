@@ -59,6 +59,7 @@ jobs:
       - name: Run SDXL Training
         env:
           NVTE_FRAMEWORK: jax
+          TF_FORCE_GPU_ALLOW_GROWTH: "true"
         run: |
           python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
             run_name="sdxl-ci-test-${{ github.run_id }}" \
