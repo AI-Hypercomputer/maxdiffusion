@@ -319,4 +319,3 @@ eval_every: -1
 eval_data_dir: ""
 enable_generate_video_for_eval: False # This will increase the used TPU memory.
 eval_max_number_of_samples_in_bucket: 60
-eval_max_processed_batch_size: 8 # This is the max batch size per device for eval step. If the global eval batch size is larger than this, the eval step will be run multiple times.

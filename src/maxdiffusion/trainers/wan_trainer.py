@@ -336,12 +336,16 @@ class WanTrainer(WanCheckpointer):
                 metrics["scalar"]["learning/eval_loss"].block_until_ready()
               losses = metrics["scalar"]["learning/eval_loss"]
               timesteps = eval_batch["timesteps"]
-              for t, l in zip(timesteps.flatten(), losses.flatten()):
-                timestep = int(t)
-                if timestep not in eval_losses_by_timestep:
-                    eval_losses_by_timestep[timestep] = []
-                eval_losses_by_timestep[timestep].append(l)
+              gathered_losses = multihost_utils.process_allgather(losses)
+              gathered_losses = jax.device_get(gathered_losses)
+              gathered_timesteps = multihost_utils.process_allgather(timesteps)
+              gathered_timesteps = jax.device_get(gathered_timesteps)
               if jax.process_index() == 0:
+                for t, l in zip(gathered_timesteps.flatten(), gathered_losses.flatten()):
+                  timestep = int(t)
+                  if timestep not in eval_losses_by_timestep:
+                      eval_losses_by_timestep[timestep] = []
+                  eval_losses_by_timestep[timestep].append(l)
                 eval_end_time = datetime.datetime.now()
                 eval_duration = eval_end_time - eval_start_time
                 max_logging.log(f"  Eval step time {eval_duration.total_seconds():.2f} seconds.")
@@ -349,7 +353,7 @@ class WanTrainer(WanCheckpointer):
               # This block is executed when the iterator has no more data
               break
           # Check if any evaluation was actually performed
-          if eval_losses_by_timestep:
+          if eval_losses_by_timestep and jax.process_index() == 0:
             mean_per_timestep = []
             if jax.process_index() == 0:
               max_logging.log(f"Step {step}, calculating mean loss per timestep...")
@@ -357,16 +361,12 @@ class WanTrainer(WanCheckpointer):
                 losses = jnp.array(losses)
                 losses = losses[: min(self.config.eval_max_number_of_samples_in_bucket, len(losses))]
                 mean_loss = jnp.mean(losses)
-                if jax.process_index() == 0:
-                  max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}, num of losses: {len(losses)}")
+                max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}")
                 mean_per_timestep.append(mean_loss)
             final_eval_loss = jnp.mean(jnp.array(mean_per_timestep))
-            if jax.process_index() == 0:
-              max_logging.log(f"Step {step}, Final Average Eval loss: {final_eval_loss:.4f}")
+            max_logging.log(f"Step {step}, Final Average Eval loss: {final_eval_loss:.4f}")
             if writer:
               writer.add_scalar("learning/eval_loss", final_eval_loss, step)
-          else:
-            max_logging.log(f"Step {step}, evaluation dataset was empty.")
         example_batch = next_batch_future.result()
         if step != 0 and self.config.checkpoint_every != -1 and step % self.config.checkpoint_every == 0:
           max_logging.log(f"Saving checkpoint for step {step}")
@@ -468,7 +468,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   # Directly compute the loss without calculating gradients.
   # The model's state.params are used but not updated.
   bs = len(data["latents"])
-  single_batch_size = min(config.eval_max_processed_batch_size, config.global_batch_size_to_train_on)
+  single_batch_size = config.global_batch_size_to_train_on
   losses = jnp.zeros(bs)
   for i in range(0, bs, single_batch_size):
     start = i
