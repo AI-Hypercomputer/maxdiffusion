@@ -24,44 +24,44 @@ on:
   workflow_dispatch:
 
 jobs:
-  # maxtext_workload:
-  #   name: "Run MaxText Workload"
-  #   # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
-  #   runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
-  #   container:
-  #     image: gcr.io/tpu-prod-env-multipod/maxtext_stable_stack_candidate_gpu:latest
-  #   steps:
-  #     - name: Checkout MaxText Repo
-  #       uses: actions/checkout@v4
-  #       with:
-  #         repository: AI-Hypercomputer/maxtext
-  #         path: maxtext
-  #         ref: rbierneni-test-gpu-run
+  maxtext_workload:
+    name: "Run MaxText Workload"
+    # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
+    runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
+    container:
+      image: gcr.io/tpu-prod-env-multipod/maxtext_stable_stack_candidate_gpu:latest
+    steps:
+      - name: Checkout MaxText Repo
+        uses: actions/checkout@v4
+        with:
+          repository: AI-Hypercomputer/maxtext
+          path: maxtext
+          ref: rbierneni-test-gpu-run
       
-  #     - name: Print dependencies
-  #       run: |
-  #         pip uninstall -y transformer-engine transformer-engine-jax
-  #         pip install -U transformer-engine[jax]==2.6.0
-  #         pip uninstall -y tensorflow
-  #         pip install tensorflow-cpu
-  #         pip freeze
+      - name: Print dependencies
+        run: |
+          pip uninstall -y transformer-engine transformer-engine-jax
+          pip install -U transformer-engine[jax]==2.6.0
+          # pip uninstall -y tensorflow
+          # pip install tensorflow-cpu
+          pip freeze
 
-  #     - name: Run MaxText Training
-  #       run: |
-  #         # This command is adapted from your DAG for a single-slice configuration.
-  #         cd maxtext && \
-  #         pip install . --no-dependencies
+      - name: Run MaxText Training
+        run: |
+          # This command is adapted from your DAG for a single-slice configuration.
+          cd maxtext && \
+          pip install . --no-dependencies
 
-  #         export XLA_PYTHON_CLIENT_MEM_FRACTION=0.65
-  #         export TF_FORCE_GPU_ALLOW_GROWTH=true
+          export XLA_PYTHON_CLIENT_MEM_FRACTION=0.65
+          export TF_FORCE_GPU_ALLOW_GROWTH=true
 
-  #         python3 -m MaxText.train MaxText/configs/base.yml \
-  #           steps=2 \
-  #           enable_checkpointing=false \
-  #           attention=cudnn_flash_te \
-  #           dataset_type=synthetic \
-  #           run_name=rbierneni-test-maxtext-gpu \
-  #           base_output_directory=gs://rbierneni-multipod-dev/maxtext/${{ github.run_id }}
+          python3 -m MaxText.train MaxText/configs/base.yml \
+            steps=2 \
+            enable_checkpointing=false \
+            attention=cudnn_flash_te \
+            dataset_type=synthetic \
+            run_name=rbierneni-test-maxtext-gpu \
+            base_output_directory=gs://rbierneni-multipod-dev/maxtext/${{ github.run_id }}
 
   # STAGE 1: PULL MAXDIFFUSION IMAGE AND RUN WORKLOAD
   maxdiffusion_workload:
@@ -69,7 +69,7 @@ jobs:
     # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:jax0.7.2_rev1_gpu
+      image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:jax0.7.2_rev2_gpu
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -77,9 +77,9 @@ jobs:
       - name: Print dependencies
         run: |
           # pip uninstall -y transformer-engine transformer-engine-jax
-          # pip install -U transformer-engine[pytorch,jax]
-          pip uninstall -y tensorflow
-          pip install tensorflow-cpu
+          pip install -U transformer-engine[jax]==2.6.0
+          # pip uninstall -y tensorflow
+          # pip install tensorflow-cpu
           pip freeze
 
       - name: Run MaxDiffusion Training
@@ -92,7 +92,7 @@ jobs:
             train_text_encoder=false \
             cache_latents_text_encoder_outputs=true \
             per_device_batch_size=1 \
-            attention=dot_product \
+            attention=cudnn_flash_te \
             activations_dtype=bfloat16 \
             weights_dtype=bfloat16 \
             max_train_steps=200 \
