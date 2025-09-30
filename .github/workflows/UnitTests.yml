@@ -15,9 +15,9 @@
 # This workflow will install Python dependencies, run tests and lint with a variety of Python versions
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
 
-# This workflow will run a small FLUX training workload on a GPU runner.
+# This workflow will run a small SDXL training workload on a GPU runner.
 
-name: FLUX Workload Training on GPU
+name: SDXL Workload Training on GPU
 
 on:
   pull_request:
@@ -26,8 +26,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  flux_training_workload:
-    name: "Run FLUX Training Workload"
+  sdxl_training_workload:
+    name: "Run SDXL Training Workload"
     # IMPORTANT: Replace with the label for your specific GPU runner if different
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
@@ -48,17 +48,22 @@ jobs:
         run: |
           echo "--- Installed Python packages ---"
           pip freeze
-
+      
       - name: Hugging Face Login
         run: huggingface-cli login --token ${{ secrets.HUGGINGFACE_TOKEN }}
 
-      - name: Run FLUX Training
+      - name: Run SDXL Training
         env:
           NVTE_FRAMEWORK: jax
         run: |
-          python src/maxdiffusion/train_flux.py src/maxdiffusion/configs/base_flux_dev.yml \
-            run_name="flux-ci-test-${{ github.run_id }}" \
-            output_dir="/tmp/flux-output/" \
+          python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
+            run_name="sdxl-ci-test-${{ github.run_id }}" \
+            output_dir="/tmp/sdxl-output/" \
             max_train_steps=5 \
             hardware=gpu \
             attention="cudnn_flash_te" \
+            resolution=512 \
+            per_device_batch_size=1 \
+            train_new_unet=true \
+            train_text_encoder=false \
+            cache_latents_text_encoder_outputs=true
