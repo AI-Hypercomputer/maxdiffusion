@@ -22,7 +22,9 @@
 # This workflow will run a small MaxText training workload on a GPU runner
 # using a custom Docker image with all code and dependencies pre-installed.
 
-name: MaxText Custom Image Workload
+# This workflow runs MaxText training with a pinned version of Transformer Engine.
+
+name: MaxText Custom Image with Pinned TE
 
 on:
   pull_request:
@@ -35,18 +37,22 @@ jobs:
     name: "Run MaxText Training Workload"
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      # Use your custom image which contains the source code and dependencies.
       image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/maxtext-gpu-custom:latest
 
     steps:
+      - name: Pin Transformer Engine Version
+        run: |
+          echo "Uninstalling any existing Transformer Engine..."
+          pip uninstall -y transformer-engine
+          echo "Installing Transformer Engine version 2.6.0..."
+          pip install transformer-engine[jax]==2.6.0
+
       - name: Run MaxText Training
-        # The Docker image's working directory is /deps, but the code is in /deps/src.
         working-directory: /deps/src
         env:
           NVTE_FRAMEWORK: jax
           TF_FORCE_GPU_ALLOW_GROWTH: "true"
         run: |
-          # Run the main training script from the /deps/src directory.
           python MaxText/train.py MaxText/configs/base.yml \
             run_name="maxtext-ci-test-${{ github.run_id }}" \
             steps=5 \
