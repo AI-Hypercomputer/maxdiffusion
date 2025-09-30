@@ -333,10 +333,9 @@ class WanTrainer(WanCheckpointer):
                   self.config.logical_axis_rules
               ):
                 metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
+                metrics["scalar"]["learning/eval_loss"].block_until_ready()
               losses = metrics["scalar"]["learning/eval_loss"]
               timesteps = eval_batch["timesteps"]
-              gathered_losses_on_device = multihost_utils.process_allgather(losses)
-              gathered_losses = jax.device_get(gathered_losses_on_device)
               for t, l in zip(timesteps.flatten(), losses.flatten()):
                 timestep = int(t)
                 if timestep not in eval_losses_by_timestep:
