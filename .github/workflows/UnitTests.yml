@@ -16,7 +16,6 @@
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
 
 # This workflow will run a small SDXL training workload on a GPU runner.
-
 # This workflow will run a small SDXL training workload on a GPU runner.
 
 name: SDXL Workload Training on GPU
@@ -33,29 +32,15 @@ jobs:
     # IMPORTANT: Replace with the label for your specific GPU runner if different
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1
+      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1:latest
 
     steps:
-      - name: Create and Activate Swap File
+      - name: Verify Environment
         run: |
-          echo "--- Verifying free space before changes ---"
+          echo "--- Verifying free space ---"
           free -h
-          echo "---"
-          echo "Creating and activating a 64GB swap file..."
-          # Deactivate any existing swap to be safe
-          sudo swapoff -a
-          # Allocate a 64GB file
-          sudo fallocate -l 64G /swapfile
-          # Set the correct permissions
-          sudo chmod 600 /swapfile
-          # Format the file as swap
-          sudo mkswap /swapfile
-          # Activate the swap file
-          sudo swapon /swapfile
-          echo "--- Swap file is now active ---"
-          sudo swapon --show
-          echo "--- Verifying free space after changes ---"
-          free -h
+          echo "--- Verifying shared memory size ---"
+          df -h /dev/shm
 
       - name: Checkout Repository
         uses: actions/checkout@v4
