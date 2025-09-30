@@ -77,9 +77,9 @@ jobs:
       - name: Print dependencies
         run: |
           # pip uninstall -y transformer-engine transformer-engine-jax transformer-engine-cu12
-          pip install -U transformer-engine[jax]==2.6.0
-          pip uninstall -y transformer-engine-cu12
-          pip install transformer-engine-cu13
+          pip install -U transformer-engine==2.6.0
+          # pip uninstall -y transformer-engine-cu12
+          # pip install transformer-engine-cu13
           # pip uninstall -y tensorflow
           # pip install tensorflow-cpu
           pip freeze
