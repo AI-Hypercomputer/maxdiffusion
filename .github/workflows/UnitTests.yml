@@ -69,7 +69,7 @@ jobs:
     # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:jax0.7.2_rev4_gpu
+      image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:jax0.7.2_cuda12_tecu12_gpu
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -89,7 +89,8 @@ jobs:
 
       - name: Print dependencies
         run: |
-          # pip uninstall -y transformer-engine transformer-engine-jax transformer-engine-cu12
+          pip uninstall -y transformer-engine transformer-engine-jax transformer-engine-cu12
+          pip install transformer_engine[jax]==2.6.0
           # pip install -U transformer-engine[jax]==2.6.0
           # pip uninstall -y transformer-engine-cu12
           # pip install transformer-engine-cu13
