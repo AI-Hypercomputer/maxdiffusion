@@ -69,7 +69,7 @@ jobs:
     # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:jax0.7.2_cuda12_tecu12_gpu
+      image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:jax0.7.2_cuda13_te2.6.0
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
