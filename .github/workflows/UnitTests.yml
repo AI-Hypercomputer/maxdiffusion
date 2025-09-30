@@ -15,12 +15,11 @@
 # This workflow will install Python dependencies, run tests and lint with a variety of Python versions
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
 
-# This workflow will run a small SDXL training workload on a GPU runner.
 
 # This workflow will run a small MaxText training workload on a GPU runner
-# by checking out the MaxText repo inside the MaxDiffusion environment.
+# using a custom Docker image with all dependencies pre-installed.
 
-name: MaxText Workload on MaxDiffusion Runner
+name: MaxText Custom Image Workload
 
 on:
   pull_request:
@@ -33,51 +32,22 @@ jobs:
     name: "Run MaxText Training Workload"
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      # Using the MaxDiffusion container as requested
-      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1
+      # Use your newly built custom image
+      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/maxtext-gpu-custom:latest
 
     steps:
-      - name: Checkout MaxText Repository
-        uses: actions/checkout@v4
-        with:
-          repository: 'AI-Hypercomputer/maxtext'
-          ref: 'main'
-          path: 'maxtext' # Clone it into a 'maxtext' subdirectory
-
-      - name: Install Dependencies
-        working-directory: ./maxtext # Run all subsequent commands inside the new directory
-        run: |
-          # Uninstall full tensorflow to prevent GPU conflicts with JAX
-          pip uninstall -y tensorflow
-          # Install the CPU-only version for data loading
-          pip install tensorflow-cpu
-          # Install MaxText's dependencies
-          pip install -r requirements.txt
-          # Install the MaxText package itself
-          pip install .
-
-      - name: List Installed Libraries
-        working-directory: ./maxtext
-        run: |
-          echo "--- Installed Python packages ---"
-          pip freeze
-
       - name: Run MaxText Training
-        working-directory: ./maxtext
         env:
-          # Set the correct framework for Transformer Engine
           NVTE_FRAMEWORK: jax
-          # Prevent TensorFlow from grabbing all GPU memory
           TF_FORCE_GPU_ALLOW_GROWTH: "true"
         run: |
-          # Run the main training script with a base configuration
+          # The working directory is /deps, so this path is correct.
           python MaxText/train.py MaxText/configs/base.yml \
             run_name="maxtext-ci-test-${{ github.run_id }}" \
             steps=5 \
             enable_checkpointing=false \
-            attention='cudnn_flash_te' \
+            attention='cudnet_flash_te' \
             dataset_type='synthetic'
-
 
 # name: SDXL Workload Training on GPU
 
