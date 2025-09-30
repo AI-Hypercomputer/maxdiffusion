@@ -34,7 +34,7 @@ jobs:
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
       # Using the MaxDiffusion container as requested
-      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1:latest
+      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1
 
     steps:
       - name: Checkout MaxText Repository
