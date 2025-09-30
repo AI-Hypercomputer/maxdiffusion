@@ -32,7 +32,7 @@ jobs:
     # IMPORTANT: Replace with the label for your specific GPU runner if different
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1:latest
+      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1
 
     steps:
       - name: Verify Environment
