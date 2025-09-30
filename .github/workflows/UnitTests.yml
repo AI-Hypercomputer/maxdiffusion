@@ -98,27 +98,28 @@ jobs:
           # pip install tensorflow-cpu
           pip freeze
 
-      - name: Check per_device_batch_size
+      - name: Check devices
         run: |
           python -c "import jax; print(jax.devices())"
+          python verify_conflict.py
 
-      - name: Run MaxDiffusion Training
-        run: |
-          # This command is adapted from your DAG for a single-slice configuration.
-          NVTE_FRAMEWORK=JAX NVTE_FUSED_ATTN=1 pip install . && \
-            python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
-            hardware=gpu \
-            train_new_unet=true \
-            train_text_encoder=false \
-            cache_latents_text_encoder_outputs=true \
-            per_device_batch_size=1 \
-            attention=dot_product \
-            activations_dtype=bfloat16 \
-            weights_dtype=bfloat16 \
-            max_train_steps=200 \
-            enable_profiler=True \
-            run_name=1slice-VGpuVersion.XPK_H100_a3-maxdiffusion-jax-stable-stack-2025-09-26-04-12-02 \
-            output_dir=gs://rbierneni-multipod-dev/${{ github.run_id }}
+      # - name: Run MaxDiffusion Training
+      #   run: |
+      #     # This command is adapted from your DAG for a single-slice configuration.
+      #     NVTE_FRAMEWORK=JAX NVTE_FUSED_ATTN=1 pip install . && \
+      #       python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
+      #       hardware=gpu \
+      #       train_new_unet=true \
+      #       train_text_encoder=false \
+      #       cache_latents_text_encoder_outputs=true \
+      #       per_device_batch_size=1 \
+      #       attention=dot_product \
+      #       activations_dtype=bfloat16 \
+      #       weights_dtype=bfloat16 \
+      #       max_train_steps=200 \
+      #       enable_profiler=True \
+      #       run_name=1slice-VGpuVersion.XPK_H100_a3-maxdiffusion-jax-stable-stack-2025-09-26-04-12-02 \
+      #       output_dir=gs://rbierneni-multipod-dev/${{ github.run_id }}
 
 # jobs:
 #   build:
