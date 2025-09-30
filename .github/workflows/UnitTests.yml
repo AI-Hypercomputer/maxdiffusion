@@ -15,7 +15,9 @@
 # This workflow will install Python dependencies, run tests and lint with a variety of Python versions
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
 
-name: Unit Test
+# This workflow will run a small FLUX training workload on a GPU runner.
+
+name: FLUX Workload Training on GPU
 
 on:
   pull_request:
@@ -24,135 +26,36 @@ on:
   workflow_dispatch:
 
 jobs:
-  # maxtext_workload:
-  #   name: "Run MaxText Workload"
-  #   # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
-  #   runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
-  #   container:
-  #     image: gcr.io/tpu-prod-env-multipod/maxtext_stable_stack_candidate_gpu:latest
-  #   steps:
-  #     - name: Checkout MaxText Repo
-  #       uses: actions/checkout@v4
-  #       with:
-  #         repository: AI-Hypercomputer/maxtext
-  #         path: maxtext
-  #         ref: rbierneni-test-gpu-run
-      
-  #     - name: Print dependencies
-  #       run: |
-  #         pip uninstall -y transformer-engine transformer-engine-jax transformer-engine-cu12
-  #         pip install -U transformer-engine[jax]==2.6.0
-  #         # pip uninstall -y tensorflow
-  #         # pip install tensorflow-cpu
-  #         pip freeze
-
-  #     - name: Run MaxText Training
-  #       run: |
-  #         # This command is adapted from your DAG for a single-slice configuration.
-  #         cd maxtext && \
-  #         pip install . --no-dependencies
-
-  #         export XLA_PYTHON_CLIENT_MEM_FRACTION=0.65
-  #         export TF_FORCE_GPU_ALLOW_GROWTH=true
-
-  #         python3 -m MaxText.train MaxText/configs/base.yml \
-  #           steps=2 \
-  #           enable_checkpointing=false \
-  #           attention=cudnn_flash_te \
-  #           dataset_type=synthetic \
-  #           run_name=rbierneni-test-maxtext-gpu \
-  #           base_output_directory=gs://rbierneni-multipod-dev/maxtext/${{ github.run_id }}
-
-  # STAGE 1: PULL MAXDIFFUSION IMAGE AND RUN WORKLOAD
-  maxdiffusion_workload:
-    name: "Run MaxDiffusion Workload"
-    # IMPORTANT: Replace with the label for your runner (e.g., v5p-8)
+  flux_training_workload:
+    name: "Run FLUX Training Workload"
+    # IMPORTANT: Replace with the label for your specific GPU runner if different
     runs-on: ["linux-x86-a3-megagpu-h100-8gpu"]
     container:
-      image: gcr.io/tpu-prod-env-multipod/maxdiffusion_stable_stack_candidate:jax0.7.2_cuda13_te2.6.0
+      image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/candidate/gpu:jax0.7.2-cuda12.9-rev1:latest
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Check Host CUDA and GPU Environment
+      - name: Install Dependencies
         run: |
-          echo "--- Checking NVIDIA driver and supported CUDA version ---"
-          nvidia-smi || echo "nvidia-smi command not found. No GPU or NVIDIA driver detected."
-          
-          echo ""
-          echo "--- Checking for default CUDA toolkit installation ---"
-          ls -l /usr/local/ | grep cuda || echo "No default CUDA toolkit found in /usr/local/"
-          
-          echo ""
-          echo "--- Checking dynamic linker library path ---"
-          echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-'Not Set'}"
-
-      - name: Print dependencies
+          pip install -r requirements.txt
+          pip install --upgrade torch torchvision
+          # Install the maxdiffusion package to make it available for execution
+          pip install .
+      
+      - name: List Installed Libraries
         run: |
-          # pip uninstall -y transformer-engine transformer-engine-jax transformer-engine-cu12
-          # pip install transformer_engine[jax]==2.4.0
-          # pip install -U transformer-engine[jax]==2.6.0
-          # pip uninstall -y transformer-engine-cu12
-          # pip install transformer-engine-cu13
-          # pip uninstall -y tensorflow
-          # pip install tensorflow-cpu
+          echo "--- Installed Python packages ---"
           pip freeze
 
-      - name: Run MaxDiffusion Training
+      - name: Run FLUX Training
+        env:
+          NVTE_FRAMEWORK: jax
         run: |
-          # This command is adapted from your DAG for a single-slice configuration.
-          NVTE_FUSED_ATTN=1 pip install . && \
-            python -m src.maxdiffusion.train_sdxl src/maxdiffusion/configs/base_xl.yml \
+          python src/maxdiffusion/train_flux.py src/maxdiffusion/configs/base_flux_dev.yml \
+            run_name="flux-ci-test-${{ github.run_id }}" \
+            output_dir="/tmp/flux-output/" \
+            max_train_steps=5 \
             hardware=gpu \
-            train_new_unet=true \
-            train_text_encoder=false \
-            cache_latents_text_encoder_outputs=true \
-            per_device_batch_size=1 \
-            attention=cudnn_flash_te \
-            activations_dtype=bfloat16 \
-            weights_dtype=bfloat16 \
-            max_train_steps=200 \
-            enable_profiler=True \
-            run_name=1slice-VGpuVersion.XPK_H100_a3-maxdiffusion-jax-stable-stack-2025-09-26-04-12-02 \
-            output_dir=gs://rbierneni-multipod-dev/${{ github.run_id }}
-
-# jobs:
-#   build:
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         tpu-type: ["v5p-8"]
-#     name: "TPU test (${{ matrix.tpu-type }})"
-#     runs-on: ["self-hosted","${{ matrix.tpu-type }}"]
-#     steps:
-#     - uses: actions/checkout@v4
-#     - name: Set up Python 3.12
-#       uses: actions/setup-python@v5
-#       with:
-#         python-version: '3.12'
-#     - name: Install dependencies
-#       run: |
-#         pip install -e .
-#         pip uninstall jax jaxlib libtpu-nightly libtpu -y
-#         bash setup.sh MODE=stable
-#         export PATH=$PATH:$HOME/.local/bin
-#         pip install ruff
-#         pip install isort
-#         pip install pytest
-#     - name: Analysing the code with ruff
-#       run: |
-#         ruff check .
-#     - name: version check
-#       run: |
-#         python --version
-#         pip show jax jaxlib flax transformers datasets tensorflow tensorflow_datasets
-#     - name: PyTest
-#       run: | #--deselect=src/maxdiffusion/tests/input_pipeline_interface_test.py
-#         HF_HUB_CACHE=/mnt/disks/github-runner-disk/ HF_HOME=/mnt/disks/github-runner-disk/ TOKENIZERS_PARALLELISM=false python3 -m pytest --deselect=src/maxdiffusion/tests/ltx_transformer_step_test.py  -x
-#  add_pull_ready:
-#    if: github.ref != 'refs/heads/main'
-#    permissions:
-#      checks: read
-#      pull-requests: write
-#    needs: build
-#    uses: ./.github/workflows/AddLabel.yml
+            attention="cudnn_flash_te"
