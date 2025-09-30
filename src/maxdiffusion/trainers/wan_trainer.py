@@ -327,25 +327,25 @@ class WanTrainer(WanCheckpointer):
           # Loop indefinitely until the iterator is exhausted
           while True:
             try:
-              with mesh:
-                eval_start_time = datetime.datetime.now()
-                eval_batch = load_next_batch(eval_data_iterator, None, self.config)
+              eval_start_time = datetime.datetime.now()
+              eval_batch = load_next_batch(eval_data_iterator, None, self.config)
+              with pipeline.mesh, nn_partitioning.axis_rules(
+                  self.config.logical_axis_rules
+              ):
                 metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
-                losses = metrics["scalar"]["learning/eval_loss"]
-                timesteps = eval_batch["timesteps"]
-                gathered_timesteps_on_device = multihost_utils.process_allgather(timesteps)
-                gathered_timesteps = jax.device_get(gathered_timesteps_on_device)
-                gathered_losses_on_device = multihost_utils.process_allgather(losses)
-                gathered_losses = jax.device_get(gathered_losses_on_device)
-                for t, l in zip(gathered_timesteps.flatten(), gathered_losses.flatten()):
-                  timestep = int(t)
-                  if timestep not in eval_losses_by_timestep:
-                      eval_losses_by_timestep[timestep] = []
-                  eval_losses_by_timestep[timestep].append(l)
+              losses = metrics["scalar"]["learning/eval_loss"]
+              timesteps = eval_batch["timesteps"]
+              gathered_losses_on_device = multihost_utils.process_allgather(losses)
+              gathered_losses = jax.device_get(gathered_losses_on_device)
+              for t, l in zip(timesteps.flatten(), losses.flatten()):
+                timestep = int(t)
+                if timestep not in eval_losses_by_timestep:
+                    eval_losses_by_timestep[timestep] = []
+                eval_losses_by_timestep[timestep].append(l)
+              if jax.process_index() == 0:
                 eval_end_time = datetime.datetime.now()
                 eval_duration = eval_end_time - eval_start_time
-                if jax.process_index() == 0:
-                  max_logging.log(f"  Eval step time {eval_duration.total_seconds():.2f} seconds.")
+                max_logging.log(f"  Eval step time {eval_duration.total_seconds():.2f} seconds.")
             except StopIteration:
               # This block is executed when the iterator has no more data
               break
