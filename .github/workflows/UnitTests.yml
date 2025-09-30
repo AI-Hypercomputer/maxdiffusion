@@ -49,6 +49,11 @@ jobs:
           echo "--- Installed Python packages ---"
           pip freeze
 
+      - name: Hugging Face Login
+        uses: huggingface/login@v1
+        with:
+          token: ${{ secrets.HUGGINGFACE_TOKEN }}
+
       - name: Run FLUX Training
         env:
           NVTE_FRAMEWORK: jax
