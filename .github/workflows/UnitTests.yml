@@ -36,7 +36,6 @@ jobs:
         with:
           repository: AI-Hypercomputer/maxtext
           path: maxtext
-          ref: rbierneni-test-gpu-run
       
       - name: Print dependencies
         run: |
