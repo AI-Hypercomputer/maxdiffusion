@@ -49,6 +49,7 @@ jobs:
         env:
           NVTE_FRAMEWORK: jax
           TF_FORCE_GPU_ALLOW_GROWTH: "true"
+          NVTE_FUSED_ATTN: 1
         run: |
           python MaxText/train.py MaxText/configs/base.yml \
             run_name="maxtext-ci-test-${{ github.run_id }}" \
