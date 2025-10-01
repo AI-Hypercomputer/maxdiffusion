@@ -40,6 +40,10 @@ jobs:
       image: us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/maxtext-gpu-custom:latest
 
     steps:
+      - name: List Installed Libraries
+        run: |
+          echo "--- Installed Python packages ---"
+          pip freeze
       - name: Run MaxText Training
         working-directory: /deps/src
         env:
