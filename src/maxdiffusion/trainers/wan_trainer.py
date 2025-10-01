@@ -176,7 +176,6 @@ class WanTrainer(WanCheckpointer):
       raise ValueError(
           "Wan 2.1 training only supports config.dataset_type set to tfrecords and config.cache_latents_text_encoder_outputs set to True"
       )
-    
     feature_description = {
         "latents": tf.io.FixedLenFeature([], tf.string),
         "encoder_hidden_states": tf.io.FixedLenFeature([], tf.string),
