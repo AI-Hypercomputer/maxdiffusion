@@ -233,7 +233,7 @@ class WanTrainer(WanCheckpointer):
     if self.config.enable_ssim:
       posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
       print_ssim(pretrained_video_path, posttrained_video_path)
-  
+
   def eval(self, mesh, eval_rng_key, step, p_eval_step, state, scheduler_state, writer):
     eval_data_iterator = self.load_dataset(mesh, is_training=False)
     eval_rng = eval_rng_key
