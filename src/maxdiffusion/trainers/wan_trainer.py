@@ -211,8 +211,9 @@ class WanTrainer(WanCheckpointer):
   def start_training(self):
 
     pipeline = self.load_checkpoint()
-    # Generate a sample before training to compare against generated sample after training.
-    pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
+    if self.config.enable_ssim:
+      # Generate a sample before training to compare against generated sample after training.
+      pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
 
     if self.config.eval_every == -1 or (not self.config.enable_generate_video_for_eval):
       # save some memory.
@@ -230,8 +231,57 @@ class WanTrainer(WanCheckpointer):
     # Returns pipeline with trained transformer state
     pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, train_data_iterator)
 
-    posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
-    print_ssim(pretrained_video_path, posttrained_video_path)
+    if self.config.enable_ssim:
+      posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
+      print_ssim(pretrained_video_path, posttrained_video_path)
+  
+  def eval(self, mesh, eval_rng_key, step, p_eval_step, state, scheduler_state, writer):
+    eval_data_iterator = self.load_dataset(mesh, is_training=False)
+    eval_rng = eval_rng_key
+    eval_losses_by_timestep = {}
+    # Loop indefinitely until the iterator is exhausted
+    while True:
+      try:
+        eval_start_time = datetime.datetime.now()
+        eval_batch = load_next_batch(eval_data_iterator, None, self.config)
+        with mesh, nn_partitioning.axis_rules(
+            self.config.logical_axis_rules
+        ):
+          metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
+          metrics["scalar"]["learning/eval_loss"].block_until_ready()
+        losses = metrics["scalar"]["learning/eval_loss"]
+        timesteps = eval_batch["timesteps"]
+        gathered_losses = multihost_utils.process_allgather(losses)
+        gathered_losses = jax.device_get(gathered_losses)
+        gathered_timesteps = multihost_utils.process_allgather(timesteps)
+        gathered_timesteps = jax.device_get(gathered_timesteps)
+        if jax.process_index() == 0:
+          for t, l in zip(gathered_timesteps.flatten(), gathered_losses.flatten()):
+            timestep = int(t)
+            if timestep not in eval_losses_by_timestep:
+                eval_losses_by_timestep[timestep] = []
+            eval_losses_by_timestep[timestep].append(l)
+          eval_end_time = datetime.datetime.now()
+          eval_duration = eval_end_time - eval_start_time
+          max_logging.log(f"Eval time: {eval_duration.total_seconds():.2f} seconds.")
+      except StopIteration:
+        # This block is executed when the iterator has no more data
+        break
+    # Check if any evaluation was actually performed
+    if eval_losses_by_timestep and jax.process_index() == 0:
+      mean_per_timestep = []
+      if jax.process_index() == 0:
+        max_logging.log(f"Step {step}, calculating mean loss per timestep...")
+      for timestep, losses in sorted(eval_losses_by_timestep.items()):
+          losses = jnp.array(losses)
+          losses = losses[: min(self.config.eval_max_number_of_samples_in_bucket, len(losses))]
+          mean_loss = jnp.mean(losses)
+          max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}")
+          mean_per_timestep.append(mean_loss)
+      final_eval_loss = jnp.mean(jnp.array(mean_per_timestep))
+      max_logging.log(f"Step {step}, Final Average Eval loss: {final_eval_loss:.4f}")
+      if writer:
+        writer.add_scalar("learning/eval_loss", final_eval_loss, step)
 
   def training_loop(self, pipeline, optimizer, learning_rate_scheduler, train_data_iterator):
     mesh = pipeline.mesh
@@ -321,52 +371,8 @@ class WanTrainer(WanCheckpointer):
             inference_generate_video(self.config, pipeline, filename_prefix=f"{step+1}-train_steps-")
           # Re-create the iterator each time you start evaluation to reset it
           # This assumes your data loading logic can be called to get a fresh iterator.
-          eval_data_iterator = self.load_dataset(mesh, is_training=False)
-          eval_rng = eval_rng_key
-          eval_losses_by_timestep = {}
-          # Loop indefinitely until the iterator is exhausted
-          while True:
-            try:
-              eval_start_time = datetime.datetime.now()
-              eval_batch = load_next_batch(eval_data_iterator, None, self.config)
-              with pipeline.mesh, nn_partitioning.axis_rules(
-                  self.config.logical_axis_rules
-              ):
-                metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
-                metrics["scalar"]["learning/eval_loss"].block_until_ready()
-              losses = metrics["scalar"]["learning/eval_loss"]
-              timesteps = eval_batch["timesteps"]
-              gathered_losses = multihost_utils.process_allgather(losses)
-              gathered_losses = jax.device_get(gathered_losses)
-              gathered_timesteps = multihost_utils.process_allgather(timesteps)
-              gathered_timesteps = jax.device_get(gathered_timesteps)
-              if jax.process_index() == 0:
-                for t, l in zip(gathered_timesteps.flatten(), gathered_losses.flatten()):
-                  timestep = int(t)
-                  if timestep not in eval_losses_by_timestep:
-                      eval_losses_by_timestep[timestep] = []
-                  eval_losses_by_timestep[timestep].append(l)
-                eval_end_time = datetime.datetime.now()
-                eval_duration = eval_end_time - eval_start_time
-                max_logging.log(f"  Eval step time {eval_duration.total_seconds():.2f} seconds.")
-            except StopIteration:
-              # This block is executed when the iterator has no more data
-              break
-          # Check if any evaluation was actually performed
-          if eval_losses_by_timestep and jax.process_index() == 0:
-            mean_per_timestep = []
-            if jax.process_index() == 0:
-              max_logging.log(f"Step {step}, calculating mean loss per timestep...")
-            for timestep, losses in sorted(eval_losses_by_timestep.items()):
-                losses = jnp.array(losses)
-                losses = losses[: min(self.config.eval_max_number_of_samples_in_bucket, len(losses))]
-                mean_loss = jnp.mean(losses)
-                max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}")
-                mean_per_timestep.append(mean_loss)
-            final_eval_loss = jnp.mean(jnp.array(mean_per_timestep))
-            max_logging.log(f"Step {step}, Final Average Eval loss: {final_eval_loss:.4f}")
-            if writer:
-              writer.add_scalar("learning/eval_loss", final_eval_loss, step)
+          self.eval(mesh, eval_rng_key, step, p_eval_step, state, scheduler_state, writer)
+
         example_batch = next_batch_future.result()
         if step != 0 and self.config.checkpoint_every != -1 and step % self.config.checkpoint_every == 0:
           max_logging.log(f"Saving checkpoint for step {step}")
