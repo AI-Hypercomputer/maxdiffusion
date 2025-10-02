@@ -42,10 +42,10 @@ def main(argv: Sequence[str]) -> None:
 
 @contextmanager
 def transformer_engine_context():
-  """ If TransformerEngine is available, this context manager will provide the library with MaxText-specific details needed for correcct operation. """
+  """ If TransformerEngine is available, this context manager will provide the library with MaxDiffusion-specific details needed for correcct operation. """
   try:
     from transformer_engine.jax.sharding import global_shard_guard, MeshResource
-    # Inform TransformerEngine of MaxText's physical mesh resources.
+    # Inform TransformerEngine of MaxDiffusion's physical mesh resources.
     mesh_resource = MeshResource(
       dp_resource = "data",
       tp_resource = "tensor",
