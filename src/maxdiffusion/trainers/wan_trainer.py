@@ -472,6 +472,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   # --- Key Difference from train_step ---
   # Directly compute the loss without calculating gradients.
   # The model's state.params are used but not updated.
+  # TODO(coolkp): Explore optimizing the creation of PRNGs in a vmap or statically outside of the loop
   bs = len(data["latents"])
   single_batch_size = config.global_batch_size_to_train_on
   losses = jnp.zeros(bs)

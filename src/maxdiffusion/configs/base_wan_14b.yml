@@ -318,6 +318,6 @@ quantization_calibration_method: "absmax"
 eval_every: -1
 eval_data_dir: ""
 enable_generate_video_for_eval: False # This will increase the used TPU memory.
-eval_max_number_of_samples_in_bucket: 60
+eval_max_number_of_samples_in_bucket: 60 # The number of samples per bucket for evaluation. This is calculated by num_eval_samples / len(considered_timesteps_list).
 
 enable_ssim: True
