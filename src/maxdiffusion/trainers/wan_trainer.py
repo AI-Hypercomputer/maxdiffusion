@@ -465,6 +465,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
     training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
     loss = (training_target - model_pred) ** 2
     loss = loss * training_weight
+    # Calculate the mean loss per sample across all non-batch dimensions.
     loss = loss.reshape(loss.shape[0], -1).mean(axis=1)
 
     return loss
