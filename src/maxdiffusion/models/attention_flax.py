@@ -184,7 +184,8 @@ def _tpu_flash_attention(
     kv_max_block_size = key.shape[1]
   else:
     kv_max_block_size = q_max_block_size
-  if flash_block_sizes:
+  # ensure that for cross attention we override the block sizes.
+  if flash_block_sizes and key.shape[1] == query.shape[1]:
     block_sizes = flash_block_sizes
   else:
     block_sizes = splash_attention_kernel.BlockSizes(
