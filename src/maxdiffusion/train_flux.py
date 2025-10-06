@@ -19,10 +19,10 @@ from typing import Sequence
 import jax
 from absl import app
 from maxdiffusion import (max_logging, pyconfig)
-from contextlib import contextmanager
 
 from maxdiffusion.train_utils import (
     validate_train_config,
+    transformer_engine_context,
 )
 
 
@@ -39,24 +39,6 @@ def main(argv: Sequence[str]) -> None:
   validate_train_config(config)
   max_logging.log(f"Found {jax.device_count()} devices.")
   train(config)
-
-@contextmanager
-def transformer_engine_context():
-  """ If TransformerEngine is available, this context manager will provide the library with MaxDiffusion-specific details needed for correcct operation. """
-  try:
-    from transformer_engine.jax.sharding import global_shard_guard, MeshResource
-    # Inform TransformerEngine of MaxDiffusion's physical mesh resources.
-    mesh_resource = MeshResource(
-      dp_resource = "data",
-      tp_resource = "tensor",
-      fsdp_resource = "fsdp",
-      pp_resource = None,
-      cp_resource = None,
-    )
-    with global_shard_guard(mesh_resource):
-      yield
-  except ImportError:
-    yield
 
 if __name__ == "__main__":
   with transformer_engine_context():
