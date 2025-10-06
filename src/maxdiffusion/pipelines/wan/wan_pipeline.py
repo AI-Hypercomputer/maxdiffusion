@@ -246,10 +246,10 @@ class WanPipeline:
   def get_basic_config(cls, dtype, config: HyperParameters):
     rules = [
         qwix.QtRule(
-            module_path=config.qwix_module_path,  # Apply to all modules
+            module_path=config.qwix_module_path,
             weight_qtype=dtype,
             act_qtype=dtype,
-            op_names=("dot_general",),
+            op_names=("dot_general","einsum", "conv_general_dilated"),
         )
     ]
     return rules
@@ -263,7 +263,7 @@ class WanPipeline:
     """
     rules = [
         qwix.QtRule(
-            module_path=config.qwix_module_path,  # Apply to all modules
+            module_path=config.qwix_module_path,
             weight_qtype=jnp.float8_e4m3fn,
             act_qtype=jnp.float8_e4m3fn,
             bwd_qtype=jnp.float8_e5m2,
@@ -272,7 +272,19 @@ class WanPipeline:
             weight_calibration_method=config.quantization_calibration_method,
             act_calibration_method=config.quantization_calibration_method,
             bwd_calibration_method=config.quantization_calibration_method,
-            op_names=("dot_general",),
+            op_names=("dot_general","einsum"),
+        ),
+        qwix.QtRule(
+            module_path=config.qwix_module_path,
+            weight_qtype=jnp.float8_e4m3fn, # conv_general_dilated requires the same dtypes
+            act_qtype=jnp.float8_e4m3fn,
+            bwd_qtype=jnp.float8_e4m3fn,
+            bwd_use_original_residuals=True,
+            disable_channelwise_axes=True,  # per_tensor calibration
+            weight_calibration_method=config.quantization_calibration_method,
+            act_calibration_method=config.quantization_calibration_method,
+            bwd_calibration_method=config.quantization_calibration_method,
+            op_names=("conv_general_dilated"),
         )
     ]
     return rules
