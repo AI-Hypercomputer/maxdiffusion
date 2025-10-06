@@ -55,13 +55,17 @@ def float_feature_list(value):
   return tf.train.Feature(float_list=tf.train.FloatList(value=value))
 
 
-def create_example(latent, hidden_states):
+def create_example(latent, hidden_states, timestep=None):
   latent = tf.io.serialize_tensor(latent)
   hidden_states = tf.io.serialize_tensor(hidden_states)
   feature = {
       "latents": bytes_feature(latent),
       "encoder_hidden_states": bytes_feature(hidden_states),
   }
+  # Add timestep feature if it is provided
+  if timestep is not None:
+    feature["timesteps"] = int64_feature(timestep)
+
   example = tf.train.Example(features=tf.train.Features(feature=feature))
   return example.SerializeToString()
 
@@ -79,6 +83,12 @@ def generate_dataset(config):
       tfrecords_dir + "/file_%.2i-%i.tfrec" % (tf_rec_num, (global_record_count + no_records_per_shard))
   )
   shard_record_count = 0
+
+  # Define timesteps and bucket configuration
+  num_eval_samples = config.num_eval_samples
+  timesteps_list = config.timesteps_list
+  assert num_eval_samples % len(timesteps_list) == 0
+  bucket_size = num_eval_samples // len(timesteps_list)
 
   # Load dataset
   metadata_path = os.path.join(config.train_data_dir, "metadata.csv")
@@ -102,7 +112,20 @@ def generate_dataset(config):
       # Save them as float32 because numpy cannot read bfloat16.
       latent = jnp.array(latent.float().numpy(), dtype=jnp.float32)
       prompt_embeds = jnp.array(prompt_embeds.float().numpy(), dtype=jnp.float32)
-      writer.write(create_example(latent, prompt_embeds))
+
+      current_timestep = None
+      # Determine the timestep for the first 420 samples
+      if config.enable_eval_timesteps:
+        if global_record_count < num_eval_samples:
+          print(f"global_record_count: {global_record_count}")
+          bucket_index = global_record_count // bucket_size
+          current_timestep = timesteps_list[bucket_index]
+        else:
+          print(f"value {global_record_count} is greater than or equal to {num_eval_samples}")
+          return
+
+      # Write the example, including the timestep if applicable
+      writer.write(create_example(latent, prompt_embeds, timestep=current_timestep))
       shard_record_count += 1
       global_record_count += 1
 
