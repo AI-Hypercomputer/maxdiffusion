@@ -301,7 +301,7 @@ class WanTransformerTest(unittest.TestCase):
     config_fp8 = Mock(spec=HyperParameters)
     config_fp8.use_qwix_quantization = True
     config_fp8.quantization = "fp8"
-    config_int8.qwix_module_path = ".*"
+    config_fp8.qwix_module_path = ".*"
     provider_fp8 = WanPipeline.get_qt_provider(config_fp8)
     self.assertIsNotNone(provider_fp8)
     mock_qt_rule.assert_called_once_with(module_path=".*", weight_qtype=jnp.float8_e4m3fn, act_qtype=jnp.float8_e4m3fn, op_names=("dot_general","einsum", "conv_general_dilated"))
@@ -312,7 +312,7 @@ class WanTransformerTest(unittest.TestCase):
     config_fp8_full.use_qwix_quantization = True
     config_fp8_full.quantization = "fp8_full"
     config_fp8_full.quantization_calibration_method = "absmax"
-    config_int8.qwix_module_path = ".*"
+    config_fp8_full.qwix_module_path = ".*"
     provider_fp8_full = WanPipeline.get_qt_provider(config_fp8_full)
     self.assertIsNotNone(provider_fp8_full)
     expected_calls = [
