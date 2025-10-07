@@ -236,6 +236,7 @@ enable_profiler: False
 # the iteration time a chance to stabilize.
 skip_first_n_steps_for_profiler: 5
 profiler_steps: 10
+profiler: ""
 
 # Generation parameters
 prompt: "A magical castle in the middle of a forest, artistic drawing"
@@ -284,3 +285,5 @@ quantization: ''
 quantization_local_shard_count: -1
 use_qwix_quantization: False 
 compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
+
+save_final_checkpoint: False
