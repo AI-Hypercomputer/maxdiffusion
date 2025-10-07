@@ -243,18 +243,19 @@ class WanPipeline:
     return wan_vae, vae_cache
 
   @classmethod
-  def get_basic_config(cls, dtype):
+  def get_basic_config(cls, dtype, config: HyperParameters):
     rules = [
         qwix.QtRule(
-            module_path=".*",  # Apply to all modules
+            module_path=config.qwix_module_path,
             weight_qtype=dtype,
             act_qtype=dtype,
+            op_names=("dot_general","einsum", "conv_general_dilated"),
         )
     ]
     return rules
 
   @classmethod
-  def get_fp8_config(cls, quantization_calibration_method: str):
+  def get_fp8_config(cls, config: HyperParameters):
     """
     fp8 config rules with per-tensor calibration.
     FLAX API (https://flax-linen.readthedocs.io/en/v0.10.6/guides/quantization/fp8_basics.html#flax-low-level-api):
@@ -262,15 +263,28 @@ class WanPipeline:
     """
     rules = [
         qwix.QtRule(
-            module_path=".*",  # Apply to all modules
+            module_path=config.qwix_module_path,
             weight_qtype=jnp.float8_e4m3fn,
+            act_qtype=jnp.float8_e4m3fn,
+            bwd_qtype=jnp.float8_e5m2,
+            bwd_use_original_residuals=True,
+            disable_channelwise_axes=True,  # per_tensor calibration
+            weight_calibration_method=config.quantization_calibration_method,
+            act_calibration_method=config.quantization_calibration_method,
+            bwd_calibration_method=config.quantization_calibration_method,
+            op_names=("dot_general","einsum"),
+        ),
+        qwix.QtRule(
+            module_path=config.qwix_module_path,
+            weight_qtype=jnp.float8_e4m3fn, # conv_general_dilated requires the same dtypes
             act_qtype=jnp.float8_e4m3fn,
             bwd_qtype=jnp.float8_e4m3fn,
             bwd_use_original_residuals=True,
             disable_channelwise_axes=True,  # per_tensor calibration
-            weight_calibration_method=quantization_calibration_method,
-            act_calibration_method=quantization_calibration_method,
-            bwd_calibration_method=quantization_calibration_method,
+            weight_calibration_method=config.quantization_calibration_method,
+            act_calibration_method=config.quantization_calibration_method,
+            bwd_calibration_method=config.quantization_calibration_method,
+            op_names=("conv_general_dilated"),
         )
     ]
     return rules
@@ -281,14 +295,13 @@ class WanPipeline:
     if not getattr(config, "use_qwix_quantization", False):
       return None
 
-    quantization_calibration_method = getattr(config, "quantization_calibration_method", "absmax")
     match config.quantization:
       case "int8":
-        return qwix.QtProvider(cls.get_basic_config(jnp.int8))
+        return qwix.QtProvider(cls.get_basic_config(jnp.int8, config))
       case "fp8":
-        return qwix.QtProvider(cls.get_basic_config(jnp.float8_e4m3fn))
+        return qwix.QtProvider(cls.get_basic_config(jnp.float8_e4m3fn, config))
       case "fp8_full":
-        return qwix.QtProvider(cls.get_fp8_config(quantization_calibration_method))
+        return qwix.QtProvider(cls.get_fp8_config(config))
     return None
 
   @classmethod

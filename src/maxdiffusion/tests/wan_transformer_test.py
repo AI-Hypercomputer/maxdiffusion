@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 from absl.testing import absltest
 from flax import nnx
 from jax.sharding import Mesh
@@ -291,18 +291,20 @@ class WanTransformerTest(unittest.TestCase):
     config_int8 = Mock(spec=HyperParameters)
     config_int8.use_qwix_quantization = True
     config_int8.quantization = "int8"
+    config_int8.qwix_module_path = ".*"
     provider_int8 = WanPipeline.get_qt_provider(config_int8)
     self.assertIsNotNone(provider_int8)
-    mock_qt_rule.assert_called_once_with(module_path=".*", weight_qtype=jnp.int8, act_qtype=jnp.int8)
+    mock_qt_rule.assert_called_once_with(module_path=".*", weight_qtype=jnp.int8, act_qtype=jnp.int8, op_names=("dot_general","einsum", "conv_general_dilated"))
 
     # Case 3: Quantization enabled, type 'fp8'
     mock_qt_rule.reset_mock()
     config_fp8 = Mock(spec=HyperParameters)
     config_fp8.use_qwix_quantization = True
     config_fp8.quantization = "fp8"
+    config_int8.qwix_module_path = ".*"
     provider_fp8 = WanPipeline.get_qt_provider(config_fp8)
     self.assertIsNotNone(provider_fp8)
-    mock_qt_rule.assert_called_once_with(module_path=".*", weight_qtype=jnp.float8_e4m3fn, act_qtype=jnp.float8_e4m3fn)
+    mock_qt_rule.assert_called_once_with(module_path=".*", weight_qtype=jnp.float8_e4m3fn, act_qtype=jnp.float8_e4m3fn, op_names=("dot_general","einsum", "conv_general_dilated"))
 
     # Case 4: Quantization enabled, type 'fp8_full'
     mock_qt_rule.reset_mock()
@@ -310,9 +312,22 @@ class WanTransformerTest(unittest.TestCase):
     config_fp8_full.use_qwix_quantization = True
     config_fp8_full.quantization = "fp8_full"
     config_fp8_full.quantization_calibration_method = "absmax"
+    config_int8.qwix_module_path = ".*"
     provider_fp8_full = WanPipeline.get_qt_provider(config_fp8_full)
     self.assertIsNotNone(provider_fp8_full)
-    mock_qt_rule.assert_called_once_with(
+    expected_calls = [
+      call(module_path=".*",  # Apply to all modules
+        weight_qtype=jnp.float8_e4m3fn,
+        act_qtype=jnp.float8_e4m3fn,
+        bwd_qtype=jnp.float8_e5m2,
+        bwd_use_original_residuals=True,
+        disable_channelwise_axes=True,  # per_tensor calibration
+        weight_calibration_method=config_fp8_full.quantization_calibration_method,
+        act_calibration_method=config_fp8_full.quantization_calibration_method,
+        bwd_calibration_method=config_fp8_full.quantization_calibration_method,
+        op_names=("dot_general","einsum"),
+        ),
+      call(
         module_path=".*",  # Apply to all modules
         weight_qtype=jnp.float8_e4m3fn,
         act_qtype=jnp.float8_e4m3fn,
@@ -322,7 +337,10 @@ class WanTransformerTest(unittest.TestCase):
         weight_calibration_method=config_fp8_full.quantization_calibration_method,
         act_calibration_method=config_fp8_full.quantization_calibration_method,
         bwd_calibration_method=config_fp8_full.quantization_calibration_method,
-    )
+        op_names=("conv_general_dilated"),
+      )
+    ]
+    mock_qt_rule.assert_has_calls(expected_calls, any_order=True)
 
     # Case 5: Invalid quantization type
     config_invalid = Mock(spec=HyperParameters)
@@ -341,6 +359,7 @@ class WanTransformerTest(unittest.TestCase):
     mock_config = Mock(spec=HyperParameters)
     mock_config.use_qwix_quantization = True
     mock_config.quantization = "fp8_full"
+    mock_config.qwix_module_path = ".*"
     mock_config.per_device_batch_size = 1
 
     mock_model = Mock(spec=WanModel)
