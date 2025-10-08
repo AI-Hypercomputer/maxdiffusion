@@ -37,6 +37,9 @@ from ..models.normalization_flax import FP32LayerNorm
 from ..models.attention_flax import FlaxWanAttention
 from maxdiffusion.pyconfig import HyperParameters
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
+import qwix
+
+RealQtRule = qwix.QtRule
 
 
 IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
@@ -282,6 +285,10 @@ class WanTransformerTest(unittest.TestCase):
     """
     Tests the provider logic for all config branches.
     """
+    def create_real_rule_instance(*args, **kwargs):
+        return RealQtRule(*args, **kwargs)
+    mock_qt_rule.side_effect = create_real_rule_instance
+
     # Case 1: Quantization disabled
     config_disabled = Mock(spec=HyperParameters)
     config_disabled.use_qwix_quantization = False
@@ -361,6 +368,7 @@ class WanTransformerTest(unittest.TestCase):
     mock_config.quantization = "fp8_full"
     mock_config.qwix_module_path = ".*"
     mock_config.per_device_batch_size = 1
+    mock_config.quantization_calibration_method = "absmax"
 
     mock_model = Mock(spec=WanModel)
     mock_pipeline = Mock()
