@@ -38,6 +38,7 @@ from ..models.attention_flax import FlaxWanAttention
 from maxdiffusion.pyconfig import HyperParameters
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 import qwix
+import numpy as np
 
 RealQtRule = qwix.QtRule
 
@@ -68,16 +69,9 @@ class WanTransformerTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     dummy_caption = jnp.ones((1, 512, 4096))
-    pyconfig.initialize(
-        [
-            None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-        ],
-        unittest=True,
-    )
-    config = pyconfig.config
-    devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
+    num_devices = len(jax.devices())
+    device_mesh = np.array(jax.devices()).reshape((1, num_devices))
+    mesh = Mesh(device_mesh, axis_names=('embed', 'mlp'))
 
     with mesh:
       layer = NNXPixArtAlphaTextProjection(rngs=rngs, in_features=4096, hidden_size=5120)
@@ -87,16 +81,9 @@ class WanTransformerTest(unittest.TestCase):
   def test_nnx_timestep_embedding(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
-    pyconfig.initialize(
-        [
-            None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-        ],
-        unittest=True,
-    )
-    config = pyconfig.config
-    devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
+    num_devices = len(jax.devices())
+    device_mesh = np.array(jax.devices()).reshape((1, num_devices))
+    mesh = Mesh(device_mesh, axis_names=('embed', 'mlp'))
 
     dummy_sample = jnp.ones((1, 256))
     with mesh:
