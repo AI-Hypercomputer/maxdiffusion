@@ -1,5 +1,5 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-jax==0.7.0
+jax>=0.6.2
 jaxlib>=0.4.30
 grain
 google-cloud-storage>=2.17.0

@@ -38,6 +38,7 @@ from ..models.attention_flax import FlaxWanAttention
 from maxdiffusion.pyconfig import HyperParameters
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 import qwix
+import numpy as np
 
 RealQtRule = qwix.QtRule
 
@@ -68,7 +69,11 @@ class WanTransformerTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     dummy_caption = jnp.ones((1, 512, 4096))
-    layer = NNXPixArtAlphaTextProjection(rngs=rngs, in_features=4096, hidden_size=5120)
+    num_devices = len(jax.devices())
+    device_mesh = np.array(jax.devices()).reshape((1, num_devices))
+    mesh = Mesh(device_mesh, axis_names=('embed', 'mlp'))
+    with mesh:
+      layer = NNXPixArtAlphaTextProjection(rngs=rngs, in_features=4096, hidden_size=5120)
     dummy_output = layer(dummy_caption)
     dummy_output.shape == (1, 512, 5120)
 
