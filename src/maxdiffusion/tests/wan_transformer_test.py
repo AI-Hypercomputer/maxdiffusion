@@ -38,7 +38,6 @@ from ..models.attention_flax import FlaxWanAttention
 from maxdiffusion.pyconfig import HyperParameters
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 import qwix
-import numpy as np
 from flax.linen import partitioning as nn_partitioning
 
 RealQtRule = qwix.QtRule
