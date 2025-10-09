@@ -196,14 +196,15 @@ class _HyperParameters:
 
     # Orbax doesn't save the tokenizer params, instead it loads them from the pretrained_model_name_or_path
     raw_keys["tokenizer_model_name_or_path"] = raw_keys["pretrained_model_name_or_path"]
+    tmp_dir = raw_keys.get("tmp_dir", "/tmp") 
     if "gs://" in raw_keys["tokenizer_model_name_or_path"]:
-      raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
+      raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], tmp_dir)
     if "gs://" in raw_keys["pretrained_model_name_or_path"]:
-      raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
+      raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], tmp_dir)
     if "gs://" in raw_keys["unet_checkpoint"]:
-      raw_keys["unet_checkpoint"] = max_utils.download_blobs(raw_keys["unet_checkpoint"], "/tmp")
+      raw_keys["unet_checkpoint"] = max_utils.download_blobs(raw_keys["unet_checkpoint"], tmp_dir)
     if "gs://" in raw_keys["tokenizer_model_name_or_path"]:
-      raw_keys["tokenizer_model_name_or_path"] = max_utils.download_blobs(raw_keys["tokenizer_model_name_or_path"], "/tmp")
+      raw_keys["tokenizer_model_name_or_path"] = max_utils.download_blobs(raw_keys["tokenizer_model_name_or_path"], tmp_dir)
     if "gs://" in raw_keys["dataset_name"]:
       raw_keys["dataset_name"] = max_utils.download_blobs(raw_keys["dataset_name"], raw_keys["dataset_save_location"])
       raw_keys["dataset_save_location"] = raw_keys["dataset_name"]

@@ -71,8 +71,9 @@ def create_sharded_logical_transformer(
 ):
 
   def create_model(rngs: nnx.Rngs, wan_config: dict):
-    wan_transformer = WanModel(**wan_config, rngs=rngs)
-    return wan_transformer
+    with nn_partitioning.axis_rules(config.logical_axis_rules):
+      wan_transformer = WanModel(**wan_config, rngs=rngs)
+      return wan_transformer
 
   # 1. Load config.
   if restored_checkpoint:
@@ -204,15 +205,16 @@ class WanPipeline:
   def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      wan_vae = AutoencoderKLWan.from_config(
-          config.pretrained_model_name_or_path,
-          subfolder="vae",
-          rngs=rngs,
-          mesh=mesh,
-          dtype=config.activations_dtype,
-          weights_dtype=config.weights_dtype,
-      )
-      return wan_vae
+      with nn_partitioning.axis_rules(config.logical_axis_rules):
+        wan_vae = AutoencoderKLWan.from_config(
+            config.pretrained_model_name_or_path,
+            subfolder="vae",
+            rngs=rngs,
+            mesh=mesh,
+            dtype=config.activations_dtype,
+            weights_dtype=config.weights_dtype,
+        )
+        return wan_vae
 
     # 1. eval shape
     p_model_factory = partial(create_model, config=config)
