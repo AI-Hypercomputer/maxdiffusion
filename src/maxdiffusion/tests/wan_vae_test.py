@@ -46,12 +46,13 @@ from ..models.wan.autoencoder_kl_wan import (
 from ..models.wan.wan_utils import load_wan_vae
 from ..utils import load_video
 from ..video_processor import VideoProcessor
+import flax
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CACHE_T = 2
 
-
+flax.config.update('flax_always_shard_variable', False)
 class TorchWanRMS_norm(nn.Module):
   r"""
   A custom RMS normalization layer.
