@@ -282,6 +282,7 @@ class WanTransformerBlock(nnx.Module):
         precision=precision,
         attention_kernel=attention,
         dropout=dropout,
+        is_self_attention=True,
     )
 
     # 1. Cross-attention
@@ -300,6 +301,7 @@ class WanTransformerBlock(nnx.Module):
         precision=precision,
         attention_kernel=attention,
         dropout=dropout,
+        is_self_attention=False,
     )
     assert cross_attn_norm is True
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
