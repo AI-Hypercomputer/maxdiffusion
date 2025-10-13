@@ -495,14 +495,14 @@ def get_flash_block_sizes(config):
   flash_block_sizes = None
   if len(config.flash_block_sizes.keys()) > 0:
     flash_block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=config.flash_block_sizes["block_q"],
-        block_kv_compute=config.flash_block_sizes["block_kv_compute"],
-        block_kv=config.flash_block_sizes["block_kv"],
-        block_q_dkv=config.flash_block_sizes["block_q_dkv"],
-        block_kv_dkv=config.flash_block_sizes["block_kv_dkv"],
-        block_kv_dkv_compute=config.flash_block_sizes["block_kv_dkv_compute"],
-        block_q_dq=config.flash_block_sizes["block_q_dq"],
-        block_kv_dq=config.flash_block_sizes["block_kv_dq"],
+        block_q=int(config.flash_block_sizes["block_q"]),
+        block_kv_compute=int(config.flash_block_sizes["block_kv_compute"]),
+        block_kv=int(config.flash_block_sizes["block_kv"]),
+        block_q_dkv=int(config.flash_block_sizes["block_q_dkv"]),
+        block_kv_dkv=int(config.flash_block_sizes["block_kv_dkv"]),
+        block_kv_dkv_compute=int(config.flash_block_sizes["block_kv_dkv_compute"]),
+        block_q_dq=int(config.flash_block_sizes["block_q_dq"]),
+        block_kv_dq=int(config.flash_block_sizes["block_kv_dq"]),
     )
   return flash_block_sizes
 
