@@ -395,7 +395,7 @@ def _cudnn_flash_attention(query: Array, key: Array, value: Array, heads: int, m
       check_rep=False,
   )
   def wrap_flash_attention(query, key, value):
-    return jax.vmap(dpa_layer)(query, key, value, mask=None)
+    return dpa_layer(query, key, value, mask=None)
 
   out = wrap_flash_attention(query, key, value)
   return _reshape_data_from_cudnn_flash(out)
