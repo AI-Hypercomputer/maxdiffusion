@@ -14,9 +14,10 @@
  limitations under the License.
  -->
 
-[![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
+[![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2025/10/10`**: Wan2.1 txt2vid training and generation is now supported.
 - **`2025/8/14`**: LTX-Video img2vid generation is now supported.
 - **`2025/7/29`**: LTX-Video text2vid generation is now supported.
 - **`2025/04/17`**: Flux Finetuning.
@@ -44,6 +45,7 @@ MaxDiffusion supports
 * ControlNet inference (Stable Diffusion 1.4 & SDXL).
 * Dreambooth training support for Stable Diffusion 1.x,2.x.
 * LTX-Video text2vid, img2vid (inference).
+* Wan2.1 text2vid (training and inference).
 
 
 # Table of Contents
@@ -54,15 +56,23 @@ MaxDiffusion supports
 - [Getting Started](#getting-started)
   - [Getting Started:](#getting-started-1)
   - [Training](#training)
-  - [Dreambooth](#dreambooth)
+    - [Wan2.1](#wan-21-training)
+    - [Flux](#flux-training)
+    - [SDXL](#stable-diffusion-xl-training)
+    - [SD 2 base](#stable-diffusion-2-base-training)
+    - [SD 1.4](#stable-diffusion-14-training)
+    - [Dreambooth](#dreambooth)
   - [Inference](#inference)
-  - [LTX-Video](#ltx-video)
-  - [Flux](#flux)
-    - [Fused Attention for GPU:](#fused-attention-for-gpu)
-  - [Hyper SDXL LoRA](#hyper-sdxl-lora)
-  - [Load Multiple LoRA](#load-multiple-lora)
-  - [SDXL Lightning](#sdxl-lightning)
-  - [ControlNet](#controlnet)
+    - [LTX-Video](#ltx-video)
+    - [Flux](#flux)
+      - [Fused Attention for GPU](#fused-attention-for-gpu)
+    - [SDXL](#stable-diffusion-xl)
+    - [SD 2 base](#stable-diffusion-2-base)
+    - [SD 2.1](#stable-diffusion-21)
+    - [Hyper SDXL LoRA](#hyper-sdxl-lora)
+    - [Load Multiple LoRA](#load-multiple-lora)
+    - [SDXL Lightning](#sdxl-lightning)
+    - [ControlNet](#controlnet)
   - [Getting Started: Multihost development](#getting-started-multihost-development)
 - [Comparison to Alternatives](#comparison-to-alternatives)
 - [Development](#development)
@@ -81,7 +91,11 @@ For your first time running Maxdiffusion, we provide specific [instructions](doc
 
 After installation completes, run the training script.
 
-- **Flux**
+  ## Wan 2.1 Training
+
+  Foo
+
+  ## Flux Training
 
   Expected results on 1024 x 1024 images with flash attention and bfloat16:
 
@@ -101,7 +115,7 @@ After installation completes, run the training script.
   python src/maxdiffusion/generate_flux_pipeline.py src/maxdiffusion/configs/base_flux_dev.yml  run_name="test-flux-train" output_dir="gs://<your-gcs-bucket>/" jax_cache_dir="/tmp/jax_cache"
   ```
 
-- **Stable Diffusion XL**
+  ## Stable Diffusion XL Training
 
   ```bash
   export LIBTPU_INIT_ARGS=""
@@ -122,14 +136,14 @@ After installation completes, run the training script.
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_xl.yml run_name="my_run" pretrained_model_name_or_path=<your_saved_checkpoint_path> from_pt=False attention=dot_product
   ```
 
-- **Stable Diffusion 2 base**
+  ## Stable Diffusion 2 base Training
 
   ```bash
   export LIBTPU_INIT_ARGS=""
   python -m src.maxdiffusion.train src/maxdiffusion/configs/base_2_base.yml run_name="my_run" jax_cache_dir=gs://your-bucket/cache_dir activations_dtype=float32 weights_dtype=float32 per_device_batch_size=2 precision=DEFAULT dataset_save_location=/tmp/my_dataset/ output_dir=gs://your-bucket/ attention=flash
   ```
 
-- **Stable Diffusion 1.4**
+  ## Stable Diffusion 1.4 Training
 
   ```bash
   export LIBTPU_INIT_ARGS=""
@@ -144,7 +158,7 @@ After installation completes, run the training script.
 
   ## Dreambooth
 
-  **Stable Diffusion 1.x,2.x**
+  Supported models are **Stable Diffusion 1.x,2.x**
 
   ```bash
   python src/maxdiffusion/dreambooth/train_dreambooth.py src/maxdiffusion/configs/base14.yml class_data_dir=<your-class-dir> instance_data_dir=<your-instance-dir> instance_prompt="a photo of ohwx dog" class_prompt="photo of a dog" max_train_steps=150 jax_cache_dir=<your-cache-dir> class_prompt="a photo of a dog" activations_dtype=bfloat16 weights_dtype=float32 per_device_batch_size=1 enable_profiler=False precision=DEFAULT cache_dreambooth_dataset=False learning_rate=4e-6 num_class_images=100 run_name=<your-run-name> output_dir=gs://<your-bucket-name>
@@ -153,7 +167,7 @@ After installation completes, run the training script.
 ## Inference
 
 To generate images, run the following command:
-- **Stable Diffusion XL**
+  ## Stable Diffusion XL
 
   Single and Multi host inference is supported with sharding annotations:
 
@@ -167,25 +181,35 @@ To generate images, run the following command:
   python -m src.maxdiffusion.generate_sdxl_replicated
   ```
 
-- **Stable Diffusion 2 base**
+  ## Stable Diffusion 2 base
   ```bash
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base_2_base.yml run_name="my_run"
+  ```
 
-- **Stable Diffusion 2.1**
+  ## Stable Diffusion 2.1
   ```bash
   python -m src.maxdiffusion.generate src/maxdiffusion/configs/base21.yml run_name="my_run"
   ```
+
   ## LTX-Video
-  - In the folder src/maxdiffusion/models/ltx_video/utils, run:
-    ```bash
-    python convert_torch_weights_to_jax.py --ckpt_path [LOCAL DIRECTORY FOR WEIGHTS] --transformer_config_path ../ltxv-13B.json
-    ```
-  - In the repo folder, run:
-    ```bash
-    python src/maxdiffusion/generate_ltx_video.py src/maxdiffusion/configs/ltx_video.yml output_dir="[SAME DIRECTORY]" config_path="src/maxdiffusion/models/ltx_video/ltxv-13B.json"
-    ```
-  - Img2video Generation: 
-    Add conditioning image path as conditioning_media_paths in the form of ["IMAGE_PATH"] along with other generation parameters in the ltx_video.yml file. Then follow same instruction as above.
+  In the folder src/maxdiffusion/models/ltx_video/utils, run:
+
+  ```bash
+  python convert_torch_weights_to_jax.py --ckpt_path [LOCAL DIRECTORY FOR WEIGHTS] --transformer_config_path ../ltxv-13B.json
+  ```
+
+  In the repo folder, run:
+  ```bash
+  python src/maxdiffusion/generate_ltx_video.py src/maxdiffusion/configs/ltx_video.yml output_dir="[SAME DIRECTORY]" config_path="src/maxdiffusion/models/ltx_video/ltxv-13B.json"
+  ```
+  Img2video Generation: 
+  
+  Add conditioning image path as conditioning_media_paths in the form of ["IMAGE_PATH"] along with other generation parameters in the ltx_video.yml file. Then follow same instruction as above.
+
+  ## Wan2.1
+
+
+
   ## Flux
 
   First make sure you have permissions to access the Flux repos in Huggingface.
@@ -219,41 +243,41 @@ To generate images, run the following command:
   ```bash
   python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
   ```
-    ## Fused Attention for GPU:
-    Fused Attention for GPU is supported via TransformerEngine. Installation instructions:
+  ## Fused Attention for GPU:
+  Fused Attention for GPU is supported via TransformerEngine. Installation instructions:
 
-    ```bash
-    cd maxdiffusion
-    pip install -U "jax[cuda12]"
-    pip install -r requirements.txt
-    pip install --upgrade torch torchvision
-    pip install "transformer_engine[jax]
-    pip install .
-    ```
+  ```bash
+  cd maxdiffusion
+  pip install -U "jax[cuda12]"
+  pip install -r requirements.txt
+  pip install --upgrade torch torchvision
+  pip install "transformer_engine[jax]
+  pip install .
+  ```
 
-    Now run the command:
+  Now run the command:
 
-    ```bash
-    NVTE_FUSED_ATTN=1 HF_HUB_ENABLE_HF_TRANSFER=1 python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 split_head_dim=True per_device_batch_size=1 attention="cudnn_flash_te" hardware=gpu
-    ```
+  ```bash
+  NVTE_FUSED_ATTN=1 HF_HUB_ENABLE_HF_TRANSFER=1 python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 split_head_dim=True per_device_batch_size=1 attention="cudnn_flash_te" hardware=gpu
+  ```
 
-    ## Flux LoRA
+  ## Flux LoRA
 
-    Disclaimer: not all LoRA formats have been tested. If there is a specific LoRA that doesn't load, please let us know.
+  Disclaimer: not all LoRA formats have been tested. If there is a specific LoRA that doesn't load, please let us know.
 
-    Tested with [Amateur Photography](https://civitai.com/models/652699/amateur-photography-flux-dev) and [XLabs-AI](https://huggingface.co/XLabs-AI/flux-lora-collection/tree/main) LoRA collection.
+  Tested with [Amateur Photography](https://civitai.com/models/652699/amateur-photography-flux-dev) and [XLabs-AI](https://huggingface.co/XLabs-AI/flux-lora-collection/tree/main) LoRA collection.
 
-    First download the LoRA file to a local directory, for example, `/home/jfacevedo/anime_lora.safetensors`. Then run as follows:
+  First download the LoRA file to a local directory, for example, `/home/jfacevedo/anime_lora.safetensors`. Then run as follows:
 
-    ```bash
-    python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 ici_data_parallelism=1 ici_fsdp_parallelism=-1 split_head_dim=True lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/anime_lora.safetensors"], "weight_name" : ["anime_lora.safetensors"], "adapter_name" : ["anime"], "scale": [0.8], "from_pt": ["true"]}'
-    ```
+  ```bash
+  python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 ici_data_parallelism=1 ici_fsdp_parallelism=-1 split_head_dim=True lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/anime_lora.safetensors"], "weight_name" : ["anime_lora.safetensors"], "adapter_name" : ["anime"], "scale": [0.8], "from_pt": ["true"]}'
+  ```
 
-    Loading multiple LoRAs is supported as follows:
+  Loading multiple LoRAs is supported as follows:
 
-    ```bash
-    python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 ici_data_parallelism=1 ici_fsdp_parallelism=-1 split_head_dim=True lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/anime_lora.safetensors", "/home/jfacevedo/amateurphoto-v6-forcu.safetensors"], "weight_name" : ["anime_lora.safetensors","amateurphoto-v6-forcu.safetensors"], "adapter_name" : ["anime","realistic"], "scale": [0.6, 0.6], "from_pt": ["true","true"]}'
-    ```
+  ```bash
+  python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 ici_data_parallelism=1 ici_fsdp_parallelism=-1 split_head_dim=True lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/anime_lora.safetensors", "/home/jfacevedo/amateurphoto-v6-forcu.safetensors"], "weight_name" : ["anime_lora.safetensors","amateurphoto-v6-forcu.safetensors"], "adapter_name" : ["anime","realistic"], "scale": [0.6, 0.6], "from_pt": ["true","true"]}'
+  ```
 
   ## Hyper SDXL LoRA
 
@@ -265,36 +289,35 @@ To generate images, run the following command:
 
   ## Load Multiple LoRA
 
-    Supports loading multiple LoRAs for inference. Both from local or from HuggingFace hub.
+  Supports loading multiple LoRAs for inference. Both from local or from HuggingFace hub.
 
-    ```bash
-    python src/maxdiffusion/generate_sdxl.py src/maxdiffusion/configs/base_xl.yml run_name="test-lora" output_dir=/tmp/tmp/ jax_cache_dir=/tmp/cache_dir/ num_inference_steps=30 do_classifier_free_guidance=True prompt="ultra detailed diagram blueprint of a papercut Sitting MaineCoon cat, wide canvas, ampereart, electrical diagram, bl3uprint, papercut" per_device_batch_size=1 diffusion_scheduler_config='{"_class_name" : "FlaxDDIMScheduler", "timestep_spacing" : "trailing"}' lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/blueprintify-sd-xl-10.safetensors","TheLastBen/Papercut_SDXL"], "weight_name" : ["/home/jfacevedo/blueprintify-sd-xl-10.safetensors","papercut.safetensors"], "adapter_name" : ["blueprint","papercut"], "scale": [0.8, 0.7], "from_pt": ["true", "true"]}'
-    ```
+  ```bash
+  python src/maxdiffusion/generate_sdxl.py src/maxdiffusion/configs/base_xl.yml run_name="test-lora" output_dir=/tmp/tmp/ jax_cache_dir=/tmp/cache_dir/ num_inference_steps=30 do_classifier_free_guidance=True prompt="ultra detailed diagram blueprint of a papercut Sitting MaineCoon cat, wide canvas, ampereart, electrical diagram, bl3uprint, papercut" per_device_batch_size=1 diffusion_scheduler_config='{"_class_name" : "FlaxDDIMScheduler", "timestep_spacing" : "trailing"}' lora_config='{"lora_model_name_or_path" : ["/home/jfacevedo/blueprintify-sd-xl-10.safetensors","TheLastBen/Papercut_SDXL"], "weight_name" : ["/home/jfacevedo/blueprintify-sd-xl-10.safetensors","papercut.safetensors"], "adapter_name" : ["blueprint","papercut"], "scale": [0.8, 0.7], "from_pt": ["true", "true"]}'
+  ```
 
   ## SDXL Lightning
 
   Single and Multi host inference is supported with sharding annotations:
 
-    ```bash
-    python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl_lightning.yml run_name="my_run" lightning_repo="ByteDance/SDXL-Lightning" lightning_ckpt="sdxl_lightning_4step_unet.safetensors"
-    ```
+  ```bash
+  python -m src.maxdiffusion.generate_sdxl src/maxdiffusion/configs/base_xl_lightning.yml run_name="my_run" lightning_repo="ByteDance/SDXL-Lightning" lightning_ckpt="sdxl_lightning_4step_unet.safetensors"
+  ```
 
   ## ControlNet
 
   Might require installing extra libraries for opencv: `apt-get update && apt-get install ffmpeg libsm6 libxext6  -y`
 
-  - Stable Diffusion 1.4
+  ### Stable Diffusion 1.4
 
-    ```bash
-    python src/maxdiffusion/controlnet/generate_controlnet_replicated.py
-    ```
+  ```bash
+  python src/maxdiffusion/controlnet/generate_controlnet_replicated.py
+  ```
 
-  - Stable Diffusion XL
+  ### Stable Diffusion XL
 
-    ```bash
-    python src/maxdiffusion/controlnet/generate_controlnet_sdxl_replicated.py
-    ```
-
+  ```bash
+  python src/maxdiffusion/controlnet/generate_controlnet_sdxl_replicated.py
+  ```
 
 ## Getting Started: Multihost development
 Multihost training for Stable Diffusion 2 base can be run using the following command:
