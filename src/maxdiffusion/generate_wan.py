@@ -21,6 +21,7 @@ from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
 from maxdiffusion.utils import export_to_video
 from google.cloud import storage
+import flax
 
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
@@ -161,6 +162,7 @@ def run(config, pipeline=None, filename_prefix=""):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
+  flax.config.update('flax_always_shard_variable', False)
   run(pyconfig.config)
 
 

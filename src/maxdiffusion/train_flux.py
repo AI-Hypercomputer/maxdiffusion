@@ -22,6 +22,7 @@ from maxdiffusion import (max_logging, pyconfig)
 
 from maxdiffusion.train_utils import (
     validate_train_config,
+    transformer_engine_context,
 )
 
 
@@ -39,6 +40,6 @@ def main(argv: Sequence[str]) -> None:
   max_logging.log(f"Found {jax.device_count()} devices.")
   train(config)
 
-
 if __name__ == "__main__":
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)

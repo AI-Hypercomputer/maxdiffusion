@@ -27,6 +27,7 @@ from maxdiffusion.trainers.sdxl_trainer import StableDiffusionXLTrainer
 
 from maxdiffusion.train_utils import (
     validate_train_config,
+    transformer_engine_context,
 )
 
 
@@ -51,4 +52,5 @@ if __name__ == "__main__":
   tf.config.set_visible_devices([], "GPU")
   os.environ["TF_CPP_MIN_LOG_LEVEL"] = "0"
   torch.set_default_device("cpu")
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)
