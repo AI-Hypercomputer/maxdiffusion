@@ -72,7 +72,6 @@ ltx-video @ git+https://github.com/Lightricks/LTX-Video@53d263f31727a0021bf65e3e
 Markdown==3.9
 markdown-it-py==4.0.0
 MarkupSafe==3.0.2
-maxdiffusion @ file:///app
 mccabe==0.7.0
 mdurl==0.1.2
 ml_dtypes==0.5.3
