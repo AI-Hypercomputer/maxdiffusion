@@ -125,9 +125,9 @@ The script will initialize, use the models from your mounted cache, and begin th
 
 ## Part 4: Accessing Your Generated Image
 
-The generation script saves the final image to its working directory (/app) inside the container. Here is the complete workflow to get that image onto your Mac.
+The generation script saves the final image to its working directory (/app) inside the container. Here is the complete workflow to get that image onto your Laptop.
 
-### Step 1: Copy the Image from Container to VM
+### Step 1: Copy the Image from Container to DGX Spark
 
 Open a new terminal window. Do not close the terminal where the container is running.
 First, find your container's ID:
@@ -140,14 +140,14 @@ Look for the container with the image maxdiffusion-arm-gpu and note its ID (e.g.
 Now, copy the image from the container to a temporary location on DGX Spark and fix its permissions.
 
 ```bash
-# Copy the file to the /tmp/ directory on the VM
+# Copy the file to the /tmp/ directory on DGX Spark
 docker cp 9049895399fc:/app/flux_0.png /tmp/flux_0.png
 
 # Change the file's owner to your user to avoid permission errors
 sudo chown username:username /tmp/flux_0.png
 ```
 
-### Step 2: Copy the Image from VM to Your MAC
+### Step 2: Copy the Image from DGX Spark to Your Laptop
 
 Now, open the Terminal app on your Laptop and use the scp (secure copy) command to download the file from DGX Spark.
 
@@ -155,7 +155,7 @@ Now, open the Terminal app on your Laptop and use the scp (secure copy) command 
 scp username@spark:/tmp/flux_0.png .
 ```
 
-This command will download flux_0.png to the current directory on your Mac. You can now view your generated image!
+This command will download flux_0.png to the current directory on your Laptop. You can now view your generated image!
 
 ## Troubleshooting and Common Pitfalls
 
@@ -171,14 +171,14 @@ Here are solutions to common issues you might encounter:
   - **Solution**: This is solved by launching the container with the `-v ~/.cache/huggingface:/root/.cache/huggingface` flag, which gives the container access to your local model cache.
 - Error: `open ... permission denied` when trying to access a copied file.
   - **Cause**: Files copied from a Docker container with docker cp are owned by the root user by default.
-  - **Solution**: After copying the file to the VM, immediately run `sudo chown your_user:your_user /path/to/file` to take ownership before trying to access or transfer it.
+  - **Solution**: After copying the file to the DGX Spark, immediately run `sudo chown your_user:your_user /path/to/file` to take ownership before trying to access or transfer it.
 - Can't find the generated image.
   - **Cause**: The script may not be saving the image to the directory specified by the output_dir argument.
   - **Solution**: Always check the script's source code to confirm the final save location. As we discovered, generate_flux.py saves to the current working directory (/app), not /tmp. Knowing this allows you to copy the file from the correct location.
 - If a process requires more memory than the available RAM, your system will crash with an "Out-of-Memory" (OOM) error.
   - `Swap memory is your safety net.` It's a designated space on your hard drive that the operating system uses as a "virtual" extension of your RAM. When RAM is full, the system moves less active data to the slower swap space, freeing up RAM for the immediate task. While it's slower than RAM, it's infinitely better than a system crash, ensuring your long-running training or generation jobs can complete successfully. For a machine with 119GB of RAM, adding 64GB of swap provides a robust buffer for memory-intensive operations.
   - Step 1: Create a 64GB Swap File
-    -  Run these commands on your spark-1c91 VM to create, format, and enable a permanent 64GB swap file.
+    -  Run these commands on your DGX Spark to create, format, and enable a permanent 64GB swap file.
 
     ```bash
     # Instantly allocate a 64GB file
