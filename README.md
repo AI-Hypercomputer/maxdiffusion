@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/google/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2025/10/14`**: NVIDIA DGX Spark Flux support.
 - **`2025/8/14`**: LTX-Video img2vid generation is now supported.
 - **`2025/7/29`**: LTX-Video text2vid generation is now supported.
 - **`2025/04/17`**: Flux Finetuning.
@@ -53,6 +54,7 @@ MaxDiffusion supports
 - [Table of Contents](#table-of-contents)
 - [Getting Started](#getting-started)
   - [Getting Started:](#getting-started-1)
+  - [NVIDIA DGX Spark](#nvidia-dgx-spark)
   - [Training](#training)
   - [Dreambooth](#dreambooth)
   - [Inference](#inference)
@@ -76,6 +78,10 @@ Minimum requirements: Ubuntu Version 22.04, Python 3.12 and Tensorflow >= 2.12.0
 ## Getting Started:
 
 For your first time running Maxdiffusion, we provide specific [instructions](docs/getting_started/first_run.md).
+
+## NVIDIA DGX Spark
+
+Try out MaxDiffusion on NVIDIA's DGX Spark. We provide specific [instructions](docs/dgx_spark.md).
 
 ## Training
 
