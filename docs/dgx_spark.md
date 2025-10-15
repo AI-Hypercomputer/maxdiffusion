@@ -43,13 +43,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Install other major Python libraries in separate layers for better caching
-RUN pip install --upgrade torch torchvision
 RUN pip install "jax[cuda13-local]==0.7.2"
-
-# Install Transformer Engine and its dependency pybind11
-RUN pip install pybind11 && \
-    export NVTE_FRAMEWORK=jax && \
-    pip install --no-build-isolation 'transformer_engine[jax]==2.6.0'
 
 # --- Application Code Layer ---
 # Now, copy your application source code. This layer is rebuilt only when your code changes.
