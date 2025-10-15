@@ -674,6 +674,10 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     Predict the sample from the previous timestep by reversing the SDE. This function propagates the sample with
     the multistep UniPC.
     """
+
+    original_dtype = sample.dtype
+    sample = sample.astype(jnp.float32)
+
     if state.timesteps is None:
       raise ValueError("Number of inference steps is 'None', you need to run 'set_timesteps' after creating the scheduler")
 
