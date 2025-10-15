@@ -1,16 +1,14 @@
-# MaxDiffusion on DGX Spark GPU: A complete User Guide
+# MaxDiffusion on Nvidia DGX Spark GPU: A complete User Guide
 
-This guide provides a detailed step-by-step walkthrough for setting up and running the maxdiffusion library within a custom Docker environment on an ARM-based machine with NVIDIA GPU support (like a spark VM). We will cover everything from building the optimized Docker image to generating your first image and retrieving it successfully.
+This guide provides a detailed step-by-step walkthrough for setting up and running the maxdiffusion library within a custom Docker environment on an ARM-based machine with NVIDIA GPU support. We will cover everything from building the optimized Docker image to generating your first image and retrieving it successfully.
 
 ## Prerequisites
 
 Before you begin, ensure you have the following:
 
-- Access to an ARM-based Linux machine (e.g., your spark VM) with Docker installed.
-- NVIDIA GPU drivers and the NVIDIA Container Toolkit installed on the host machine to enable `--gpus all` support.
+- Access to [Nvidia DGX Spark Box](https://www.nvidia.com/en-us/products/workstations/dgx-spark/).
 - The maxdiffusion source code cloned onto the machine.
   - Branch: dgx_spark
-- A requirements.txt file in the root of the maxdiffusion directory
 - An internet connection for the initial Docker build and for downloading models (if not cached).
 
 ## Part 1: Building the Optimized Docker Image
@@ -22,7 +20,8 @@ The foundation of a smooth workflow is a well-built Docker image. The following 
 In the root directory of your maxdiffusion project, create a file named box.Dockerfile and paste the following content into it.
 
 ```docker
-# Base image for ARM64 with CUDA support
+# Nvidia Base image for ARM64 with CUDA support
+# As JAX AI Image as it currently doesn't support ARM builds.
 FROM nvcr.io/nvidia/cuda-dl-base@sha256:3631d968c12ef22b1dfe604de63dbc71a55f3ffcc23a085677a6d539d98884a4
 
 # Set environment variables (these rarely change)
@@ -65,13 +64,13 @@ CMD ["/bin/bash"]
 
 ### Step2: Build the Image
 
-Open your terminal on the spark VM, navigate to the root directory of the maxdiffusion project, and run the build command:
+Open your terminal on DGX Spark, navigate to the root directory of the maxdiffusion project, and run the build command:
 
 ```bash
 docker build -f box.Dockerfile -t maxdiffusion-arm-gpu .
 ```
 
-This command will execute the steps in your Dockerfile, download the necessary layers, install all dependencies, and create a local Docker image named maxdiffusion-arm-gpu. The first build may take some time. Subsequent builds will be much faster if you only change the source code.
+This command will execute the steps in your Dockerfile, download the necessary layers, install all dependencies, and create a local Docker image named `maxdiffusion-arm-gpu`. The first build may take some time. Subsequent builds will be much faster if you only change the source code.
 
 ## Part 2: Running the Container for Image Generation
 
@@ -79,13 +78,13 @@ To run the image generator effectively, we need to connect our local machine's f
 
 ### Step 1: Create a Local Output Directory
 
-On your spark VM, create a directory to store the generated images.
+On your DGX Spark, create a directory to store the generated images.
 
 ```bash
 mkdir -p ~/maxdiffusion_output
 ```
 
-### Step 2: Launch the Container with Volume Mounts
+### Step 2a: Launch the Container with Volume Mounts
 
 Run the following command to start an interactive session inside your container. This command links your Hugging Face cache (to avoid re-downloading models) and the output directory you just created.
 
@@ -96,6 +95,24 @@ docker run -it --gpus all \
 maxdiffusion-arm-gpu
 ```
 Your terminal prompt will change, indicating you are now inside the running container.
+
+#### Step 2b: Log in to Hugging Face (First-Time Setup)
+
+You must do this once to download the required model weights.
+
+```bash
+#  [Inside  the  Docker  Container]
+huggingface-cli  login
+```
+
+You will be prompted to paste a Hugging Face User Access Token.
+
+1.  Go to[  huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) in your web browser.
+
+2.  Copy your token (or create a new one with write permissions).
+
+3.  Paste the token into the terminal and press Enter.
+
 
 ## Part 3: Generating Your First Image
 
@@ -112,7 +129,7 @@ The generation script saves the final image to its working directory (/app) insi
 
 ### Step 1: Copy the Image from Container to VM
 
-Open a new terminal window and connect to your spark VM. Do not close the terminal where the container is running.
+Open a new terminal window. Do not close the terminal where the container is running.
 First, find your container's ID:
 
 ```bash
@@ -120,22 +137,22 @@ docker ps
 ```
 
 Look for the container with the image maxdiffusion-arm-gpu and note its ID (e.g., 9049895399fc).
-Now, copy the image from the container to a temporary location on the VM and fix its permissions.
+Now, copy the image from the container to a temporary location on DGX Spark and fix its permissions.
 
 ```bash
 # Copy the file to the /tmp/ directory on the VM
 docker cp 9049895399fc:/app/flux_0.png /tmp/flux_0.png
 
 # Change the file's owner to your user to avoid permission errors
-sudo chown parambole:parambole /tmp/flux_0.png
+sudo chown username:username /tmp/flux_0.png
 ```
 
 ### Step 2: Copy the Image from VM to Your MAC
 
-Now, open the Terminal app on your Mac and use the scp (secure copy) command to download the file from the VM.
+Now, open the Terminal app on your Laptop and use the scp (secure copy) command to download the file from DGX Spark.
 
 ```bash
-scp parambole@spark:/tmp/flux_0.png .
+scp username@spark:/tmp/flux_0.png .
 ```
 
 This command will download flux_0.png to the current directory on your Mac. You can now view your generated image!
