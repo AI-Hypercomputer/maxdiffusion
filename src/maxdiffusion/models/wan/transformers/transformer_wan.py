@@ -116,7 +116,7 @@ class WanTimeTextImageEmbedding(nnx.Module):
         rngs=rngs,
         in_features=dim,
         out_features=time_proj_dim,
-        dtype=dtype,
+        dtype=jnp.float32,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(

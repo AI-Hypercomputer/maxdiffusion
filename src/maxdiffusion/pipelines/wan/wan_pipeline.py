@@ -234,8 +234,8 @@ class WanPipeline:
           subfolder="vae",
           rngs=rngs,
           mesh=mesh,
-          dtype=config.activations_dtype,
-          weights_dtype=config.weights_dtype,
+          dtype=jnp.float32,
+          weights_dtype=jnp.float32,
       )
       return wan_vae
 
@@ -494,7 +494,7 @@ class WanPipeline:
           num_videos_per_prompt=num_videos_per_prompt,
           max_sequence_length=max_sequence_length,
       )
-      prompt_embeds = jnp.array(prompt_embeds.detach().numpy(), dtype=self.config.weights_dtype)
+      prompt_embeds = jnp.array(prompt_embeds.detach().numpy(), dtype=jnp.float32)
 
     if negative_prompt_embeds is None:
       negative_prompt = negative_prompt or ""
@@ -504,7 +504,7 @@ class WanPipeline:
           num_videos_per_prompt=num_videos_per_prompt,
           max_sequence_length=max_sequence_length,
       )
-      negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().numpy(), dtype=self.config.weights_dtype)
+      negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().numpy(), dtype=jnp.float32)
 
     return prompt_embeds, negative_prompt_embeds
 
@@ -527,7 +527,7 @@ class WanPipeline:
         int(height) // vae_scale_factor_spatial,
         int(width) // vae_scale_factor_spatial,
     )
-    latents = jax.random.normal(rng, shape=shape, dtype=self.config.weights_dtype)
+    latents = jax.random.normal(rng, shape=shape, dtype=jnp.float32)
 
     return latents
 
@@ -617,7 +617,7 @@ class WanPipeline:
         latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
         latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
         latents = latents / latents_std + latents_mean
-        latents = latents.astype(self.config.weights_dtype)
+        latents = latents.astype(jnp.float32)
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       video = self.vae.decode(latents, self.vae_cache)[0]
