@@ -90,6 +90,7 @@ def create_sharded_logical_transformer(
   wan_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
   wan_config["flash_min_seq_length"] = config.flash_min_seq_length
   wan_config["dropout"] = config.dropout
+  wan_config["scan_layers"] = config.scan_layers
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.
@@ -111,7 +112,11 @@ def create_sharded_logical_transformer(
     params = restored_checkpoint["wan_state"]
   else:
     params = load_wan_transformer(
-        config.wan_transformer_pretrained_model_name_or_path, params, "cpu", num_layers=wan_config["num_layers"]
+        config.wan_transformer_pretrained_model_name_or_path,
+        params,
+        "cpu",
+        num_layers=wan_config["num_layers"],
+        scan_layers=config.scan_layers,
     )
   params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
   for path, val in flax.traverse_util.flatten_dict(params).items():
@@ -249,7 +254,7 @@ class WanPipeline:
             module_path=config.qwix_module_path,
             weight_qtype=dtype,
             act_qtype=dtype,
-            op_names=("dot_general","einsum", "conv_general_dilated"),
+            op_names=("dot_general", "einsum", "conv_general_dilated"),
         )
     ]
     return rules
@@ -272,11 +277,11 @@ class WanPipeline:
             weight_calibration_method=config.quantization_calibration_method,
             act_calibration_method=config.quantization_calibration_method,
             bwd_calibration_method=config.quantization_calibration_method,
-            op_names=("dot_general","einsum"),
+            op_names=("dot_general", "einsum"),
         ),
         qwix.QtRule(
             module_path=config.qwix_module_path,
-            weight_qtype=jnp.float8_e4m3fn, # conv_general_dilated requires the same dtypes
+            weight_qtype=jnp.float8_e4m3fn,  # conv_general_dilated requires the same dtypes
             act_qtype=jnp.float8_e4m3fn,
             bwd_qtype=jnp.float8_e4m3fn,
             bwd_use_original_residuals=True,
@@ -285,7 +290,7 @@ class WanPipeline:
             act_calibration_method=config.quantization_calibration_method,
             bwd_calibration_method=config.quantization_calibration_method,
             op_names=("conv_general_dilated"),
-        )
+        ),
     ]
     return rules
 

@@ -22,6 +22,7 @@ import queue
 from maxdiffusion import max_utils, max_logging
 from contextlib import contextmanager
 
+
 def get_first_step(state):
   return int(state.step)
 
@@ -200,16 +201,16 @@ def generate_timestep_weights(config, num_timesteps):
 
 @contextmanager
 def transformer_engine_context():
-  """ If TransformerEngine is available, this context manager will provide the library with MaxDiffusion-specific details needed for correcct operation. """
+  """If TransformerEngine is available, this context manager will provide the library with MaxDiffusion-specific details needed for correcct operation."""
   try:
     from transformer_engine.jax.sharding import global_shard_guard, MeshResource
     # Inform TransformerEngine of MaxDiffusion's physical mesh resources.
     mesh_resource = MeshResource(
-      dp_resource = "data",
-      tp_resource = "tensor",
-      fsdp_resource = "fsdp",
-      pp_resource = None,
-      cp_resource = None,
+        dp_resource="data",
+        tp_resource="tensor",
+        fsdp_resource="fsdp",
+        pp_resource=None,
+        cp_resource=None,
     )
     with global_shard_guard(mesh_resource):
       yield

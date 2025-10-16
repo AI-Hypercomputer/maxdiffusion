@@ -243,9 +243,7 @@ class WanTrainer(WanCheckpointer):
       try:
         eval_start_time = datetime.datetime.now()
         eval_batch = load_next_batch(eval_data_iterator, None, self.config)
-        with mesh, nn_partitioning.axis_rules(
-            self.config.logical_axis_rules
-        ):
+        with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
           metrics, eval_rng = p_eval_step(state, eval_batch, eval_rng, scheduler_state)
           metrics["scalar"]["learning/eval_loss"].block_until_ready()
         losses = metrics["scalar"]["learning/eval_loss"]
@@ -258,7 +256,7 @@ class WanTrainer(WanCheckpointer):
           for t, l in zip(gathered_timesteps.flatten(), gathered_losses.flatten()):
             timestep = int(t)
             if timestep not in eval_losses_by_timestep:
-                eval_losses_by_timestep[timestep] = []
+              eval_losses_by_timestep[timestep] = []
             eval_losses_by_timestep[timestep].append(l)
           eval_end_time = datetime.datetime.now()
           eval_duration = eval_end_time - eval_start_time
@@ -272,11 +270,11 @@ class WanTrainer(WanCheckpointer):
       if jax.process_index() == 0:
         max_logging.log(f"Step {step}, calculating mean loss per timestep...")
       for timestep, losses in sorted(eval_losses_by_timestep.items()):
-          losses = jnp.array(losses)
-          losses = losses[: min(self.config.eval_max_number_of_samples_in_bucket, len(losses))]
-          mean_loss = jnp.mean(losses)
-          max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}")
-          mean_per_timestep.append(mean_loss)
+        losses = jnp.array(losses)
+        losses = losses[: min(self.config.eval_max_number_of_samples_in_bucket, len(losses))]
+        mean_loss = jnp.mean(losses)
+        max_logging.log(f"  Mean eval loss for timestep {timestep}: {mean_loss:.4f}")
+        mean_per_timestep.append(mean_loss)
       final_eval_loss = jnp.mean(jnp.array(mean_per_timestep))
       max_logging.log(f"Step {step}, Final Average Eval loss: {final_eval_loss:.4f}")
       if writer:
@@ -480,7 +478,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
   for i in range(0, bs, single_batch_size):
     start = i
     end = min(i + single_batch_size, bs)
-    latents= data["latents"][start:end, :].astype(config.weights_dtype)
+    latents = data["latents"][start:end, :].astype(config.weights_dtype)
     encoder_hidden_states = data["encoder_hidden_states"][start:end, :].astype(config.weights_dtype)
     timesteps = data["timesteps"][start:end].astype("int64")
     _, new_rng = jax.random.split(rng, num=2)
