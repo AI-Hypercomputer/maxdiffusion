@@ -396,10 +396,12 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       remat_policy: str = "None",
       names_which_can_be_saved: list = [],
       names_which_can_be_offloaded: list = [],
+      scan_layers: bool = True,
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
     self.num_layers = num_layers
+    self.scan_layers = scan_layers
 
     # 1. Patch & position embedding
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
@@ -455,8 +457,29 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
     self.names_which_can_be_offloaded = names_which_can_be_offloaded
     self.names_which_can_be_saved = names_which_can_be_saved
-
-    self.blocks = init_block(rngs)
+    if scan_layers:
+      self.blocks = init_block(rngs)
+    else:
+      blocks = nnx.List([])
+      for _ in range(num_layers):
+        block = WanTransformerBlock(
+            rngs=rngs,
+            dim=inner_dim,
+            ffn_dim=ffn_dim,
+            num_heads=num_attention_heads,
+            qk_norm=qk_norm,
+            cross_attn_norm=cross_attn_norm,
+            eps=eps,
+            flash_min_seq_length=flash_min_seq_length,
+            flash_block_sizes=flash_block_sizes,
+            mesh=mesh,
+            dtype=dtype,
+            weights_dtype=weights_dtype,
+            precision=precision,
+            attention=attention,
+        )
+        blocks.append(block)
+      self.blocks = blocks
 
     self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
     self.proj_out = nnx.Linear(
@@ -505,24 +528,38 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if encoder_hidden_states_image is not None:
       raise NotImplementedError("img2vid is not yet implemented.")
 
-    def scan_fn(carry, block):
-      hidden_states_carry, rngs_carry = carry
-      hidden_states = block(hidden_states_carry, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs_carry)
-      new_carry = (hidden_states, rngs_carry)
-      return new_carry, None
+    if self.scan_layers:
 
-    rematted_block_forward = self.gradient_checkpoint.apply(
-        scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded
-    )
-    initial_carry = (hidden_states, rngs)
-    final_carry, _ = nnx.scan(
-        rematted_block_forward,
-        length=self.num_layers,
-        in_axes=(nnx.Carry, 0),
-        out_axes=(nnx.Carry, 0),
-    )(initial_carry, self.blocks)
+      def scan_fn(carry, block):
+        hidden_states_carry, rngs_carry = carry
+        hidden_states = block(
+            hidden_states_carry, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs_carry
+        )
+        new_carry = (hidden_states, rngs_carry)
+        return new_carry, None
 
-    hidden_states, _ = final_carry
+      rematted_block_forward = self.gradient_checkpoint.apply(
+          scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+      )
+      initial_carry = (hidden_states, rngs)
+      final_carry, _ = nnx.scan(
+          rematted_block_forward,
+          length=self.num_layers,
+          in_axes=(nnx.Carry, 0),
+          out_axes=(nnx.Carry, 0),
+      )(initial_carry, self.blocks)
+
+      hidden_states, _ = final_carry
+    else:
+      for block in self.blocks:
+
+        def layer_forward(hidden_states):
+          return block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs)
+
+        rematted_layer_forward = self.gradient_checkpoint.apply(
+            layer_forward, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+        )
+        hidden_states = rematted_layer_forward(hidden_states)
 
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 

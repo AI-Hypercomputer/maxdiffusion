@@ -42,6 +42,7 @@ from PIL import Image
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+
 def make_data_iterator(
     config,
     dataloading_host_index,

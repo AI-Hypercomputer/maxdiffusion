@@ -24,7 +24,6 @@ from huggingface_hub import hf_hub_download
 from safetensors import safe_open
 from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
-from ...common_types import WAN_MODEL
 
 CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH = "lightx2v/Wan2.1-T2V-14B-CausVid"
 WAN_21_FUSION_X_MODEL_NAME_OR_PATH = "vrgamedevgirl84/Wan14BT2VFusioniX"
@@ -73,8 +72,35 @@ def rename_for_custom_trasformer(key):
   return renamed_pt_key
 
 
+def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers):
+  if scan_layers:
+    if "blocks" in pt_tuple_key:
+      new_key = ("blocks",) + pt_tuple_key[2:]
+      block_index = int(pt_tuple_key[1])
+      pt_tuple_key = new_key
+
+  flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
+
+  flax_key = rename_for_nnx(flax_key)
+  flax_key = _tuple_str_to_int(flax_key)
+
+  if scan_layers:
+    if "blocks" in flax_key:
+      if flax_key in flax_state_dict:
+        new_tensor = flax_state_dict[flax_key]
+      else:
+        new_tensor = jnp.zeros((40,) + flax_tensor.shape)
+      flax_tensor = new_tensor.at[block_index].set(flax_tensor)
+  return flax_key, flax_tensor
+
+
 def load_fusionx_transformer(
-    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, num_layers: int = 40
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    num_layers: int = 40,
+    scan_layers: bool = True,
 ):
   device = jax.local_devices(backend=device)[0]
   with jax.default_device(device):
@@ -101,23 +127,9 @@ def load_fusionx_transformer(
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
 
-        if "blocks" in pt_tuple_key:
-          new_key = ("blocks",) + pt_tuple_key[2:]
-          block_index = int(pt_tuple_key[1])
-          pt_tuple_key = new_key
-        flax_key, flax_tensor = rename_key_and_reshape_tensor(
-            pt_tuple_key, tensor, random_flax_state_dict, model_type=WAN_MODEL
-        )
-        flax_key = rename_for_nnx(flax_key)
-        flax_key = _tuple_str_to_int(flax_key)
-
-        if "blocks" in flax_key:
-          if flax_key in flax_state_dict:
-            new_tensor = flax_state_dict[flax_key]
-          else:
-            new_tensor = jnp.zeros((num_layers,) + flax_tensor.shape)
-          flax_tensor = new_tensor.at[block_index].set(flax_tensor)
+        flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+
       validate_flax_state_dict(eval_shapes, flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)
       del tensors
@@ -126,7 +138,12 @@ def load_fusionx_transformer(
 
 
 def load_causvid_transformer(
-    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, num_layers: int = 40
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    num_layers: int = 40,
+    scan_layers: bool = True,
 ):
   device = jax.local_devices(backend=device)[0]
   with jax.default_device(device):
@@ -150,24 +167,9 @@ def load_causvid_transformer(
         renamed_pt_key = rename_for_custom_trasformer(renamed_pt_key)
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
-
-        if "blocks" in pt_tuple_key:
-          new_key = ("blocks",) + pt_tuple_key[2:]
-          block_index = int(pt_tuple_key[1])
-          pt_tuple_key = new_key
-        flax_key, flax_tensor = rename_key_and_reshape_tensor(
-            pt_tuple_key, tensor, random_flax_state_dict, model_type=WAN_MODEL
-        )
-        flax_key = rename_for_nnx(flax_key)
-        flax_key = _tuple_str_to_int(flax_key)
-
-        if "blocks" in flax_key:
-          if flax_key in flax_state_dict:
-            new_tensor = flax_state_dict[flax_key]
-          else:
-            new_tensor = jnp.zeros((num_layers,) + flax_tensor.shape)
-          flax_tensor = new_tensor.at[block_index].set(flax_tensor)
+        flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+
       validate_flax_state_dict(eval_shapes, flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)
       del tensors
@@ -176,19 +178,31 @@ def load_causvid_transformer(
 
 
 def load_wan_transformer(
-    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, num_layers: int = 40
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    num_layers: int = 40,
+    scan_layers: bool = True,
 ):
 
   if pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
-    return load_causvid_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers)
+    return load_causvid_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
   elif pretrained_model_name_or_path == WAN_21_FUSION_X_MODEL_NAME_OR_PATH:
-    return load_fusionx_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers)
+    return load_fusionx_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
   else:
-    return load_base_wan_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers)
+    return load_base_wan_transformer(
+        pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers
+    )
 
 
 def load_base_wan_transformer(
-    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, num_layers: int = 40
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    num_layers: int = 40,
+    scan_layers: bool = True,
 ):
   device = jax.local_devices(backend=device)[0]
   subfolder = "transformer"
@@ -247,24 +261,9 @@ def load_base_wan_transformer(
       renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
       renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
       pt_tuple_key = tuple(renamed_pt_key.split("."))
-
-      if "blocks" in pt_tuple_key:
-        new_key = ("blocks",) + pt_tuple_key[2:]
-        block_index = int(pt_tuple_key[1])
-        pt_tuple_key = new_key
-      flax_key, flax_tensor = rename_key_and_reshape_tensor(
-          pt_tuple_key, tensor, random_flax_state_dict, model_type=WAN_MODEL
-      )
-      flax_key = rename_for_nnx(flax_key)
-      flax_key = _tuple_str_to_int(flax_key)
-
-      if "blocks" in flax_key:
-        if flax_key in flax_state_dict:
-          new_tensor = flax_state_dict[flax_key]
-        else:
-          new_tensor = jnp.zeros((num_layers,) + flax_tensor.shape)
-        flax_tensor = new_tensor.at[block_index].set(flax_tensor)
+      flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+
     validate_flax_state_dict(eval_shapes, flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
     del tensors

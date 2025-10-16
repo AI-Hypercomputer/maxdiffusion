@@ -24,6 +24,7 @@ from maxdiffusion import multihost_dataloading, max_logging
 AUTOTUNE = tf.data.AUTOTUNE
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+
 def load_as_tf_dataset(dataset, global_batch_size, shuffle, dataloading_host_count):
   dataset = dataset.with_format("tensorflow")[:]
   tf_dataset = tf.data.Dataset.from_tensor_slices(dataset)
