@@ -518,8 +518,8 @@ class FlaxUniPCMultistepSchedulerTest(FlaxSchedulerCommonTest):
                         step_output = scheduler.step(state, residual, t, sample)
                         sample = step_output.prev_sample
                         state = step_output.state
-
-                    self.assertEqual(sample.dtype, jnp.bfloat16)
+                    # sample is casted to fp32 inside step and output should be fp32.
+                    self.assertEqual(sample.dtype, jnp.float32)
 
     def test_full_loop_with_noise(self):
         scheduler_class = self.scheduler_classes[0]
