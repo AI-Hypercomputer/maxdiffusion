@@ -116,7 +116,7 @@ class WanTimeTextImageEmbedding(nnx.Module):
         rngs=rngs,
         in_features=dim,
         out_features=time_proj_dim,
-        dtype=dtype,
+        dtype=jnp.float32,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(
@@ -332,13 +332,15 @@ class WanTransformerBlock(nnx.Module):
       rngs: nnx.Rngs = None,
   ):
     shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
-        (self.adaln_scale_shift_table + temb), 6, axis=1
+        (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
     )
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", None))
 
     # 1. Self-attention
-    norm_hidden_states = (self.norm1(hidden_states) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
+    norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(
+        hidden_states.dtype
+    )
     attn_output = self.attn1(
         hidden_states=norm_hidden_states,
         encoder_hidden_states=norm_hidden_states,
@@ -346,19 +348,23 @@ class WanTransformerBlock(nnx.Module):
         deterministic=deterministic,
         rngs=rngs,
     )
-    hidden_states = (hidden_states + attn_output * gate_msa).astype(hidden_states.dtype)
+    hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
 
     # 2. Cross-attention
-    norm_hidden_states = self.norm2(hidden_states)
+    norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32)).astype(hidden_states.dtype)
     attn_output = self.attn2(
         hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs
     )
     hidden_states = hidden_states + attn_output
 
     # 3. Feed-forward
-    norm_hidden_states = (self.norm3(hidden_states) * (1 + c_scale_msa) + c_shift_msa).astype(hidden_states.dtype)
+    norm_hidden_states = (self.norm3(hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(
+        hidden_states.dtype
+    )
     ff_output = self.ffn(norm_hidden_states, deterministic=deterministic, rngs=rngs)
-    hidden_states = (hidden_states + ff_output * c_gate_msa).astype(hidden_states.dtype)
+    hidden_states = (hidden_states.astype(jnp.float32) + ff_output.astype(jnp.float32) * c_gate_msa).astype(
+        hidden_states.dtype
+    )
     return hidden_states
 
 
@@ -563,7 +569,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 
-    hidden_states = (self.norm_out(hidden_states) * (1 + scale) + shift).astype(hidden_states.dtype)
+    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
     hidden_states = self.proj_out(hidden_states)
 
     hidden_states = hidden_states.reshape(

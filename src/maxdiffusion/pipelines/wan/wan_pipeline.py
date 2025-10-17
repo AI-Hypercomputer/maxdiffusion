@@ -40,6 +40,28 @@ import torch
 import qwix
 
 
+def cast_with_exclusion(path, x, dtype_to_cast):
+  """
+  Casts arrays to dtype_to_cast, but keeps params from any 'norm' layer in float32.
+  """
+
+  exclusion_keywords = [
+      "norm",  # For all LayerNorm/GroupNorm layers
+      "condition_embedder",  # The entire time/text conditioning module
+      "scale_shift_table",  # Catches both the final and the AdaLN tables
+  ]
+
+  path_str = ".".join(str(k.key) if isinstance(k, jax.tree_util.DictKey) else str(k) for k in path)
+
+  if any(keyword in path_str.lower() for keyword in exclusion_keywords):
+    print("is_norm_path: ", path)
+    # Keep LayerNorm/GroupNorm weights and biases in full precision
+    return x.astype(jnp.float32)
+  else:
+    # Cast everything else to dtype_to_cast
+    return x.astype(dtype_to_cast)
+
+
 def basic_clean(text):
   if is_ftfy_available():
     import ftfy
@@ -118,7 +140,10 @@ def create_sharded_logical_transformer(
         num_layers=wan_config["num_layers"],
         scan_layers=config.scan_layers,
     )
-  params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+
+  params = jax.tree_util.tree_map_with_path(
+      lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
+  )
   for path, val in flax.traverse_util.flatten_dict(params).items():
     if restored_checkpoint:
       path = path[:-1]
@@ -214,8 +239,8 @@ class WanPipeline:
           subfolder="vae",
           rngs=rngs,
           mesh=mesh,
-          dtype=config.activations_dtype,
-          weights_dtype=config.weights_dtype,
+          dtype=jnp.float32,
+          weights_dtype=jnp.float32,
       )
       return wan_vae
 
@@ -474,7 +499,7 @@ class WanPipeline:
           num_videos_per_prompt=num_videos_per_prompt,
           max_sequence_length=max_sequence_length,
       )
-      prompt_embeds = jnp.array(prompt_embeds.detach().numpy(), dtype=self.config.weights_dtype)
+      prompt_embeds = jnp.array(prompt_embeds.detach().numpy(), dtype=jnp.float32)
 
     if negative_prompt_embeds is None:
       negative_prompt = negative_prompt or ""
@@ -484,7 +509,7 @@ class WanPipeline:
           num_videos_per_prompt=num_videos_per_prompt,
           max_sequence_length=max_sequence_length,
       )
-      negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().numpy(), dtype=self.config.weights_dtype)
+      negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().numpy(), dtype=jnp.float32)
 
     return prompt_embeds, negative_prompt_embeds
 
@@ -507,7 +532,7 @@ class WanPipeline:
         int(height) // vae_scale_factor_spatial,
         int(width) // vae_scale_factor_spatial,
     )
-    latents = jax.random.normal(rng, shape=shape, dtype=self.config.weights_dtype)
+    latents = jax.random.normal(rng, shape=shape, dtype=jnp.float32)
 
     return latents
 
@@ -597,7 +622,7 @@ class WanPipeline:
         latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
         latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
         latents = latents / latents_std + latents_mean
-        latents = latents.astype(self.config.weights_dtype)
+        latents = latents.astype(jnp.float32)
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       video = self.vae.decode(latents, self.vae_cache)[0]
