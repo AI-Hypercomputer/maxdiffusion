@@ -675,7 +675,6 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     the multistep UniPC.
     """
 
-    original_dtype = sample.dtype
     sample = sample.astype(jnp.float32)
 
     if state.timesteps is None:

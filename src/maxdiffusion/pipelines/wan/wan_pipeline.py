@@ -39,20 +39,20 @@ import re
 import torch
 import qwix
 
+
 def cast_with_exclusion(path, x, dtype_to_cast):
   """
   Casts arrays to dtype_to_cast, but keeps params from any 'norm' layer in float32.
   """
-  is_norm_param = any('norm' in str(key).lower() for key in path)
 
   exclusion_keywords = [
-    "norm",                   # For all LayerNorm/GroupNorm layers
-    "condition_embedder",     # The entire time/text conditioning module
-    "scale_shift_table",      # Catches both the final and the AdaLN tables
+      "norm",  # For all LayerNorm/GroupNorm layers
+      "condition_embedder",  # The entire time/text conditioning module
+      "scale_shift_table",  # Catches both the final and the AdaLN tables
   ]
 
   path_str = ".".join(str(k.key) if isinstance(k, jax.tree_util.DictKey) else str(k) for k in path)
-  
+
   if any(keyword in path_str.lower() for keyword in exclusion_keywords):
     print("is_norm_path: ", path)
     # Keep LayerNorm/GroupNorm weights and biases in full precision
@@ -60,7 +60,8 @@ def cast_with_exclusion(path, x, dtype_to_cast):
   else:
     # Cast everything else to dtype_to_cast
     return x.astype(dtype_to_cast)
-  
+
+
 def basic_clean(text):
   if is_ftfy_available():
     import ftfy
@@ -139,10 +140,9 @@ def create_sharded_logical_transformer(
         num_layers=wan_config["num_layers"],
         scan_layers=config.scan_layers,
     )
-  
+
   params = jax.tree_util.tree_map_with_path(
-    lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype),
-    params
+      lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
   )
   for path, val in flax.traverse_util.flatten_dict(params).items():
     if restored_checkpoint:
