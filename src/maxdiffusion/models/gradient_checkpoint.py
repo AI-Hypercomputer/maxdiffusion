@@ -85,6 +85,7 @@ class GradientCheckpointType(Enum):
       names_which_can_be_saved: list = [],
       names_which_can_be_offloaded: list = [],
       static_argnums=(),
+      prevent_cse: bool = False,
   ) -> nnx.Module:
     """
     Applies a gradient checkpoint policy to a module
@@ -99,4 +100,4 @@ class GradientCheckpointType(Enum):
     policy = self.to_jax_policy(names_which_can_be_saved, names_which_can_be_offloaded)
     if policy == SKIP_GRADIENT_CHECKPOINT_KEY:
       return module
-    return nnx.remat(module, prevent_cse=False, policy=policy, static_argnums=static_argnums)  # pylint: disable=invalid-name
+    return nnx.remat(module, prevent_cse=prevent_cse, policy=policy, static_argnums=static_argnums)  # pylint: disable=invalid-name

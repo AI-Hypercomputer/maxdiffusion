@@ -40,6 +40,7 @@ def main(argv: Sequence[str]) -> None:
   max_logging.log(f"Found {jax.device_count()} devices.")
   train(config)
 
+
 if __name__ == "__main__":
   with transformer_engine_context():
     app.run(main)

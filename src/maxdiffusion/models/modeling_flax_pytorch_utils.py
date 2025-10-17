@@ -25,7 +25,6 @@ from jax.random import PRNGKey
 from chex import Array
 from ..utils import logging
 from .. import max_logging
-from .. import common_types
 
 
 logger = logging.get_logger(__name__)
@@ -87,7 +86,7 @@ def rename_key(key):
 
 # Adapted from https://github.com/huggingface/transformers/blob/c603c80f46881ae18b2ca50770ef65fa4033eacd/src/transformers/modeling_flax_pytorch_utils.py#L69
 # and https://github.com/patil-suraj/stable-diffusion-jax/blob/main/stable_diffusion_jax/convert_diffusers_to_jax.py
-def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dict, model_type=None):
+def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dict, scan_layers=False):
   """Rename PT weight names to corresponding Flax weight names and reshape tensor if necessary"""
   # conv norm or layer norm
   renamed_pt_tuple_key = pt_tuple_key[:-1] + ("scale",)
@@ -112,12 +111,12 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
           if isinstance(random_flax_state_dict[renamed_pt_tuple_key], Partitioned):
             # Wan 2.1 uses nnx.scan and nnx.vmap which stacks layer weights which will cause a shape mismatch
             # from the original weights which are not stacked.
-            if model_type is not None and model_type == common_types.WAN_MODEL:
+            if scan_layers:
               pass
             else:
               assert random_flax_state_dict[renamed_pt_tuple_key].value.shape == pt_tensor.T.shape
           else:
-            if model_type is not None and model_type == common_types.WAN_MODEL:
+            if scan_layers:
               pass
             else:
               assert random_flax_state_dict[renamed_pt_tuple_key].shape == pt_tensor.T.shape
