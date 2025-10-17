@@ -36,7 +36,7 @@ MaxDiffusion is a collection of reference implementations of various latent diff
 The goal of this project is to provide reference implementations for latent diffusion models that help developers get started with training, tuning, and serving solutions on XLA devices including Cloud TPUs and GPUs. We started with Stable Diffusion inference on TPUs, but welcome code contributions to grow.
 
 MaxDiffusion supports
-* Stable Diffusion 2 base (training and inference)
+* Stable Diffusion 2 base (inference)
 * Stable Diffusion 2.1 (training and inference)
 * Stable Diffusion XL (training and inference).
 * Flux Dev and Schnell (Training and inference).
@@ -100,7 +100,7 @@ After installation completes, run the training script.
 
   ## Wan 2.1 Training
 
-  Foo
+  Coming soon.
 
   ## Flux Training
 
