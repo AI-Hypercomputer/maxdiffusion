@@ -350,8 +350,8 @@ After installation completes, run the training script.
   skip_first_n_steps_for_profiler=3 \
   profiler_steps=3 \
   per_device_batch_size=0.25 \
-  ici_data_parallelism=64 \
-  ici_fsdp_parallelism=2 \
+  ici_data_parallelism=32 \
+  ici_fsdp_parallelism=4 \
   ici_tensor_parallelism=1" \
   max_train_steps=5000 \
   eval_every=100 \
