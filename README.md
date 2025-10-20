@@ -342,7 +342,6 @@ After installation completes, run the training script.
   num_frames=81 \
   num_inference_steps=50 \
   jax_cache_dir=${OUTPUT_DIR}/jax_cache/ \
-  max_train_steps=1000 \
   enable_profiler=True \
   dataset_save_location=${SAVE_DATASET_DIR} \
   remat_policy='HIDDEN_STATE_WITH_OFFLOAD' \
@@ -353,7 +352,17 @@ After installation completes, run the training script.
   per_device_batch_size=0.25 \
   ici_data_parallelism=64 \
   ici_fsdp_parallelism=2 \
-  ici_tensor_parallelism=1"
+  ici_tensor_parallelism=1" \
+  max_train_steps=5000 \
+  eval_every=100 \
+  eval_data_dir=${EVAL_DATA_DIR} \
+  enable_generate_video_for_eval=True \
+  warmup_steps_fraction=0.025"
+  --base-docker-image=${IMAGE_DIR} \
+  --enable-debug-logs \
+  --workload=${RUN_NAME} \
+  --priority=medium \
+  --max-restarts=0
   ```
 
   ## Flux Training
