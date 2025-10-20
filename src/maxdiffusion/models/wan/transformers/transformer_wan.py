@@ -340,6 +340,7 @@ class WanTransformerBlock(nnx.Module):
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", None))
 
     # 1. Self-attention
+    # with jax.named_scope("SelfAttention"):
     norm_hidden_states = (self.norm1(hidden_states) * (1 + scale_msa) + shift_msa).astype(hidden_states.dtype)
     attn_output = self.attn1(
         hidden_states=norm_hidden_states,
@@ -351,6 +352,7 @@ class WanTransformerBlock(nnx.Module):
     hidden_states = (hidden_states + attn_output * gate_msa).astype(hidden_states.dtype)
 
     # 2. Cross-attention
+    # with jax.named_scope("CrossAttention"):
     norm_hidden_states = self.norm2(hidden_states)
     attn_output = self.attn2(
         hidden_states=norm_hidden_states,
@@ -361,6 +363,7 @@ class WanTransformerBlock(nnx.Module):
     hidden_states = hidden_states + attn_output
 
     # 3. Feed-forward
+    # with jax.named_scope("FeedForward"):
     norm_hidden_states = (self.norm3(hidden_states) * (1 + c_scale_msa) + c_shift_msa).astype(hidden_states.dtype)
     ff_output = self.ffn(norm_hidden_states, deterministic=deterministic, rngs=rngs)
     hidden_states = (hidden_states + ff_output * c_gate_msa).astype(hidden_states.dtype)
@@ -498,8 +501,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
     rotary_emb = self.rope(hidden_states)
-
-    hidden_states = self.patch_embedding(hidden_states)
+    with jax.named_scope("PatchEmbedding"):
+      hidden_states = self.patch_embedding(hidden_states)
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
 
     temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
@@ -520,12 +523,13 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded
     )
     initial_carry = (hidden_states, rngs)
-    final_carry, _ = nnx.scan(
-        rematted_block_forward,
-        length=self.num_layers,
-        in_axes=(nnx.Carry, 0),
-        out_axes=(nnx.Carry, 0),
-    )(initial_carry, self.blocks)
+    with jax.named_scope("Transformer"):
+      final_carry, _ = nnx.scan(
+          rematted_block_forward,
+          length=self.num_layers,
+          in_axes=(nnx.Carry, 0),
+          out_axes=(nnx.Carry, 0),
+      )(initial_carry, self.blocks)
 
     hidden_states, _ = final_carry
 

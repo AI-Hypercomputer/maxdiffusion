@@ -535,17 +535,18 @@ class WanPipeline:
         prompt = [prompt]
 
       batch_size = len(prompt)
-
-      prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-          prompt=prompt,
-          negative_prompt=negative_prompt,
-          max_sequence_length=max_sequence_length,
-          prompt_embeds=prompt_embeds,
-          negative_prompt_embeds=negative_prompt_embeds,
-      )
+      
+      with jax.named_scope("Encode-Prompt"):
+        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            max_sequence_length=max_sequence_length,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+        )
 
       num_channel_latents = self.transformer.config.in_channels
-      if latents is None:
+      if latents is None: 
         latents = self.prepare_latents(
             batch_size=batch_size,
             vae_scale_factor_temporal=self.vae_scale_factor_temporal,
@@ -554,7 +555,7 @@ class WanPipeline:
             width=width,
             num_frames=num_frames,
             num_channels_latents=num_channel_latents,
-        )
+        ) # # fusion.18
 
       data_sharding = NamedSharding(self.mesh, P())
       # Using global_batch_size_to_train_on so not to create more config variables

@@ -26,6 +26,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 from einops import rearrange
 from .. import common_types, max_logging
+from .padded_flash_attn import make_dense_padded_attention
 
 from . import quantizations
 
@@ -236,9 +237,6 @@ def _tpu_flash_attention(
     kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
     segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
-
-    # make_splash_mha is wrapped around shardmap and seq and head is already
-    # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
     splash_kernel = splash_attention_kernel.make_splash_mha(
         mask=multi_head_mask,
         head_shards=1,  # the sizes of the axis is sharding over heads
@@ -246,10 +244,16 @@ def _tpu_flash_attention(
         block_sizes=block_sizes,
         save_residuals=True if attention_kernel == "ring" else False,
     )
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None), out_axes=0)
 
     if attention_kernel == "flash":
+      # attention_output = vmapped_splash(query, key, value, segment_ids)
       attention_output = vmapped_splash(query, key, value, segment_ids)
+    elif attention_kernel == "dense_padded":
+      padded_kv_len = key.shape[1] - key_seq_len
+      dense_padded_attention_kernel = make_dense_padded_attention(block_sizes=block_sizes, kv_padding=padded_kv_len)
+      vmapped_splash = jax.vmap(dense_padded_attention_kernel, in_axes=(0, 0, 0), out_axes=0)
+      attention_output, _ = vmapped_splash(query, key, value)
     else:
       if num_fsdp_shards > 1:
         out, (lse,) = vmapped_splash(query, key, value, segment_ids)
@@ -446,6 +450,19 @@ def _apply_attention(
         query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
     )
   elif attention_kernel == "flash":
+    return _tpu_flash_attention(
+        query,
+        key * scale,
+        value,
+        heads,
+        mesh,
+        axis_names_q,
+        axis_names_kv,
+        flash_block_sizes,
+        dtype,
+        attention_kernel,
+    )
+  elif attention_kernel == "dense_padded":
     return _tpu_flash_attention(
         query,
         key * scale,
@@ -877,10 +894,10 @@ class FlaxWanAttention(nnx.Module):
     dtype = hidden_states.dtype
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
-
-    query_proj = self.query(hidden_states)
-    key_proj = self.key(encoder_hidden_states)
-    value_proj = self.value(encoder_hidden_states)
+    with jax.named_scope("attention-projection"):
+      query_proj = self.query(hidden_states)
+      key_proj = self.key(encoder_hidden_states)
+      value_proj = self.value(encoder_hidden_states)
 
     if self.qk_norm:
       query_proj = self.norm_q(query_proj)
@@ -895,7 +912,8 @@ class FlaxWanAttention(nnx.Module):
     query_proj = checkpoint_name(query_proj, "query_proj")
     key_proj = checkpoint_name(key_proj, "key_proj")
     value_proj = checkpoint_name(value_proj, "value_proj")
-    attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+    with jax.named_scope("attention-compute"):
+      attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")

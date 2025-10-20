@@ -62,6 +62,14 @@ def delete_file(file_path: str):
 
 
 jax.config.update("jax_use_shardy_partitioner", True)
+jax.config.update("jax_default_prng_impl", "unsafe_rbg")
+  # TF allocates extraneous GPU memory when using TFDS data
+  # this leads to CUDA OOMs. WAR for now is to hide GPUs from TF
+  # tf.config.set_visible_devices([], "GPU")
+if "xla_tpu_spmd_rng_bit_generator_unsafe" not in os.environ.get("LIBTPU_INIT_ARGS", ""):
+  os.environ["LIBTPU_INIT_ARGS"] = (
+      os.environ.get("LIBTPU_INIT_ARGS", "") + " --xla_tpu_spmd_rng_bit_generator_unsafe=true"
+  )
 
 
 def inference_generate_video(config, pipeline, filename_prefix=""):
@@ -97,7 +105,6 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
 def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)
   from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
-
   checkpoint_loader = WanCheckpointer(config, "WAN_CHECKPOINT")
   pipeline = checkpoint_loader.load_checkpoint()
   if pipeline is None:
