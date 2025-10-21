@@ -174,6 +174,7 @@ def _tpu_flash_attention(
     flash_block_sizes: BlockSizes,
     dtype: jnp.dtype = jnp.float32,
     attention_kernel: str = "flash",
+    residual_checkpoint_name: str | None = None,
 ) -> jax.Array:
   """TPU Flash Attention"""
 
@@ -213,9 +214,22 @@ def _tpu_flash_attention(
   )
   def wrap_flash_attention(query, key, value):
 
-    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_sizes.block_q)
-    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_sizes.block_kv)
-    value, _, _ = _pad_data_for_flash(value, heads, block_sizes.block_kv)
+    uses_fused_kernel = block_sizes.use_fused_bwd_kernel
+    block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv,)
+    block_kv_sizes = (block_sizes.block_kv, block_sizes.block_kv_dkv,)
+    if uses_fused_kernel:
+      block_q_sizes += (block_sizes.block_q_dkv,)
+      block_kv_sizes += (block_sizes.block_kv_dkv,)
+    else:
+      block_q_sizes += (block_sizes.block_q_dq,)
+      block_kv_sizes += (block_sizes.block_kv_dq,)
+
+    block_q = max(*block_q_sizes)
+    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_q)
+
+    block_kv = max(*block_kv_sizes)
+    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
+    value, _, _ = _pad_data_for_flash(value, heads, block_kv)
 
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
@@ -237,6 +251,7 @@ def _tpu_flash_attention(
         q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
         block_sizes=block_sizes,
         save_residuals=True if attention_kernel == "ring" else False,
+        residual_checkpoint_name=residual_checkpoint_name,
     )
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
@@ -419,6 +434,7 @@ def _apply_attention(
     axis_names_kv: AxisNames,
     flash_block_sizes: BlockSizes,
     dpa_layer: Callable,
+    residual_checkpoint_name: str | None = None,
 ):
   """Routes to different attention kernels."""
   _check_attention_inputs(query, key, value)
@@ -439,7 +455,7 @@ def _apply_attention(
     )
   elif attention_kernel == "flash":
     return _tpu_flash_attention(
-        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype
+        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, residual_checkpoint_name=residual_checkpoint_name
     )
   elif attention_kernel == "ring":
     return _tpu_flash_attention(
@@ -574,6 +590,7 @@ class NNXAttentionOp(nnx.Module):
       flash_block_sizes: BlockSizes = None,
       dtype: DType = jnp.float32,
       quant: Quant = None,
+      residual_checkpoint_name: str | None = None,
   ):
     self.dpa_layer = None
     if attention_kernel == "cudnn_flash_te":
@@ -593,6 +610,7 @@ class NNXAttentionOp(nnx.Module):
     self.flash_block_sizes = flash_block_sizes
     self.dtype = dtype
     self.quant = quant
+    self.residual_checkpoint_name = residual_checkpoint_name
 
   def apply_attention(self, query: Array, key: Array, value: Array):
     return _apply_attention(
@@ -613,6 +631,7 @@ class NNXAttentionOp(nnx.Module):
         axis_names_kv=self.axis_names_kv,
         flash_block_sizes=self.flash_block_sizes,
         dpa_layer=self.dpa_layer,
+        residual_checkpoint_name=self.residual_checkpoint_name,
     )
 
 
@@ -701,6 +720,7 @@ class FlaxWanAttention(nnx.Module):
       precision: jax.lax.Precision = None,
       qkv_bias: bool = False,
       quant: Quant = None,
+      residual_checkpoint_name: str | None = None,
   ):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
@@ -730,6 +750,7 @@ class FlaxWanAttention(nnx.Module):
         flash_block_sizes=flash_block_sizes,
         dtype=dtype,
         quant=quant,
+        residual_checkpoint_name=residual_checkpoint_name,
     )
     # None axes corresponds to the stacked weights across all blocks
     # because of the use of nnx.vmap and nnx.scan.

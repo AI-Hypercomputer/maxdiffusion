@@ -41,6 +41,7 @@ class GradientCheckpointType(Enum):
   MATMUL_WITHOUT_BATCH = auto()
   OFFLOAD_MATMUL_WITHOUT_BATCH = auto()
   CUSTOM = auto()
+  HIDDEN_STATE_WITH_OFFLOAD = auto()
 
   @classmethod
   def from_str(cls, s: Optional[str] = None) -> "GradientCheckpointType":
@@ -76,6 +77,13 @@ class GradientCheckpointType(Enum):
             offload_dst="pinned_host",
         )
         return policy
+      case GradientCheckpointType.HIDDEN_STATE_WITH_OFFLOAD:
+        return jax.checkpoint_policies.save_and_offload_only_these_names(
+            names_which_can_be_saved=[],
+            names_which_can_be_offloaded=["hidden_states","self_attn","cross_attn"],
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
       case GradientCheckpointType.MATMUL_WITHOUT_BATCH:
         return jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
 
