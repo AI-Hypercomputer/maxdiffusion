@@ -118,7 +118,7 @@ After installation completes, run the training script.
   huggingface-cli download RaphaelLiu/PusaV1_training --repo-type dataset --local-dir $HF_DATASET_DIR
   ```
 
-  Next run the TFRecords conversion script. This step prepares training an eval datasets. Validation is done as described in  [Scaling Rectified Flow Transformers for High-Resolution Image Synthesis](https://arxiv.org/pdf/2403.03206). More details [here](https://github.com/mlcommons/training/tree/master/text_to_image#5-quality)
+  Next run the TFRecords conversion script. This step prepares training and eval datasets. Validation is done as described in  [Scaling Rectified Flow Transformers for High-Resolution Image Synthesis](https://arxiv.org/pdf/2403.03206). More details [here](https://github.com/mlcommons/training/tree/master/text_to_image#5-quality)
 
   Training dataset.
 
@@ -194,7 +194,7 @@ After installation completes, run the training script.
   --xla_tpu_enable_async_collective_fusion_multiple_steps=true \
   --xla_tpu_overlap_compute_collective_tc=true \
   --xla_enable_async_all_gather=true \
-  --xla_tpu_scoped_vmem_limit_kib=81920 \
+  --xla_tpu_scoped_vmem_limit_kib=65536 \
   --xla_tpu_enable_async_all_to_all=true \
   --xla_tpu_enable_all_experimental_scheduler_features=true \
   --xla_tpu_enable_scheduler_memory_pressure_tracking=true \
@@ -299,7 +299,7 @@ After installation completes, run the training script.
   --xla_tpu_enable_async_collective_fusion_multiple_steps=true \
   --xla_tpu_overlap_compute_collective_tc=true \
   --xla_enable_async_all_gather=true \
-  --xla_tpu_scoped_vmem_limit_kib=81920 \
+  --xla_tpu_scoped_vmem_limit_kib=65536 \
   --xla_tpu_enable_async_all_to_all=true \
   --xla_tpu_enable_all_experimental_scheduler_features=true \
   --xla_tpu_enable_scheduler_memory_pressure_tracking=true \
