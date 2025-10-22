@@ -226,25 +226,26 @@ def _tpu_flash_attention(
     key, _, key_seq_len = _pad_data_for_flash(key, heads, block_sizes.block_kv)
     value, _, _ = _pad_data_for_flash(value, heads, block_sizes.block_kv)
 
-    mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
-    multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+    if attention_kernel == "flash":
+      mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
+      multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
 
-    q_padded_len = query.shape[2]
-    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
-    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
+      q_padded_len = query.shape[2]
+      q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
+      q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
 
-    kv_padded_len = key.shape[2]
-    kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
-    kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
-    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
-    splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask,
-        head_shards=1,  # the sizes of the axis is sharding over heads
-        q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
-        block_sizes=block_sizes,
-        save_residuals=True if attention_kernel == "ring" else False,
-    )
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None), out_axes=0)
+      kv_padded_len = key.shape[2]
+      kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
+      kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+      segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
+      splash_kernel = splash_attention_kernel.make_splash_mha(
+          mask=multi_head_mask,
+          head_shards=1,  # the sizes of the axis is sharding over heads
+          q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+          block_sizes=block_sizes,
+          save_residuals=True if attention_kernel == "ring" else False,
+      )
+      vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None), out_axes=0)
 
     if attention_kernel == "flash":
       # attention_output = vmapped_splash(query, key, value, segment_ids)
