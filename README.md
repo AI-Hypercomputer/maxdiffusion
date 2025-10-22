@@ -352,11 +352,11 @@ After installation completes, run the training script.
   per_device_batch_size=0.25 \
   ici_data_parallelism=32 \
   ici_fsdp_parallelism=4 \
-  ici_tensor_parallelism=1" \
+  ici_tensor_parallelism=1 \
   max_train_steps=5000 \
   eval_every=100 \
   eval_data_dir=${EVAL_DATA_DIR} \
-  enable_generate_video_for_eval=True \
+  enable_generate_video_for_eval=True" \
   --base-docker-image=${IMAGE_DIR} \
   --enable-debug-logs \
   --workload=${RUN_NAME} \
