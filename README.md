@@ -357,7 +357,6 @@ After installation completes, run the training script.
   eval_every=100 \
   eval_data_dir=${EVAL_DATA_DIR} \
   enable_generate_video_for_eval=True \
-  warmup_steps_fraction=0.025"
   --base-docker-image=${IMAGE_DIR} \
   --enable-debug-logs \
   --workload=${RUN_NAME} \
