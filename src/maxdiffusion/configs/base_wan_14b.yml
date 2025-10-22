@@ -81,7 +81,8 @@ flash_block_sizes: {
 #   "block_kv_dkv" : 2048,
 #   "block_kv_dkv_compute" : 2048,
 #   "block_q_dq" : 3024,
-#   "block_kv_dq" : 2048
+#   "block_kv_dq" : 2048,
+#   "use_fused_bwd_kernel": False,
 # }
 # GroupNorm groups
 norm_num_groups: 32
