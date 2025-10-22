@@ -155,11 +155,11 @@ def _tpu_flash_attention(
                         kv_padded_len=kv_padded_len,
                        )
 
-        if mask_type == Masking.FULL:
+        if mask_type == Masking.FULL and attention_kernel != "dense_padded":
             mask = splash_attention_mask.FullMask(_shape=(q_padded_len, kv_padded_len))
             multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
             segment_ids = None
-        elif mask_type == Masking.PADDING:
+        elif mask_type == Masking.PADDING and attention_kernel != "dense_padded":
             padding_mask = splash_attention_mask.PaddingMask(
                 shape=(q_padded_len, kv_padded_len),
                 q_seq_len=query_seq_len,
@@ -167,7 +167,7 @@ def _tpu_flash_attention(
             )
             multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(padding_mask,) * query.shape[1])
             segment_ids = None
-        elif mask_type == Masking.SEGMENT:
+        elif mask_type == Masking.SEGMENT and attention_kernel != "dense_padded":
             q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
             q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
             kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
@@ -179,16 +179,17 @@ def _tpu_flash_attention(
         # jax.debug.print("Is cross attention: {is_cross_attention}, q_padded_len: {q_padded_len}, kv_padded_len: {kv_padded_len}", is_cross_attention=is_cross_attention, q_padded_len=q_padded_len, kv_padded_len=kv_padded_len)
         # make_splash_mha is wrapped around shardmap and seq and head is already
         # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
-        splash_kernel = splash_attention_kernel.make_splash_mha(
-            mask=multi_head_mask,
-            head_shards=1,  # the sizes of the axis is sharding over heads
-            q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
-            block_sizes=block_sizes,
-            save_residuals=True if attention_kernel == "ring" else False,
-        )
-        vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0), out_axes=0)
+        
 
         if attention_kernel == "flash":
+            splash_kernel = splash_attention_kernel.make_splash_mha(
+                mask=multi_head_mask,
+                head_shards=1,  # the sizes of the axis is sharding over heads
+                q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+                block_sizes=block_sizes,
+                save_residuals=True if attention_kernel == "ring" else False
+                )
+            vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0), out_axes=0)
             if segment_ids:
                 vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None), out_axes=0)
                 attention_output = vmapped_splash(query, key, value, segment_ids)
@@ -196,6 +197,13 @@ def _tpu_flash_attention(
                 vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0), out_axes=0)
                 attention_output = vmapped_splash(query, key, value)
         elif attention_kernel == "ring":
+            splash_kernel = splash_attention_kernel.make_splash_mha(
+                mask=multi_head_mask,
+                head_shards=1,  # the sizes of the axis is sharding over heads
+                q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+                block_sizes=block_sizes,
+                save_residuals=True if attention_kernel == "ring" else False
+                )
             if num_fsdp_shards > 1:
                 out, (lse,) = vmapped_splash(query, key, value, segment_ids)
                 m = lse.astype(jnp.float32)
