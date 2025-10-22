@@ -233,7 +233,7 @@ After installation completes, run the training script.
   max_train_steps=1000 \
   enable_profiler=True \
   dataset_save_location=${SAVE_DATASET_DIR} \
-  remat_policy='FULL' \
+  remat_policy='HIDDEN_STATE_WITH_OFFLOAD' \
   flash_min_seq_length=0 \
   seed=$RANDOM \
   skip_first_n_steps_for_profiler=3 \
@@ -352,12 +352,11 @@ After installation completes, run the training script.
   per_device_batch_size=0.25 \
   ici_data_parallelism=32 \
   ici_fsdp_parallelism=4 \
-  ici_tensor_parallelism=1" \
+  ici_tensor_parallelism=1 \
   max_train_steps=5000 \
   eval_every=100 \
   eval_data_dir=${EVAL_DATA_DIR} \
-  enable_generate_video_for_eval=True \
-  warmup_steps_fraction=0.025"
+  enable_generate_video_for_eval=True" \
   --base-docker-image=${IMAGE_DIR} \
   --enable-debug-logs \
   --workload=${RUN_NAME} \
