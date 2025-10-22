@@ -17,6 +17,7 @@
 import os
 import datetime
 import functools
+from pprint import pprint
 import numpy as np
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -209,7 +210,11 @@ class WanTrainer(WanCheckpointer):
 
   def start_training(self):
 
-    pipeline = self.load_checkpoint()
+    pipeline, opt_state, step = self.load_checkpoint()
+    restore_args = {}
+    if opt_state and step:
+      restore_args = {"opt_state": opt_state, "step":step}
+      del opt_state
     if self.config.enable_ssim:
       # Generate a sample before training to compare against generated sample after training.
       pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
@@ -228,7 +233,7 @@ class WanTrainer(WanCheckpointer):
     pipeline.scheduler_state = scheduler_state
     optimizer, learning_rate_scheduler = self._create_optimizer(pipeline.transformer, self.config, 1e-5)
     # Returns pipeline with trained transformer state
-    pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, train_data_iterator)
+    pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, train_data_iterator, restore_args)
 
     if self.config.enable_ssim:
       posttrained_video_path = generate_sample(self.config, pipeline, filename_prefix="post-training-")
@@ -280,18 +285,28 @@ class WanTrainer(WanCheckpointer):
       if writer:
         writer.add_scalar("learning/eval_loss", final_eval_loss, step)
 
-  def training_loop(self, pipeline, optimizer, learning_rate_scheduler, train_data_iterator):
+  def training_loop(self, pipeline, optimizer, learning_rate_scheduler, train_data_iterator, restore_args:dict={}):
     mesh = pipeline.mesh
     graphdef, params, rest_of_state = nnx.split(pipeline.transformer, nnx.Param, ...)
 
     with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       state = TrainState.create(
-          apply_fn=graphdef.apply, params=params, tx=optimizer, graphdef=graphdef, rest_of_state=rest_of_state
-      )
+          apply_fn=graphdef.apply, params=params, tx=optimizer, graphdef=graphdef, rest_of_state=rest_of_state)
+      if restore_args:
+        step = restore_args.get("step", 0)
+        max_logging.log(f"Restoring optimizer and resuming from step {step}")
+        state.replace(opt_state=restore_args.get("opt_state"), step = restore_args.get("step", 0))
+        del restore_args["opt_state"]
+        del optimizer
       state = jax.tree.map(_to_array, state)
       state_spec = nnx.get_partition_spec(state)
       state = jax.lax.with_sharding_constraint(state, state_spec)
       state_shardings = nnx.get_named_sharding(state, mesh)
+      if jax.process_index() == 0 and restore_args:
+          max_logging.log("--- Optimizer State Sharding Spec (opt_state) ---")
+          pretty_string = pprint.pformat(state_spec.opt_state, indent=4, width=60)
+          max_logging.log(pretty_string)
+          max_logging.log("------------------------------------------------")
     data_shardings = self.get_data_shardings(mesh)
     eval_data_shardings = self.get_eval_data_shardings(mesh)
 
@@ -334,8 +349,9 @@ class WanTrainer(WanCheckpointer):
     last_profiling_step = np.clip(
         first_profiling_step + self.config.profiler_steps - 1, first_profiling_step, self.config.max_train_steps - 1
     )
-    # TODO - 0 needs to be changed to last step if continuing from an orbax checkpoint.
-    start_step = 0
+    if restore_args.get("step",0):
+        max_logging.log(f"Resuming training from step {step}")
+    start_step = restore_args.get("step",0)
     per_device_tflops, _, _ = WanTrainer.calculate_tflops(pipeline)
     scheduler_state = pipeline.scheduler_state
     example_batch = load_next_batch(train_data_iterator, None, self.config)
@@ -373,7 +389,10 @@ class WanTrainer(WanCheckpointer):
         example_batch = next_batch_future.result()
         if step != 0 and self.config.checkpoint_every != -1 and step % self.config.checkpoint_every == 0:
           max_logging.log(f"Saving checkpoint for step {step}")
-          self.save_checkpoint(step, pipeline, state.params)
+          if self.config.save_optimizer:
+            self.save_checkpoint(step, pipeline, state)
+          else:
+            self.save_checkpoint(step, pipeline, state.params)
 
       _metrics_queue.put(None)
       writer_thread.join()

@@ -33,6 +33,7 @@ class WanCheckpointer(ABC):
   def __init__(self, config, checkpoint_type):
     self.config = config
     self.checkpoint_type = checkpoint_type
+    self.opt_state = None
 
     self.checkpoint_manager: ocp.CheckpointManager = create_orbax_checkpoint_manager(
         self.config.checkpoint_dir,
@@ -57,7 +58,6 @@ class WanCheckpointer(ABC):
         return None
     max_logging.log(f"Loading WAN checkpoint from step {step}")
     metadatas = self.checkpoint_manager.item_metadata(step)
-
     transformer_metadata = metadatas.wan_state
     abstract_tree_structure_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, transformer_metadata)
     params_restore = ocp.args.PyTreeRestore(
@@ -73,27 +73,32 @@ class WanCheckpointer(ABC):
         step=step,
         args=ocp.args.Composite(
             wan_state=params_restore,
-            # wan_state=params_restore_util_way,
             wan_config=ocp.args.JsonRestore(),
         ),
     )
-    return restored_checkpoint
+    max_logging.log(f"restored checkpoint {restored_checkpoint.keys()}")
+    max_logging.log(f"restored checkpoint wan_state {restored_checkpoint.wan_state.keys()}")
+    max_logging.log(f"optimizer found in checkpoint {'opt_state' in restored_checkpoint.wan_state.keys()}")
+    max_logging.log(f"optimizer state saved in attribute self.opt_state {self.opt_state}")
+    return restored_checkpoint, step
 
   def load_diffusers_checkpoint(self):
     pipeline = WanPipeline.from_pretrained(self.config)
     return pipeline
 
   def load_checkpoint(self, step=None):
-    restored_checkpoint = self.load_wan_configs_from_orbax(step)
-
+    restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
+    opt_state = None
     if restored_checkpoint:
       max_logging.log("Loading WAN pipeline from checkpoint")
       pipeline = WanPipeline.from_checkpoint(self.config, restored_checkpoint)
+      if "opt_state" in restored_checkpoint["wan_state"].keys():
+        opt_state = restored_checkpoint["wan_state"]["opt_state"]
     else:
       max_logging.log("No checkpoint found, loading default pipeline.")
       pipeline = self.load_diffusers_checkpoint()
 
-    return pipeline
+    return pipeline, opt_state, step
 
   def save_checkpoint(self, train_step, pipeline: WanPipeline, train_states: dict):
     """Saves the training state and model configurations."""

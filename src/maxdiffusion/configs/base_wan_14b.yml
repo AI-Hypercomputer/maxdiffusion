@@ -243,6 +243,7 @@ num_eval_samples: 420
 
 warmup_steps_fraction: 0.1
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
+save_optimizer: False
 
 # However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before
 # dropping fully down. Or you may choose a shorter schedule, where the unspecified steps will have a learning rate of 0.
