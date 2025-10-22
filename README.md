@@ -344,7 +344,7 @@ After installation completes, run the training script.
   jax_cache_dir=${OUTPUT_DIR}/jax_cache/ \
   enable_profiler=True \
   dataset_save_location=${SAVE_DATASET_DIR} \
-  remat_policy='HIDDEN_STATE_WITH_OFFLOAD' \
+  remat_policy='FULL' \
   flash_min_seq_length=0 \
   seed=$RANDOM \
   skip_first_n_steps_for_profiler=3 \
