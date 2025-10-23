@@ -213,7 +213,7 @@ class WanTrainer(WanCheckpointer):
     pipeline, opt_state, step = self.load_checkpoint()
     restore_args = {}
     if opt_state and step:
-      restore_args = {"opt_state": opt_state, "step":step}
+      restore_args = {"opt_state": opt_state, "step": step}
       del opt_state
     if self.config.enable_ssim:
       # Generate a sample before training to compare against generated sample after training.
@@ -285,17 +285,18 @@ class WanTrainer(WanCheckpointer):
       if writer:
         writer.add_scalar("learning/eval_loss", final_eval_loss, step)
 
-  def training_loop(self, pipeline, optimizer, learning_rate_scheduler, train_data_iterator, restore_args:dict={}):
+  def training_loop(self, pipeline, optimizer, learning_rate_scheduler, train_data_iterator, restore_args: dict = {}):
     mesh = pipeline.mesh
     graphdef, params, rest_of_state = nnx.split(pipeline.transformer, nnx.Param, ...)
 
     with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       state = TrainState.create(
-          apply_fn=graphdef.apply, params=params, tx=optimizer, graphdef=graphdef, rest_of_state=rest_of_state)
+          apply_fn=graphdef.apply, params=params, tx=optimizer, graphdef=graphdef, rest_of_state=rest_of_state
+      )
       if restore_args:
         step = restore_args.get("step", 0)
         max_logging.log(f"Restoring optimizer and resuming from step {step}")
-        state.replace(opt_state=restore_args.get("opt_state"), step = restore_args.get("step", 0))
+        state.replace(opt_state=restore_args.get("opt_state"), step=restore_args.get("step", 0))
         del restore_args["opt_state"]
         del optimizer
       state = jax.tree.map(_to_array, state)
@@ -303,10 +304,11 @@ class WanTrainer(WanCheckpointer):
       state = jax.lax.with_sharding_constraint(state, state_spec)
       state_shardings = nnx.get_named_sharding(state, mesh)
       if jax.process_index() == 0 and restore_args:
-          max_logging.log("--- Optimizer State Sharding Spec (opt_state) ---")
-          pretty_string = pprint.pformat(state_spec.opt_state, indent=4, width=60)
-          max_logging.log(pretty_string)
-          max_logging.log("------------------------------------------------")
+        max_logging.log("--- Optimizer State Sharding Spec (opt_state) ---")
+        pretty_string = pprint.pformat(state_spec.opt_state, indent=4, width=60)
+        max_logging.log(pretty_string)
+        max_logging.log("------------------------------------------------")
+    max_utils.delete_pytree(params)
     data_shardings = self.get_data_shardings(mesh)
     eval_data_shardings = self.get_eval_data_shardings(mesh)
 
@@ -349,9 +351,9 @@ class WanTrainer(WanCheckpointer):
     last_profiling_step = np.clip(
         first_profiling_step + self.config.profiler_steps - 1, first_profiling_step, self.config.max_train_steps - 1
     )
-    if restore_args.get("step",0):
-        max_logging.log(f"Resuming training from step {step}")
-    start_step = restore_args.get("step",0)
+    if restore_args.get("step", 0):
+      max_logging.log(f"Resuming training from step {step}")
+    start_step = restore_args.get("step", 0)
     per_device_tflops, _, _ = WanTrainer.calculate_tflops(pipeline)
     scheduler_state = pipeline.scheduler_state
     example_batch = load_next_batch(train_data_iterator, None, self.config)

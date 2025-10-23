@@ -215,8 +215,14 @@ def _tpu_flash_attention(
   def wrap_flash_attention(query, key, value):
 
     uses_fused_kernel = block_sizes.use_fused_bwd_kernel
-    block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv,)
-    block_kv_sizes = (block_sizes.block_kv, block_sizes.block_kv_dkv,)
+    block_q_sizes = (
+        block_sizes.block_q,
+        block_sizes.block_q_dkv,
+    )
+    block_kv_sizes = (
+        block_sizes.block_kv,
+        block_sizes.block_kv_dkv,
+    )
     if uses_fused_kernel:
       block_q_sizes += (block_sizes.block_q_dkv,)
       block_kv_sizes += (block_sizes.block_kv_dkv,)
@@ -455,7 +461,16 @@ def _apply_attention(
     )
   elif attention_kernel == "flash":
     return _tpu_flash_attention(
-        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, residual_checkpoint_name=residual_checkpoint_name
+        query,
+        key * scale,
+        value,
+        heads,
+        mesh,
+        axis_names_q,
+        axis_names_kv,
+        flash_block_sizes,
+        dtype,
+        residual_checkpoint_name=residual_checkpoint_name,
     )
   elif attention_kernel == "ring":
     return _tpu_flash_attention(
