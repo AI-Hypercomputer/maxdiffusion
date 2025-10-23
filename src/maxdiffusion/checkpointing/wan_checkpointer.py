@@ -19,6 +19,7 @@ import json
 
 import jax
 import numpy as np
+from typing import Optional, Tuple
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
 from ..pipelines.wan.wan_pipeline import WanPipeline
 from .. import max_logging, max_utils
@@ -50,12 +51,13 @@ class WanCheckpointer(ABC):
     tx = max_utils.create_optimizer(config, learning_rate_scheduler)
     return tx, learning_rate_scheduler
 
-  def load_wan_configs_from_orbax(self, step):
+  def load_wan_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
     if step is None:
       step = self.checkpoint_manager.latest_step()
       max_logging.log(f"Latest WAN checkpoint step: {step}")
       if step is None:
-        return None
+        max_logging.log("No WAN checkpoint found.")
+        return None, None
     max_logging.log(f"Loading WAN checkpoint from step {step}")
     metadatas = self.checkpoint_manager.item_metadata(step)
     transformer_metadata = metadatas.wan_state
@@ -86,7 +88,7 @@ class WanCheckpointer(ABC):
     pipeline = WanPipeline.from_pretrained(self.config)
     return pipeline
 
-  def load_checkpoint(self, step=None):
+  def load_checkpoint(self, step=None) -> Tuple[WanPipeline, Optional[dict], Optional[int]]:
     restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
     opt_state = None
     if restored_checkpoint:
