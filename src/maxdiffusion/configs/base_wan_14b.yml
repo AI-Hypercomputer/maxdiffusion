@@ -81,7 +81,8 @@ flash_block_sizes: {
 #   "block_kv_dkv" : 2048,
 #   "block_kv_dkv_compute" : 2048,
 #   "block_q_dq" : 3024,
-#   "block_kv_dq" : 2048
+#   "block_kv_dq" : 2048,
+#   "use_fused_bwd_kernel": False,
 # }
 # GroupNorm groups
 norm_num_groups: 32
@@ -237,7 +238,7 @@ global_batch_size: 0
 tfrecords_dir: ''
 no_records_per_shard: 0
 enable_eval_timesteps: False
-considered_timesteps_list: [125, 250, 375, 500, 625, 750, 875]
+timesteps_list: [125, 250, 375, 500, 625, 750, 875]
 num_eval_samples: 420
 
 warmup_steps_fraction: 0.1
@@ -322,6 +323,6 @@ qwix_module_path: ".*"
 eval_every: -1
 eval_data_dir: ""
 enable_generate_video_for_eval: False # This will increase the used TPU memory.
-eval_max_number_of_samples_in_bucket: 60 # The number of samples per bucket for evaluation. This is calculated by num_eval_samples / len(considered_timesteps_list).
+eval_max_number_of_samples_in_bucket: 60 # The number of samples per bucket for evaluation. This is calculated by num_eval_samples / len(timesteps_list).
 
 enable_ssim: False

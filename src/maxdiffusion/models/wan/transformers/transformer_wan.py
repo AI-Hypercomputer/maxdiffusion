@@ -21,6 +21,7 @@ import jax.numpy as jnp
 from jax.sharding import PartitionSpec
 from jax.ad_checkpoint import checkpoint_name
 from flax import nnx
+import flax.linen as nn
 import numpy as np
 from .... import common_types
 from ...modeling_flax_utils import FlaxModelMixin, get_activation
@@ -282,6 +283,7 @@ class WanTransformerBlock(nnx.Module):
         precision=precision,
         attention_kernel=attention,
         dropout=dropout,
+        residual_checkpoint_name='self_attn',
     )
 
     # 1. Cross-attention
@@ -300,6 +302,7 @@ class WanTransformerBlock(nnx.Module):
         precision=precision,
         attention_kernel=attention,
         dropout=dropout,
+        residual_checkpoint_name='cross_attn',
     )
     assert cross_attn_norm is True
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
@@ -335,6 +338,7 @@ class WanTransformerBlock(nnx.Module):
         (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
     )
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+    hidden_states = checkpoint_name(hidden_states, "hidden_states")
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", None))
 
     # 1. Self-attention
@@ -514,6 +518,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> Union[jax.Array, Dict[str, jax.Array]]:
+    hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size
     post_patch_num_frames = num_frames // p_t
