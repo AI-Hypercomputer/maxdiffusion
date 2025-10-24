@@ -131,9 +131,9 @@ def create_sharded_logical_transformer(
   # This helps with loading sharded weights directly into the accelerators without fist copying them
   # all to one device and then distributing them, thus using low HBM memory.
   if restored_checkpoint:
-    if "params" in restored_checkpoint["wan_state"]: # if checkpointed with optimizer
+    if "params" in restored_checkpoint["wan_state"]:  # if checkpointed with optimizer
       params = restored_checkpoint["wan_state"]["params"]
-    else: # if not checkpointed with optimizer
+    else:  # if not checkpointed with optimizer
       params = restored_checkpoint["wan_state"]
   else:
     params = load_wan_transformer(

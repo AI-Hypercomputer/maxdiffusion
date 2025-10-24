@@ -80,7 +80,7 @@ class GradientCheckpointType(Enum):
       case GradientCheckpointType.HIDDEN_STATE_WITH_OFFLOAD:
         return jax.checkpoint_policies.save_and_offload_only_these_names(
             names_which_can_be_saved=[],
-            names_which_can_be_offloaded=["hidden_states","self_attn","cross_attn"],
+            names_which_can_be_offloaded=["hidden_states", "self_attn", "cross_attn"],
             offload_src="device",
             offload_dst="pinned_host",
         )

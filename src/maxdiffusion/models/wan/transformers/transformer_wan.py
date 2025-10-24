@@ -283,7 +283,7 @@ class WanTransformerBlock(nnx.Module):
         precision=precision,
         attention_kernel=attention,
         dropout=dropout,
-        residual_checkpoint_name='self_attn',
+        residual_checkpoint_name="self_attn",
     )
 
     # 1. Cross-attention
@@ -302,7 +302,7 @@ class WanTransformerBlock(nnx.Module):
         precision=precision,
         attention_kernel=attention,
         dropout=dropout,
-        residual_checkpoint_name='cross_attn',
+        residual_checkpoint_name="cross_attn",
     )
     assert cross_attn_norm is True
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)

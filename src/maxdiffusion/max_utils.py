@@ -489,11 +489,13 @@ def get_precision(config):
     retval = jax.lax.Precision.HIGHEST
   return retval
 
+
 def value_or_none(flash_block_sizes, key):
   if key in flash_block_sizes:
     return flash_block_sizes[key]
   else:
     return None
+
 
 def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
@@ -508,7 +510,7 @@ def get_flash_block_sizes(config):
         block_kv_dkv_compute=config.flash_block_sizes["block_kv_dkv_compute"],
         block_q_dq=value_or_none(config.flash_block_sizes, "block_q_dq"),
         block_kv_dq=value_or_none(config.flash_block_sizes, "block_kv_dq"),
-        use_fused_bwd_kernel=value_or_none(config.flash_block_sizes, "use_fused_bwd_kernel")
+        use_fused_bwd_kernel=value_or_none(config.flash_block_sizes, "use_fused_bwd_kernel"),
     )
   return flash_block_sizes
 
@@ -526,6 +528,20 @@ def get_memory_allocations():
         f"device : {device.process_index},"
         f'bytes in use: {m_stats["bytes_in_use"] / gb} / {m_stats["bytes_limit"] / gb} GB'
     )
+
+
+def get_live_arrays():
+
+  backend = jax.extend.backend.get_backend()
+  live_arrays = backend.live_arrays()
+
+  max_logging.log(f"Total live arrays: {len(live_arrays)}\n")
+
+  for i, arr in enumerate(live_arrays):
+    max_logging.log(f"Array {i}:")
+    max_logging.log(f"  Shape: {arr.shape}")
+    max_logging.log(f"  Dtype: {arr.dtype}")
+    max_logging.log(f"  Devices: {arr.devices()}")
 
 
 # Taking inspiration from flax's https://flax.readthedocs.io/en/v0.5.3/_modules/flax/linen/summary.html#tabulate
