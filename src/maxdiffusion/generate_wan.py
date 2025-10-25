@@ -115,7 +115,7 @@ def run(config, pipeline=None, filename_prefix=""):
   from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
 
   checkpoint_loader = WanCheckpointer(config, "WAN_CHECKPOINT")
-  pipeline = checkpoint_loader.load_checkpoint()
+  pipeline, opt_state, step = checkpoint_loader.load_checkpoint()
   if pipeline is None:
     pipeline = WanPipeline.from_pretrained(config)
   s0 = time.perf_counter()
