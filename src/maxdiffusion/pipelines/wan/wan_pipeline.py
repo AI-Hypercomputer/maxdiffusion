@@ -213,7 +213,7 @@ class WanPipeline:
     self.devices_array = devices_array
     self.mesh = mesh
     self.config = config
-    self.run_wan2_2 = config.run_wan2_2 if 'run_wan2_2' in self.config.__dict__ else False
+    self.run_wan2_2 = config.model_name == "wan2.2"
 
     self.vae_scale_factor_temporal = 2 ** sum(self.vae.temperal_downsample) if getattr(self, "vae", None) else 4
     self.vae_scale_factor_spatial = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
@@ -379,7 +379,7 @@ class WanPipeline:
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
-    run_wan2_2 = config.run_wan2_2 if 'run_wan2_2' in config.__dict__ else False
+    run_wan2_2 = config.model_name == "wan2.2"
     low_noise_transformer = None
     high_noise_transformer = None
     tokenizer = None
@@ -421,7 +421,7 @@ class WanPipeline:
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
-    run_wan2_2 = config.run_wan2_2 if 'run_wan2_2' in config.__dict__ else False
+    run_wan2_2 = config.model_name == "wan2.2"
     low_noise_transformer = None
     high_noise_transformer = None
     tokenizer = None
