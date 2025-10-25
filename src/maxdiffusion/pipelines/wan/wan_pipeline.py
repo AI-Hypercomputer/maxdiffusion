@@ -89,7 +89,7 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
 
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(
-    devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None
+    devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None, subfolder: str = ""
 ):
 
   def create_model(rngs: nnx.Rngs, wan_config: dict):
@@ -100,7 +100,7 @@ def create_sharded_logical_transformer(
   if restored_checkpoint:
     wan_config = restored_checkpoint["wan_config"]
   else:
-    wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder="transformer")
+    wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
   wan_config["weights_dtype"] = config.weights_dtype
@@ -142,6 +142,7 @@ def create_sharded_logical_transformer(
         "cpu",
         num_layers=wan_config["num_layers"],
         scan_layers=config.scan_layers,
+        subfolder=subfolder,
     )
 
   params = jax.tree_util.tree_map_with_path(
@@ -191,7 +192,8 @@ class WanPipeline:
       self,
       tokenizer: AutoTokenizer,
       text_encoder: UMT5EncoderModel,
-      transformer: WanModel,
+      low_noise_transformer: WanModel,
+      high_noise_transformer: Optional[WanModel],
       vae: AutoencoderKLWan,
       vae_cache: AutoencoderKLWanCache,
       scheduler: FlaxUniPCMultistepScheduler,
@@ -202,7 +204,8 @@ class WanPipeline:
   ):
     self.tokenizer = tokenizer
     self.text_encoder = text_encoder
-    self.transformer = transformer
+    self.low_noise_transformer = low_noise_transformer
+    self.high_noise_transformer = high_noise_transformer
     self.vae = vae
     self.vae_cache = vae_cache
     self.scheduler = scheduler
@@ -210,6 +213,7 @@ class WanPipeline:
     self.devices_array = devices_array
     self.mesh = mesh
     self.config = config
+    self.run_wan2_2 = config.run_wan2_2 if 'run_wan2_2' in self.config.__dict__ else False
 
     self.vae_scale_factor_temporal = 2 ** sum(self.vae.temperal_downsample) if getattr(self, "vae", None) else 4
     self.vae_scale_factor_spatial = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
@@ -353,11 +357,10 @@ class WanPipeline:
 
   @classmethod
   def load_transformer(
-      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None
-  ):
+      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None, subfolder="transformer"):
     with mesh:
       wan_transformer = create_sharded_logical_transformer(
-          devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint
+          devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint, subfolder=subfolder
       )
     return wan_transformer
 
@@ -376,7 +379,9 @@ class WanPipeline:
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
-    transformer = None
+    run_wan2_2 = config.run_wan2_2 if 'run_wan2_2' in config.__dict__ else False
+    low_noise_transformer = None
+    high_noise_transformer = None
     tokenizer = None
     scheduler = None
     scheduler_state = None
@@ -384,9 +389,9 @@ class WanPipeline:
     if not vae_only:
       if load_transformer:
         with mesh:
-          transformer = cls.load_transformer(
-              devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint
-          )
+          low_noise_transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint, subfolder="transformer")
+          if run_wan2_2:
+            high_noise_transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint, subfolder="transformer_2")
 
       text_encoder = cls.load_text_encoder(config=config)
       tokenizer = cls.load_tokenizer(config=config)
@@ -399,7 +404,8 @@ class WanPipeline:
     return WanPipeline(
         tokenizer=tokenizer,
         text_encoder=text_encoder,
-        transformer=transformer,
+        low_noise_transformer=low_noise_transformer,
+        high_noise_transformer=high_noise_transformer,
         vae=wan_vae,
         vae_cache=vae_cache,
         scheduler=scheduler,
@@ -415,7 +421,9 @@ class WanPipeline:
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
-    transformer = None
+    run_wan2_2 = config.run_wan2_2 if 'run_wan2_2' in config.__dict__ else False
+    low_noise_transformer = None
+    high_noise_transformer = None
     tokenizer = None
     scheduler = None
     scheduler_state = None
@@ -423,8 +431,9 @@ class WanPipeline:
     if not vae_only:
       if load_transformer:
         with mesh:
-          transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
-
+          low_noise_transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, subfolder="transformer")
+          if run_wan2_2:
+            high_noise_transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, subfolder="transformer_2")
       text_encoder = cls.load_text_encoder(config=config)
       tokenizer = cls.load_tokenizer(config=config)
 
@@ -436,7 +445,8 @@ class WanPipeline:
     pipeline = WanPipeline(
         tokenizer=tokenizer,
         text_encoder=text_encoder,
-        transformer=transformer,
+        low_noise_transformer=low_noise_transformer,
+        high_noise_transformer=high_noise_transformer,
         vae=wan_vae,
         vae_cache=vae_cache,
         scheduler=scheduler,
@@ -446,7 +456,9 @@ class WanPipeline:
         config=config,
     )
 
-    pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, mesh)
+    pipeline.low_noise_transformer = cls.quantize_transformer(config, pipeline.low_noise_transformer, pipeline, mesh)
+    if run_wan2_2:
+      pipeline.high_noise_transformer = cls.quantize_transformer(config, pipeline.high_noise_transformer, pipeline, mesh)
     return pipeline
 
   def _get_t5_prompt_embeds(
@@ -546,6 +558,9 @@ class WanPipeline:
       num_frames: int = 81,
       num_inference_steps: int = 50,
       guidance_scale: float = 5.0,
+      guidance_scale_low: float = 3.0,
+      guidance_scale_high: float = 4.0,
+      boundary: int = 875,
       num_videos_per_prompt: Optional[int] = 1,
       max_sequence_length: int = 512,
       latents: jax.Array = None,
@@ -575,7 +590,7 @@ class WanPipeline:
           negative_prompt_embeds=negative_prompt_embeds,
       )
 
-      num_channel_latents = self.transformer.config.in_channels
+      num_channel_latents = self.low_noise_transformer.config.in_channels
       if latents is None:
         latents = self.prepare_latents(
             batch_size=batch_size,
@@ -600,22 +615,31 @@ class WanPipeline:
           self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
       )
 
-      graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
+      low_noise_graphdef, low_noise_state, low_noise_rest = nnx.split(self.low_noise_transformer, nnx.Param, ...)
+      high_noise_graphdef, high_noise_state, high_noise_rest = None, None, None
+      if self.run_wan2_2:
+        high_noise_graphdef, high_noise_state, high_noise_rest = nnx.split(self.high_noise_transformer, nnx.Param, ...)
 
       p_run_inference = partial(
           run_inference,
+          run_wan2_2=self.run_wan2_2,
           guidance_scale=guidance_scale,
+          guidance_scale_low=guidance_scale_low,
+          guidance_scale_high=guidance_scale_high,
+          boundary=boundary,
           num_inference_steps=num_inference_steps,
           scheduler=self.scheduler,
           scheduler_state=scheduler_state,
-          num_transformer_layers=self.transformer.config.num_layers,
       )
 
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
         latents = p_run_inference(
-            graphdef=graphdef,
-            sharded_state=state,
-            rest_of_state=rest_of_state,
+            low_noise_graphdef=low_noise_graphdef,
+            low_noise_state=low_noise_state,
+            low_noise_rest=low_noise_rest,
+            high_noise_graphdef=high_noise_graphdef,
+            high_noise_state=high_noise_state,
+            high_noise_rest=high_noise_rest,
             latents=latents,
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
@@ -635,43 +659,74 @@ class WanPipeline:
     return video
 
 
-@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
+@partial(jax.jit, static_argnames=("run_wan2_2", "guidance_scale", "guidance_scale_low", "guidance_scale_high", "boundary", "do_classifier_free_guidance"))
 def transformer_forward_pass(
-    graphdef,
-    sharded_state,
-    rest_of_state,
-    latents,
-    timestep,
+    low_noise_graphdef,
+    low_noise_state,
+    low_noise_rest,
+    high_noise_graphdef,
+    high_noise_state,
+    high_noise_rest,
+    latents, timestep,
     prompt_embeds,
-    do_classifier_free_guidance,
-    guidance_scale,
+    run_wan2_2: bool,
+    guidance_scale: float,
+    guidance_scale_low: float,
+    guidance_scale_high: float,
+    boundary: int,
+    do_classifier_free_guidance: bool,
+    t: jnp.array,
 ):
-  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  noise_pred = wan_transformer(hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds)
-  if do_classifier_free_guidance:
-    bsz = latents.shape[0] // 2
-    noise_uncond = noise_pred[bsz:]
-    noise_pred = noise_pred[:bsz]
-    noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
-    latents = latents[:bsz]
+    low_noise_transformer = nnx.merge(low_noise_graphdef, low_noise_state, low_noise_rest)
+    noise_pred_low = low_noise_transformer(hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds)
+    noise_pred = noise_pred_low
+    current_guide_scale = guidance_scale
+    if run_wan2_2:
+      high_noise_transformer = nnx.merge(high_noise_graphdef, high_noise_state, high_noise_rest)
+      noise_pred_high = high_noise_transformer(hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds)
+      use_high_noise = jnp.greater_equal(t, boundary)
+      noise_pred = jax.lax.cond(
+        use_high_noise,
+        lambda: noise_pred_high,
+        lambda: noise_pred_low,
+      )
+      current_guide_scale = jax.lax.cond(
+        use_high_noise,
+        lambda: guidance_scale_high,
+        lambda: guidance_scale_low,
+      )
 
-  return noise_pred, latents
+    if do_classifier_free_guidance:
+        bsz = latents.shape[0] // 2
+        noise_uncond = noise_pred[bsz:]
+        noise_pred = noise_pred[:bsz]
+        noise_pred = noise_uncond + current_guide_scale * (noise_pred - noise_uncond)
+        latents = latents[:bsz]
 
+    return noise_pred, latents
 
 def run_inference(
-    graphdef,
-    sharded_state,
-    rest_of_state,
+    low_noise_graphdef,
+    low_noise_state,
+    low_noise_rest,
+    high_noise_graphdef,
+    high_noise_state,
+    high_noise_rest,
     latents: jnp.array,
     prompt_embeds: jnp.array,
     negative_prompt_embeds: jnp.array,
+    run_wan2_2: bool,
     guidance_scale: float,
+    guidance_scale_low: float,
+    guidance_scale_high: float,
+    boundary: int,
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
-    num_transformer_layers: int,
     scheduler_state,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
+  if run_wan2_2:
+    do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
   if do_classifier_free_guidance:
     prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
   for step in range(num_inference_steps):
@@ -681,14 +736,21 @@ def run_inference(
     timestep = jnp.broadcast_to(t, latents.shape[0])
 
     noise_pred, latents = transformer_forward_pass(
-        graphdef,
-        sharded_state,
-        rest_of_state,
-        latents,
-        timestep,
+        low_noise_graphdef,
+        low_noise_state,
+        low_noise_rest,
+        high_noise_graphdef,
+        high_noise_state,
+        high_noise_rest,
+        latents, timestep,
         prompt_embeds,
-        do_classifier_free_guidance=do_classifier_free_guidance,
-        guidance_scale=guidance_scale,
+        run_wan2_2,
+        guidance_scale,
+        guidance_scale_low,
+        guidance_scale_high,
+        boundary,
+        do_classifier_free_guidance,
+        t
     )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

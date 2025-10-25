@@ -19,10 +19,23 @@ import os
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
+from absl import flags
 from maxdiffusion.utils import export_to_video
 from google.cloud import storage
 import flax
 
+_MODEL_NAME = flags.DEFINE_enum(
+    "model_name",
+    default="wan2.1",
+    enum_values=["wan2.1", "wan2.2"],
+    help="The model version to run (wan2.1 or wan2.2). This determines the base config file.",
+)
+
+CONFIG_BASE_DIR = "src/maxdiffusion/configs"
+MODEL_CONFIG_MAP = {
+    "wan2.1": "base_wan_14b.yml",
+    "wan2.2": "base_wan_27b.yml",
+}
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
   """
@@ -80,7 +93,10 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
       width=config.width,
       num_frames=config.num_frames,
       num_inference_steps=config.num_inference_steps,
-      guidance_scale=config.guidance_scale,
+      guidance_scale=guidance_scale,
+      guidance_scale_low=guidance_scale_low,
+      guidance_scale_high=guidance_scale_high,
+      boundary=boundary,
   )
 
   max_logging.log(f"video {filename_prefix}, compile time: {(time.perf_counter() - s0)}")
@@ -107,6 +123,10 @@ def run(config, pipeline=None, filename_prefix=""):
   # Using global_batch_size_to_train_on so not to create more config variables
   prompt = [config.prompt] * config.global_batch_size_to_train_on
   negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
+  guidance_scale = config.guidance_scale if 'guidance_scale' in config.__dict__ else 5
+  guidance_scale_low = config.guidance_scale_low if 'guidance_scale_low' in config.__dict__ else 3
+  guidance_scale_high = config.guidance_scale_high if 'guidance_scale_high' in config.__dict__ else 4
+  boundary = config.boundary_timestep if 'boundary_timestep' in config.__dict__ else 875
 
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
@@ -119,7 +139,10 @@ def run(config, pipeline=None, filename_prefix=""):
       width=config.width,
       num_frames=config.num_frames,
       num_inference_steps=config.num_inference_steps,
-      guidance_scale=config.guidance_scale,
+      guidance_scale=guidance_scale,
+      guidance_scale_low=guidance_scale_low,
+      guidance_scale_high=guidance_scale_high,
+      boundary=boundary,
   )
 
   print("compile time: ", (time.perf_counter() - s0))
@@ -139,7 +162,10 @@ def run(config, pipeline=None, filename_prefix=""):
       width=config.width,
       num_frames=config.num_frames,
       num_inference_steps=config.num_inference_steps,
-      guidance_scale=config.guidance_scale,
+      guidance_scale=guidance_scale,
+      guidance_scale_low=guidance_scale_low,
+      guidance_scale_high=guidance_scale_high,
+      boundary=boundary,
   )
   print("generation time: ", (time.perf_counter() - s0))
 
@@ -153,7 +179,10 @@ def run(config, pipeline=None, filename_prefix=""):
         width=config.width,
         num_frames=config.num_frames,
         num_inference_steps=config.num_inference_steps,
-        guidance_scale=config.guidance_scale,
+        guidance_scale=guidance_scale,
+        guidance_scale_low=guidance_scale_low,
+        guidance_scale_high=guidance_scale_high,
+        boundary=boundary,
     )
     max_utils.deactivate_profiler(config)
     print("generation time: ", (time.perf_counter() - s0))
@@ -161,7 +190,20 @@ def run(config, pipeline=None, filename_prefix=""):
 
 
 def main(argv: Sequence[str]) -> None:
-  pyconfig.initialize(argv)
+  # Get the model name from the flag
+  model_key = _MODEL_NAME.value
+  config_filename = MODEL_CONFIG_MAP[model_key]
+  selected_yaml_path = os.path.join(CONFIG_BASE_DIR, config_filename)
+
+  max_logging.log(f"Using model: {model_key}, loading base config: {selected_yaml_path}")
+
+  # Construct argv for pyconfig.initialize
+  # argv[0] is the program name.
+  # Insert the selected YAML path at index 1.
+  # The rest of argv (argv[1:]) are the overrides.
+  argv_for_pyconfig = list(argv[:1]) + [selected_yaml_path] + list(argv[1:])
+
+  pyconfig.initialize(argv_for_pyconfig)
   flax.config.update("flax_always_shard_variable", False)
   run(pyconfig.config)
 
