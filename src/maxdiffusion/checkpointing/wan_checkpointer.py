@@ -34,6 +34,7 @@ class WanCheckpointer(ABC):
   def __init__(self, config, checkpoint_type):
     self.config = config
     self.checkpoint_type = checkpoint_type
+    self.opt_state = None
     self.run_wan2_2 = config.run_wan2_2 if 'run_wan2_2' in self.config.__dict__ else False
 
     self.checkpoint_manager: ocp.CheckpointManager = create_orbax_checkpoint_manager(
