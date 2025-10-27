@@ -728,6 +728,11 @@ def run_inference(
       latents = jnp.concatenate([latents] * 2)
     timestep = jnp.broadcast_to(t, latents.shape[0])
 
+    if model_name == "wan2.1":
+      noise_pred, latents = low_noise_branch((latents, timestep, prompt_embeds))
+      latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+      continue
+
     use_high_noise = jnp.greater_equal(t, boundary)
 
     noise_pred, latents = jax.lax.cond(
