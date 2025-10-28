@@ -116,45 +116,13 @@ def create_sharded_logical_transformer(
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.
-  p_model_factory = partial(create_model, wan_config=wan_config)
-  wan_transformer = nnx.eval_shape(p_model_factory, rngs=rngs)
-  graphdef, state, rest_of_state = nnx.split(wan_transformer, nnx.Param, ...)
-
-  # 3. retrieve the state shardings, mapping logical names to mesh axis names.
-  logical_state_spec = nnx.get_partition_spec(state)
-  logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
-  logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
-  params = state.to_pure_dict()
-  state = dict(nnx.to_flat_state(state))
+  with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+    p_model_factory = partial(create_model, wan_config=wan_config)
+    wan_transformer = p_model_factory(rngs=rngs)
 
   # 4. Load pretrained weights and move them to device using the state shardings from (3) above.
   # This helps with loading sharded weights directly into the accelerators without fist copying them
   # all to one device and then distributing them, thus using low HBM memory.
-  if restored_checkpoint:
-    if "params" in restored_checkpoint["wan_state"]:  # if checkpointed with optimizer
-      params = restored_checkpoint["wan_state"]["params"]
-    else:  # if not checkpointed with optimizer
-      params = restored_checkpoint["wan_state"]
-  else:
-    params = load_wan_transformer(
-        config.wan_transformer_pretrained_model_name_or_path,
-        params,
-        "cpu",
-        num_layers=wan_config["num_layers"],
-        scan_layers=config.scan_layers,
-    )
-
-  params = jax.tree_util.tree_map_with_path(
-      lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
-  )
-  for path, val in flax.traverse_util.flatten_dict(params).items():
-    if restored_checkpoint:
-      path = path[:-1]
-    sharding = logical_state_sharding[path].value
-    state[path].value = device_put_replicated(val, sharding)
-  state = nnx.from_flat_state(state)
-
-  wan_transformer = nnx.merge(graphdef, state, rest_of_state)
   return wan_transformer
 
 
@@ -392,9 +360,10 @@ class WanPipeline:
       tokenizer = cls.load_tokenizer(config=config)
 
       scheduler, scheduler_state = cls.load_scheduler(config=config)
-
-    with mesh:
-      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+    wan_vae = None
+    vae_cache = None
+    # with mesh:
+    #   wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
     return WanPipeline(
         tokenizer=tokenizer,
@@ -429,9 +398,10 @@ class WanPipeline:
       tokenizer = cls.load_tokenizer(config=config)
 
       scheduler, scheduler_state = cls.load_scheduler(config=config)
-
-    with mesh:
-      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+    wan_vae = None
+    vae_cache = None
+    # with mesh:
+    #   wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
     pipeline = WanPipeline(
         tokenizer=tokenizer,
