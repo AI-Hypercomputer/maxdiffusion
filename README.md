@@ -483,6 +483,14 @@ To generate images, run the following command:
   HF_HUB_CACHE=/mnt/disks/external_disk/maxdiffusion_hf_cache/
   LIBTPU_INIT_ARGS="--xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_fuse_all_reduce=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_reduce=true" HF_HUB_ENABLE_HF_TRANSFER=1 python src/maxdiffusion/generate_wan.py   src/maxdiffusion/configs/base_wan_14b.yml   attention="flash"   num_inference_steps=50   num_frames=81   width=1280   height=720   jax_cache_dir=gs://jfacevedo-maxdiffusion/jax_cache/   per_device_batch_size=.125   ici_data_parallelism=2   ici_fsdp_parallelism=2   flow_shift=5.0   enable_profiler=True   run_name=wan-inference-testing-720p   output_dir=gs:/jfacevedo-maxdiffusion   fps=16   flash_min_seq_length=0   flash_block_sizes='{"block_q" : 3024, "block_kv_compute" : 1024, "block_kv" : 2048, "block_q_dkv": 3024, "block_kv_dkv" : 2048, "block_kv_dkv_compute" : 2048, "block_q_dq" : 3024, "block_kv_dq" : 2048 }' seed=118445
   ```
+  ## Wan2.2
+
+  Although not required, attaching an external disk is recommended as weights take up a lot of disk space. [Follow these instructions if you would like to attach an external disk](https://cloud.google.com/tpu/docs/attach-durable-block-storage).
+
+  ```bash
+  HF_HUB_CACHE=/mnt/disks/external_disk/maxdiffusion_hf_cache/
+  LIBTPU_INIT_ARGS="--xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_fuse_all_reduce=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_reduce=true" HF_HUB_ENABLE_HF_TRANSFER=1 python src/maxdiffusion/generate_wan.py   src/maxdiffusion/configs/base_wan_27b.yml   attention="flash"   num_inference_steps=50   num_frames=81   width=1280   height=720   jax_cache_dir=gs://jfacevedo-maxdiffusion/jax_cache/   per_device_batch_size=.125   ici_data_parallelism=2   ici_fsdp_parallelism=2   flow_shift=5.0   enable_profiler=True   run_name=wan-inference-testing-720p   output_dir=gs:/jfacevedo-maxdiffusion   fps=16   flash_min_seq_length=0   flash_block_sizes='{"block_q" : 3024, "block_kv_compute" : 1024, "block_kv" : 2048, "block_q_dkv": 3024, "block_kv_dkv" : 2048, "block_kv_dkv_compute" : 2048, "block_q_dq" : 3024, "block_kv_dq" : 2048 }' seed=118445
+  ```
 
   ## Flux
 
