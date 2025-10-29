@@ -356,7 +356,11 @@ class WanTrainer(WanCheckpointer):
     start_step = restore_args.get("step", 0)
     per_device_tflops, _, _ = WanTrainer.calculate_tflops(pipeline)
     scheduler_state = pipeline.scheduler_state
-    example_batch = load_next_batch(train_data_iterator, None, self.config)
+    example_batch = {
+      "latents" : jax.random.normal(rng, (jax.device_count() * self.config.global_batch_size_to_train_on, 16, 21, 90, 160), dtype=jnp.bfloat16),
+      "encoder_hidden_states" : jax.random.normal(rng, (jax.device_count() * self.config.global_batch_size_to_train_on, 512, 4096), dtype=jnp.bfloat16)
+    }
+    example_batch = load_next_batch(train_data_iterator, example_batch, self.config)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
       for step in np.arange(start_step, self.config.max_train_steps):
