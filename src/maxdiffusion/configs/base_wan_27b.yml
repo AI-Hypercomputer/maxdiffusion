@@ -27,8 +27,8 @@ gcs_metrics: False
 save_config_to_gcs: False
 log_period: 100
 
-pretrained_model_name_or_path: 'Wan-AI/Wan2.1-T2V-14B-Diffusers'
-model_name: wan2.1
+pretrained_model_name_or_path: 'Wan-AI/Wan2.2-T2V-A14B-Diffusers'
+model_name: wan2.2
 
 # Overrides the transformer from pretrained_model_name_or_path
 wan_transformer_pretrained_model_name_or_path: ''
@@ -82,7 +82,7 @@ flash_block_sizes: {
 #   "block_kv_dkv" : 2048,
 #   "block_kv_dkv_compute" : 2048,
 #   "block_q_dq" : 3024,
-#   "block_kv_dq" : 2048,
+#   "block_kv_dq" : 2048
 #   "use_fused_bwd_kernel": False,
 # }
 # GroupNorm groups
@@ -270,8 +270,11 @@ do_classifier_free_guidance: True
 height: 480
 width: 832
 num_frames: 81
-guidance_scale: 5.0
 flow_shift: 3.0
+
+guidance_scale_low: 5.0    
+guidance_scale_high: 8.0   
+boundary_timestep: 15
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0

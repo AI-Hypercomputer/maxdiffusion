@@ -184,6 +184,7 @@ def load_wan_transformer(
     hf_download: bool = True,
     num_layers: int = 40,
     scan_layers: bool = True,
+    subfolder: str = "",
 ):
 
   if pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
@@ -192,7 +193,7 @@ def load_wan_transformer(
     return load_fusionx_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
   else:
     return load_base_wan_transformer(
-        pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers
+        pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers, subfolder
     )
 
 
@@ -203,9 +204,9 @@ def load_base_wan_transformer(
     hf_download: bool = True,
     num_layers: int = 40,
     scan_layers: bool = True,
+    subfolder: str = "",
 ):
   device = jax.local_devices(backend=device)[0]
-  subfolder = "transformer"
   filename = "diffusion_pytorch_model.safetensors.index.json"
   local_files = False
   if os.path.isdir(pretrained_model_name_or_path):
@@ -236,7 +237,7 @@ def load_base_wan_transformer(
       else:
         ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
       # now get all the filenames for the model that need downloading
-      max_logging.log(f"Load and port Wan 2.1 transformer on {device}")
+      max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device}")
 
       if ckpt_shard_path is not None:
         with safe_open(ckpt_shard_path, framework="pt") as f:
@@ -281,7 +282,7 @@ def load_wan_vae(pretrained_model_name_or_path: str, eval_shapes: dict, device: 
       raise FileNotFoundError(f"File {ckpt_path} not found for local directory.")
   elif hf_download:
     ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
-  max_logging.log(f"Load and port Wan 2.1 VAE on {device}")
+  max_logging.log(f"Load and port {pretrained_model_name_or_path} VAE on {device}")
   with jax.default_device(device):
     if ckpt_path is not None:
       tensors = {}
