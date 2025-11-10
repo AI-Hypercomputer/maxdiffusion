@@ -90,6 +90,7 @@ def create_sharded_logical_transformer(
   wan_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
   wan_config["flash_min_seq_length"] = config.flash_min_seq_length
   wan_config["dropout"] = config.dropout
+  wan_config["mask_padding_tokens"] = config.mask_padding_tokens
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.

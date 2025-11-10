@@ -67,6 +67,7 @@ jax.config.update("jax_default_prng_impl", "unsafe_rbg")
   # this leads to CUDA OOMs. WAR for now is to hide GPUs from TF
   # tf.config.set_visible_devices([], "GPU")
 if "xla_tpu_spmd_rng_bit_generator_unsafe" not in os.environ.get("LIBTPU_INIT_ARGS", ""):
+  max_logging.log("Enabling unsafe RNG bit generator for TPU SPMD.")
   os.environ["LIBTPU_INIT_ARGS"] = (
       os.environ.get("LIBTPU_INIT_ARGS", "") + " --xla_tpu_spmd_rng_bit_generator_unsafe=true"
   )

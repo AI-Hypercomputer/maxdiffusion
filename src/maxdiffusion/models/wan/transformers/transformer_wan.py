@@ -263,6 +263,7 @@ class WanTransformerBlock(nnx.Module):
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
       dropout: float = 0.0,
+      mask_padding_tokens: bool = True,
   ):
 
     # 1. Self-attention
@@ -283,6 +284,7 @@ class WanTransformerBlock(nnx.Module):
         attention_kernel=attention,
         dropout=dropout,
         is_self_attention=True,
+        mask_padding_tokens=mask_padding_tokens
     )
 
     # 1. Cross-attention
@@ -302,6 +304,7 @@ class WanTransformerBlock(nnx.Module):
         attention_kernel=attention,
         dropout=dropout,
         is_self_attention=False,
+        mask_padding_tokens=mask_padding_tokens
     )
     assert cross_attn_norm is True
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
@@ -404,6 +407,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       remat_policy: str = "None",
       names_which_can_be_saved: list = [],
       names_which_can_be_offloaded: list = [],
+      mask_padding_tokens: bool = True,
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
@@ -458,6 +462,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           precision=precision,
           attention=attention,
           dropout=dropout,
+          mask_padding_tokens=mask_padding_tokens,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)

@@ -181,6 +181,7 @@ def _tpu_flash_attention(
     flash_block_sizes: BlockSizes,
     dtype: jnp.dtype = jnp.float32,
     attention_kernel: str = "flash",
+    mask_padding_tokens: bool = True,
 ) -> jax.Array:
   """TPU Flash Attention"""
 
@@ -248,6 +249,8 @@ def _tpu_flash_attention(
     )
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
+    if not mask_padding_tokens:
+      segment_ids = None
     if attention_kernel == "flash":
       attention_output = vmapped_splash(query, key, value, segment_ids)
     else:
@@ -287,6 +290,8 @@ def _tpu_flash_attention(
         (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
 
         attention_output = o_final / l_final[..., None]
+      else:
+        raise ValueError("ring attention requires fsdp > 1")
 
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
@@ -427,6 +432,7 @@ def _apply_attention(
     axis_names_kv: AxisNames,
     flash_block_sizes: BlockSizes,
     dpa_layer: Callable,
+    mask_padding_tokens: bool = True,
 ):
   """Routes to different attention kernels."""
   _check_attention_inputs(query, key, value)
@@ -457,10 +463,12 @@ def _apply_attention(
         flash_block_sizes,
         dtype,
         attention_kernel,
+        mask_padding_tokens=mask_padding_tokens,
     )
   elif attention_kernel == "ring":
     return _tpu_flash_attention(
-        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel
+        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel, 
+        mask_padding_tokens=mask_padding_tokens,
     )
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
@@ -591,6 +599,7 @@ class NNXAttentionOp(nnx.Module):
       flash_block_sizes: BlockSizes = None,
       dtype: DType = jnp.float32,
       quant: Quant = None,
+      mask_padding_tokens: bool = True,
   ):
     self.dpa_layer = None
     if attention_kernel == "cudnn_flash_te":
@@ -610,6 +619,7 @@ class NNXAttentionOp(nnx.Module):
     self.flash_block_sizes = flash_block_sizes
     self.dtype = dtype
     self.quant = quant
+    self.mask_padding_tokens = mask_padding_tokens
 
   def apply_attention(self, query: Array, key: Array, value: Array):
     return _apply_attention(
@@ -630,6 +640,7 @@ class NNXAttentionOp(nnx.Module):
         axis_names_kv=self.axis_names_kv,
         flash_block_sizes=self.flash_block_sizes,
         dpa_layer=self.dpa_layer,
+        mask_padding_tokens=self.mask_padding_tokens,
     )
 
 
@@ -719,6 +730,7 @@ class FlaxWanAttention(nnx.Module):
       qkv_bias: bool = False,
       quant: Quant = None,
       is_self_attention: bool = True,
+      mask_padding_tokens: bool = True,
   ):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
@@ -757,6 +769,7 @@ class FlaxWanAttention(nnx.Module):
         flash_block_sizes=flash_block_sizes,
         dtype=dtype,
         quant=quant,
+        mask_padding_tokens=mask_padding_tokens,
     )
     # None axes corresponds to the stacked weights across all blocks
     # because of the use of nnx.vmap and nnx.scan.
