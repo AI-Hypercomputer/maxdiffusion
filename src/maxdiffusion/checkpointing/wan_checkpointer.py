@@ -14,35 +14,50 @@
  limitations under the License.
 """
 
-from abc import ABC
+from abc import ABC, abstractmethod
 import json
 
 import jax
 import numpy as np
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Type
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
-from ..pipelines.wan.wan_pipeline import WanPipeline
+from ..pipelines.wan.wan_pipeline import WanPipeline2_1, WanPipeline2_2
 from .. import max_logging, max_utils
 import orbax.checkpoint as ocp
 from etils import epath
+
 
 WAN_CHECKPOINT = "WAN_CHECKPOINT"
 
 
 class WanCheckpointer(ABC):
+  _SUBCLASS_MAP: dict[str, Type['WanCheckpointer']] = {}
 
-  def __init__(self, config, checkpoint_type):
+  def __new__(cls, model_key: str, config, checkpoint_type: str = WAN_CHECKPOINT):
+    if cls is WanCheckpointer:
+      subclass = cls._SUBCLASS_MAP.get(model_key)
+      if subclass is None:
+          raise ValueError(
+              f"Unknown model_key: '{model_key}'. "
+              f"Supported keys are: {list(cls._SUBCLASS_MAP.keys())}"
+          )
+      return super().__new__(subclass)
+    else:
+      return super().__new__(cls)
+
+  def __init__(self, model_key, config, checkpoint_type: str = WAN_CHECKPOINT):
     self.config = config
     self.checkpoint_type = checkpoint_type
     self.opt_state = None
-    self.run_wan2_2 = config.run_wan2_2 if 'run_wan2_2' in self.config.__dict__ else False
 
-    self.checkpoint_manager: ocp.CheckpointManager = create_orbax_checkpoint_manager(
-        self.config.checkpoint_dir,
-        enable_checkpointing=True,
-        save_interval_steps=1,
-        checkpoint_type=checkpoint_type,
-        dataset_type=config.dataset_type,
+    self.checkpoint_manager: ocp.CheckpointManager = (
+        create_orbax_checkpoint_manager(
+            self.config.checkpoint_dir,
+            enable_checkpointing=True,
+            save_interval_steps=1,
+            checkpoint_type=checkpoint_type,
+            dataset_type=config.dataset_type,
+        )
     )
 
   def _create_optimizer(self, model, config, learning_rate):
@@ -51,6 +66,96 @@ class WanCheckpointer(ABC):
     )
     tx = max_utils.create_optimizer(config, learning_rate_scheduler)
     return tx, learning_rate_scheduler
+
+  @abstractmethod
+  def load_wan_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
+    raise NotImplementedError
+
+  @abstractmethod
+  def load_diffusers_checkpoint(self):
+    raise NotImplementedError
+
+  @abstractmethod
+  def load_checkpoint(self, step=None) -> Tuple[Optional[WanPipeline2_1 | WanPipeline2_2], Optional[dict], Optional[int]]:
+    raise NotImplementedError
+
+  @abstractmethod
+  def save_checkpoint(self, train_step, pipeline, train_states: dict):
+    raise NotImplementedError
+
+
+class WanCheckpointer2_1(WanCheckpointer):
+
+  def load_wan_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
+    if step is None:
+      step = self.checkpoint_manager.latest_step()
+      max_logging.log(f"Latest WAN checkpoint step: {step}")
+      if step is None:
+        max_logging.log("No WAN checkpoint found.")
+        return None, None
+    max_logging.log(f"Loading WAN checkpoint from step {step}")
+    metadatas = self.checkpoint_manager.item_metadata(step)
+    transformer_metadata = metadatas.wan_state
+    abstract_tree_structure_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, transformer_metadata)
+    params_restore = ocp.args.PyTreeRestore(
+        restore_args=jax.tree.map(
+            lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
+            abstract_tree_structure_params,
+        )
+    )
+
+    max_logging.log("Restoring WAN checkpoint")
+    restored_checkpoint = self.checkpoint_manager.restore(
+        directory=epath.Path(self.config.checkpoint_dir),
+        step=step,
+        args=ocp.args.Composite(
+            wan_state=params_restore,
+            wan_config=ocp.args.JsonRestore(),
+        ),
+    )
+    max_logging.log(f"restored checkpoint {restored_checkpoint.keys()}")
+    max_logging.log(f"restored checkpoint wan_state {restored_checkpoint.wan_state.keys()}")
+    max_logging.log(f"optimizer found in checkpoint {'opt_state' in restored_checkpoint.wan_state.keys()}")
+    max_logging.log(f"optimizer state saved in attribute self.opt_state {self.opt_state}")
+    return restored_checkpoint, step
+
+  def load_diffusers_checkpoint(self):
+    pipeline = WanPipeline2_1.from_pretrained(self.config)
+    return pipeline
+
+  def load_checkpoint(self, step=None) -> Tuple[WanPipeline2_1, Optional[dict], Optional[int]]:
+    restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
+    opt_state = None
+    if restored_checkpoint:
+      max_logging.log("Loading WAN pipeline from checkpoint")
+      pipeline = WanPipeline2_1.from_checkpoint(self.config, restored_checkpoint)
+      if "opt_state" in restored_checkpoint.wan_state.keys():
+        opt_state = restored_checkpoint.wan_state["opt_state"]
+    else:
+      max_logging.log("No checkpoint found, loading default pipeline.")
+      pipeline = self.load_diffusers_checkpoint()
+
+    return pipeline, opt_state, step
+
+  def save_checkpoint(self, train_step, pipeline: WanPipeline2_1, train_states: dict):
+    """Saves the training state and model configurations."""
+
+    def config_to_json(model_or_config):
+      return json.loads(model_or_config.to_json_string())
+
+    max_logging.log(f"Saving checkpoint for step {train_step}")
+    items = {
+        "wan_config": ocp.args.JsonSave(config_to_json(pipeline.transformer)),
+    }
+
+    items["wan_state"] = ocp.args.PyTreeSave(train_states)
+
+    # Save the checkpoint
+    self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
+    max_logging.log(f"Checkpoint for step {train_step} saved.")
+
+
+class WanCheckpointer2_2(WanCheckpointer):
 
   def load_wan_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
     if step is None:
@@ -62,61 +167,66 @@ class WanCheckpointer(ABC):
     max_logging.log(f"Loading WAN checkpoint from step {step}")
     metadatas = self.checkpoint_manager.item_metadata(step)
 
-    restore_args = {}
-
-    low_state_metadata = metadatas.low_noise_transformer_state
-    abstract_tree_structure_low_state = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, low_state_metadata)
-    low_state_restore = ocp.args.PyTreeRestore(
+    # Handle low_noise_transformer
+    low_noise_transformer_metadata = metadatas.low_noise_transformer_state
+    abstract_tree_structure_low_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, low_noise_transformer_metadata)
+    low_params_restore = ocp.args.PyTreeRestore(
         restore_args=jax.tree.map(
             lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
-            abstract_tree_structure_low_state,
+            abstract_tree_structure_low_params,
         )
     )
-    restore_args["low_noise_transformer_state"] = low_state_restore
 
-    if self.run_wan2_2:
-      high_state_metadata = metadatas.high_noise_transformer_state
-      abstract_tree_structure_high_state = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, high_state_metadata)
-      high_state_restore = ocp.args.PyTreeRestore(
-          restore_args=jax.tree.map(
-              lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
-              abstract_tree_structure_high_state,
-          )
-      )
-      restore_args["high_noise_transformer_state"] = high_state_restore
+    # Handle high_noise_transformer
+    high_noise_transformer_metadata = metadatas.high_noise_transformer_state
+    abstract_tree_structure_high_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, high_noise_transformer_metadata)
+    high_params_restore = ocp.args.PyTreeRestore(
+        restore_args=jax.tree.map(
+            lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
+            abstract_tree_structure_high_params,
+        )
+    )
 
-    restore_args["wan_config"] = ocp.args.JsonRestore()
-
-    max_logging.log("Restoring WAN checkpoint")
+    max_logging.log("Restoring WAN 2.2 checkpoint")
     restored_checkpoint = self.checkpoint_manager.restore(
+        directory=epath.Path(self.config.checkpoint_dir),
         step=step,
-        args=ocp.args.Composite(**restore_args),
+        args=ocp.args.Composite(
+            low_noise_transformer_state=low_params_restore,
+            high_noise_transformer_state=high_params_restore,
+            wan_config=ocp.args.JsonRestore(),
+        ),
     )
     max_logging.log(f"restored checkpoint {restored_checkpoint.keys()}")
-    max_logging.log(f"restored checkpoint wan_state {restored_checkpoint.wan_state.keys()}")
-    max_logging.log(f"optimizer found in checkpoint {'opt_state' in restored_checkpoint.wan_state.keys()}")
+    max_logging.log(f"restored checkpoint low_noise_transformer_state {restored_checkpoint.low_noise_transformer_state.keys()}")
+    max_logging.log(f"restored checkpoint high_noise_transformer_state {restored_checkpoint.high_noise_transformer_state.keys()}")
+    max_logging.log(f"optimizer found in low_noise checkpoint {'opt_state' in restored_checkpoint.low_noise_transformer_state.keys()}")
+    max_logging.log(f"optimizer found in high_noise checkpoint {'opt_state' in restored_checkpoint.high_noise_transformer_state.keys()}")
     max_logging.log(f"optimizer state saved in attribute self.opt_state {self.opt_state}")
     return restored_checkpoint, step
 
   def load_diffusers_checkpoint(self):
-    pipeline = WanPipeline.from_pretrained(self.config)
+    pipeline = WanPipeline2_2.from_pretrained(self.config)
     return pipeline
 
-  def load_checkpoint(self, step=None) -> Tuple[WanPipeline, Optional[dict], Optional[int]]:
+  def load_checkpoint(self, step=None) -> Tuple[WanPipeline2_2, Optional[dict], Optional[int]]:
     restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
     opt_state = None
     if restored_checkpoint:
       max_logging.log("Loading WAN pipeline from checkpoint")
-      pipeline = WanPipeline.from_checkpoint(self.config, restored_checkpoint)
-      if "opt_state" in restored_checkpoint["wan_state"].keys():
-        opt_state = restored_checkpoint["wan_state"]["opt_state"]
+      pipeline = WanPipeline2_2.from_checkpoint(self.config, restored_checkpoint)
+      # Check for optimizer state in either transformer
+      if "opt_state" in restored_checkpoint.low_noise_transformer_state.keys():
+        opt_state = restored_checkpoint.low_noise_transformer_state["opt_state"]
+      elif "opt_state" in restored_checkpoint.high_noise_transformer_state.keys():
+        opt_state = restored_checkpoint.high_noise_transformer_state["opt_state"]
     else:
       max_logging.log("No checkpoint found, loading default pipeline.")
       pipeline = self.load_diffusers_checkpoint()
 
     return pipeline, opt_state, step
 
-  def save_checkpoint(self, train_step, pipeline: WanPipeline, train_states: dict):
+  def save_checkpoint(self, train_step, pipeline: WanPipeline2_2, train_states: dict):
     """Saves the training state and model configurations."""
 
     def config_to_json(model_or_config):
@@ -127,22 +237,17 @@ class WanCheckpointer(ABC):
         "wan_config": ocp.args.JsonSave(config_to_json(pipeline.low_noise_transformer)),
     }
 
-    if "low_noise_transformer" in train_states:
-        low_noise_state = train_states["low_noise_transformer"]
-        items["low_noise_transformer_state"] = ocp.args.PyTreeSave(low_noise_state)
+    items["low_noise_transformer_state"] = ocp.args.PyTreeSave(train_states["low_noise_transformer"])
+    items["high_noise_transformer_state"] = ocp.args.PyTreeSave(train_states["high_noise_transformer"])
 
-    if self.run_wan2_2:
-        if "high_noise_transformer" in train_states:
-            high_noise_state = train_states["high_noise_transformer"]
-            items["high_noise_transformer_state"] = ocp.args.PyTreeSave(high_noise_state)
-    
     # Save the checkpoint
-    if len(items) > 1:
-        self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
-        max_logging.log(f"Checkpoint for step {train_step} saved.")
+    self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
+    max_logging.log(f"Checkpoint for step {train_step} saved.")
 
+WanCheckpointer._SUBCLASS_MAP["wan2.1"] = WanCheckpointer2_1
+WanCheckpointer._SUBCLASS_MAP["wan2.2"] = WanCheckpointer2_2
 
-def save_checkpoint_orig(self, train_step, pipeline: WanPipeline, train_states: dict):
+def save_checkpoint_orig(self, train_step, pipeline, train_states: dict):
   """Saves the training state and model configurations."""
 
   def config_to_json(model_or_config):

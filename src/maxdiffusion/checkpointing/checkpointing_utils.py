@@ -61,7 +61,7 @@ def create_orbax_checkpoint_manager(
   if checkpoint_type == FLUX_CHECKPOINT:
     item_names = ("flux_state", "flux_config", "vae_state", "vae_config", "scheduler", "scheduler_config")
   elif checkpoint_type == WAN_CHECKPOINT:
-    item_names = ("wan_state", "wan_config")
+    item_names = ("low_noise_transformer_state", "high_noise_transformer_state", "wan_state", "wan_config")
   else:
     item_names = (
         "unet_config",

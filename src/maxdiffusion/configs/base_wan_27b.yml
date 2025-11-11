@@ -272,9 +272,9 @@ width: 832
 num_frames: 81
 flow_shift: 3.0
 
-guidance_scale_low: 5.0    
-guidance_scale_high: 8.0   
-boundary_timestep: 15
+guidance_scale_low: 3.0    
+guidance_scale_high: 4.0   
+boundary_timestep: 875
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
