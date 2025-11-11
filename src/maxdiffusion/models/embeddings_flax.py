@@ -89,7 +89,7 @@ class NNXTimestepEmbedding(nnx.Module):
         in_features=in_channels,
         out_features=time_embed_dim,
         use_bias=sample_proj_bias,
-        dtype=dtype,
+        dtype=jnp.float32,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(
@@ -121,7 +121,7 @@ class NNXTimestepEmbedding(nnx.Module):
         in_features=time_embed_dim,
         out_features=time_embed_dim_out,
         use_bias=sample_proj_bias,
-        dtype=dtype,
+        dtype=jnp.float32,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(
@@ -269,7 +269,7 @@ class NNXPixArtAlphaTextProjection(nnx.Module):
         in_features=in_features,
         out_features=hidden_size,
         use_bias=True,
-        dtype=dtype,
+        dtype=jnp.float32,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(
@@ -288,7 +288,7 @@ class NNXPixArtAlphaTextProjection(nnx.Module):
         in_features=hidden_size,
         out_features=out_features,
         use_bias=True,
-        dtype=dtype,
+        dtype=jnp.float32,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(

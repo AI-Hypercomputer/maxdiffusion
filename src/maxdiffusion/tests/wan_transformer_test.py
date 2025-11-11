@@ -40,7 +40,7 @@ from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 import qwix
 import flax
 
-flax.config.update('flax_always_shard_variable', False)
+flax.config.update("flax_always_shard_variable", False)
 RealQtRule = qwix.QtRule
 
 
@@ -302,8 +302,10 @@ class WanTransformerTest(unittest.TestCase):
     """
     Tests the provider logic for all config branches.
     """
+
     def create_real_rule_instance(*args, **kwargs):
-        return RealQtRule(*args, **kwargs)
+      return RealQtRule(*args, **kwargs)
+
     mock_qt_rule.side_effect = create_real_rule_instance
 
     # Case 1: Quantization disabled
@@ -318,7 +320,12 @@ class WanTransformerTest(unittest.TestCase):
     config_int8.qwix_module_path = ".*"
     provider_int8 = WanPipeline.get_qt_provider(config_int8)
     self.assertIsNotNone(provider_int8)
-    mock_qt_rule.assert_called_once_with(module_path=".*", weight_qtype=jnp.int8, act_qtype=jnp.int8, op_names=("dot_general","einsum", "conv_general_dilated"))
+    mock_qt_rule.assert_called_once_with(
+        module_path=".*",
+        weight_qtype=jnp.int8,
+        act_qtype=jnp.int8,
+        op_names=("dot_general", "einsum", "conv_general_dilated"),
+    )
 
     # Case 3: Quantization enabled, type 'fp8'
     mock_qt_rule.reset_mock()
@@ -328,7 +335,12 @@ class WanTransformerTest(unittest.TestCase):
     config_fp8.qwix_module_path = ".*"
     provider_fp8 = WanPipeline.get_qt_provider(config_fp8)
     self.assertIsNotNone(provider_fp8)
-    mock_qt_rule.assert_called_once_with(module_path=".*", weight_qtype=jnp.float8_e4m3fn, act_qtype=jnp.float8_e4m3fn, op_names=("dot_general","einsum", "conv_general_dilated"))
+    mock_qt_rule.assert_called_once_with(
+        module_path=".*",
+        weight_qtype=jnp.float8_e4m3fn,
+        act_qtype=jnp.float8_e4m3fn,
+        op_names=("dot_general", "einsum", "conv_general_dilated"),
+    )
 
     # Case 4: Quantization enabled, type 'fp8_full'
     mock_qt_rule.reset_mock()
@@ -340,29 +352,28 @@ class WanTransformerTest(unittest.TestCase):
     provider_fp8_full = WanPipeline.get_qt_provider(config_fp8_full)
     self.assertIsNotNone(provider_fp8_full)
     expected_calls = [
-      call(module_path=".*",  # Apply to all modules
-        weight_qtype=jnp.float8_e4m3fn,
-        act_qtype=jnp.float8_e4m3fn,
-        bwd_qtype=jnp.float8_e5m2,
-        bwd_use_original_residuals=True,
-        disable_channelwise_axes=True,  # per_tensor calibration
-        weight_calibration_method=config_fp8_full.quantization_calibration_method,
-        act_calibration_method=config_fp8_full.quantization_calibration_method,
-        bwd_calibration_method=config_fp8_full.quantization_calibration_method,
-        op_names=("dot_general","einsum"),
+        call(
+            module_path=".*",  # Apply to all modules
+            weight_qtype=jnp.float8_e4m3fn,
+            act_qtype=jnp.float8_e4m3fn,
+            bwd_qtype=jnp.float8_e5m2,
+            disable_channelwise_axes=True,  # per_tensor calibration
+            weight_calibration_method=config_fp8_full.quantization_calibration_method,
+            act_calibration_method=config_fp8_full.quantization_calibration_method,
+            bwd_calibration_method=config_fp8_full.quantization_calibration_method,
+            op_names=("dot_general", "einsum"),
         ),
-      call(
-        module_path=".*",  # Apply to all modules
-        weight_qtype=jnp.float8_e4m3fn,
-        act_qtype=jnp.float8_e4m3fn,
-        bwd_qtype=jnp.float8_e4m3fn,
-        bwd_use_original_residuals=True,
-        disable_channelwise_axes=True,  # per_tensor calibration
-        weight_calibration_method=config_fp8_full.quantization_calibration_method,
-        act_calibration_method=config_fp8_full.quantization_calibration_method,
-        bwd_calibration_method=config_fp8_full.quantization_calibration_method,
-        op_names=("conv_general_dilated"),
-      )
+        call(
+            module_path=".*",  # Apply to all modules
+            weight_qtype=jnp.float8_e4m3fn,
+            act_qtype=jnp.float8_e4m3fn,
+            bwd_qtype=jnp.float8_e4m3fn,
+            disable_channelwise_axes=True,  # per_tensor calibration
+            weight_calibration_method=config_fp8_full.quantization_calibration_method,
+            act_calibration_method=config_fp8_full.quantization_calibration_method,
+            bwd_calibration_method=config_fp8_full.quantization_calibration_method,
+            op_names=("conv_general_dilated"),
+        ),
     ]
     mock_qt_rule.assert_has_calls(expected_calls, any_order=True)
 

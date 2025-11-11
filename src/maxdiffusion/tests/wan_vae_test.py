@@ -53,7 +53,9 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CACHE_T = 2
 
-flax.config.update('flax_always_shard_variable', False)
+flax.config.update("flax_always_shard_variable", False)
+
+
 class TorchWanRMS_norm(nn.Module):
   r"""
   A custom RMS normalization layer.
