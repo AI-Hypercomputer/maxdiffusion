@@ -50,6 +50,8 @@ jit_initializers: True
 from_pt: False
 split_head_dim: True
 attention: 'dot_product' # Supported attention: dot_product, flash
+mask_padding_tokens: True # Whether to mask padding tokens in attention computation.
+attention_sharding_uniform: True # same sequence sharding rules applied for q in both (self and cross attention)
 flash_block_sizes: {}
 # GroupNorm groups
 norm_num_groups: 32

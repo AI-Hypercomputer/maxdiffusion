@@ -62,6 +62,8 @@ jit_initializers: True
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
+mask_padding_tokens: True # Whether to mask padding tokens in attention computation.
+attention_sharding_uniform: True # same sequence sharding rules applied for q in both (self and cross attention)
 flash_block_sizes: {
   "block_q" : 256,
   "block_kv_compute" : 256,
