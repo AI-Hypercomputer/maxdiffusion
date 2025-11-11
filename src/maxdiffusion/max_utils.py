@@ -494,6 +494,7 @@ def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
   flash_block_sizes = None
   if len(config.flash_block_sizes.keys()) > 0:
+    use_fused_bwd_kernel = config.flash_block_sizes.get("use_fused_bwd_kernel", False)
     flash_block_sizes = splash_attention_kernel.BlockSizes(
         block_q=int(config.flash_block_sizes["block_q"]),
         block_kv_compute=int(config.flash_block_sizes["block_kv_compute"]),
@@ -501,8 +502,9 @@ def get_flash_block_sizes(config):
         block_q_dkv=config.flash_block_sizes.get("block_q_dkv"),
         block_kv_dkv=config.flash_block_sizes.get("block_kv_dkv"),
         block_kv_dkv_compute=config.flash_block_sizes.get("block_kv_dkv_compute"),
-        block_q_dq=config.flash_block_sizes.get("block_q_dq"),
-        block_kv_dq=config.flash_block_sizes.get("block_kv_dq"),
+        block_q_dq=config.flash_block_sizes.get("block_q_dq") if not use_fused_bwd_kernel else None,
+        block_kv_dq=config.flash_block_sizes.get("block_kv_dq") if not use_fused_bwd_kernel else None,
+        use_fused_bwd_kernel=use_fused_bwd_kernel,
     )
   return flash_block_sizes
 

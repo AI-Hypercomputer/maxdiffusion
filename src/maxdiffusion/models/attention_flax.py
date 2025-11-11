@@ -24,6 +24,8 @@ import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
+from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
+from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
 from einops import rearrange
 from .. import common_types, max_logging
 
@@ -169,6 +171,40 @@ def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
 
   return tensor, kv_size, seq_len
 
+def convert_to_tokamax_splash_config( block_sizes: BlockSizes, 
+                                      q_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+                                      k_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+                                      v_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+                                      residual_checkpoint_name: str | None = None,
+                                      attn_logits_soft_cap: float | None = None,
+                                      fuse_reciprocal: bool = True,
+                                      use_base2_exp: bool = False,
+                                      max_logit_const: float | None = None,
+                                      interpret: bool = False,
+                                      dq_reduction_steps: int | None = None) -> tokamax_splash_attention_kernel.SplashConfig:
+  assert block_sizes.use_fused_bwd_kernel, "Tokamax Splash attention only supports fused bwd kernel."
+  return tokamax_splash_attention_kernel.SplashConfig(
+      block_q=block_sizes.block_q,
+      block_kv=block_sizes.block_kv,
+      block_kv_compute=block_sizes.block_kv_compute,
+      block_q_dkv=block_sizes.block_q_dkv,
+      block_kv_dkv=block_sizes.block_kv_dkv,
+      block_kv_dkv_compute=block_sizes.block_kv_dkv_compute,
+      block_q_dq= None if block_sizes.use_fused_bwd_kernel else block_sizes.block_q_dq,
+      block_kv_dq=None if block_sizes.use_fused_bwd_kernel else block_sizes.block_kv_dq,
+      use_fused_bwd_kernel=block_sizes.use_fused_bwd_kernel,
+      q_layout=q_layout,
+      k_layout=k_layout,
+      v_layout=v_layout,
+      residual_checkpoint_name=residual_checkpoint_name,
+      attn_logits_soft_cap=attn_logits_soft_cap,
+      fuse_reciprocal=fuse_reciprocal,
+      use_base2_exp=use_base2_exp,
+      max_logit_const=max_logit_const,
+      interpret=interpret,
+      dq_reduction_steps=dq_reduction_steps,
+  )
+
 
 def _tpu_flash_attention(
     query: jax.Array,
@@ -203,8 +239,9 @@ def _tpu_flash_attention(
         block_q_dkv=min(q_max_block_size, query.shape[2]),
         block_kv_dkv=min(kv_max_block_size, key.shape[2]),
         block_kv_dkv_compute=min(kv_max_block_size, query.shape[2]),
-        block_q_dq=min(q_max_block_size, query.shape[2]),
-        block_kv_dq=min(kv_max_block_size, query.shape[2]),
+        block_q_dq=None if attention_kernel == "tokamax_flash" else block_sizes.block_q_dq,
+        block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
+        use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
     )
   num_fsdp_shards = mesh.shape["fsdp"]
   query = _reshape_data_for_flash(query, heads)
@@ -240,18 +277,27 @@ def _tpu_flash_attention(
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
-    splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask,
-        head_shards=1,  # the sizes of the axis is sharding over heads
-        q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
-        block_sizes=block_sizes,
-        save_residuals=True if attention_kernel == "ring" else False,
-    )
+    if attention_kernel == "tokamax_flash":
+      mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
+      splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
+          mask=mask,
+          q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+          config=convert_to_tokamax_splash_config(block_sizes),
+          save_residuals=True if attention_kernel == "ring" else False,
+      )
+    else:
+      splash_kernel = splash_attention_kernel.make_splash_mha(
+          mask=multi_head_mask,
+          head_shards=1,  # the sizes of the axis is sharding over heads
+          q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+          block_sizes=block_sizes,
+          save_residuals=True if attention_kernel == "ring" else False,
+      )
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
     if not mask_padding_tokens:
       segment_ids = None
-    if attention_kernel == "flash":
+    if attention_kernel in ["flash", "tokamax_flash"]:
       attention_output = vmapped_splash(query, key, value, segment_ids)
     else:
       if num_fsdp_shards > 1:
@@ -439,7 +485,7 @@ def _apply_attention(
   seq_len_idx = 1
   if query.ndim == 4:
     seq_len_idx = 2
-  if attention_kernel == "flash":
+  if attention_kernel in ["flash", "tokamax_flash"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -451,7 +497,7 @@ def _apply_attention(
     return _apply_attention_dot(
         query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
     )
-  elif attention_kernel == "flash":
+  elif attention_kernel in ["flash", "tokamax_flash"]:
     return _tpu_flash_attention(
         query,
         key * scale,
