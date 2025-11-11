@@ -587,7 +587,7 @@ class WanPipeline:
             width=width,
             num_frames=num_frames,
             num_channels_latents=num_channel_latents,
-        ) # # fusion.18
+        )
 
       data_sharding = NamedSharding(self.mesh, P())
       # Using global_batch_size_to_train_on so not to create more config variables
