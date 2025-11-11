@@ -285,7 +285,7 @@ class WanTransformerBlock(nnx.Module):
         attention_kernel=attention,
         dropout=dropout,
         is_self_attention=True,
-        mask_padding_tokens=mask_padding_tokens
+        mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="self_attn",
     )
 
@@ -306,7 +306,7 @@ class WanTransformerBlock(nnx.Module):
         attention_kernel=attention,
         dropout=dropout,
         is_self_attention=False,
-        mask_padding_tokens=mask_padding_tokens
+        mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="cross_attn",
     )
     assert cross_attn_norm is True

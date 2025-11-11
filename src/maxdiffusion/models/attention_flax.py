@@ -302,7 +302,7 @@ def _tpu_flash_attention(
       splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
           mask=mask,
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
-          config=convert_to_tokamax_splash_config(block_sizes),
+          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
           save_residuals=True if attention_kernel == "ring" else False,
       )
     else:
@@ -312,6 +312,7 @@ def _tpu_flash_attention(
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
           block_sizes=block_sizes,
           save_residuals=True if attention_kernel == "ring" else False,
+          residual_checkpoint_name=residual_checkpoint_name
       )
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
