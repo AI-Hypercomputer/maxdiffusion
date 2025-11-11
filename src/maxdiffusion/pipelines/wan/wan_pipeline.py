@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import List, Union, Optional, Type
 from functools import partial
 import numpy as np
@@ -466,7 +466,7 @@ class WanPipeline:
       latents = latents / latents_std + latents_mean
       latents = latents.astype(jnp.float32)
       return latents
-    
+
   def _decode_latents_to_video(self, latents: jax.Array) -> np.ndarray:
       """Decodes latents to video frames and postprocesses."""
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -508,7 +508,7 @@ class WanPipeline:
             f"Supported keys are: {list(cls._SUBCLASS_MAP.keys())}"
         )
     return subclass
-  
+
   @classmethod
   def from_checkpoint(cls, model_key: str, config: HyperParameters, restored_checkpoint=None, vae_only=False, load_transformer=True):
     subclass = cls._get_subclass(model_key)
@@ -708,7 +708,6 @@ class WanPipeline2_2(WanPipeline):
     common_components = cls._create_common_components(config, vae_only)
     low_noise_transformer, high_noise_transformer = None, None
     if not vae_only and load_transformer:
-        rngs = nnx.Rngs(jax.random.key(config.seed))
         low_noise_transformer = super().load_transformer(
             devices_array=common_components["devices_array"],
             mesh=common_components["mesh"],

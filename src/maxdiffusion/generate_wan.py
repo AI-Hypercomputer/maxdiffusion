@@ -18,10 +18,8 @@ import time
 import os
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
-from functools import partial
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
-from absl import flags
 from maxdiffusion.utils import export_to_video
 from google.cloud import storage
 import flax
@@ -127,7 +125,7 @@ def run(config, pipeline=None, filename_prefix=""):
   # Using global_batch_size_to_train_on so not to create more config variables
   prompt = [config.prompt] * config.global_batch_size_to_train_on
   negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
-  
+
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
   )
