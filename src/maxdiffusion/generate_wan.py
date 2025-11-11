@@ -17,8 +17,11 @@ import jax
 import time
 import os
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
+from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
+from functools import partial
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
+from absl import flags
 from maxdiffusion.utils import export_to_video
 from google.cloud import storage
 import flax
@@ -63,6 +66,33 @@ def delete_file(file_path: str):
 
 jax.config.update("jax_use_shardy_partitioner", True)
 
+def call_pipeline(config, pipeline, prompt, negative_prompt):
+  model_key = config.model_name
+  if model_key == "wan2.1":
+    return pipeline(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        height=config.height,
+        width=config.width,
+        num_frames=config.num_frames,
+        num_inference_steps=config.num_inference_steps,
+        guidance_scale=config.guidance_scale,
+    )
+  elif model_key == "wan2.2":
+    return pipeline(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        height=config.height,
+        width=config.width,
+        num_frames=config.num_frames,
+        num_inference_steps=config.num_inference_steps,
+        guidance_scale_low=config.guidance_scale_low,
+        guidance_scale_high=config.guidance_scale_high,
+        boundary=config.boundary_timestep,
+    )
+  else:
+    raise ValueError(f"Unsupported model_name in config: {model_key}")
+
 
 def inference_generate_video(config, pipeline, filename_prefix=""):
   s0 = time.perf_counter()
@@ -73,15 +103,7 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}, video: {filename_prefix}"
   )
 
-  videos = pipeline(
-      prompt=prompt,
-      negative_prompt=negative_prompt,
-      height=config.height,
-      width=config.width,
-      num_frames=config.num_frames,
-      num_inference_steps=config.num_inference_steps,
-      guidance_scale=config.guidance_scale,
-  )
+  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
 
   max_logging.log(f"video {filename_prefix}, compile time: {(time.perf_counter() - s0)}")
   for i in range(len(videos)):
@@ -96,31 +118,20 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
 
 def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)
-  from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
-
-  checkpoint_loader = WanCheckpointer(config, "WAN_CHECKPOINT")
-  pipeline = checkpoint_loader.load_checkpoint()
-  if pipeline is None:
-    pipeline = WanPipeline.from_pretrained(config)
+  model_key = config.model_name
+  checkpoint_loader = WanCheckpointer(model_key=model_key, config=config)
+  pipeline, _, _ = checkpoint_loader.load_checkpoint()
+  pipeline = WanPipeline.from_pretrained(model_key=model_key, config=config)
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on so not to create more config variables
   prompt = [config.prompt] * config.global_batch_size_to_train_on
   negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
-
+  
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
   )
-
-  videos = pipeline(
-      prompt=prompt,
-      negative_prompt=negative_prompt,
-      height=config.height,
-      width=config.width,
-      num_frames=config.num_frames,
-      num_inference_steps=config.num_inference_steps,
-      guidance_scale=config.guidance_scale,
-  )
+  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
 
   print("compile time: ", (time.perf_counter() - s0))
   saved_video_path = []
@@ -132,29 +143,13 @@ def run(config, pipeline=None, filename_prefix=""):
       upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
 
   s0 = time.perf_counter()
-  videos = pipeline(
-      prompt=prompt,
-      negative_prompt=negative_prompt,
-      height=config.height,
-      width=config.width,
-      num_frames=config.num_frames,
-      num_inference_steps=config.num_inference_steps,
-      guidance_scale=config.guidance_scale,
-  )
+  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
   print("generation time: ", (time.perf_counter() - s0))
 
   s0 = time.perf_counter()
   if config.enable_profiler:
     max_utils.activate_profiler(config)
-    videos = pipeline(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        height=config.height,
-        width=config.width,
-        num_frames=config.num_frames,
-        num_inference_steps=config.num_inference_steps,
-        guidance_scale=config.guidance_scale,
-    )
+    videos = call_pipeline(config, pipeline, prompt, negative_prompt)
     max_utils.deactivate_profiler(config)
     print("generation time: ", (time.perf_counter() - s0))
   return saved_video_path
