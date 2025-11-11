@@ -567,7 +567,7 @@ class WanPipeline:
         prompt = [prompt]
 
       batch_size = len(prompt)
-      
+
       with jax.named_scope("Encode-Prompt"):
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
             prompt=prompt,
@@ -578,7 +578,7 @@ class WanPipeline:
         )
 
       num_channel_latents = self.transformer.config.in_channels
-      if latents is None: 
+      if latents is None:
         latents = self.prepare_latents(
             batch_size=batch_size,
             vae_scale_factor_temporal=self.vae_scale_factor_temporal,

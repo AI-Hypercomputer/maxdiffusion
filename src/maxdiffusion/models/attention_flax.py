@@ -171,7 +171,7 @@ def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
 
   return tensor, kv_size, seq_len
 
-def convert_to_tokamax_splash_config( block_sizes: BlockSizes, 
+def convert_to_tokamax_splash_config( block_sizes: BlockSizes,
                                       q_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
                                       k_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
                                       v_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
@@ -536,7 +536,7 @@ def _apply_attention(
     )
   elif attention_kernel == "ring":
     return _tpu_flash_attention(
-        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel, 
+        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel,
         mask_padding_tokens=mask_padding_tokens,
     )
   elif attention_kernel == "cudnn_flash_te":
