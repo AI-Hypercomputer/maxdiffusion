@@ -13,6 +13,7 @@ ftfy
 tensorboard>=2.17.0
 tensorboardx>=2.6.2.2
 tensorboard-plugin-profile>=2.15.2
+tokamax
 Jinja2
 scikit-image
 parameterized
