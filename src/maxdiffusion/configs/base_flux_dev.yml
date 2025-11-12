@@ -63,8 +63,15 @@ jit_initializers: True
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
-mask_padding_tokens: True # Whether to mask padding tokens in attention computation.
-attention_sharding_uniform: True # same sequence sharding rules applied for q in both (self and cross attention)
+# If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
+# Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
+# However, when padding tokens are significant, this will lead to worse quality and should be set to True.
+mask_padding_tokens: True 
+# Maxdiffusion has 2 types of attention sharding strategies:
+# 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
+# 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
+#    in cross attention q.
+attention_sharding_uniform: True 
 
 flash_block_sizes: {}
 # Use the following flash_block_sizes on v6e (Trillium) due to larger vmem.
