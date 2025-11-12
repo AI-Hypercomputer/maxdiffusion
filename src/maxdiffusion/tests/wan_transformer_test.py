@@ -23,7 +23,7 @@ from unittest.mock import Mock, patch, call
 from absl.testing import absltest
 from flax import nnx
 from jax.sharding import Mesh
-
+from flax.linen import partitioning as nn_partitioning
 from .. import pyconfig
 from ..max_utils import (create_device_mesh, get_flash_block_sizes)
 from ..models.wan.transformers.transformer_wan import (
@@ -53,6 +53,18 @@ class WanTransformerTest(unittest.TestCase):
 
   def setUp(self):
     WanTransformerTest.dummy_data = {}
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+        ],
+        unittest=True,
+    )
+    config = pyconfig.config
+    self.config = config
+    devices_array = create_device_mesh(config)
+    self.mesh = Mesh(devices_array, config.mesh_axes)
+
 
   def test_rotary_pos_embed(self):
     batch_size = 1
@@ -70,18 +82,20 @@ class WanTransformerTest(unittest.TestCase):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     dummy_caption = jnp.ones((1, 512, 4096))
-    layer = NNXPixArtAlphaTextProjection(rngs=rngs, in_features=4096, hidden_size=5120)
-    dummy_output = layer(dummy_caption)
-    dummy_output.shape == (1, 512, 5120)
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      layer = NNXPixArtAlphaTextProjection(rngs=rngs, in_features=4096, hidden_size=5120)
+      dummy_output = layer(dummy_caption)
+      dummy_output.shape == (1, 512, 5120)
 
   def test_nnx_timestep_embedding(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
 
     dummy_sample = jnp.ones((1, 256))
-    layer = NNXTimestepEmbedding(rngs=rngs, in_channels=256, time_embed_dim=5120)
-    dummy_output = layer(dummy_sample)
-    assert dummy_output.shape == (1, 5120)
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      layer = NNXTimestepEmbedding(rngs=rngs, in_channels=256, time_embed_dim=5120)
+      dummy_output = layer(dummy_sample)
+      assert dummy_output.shape == (1, 5120)
 
   def test_fp32_layer_norm(self):
     key = jax.random.key(0)
@@ -89,9 +103,10 @@ class WanTransformerTest(unittest.TestCase):
     batch_size = 1
     dummy_hidden_states = jnp.ones((batch_size, 75600, 5120))
     # expected same output shape with same dtype
-    layer = FP32LayerNorm(rngs=rngs, dim=5120, eps=1e-6, elementwise_affine=False)
-    dummy_output = layer(dummy_hidden_states)
-    assert dummy_output.shape == dummy_hidden_states.shape
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      layer = FP32LayerNorm(rngs=rngs, dim=5120, eps=1e-6, elementwise_affine=False)
+      dummy_output = layer(dummy_hidden_states)
+      assert dummy_output.shape == dummy_hidden_states.shape
 
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_wan_time_text_embedding(self):
@@ -102,20 +117,21 @@ class WanTransformerTest(unittest.TestCase):
     time_freq_dim = 256
     time_proj_dim = 30720
     text_embed_dim = 4096
-    layer = WanTimeTextImageEmbedding(
-        rngs=rngs, dim=dim, time_freq_dim=time_freq_dim, time_proj_dim=time_proj_dim, text_embed_dim=text_embed_dim
-    )
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      layer = WanTimeTextImageEmbedding(
+          rngs=rngs, dim=dim, time_freq_dim=time_freq_dim, time_proj_dim=time_proj_dim, text_embed_dim=text_embed_dim
+      )
 
-    dummy_timestep = jnp.ones(batch_size)
+      dummy_timestep = jnp.ones(batch_size)
 
-    encoder_hidden_states_shape = (batch_size, time_freq_dim * 2, text_embed_dim)
-    dummy_encoder_hidden_states = jnp.ones(encoder_hidden_states_shape)
-    temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = layer(
-        dummy_timestep, dummy_encoder_hidden_states
-    )
-    assert temb.shape == (batch_size, dim)
-    assert timestep_proj.shape == (batch_size, time_proj_dim)
-    assert encoder_hidden_states.shape == (batch_size, time_freq_dim * 2, dim)
+      encoder_hidden_states_shape = (batch_size, time_freq_dim * 2, text_embed_dim)
+      dummy_encoder_hidden_states = jnp.ones(encoder_hidden_states_shape)
+      temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = layer(
+          dummy_timestep, dummy_encoder_hidden_states
+      )
+      assert temb.shape == (batch_size, dim)
+      assert timestep_proj.shape == (batch_size, time_proj_dim)
+      assert encoder_hidden_states.shape == (batch_size, time_freq_dim * 2, dim)
 
   def test_wan_block(self):
     key = jax.random.key(0)
@@ -163,20 +179,19 @@ class WanTransformerTest(unittest.TestCase):
     dummy_encoder_hidden_states = jnp.ones((batch_size, 512, dim))
 
     dummy_temb = jnp.ones((batch_size, 6, dim))
-
-    wan_block = WanTransformerBlock(
-        rngs=rngs,
-        dim=dim,
-        ffn_dim=ffn_dim,
-        num_heads=num_heads,
-        qk_norm=qk_norm,
-        cross_attn_norm=cross_attn_norm,
-        eps=eps,
-        attention="flash",
-        mesh=mesh,
-        flash_block_sizes=flash_block_sizes,
-    )
-    with mesh:
+    with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      wan_block = WanTransformerBlock(
+          rngs=rngs,
+          dim=dim,
+          ffn_dim=ffn_dim,
+          num_heads=num_heads,
+          qk_norm=qk_norm,
+          cross_attn_norm=cross_attn_norm,
+          eps=eps,
+          attention="flash",
+          mesh=mesh,
+          flash_block_sizes=flash_block_sizes,
+      )
       dummy_output = wan_block(dummy_hidden_states, dummy_encoder_hidden_states, dummy_temb, dummy_rotary_emb)
     assert dummy_output.shape == dummy_hidden_states.shape
 
@@ -209,40 +224,39 @@ class WanTransformerTest(unittest.TestCase):
     mesh = Mesh(devices_array, config.mesh_axes)
     batch_size = 1
     query_dim = 5120
-    attention = FlaxWanAttention(
-        rngs=rngs,
-        query_dim=query_dim,
-        heads=40,
-        dim_head=128,
-        attention_kernel="flash",
-        mesh=mesh,
-        flash_block_sizes=flash_block_sizes,
-    )
-
-    dummy_hidden_states_shape = (batch_size, 75600, query_dim)
-
-    dummy_hidden_states = jnp.ones(dummy_hidden_states_shape)
-    dummy_encoder_hidden_states = jnp.ones(dummy_hidden_states_shape)
-    with mesh:
-      dummy_output = attention(
-          hidden_states=dummy_hidden_states, encoder_hidden_states=dummy_encoder_hidden_states, rotary_emb=dummy_rotary_emb
-      )
-    assert dummy_output.shape == dummy_hidden_states_shape
-
-    # dot product
-    try:
+    with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       attention = FlaxWanAttention(
           rngs=rngs,
           query_dim=query_dim,
           heads=40,
           dim_head=128,
-          attention_kernel="dot_product",
-          split_head_dim=True,
+          attention_kernel="flash",
           mesh=mesh,
           flash_block_sizes=flash_block_sizes,
       )
-    except NotImplementedError:
-      pass
+      dummy_hidden_states_shape = (batch_size, 75600, query_dim)
+
+      dummy_hidden_states = jnp.ones(dummy_hidden_states_shape)
+      dummy_encoder_hidden_states = jnp.ones(dummy_hidden_states_shape)
+      dummy_output = attention(
+          hidden_states=dummy_hidden_states, encoder_hidden_states=dummy_encoder_hidden_states, rotary_emb=dummy_rotary_emb
+      )
+      assert dummy_output.shape == dummy_hidden_states_shape
+
+      # dot product
+      try:
+        attention = FlaxWanAttention(
+            rngs=rngs,
+            query_dim=query_dim,
+            heads=40,
+            dim_head=128,
+            attention_kernel="dot_product",
+            split_head_dim=True,
+            mesh=mesh,
+            flash_block_sizes=flash_block_sizes,
+        )
+      except NotImplementedError:
+        pass
 
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_wan_model(self):
@@ -272,7 +286,8 @@ class WanTransformerTest(unittest.TestCase):
     mesh = Mesh(devices_array, config.mesh_axes)
     batch_size = 1
     num_layers = 1
-    wan_model = WanModel(rngs=rngs, attention="flash", mesh=mesh, flash_block_sizes=flash_block_sizes, num_layers=num_layers)
+    with nn_partitioning.axis_rules(config.logical_axis_rules):
+      wan_model = WanModel(rngs=rngs, attention="flash", mesh=mesh, flash_block_sizes=flash_block_sizes, num_layers=num_layers)
 
     dummy_timestep = jnp.ones((batch_size))
     dummy_encoder_hidden_states = jnp.ones((batch_size, 512, 4096))

@@ -501,6 +501,7 @@ def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
   flash_block_sizes = None
   if len(config.flash_block_sizes.keys()) > 0:
+    use_fused_bwd_kernel = config.flash_block_sizes.get("use_fused_bwd_kernel", False)
     flash_block_sizes = splash_attention_kernel.BlockSizes(
         block_q=config.flash_block_sizes["block_q"],
         block_kv_compute=config.flash_block_sizes["block_kv_compute"],
