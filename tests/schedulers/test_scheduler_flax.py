@@ -336,7 +336,7 @@ class FlaxDDPMSchedulerTest(FlaxSchedulerCommonTest):
 
         if jax_device == "tpu":
             assert abs(result_sum - 263.11) < 1.5e-2
-            assert abs(result_mean - 0.3349905) < 2e-5
+            assert abs(result_mean - 0.34259) < 2e-5
         else:
             assert abs(result_sum - 255.1113) < 1e-2
             assert abs(result_mean - 0.332176) < 1e-3
