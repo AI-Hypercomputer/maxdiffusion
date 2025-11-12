@@ -119,7 +119,8 @@ def run(config, pipeline=None, filename_prefix=""):
   model_key = config.model_name
   checkpoint_loader = WanCheckpointer(model_key=model_key, config=config)
   pipeline, _, _ = checkpoint_loader.load_checkpoint()
-  pipeline = WanPipeline.from_pretrained(model_key=model_key, config=config)
+  if pipeline is None:
+    pipeline = WanPipeline.from_pretrained(model_key=model_key, config=config)
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on so not to create more config variables
