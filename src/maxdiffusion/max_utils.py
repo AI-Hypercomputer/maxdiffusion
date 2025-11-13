@@ -501,7 +501,7 @@ def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
   flash_block_sizes = None
   if len(config.flash_block_sizes.keys()) > 0:
-    attention_is_tokamax = "tokamax" in config.attention_kernel
+    attention_is_tokamax = "tokamax" in config.attention
     user_block_sizes:Dict[str, int] = config.flash_block_sizes
     if attention_is_tokamax:
       max_logging.log("Tokamax kernel specified, Note: Tokamax only supports fused backward kernel."
