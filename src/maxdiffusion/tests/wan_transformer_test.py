@@ -133,7 +133,8 @@ class WanTransformerTest(unittest.TestCase):
       assert timestep_proj.shape == (batch_size, time_proj_dim)
       assert encoder_hidden_states.shape == (batch_size, time_freq_dim * 2, dim)
 
-  def test_wan_block(self):
+  @pytest.mark.parametrize("attention", ["flash", "tokamax_flash"])
+  def test_wan_block(self, attention):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     pyconfig.initialize(
@@ -179,19 +180,20 @@ class WanTransformerTest(unittest.TestCase):
     dummy_encoder_hidden_states = jnp.ones((batch_size, 512, dim))
 
     dummy_temb = jnp.ones((batch_size, 6, dim))
-    with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      wan_block = WanTransformerBlock(
-          rngs=rngs,
-          dim=dim,
-          ffn_dim=ffn_dim,
-          num_heads=num_heads,
-          qk_norm=qk_norm,
-          cross_attn_norm=cross_attn_norm,
-          eps=eps,
-          attention="flash",
-          mesh=mesh,
-          flash_block_sizes=flash_block_sizes,
-      )
+
+    wan_block = WanTransformerBlock(
+        rngs=rngs,
+        dim=dim,
+        ffn_dim=ffn_dim,
+        num_heads=num_heads,
+        qk_norm=qk_norm,
+        cross_attn_norm=cross_attn_norm,
+        eps=eps,
+        attention=attention,
+        mesh=mesh,
+        flash_block_sizes=flash_block_sizes,
+    )
+    with mesh:
       dummy_output = wan_block(dummy_hidden_states, dummy_encoder_hidden_states, dummy_temb, dummy_rotary_emb)
     assert dummy_output.shape == dummy_hidden_states.shape
 
