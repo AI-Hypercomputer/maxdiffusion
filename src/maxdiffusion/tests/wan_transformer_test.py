@@ -188,7 +188,7 @@ class WanTransformerTest(unittest.TestCase):
         qk_norm=qk_norm,
         cross_attn_norm=cross_attn_norm,
         eps=eps,
-        attention=attention,
+        attention="flash",
         mesh=mesh,
         flash_block_sizes=flash_block_sizes,
     )
