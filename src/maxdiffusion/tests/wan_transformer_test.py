@@ -133,8 +133,7 @@ class WanTransformerTest(unittest.TestCase):
       assert timestep_proj.shape == (batch_size, time_proj_dim)
       assert encoder_hidden_states.shape == (batch_size, time_freq_dim * 2, dim)
 
-  @pytest.mark.parametrize("attention", ["flash", "tokamax_flash"])
-  def test_wan_block(self, attention):
+  def test_wan_block(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
     pyconfig.initialize(
@@ -226,24 +225,25 @@ class WanTransformerTest(unittest.TestCase):
     mesh = Mesh(devices_array, config.mesh_axes)
     batch_size = 1
     query_dim = 5120
-    with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      attention = FlaxWanAttention(
-          rngs=rngs,
-          query_dim=query_dim,
-          heads=40,
-          dim_head=128,
-          attention_kernel="flash",
-          mesh=mesh,
-          flash_block_sizes=flash_block_sizes,
-      )
-      dummy_hidden_states_shape = (batch_size, 75600, query_dim)
+    for attention_kernel in ["flash", "tokamax_flash"]:
+      with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+        attention = FlaxWanAttention(
+            rngs=rngs,
+            query_dim=query_dim,
+            heads=40,
+            dim_head=128,
+            attention_kernel=attention_kernel,
+            mesh=mesh,
+            flash_block_sizes=flash_block_sizes,
+        )
+        dummy_hidden_states_shape = (batch_size, 75600, query_dim)
 
-      dummy_hidden_states = jnp.ones(dummy_hidden_states_shape)
-      dummy_encoder_hidden_states = jnp.ones(dummy_hidden_states_shape)
-      dummy_output = attention(
-          hidden_states=dummy_hidden_states, encoder_hidden_states=dummy_encoder_hidden_states, rotary_emb=dummy_rotary_emb
-      )
-      assert dummy_output.shape == dummy_hidden_states_shape
+        dummy_hidden_states = jnp.ones(dummy_hidden_states_shape)
+        dummy_encoder_hidden_states = jnp.ones(dummy_hidden_states_shape)
+        dummy_output = attention(
+            hidden_states=dummy_hidden_states, encoder_hidden_states=dummy_encoder_hidden_states, rotary_emb=dummy_rotary_emb
+        )
+        assert dummy_output.shape == dummy_hidden_states_shape
 
       # dot product
       try:
