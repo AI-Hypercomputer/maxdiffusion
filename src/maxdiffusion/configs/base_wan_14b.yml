@@ -244,7 +244,7 @@ num_eval_samples: 420
 
 warmup_steps_fraction: 0.1
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
-save_optimizer: False
+save_optimizer: True
 
 # However you may choose a longer schedule (learning_rate_schedule_steps > steps), in which case the training will end before
 # dropping fully down. Or you may choose a shorter schedule, where the unspecified steps will have a learning rate of 0.
@@ -327,3 +327,9 @@ enable_generate_video_for_eval: False # This will increase the used TPU memory.
 eval_max_number_of_samples_in_bucket: 60 # The number of samples per bucket for evaluation. This is calculated by num_eval_samples / len(timesteps_list).
 
 enable_ssim: False
+
+# Model surgery
+override_model_dims: True
+# If doubling the target_head_dim, then must halve the num_heads
+target_head_dim: 256
+target_num_heads: 20

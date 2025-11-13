@@ -39,13 +39,33 @@ from ...gradient_checkpoint import GradientCheckpointType
 BlockSizes = common_types.BlockSizes
 
 
-def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
+def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int, original_attention_head_dim: int):
+  
+  # 1. Calculate NEW sub-dimensions (The target shapes)
+  # e.g., for 256: h=84, w=84, t=88
   h_dim = w_dim = 2 * (attention_head_dim // 6)
   t_dim = attention_head_dim - h_dim - w_dim
+  current_dims = [t_dim, h_dim, w_dim]
+  
+  # 2. Calculate OLD sub-dimensions (For interpolation reference)
+  # e.g., for 128: h=42, w=42, t=44
+  h_dim_old = w_dim_old = 2 * (original_attention_head_dim // 6)
+  t_dim_old = original_attention_head_dim - h_dim_old - w_dim_old
+  old_dims = [t_dim_old, h_dim_old, w_dim_old]
+
   freqs = []
-  for dim in [t_dim, h_dim, w_dim]:
-    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float32, use_real=False)
+
+  for dim, old_dim in zip(current_dims, old_dims):
+    freq = get_1d_rotary_pos_embed(
+      dim=dim, # new size
+      pos=max_seq_len,
+      theta=theta,
+      freqs_dtype=jnp.float32,
+      use_real=False,
+      original_dim=old_dim
+    )
     freqs.append(freq)
+
   freqs = jnp.concatenate(freqs, axis=1)
   t_size = attention_head_dim // 2 - 2 * (attention_head_dim // 6)
   hw_size = attention_head_dim // 6
@@ -61,8 +81,16 @@ def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
 
 class WanRotaryPosEmbed(nnx.Module):
 
-  def __init__(self, attention_head_dim: int, patch_size: Tuple[int, int, int], max_seq_len: int, theta: float = 10000.0):
+  def __init__(
+    self,
+    attention_head_dim: int,
+    original_attention_head_dim: int,
+    patch_size: Tuple[int, int, int],
+    max_seq_len: int,
+    theta: float = 10000.0
+  ):
     self.attention_head_dim = attention_head_dim
+    self.original_attention_head_dim = original_attention_head_dim
     self.patch_size = patch_size
     self.max_seq_len = max_seq_len
     self.theta = theta
@@ -72,7 +100,7 @@ class WanRotaryPosEmbed(nnx.Module):
     p_t, p_h, p_w = self.patch_size
     ppf, pph, ppw = num_frames // p_t, height // p_h, width // p_w
 
-    freqs_split = get_frequencies(self.max_seq_len, self.theta, self.attention_head_dim)
+    freqs_split = get_frequencies(self.max_seq_len, self.theta, self.attention_head_dim, self.original_attention_head_dim)
 
     freqs_f = jnp.expand_dims(jnp.expand_dims(freqs_split[0][:ppf], axis=1), axis=1)
     freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, freqs_split[0].shape[-1]))
@@ -378,6 +406,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
   def __init__(
       self,
       rngs: nnx.Rngs,
+      target_head_dim: int,
       model_type="t2v",
       patch_size: Tuple[int] = (1, 2, 2),
       num_attention_heads: int = 40,
@@ -408,13 +437,13 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       names_which_can_be_offloaded: list = [],
       scan_layers: bool = True,
   ):
-    inner_dim = num_attention_heads * attention_head_dim
+    inner_dim = num_attention_heads * target_head_dim
     out_channels = out_channels or in_channels
     self.num_layers = num_layers
     self.scan_layers = scan_layers
 
     # 1. Patch & position embedding
-    self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
+    self.rope = WanRotaryPosEmbed(target_head_dim, attention_head_dim, patch_size, rope_max_seq_len)
     self.patch_embedding = nnx.Conv(
         in_channels,
         inner_dim,

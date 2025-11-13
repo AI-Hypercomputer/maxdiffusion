@@ -133,13 +133,12 @@ def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)
   model_key = config.model_name
 
-  checkpointer_lib = get_checkpointer(model_key)
-  WanCheckpointer = checkpointer_lib.WanCheckpointer
-
-  checkpoint_loader = WanCheckpointer(config, "WAN_CHECKPOINT")
-  pipeline, _, _ = checkpoint_loader.load_checkpoint()
-
   if pipeline is None:
+    checkpointer_lib = get_checkpointer(model_key)
+    WanCheckpointer = checkpointer_lib.WanCheckpointer
+
+    checkpoint_loader = WanCheckpointer(config, "WAN_CHECKPOINT")
+    pipeline, _, _ = checkpoint_loader.load_checkpoint()
     pipeline_lib = get_pipeline(model_key)
     WanPipeline = pipeline_lib.WanPipeline
     pipeline = WanPipeline.from_pretrained(config)
