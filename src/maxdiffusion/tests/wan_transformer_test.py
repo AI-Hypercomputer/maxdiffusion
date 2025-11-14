@@ -240,7 +240,7 @@ class WanTransformerTest(unittest.TestCase):
             query_dim=query_dim,
             heads=40,
             dim_head=128,
-            attention_kernel=config.attention,
+            attention_kernel=attention_kernel,
             mesh=mesh,
             flash_block_sizes=flash_block_sizes,
         )
