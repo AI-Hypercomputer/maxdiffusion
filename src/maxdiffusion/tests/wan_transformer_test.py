@@ -220,11 +220,19 @@ class WanTransformerTest(unittest.TestCase):
     rngs = nnx.Rngs(key)
     devices_array = create_device_mesh(config)
 
-
-    mesh = Mesh(devices_array, config.mesh_axes)
+    mesh_axes = ['data', 'fsdp', 'tensor']
+    mesh = Mesh(devices_array, mesh_axes)
     batch_size = 1
     query_dim = 5120
     for attention_kernel in ["flash", "tokamax_flash"]:
+      pyconfig.initialize(
+          [
+              None,
+              os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+              f"attention={attention_kernel}"
+          ]
+      )
+      config = pyconfig.config
       with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         config.attention = attention_kernel
         flash_block_sizes = get_flash_block_sizes(config)
