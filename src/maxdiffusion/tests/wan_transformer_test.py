@@ -179,69 +179,69 @@ class WanTransformerTest(unittest.TestCase):
     dummy_encoder_hidden_states = jnp.ones((batch_size, 512, dim))
 
     dummy_temb = jnp.ones((batch_size, 6, dim))
-    with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      wan_block = WanTransformerBlock(
-          rngs=rngs,
-          dim=dim,
-          ffn_dim=ffn_dim,
-          num_heads=num_heads,
-          qk_norm=qk_norm,
-          cross_attn_norm=cross_attn_norm,
-          eps=eps,
-          attention="flash",
-          mesh=mesh,
-          flash_block_sizes=flash_block_sizes,
-      )
+
+    wan_block = WanTransformerBlock(
+        rngs=rngs,
+        dim=dim,
+        ffn_dim=ffn_dim,
+        num_heads=num_heads,
+        qk_norm=qk_norm,
+        cross_attn_norm=cross_attn_norm,
+        eps=eps,
+        attention="flash",
+        mesh=mesh,
+        flash_block_sizes=flash_block_sizes,
+    )
+    with mesh:
       dummy_output = wan_block(dummy_hidden_states, dummy_encoder_hidden_states, dummy_temb, dummy_rotary_emb)
     assert dummy_output.shape == dummy_hidden_states.shape
 
   def test_wan_attention(self):
-    pyconfig.initialize(
-        [
-            None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-        ],
-        unittest=True,
-    )
-    config = pyconfig.config
-
-    batch_size = 1
-    channels = 16
-    frames = 21
-    height = 90
-    width = 160
-    hidden_states_shape = (batch_size, frames, height, width, channels)
-    dummy_hidden_states = jnp.ones(hidden_states_shape)
-    wan_rot_embed = WanRotaryPosEmbed(attention_head_dim=128, patch_size=[1, 2, 2], max_seq_len=1024)
-    dummy_rotary_emb = wan_rot_embed(dummy_hidden_states)
-
-    key = jax.random.key(0)
-    rngs = nnx.Rngs(key)
-    devices_array = create_device_mesh(config)
-
-    flash_block_sizes = get_flash_block_sizes(config)
-
-    mesh = Mesh(devices_array, config.mesh_axes)
-    batch_size = 1
-    query_dim = 5120
-    with mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      attention = FlaxWanAttention(
-          rngs=rngs,
-          query_dim=query_dim,
-          heads=40,
-          dim_head=128,
-          attention_kernel="flash",
-          mesh=mesh,
-          flash_block_sizes=flash_block_sizes,
+    for attention_kernel in ["flash", "tokamax_flash"]:
+      pyconfig.initialize(
+          [
+              None,
+              os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+              f"attention={attention_kernel}"
+          ],
+          unittest=True
       )
-      dummy_hidden_states_shape = (batch_size, 75600, query_dim)
+      config = pyconfig.config
+      batch_size = 1
+      channels = 16
+      frames = 21
+      height = 90
+      width = 160
+      hidden_states_shape = (batch_size, frames, height, width, channels)
+      dummy_hidden_states = jnp.ones(hidden_states_shape)
+      wan_rot_embed = WanRotaryPosEmbed(attention_head_dim=128, patch_size=[1, 2, 2], max_seq_len=1024)
+      dummy_rotary_emb = wan_rot_embed(dummy_hidden_states)
 
-      dummy_hidden_states = jnp.ones(dummy_hidden_states_shape)
-      dummy_encoder_hidden_states = jnp.ones(dummy_hidden_states_shape)
-      dummy_output = attention(
-          hidden_states=dummy_hidden_states, encoder_hidden_states=dummy_encoder_hidden_states, rotary_emb=dummy_rotary_emb
-      )
-      assert dummy_output.shape == dummy_hidden_states_shape
+      key = jax.random.key(0)
+      rngs = nnx.Rngs(key)
+      devices_array = create_device_mesh(config)
+      mesh = Mesh(devices_array, config.mesh_axes)
+      batch_size = 1
+      query_dim = 5120
+      with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+        flash_block_sizes = get_flash_block_sizes(config)
+        attention = FlaxWanAttention(
+            rngs=rngs,
+            query_dim=query_dim,
+            heads=40,
+            dim_head=128,
+            attention_kernel=attention_kernel,
+            mesh=mesh,
+            flash_block_sizes=flash_block_sizes,
+        )
+        dummy_hidden_states_shape = (batch_size, 75600, query_dim)
+
+        dummy_hidden_states = jnp.ones(dummy_hidden_states_shape)
+        dummy_encoder_hidden_states = jnp.ones(dummy_hidden_states_shape)
+        dummy_output = attention(
+            hidden_states=dummy_hidden_states, encoder_hidden_states=dummy_encoder_hidden_states, rotary_emb=dummy_rotary_emb
+        )
+        assert dummy_output.shape == dummy_hidden_states_shape
 
       # dot product
       try:
