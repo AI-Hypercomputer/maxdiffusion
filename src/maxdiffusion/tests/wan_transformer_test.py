@@ -197,15 +197,6 @@ class WanTransformerTest(unittest.TestCase):
     assert dummy_output.shape == dummy_hidden_states.shape
 
   def test_wan_attention(self):
-    # pyconfig.initialize(
-    #     [
-    #         None,
-    #         os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-    #     ],
-    #     unittest=True,
-    # )
-    # config = pyconfig.config
-
     for attention_kernel in ["flash", "tokamax_flash"]:
       pyconfig.initialize(
           [
