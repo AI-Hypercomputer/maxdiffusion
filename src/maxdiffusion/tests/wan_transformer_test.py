@@ -212,7 +212,8 @@ class WanTransformerTest(unittest.TestCase):
               None,
               os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
               f"attention={attention_kernel}"
-          ]
+          ],
+          unittest=True
       )
       config = pyconfig.config
       batch_size = 1
