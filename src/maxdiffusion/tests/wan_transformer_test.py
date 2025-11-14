@@ -234,7 +234,6 @@ class WanTransformerTest(unittest.TestCase):
       )
       config = pyconfig.config
       with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-        config.attention = attention_kernel
         flash_block_sizes = get_flash_block_sizes(config)
         attention = FlaxWanAttention(
             rngs=rngs,
