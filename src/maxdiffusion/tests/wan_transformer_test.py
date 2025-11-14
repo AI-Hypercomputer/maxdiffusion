@@ -220,19 +220,20 @@ class WanTransformerTest(unittest.TestCase):
     rngs = nnx.Rngs(key)
     devices_array = create_device_mesh(config)
 
-    flash_block_sizes = get_flash_block_sizes(config)
 
     mesh = Mesh(devices_array, config.mesh_axes)
     batch_size = 1
     query_dim = 5120
     for attention_kernel in ["flash", "tokamax_flash"]:
       with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+        config.attention = attention_kernel
+        flash_block_sizes = get_flash_block_sizes(config)
         attention = FlaxWanAttention(
             rngs=rngs,
             query_dim=query_dim,
             heads=40,
             dim_head=128,
-            attention_kernel=attention_kernel,
+            attention_kernel=config.attention,
             mesh=mesh,
             flash_block_sizes=flash_block_sizes,
         )
