@@ -141,6 +141,11 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
 def run(config, pipeline=None, filename_prefix=""):
   print("seed: ", config.seed)
   model_key = config.model_name
+  config.tensorboard_dir = os.path.join(config.output_dir, "tensorboard")
+  # Initialize TensorBoard writer
+  writer = max_utils.initialize_summary_writer(config)
+  if jax.process_index() == 0 and writer:
+    max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
   checkpointer_lib = get_checkpointer(model_key)
   WanCheckpointer = checkpointer_lib.WanCheckpointer
@@ -164,7 +169,10 @@ def run(config, pipeline=None, filename_prefix=""):
 
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
 
-  print("compile time: ", (time.perf_counter() - s0))
+  compile_time = time.perf_counter() - s0
+  print("compile_time: ", compile_time)
+  if writer and jax.process_index() == 0:
+    writer.add_scalar("inference/compile_time", compile_time, global_step=0)
   saved_video_path = []
   for i in range(len(videos)):
     video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
@@ -175,14 +183,30 @@ def run(config, pipeline=None, filename_prefix=""):
 
   s0 = time.perf_counter()
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
-  print("generation time: ", (time.perf_counter() - s0))
+  generation_time = time.perf_counter() - s0
+  print("generation_time: ", generation_time)
+  if writer and jax.process_index() == 0:
+    writer.add_scalar("inference/generation_time", generation_time, global_step=0)
+    num_devices = jax.device_count()
+    num_videos = num_devices * config.per_device_batch_size
+    if num_videos > 0:
+      generation_time_per_video = generation_time / num_videos
+      writer.add_scalar("inference/generation_time_per_video", generation_time_per_video, global_step=0)
+      print(f"generation time per video: {generation_time_per_video}")
+    else:
+      max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
+
 
   s0 = time.perf_counter()
   if config.enable_profiler:
     max_utils.activate_profiler(config)
     videos = call_pipeline(config, pipeline, prompt, negative_prompt)
     max_utils.deactivate_profiler(config)
-    print("generation time: ", (time.perf_counter() - s0))
+    generation_time_with_profiler = time.perf_counter() - s0
+    print("generation_time_with_profiler: ", generation_time_with_profiler)
+    if writer and jax.process_index() == 0:
+      writer.add_scalar("inference/generation_time_with_profiler", generation_time_with_profiler, global_step=0)
+
   return saved_video_path
 
 
