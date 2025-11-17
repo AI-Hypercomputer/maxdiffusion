@@ -176,7 +176,7 @@ def run(config, pipeline=None, filename_prefix=""):
   print("number of devices: ", jax.device_count())
   print("per_device_batch_size: ", config.per_device_batch_size)
   print("============================================================")
-  
+
   compile_time = time.perf_counter() - s0
   print("compile_time: ", compile_time)
   if writer and jax.process_index() == 0:
