@@ -168,7 +168,15 @@ def run(config, pipeline=None, filename_prefix=""):
   )
 
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
-
+  print("===================== Model details =======================")
+  print("model name: ", config.model_name)
+  print("model path: ", config.pretrained_model_name_or_path)
+  print("model type: t2v")
+  print("hardware: ", jax.devices()[0].platform)
+  print("number of devices: ", jax.device_count())
+  print("per_device_batch_size: ", config.per_device_batch_size)
+  print("============================================================")
+  
   compile_time = time.perf_counter() - s0
   print("compile_time: ", compile_time)
   if writer and jax.process_index() == 0:
