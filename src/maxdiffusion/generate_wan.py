@@ -167,16 +167,16 @@ def run(config, pipeline=None, filename_prefix=""):
 
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
   max_logging.log("===================== Model details =======================")
-  max_logging.log("model name: ", config.model_name)
-  max_logging.log("model path: ", config.pretrained_model_name_or_path)
+  max_logging.log(f"model name: {config.model_name}")
+  max_logging.log(f"model path: {config.pretrained_model_name_or_path}")
   max_logging.log("model type: t2v")
-  max_logging.log("hardware: ", jax.devices()[0].platform)
-  max_logging.log("number of devices: ", jax.device_count())
-  max_logging.log("per_device_batch_size: ", config.per_device_batch_size)
+  max_logging.log(f"hardware: {jax.devices()[0].platform}")
+  max_logging.log(f"number of devices: {jax.device_count()}")
+  max_logging.log(f"per_device_batch_size: {config.per_device_batch_size}")
   max_logging.log("============================================================")
 
   compile_time = time.perf_counter() - s0
-  max_logging.log("compile_time: ", compile_time)
+  max_logging.log(f"compile_time: {compile_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/compile_time", compile_time, global_step=0)
   saved_video_path = []
@@ -190,7 +190,7 @@ def run(config, pipeline=None, filename_prefix=""):
   s0 = time.perf_counter()
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
   generation_time = time.perf_counter() - s0
-  max_logging.log("generation_time: ", generation_time)
+  max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/generation_time", generation_time, global_step=0)
     num_devices = jax.device_count()
@@ -209,7 +209,7 @@ def run(config, pipeline=None, filename_prefix=""):
     videos = call_pipeline(config, pipeline, prompt, negative_prompt)
     max_utils.deactivate_profiler(config)
     generation_time_with_profiler = time.perf_counter() - s0
-    max_logging.log("generation_time_with_profiler: ", generation_time_with_profiler)
+    max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
     if writer and jax.process_index() == 0:
       writer.add_scalar("inference/generation_time_with_profiler", generation_time_with_profiler, global_step=0)
 
