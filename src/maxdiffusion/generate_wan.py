@@ -149,12 +149,15 @@ def run(config, pipeline=None, filename_prefix=""):
   WanCheckpointer = checkpointer_lib.WanCheckpointer
 
   checkpoint_loader = WanCheckpointer(config, "WAN_CHECKPOINT")
-  pipeline, _, _ = checkpoint_loader.load_checkpoint()
-
   if pipeline is None:
-    pipeline_lib = get_pipeline(model_key)
-    WanPipeline = pipeline_lib.WanPipeline
-    pipeline = WanPipeline.from_pretrained(config)
+    pipeline, _, _ = checkpoint_loader.load_checkpoint()
+
+    if pipeline is None:
+      pipeline_lib = get_pipeline(model_key)
+      WanPipeline = pipeline_lib.WanPipeline
+      pipeline = WanPipeline.from_pretrained(config)
+  else:
+    max_logging.log("Using provided pipeline for inference.")
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on so not to create more config variables
