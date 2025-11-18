@@ -139,9 +139,7 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
 
 
 def run(config, pipeline=None, filename_prefix=""):
-  print("seed: ", config.seed)
   model_key = config.model_name
-  tensorboard_dir = os.path.join(config.output_dir, "tensorboard")
   # Initialize TensorBoard writer
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
@@ -168,17 +166,17 @@ def run(config, pipeline=None, filename_prefix=""):
   )
 
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
-  print("===================== Model details =======================")
-  print("model name: ", config.model_name)
-  print("model path: ", config.pretrained_model_name_or_path)
-  print("model type: t2v")
-  print("hardware: ", jax.devices()[0].platform)
-  print("number of devices: ", jax.device_count())
-  print("per_device_batch_size: ", config.per_device_batch_size)
-  print("============================================================")
+  max_logging.log("===================== Model details =======================")
+  max_logging.log("model name: ", config.model_name)
+  max_logging.log("model path: ", config.pretrained_model_name_or_path)
+  max_logging.log("model type: t2v")
+  max_logging.log("hardware: ", jax.devices()[0].platform)
+  max_logging.log("number of devices: ", jax.device_count())
+  max_logging.log("per_device_batch_size: ", config.per_device_batch_size)
+  max_logging.log("============================================================")
 
   compile_time = time.perf_counter() - s0
-  print("compile_time: ", compile_time)
+  max_logging.log("compile_time: ", compile_time)
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/compile_time", compile_time, global_step=0)
   saved_video_path = []
@@ -192,7 +190,7 @@ def run(config, pipeline=None, filename_prefix=""):
   s0 = time.perf_counter()
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
   generation_time = time.perf_counter() - s0
-  print("generation_time: ", generation_time)
+  max_logging.log("generation_time: ", generation_time)
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/generation_time", generation_time, global_step=0)
     num_devices = jax.device_count()
@@ -200,7 +198,7 @@ def run(config, pipeline=None, filename_prefix=""):
     if num_videos > 0:
       generation_time_per_video = generation_time / num_videos
       writer.add_scalar("inference/generation_time_per_video", generation_time_per_video, global_step=0)
-      print(f"generation time per video: {generation_time_per_video}")
+      max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
 
@@ -211,7 +209,7 @@ def run(config, pipeline=None, filename_prefix=""):
     videos = call_pipeline(config, pipeline, prompt, negative_prompt)
     max_utils.deactivate_profiler(config)
     generation_time_with_profiler = time.perf_counter() - s0
-    print("generation_time_with_profiler: ", generation_time_with_profiler)
+    max_logging.log("generation_time_with_profiler: ", generation_time_with_profiler)
     if writer and jax.process_index() == 0:
       writer.add_scalar("inference/generation_time_with_profiler", generation_time_with_profiler, global_step=0)
 
