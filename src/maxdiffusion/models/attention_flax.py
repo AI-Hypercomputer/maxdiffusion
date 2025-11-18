@@ -850,30 +850,41 @@ class FlaxWanAttention(nnx.Module):
     dtype = hidden_states.dtype
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
-
-    query_proj = self.query(hidden_states)
-    key_proj = self.key(encoder_hidden_states)
-    value_proj = self.value(encoder_hidden_states)
+      
+    with jax.named_scope("attn_qkv_proj"):
+      with jax.named_scope("proj_query"):
+        query_proj = self.query(hidden_states)
+      with jax.named_scope("proj_key"):
+        key_proj = self.key(encoder_hidden_states)
+      with jax.named_scope("proj_value"):
+        value_proj = self.value(encoder_hidden_states)
 
     if self.qk_norm:
-      query_proj = self.norm_q(query_proj)
-      key_proj = self.norm_k(key_proj)
+      with jax.named_scope("attn_q_norm"):
+        query_proj = self.norm_q(query_proj)
+      with jax.named_scope("attn_k_norm"):
+        key_proj = self.norm_k(key_proj)
     if rotary_emb is not None:
-      query_proj = _unflatten_heads(query_proj, self.heads)
-      key_proj = _unflatten_heads(key_proj, self.heads)
-      value_proj = _unflatten_heads(value_proj, self.heads)
-      # output of _unflatten_heads Batch, heads, seq_len, head_dim
-      query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
+      with jax.named_scope("attn_rope"):
+        query_proj = _unflatten_heads(query_proj, self.heads)
+        key_proj = _unflatten_heads(key_proj, self.heads)
+        value_proj = _unflatten_heads(value_proj, self.heads)
+        # output of _unflatten_heads Batch, heads, seq_len, head_dim
+        query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
     query_proj = checkpoint_name(query_proj, "query_proj")
     key_proj = checkpoint_name(key_proj, "key_proj")
     value_proj = checkpoint_name(value_proj, "value_proj")
-    attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+    
+    with jax.named_scope("attn_compute"):
+      attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
-    hidden_states = self.proj_attn(attn_output)
-    hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
+    
+    with jax.named_scope("attn_out_proj"):
+      hidden_states = self.proj_attn(attn_output)
+      hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     return hidden_states
 
 
