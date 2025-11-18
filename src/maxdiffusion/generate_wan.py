@@ -143,7 +143,7 @@ def run(config, pipeline=None, filename_prefix=""):
   # Initialize TensorBoard writer
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
-    max_logging.log(f"TensorBoard logs will be written to: {tensorboard_dir}")
+    max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
   checkpointer_lib = get_checkpointer(model_key)
   WanCheckpointer = checkpointer_lib.WanCheckpointer
