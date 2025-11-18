@@ -176,3 +176,7 @@ tags
 .ruff_cache
 
 wandb
+
+# Gemini CLI
+.gemini/
+gha-creds-*.json
