@@ -284,6 +284,10 @@ enable_profiler: False
 skip_first_n_steps_for_profiler: 5
 profiler_steps: 10
 
+# Enable JAX named scopes for detailed profiling and debugging
+# When enabled, adds named scopes around key operations in transformer and attention layers
+enable_jax_named_scopes: False
+
 # Generation parameters
 prompt: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
 prompt_2: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."

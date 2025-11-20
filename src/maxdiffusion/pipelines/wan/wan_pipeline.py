@@ -114,6 +114,7 @@ def create_sharded_logical_transformer(
   wan_config["dropout"] = config.dropout
   wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
+  wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.

@@ -15,6 +15,7 @@
 """
 
 from typing import Tuple, Optional, Dict, Union, Any
+import contextlib
 import math
 import jax
 import jax.numpy as jnp
@@ -205,11 +206,13 @@ class WanFeedForward(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      enable_jax_named_scopes: bool = False,
   ):
     if inner_dim is None:
       inner_dim = int(dim * mult)
     dim_out = dim_out if dim_out is not None else dim
 
+    self.enable_jax_named_scopes = enable_jax_named_scopes
     self.act_fn = nnx.data(None)
     if activation_fn == "gelu-approximate":
       self.act_fn = ApproximateGELU(
@@ -236,12 +239,16 @@ class WanFeedForward(nnx.Module):
         ),
     )
 
+  def conditional_named_scope(self, name: str):
+    """Return a JAX named scope if enabled, otherwise a null context."""
+    return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
+
   def __call__(self, hidden_states: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None) -> jax.Array:
-    with jax.named_scope("mlp_up_proj_and_gelu"):
+    with self.conditional_named_scope("mlp_up_proj_and_gelu"):
       hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
       hidden_states = checkpoint_name(hidden_states, "ffn_activation")
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
-    with jax.named_scope("mlp_down_proj"):
+    with self.conditional_named_scope("mlp_down_proj"):
       return self.proj_out(hidden_states)  # output is (4, 75600, 5120)
 
 
@@ -267,7 +274,10 @@ class WanTransformerBlock(nnx.Module):
       attention: str = "dot_product",
       dropout: float = 0.0,
       mask_padding_tokens: bool = True,
+      enable_jax_named_scopes: bool = False,
   ):
+
+    self.enable_jax_named_scopes = enable_jax_named_scopes
 
     # 1. Self-attention
     self.norm1 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=False)
@@ -289,6 +299,7 @@ class WanTransformerBlock(nnx.Module):
         is_self_attention=True,
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="self_attn",
+        enable_jax_named_scopes=enable_jax_named_scopes,
     )
 
     # 1. Cross-attention
@@ -310,6 +321,7 @@ class WanTransformerBlock(nnx.Module):
         is_self_attention=False,
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="cross_attn",
+        enable_jax_named_scopes=enable_jax_named_scopes,
     )
     assert cross_attn_norm is True
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
@@ -324,6 +336,7 @@ class WanTransformerBlock(nnx.Module):
         weights_dtype=weights_dtype,
         precision=precision,
         dropout=dropout,
+        enable_jax_named_scopes=enable_jax_named_scopes,
     )
     self.norm3 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=False)
 
@@ -331,6 +344,10 @@ class WanTransformerBlock(nnx.Module):
     self.adaln_scale_shift_table = nnx.Param(
         jax.random.normal(key, (1, 6, dim)) / dim**0.5,
     )
+
+  def conditional_named_scope(self, name: str):
+    """Return a JAX named scope if enabled, otherwise a null context."""
+    return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
 
   def __call__(
       self,
@@ -341,8 +358,8 @@ class WanTransformerBlock(nnx.Module):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ):
-    with jax.named_scope("transformer_block"):
-      with jax.named_scope("adaln"):
+    with self.conditional_named_scope("transformer_block"):
+      with self.conditional_named_scope("adaln"):
         shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
             (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
         )
@@ -351,12 +368,12 @@ class WanTransformerBlock(nnx.Module):
       encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", None))
 
       # 1. Self-attention
-      with jax.named_scope("self_attn"):
-        with jax.named_scope("self_attn_norm"):
+      with self.conditional_named_scope("self_attn"):
+        with self.conditional_named_scope("self_attn_norm"):
           norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(
               hidden_states.dtype
           )
-        with jax.named_scope("self_attn_attn"):
+        with self.conditional_named_scope("self_attn_attn"):
           attn_output = self.attn1(
               hidden_states=norm_hidden_states,
               encoder_hidden_states=norm_hidden_states,
@@ -364,32 +381,32 @@ class WanTransformerBlock(nnx.Module):
               deterministic=deterministic,
               rngs=rngs,
           )
-        with jax.named_scope("self_attn_residual"):
+        with self.conditional_named_scope("self_attn_residual"):
           hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
 
       # 2. Cross-attention
-      with jax.named_scope("cross_attn"):
-        with jax.named_scope("cross_attn_norm"):
+      with self.conditional_named_scope("cross_attn"):
+        with self.conditional_named_scope("cross_attn_norm"):
           norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32)).astype(hidden_states.dtype)
-        with jax.named_scope("cross_attn_attn"):
+        with self.conditional_named_scope("cross_attn_attn"):
           attn_output = self.attn2(
               hidden_states=norm_hidden_states,
               encoder_hidden_states=encoder_hidden_states,
               deterministic=deterministic,
               rngs=rngs,
           )
-        with jax.named_scope("cross_attn_residual"):
+        with self.conditional_named_scope("cross_attn_residual"):
           hidden_states = hidden_states + attn_output
 
       # 3. Feed-forward
-      with jax.named_scope("mlp"):
-        with jax.named_scope("mlp_norm"):
+      with self.conditional_named_scope("mlp"):
+        with self.conditional_named_scope("mlp_norm"):
           norm_hidden_states = (self.norm3(hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(
               hidden_states.dtype
           )
-        with jax.named_scope("mlp_ffn"):
+        with self.conditional_named_scope("mlp_ffn"):
           ff_output = self.ffn(norm_hidden_states, deterministic=deterministic, rngs=rngs)
-        with jax.named_scope("mlp_residual"):
+        with self.conditional_named_scope("mlp_residual"):
           hidden_states = (hidden_states.astype(jnp.float32) + ff_output.astype(jnp.float32) * c_gate_msa).astype(
               hidden_states.dtype
           )
@@ -432,11 +449,13 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       names_which_can_be_offloaded: list = [],
       mask_padding_tokens: bool = True,
       scan_layers: bool = True,
+      enable_jax_named_scopes: bool = False,
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
     self.num_layers = num_layers
     self.scan_layers = scan_layers
+    self.enable_jax_named_scopes = enable_jax_named_scopes
 
     # 1. Patch & position embedding
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
@@ -488,6 +507,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           attention=attention,
           dropout=dropout,
           mask_padding_tokens=mask_padding_tokens,
+          enable_jax_named_scopes=enable_jax_named_scopes,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
@@ -513,6 +533,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             weights_dtype=weights_dtype,
             precision=precision,
             attention=attention,
+            enable_jax_named_scopes=enable_jax_named_scopes,
         )
         blocks.append(block)
       self.blocks = blocks
@@ -533,6 +554,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, "embed")),
     )
 
+  def conditional_named_scope(self, name: str):
+    """Return a JAX named scope if enabled, otherwise a null context."""
+    return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
+
   def __call__(
       self,
       hidden_states: jax.Array,
@@ -552,12 +577,12 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     post_patch_width = width // p_w
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
-    with jax.named_scope("rotary_embedding"):
+    with self.conditional_named_scope("rotary_embedding"):
       rotary_emb = self.rope(hidden_states)
-    with jax.named_scope("patch_embedding"):
+    with self.conditional_named_scope("patch_embedding"):
       hidden_states = self.patch_embedding(hidden_states)
       hidden_states = jax.lax.collapse(hidden_states, 1, -1)
-    with jax.named_scope("condition_embedder"):
+    with self.conditional_named_scope("condition_embedder"):
       temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
           timestep, encoder_hidden_states, encoder_hidden_states_image
       )
