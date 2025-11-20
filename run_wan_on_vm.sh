@@ -64,5 +64,4 @@ per_device_batch_size=0.5 \
 ici_data_parallelism=2 \
 ici_fsdp_parallelism=2 \
 ici_tensor_parallelism=1 \
-enable_ssim=False \
-flash_block_sizes='{\"block_q\":2048,\"block_kv_compute\":512,\"block_kv\":2048,\"block_q_dkv\":2048,\"block_kv_dkv\":2048,\"block_kv_dkv_compute\":512,\"use_fused_bwd_kernel\":true}'
+enable_ssim=False
