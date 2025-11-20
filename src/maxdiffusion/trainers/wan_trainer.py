@@ -85,12 +85,15 @@ def print_ssim(pretrained_video_path, posttrained_video_path):
   max_logging.log(f"SSIM score after training is {ssim_compare}")
 
 
-class WanTrainer(WanCheckpointer):
+class WanTrainer:
 
   def __init__(self, config):
-    WanCheckpointer.__init__(self, config, WAN_CHECKPOINT)
+    # WanCheckpointer.__init__(self, config, WAN_CHECKPOINT)
     if config.train_text_encoder:
       raise ValueError("this script currently doesn't support training text_encoders")
+    self.config = config
+    model_key = config.model_name
+    self.checkpointer = WanCheckpointer(model_key, config, WAN_CHECKPOINT)
 
   def post_training_steps(self, pipeline, params, train_states, msg=""):
     pass
@@ -210,7 +213,7 @@ class WanTrainer(WanCheckpointer):
 
   def start_training(self):
 
-    pipeline, opt_state, step = self.load_checkpoint()
+    pipeline, opt_state, step = self.checkpointer.load_checkpoint()
     restore_args = {}
     if opt_state and step:
       restore_args = {"opt_state": opt_state, "step": step}
@@ -231,7 +234,7 @@ class WanTrainer(WanCheckpointer):
     scheduler, scheduler_state = self.create_scheduler()
     pipeline.scheduler = scheduler
     pipeline.scheduler_state = scheduler_state
-    optimizer, learning_rate_scheduler = self._create_optimizer(pipeline.transformer, self.config, 1e-5)
+    optimizer, learning_rate_scheduler = self.checkpointer._create_optimizer(pipeline.transformer, self.config, 1e-5)
     # Returns pipeline with trained transformer state
     pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, train_data_iterator, restore_args)
 
@@ -392,9 +395,9 @@ class WanTrainer(WanCheckpointer):
         if step != 0 and self.config.checkpoint_every != -1 and step % self.config.checkpoint_every == 0:
           max_logging.log(f"Saving checkpoint for step {step}")
           if self.config.save_optimizer:
-            self.save_checkpoint(step, pipeline, state)
+            self.checkpointer.save_checkpoint(step, pipeline, state)
           else:
-            self.save_checkpoint(step, pipeline, state.params)
+            self.checkpointer.save_checkpoint(step, pipeline, state.params)
 
       _metrics_queue.put(None)
       writer_thread.join()
@@ -402,8 +405,8 @@ class WanTrainer(WanCheckpointer):
         writer.flush()
       if self.config.save_final_checkpoint:
         max_logging.log(f"Saving final checkpoint for step {step}")
-        self.save_checkpoint(self.config.max_train_steps - 1, pipeline, state.params)
-        self.checkpoint_manager.wait_until_finished()
+        self.checkpointer.save_checkpoint(self.config.max_train_steps - 1, pipeline, state.params)
+        self.checkpointer.checkpoint_manager.wait_until_finished()
       # load new state for trained tranformer
       pipeline.transformer = nnx.merge(state.graphdef, state.params, state.rest_of_state)
       return pipeline
