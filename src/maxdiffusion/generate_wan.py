@@ -16,7 +16,6 @@ from typing import Sequence
 import jax
 import time
 import os
-from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
@@ -128,7 +127,7 @@ def run(config, pipeline=None, filename_prefix=""):
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
-  
+
   if pipeline is None:
     checkpoint_loader = WanCheckpointer(model_key=model_key, config=config)
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
