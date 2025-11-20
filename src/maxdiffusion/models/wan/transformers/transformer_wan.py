@@ -264,6 +264,7 @@ class WanTransformerBlock(nnx.Module):
       precision: jax.lax.Precision = None,
       attention: str = "dot_product",
       dropout: float = 0.0,
+      mask_padding_tokens: bool = True,
   ):
 
     # 1. Self-attention
@@ -283,6 +284,8 @@ class WanTransformerBlock(nnx.Module):
         precision=precision,
         attention_kernel=attention,
         dropout=dropout,
+        is_self_attention=True,
+        mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="self_attn",
     )
 
@@ -302,6 +305,8 @@ class WanTransformerBlock(nnx.Module):
         precision=precision,
         attention_kernel=attention,
         dropout=dropout,
+        is_self_attention=False,
+        mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="cross_attn",
     )
     assert cross_attn_norm is True
@@ -357,7 +362,10 @@ class WanTransformerBlock(nnx.Module):
     # 2. Cross-attention
     norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32)).astype(hidden_states.dtype)
     attn_output = self.attn2(
-        hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs
+        hidden_states=norm_hidden_states,
+        encoder_hidden_states=encoder_hidden_states,
+        deterministic=deterministic,
+        rngs=rngs,
     )
     hidden_states = hidden_states + attn_output
 
@@ -406,6 +414,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       remat_policy: str = "None",
       names_which_can_be_saved: list = [],
       names_which_can_be_offloaded: list = [],
+      mask_padding_tokens: bool = True,
       scan_layers: bool = True,
   ):
     inner_dim = num_attention_heads * attention_head_dim
@@ -462,6 +471,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           precision=precision,
           attention=attention,
           dropout=dropout,
+          mask_padding_tokens=mask_padding_tokens,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
@@ -527,8 +537,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
     rotary_emb = self.rope(hidden_states)
-
-    hidden_states = self.patch_embedding(hidden_states)
+    with jax.named_scope("PatchEmbedding"):
+      hidden_states = self.patch_embedding(hidden_states)
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
 
     temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(

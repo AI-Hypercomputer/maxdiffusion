@@ -187,6 +187,7 @@ def run(config, pipeline=None, filename_prefix=""):
     max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
     if writer and jax.process_index() == 0:
       writer.add_scalar("inference/generation_time_with_profiler", generation_time_with_profiler, global_step=0)
+
   return saved_video_path
 
 

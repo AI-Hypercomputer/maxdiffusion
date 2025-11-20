@@ -4,7 +4,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
 # C extensions
 *.so
 
@@ -98,6 +97,7 @@ celerybeat-schedule
 
 # Environments
 .env
+.history
 .venv
 env/
 venv/
@@ -176,3 +176,7 @@ tags
 .ruff_cache
 
 wandb
+
+# Gemini CLI
+.gemini/
+gha-creds-*.json
