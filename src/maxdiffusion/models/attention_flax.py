@@ -850,7 +850,7 @@ class FlaxWanAttention(nnx.Module):
     dtype = hidden_states.dtype
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
-      
+
     with jax.named_scope("attn_qkv_proj"):
       with jax.named_scope("proj_query"):
         query_proj = self.query(hidden_states)
@@ -875,13 +875,13 @@ class FlaxWanAttention(nnx.Module):
     query_proj = checkpoint_name(query_proj, "query_proj")
     key_proj = checkpoint_name(key_proj, "key_proj")
     value_proj = checkpoint_name(value_proj, "value_proj")
-    
+
     with jax.named_scope("attn_compute"):
       attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
-    
+
     with jax.named_scope("attn_out_proj"):
       hidden_states = self.proj_attn(attn_output)
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)

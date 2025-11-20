@@ -538,7 +538,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
     rotary_emb = self.rope(hidden_states)
-    
+
     with jax.named_scope("patch_embedding"):
       hidden_states = self.patch_embedding(hidden_states)
       hidden_states = jax.lax.collapse(hidden_states, 1, -1)
