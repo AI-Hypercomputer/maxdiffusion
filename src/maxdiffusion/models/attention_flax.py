@@ -973,12 +973,12 @@ class FlaxWanAttention(nnx.Module):
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
 
-    with jax.named_scope("attn_qkv_proj"):
-      with jax.named_scope("proj_query"):
+    with self.conditional_named_scope("attn_qkv_proj"):
+      with self.conditional_named_scope("proj_query"):
         query_proj = self.query(hidden_states)
-      with jax.named_scope("proj_key"):
+      with self.conditional_named_scope("proj_key"):
         key_proj = self.key(encoder_hidden_states)
-      with jax.named_scope("proj_value"):
+      with self.conditional_named_scope("proj_value"):
         value_proj = self.value(encoder_hidden_states)
 
     if self.qk_norm:
