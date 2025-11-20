@@ -119,10 +119,10 @@ def run(config, pipeline=None, filename_prefix=""):
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
-  checkpoint_loader = WanCheckpointer(model_key=model_key, config=config)
-  pipeline, _, _ = checkpoint_loader.load_checkpoint()
+  
   if pipeline is None:
-    pipeline = WanPipeline.from_pretrained(model_key=model_key, config=config)
+    checkpoint_loader = WanCheckpointer(model_key=model_key, config=config)
+    pipeline, _, _ = checkpoint_loader.load_checkpoint()
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on so not to create more config variables
