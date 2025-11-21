@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import functools
 import math
 from typing import Optional, Callable, Tuple
@@ -805,6 +806,7 @@ class FlaxWanAttention(nnx.Module):
       is_self_attention: bool = True,
       mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
+      enable_jax_named_scopes: bool = False,
   ):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
@@ -820,6 +822,7 @@ class FlaxWanAttention(nnx.Module):
     self.key_axis_names = key_axis_names
     self.value_axis_names = value_axis_names
     self.out_axis_names = out_axis_names
+    self.enable_jax_named_scopes = enable_jax_named_scopes
 
     if is_self_attention:
       axis_names_q = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_Q_LENGTH, D_KV)
@@ -952,6 +955,10 @@ class FlaxWanAttention(nnx.Module):
 
     return xq_out, xk_out
 
+  def conditional_named_scope(self, name: str):
+    """Return a JAX named scope if enabled, otherwise a null context."""
+    return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
+
   def __call__(
       self,
       hidden_states: jax.Array,
@@ -966,29 +973,41 @@ class FlaxWanAttention(nnx.Module):
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
 
-    query_proj = self.query(hidden_states)
-    key_proj = self.key(encoder_hidden_states)
-    value_proj = self.value(encoder_hidden_states)
+    with self.conditional_named_scope("attn_qkv_proj"):
+      with self.conditional_named_scope("proj_query"):
+        query_proj = self.query(hidden_states)
+      with self.conditional_named_scope("proj_key"):
+        key_proj = self.key(encoder_hidden_states)
+      with self.conditional_named_scope("proj_value"):
+        value_proj = self.value(encoder_hidden_states)
 
     if self.qk_norm:
-      query_proj = self.norm_q(query_proj)
-      key_proj = self.norm_k(key_proj)
+      with self.conditional_named_scope("attn_q_norm"):
+        query_proj = self.norm_q(query_proj)
+      with self.conditional_named_scope("attn_k_norm"):
+        key_proj = self.norm_k(key_proj)
+
     if rotary_emb is not None:
-      query_proj = _unflatten_heads(query_proj, self.heads)
-      key_proj = _unflatten_heads(key_proj, self.heads)
-      value_proj = _unflatten_heads(value_proj, self.heads)
-      # output of _unflatten_heads Batch, heads, seq_len, head_dim
-      query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
+      with self.conditional_named_scope("attn_rope"):
+        query_proj = _unflatten_heads(query_proj, self.heads)
+        key_proj = _unflatten_heads(key_proj, self.heads)
+        value_proj = _unflatten_heads(value_proj, self.heads)
+        # output of _unflatten_heads Batch, heads, seq_len, head_dim
+        query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
     query_proj = checkpoint_name(query_proj, "query_proj")
     key_proj = checkpoint_name(key_proj, "key_proj")
     value_proj = checkpoint_name(value_proj, "value_proj")
-    attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+
+    with self.conditional_named_scope("attn_compute"):
+      attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
-    hidden_states = self.proj_attn(attn_output)
-    hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
+
+    with self.conditional_named_scope("attn_out_proj"):
+      hidden_states = self.proj_attn(attn_output)
+      hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     return hidden_states
 
 
