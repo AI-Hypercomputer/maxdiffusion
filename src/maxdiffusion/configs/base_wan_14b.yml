@@ -353,3 +353,10 @@ enable_generate_video_for_eval: False # This will increase the used TPU memory.
 eval_max_number_of_samples_in_bucket: 60 # The number of samples per bucket for evaluation. This is calculated by num_eval_samples / len(timesteps_list).
 
 enable_ssim: False
+
+# Enable frame-by-frame debugging visualization
+visualize_frame_debug: True
+
+# Visualization output settings
+visualization_output_dir: "wan_visualization_output"  # Will be created if it doesn't exist
+save_tensor_stats: True      # Save tensor statistics to JSON files

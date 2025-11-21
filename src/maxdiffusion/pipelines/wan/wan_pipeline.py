@@ -15,6 +15,7 @@
 from typing import List, Union, Optional
 from functools import partial
 import numpy as np
+import os
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
@@ -34,6 +35,7 @@ from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepSche
 from transformers import AutoTokenizer, UMT5EncoderModel
 from maxdiffusion.utils.import_utils import is_ftfy_available
 from maxdiffusion.maxdiffusion_utils import get_dummy_wan_inputs
+from ...visualization import VisualizationMixin, create_visualization_videos
 import html
 import re
 import torch
@@ -172,7 +174,7 @@ def create_sharded_logical_model(model, logical_axis_rules):
   return model
 
 
-class WanPipeline:
+class WanPipeline(VisualizationMixin):
   r"""
   Pipeline for text-to-video generation using Wan.
 
@@ -539,6 +541,157 @@ class WanPipeline:
 
     return latents
 
+  def visualize_frame(
+      self,
+      hidden_states: jnp.ndarray,
+      timestep: int,
+      frame_idx: int = 0
+  ) -> None:
+    """
+    Generate visualization for a specific frame at timestep t.
+    Creates two images: noise representation and current decoded image.
+
+    Args:
+        hidden_states: Current latent states with shape (batch, channels, frames, height, width)
+        timestep: Current timestep value
+        frame_idx: Which frame to visualize (default: 0 for first frame)
+    """
+    if not self._should_visualize("frame_debug"):
+      return
+
+    try:
+      max_logging.log(f"Visualizing frame {frame_idx} at timestep {timestep}")
+
+      # Convert to numpy and get statistics
+      hidden_states_np = np.array(hidden_states)
+      batch_size, num_channels, num_frames, height, width = hidden_states_np.shape
+
+      # Ensure frame_idx is valid
+      frame_idx = min(frame_idx, num_frames - 1)
+
+      # Extract the specific frame from first batch
+      frame_latents = hidden_states_np[0, :, frame_idx, :, :]  # (channels, height, width)
+
+      # Save latent tensor statistics and raw data
+      viz_dir = self._get_visualization_dir("frame_debug")
+      latent_filename = f"latent_t{timestep}_frame{frame_idx}"
+
+      self._save_tensor_stats(frame_latents, latent_filename, "frame_debug")
+      latent_path = self._save_tensor_as_numpy(frame_latents, latent_filename, "frame_debug")
+
+      # 1. Create noise visualization (latent space representation)
+      noise_image_path = os.path.join(viz_dir, f"noise_t{timestep}_frame{frame_idx}.png")
+
+      # Show just the first channel as a single image (like how video is parsed)
+      channel_0 = frame_latents[0]  # (height, width) - first channel only
+
+      # Create single image plot for the latent channel with fixed dimensions
+      try:
+        import matplotlib.pyplot as plt
+
+        # Use fixed figure size and DPI for consistent output dimensions
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        # Display the latent channel
+        im = ax.imshow(channel_0, cmap='viridis')
+        ax.set_title(f"Latent Channel 0 at t={timestep}, Frame {frame_idx}")
+        ax.axis('off')
+
+        # Add colorbar with fixed positioning
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label('Latent Value')
+
+        # Save with fixed dimensions (no bbox_inches='tight' to avoid size variations)
+        plt.savefig(noise_image_path, dpi=150, bbox_inches=None,
+                   facecolor='white', edgecolor='none')
+        plt.close()
+
+        max_logging.log(f"Saved noise visualization to {noise_image_path}")
+
+      except ImportError:
+        max_logging.log("matplotlib not available, skipping noise visualization")
+
+      # 2. Create current image visualization (VAE decoded)
+      current_image_path = os.path.join(viz_dir, f"current_image_t{timestep}_frame{frame_idx}.png")
+
+      # Decode through VAE
+      latents_for_decode = hidden_states[:, :, frame_idx:frame_idx+1, :, :]  # Keep single frame with proper dims
+
+      # Apply VAE scaling
+      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
+      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
+      scaled_latents = latents_for_decode / latents_std + latents_mean
+      scaled_latents = scaled_latents.astype(jnp.float32)
+
+      # Decode through VAE
+      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+        video = self.vae.decode(scaled_latents, self.vae_cache)[0]
+
+      # Process video
+      video = jnp.transpose(video, (0, 4, 1, 2, 3))
+      video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
+      video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
+      video = self.video_processor.postprocess_video(video, output_type="np")
+
+      # Extract the decoded frame
+      video_np = np.array(video)
+      decoded_frame = video_np[0, 0]  # (height, width, channels) - first batch, first frame
+
+      # Handle different channel formats for display
+      if decoded_frame.shape[-1] == 3:
+        # RGB
+        display_frame = np.clip(decoded_frame, 0, 1)
+        cmap = None
+      else:
+        # Convert to grayscale
+        display_frame = decoded_frame.mean(axis=-1) if len(decoded_frame.shape) == 3 else decoded_frame
+        cmap = 'gray'
+
+      # Create single image plot with fixed dimensions
+      try:
+        import matplotlib.pyplot as plt
+
+        # Use fixed figure size for consistent output dimensions
+        fig, ax = plt.subplots(figsize=(10, 10))
+
+        ax.imshow(display_frame, cmap=cmap)
+        ax.set_title(f"Decoded Frame {frame_idx} at t={timestep}")
+        ax.axis('off')
+
+        # Save with fixed dimensions (no bbox_inches='tight' to avoid size variations)
+        plt.savefig(current_image_path, dpi=150, bbox_inches=None,
+                   facecolor='white', edgecolor='none')
+        plt.close()
+
+        max_logging.log(f"Saved current image to {current_image_path}")
+
+      except ImportError:
+        max_logging.log("matplotlib not available for current image visualization")
+
+      max_logging.log("Frame visualization complete:")
+      max_logging.log(f"  - Noise representation: {noise_image_path}")
+      max_logging.log(f"  - Current decoded image: {current_image_path}")
+      max_logging.log(f"  - Raw latents: {latent_path}")
+
+    except Exception as e:
+      max_logging.log(f"Error in frame visualization: {e}")
+
+  def _create_visualization_videos(self) -> None:
+    """
+    Create denoising and noise evolution videos from the visualization output.
+    Uses 4 fps (0.25 seconds per frame) by default.
+    """
+    try:
+      viz_dir = self._get_visualization_dir("frame_debug")
+      if os.path.exists(viz_dir):
+        max_logging.log("Creating visualization videos...")
+        # Use 4 fps for 0.25 seconds per frame (default)
+        create_visualization_videos(viz_dir, output_prefix="wan_visualization", fps=4.0)
+      else:
+        max_logging.log(f"Visualization directory not found: {viz_dir}")
+    except Exception as e:
+      max_logging.log(f"Error creating visualization videos: {e}")
+
   def __call__(
       self,
       prompt: Union[str, List[str]] = None,
@@ -603,6 +756,11 @@ class WanPipeline:
           self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
       )
 
+      # Visualize initial noise if enabled - using actual first timestep
+      if self._should_visualize("frame_debug"):
+        initial_timestep = int(scheduler_state.timesteps[0])
+        self.visualize_frame(latents, timestep=initial_timestep, frame_idx=0)
+
       graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
 
       p_run_inference = partial(
@@ -612,6 +770,8 @@ class WanPipeline:
           scheduler=self.scheduler,
           scheduler_state=scheduler_state,
           num_transformer_layers=self.transformer.config.num_layers,
+          should_visualize=self._should_visualize("frame_debug"),
+          visualize_fn=self.visualize_frame if self._should_visualize("frame_debug") else None,
       )
 
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -623,6 +783,13 @@ class WanPipeline:
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
         )
+
+        # Visualize final denoised latents if enabled
+        if self._should_visualize("frame_debug"):
+          # Use the last (lowest) timestep from the scheduler
+          final_timestep = int(scheduler_state.timesteps[-1])
+          self.visualize_frame(latents, timestep=final_timestep, frame_idx=0)
+
         latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
         latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
         latents = latents / latents_std + latents_mean
@@ -635,6 +802,11 @@ class WanPipeline:
     video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
     video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
     video = self.video_processor.postprocess_video(video, output_type="np")
+
+    # Generate visualization videos if frame debugging is enabled
+    if not vae_only and self._should_visualize("frame_debug"):
+      self._create_visualization_videos()
+
     return video
 
 
@@ -673,6 +845,8 @@ def run_inference(
     scheduler: FlaxUniPCMultistepScheduler,
     num_transformer_layers: int,
     scheduler_state,
+    should_visualize: bool = False,
+    visualize_fn = None,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
   if do_classifier_free_guidance:
@@ -695,4 +869,8 @@ def run_inference(
     )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+    # Visualize latents at each step if enabled
+    if should_visualize and visualize_fn is not None:
+      visualize_fn(latents, timestep=int(t), frame_idx=0)
+
   return latents
