@@ -625,9 +625,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         hidden_states = rematted_layer_forward(hidden_states)
 
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
-
-    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
-    hidden_states = self.proj_out(hidden_states)
+    with self.conditional_named_scope("output_norm"):
+      hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
+    with self.conditional_named_scope("output_proj"):
+      hidden_states = self.proj_out(hidden_states)
 
     hidden_states = hidden_states.reshape(
         batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1
