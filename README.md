@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2025/11/11`**: Wan2.2 txt2vid generation is now supported
 - **`2025/10/10`**: Wan2.1 txt2vid training and generation is now supported.
 - **`2025/10/14`**: NVIDIA DGX Spark Flux support.
 - **`2025/8/14`**: LTX-Video img2vid generation is now supported.

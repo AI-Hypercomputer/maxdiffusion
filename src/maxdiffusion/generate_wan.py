@@ -16,9 +16,9 @@ from typing import Sequence
 import jax
 import time
 import os
+from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer2_1, WanCheckpointer2_2
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
-import importlib
 from maxdiffusion.utils import export_to_video
 from google.cloud import storage
 import flax
@@ -72,22 +72,6 @@ if "xla_tpu_spmd_rng_bit_generator_unsafe" not in os.environ.get("LIBTPU_INIT_AR
       os.environ.get("LIBTPU_INIT_ARGS", "") + " --xla_tpu_spmd_rng_bit_generator_unsafe=true"
   )
 
-def get_pipeline(model_name: str):
-  if model_name == "wan2.1":
-    return importlib.import_module("maxdiffusion.pipelines.wan.wan_pipeline")
-  elif model_name == "wan2.2":
-    return importlib.import_module("maxdiffusion.pipelines.wan.wan_pipeline2_2")
-  else:
-    raise ValueError(f"Unsupported model_name in config: {model_name}")
-
-def get_checkpointer(model_name: str):
-  if model_name == "wan2.1":
-    return importlib.import_module("maxdiffusion.checkpointing.wan_checkpointer")
-  elif model_name == "wan2.2":
-    return importlib.import_module("maxdiffusion.checkpointing.wan_checkpointer2_2")
-  else:
-    raise ValueError(f"Unsupported model_name in config: {model_name}")
-
 def call_pipeline(config, pipeline, prompt, negative_prompt):
   model_key = config.model_name
   if model_key == "wan2.1":
@@ -140,21 +124,18 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
 
 def run(config, pipeline=None, filename_prefix=""):
   model_key = config.model_name
-  # Initialize TensorBoard writer
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
-  checkpointer_lib = get_checkpointer(model_key)
-  WanCheckpointer = checkpointer_lib.WanCheckpointer
-
-  checkpoint_loader = WanCheckpointer(config, "WAN_CHECKPOINT")
-  pipeline, _, _ = checkpoint_loader.load_checkpoint()
-
   if pipeline is None:
-    pipeline_lib = get_pipeline(model_key)
-    WanPipeline = pipeline_lib.WanPipeline
-    pipeline = WanPipeline.from_pretrained(config)
+    if model_key == "wan2.1":
+      checkpoint_loader = WanCheckpointer2_1(config=config)
+    elif model_key == "wan2.2":
+      checkpoint_loader = WanCheckpointer2_2(config=config)
+    else:
+      raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
+    pipeline, _, _ = checkpoint_loader.load_checkpoint()
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on so not to create more config variables
@@ -164,8 +145,8 @@ def run(config, pipeline=None, filename_prefix=""):
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
   )
-
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")
   max_logging.log(f"model path: {config.pretrained_model_name_or_path}")
@@ -201,8 +182,6 @@ def run(config, pipeline=None, filename_prefix=""):
       max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
-
-
   s0 = time.perf_counter()
   if config.enable_profiler:
     max_utils.activate_profiler(config)
