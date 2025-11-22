@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from abc import abstractmethod
-from typing import List, Union, Optional, Type
+from typing import List, Union, Optional
 from functools import partial
 import numpy as np
 import jax

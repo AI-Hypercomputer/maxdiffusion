@@ -19,7 +19,7 @@ import json
 
 import jax
 import numpy as np
-from typing import Optional, Tuple, Type
+from typing import Optional, Tuple
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
 from ..pipelines.wan.wan_pipeline import WanPipeline2_1, WanPipeline2_2
 from .. import max_logging, max_utils

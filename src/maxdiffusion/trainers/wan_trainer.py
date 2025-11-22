@@ -29,7 +29,7 @@ from flax import nnx
 from maxdiffusion.schedulers import FlaxFlowMatchScheduler
 from flax.linen import partitioning as nn_partitioning
 from maxdiffusion import max_utils, max_logging, train_utils
-from maxdiffusion.checkpointing.wan_checkpointer import (WanCheckpointer2_1, WAN_CHECKPOINT)
+from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer2_1
 from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
 from maxdiffusion.generate_wan import run as generate_wan
 from maxdiffusion.generate_wan import inference_generate_video
