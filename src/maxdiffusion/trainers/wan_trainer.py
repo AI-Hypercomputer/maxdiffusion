@@ -29,7 +29,7 @@ from flax import nnx
 from maxdiffusion.schedulers import FlaxFlowMatchScheduler
 from flax.linen import partitioning as nn_partitioning
 from maxdiffusion import max_utils, max_logging, train_utils
-from maxdiffusion.checkpointing.wan_checkpointer import (WanCheckpointer, WAN_CHECKPOINT)
+from maxdiffusion.checkpointing.wan_checkpointer import (WanCheckpointer2_1, WAN_CHECKPOINT)
 from maxdiffusion.input_pipeline.input_pipeline_interface import (make_data_iterator)
 from maxdiffusion.generate_wan import run as generate_wan
 from maxdiffusion.generate_wan import inference_generate_video
@@ -88,14 +88,13 @@ def print_ssim(pretrained_video_path, posttrained_video_path):
 class WanTrainer:
 
   def __init__(self, config):
-    # WanCheckpointer.__init__(self, config, WAN_CHECKPOINT)
     if config.train_text_encoder:
       raise ValueError("this script currently doesn't support training text_encoders")
     self.config = config
     model_key = config.model_name
     if model_key != 'wan2.1':
       raise ValueError(f"Unsupported model_name: '{model_key}'. This trainer only supports 'wan2.1'.")
-    self.checkpointer = WanCheckpointer(model_key, config, WAN_CHECKPOINT)
+    self.checkpointer = WanCheckpointer2_1(config=config)
 
   def post_training_steps(self, pipeline, params, train_states, msg=""):
     pass

@@ -189,7 +189,6 @@ class WanPipeline:
   vae ([`AutoencoderKLWan`]):
       Variational Auto-Encoder (VAE) Model to encode and decode videos to and from latent representations.
   """
-  _SUBCLASS_MAP: dict[str, Type['WanPipeline']] = {}
   def __init__(
       self,
       tokenizer: AutoTokenizer,
@@ -499,26 +498,6 @@ class WanPipeline:
           components["text_encoder"] = cls.load_text_encoder(config=config)
           components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
       return components
-
-  @classmethod
-  def _get_subclass(cls, model_key: str) -> Type['WanPipeline']:
-    subclass = cls._SUBCLASS_MAP.get(model_key)
-    if subclass is None:
-        raise ValueError(
-            f"Unknown model_key for WanPipeline: '{model_key}'. "
-            f"Supported keys are: {list(cls._SUBCLASS_MAP.keys())}"
-        )
-    return subclass
-
-  @classmethod
-  def from_checkpoint(cls, model_key: str, config: HyperParameters, restored_checkpoint=None, vae_only=False, load_transformer=True):
-    subclass = cls._get_subclass(model_key)
-    return subclass.from_checkpoint(config, restored_checkpoint=restored_checkpoint, vae_only=vae_only, load_transformer=load_transformer)
-
-  @classmethod
-  def from_pretrained(cls, model_key: str, config: HyperParameters, vae_only=False, load_transformer=True):
-    subclass = cls._get_subclass(model_key)
-    return subclass.from_pretrained(config, vae_only=vae_only, load_transformer=load_transformer)
 
   @abstractmethod
   def _get_num_channel_latents(self) -> int:
@@ -929,6 +908,3 @@ def run_inference_2_2(
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
   return latents
-
-WanPipeline._SUBCLASS_MAP["wan2.1"] = WanPipeline2_1
-WanPipeline._SUBCLASS_MAP["wan2.2"] = WanPipeline2_2

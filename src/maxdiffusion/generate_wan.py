@@ -16,7 +16,7 @@ from typing import Sequence
 import jax
 import time
 import os
-from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
+from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer2_1, WanCheckpointer2_2
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
 from maxdiffusion.utils import export_to_video
@@ -129,7 +129,12 @@ def run(config, pipeline=None, filename_prefix=""):
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
   if pipeline is None:
-    checkpoint_loader = WanCheckpointer(model_key=model_key, config=config)
+    if model_key == "wan2.1":
+      checkpoint_loader = WanCheckpointer2_1(config=config)
+    elif model_key == "wan2.2":
+      checkpoint_loader = WanCheckpointer2_2(config=config)
+    else:
+      raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
   s0 = time.perf_counter()
 

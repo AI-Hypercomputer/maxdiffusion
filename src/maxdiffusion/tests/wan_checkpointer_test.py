@@ -34,7 +34,7 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     mock_pipeline_instance = MagicMock()
     mock_wan_pipeline.from_pretrained.return_value = mock_pipeline_instance
 
-    checkpointer = WanCheckpointer2_1(model_key=self.config.model_key, config=self.config)
+    checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=None)
 
     mock_manager.latest_step.assert_called_once()
@@ -64,7 +64,7 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     mock_pipeline_instance = MagicMock()
     mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
 
-    checkpointer = WanCheckpointer2_1(model_key=self.config.model_key, config=self.config)
+    checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
@@ -94,7 +94,7 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     mock_pipeline_instance = MagicMock()
     mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
 
-    checkpointer = WanCheckpointer2_1(model_key=self.config.model_key, config=self.config)
+    checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
@@ -124,7 +124,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     mock_pipeline_instance = MagicMock()
     mock_wan_pipeline.from_pretrained.return_value = mock_pipeline_instance
 
-    checkpointer = WanCheckpointer2_2(model_key=self.config.model_key, config=self.config)
+    checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=None)
 
     mock_manager.latest_step.assert_called_once()
@@ -157,7 +157,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     mock_pipeline_instance = MagicMock()
     mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
 
-    checkpointer = WanCheckpointer2_2(model_key=self.config.model_key, config=self.config)
+    checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
@@ -190,7 +190,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     mock_pipeline_instance = MagicMock()
     mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
 
-    checkpointer = WanCheckpointer2_2(model_key=self.config.model_key, config=self.config)
+    checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
@@ -224,7 +224,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     mock_pipeline_instance = MagicMock()
     mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
 
-    checkpointer = WanCheckpointer2_2(model_key=self.config.model_key, config=self.config)
+    checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
@@ -263,7 +263,7 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     mock_pipeline_instance = MagicMock()
     mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
 
-    checkpointer = WanCheckpointer2_1(model_key=self.config.model_key, config=self.config)
+    checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=None)
 
     mock_manager.latest_step.assert_called_once()
@@ -291,7 +291,7 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     mock_pipeline_instance = MagicMock()
     mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
 
-    checkpointer = WanCheckpointer2_2(model_key=self.config.model_key, config=self.config)
+    checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     # Should prioritize low_noise_transformer's optimizer state
