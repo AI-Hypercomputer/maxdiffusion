@@ -105,9 +105,10 @@ class WanCausalConv3d(nnx.Module):
           if shard_axis is None and width % num_fsdp_devices == 0:
              shard_width_axis = "fsdp"
 
+          # CRITICAL FIX: First axis is "data" (Batch), NOT None
           cache = jax.lax.with_sharding_constraint(
               cache, 
-              PartitionSpec(None, None, shard_axis, shard_width_axis, None)
+              PartitionSpec("data", None, shard_axis, shard_width_axis, None)
           )
       return cache
 
@@ -123,9 +124,10 @@ class WanCausalConv3d(nnx.Module):
          if shard_axis is None and width % num_fsdp_devices == 0:
              shard_width_axis = "fsdp"
 
+         # CRITICAL FIX: First axis is "data" (Batch), NOT None
          x = jax.lax.with_sharding_constraint(
              x, 
-             PartitionSpec(None, None, shard_axis, shard_width_axis, None)
+             PartitionSpec("data", None, shard_axis, shard_width_axis, None)
          )
 
     current_padding = list(self._causal_padding)
@@ -238,7 +240,7 @@ class WanResample(nnx.Module):
     if self.mode == "upsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x = self.resample(x) # Sequential
+        x = self.resample(x)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
@@ -260,14 +262,14 @@ class WanResample(nnx.Module):
     elif self.mode == "downsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.resample(x, None) # ZeroPaddedConv2D
+        x, _ = self.resample(x, None)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample3d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.resample(x, None) # ZeroPaddedConv2D
+        x, _ = self.resample(x, None)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
         
@@ -561,7 +563,7 @@ class WanDecoder3d(nnx.Module):
 
 
 class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
-  def __init__(self, rngs: nnx.Rngs, base_dim: int = 96, z_dim: int = 16, dim_mult: Tuple[int] = [1, 2, 4, 4], num_res_blocks: int = 2, attn_scales: List[float] = [], temperal_downsample: List[bool] = [False, True, True], dropout: float = 0.0, latents_mean: List[float] = [], latents_std: List[float] = [], mesh: jax.sharding.Mesh = None, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: jax.lax.Precision = None):
+  def __init__(self, rngs: nnx.Rngs, base_dim: int = 96, z_dim: int = 16, dim_mult: Tuple[int] = [1, 2, 4, 4], num_res_blocks: int = 2, attn_scales: List[float] = [], temperal_downsample: List[bool] = [False, True, True], dropout=0.0, latents_mean: List[float] = [], latents_std: List[float] = [], mesh: jax.sharding.Mesh = None, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: jax.lax.Precision = None):
     self.z_dim = z_dim
     self.temperal_downsample = temperal_downsample
     self.temporal_upsample = temperal_downsample[::-1]
@@ -611,9 +613,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     def scan_fn(carry, input_slice):
         # Expand Time dimension for Conv3d
         input_slice = jnp.expand_dims(input_slice, 1)
+        # OPTIMIZATION: Force bfloat16 accumulation within the scan
+        # to save memory on the massive output buffer
         out_slice, new_carry = self.decoder(input_slice, carry)
         out_slice = out_slice.astype(jnp.bfloat16)
-        # Don't squeeze here; keep the upsampled frames (B, 4, H, W, C)
         return new_carry, out_slice
         
     final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
