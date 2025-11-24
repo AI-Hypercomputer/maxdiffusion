@@ -178,26 +178,102 @@ class WanResample(nnx.Module):
     self.dim = dim
     self.mode = mode
     
+    # ATTRIBUTES MUST BE DEFINED IN THE INIT PATH
+    # We use different attribute names depending on mode to match strict checkpoint keys if needed,
+    # OR we rely on the fact that the checkpoint loading mapping handles the name translation.
+    # based on the error, the checkpoint expects 'resample' to be a Sequential for 2D modes.
+
     if mode == "upsample2d":
-       # FIX: Use Sequential to match checkpoint keys
+       # Map: resample.layers.0 -> WanUpsample
+       # Map: resample.layers.1 -> Conv
        self.resample = nnx.Sequential(
           WanUpsample(scale_factor=(2.0, 2.0), method="nearest"),
-          nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
+          nnx.Conv(
+              dim, 
+              dim // 2, 
+              kernel_size=(3, 3), 
+              padding="SAME", 
+              use_bias=True, 
+              rngs=rngs, 
+              kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), 
+              dtype=dtype, 
+              param_dtype=weights_dtype, 
+              precision=precision
+          )
        )
+    
     elif mode == "upsample3d":
-       # 3D mode uses explicit attributes for cache handling
+       # 3D mode: Code handles 'upsample' and 'conv' separately in __call__,
+       # BUT for checkpoint loading, if the checkpoint has 'resample.layers...', 
+       # we might need to match that.
+       # However, standard Wan3D usually has explicit components.
+       # We will stick to explicit attributes here as defined in previous working versions.
        self.upsample = WanUpsample(scale_factor=(2.0, 2.0), method="nearest")
-       self.conv = nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
-       self.time_conv = WanCausalConv3d(rngs=rngs, in_channels=dim, out_channels=dim * 2, kernel_size=(3, 1, 1), padding=(1, 0, 0), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
+       self.conv = nnx.Conv(
+           dim, 
+           dim // 2, 
+           kernel_size=(3, 3), 
+           padding="SAME", 
+           use_bias=True, 
+           rngs=rngs, 
+           kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), 
+           dtype=dtype, 
+           param_dtype=weights_dtype, 
+           precision=precision
+       )
+       self.time_conv = WanCausalConv3d(
+           rngs=rngs, 
+           in_channels=dim, 
+           out_channels=dim * 2, 
+           kernel_size=(3, 1, 1), 
+           padding=(1, 0, 0), 
+           mesh=mesh, 
+           dtype=dtype, 
+           weights_dtype=weights_dtype, 
+           precision=precision
+       )
+
     elif mode == "downsample2d":
-       # FIX: Use Sequential/Wrapper to match checkpoint keys if needed, 
-       # but ZeroPaddedConv2D is a Module itself, so direct assignment is likely fine unless checkpoint wrapped it.
-       # Based on error log, downsample keys were missing too.
-       self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
+       # Downsample 2D is often just a strided conv.
+       # Error log suggested keys like 'downsample_conv' were missing in previous attempts?
+       # Let's look at the error: 'resample', 'layers', 1...
+       # This implies downsample might ALSO be a Sequential in the checkpoint?
+       # Usually downsample is just a Conv.
+       # Let's use the attribute name 'resample' to be safe if it matches the error key path structure.
+       self.resample = ZeroPaddedConv2D(
+           dim=dim, 
+           rngs=rngs, 
+           kernel_size=(3, 3), 
+           stride=(2, 2), 
+           mesh=mesh, 
+           dtype=dtype, 
+           weights_dtype=weights_dtype, 
+           precision=precision
+       )
+
     elif mode == "downsample3d":
-       # 3D mode explicit
-       self.downsample_conv = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
-       self.time_conv = WanCausalConv3d(rngs=rngs, in_channels=dim, out_channels=dim, kernel_size=(3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
+       self.downsample_conv = ZeroPaddedConv2D(
+           dim=dim, 
+           rngs=rngs, 
+           kernel_size=(3, 3), 
+           stride=(2, 2), 
+           mesh=mesh, 
+           dtype=dtype, 
+           weights_dtype=weights_dtype, 
+           precision=precision
+       )
+       self.time_conv = WanCausalConv3d(
+           rngs=rngs, 
+           in_channels=dim, 
+           out_channels=dim, 
+           kernel_size=(3, 1, 1), 
+           stride=(2, 1, 1), 
+           padding=(0, 0, 0), 
+           mesh=mesh, 
+           dtype=dtype, 
+           weights_dtype=weights_dtype, 
+           precision=precision
+       )
     else:
        self.resample = Identity()
 
@@ -215,9 +291,9 @@ class WanResample(nnx.Module):
     new_cache = {}
 
     if self.mode == "upsample2d":
-        # Use self.resample (Sequential)
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
+        # Using Sequential
         x = self.resample(x)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
@@ -239,9 +315,11 @@ class WanResample(nnx.Module):
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample2d":
-        # Use self.resample (ZeroPaddedConv2D)
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
+        # ZeroPaddedConv2D returns (out, cache) because of wrapper, 
+        # but Sequential might behave differently. 
+        # Here self.resample is ZeroPaddedConv2D directly.
         x, _ = self.resample(x, None)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
@@ -258,7 +336,12 @@ class WanResample(nnx.Module):
     
     else:
         if hasattr(self, "resample"):
-             x, _ = self.resample(x, None)
+             # Identity check
+             if isinstance(self.resample, Identity):
+                 x, _ = self.resample(x, None)
+             else:
+                 # Just in case it falls here
+                 x = self.resample(x)
 
     return x, new_cache
 
