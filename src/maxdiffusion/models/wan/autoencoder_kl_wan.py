@@ -612,6 +612,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         # Expand Time dimension for Conv3d
         input_slice = jnp.expand_dims(input_slice, 1)
         out_slice, new_carry = self.decoder(input_slice, carry)
+        out_slice = out_slice.astype(jnp.bfloat16)
         # Don't squeeze here; keep the upsampled frames (B, 4, H, W, C)
         return new_carry, out_slice
         
