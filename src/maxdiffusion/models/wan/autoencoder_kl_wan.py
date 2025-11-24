@@ -20,6 +20,7 @@ import flax
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from jax.sharding import PartitionSpec
 from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
@@ -57,6 +58,7 @@ class WanCausalConv3d(nnx.Module):
     self.kernel_size = _canonicalize_tuple(kernel_size, 3, "kernel_size")
     self.stride = _canonicalize_tuple(stride, 3, "stride")
     padding_tuple = _canonicalize_tuple(padding, 3, "padding")
+    self.mesh = mesh 
 
     self._causal_padding = (
         (0, 0),
@@ -90,9 +92,22 @@ class WanCausalConv3d(nnx.Module):
     )
 
   def initialize_cache(self, batch_size, height, width, dtype):
-      return jnp.zeros((batch_size, CACHE_T, height, width, self.conv.in_features), dtype=dtype)
+      # Create zeros
+      cache = jnp.zeros((batch_size, CACHE_T, height, width, self.conv.in_features), dtype=dtype)
+      
+      # OPTIMIZATION: Spatial Partitioning on Initialization
+      # If we don't shard here, JAX allocates the full 2.64GB per chip, causing OOM.
+      if self.mesh is not None:
+          # Shard along Height (axis 2). Axis spec: (Batch, Time, Height, Width, Channels)
+          # "fsdp" axis usually corresponds to the data parallelism or spatial split in this context.
+          cache = jax.lax.with_sharding_constraint(cache, PartitionSpec(None, None, "fsdp", None, None))
+      return cache
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None) -> Tuple[jax.Array, jax.Array]:
+    # OPTIMIZATION: Spatial Partitioning during execution
+    if self.mesh is not None:
+         x = jax.lax.with_sharding_constraint(x, PartitionSpec(None, None, "fsdp", None, None))
+
     current_padding = list(self._causal_padding)
     
     if cache_x is not None:
@@ -174,7 +189,6 @@ class WanResample(nnx.Module):
           nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
        )
     elif mode == "upsample3d":
-       # 3D mode ALSO needs Sequential for the spatial part to match checkpoints
        self.resample = nnx.Sequential(
           WanUpsample(scale_factor=(2.0, 2.0), method="nearest"),
           nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
@@ -219,8 +233,7 @@ class WanResample(nnx.Module):
         
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x = self.upsample(x)
-        x = self.conv(x)
+        x = self.resample(x) # Sequential
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
@@ -234,7 +247,7 @@ class WanResample(nnx.Module):
     elif self.mode == "downsample3d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.resample(x, None) # Fixed: use self.resample not self.downsample_conv
+        x, _ = self.resample(x, None) # ZeroPaddedConv2D
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
         
@@ -532,8 +545,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.z_dim = z_dim
     self.temperal_downsample = temperal_downsample
     self.temporal_upsample = temperal_downsample[::-1]
-    
-    # MISSING attributes added back
     self.latents_mean = latents_mean
     self.latents_std = latents_std
     
