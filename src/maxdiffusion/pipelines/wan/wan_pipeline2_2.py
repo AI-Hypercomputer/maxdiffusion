@@ -28,7 +28,7 @@ from ... import max_utils
 from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
 from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
 from ...models.wan.transformers.transformer_wan import WanModel
-from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
+from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan
 from maxdiffusion.video_processor import VideoProcessor
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
 from transformers import AutoTokenizer, UMT5EncoderModel
@@ -195,7 +195,6 @@ class WanPipeline:
       low_noise_transformer: WanModel,
       high_noise_transformer: WanModel,
       vae: AutoencoderKLWan,
-      vae_cache: AutoencoderKLWanCache,
       scheduler: FlaxUniPCMultistepScheduler,
       scheduler_state: UniPCMultistepSchedulerState,
       devices_array: np.array,
@@ -207,7 +206,6 @@ class WanPipeline:
     self.low_noise_transformer = low_noise_transformer
     self.high_noise_transformer = high_noise_transformer
     self.vae = vae
-    self.vae_cache = vae_cache
     self.scheduler = scheduler
     self.scheduler_state = scheduler_state
     self.devices_array = devices_array
@@ -275,8 +273,7 @@ class WanPipeline:
     state = nnx.from_flat_state(state)
 
     wan_vae = nnx.merge(graphdef, state)
-    vae_cache = AutoencoderKLWanCache(wan_vae)
-    return wan_vae, vae_cache
+    return wan_vae
 
   @classmethod
   def get_basic_config(cls, dtype, config: HyperParameters):
@@ -396,7 +393,7 @@ class WanPipeline:
       scheduler, scheduler_state = cls.load_scheduler(config=config)
 
     with mesh:
-      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+      wan_vae = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
     return WanPipeline(
         tokenizer=tokenizer,
@@ -404,7 +401,6 @@ class WanPipeline:
         low_noise_transformer=low_noise_transformer,
         high_noise_transformer=high_noise_transformer,
         vae=wan_vae,
-        vae_cache=vae_cache,
         scheduler=scheduler,
         scheduler_state=scheduler_state,
         devices_array=devices_array,
@@ -435,7 +431,7 @@ class WanPipeline:
       scheduler, scheduler_state = cls.load_scheduler(config=config)
 
     with mesh:
-      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+      wan_vae = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
     pipeline = WanPipeline(
         tokenizer=tokenizer,
@@ -443,7 +439,6 @@ class WanPipeline:
         low_noise_transformer=low_noise_transformer,
         high_noise_transformer=high_noise_transformer,
         vae=wan_vae,
-        vae_cache=vae_cache,
         scheduler=scheduler,
         scheduler_state=scheduler_state,
         devices_array=devices_array,
@@ -639,7 +634,7 @@ class WanPipeline:
         latents = latents.astype(jnp.float32)
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      video = self.vae.decode(latents, self.vae_cache)[0]
+      video = self.vae.decode(latents, return_dict=False)[0]
 
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
     video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
