@@ -177,26 +177,35 @@ class WanResample(nnx.Module):
   def __init__(self, dim: int, mode: str, rngs: nnx.Rngs, mesh: jax.sharding.Mesh = None, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: jax.lax.Precision = None):
     self.dim = dim
     self.mode = mode
-
+    
     if mode == "upsample2d":
-       self.upsample = WanUpsample(scale_factor=(2.0, 2.0), method="nearest")
-       self.conv = nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
+       # FIX: Use Sequential to match checkpoint keys
+       self.resample = nnx.Sequential(
+          WanUpsample(scale_factor=(2.0, 2.0), method="nearest"),
+          nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
+       )
     elif mode == "upsample3d":
+       # 3D mode uses explicit attributes for cache handling
        self.upsample = WanUpsample(scale_factor=(2.0, 2.0), method="nearest")
        self.conv = nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
        self.time_conv = WanCausalConv3d(rngs=rngs, in_channels=dim, out_channels=dim * 2, kernel_size=(3, 1, 1), padding=(1, 0, 0), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     elif mode == "downsample2d":
-       self.downsample_conv = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
+       # FIX: Use Sequential/Wrapper to match checkpoint keys if needed, 
+       # but ZeroPaddedConv2D is a Module itself, so direct assignment is likely fine unless checkpoint wrapped it.
+       # Based on error log, downsample keys were missing too.
+       self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     elif mode == "downsample3d":
+       # 3D mode explicit
        self.downsample_conv = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
        self.time_conv = WanCausalConv3d(rngs=rngs, in_channels=dim, out_channels=dim, kernel_size=(3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
+    else:
+       self.resample = Identity()
 
   def initialize_cache(self, batch_size, height, width, dtype):
       cache = {}
       if hasattr(self, "time_conv"):
           h_curr, w_curr = height, width
           if self.mode == "downsample3d":
-              # Resample (stride 2) happens before time conv
               h_curr, w_curr = height // 2, width // 2
           cache["time_conv"] = self.time_conv.initialize_cache(batch_size, h_curr, w_curr, dtype)
       return cache
@@ -206,25 +215,22 @@ class WanResample(nnx.Module):
     new_cache = {}
 
     if self.mode == "upsample2d":
+        # Use self.resample (Sequential)
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x = self.upsample(x)
-        x = self.conv(x)
+        x = self.resample(x)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "upsample3d":
-        # TimeConv -> Reshape -> Resample
         x, tc_cache = self.time_conv(x, cache.get("time_conv"))
         new_cache["time_conv"] = tc_cache
         
         b, t, h, w, c = x.shape
-        # Split channels for time upsample
         x = x.reshape(b, t, h, w, 2, c // 2)
         x = jnp.stack([x[:, :, :, :, 0, :], x[:, :, :, :, 1, :]], axis=1)
         x = x.reshape(b, t * 2, h, w, c // 2)
         
-        # Spatial resample
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
         x = self.upsample(x)
@@ -233,9 +239,10 @@ class WanResample(nnx.Module):
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample2d":
+        # Use self.resample (ZeroPaddedConv2D)
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.downsample_conv(x, None)
+        x, _ = self.resample(x, None)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
@@ -245,14 +252,15 @@ class WanResample(nnx.Module):
         x, _ = self.downsample_conv(x, None)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
-
+        
         x, tc_cache = self.time_conv(x, cache.get("time_conv"))
         new_cache["time_conv"] = tc_cache
+    
     else:
         if hasattr(self, "resample"):
-          x, _ = self.resample(x, None)
-    return x, new_cache
+             x, _ = self.resample(x, None)
 
+    return x, new_cache
 
 class WanResidualBlock(nnx.Module):
   def __init__(self, in_dim: int, out_dim: int, rngs: nnx.Rngs, dropout: float = 0.0, non_linearity: str = "silu", mesh: jax.sharding.Mesh = None, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: jax.lax.Precision = None):
