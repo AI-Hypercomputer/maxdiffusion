@@ -95,7 +95,6 @@ class WanCausalConv3d(nnx.Module):
       cache = jnp.zeros((batch_size, CACHE_T, height, width, self.conv.in_features), dtype=dtype)
       
       # OPTIMIZATION: Spatial Partitioning on Initialization
-      # FIX: Check divisibility before sharding
       if self.mesh is not None and "fsdp" in self.mesh.axis_names:
           num_fsdp_devices = self.mesh.shape["fsdp"]
           # Axis 2 is Height
@@ -114,7 +113,6 @@ class WanCausalConv3d(nnx.Module):
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None) -> Tuple[jax.Array, jax.Array]:
     # OPTIMIZATION: Spatial Partitioning during execution
-    # FIX: Check divisibility
     if self.mesh is not None and "fsdp" in self.mesh.axis_names:
          height = x.shape[2]
          width = x.shape[3]
@@ -240,7 +238,7 @@ class WanResample(nnx.Module):
     if self.mode == "upsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x = self.resample(x)
+        x = self.resample(x) # Sequential
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
@@ -262,14 +260,14 @@ class WanResample(nnx.Module):
     elif self.mode == "downsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.resample(x, None)
+        x, _ = self.resample(x, None) # ZeroPaddedConv2D
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample3d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.resample(x, None)
+        x, _ = self.resample(x, None) # ZeroPaddedConv2D
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
         
@@ -583,6 +581,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     init_cache = self.encoder.init_cache(b, h, w, x.dtype)
     
     def scan_fn(carry, input_slice):
+        # Expand Time dimension for Conv3d
         input_slice = jnp.expand_dims(input_slice, 1)
         out_slice, new_carry = self.encoder(input_slice, carry)
         # Squeeze Time dimension for scan stacking
@@ -610,14 +609,23 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     init_cache = self.decoder.init_cache(b, h, w, x.dtype)
     
     def scan_fn(carry, input_slice):
+        # Expand Time dimension for Conv3d
         input_slice = jnp.expand_dims(input_slice, 1)
         out_slice, new_carry = self.decoder(input_slice, carry)
-        # Squeeze Time dimension for scan stacking
-        out_slice = jnp.squeeze(out_slice, 1)
+        # Don't squeeze here; keep the upsampled frames (B, 4, H, W, C)
         return new_carry, out_slice
         
     final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
-    decoded = jnp.swapaxes(decoded_frames, 0, 1)
+    
+    # decoded_frames shape: (T_lat, B, 4, H, W, C)
+    # We need to flatten T_lat and 4.
+    # Transpose to (B, T_lat, 4, H, W, C)
+    decoded = jnp.transpose(decoded_frames, (1, 0, 2, 3, 4, 5))
+    
+    # Reshape to (B, T_lat*4, H, W, C)
+    b, t_lat, t_sub, h, w, c = decoded.shape
+    decoded = decoded.reshape(b, t_lat * t_sub, h, w, c)
+    
     out = jnp.clip(decoded, min=-1.0, max=1.0)
     
     if not return_dict: return (out,)
