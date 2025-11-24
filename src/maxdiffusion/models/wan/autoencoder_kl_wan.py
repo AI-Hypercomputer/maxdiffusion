@@ -60,14 +60,13 @@ class WanCausalConv3d(nnx.Module):
 
     self._causal_padding = (
         (0, 0),
-        (2 * padding_tuple[0], 0),  # Depth dimension - causal padding
+        (2 * padding_tuple[0], 0),
         (padding_tuple[1], padding_tuple[1]),
         (padding_tuple[2], padding_tuple[2]),
         (0, 0),
     )
     self._depth_padding_before = self._causal_padding[1][0]
 
-    # Standard Weight Partitioning (Model Parallelism) - Safe to keep
     num_fsdp_axis_devices = 1
     if mesh is not None and "fsdp" in mesh.axis_names:
         num_fsdp_axis_devices = mesh.shape["fsdp"]
@@ -94,20 +93,13 @@ class WanCausalConv3d(nnx.Module):
       return jnp.zeros((batch_size, CACHE_T, height, width, self.conv.in_features), dtype=dtype)
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None) -> Tuple[jax.Array, jax.Array]:
-    # NOTE: Spatial Partitioning (sharding constraints) removed per request.
-    
     current_padding = list(self._causal_padding)
     
     if cache_x is not None:
-      # Concat along Time/Depth axis (axis 1)
       x_concat = jnp.concatenate([cache_x, x], axis=1)
-      
-      # Determine new cache (keep last T frames)
       new_cache = x_concat[:, -CACHE_T:, ...]
       
-      # Determine if we have enough context to skip padding
       padding_needed = self._depth_padding_before - cache_x.shape[1]
-      
       if padding_needed < 0:
           x_input = x_concat[:, -padding_needed:, ...]
           current_padding[1] = (0, 0)
@@ -115,7 +107,6 @@ class WanCausalConv3d(nnx.Module):
           x_input = x_concat
           current_padding[1] = (padding_needed, 0)
     else:
-      # Stateless / First step fallback
       new_cache = x[:, -CACHE_T:, ...]
       x_input = x
 
@@ -169,7 +160,6 @@ class ZeroPaddedConv2D(nnx.Module):
     self.conv = nnx.Conv(dim, dim, kernel_size=kernel_size, strides=stride, use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, None)), dtype=dtype, param_dtype=weights_dtype, precision=precision)
 
   def __call__(self, x, cache=None):
-    # Returns tuple to match signature of other layers
     return self.conv(x), cache
 
 
@@ -178,102 +168,24 @@ class WanResample(nnx.Module):
     self.dim = dim
     self.mode = mode
     
-    # ATTRIBUTES MUST BE DEFINED IN THE INIT PATH
-    # We use different attribute names depending on mode to match strict checkpoint keys if needed,
-    # OR we rely on the fact that the checkpoint loading mapping handles the name translation.
-    # based on the error, the checkpoint expects 'resample' to be a Sequential for 2D modes.
+    # FIX: Removed pre-initialization of attributes to None to avoid NNX errors.
 
     if mode == "upsample2d":
-       # Map: resample.layers.0 -> WanUpsample
-       # Map: resample.layers.1 -> Conv
        self.resample = nnx.Sequential(
           WanUpsample(scale_factor=(2.0, 2.0), method="nearest"),
-          nnx.Conv(
-              dim, 
-              dim // 2, 
-              kernel_size=(3, 3), 
-              padding="SAME", 
-              use_bias=True, 
-              rngs=rngs, 
-              kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), 
-              dtype=dtype, 
-              param_dtype=weights_dtype, 
-              precision=precision
-          )
+          nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
        )
-    
     elif mode == "upsample3d":
-       # 3D mode: Code handles 'upsample' and 'conv' separately in __call__,
-       # BUT for checkpoint loading, if the checkpoint has 'resample.layers...', 
-       # we might need to match that.
-       # However, standard Wan3D usually has explicit components.
-       # We will stick to explicit attributes here as defined in previous working versions.
-       self.upsample = WanUpsample(scale_factor=(2.0, 2.0), method="nearest")
-       self.conv = nnx.Conv(
-           dim, 
-           dim // 2, 
-           kernel_size=(3, 3), 
-           padding="SAME", 
-           use_bias=True, 
-           rngs=rngs, 
-           kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), 
-           dtype=dtype, 
-           param_dtype=weights_dtype, 
-           precision=precision
+       self.resample = nnx.Sequential(
+          WanUpsample(scale_factor=(2.0, 2.0), method="nearest"),
+          nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
        )
-       self.time_conv = WanCausalConv3d(
-           rngs=rngs, 
-           in_channels=dim, 
-           out_channels=dim * 2, 
-           kernel_size=(3, 1, 1), 
-           padding=(1, 0, 0), 
-           mesh=mesh, 
-           dtype=dtype, 
-           weights_dtype=weights_dtype, 
-           precision=precision
-       )
-
+       self.time_conv = WanCausalConv3d(rngs=rngs, in_channels=dim, out_channels=dim * 2, kernel_size=(3, 1, 1), padding=(1, 0, 0), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     elif mode == "downsample2d":
-       # Downsample 2D is often just a strided conv.
-       # Error log suggested keys like 'downsample_conv' were missing in previous attempts?
-       # Let's look at the error: 'resample', 'layers', 1...
-       # This implies downsample might ALSO be a Sequential in the checkpoint?
-       # Usually downsample is just a Conv.
-       # Let's use the attribute name 'resample' to be safe if it matches the error key path structure.
-       self.resample = ZeroPaddedConv2D(
-           dim=dim, 
-           rngs=rngs, 
-           kernel_size=(3, 3), 
-           stride=(2, 2), 
-           mesh=mesh, 
-           dtype=dtype, 
-           weights_dtype=weights_dtype, 
-           precision=precision
-       )
-
+       self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     elif mode == "downsample3d":
-       self.downsample_conv = ZeroPaddedConv2D(
-           dim=dim, 
-           rngs=rngs, 
-           kernel_size=(3, 3), 
-           stride=(2, 2), 
-           mesh=mesh, 
-           dtype=dtype, 
-           weights_dtype=weights_dtype, 
-           precision=precision
-       )
-       self.time_conv = WanCausalConv3d(
-           rngs=rngs, 
-           in_channels=dim, 
-           out_channels=dim, 
-           kernel_size=(3, 1, 1), 
-           stride=(2, 1, 1), 
-           padding=(0, 0, 0), 
-           mesh=mesh, 
-           dtype=dtype, 
-           weights_dtype=weights_dtype, 
-           precision=precision
-       )
+       self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
+       self.time_conv = WanCausalConv3d(rngs=rngs, in_channels=dim, out_channels=dim, kernel_size=(3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     else:
        self.resample = Identity()
 
@@ -293,8 +205,7 @@ class WanResample(nnx.Module):
     if self.mode == "upsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        # Using Sequential
-        x = self.resample(x)
+        x = self.resample(x) # Sequential
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
@@ -309,25 +220,21 @@ class WanResample(nnx.Module):
         
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x = self.upsample(x)
-        x = self.conv(x)
+        x = self.resample(x) # Sequential
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        # ZeroPaddedConv2D returns (out, cache) because of wrapper, 
-        # but Sequential might behave differently. 
-        # Here self.resample is ZeroPaddedConv2D directly.
-        x, _ = self.resample(x, None)
+        x, _ = self.resample(x, None) # ZeroPaddedConv2D
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample3d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.downsample_conv(x, None)
+        x, _ = self.resample(x, None) # ZeroPaddedConv2D
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
         
@@ -335,15 +242,13 @@ class WanResample(nnx.Module):
         new_cache["time_conv"] = tc_cache
     
     else:
-        if hasattr(self, "resample"):
-             # Identity check
-             if isinstance(self.resample, Identity):
-                 x, _ = self.resample(x, None)
-             else:
-                 # Just in case it falls here
-                 x = self.resample(x)
+        if isinstance(self.resample, Identity):
+             x, _ = self.resample(x, None)
+        else:
+             x = self.resample(x)
 
     return x, new_cache
+
 
 class WanResidualBlock(nnx.Module):
   def __init__(self, in_dim: int, out_dim: int, rngs: nnx.Rngs, dropout: float = 0.0, non_linearity: str = "silu", mesh: jax.sharding.Mesh = None, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: jax.lax.Precision = None):
@@ -358,13 +263,15 @@ class WanResidualBlock(nnx.Module):
         self.conv_shortcut = WanCausalConv3d(rngs=rngs, in_channels=in_dim, out_channels=out_dim, kernel_size=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
 
   def initialize_cache(self, batch_size, height, width, dtype):
-      return {
+      cache = {
           "conv1": self.conv1.initialize_cache(batch_size, height, width, dtype),
-          "conv2": self.conv2.initialize_cache(batch_size, height, width, dtype),
-          # Shortcut usually has kernel 1 so cache is irrelevant or size 1, but if it's CausalConv it expects cache.
-          # If shortcut is Identity, it ignores cache input.
-          "shortcut": self.conv_shortcut.initialize_cache(batch_size, height, width, dtype) if isinstance(self.conv_shortcut, WanCausalConv3d) else None
+          "conv2": self.conv2.initialize_cache(batch_size, height, width, dtype)
       }
+      if isinstance(self.conv_shortcut, WanCausalConv3d):
+          cache["shortcut"] = self.conv_shortcut.initialize_cache(batch_size, height, width, dtype)
+      else:
+          cache["shortcut"] = None
+      return cache
 
   def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
     if cache is None: cache = {}
@@ -397,8 +304,6 @@ class WanAttentionBlock(nnx.Module):
     self.proj = nnx.Conv(in_features=dim, out_features=dim, kernel_size=(1, 1), rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, "conv_in", None)), dtype=dtype, param_dtype=weights_dtype, precision=precision)
 
   def __call__(self, x: jax.Array):
-    # Attention is treated as stateless in this implementation for simplicity 
-    # (spatial attention, not temporal recurrence in this specific block)
     identity = x
     batch_size, time, height, width, channels = x.shape
     x = x.reshape(batch_size * time, height, width, channels)
@@ -420,13 +325,11 @@ class WanAttentionBlock(nnx.Module):
 class WanMidBlock(nnx.Module):
   def __init__(self, dim: int, rngs: nnx.Rngs, dropout: float = 0.0, non_linearity: str = "silu", num_layers: int = 1, mesh: jax.sharding.Mesh = None, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: jax.lax.Precision = None):
     self.dim = dim
-    resnets = [WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs, dropout=dropout, non_linearity=non_linearity, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)]
-    attentions = []
+    self.resnets = nnx.List([WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs, dropout=dropout, non_linearity=non_linearity, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)])
+    self.attentions = nnx.List([])
     for _ in range(num_layers):
-      attentions.append(WanAttentionBlock(dim=dim, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
-      resnets.append(WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs, dropout=dropout, non_linearity=non_linearity, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
-    self.attentions = nnx.data(attentions)
-    self.resnets = nnx.data(resnets)
+      self.attentions.append(WanAttentionBlock(dim=dim, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
+      self.resnets.append(WanResidualBlock(in_dim=dim, out_dim=dim, rngs=rngs, dropout=dropout, non_linearity=non_linearity, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
 
   def initialize_cache(self, batch_size, height, width, dtype):
       cache = {"resnets": []}
@@ -438,11 +341,9 @@ class WanMidBlock(nnx.Module):
     if cache is None: cache = {}
     new_cache = {"resnets": []}
     
-    # Process First Resnet
     x, c = self.resnets[0](x, cache.get("resnets", [None])[0])
     new_cache["resnets"].append(c)
 
-    # Process subsequent pairs
     for i, (attn, resnet) in enumerate(zip(self.attentions, self.resnets[1:])):
         if attn is not None: x = attn(x)
         x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i+1])
@@ -453,15 +354,15 @@ class WanMidBlock(nnx.Module):
 
 class WanUpBlock(nnx.Module):
   def __init__(self, in_dim: int, out_dim: int, num_res_blocks: int, rngs: nnx.Rngs, dropout: float = 0.0, upsample_mode: Optional[str] = None, non_linearity: str = "silu", mesh: jax.sharding.Mesh = None, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: jax.lax.Precision = None):
-    resnets = []
+    self.resnets = nnx.List([])
     current_dim = in_dim
     for _ in range(num_res_blocks + 1):
-      resnets.append(WanResidualBlock(in_dim=current_dim, out_dim=out_dim, dropout=dropout, non_linearity=non_linearity, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
+      self.resnets.append(WanResidualBlock(in_dim=current_dim, out_dim=out_dim, dropout=dropout, non_linearity=non_linearity, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
       current_dim = out_dim
-    self.resnets = nnx.data(resnets)
-    self.upsamplers = nnx.data(None)
+    
+    self.upsamplers = nnx.List([])
     if upsample_mode is not None:
-      self.upsamplers = [WanResample(dim=out_dim, mode=upsample_mode, rngs=rngs, mesh=mesh, weights_dtype=weights_dtype, dtype=dtype, precision=precision)]
+      self.upsamplers.append(WanResample(dim=out_dim, mode=upsample_mode, rngs=rngs, mesh=mesh, weights_dtype=weights_dtype, dtype=dtype, precision=precision))
 
   def initialize_cache(self, batch_size, height, width, dtype):
       cache = {"resnets": [], "upsamplers": []}
@@ -469,10 +370,7 @@ class WanUpBlock(nnx.Module):
           cache["resnets"].append(resnet.initialize_cache(batch_size, height, width, dtype))
       
       h_curr, w_curr = height, width
-      if self.upsamplers is not None:
-          # Note: Upsample layers change resolution, but initialize_cache for WanResample
-          # calculates the correct internal cache size based on output size (or mode).
-          # We pass current size.
+      if self.upsamplers:
           cache["upsamplers"].append(self.upsamplers[0].initialize_cache(batch_size, h_curr, w_curr, dtype))
       return cache
 
@@ -484,7 +382,7 @@ class WanUpBlock(nnx.Module):
         x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i])
         new_cache["resnets"].append(c)
 
-    if self.upsamplers is not None:
+    if self.upsamplers:
         x, c = self.upsamplers[0](x, cache.get("upsamplers", [None])[0])
         new_cache["upsamplers"].append(c)
     return x, new_cache
@@ -501,20 +399,18 @@ class WanEncoder3d(nnx.Module):
 
     self.conv_in = WanCausalConv3d(rngs=rngs, in_channels=3, out_channels=dims[0], kernel_size=3, padding=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     
-    # We need a structured way to access blocks for cache init, so we separate them
-    down_blocks_layers = []
+    self.down_blocks = nnx.List([])
     
     for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
       for _ in range(num_res_blocks):
-        down_blocks_layers.append(WanResidualBlock(in_dim=in_dim, out_dim=out_dim, dropout=dropout, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
+        self.down_blocks.append(WanResidualBlock(in_dim=in_dim, out_dim=out_dim, dropout=dropout, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
         if scale in attn_scales:
-          down_blocks_layers.append(WanAttentionBlock(dim=out_dim, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
+          self.down_blocks.append(WanAttentionBlock(dim=out_dim, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
         in_dim = out_dim
       if i != len(dim_mult) - 1:
         mode = "downsample3d" if temperal_downsample[i] else "downsample2d"
-        down_blocks_layers.append(WanResample(out_dim, mode=mode, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
+        self.down_blocks.append(WanResample(out_dim, mode=mode, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
         scale /= 2.0
-    self.down_blocks = nnx.data(down_blocks_layers)
 
     self.mid_block = WanMidBlock(dim=out_dim, rngs=rngs, dropout=dropout, non_linearity=non_linearity, num_layers=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     self.norm_out = WanRMS_norm(out_dim, channel_first=False, images=False, rngs=rngs)
@@ -534,7 +430,7 @@ class WanEncoder3d(nnx.Module):
               if layer.mode == "downsample2d" or layer.mode == "downsample3d":
                   h_curr, w_curr = h_curr // 2, w_curr // 2
           else:
-              cache["down_blocks"].append(None) # Attention, etc
+              cache["down_blocks"].append(None) 
               
       cache["mid_block"] = self.mid_block.initialize_cache(batch_size, h_curr, w_curr, dtype)
       cache["conv_out"] = self.conv_out.initialize_cache(batch_size, h_curr, w_curr, dtype)
@@ -580,14 +476,13 @@ class WanDecoder3d(nnx.Module):
     self.conv_in = WanCausalConv3d(rngs=rngs, in_channels=z_dim, out_channels=dims[0], kernel_size=3, padding=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     self.mid_block = WanMidBlock(dim=dims[0], rngs=rngs, dropout=dropout, non_linearity=non_linearity, num_layers=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
 
-    up_blocks = []
+    self.up_blocks = nnx.List([])
     for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
       if i > 0: in_dim = in_dim // 2
       upsample_mode = None
       if i != len(dim_mult) - 1:
         upsample_mode = "upsample3d" if temperal_upsample[i] else "upsample2d"
-      up_blocks.append(WanUpBlock(in_dim=in_dim, out_dim=out_dim, num_res_blocks=num_res_blocks, dropout=dropout, upsample_mode=upsample_mode, non_linearity=non_linearity, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
-    self.up_blocks = nnx.data(up_blocks)
+      self.up_blocks.append(WanUpBlock(in_dim=in_dim, out_dim=out_dim, num_res_blocks=num_res_blocks, dropout=dropout, upsample_mode=upsample_mode, non_linearity=non_linearity, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
 
     self.norm_out = WanRMS_norm(dim=out_dim, images=False, rngs=rngs, channel_first=False)
     self.conv_out = WanCausalConv3d(rngs=rngs, in_channels=out_dim, out_channels=3, kernel_size=3, padding=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
@@ -601,8 +496,7 @@ class WanDecoder3d(nnx.Module):
       h_curr, w_curr = height, width
       for block in self.up_blocks:
           cache["up_blocks"].append(block.initialize_cache(batch_size, h_curr, w_curr, dtype))
-          if block.upsamplers is not None:
-             # Logic to update h_curr, w_curr based on upsample
+          if block.upsamplers:
              h_curr, w_curr = h_curr * 2, w_curr * 2
              
       cache["conv_out"] = self.conv_out.initialize_cache(batch_size, h_curr, w_curr, dtype)
@@ -638,7 +532,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.temperal_downsample = temperal_downsample
     self.temporal_upsample = temperal_downsample[::-1]
     
-    # Initialize components
     self.encoder = WanEncoder3d(rngs=rngs, dim=base_dim, z_dim=z_dim * 2, dim_mult=dim_mult, num_res_blocks=num_res_blocks, attn_scales=attn_scales, temperal_downsample=temperal_downsample, dropout=dropout, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     self.quant_conv = WanCausalConv3d(rngs=rngs, in_channels=z_dim * 2, out_channels=z_dim * 2, kernel_size=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     self.post_quant_conv = WanCausalConv3d(rngs=rngs, in_channels=z_dim, out_channels=z_dim, kernel_size=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
@@ -647,27 +540,17 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
   def encode(self, x: jax.Array, return_dict: bool = True) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     if x.shape[-1] != 3: x = jnp.transpose(x, (0, 2, 3, 4, 1))
     
-    # JIT OPTIMIZATION: Use scan
-    # x shape: (Batch, Time, H, W, 3) -> Swap to (Time, Batch, H, W, 3) for scan
     x_scan = jnp.swapaxes(x, 0, 1)
-    
-    # Init Cache
     b, t, h, w, c = x.shape
     init_cache = self.encoder.init_cache(b, h, w, x.dtype)
     
     def scan_fn(carry, input_slice):
-        # input_slice: (Batch, 1, H, W, C)
         out_slice, new_carry = self.encoder(input_slice, carry)
         return new_carry, out_slice
     
-    # Scan
     final_cache, encoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
-    
-    # Swap back: (Time, Batch, H, W, C) -> (Batch, Time, H, W, C)
     encoded = jnp.swapaxes(encoded_frames, 0, 1)
-    
-    # Quant conv
-    enc, _ = self.quant_conv(encoded) # Conv1x1 is stateless/local
+    enc, _ = self.quant_conv(encoded)
     
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
     h = jnp.concatenate([mu, logvar], axis=-1)
@@ -678,29 +561,20 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def decode(self, z: jax.Array, return_dict: bool = True) -> Union[FlaxDecoderOutput, jax.Array]:
     if z.shape[-1] != self.z_dim: z = jnp.transpose(z, (0, 2, 3, 4, 1))
-
-    # Post quant conv
+    
     x, _ = self.post_quant_conv(z)
-
-    # JIT OPTIMIZATION: Use scan
-    # x shape: (Batch, Time, H, W, C) -> Swap to (Time, Batch, H, W, C)
     x_scan = jnp.swapaxes(x, 0, 1)
-
-    # Init Cache
+    
     b, t, h, w, c = x.shape
     init_cache = self.decoder.init_cache(b, h, w, x.dtype)
-
+    
     def scan_fn(carry, input_slice):
         out_slice, new_carry = self.decoder(input_slice, carry)
         return new_carry, out_slice
-
+        
     final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
-
-    # Swap back
     decoded = jnp.swapaxes(decoded_frames, 0, 1)
-
     out = jnp.clip(decoded, min=-1.0, max=1.0)
-
+    
     if not return_dict: return (out,)
     return FlaxDecoderOutput(sample=out)
-
