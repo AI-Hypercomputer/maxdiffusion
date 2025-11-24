@@ -411,19 +411,19 @@ class WanEncoder3d(nnx.Module):
     self.conv_in = WanCausalConv3d(rngs=rngs, in_channels=3, out_channels=dims[0], kernel_size=3, padding=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     
     # We need a structured way to access blocks for cache init, so we separate them
-    self.down_blocks_layers = []
+    down_blocks_layers = []
     
     for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
       for _ in range(num_res_blocks):
-        self.down_blocks_layers.append(WanResidualBlock(in_dim=in_dim, out_dim=out_dim, dropout=dropout, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
+        down_blocks_layers.append(WanResidualBlock(in_dim=in_dim, out_dim=out_dim, dropout=dropout, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
         if scale in attn_scales:
-          self.down_blocks_layers.append(WanAttentionBlock(dim=out_dim, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
+          down_blocks_layers.append(WanAttentionBlock(dim=out_dim, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
         in_dim = out_dim
       if i != len(dim_mult) - 1:
         mode = "downsample3d" if temperal_downsample[i] else "downsample2d"
-        self.down_blocks_layers.append(WanResample(out_dim, mode=mode, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
+        down_blocks_layers.append(WanResample(out_dim, mode=mode, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
         scale /= 2.0
-    self.down_blocks = nnx.data(self.down_blocks_layers)
+    self.down_blocks = nnx.data(down_blocks_layers)
 
     self.mid_block = WanMidBlock(dim=out_dim, rngs=rngs, dropout=dropout, non_linearity=non_linearity, num_layers=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     self.norm_out = WanRMS_norm(out_dim, channel_first=False, images=False, rngs=rngs)
@@ -489,14 +489,14 @@ class WanDecoder3d(nnx.Module):
     self.conv_in = WanCausalConv3d(rngs=rngs, in_channels=z_dim, out_channels=dims[0], kernel_size=3, padding=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     self.mid_block = WanMidBlock(dim=dims[0], rngs=rngs, dropout=dropout, non_linearity=non_linearity, num_layers=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
 
-    self.up_blocks = []
+    up_blocks = []
     for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
       if i > 0: in_dim = in_dim // 2
       upsample_mode = None
       if i != len(dim_mult) - 1:
         upsample_mode = "upsample3d" if temperal_upsample[i] else "upsample2d"
-      self.up_blocks.append(WanUpBlock(in_dim=in_dim, out_dim=out_dim, num_res_blocks=num_res_blocks, dropout=dropout, upsample_mode=upsample_mode, non_linearity=non_linearity, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
-    self.up_blocks = nnx.data(self.up_blocks)
+      up_blocks.append(WanUpBlock(in_dim=in_dim, out_dim=out_dim, num_res_blocks=num_res_blocks, dropout=dropout, upsample_mode=upsample_mode, non_linearity=non_linearity, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision))
+    self.up_blocks = nnx.data(up_blocks)
 
     self.norm_out = WanRMS_norm(dim=out_dim, images=False, rngs=rngs, channel_first=False)
     self.conv_out = WanCausalConv3d(rngs=rngs, in_channels=out_dim, out_channels=3, kernel_size=3, padding=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
