@@ -92,21 +92,43 @@ class WanCausalConv3d(nnx.Module):
     )
 
   def initialize_cache(self, batch_size, height, width, dtype):
-      # Create zeros
       cache = jnp.zeros((batch_size, CACHE_T, height, width, self.conv.in_features), dtype=dtype)
       
       # OPTIMIZATION: Spatial Partitioning on Initialization
-      # If we don't shard here, JAX allocates the full 2.64GB per chip, causing OOM.
-      if self.mesh is not None:
-          # Shard along Height (axis 2). Axis spec: (Batch, Time, Height, Width, Channels)
-          # "fsdp" axis usually corresponds to the data parallelism or spatial split in this context.
-          cache = jax.lax.with_sharding_constraint(cache, PartitionSpec(None, None, "fsdp", None, None))
+      # FIX: Check divisibility before sharding
+      if self.mesh is not None and "fsdp" in self.mesh.axis_names:
+          num_fsdp_devices = self.mesh.shape["fsdp"]
+          # Axis 2 is Height
+          shard_axis = "fsdp" if (height % num_fsdp_devices == 0) else None
+          
+          # If height isn't divisible, try width (Axis 3)
+          shard_width_axis = None
+          if shard_axis is None and width % num_fsdp_devices == 0:
+             shard_width_axis = "fsdp"
+
+          cache = jax.lax.with_sharding_constraint(
+              cache, 
+              PartitionSpec(None, None, shard_axis, shard_width_axis, None)
+          )
       return cache
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None) -> Tuple[jax.Array, jax.Array]:
     # OPTIMIZATION: Spatial Partitioning during execution
-    if self.mesh is not None:
-         x = jax.lax.with_sharding_constraint(x, PartitionSpec(None, None, "fsdp", None, None))
+    # FIX: Check divisibility
+    if self.mesh is not None and "fsdp" in self.mesh.axis_names:
+         height = x.shape[2]
+         width = x.shape[3]
+         num_fsdp_devices = self.mesh.shape["fsdp"]
+         
+         shard_axis = "fsdp" if (height % num_fsdp_devices == 0) else None
+         shard_width_axis = None
+         if shard_axis is None and width % num_fsdp_devices == 0:
+             shard_width_axis = "fsdp"
+
+         x = jax.lax.with_sharding_constraint(
+             x, 
+             PartitionSpec(None, None, shard_axis, shard_width_axis, None)
+         )
 
     current_padding = list(self._causal_padding)
     
@@ -218,7 +240,7 @@ class WanResample(nnx.Module):
     if self.mode == "upsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x = self.resample(x) # Sequential
+        x = self.resample(x)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
@@ -233,21 +255,21 @@ class WanResample(nnx.Module):
         
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x = self.resample(x) # Sequential
+        x = self.resample(x)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.resample(x, None) # ZeroPaddedConv2D
+        x, _ = self.resample(x, None)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample3d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.resample(x, None) # ZeroPaddedConv2D
+        x, _ = self.resample(x, None)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
         
