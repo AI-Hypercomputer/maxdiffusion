@@ -178,11 +178,6 @@ class WanResample(nnx.Module):
     self.dim = dim
     self.mode = mode
     self.time_conv = None
-    
-    # We unpack nnx.Sequential to handle cache logic explicitly
-    self.upsample = None
-    self.conv = None
-    self.downsample_conv = None
 
     if mode == "upsample2d":
        self.upsample = WanUpsample(scale_factor=(2.0, 2.0), method="nearest")
@@ -199,7 +194,7 @@ class WanResample(nnx.Module):
 
   def initialize_cache(self, batch_size, height, width, dtype):
       cache = {}
-      if self.time_conv is not None:
+      if hasattr(self, "time_conv"):
           h_curr, w_curr = height, width
           if self.mode == "downsample3d":
               # Resample (stride 2) happens before time conv
@@ -251,10 +246,12 @@ class WanResample(nnx.Module):
         x, _ = self.downsample_conv(x, None)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
-        
+
         x, tc_cache = self.time_conv(x, cache.get("time_conv"))
         new_cache["time_conv"] = tc_cache
-        
+    else:
+        if hasattr(self, "resample"):
+          x, _ = self.resample(x, None)
     return x, new_cache
 
 
