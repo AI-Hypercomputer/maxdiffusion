@@ -583,7 +583,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     init_cache = self.encoder.init_cache(b, h, w, x.dtype)
     
     def scan_fn(carry, input_slice):
+        input_slice = jnp.expand_dims(input_slice, 1)
         out_slice, new_carry = self.encoder(input_slice, carry)
+        # Squeeze Time dimension for scan stacking
+        out_slice = jnp.squeeze(out_slice, 1)
         return new_carry, out_slice
     
     final_cache, encoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
@@ -607,7 +610,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     init_cache = self.decoder.init_cache(b, h, w, x.dtype)
     
     def scan_fn(carry, input_slice):
+        input_slice = jnp.expand_dims(input_slice, 1)
         out_slice, new_carry = self.decoder(input_slice, carry)
+        # Squeeze Time dimension for scan stacking
+        out_slice = jnp.squeeze(out_slice, 1)
         return new_carry, out_slice
         
     final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
