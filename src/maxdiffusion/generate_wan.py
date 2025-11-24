@@ -16,6 +16,7 @@ from typing import Sequence
 import jax
 import time
 import os
+import subprocess
 from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer2_1, WanCheckpointer2_2
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
@@ -60,6 +61,17 @@ def delete_file(file_path: str):
   else:
     max_logging.log(f"The file '{file_path}' does not exist.")
 
+def get_git_commit_hash():
+  """Tries to get the current Git commit hash."""
+  try:
+    commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
+    return commit_hash
+  except subprocess.CalledProcessError:
+    max_logging.log("Warning: 'git rev-parse HEAD' failed. Not running in a git repo?")
+    return None
+  except FileNotFoundError:
+    max_logging.log("Warning: 'git' command not found.")
+    return None
 
 jax.config.update("jax_use_shardy_partitioner", True)
 jax.config.update("jax_default_prng_impl", "unsafe_rbg")
@@ -127,6 +139,19 @@ def run(config, pipeline=None, filename_prefix=""):
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
+
+    commit_hash = get_git_commit_hash()
+    if commit_hash:
+      writer.add_text("inference/git_commit_hash", commit_hash, global_step=0)
+      max_logging.log(f"Git Commit Hash: {commit_hash}")
+    else:
+      # Fallback for CI environments like GitHub Actions
+      github_sha = os.environ.get('GITHUB_SHA')
+      if github_sha:
+        writer.add_text("inference/git_commit_hash", github_sha, global_step=0)
+        max_logging.log(f"Git Commit Hash (from GITHUB_SHA): {github_sha}")
+      else:
+        max_logging.log("Could not retrieve Git commit hash.")
 
   if pipeline is None:
     if model_key == "wan2.1":
