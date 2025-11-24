@@ -177,7 +177,6 @@ class WanResample(nnx.Module):
   def __init__(self, dim: int, mode: str, rngs: nnx.Rngs, mesh: jax.sharding.Mesh = None, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: jax.lax.Precision = None):
     self.dim = dim
     self.mode = mode
-    self.time_conv = None
 
     if mode == "upsample2d":
        self.upsample = WanUpsample(scale_factor=(2.0, 2.0), method="nearest")
