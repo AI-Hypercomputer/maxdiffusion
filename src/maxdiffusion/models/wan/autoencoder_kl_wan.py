@@ -168,18 +168,14 @@ class WanResample(nnx.Module):
     self.dim = dim
     self.mode = mode
     
-    # FIX: Removed pre-initialization of attributes to None to avoid NNX errors.
-
     if mode == "upsample2d":
        self.resample = nnx.Sequential(
           WanUpsample(scale_factor=(2.0, 2.0), method="nearest"),
           nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
        )
     elif mode == "upsample3d":
-       self.resample = nnx.Sequential(
-          WanUpsample(scale_factor=(2.0, 2.0), method="nearest"),
-          nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
-       )
+       self.upsample = WanUpsample(scale_factor=(2.0, 2.0), method="nearest")
+       self.conv = nnx.Conv(dim, dim // 2, kernel_size=(3, 3), padding="SAME", use_bias=True, rngs=rngs, kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, "conv_out")), dtype=dtype, param_dtype=weights_dtype, precision=precision)
        self.time_conv = WanCausalConv3d(rngs=rngs, in_channels=dim, out_channels=dim * 2, kernel_size=(3, 1, 1), padding=(1, 0, 0), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     elif mode == "downsample2d":
        self.resample = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(3, 3), stride=(2, 2), mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
@@ -220,7 +216,8 @@ class WanResample(nnx.Module):
         
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x = self.resample(x) # Sequential
+        x = self.upsample(x)
+        x = self.conv(x)
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
@@ -234,7 +231,7 @@ class WanResample(nnx.Module):
     elif self.mode == "downsample3d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        x, _ = self.resample(x, None) # ZeroPaddedConv2D
+        x, _ = self.resample(x, None) # Fixed: use self.resample not self.downsample_conv
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
         
@@ -242,10 +239,11 @@ class WanResample(nnx.Module):
         new_cache["time_conv"] = tc_cache
     
     else:
-        if isinstance(self.resample, Identity):
-             x, _ = self.resample(x, None)
-        else:
-             x = self.resample(x)
+        if hasattr(self, "resample"):
+             if isinstance(self.resample, Identity):
+                 x, _ = self.resample(x, None)
+             else:
+                 x = self.resample(x)
 
     return x, new_cache
 
@@ -531,6 +529,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.z_dim = z_dim
     self.temperal_downsample = temperal_downsample
     self.temporal_upsample = temperal_downsample[::-1]
+    
+    # MISSING attributes added back
+    self.latents_mean = latents_mean
+    self.latents_std = latents_std
     
     self.encoder = WanEncoder3d(rngs=rngs, dim=base_dim, z_dim=z_dim * 2, dim_mult=dim_mult, num_res_blocks=num_res_blocks, attn_scales=attn_scales, temperal_downsample=temperal_downsample, dropout=dropout, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     self.quant_conv = WanCausalConv3d(rngs=rngs, in_channels=z_dim * 2, out_channels=z_dim * 2, kernel_size=1, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
