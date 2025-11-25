@@ -279,39 +279,43 @@ def _tpu_flash_attention(
       block_kv_sizes += (block_sizes.block_kv_dq,)
 
     block_q = max(*block_q_sizes)
-    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_q)
-
     block_kv = max(*block_kv_sizes)
-    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
-    value, _, _ = _pad_data_for_flash(value, heads, block_kv)
 
-    mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
-    multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
-
-    q_padded_len = query.shape[2]
-    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
-    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
-
-    kv_padded_len = key.shape[2]
-    kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
-    kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
-    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
-
-    # make_splash_mha is wrapped around shardmap and seq and head is already
-    # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
     if attention_kernel == "tokamax_flash":
+      # OPTIMIZATION: Skip padding and segment_ids for the optimized kernel
+      kv_size = key.shape[-1]
+      query_seq_len = query.shape[2]
+      segment_ids = None
+
       mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
       splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
           mask=mask,
-          q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+          q_seq_shards=1,
           config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
-          save_residuals=True if attention_kernel == "ring" else False,
+          save_residuals=False, # Ring attention not typically used in this path
       )
     else:
+      # STANDARD PATH: Explicit padding (Slower)
+      query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_q)
+      key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
+      value, _, _ = _pad_data_for_flash(value, heads, block_kv)
+
+      mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
+      multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+
+      q_padded_len = query.shape[2]
+      q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
+      q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
+
+      kv_padded_len = key.shape[2]
+      kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
+      kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+      segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
+
       splash_kernel = splash_attention_kernel.make_splash_mha(
           mask=multi_head_mask,
-          head_shards=1,  # the sizes of the axis is sharding over heads
-          q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+          head_shards=1,
+          q_seq_shards=1,
           block_sizes=block_sizes,
           save_residuals=True if attention_kernel == "ring" else False,
           residual_checkpoint_name=residual_checkpoint_name
