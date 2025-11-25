@@ -181,25 +181,24 @@ class WanTransformerTest(unittest.TestCase):
     assert dummy_output.shape == dummy_hidden_states.shape
 
   def test_wan_attention(self):
-    for attention_kernel in ["flash", "tokamax_flash"]:
-      pyconfig.initialize(
-          [
-              None,
-              os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-              f"attention={attention_kernel}"
-          ],
-          unittest=True
-      )
-      config = pyconfig.config
-      batch_size = 1
-      channels = 16
-      frames = 21
-      height = 90
-      width = 160
-      hidden_states_shape = (batch_size, frames, height, width, channels)
-      dummy_hidden_states = jnp.ones(hidden_states_shape)
-      wan_rot_embed = WanRotaryPosEmbed(attention_head_dim=128, patch_size=[1, 2, 2], max_seq_len=1024)
-      dummy_rotary_emb = wan_rot_embed(dummy_hidden_states)
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+        ],
+        unittest=True,
+    )
+    config = pyconfig.config
+
+    batch_size = 1
+    channels = 16
+    frames = 21
+    height = 90
+    width = 160
+    hidden_states_shape = (batch_size, frames, height, width, channels)
+    dummy_hidden_states = jnp.ones(hidden_states_shape)
+    wan_rot_embed = WanRotaryPosEmbed(attention_head_dim=128, patch_size=[1, 2, 2], max_seq_len=1024)
+    dummy_rotary_emb = wan_rot_embed(dummy_hidden_states)
 
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)

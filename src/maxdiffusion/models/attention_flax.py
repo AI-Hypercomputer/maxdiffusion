@@ -189,16 +189,16 @@ def _tpu_flash_attention(
   if flash_block_sizes:
     block_sizes = flash_block_sizes
   else:
-    block_size_q = flash_block_sizes.block_q if flash_block_sizes else q_max_block_size
     block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=block_size_q,
+        block_q=min(q_max_block_size, query.shape[2]),
         block_kv_compute=min(kv_max_block_size, key.shape[2]),
         block_kv=min(kv_max_block_size, key.shape[2]),
-        block_q_dkv=block_size_q,
+        block_q_dkv=min(q_max_block_size, query.shape[2]),
         block_kv_dkv=min(kv_max_block_size, key.shape[2]),
         block_kv_dkv_compute=min(kv_max_block_size, query.shape[2]),
-        block_q_dq=min(q_max_block_size, query.shape[2]),
-        block_kv_dq=min(kv_max_block_size, query.shape[2]),
+        block_q_dq=None if attention_kernel == "tokamax_flash" else block_sizes.block_q_dq,
+        block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
+        use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
     )
   num_fsdp_shards = mesh.shape["fsdp"]
   query = _reshape_data_for_flash(query, heads)
