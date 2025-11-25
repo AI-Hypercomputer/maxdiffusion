@@ -33,11 +33,7 @@ ScanIn = partitioning.ScanIn
 BlockSizes = splash_attention_kernel.BlockSizes
 
 AxisNames = tuple[str, ...]
-# Physical axis names for device meshes.
-DATA = "data"
-FSDP = "fsdp"
-TENSOR = "tensor"
-# Logical axis names for model parameters and activations.
+
 BATCH = "activation_batch"
 LENGTH = "activation_length"
 KV_LENGTH = "activation_kv_length"
@@ -48,32 +44,4 @@ KEEP_1 = "activation_keep_1"
 KEEP_2 = "activation_keep_2"
 CONV_OUT = "activation_conv_out_channels"
 
-# For setting self/cross attention independently in splash kernel
-SELF_ATTN_HEAD = "activation_self_attn_heads"
-SELF_ATTN_Q_LENGTH = "activation_self_attn_q_length"
-SELF_ATTN_KV_LENGTH = "activation_self_attn_kv_length"
-CROSS_ATTN_HEAD = "activation_cross_attn_heads"
-CROSS_ATTN_Q_LENGTH = "activation_cross_attn_q_length"
-CROSS_ATTN_KV_LENGTH = "activation_cross_attn_kv_length"
-
-
 WAN_MODEL = "Wan2.1"
-
-### Common axis rules for ring attention ###
-RING_ATTENTION_AXIS_RULES = [
-        [SELF_ATTN_HEAD, None],
-        [SELF_ATTN_Q_LENGTH, FSDP],
-        [SELF_ATTN_KV_LENGTH, FSDP],
-        [CROSS_ATTN_HEAD, None],
-        [CROSS_ATTN_Q_LENGTH, FSDP],
-        [CROSS_ATTN_KV_LENGTH, FSDP],
-]
-
-SEQUENCE_PARALLEL_AXIS_RULES = [
-        [SELF_ATTN_HEAD, None],
-        [SELF_ATTN_Q_LENGTH, FSDP],
-        [SELF_ATTN_KV_LENGTH, None],
-        [CROSS_ATTN_HEAD, None],
-        [CROSS_ATTN_Q_LENGTH, FSDP],
-        [CROSS_ATTN_KV_LENGTH, None],
-]

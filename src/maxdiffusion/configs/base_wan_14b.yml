@@ -60,28 +60,18 @@ jit_initializers: True
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring
-flash_min_seq_length: 0
-
-# If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
-# Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
-# However, when padding tokens are significant, this will lead to worse quality and should be set to True.
-mask_padding_tokens: True 
-# Maxdiffusion has 2 types of attention sharding strategies:
-# 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
-# 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
-#    in cross attention q.
-attention_sharding_uniform: True 
+flash_min_seq_length: 4096
 dropout: 0.1
 
 flash_block_sizes: {
-  "block_q" : 3024,
-  "block_kv_compute" : 1024,
-  "block_kv" : 2048,
-  "block_q_dkv" : 3024,
-  "block_kv_dkv" : 2048,
-  "block_kv_dkv_compute" : 2048,
-  "block_q_dq" : 3024,
-  "block_kv_dq" : 2048
+  "block_q" : 1024,
+  "block_kv_compute" : 256,
+  "block_kv" : 1024,
+  "block_q_dkv" : 1024,
+  "block_kv_dkv" : 1024,
+  "block_kv_dkv_compute" : 256,
+  "block_q_dq" : 1024,
+  "block_kv_dq" : 1024
 }
 # Use on v6e
 # flash_block_sizes: {
@@ -90,21 +80,10 @@ flash_block_sizes: {
 #   "block_kv" : 2048,
 #   "block_q_dkv" : 3024,
 #   "block_kv_dkv" : 2048,
-#   "block_kv_dkv_compute" : 1024,
+#   "block_kv_dkv_compute" : 2048,
 #   "block_q_dq" : 3024,
 #   "block_kv_dq" : 2048,
 #   "use_fused_bwd_kernel": False,
-# }
-# Use on v5p
-# flash_block_sizes: {
-#   "block_q" : 3024,
-#   "block_kv_compute" : 1024,
-#   "block_kv" : 2048,
-#   "block_q_dkv" : 1024,
-#   "block_kv_dkv" : 3072,
-#   "block_kv_dkv_compute" : 256,
-#   "block_q_dq" : 1024,
-#   "block_kv_dq" : 3072
 # }
 # GroupNorm groups
 norm_num_groups: 32
@@ -166,9 +145,8 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 logical_axis_rules: [
                       ['batch', 'data'],
                       ['activation_batch', 'data'],
-                      ['activation_self_attn_heads', ['fsdp', 'tensor']], 
-                      ['activation_cross_attn_q_length', ['fsdp', 'tensor']],
                       ['activation_length', 'fsdp'],
+                      
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
                       ['embed','fsdp'],
@@ -284,6 +262,10 @@ enable_profiler: False
 skip_first_n_steps_for_profiler: 5
 profiler_steps: 10
 
+# Enable JAX named scopes for detailed profiling and debugging
+# When enabled, adds named scopes around key operations in transformer and attention layers
+enable_jax_named_scopes: False
+
 # Generation parameters
 prompt: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
 prompt_2: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
@@ -298,7 +280,7 @@ flow_shift: 3.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 30
-fps: 16
+fps: 24
 save_final_checkpoint: False
 
 # SDXL Lightning parameters

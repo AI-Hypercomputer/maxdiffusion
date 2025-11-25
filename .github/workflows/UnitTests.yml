@@ -58,7 +58,7 @@ jobs:
         pip show jax jaxlib flax transformers datasets tensorflow tensorflow_datasets
     - name: PyTest
       run: | #--deselect=src/maxdiffusion/tests/input_pipeline_interface_test.py
-        HF_HUB_CACHE=/mnt/disks/github-runner-disk/ HF_HOME=/mnt/disks/github-runner-disk/ TOKENIZERS_PARALLELISM=false LIBTPU_INIT_ARGS="--xla_tpu_scoped_vmem_limit_kib=65472" python3 -m pytest --deselect=src/maxdiffusion/tests/ltx_transformer_step_test.py -x
+        HF_HUB_CACHE=/mnt/disks/github-runner-disk/ HF_HOME=/mnt/disks/github-runner-disk/ TOKENIZERS_PARALLELISM=false python3 -m pytest --deselect=src/maxdiffusion/tests/ltx_transformer_step_test.py -x
 #  add_pull_ready:
 #    if: github.ref != 'refs/heads/main'
 #    permissions:
