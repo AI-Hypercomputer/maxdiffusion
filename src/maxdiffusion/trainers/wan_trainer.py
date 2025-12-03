@@ -91,9 +91,6 @@ class WanTrainer:
     if config.train_text_encoder:
       raise ValueError("this script currently doesn't support training text_encoders")
     self.config = config
-    model_key = config.model_name
-    if model_key != 'wan2.1':
-      raise ValueError(f"Unsupported model_name: '{model_key}'. This trainer only supports 'wan2.1'.")
     self.checkpointer = WanCheckpointer2_1(config=config)
 
   def post_training_steps(self, pipeline, params, train_states, msg=""):

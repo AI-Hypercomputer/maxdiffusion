@@ -23,6 +23,7 @@ from absl import app
 from maxdiffusion.utils import export_to_video
 from google.cloud import storage
 import flax
+from maxdiffusion.common_types import WAN2_1, WAN2_2
 
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
@@ -77,7 +78,7 @@ jax.config.update("jax_use_shardy_partitioner", True)
 
 def call_pipeline(config, pipeline, prompt, negative_prompt):
   model_key = config.model_name
-  if model_key == "wan2.1":
+  if model_key == WAN2_1:
     return pipeline(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -87,7 +88,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
         num_inference_steps=config.num_inference_steps,
         guidance_scale=config.guidance_scale,
     )
-  elif model_key == "wan2.2":
+  elif model_key == WAN2_2:
     return pipeline(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -139,9 +140,9 @@ def run(config, pipeline=None, filename_prefix=""):
       max_logging.log("Could not retrieve Git commit hash.")
 
   if pipeline is None:
-    if model_key == "wan2.1":
+    if model_key == WAN2_1:
       checkpoint_loader = WanCheckpointer2_1(config=config)
-    elif model_key == "wan2.2":
+    elif model_key == WAN2_2:
       checkpoint_loader = WanCheckpointer2_2(config=config)
     else:
       raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")

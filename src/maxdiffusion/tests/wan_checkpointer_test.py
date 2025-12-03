@@ -13,8 +13,8 @@
 
 import unittest
 from unittest.mock import patch, MagicMock
-
-from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer2_1, WanCheckpointer2_2
+from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
+from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 
 class WanCheckpointer2_1Test(unittest.TestCase):
   """Tests for WAN 2.1 checkpointer."""

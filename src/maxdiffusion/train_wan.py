@@ -31,7 +31,7 @@ def train(config):
 
 
 def main(argv: Sequence[str]) -> None:
-  pyconfig.initialize(argv)
+  pyconfig.initialize(argv, validate_training=True)
   config = pyconfig.config
   validate_train_config(config)
   max_logging.log(f"Found {jax.device_count()} devices.")

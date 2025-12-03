@@ -276,8 +276,16 @@ width: 832
 num_frames: 81
 flow_shift: 3.0
 
+# Reference for below guidance scale and boundary values: https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_t2v_A14B.py
+# guidance scale factor for low noise transformer
 guidance_scale_low: 3.0    
+
+# guidance scale factor for high noise transformer
 guidance_scale_high: 4.0   
+
+# The timestep threshold. If `t` is at or above this value,
+# the `high_noise_model` is considered as the required model.
+# timestep to switch between low noise and high noise transformer
 boundary_timestep: 875
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
