@@ -25,7 +25,7 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     self.config.dataset_type = "test_dataset"
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer.WanPipeline2_1")
+  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_1.WanPipeline2_1")
   def test_load_from_diffusers(self, mock_wan_pipeline, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = None
@@ -44,7 +44,7 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     self.assertIsNone(step)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer.WanPipeline2_1")
+  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_1.WanPipeline2_1")
   def test_load_checkpoint_no_optimizer(self, mock_wan_pipeline, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
@@ -74,7 +74,7 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer.WanPipeline2_1")
+  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_1.WanPipeline2_1")
   def test_load_checkpoint_with_optimizer(self, mock_wan_pipeline, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
@@ -114,7 +114,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     self.config.dataset_type = "test_dataset"
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer.WanPipeline2_2")
+  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
   def test_load_from_diffusers(self, mock_wan_pipeline, mock_create_manager):
     """Test loading from pretrained when no checkpoint exists."""
     mock_manager = MagicMock()
@@ -134,7 +134,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     self.assertIsNone(step)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer.WanPipeline2_2")
+  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
   def test_load_checkpoint_no_optimizer(self, mock_wan_pipeline, mock_create_manager):
     """Test loading checkpoint without optimizer state."""
     mock_manager = MagicMock()
@@ -167,7 +167,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer.WanPipeline2_2")
+  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
   def test_load_checkpoint_with_optimizer_in_low_noise(self, mock_wan_pipeline, mock_create_manager):
     """Test loading checkpoint with optimizer state in low_noise_transformer."""
     mock_manager = MagicMock()
@@ -201,7 +201,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer.WanPipeline2_2")
+  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
   def test_load_checkpoint_with_optimizer_in_high_noise(self, mock_wan_pipeline, mock_create_manager):
     """Test loading checkpoint with optimizer state in high_noise_transformer."""
     mock_manager = MagicMock()
@@ -244,7 +244,7 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     self.config.dataset_type = "test_dataset"
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer.WanPipeline2_1")
+  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_1.WanPipeline2_1")
   def test_load_checkpoint_with_explicit_none_step(self, mock_wan_pipeline, mock_create_manager):
     """Test loading checkpoint with explicit None step falls back to latest."""
     mock_manager = MagicMock()
@@ -270,7 +270,7 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     self.assertEqual(step, 5)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer.WanPipeline2_2")
+  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
   def test_load_checkpoint_both_optimizers_present(self, mock_wan_pipeline, mock_create_manager):
     """Test loading checkpoint when both transformers have optimizer state (prioritize low_noise)."""
     mock_manager = MagicMock()
