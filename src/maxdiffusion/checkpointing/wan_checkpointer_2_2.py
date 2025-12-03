@@ -22,7 +22,7 @@ from ..pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
 from .. import max_logging
 import orbax.checkpoint as ocp
 from etils import epath
-from checkpointing.wan_checkpointer import WanCheckpointer
+from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
 
 class WanCheckpointer2_2(WanCheckpointer):
 
