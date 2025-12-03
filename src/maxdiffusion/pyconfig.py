@@ -38,7 +38,7 @@ def _validate_model_name(model_name: str | None):
     return
   if model_name not in _ALLOWED_MODEL_NAMES:
     raise ValueError(f"Invalid config.model_name '{model_name}'. Allowed values: {sorted(_ALLOWED_MODEL_NAMES)}")
-  
+
 def _validate_training_model_name(model_name: str | None):
   """Raise if model_name is not in the allowed training list."""
   if model_name is None:

@@ -142,7 +142,7 @@ class WanPipeline2_2(WanPipeline):
       )
       latents = self._denormalize_latents(latents)
     return self._decode_latents_to_video(latents)
-  
+
 def run_inference_2_2(
     low_noise_graphdef,
     low_noise_state,

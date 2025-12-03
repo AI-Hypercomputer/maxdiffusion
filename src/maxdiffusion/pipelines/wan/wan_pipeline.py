@@ -572,7 +572,7 @@ class WanPipeline:
   def __call__(self, **kwargs):
         """Runs the inference pipeline."""
         pass
-  
+
 @partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
 def transformer_forward_pass(
     graphdef,
