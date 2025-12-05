@@ -187,6 +187,8 @@ class ApproximateGELU(nnx.Module):
 
   def __call__(self, x: jax.Array) -> jax.Array:
     x = self.proj(x)
+    jax.debug.print("ApproximateGELU activation shape: {shape}", shape=x.shape)
+    jax.debug.inspect_array_sharding(x, callback=print)
     return nnx.gelu(x)
 
 
@@ -245,7 +247,11 @@ class WanFeedForward(nnx.Module):
 
   def __call__(self, hidden_states: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None) -> jax.Array:
     with self.conditional_named_scope("mlp_up_proj_and_gelu"):
+      jax.debug.print(f"MLP input shape: {{shape}}", shape=hidden_states.shape)
+      jax.debug.inspect_array_sharding(hidden_states, callback=print)
       hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
+      jax.debug.print(f"MLP intermediate activation shape: {{shape}}", shape=hidden_states.shape)
+      jax.debug.inspect_array_sharding(hidden_states, callback=print)
       hidden_states = checkpoint_name(hidden_states, "ffn_activation")
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     with self.conditional_named_scope("mlp_down_proj"):

@@ -70,7 +70,7 @@ mask_padding_tokens: True
 # 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
 # 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
 #    in cross attention q.
-attention_sharding_uniform: True 
+attention_sharding_uniform: False 
 dropout: 0.1
 
 flash_block_sizes: {
@@ -165,7 +165,8 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 logical_axis_rules: [
                       ['batch', 'data'],
                       ['activation_batch', 'data'],
-                      ['activation_self_attn_heads', ['fsdp', 'tensor']], 
+                      ['activation_self_attn_q_length', 'fsdp'],
+                      ['activation_self_attn_kv_length', 'fsdp'],
                       ['activation_cross_attn_q_length', ['fsdp', 'tensor']],
                       ['activation_length', 'fsdp'],
                       ['activation_heads', 'tensor'],
