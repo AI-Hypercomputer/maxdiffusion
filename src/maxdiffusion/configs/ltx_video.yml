@@ -20,6 +20,10 @@ frame_rate: 30
 max_sequence_length: 512
 sampler: "from_checkpoint"
 
+# Attention settings
+attention: "standard"
+attention_sharding_uniform: False
+
 # Generation parameters
 pipeline_type: multi-scale
 prompt: "A man in a dimly lit room talks on a vintage telephone, hangs up, and looks down with a sad expression. He holds the black rotary phone to his right ear with his right hand, his left hand holding a rocks glass with amber liquid. He wears a brown suit jacket over a white shirt, and a gold ring on his left ring finger. His short hair is neatly combed, and he has light skin with visible wrinkles around his eyes. The camera remains stationary, focused on his face and upper body. The room is dark, lit only by a warm light source off-screen to the left, casting shadows on the wall behind him. The scene appears to be from a movie."
