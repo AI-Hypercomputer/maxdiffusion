@@ -250,6 +250,8 @@ class WanFeedForward(nnx.Module):
       jax.debug.print(f"MLP input shape: {{shape}}", shape=hidden_states.shape)
       jax.debug.inspect_array_sharding(hidden_states, callback=print)
       hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
+      # Add logical constraint to ensure batch dimension is properly sharded
+      hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "mlp"))
       jax.debug.print(f"MLP intermediate activation shape: {{shape}}", shape=hidden_states.shape)
       jax.debug.inspect_array_sharding(hidden_states, callback=print)
       hidden_states = checkpoint_name(hidden_states, "ffn_activation")
