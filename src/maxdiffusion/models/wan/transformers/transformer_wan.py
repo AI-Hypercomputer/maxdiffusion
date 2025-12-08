@@ -36,6 +36,7 @@ from ...embeddings_flax import (
 from ...normalization_flax import FP32LayerNorm
 from ...attention_flax import FlaxWanAttention
 from ...gradient_checkpoint import GradientCheckpointType
+from ....max_utils import get_tensor_sharding_info
 
 BlockSizes = common_types.BlockSizes
 
@@ -187,6 +188,7 @@ class ApproximateGELU(nnx.Module):
 
   def __call__(self, x: jax.Array) -> jax.Array:
     x = self.proj(x)
+    get_tensor_sharding_info(x, "ffn_activation_before_gelu", loc="GELU_PROJ_OUTPUT")
     return nnx.gelu(x)
 
 
@@ -245,7 +247,9 @@ class WanFeedForward(nnx.Module):
 
   def __call__(self, hidden_states: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None) -> jax.Array:
     with self.conditional_named_scope("mlp_up_proj_and_gelu"):
+      get_tensor_sharding_info(hidden_states, "mlp_input", loc="MLP_INPUT")
       hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
+      get_tensor_sharding_info(hidden_states, "mlp_intermediate", loc="MLP_INTERMEDIATE")
       hidden_states = checkpoint_name(hidden_states, "ffn_activation")
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     with self.conditional_named_scope("mlp_down_proj"):
@@ -359,6 +363,7 @@ class WanTransformerBlock(nnx.Module):
             (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
         )
       hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+      get_tensor_sharding_info(hidden_states, "hidden_states_after_constraint", loc="BLOCK_ENTRY")
       hidden_states = checkpoint_name(hidden_states, "hidden_states")
       encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", None))
 

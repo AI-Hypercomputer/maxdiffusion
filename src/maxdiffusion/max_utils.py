@@ -651,3 +651,29 @@ def maybe_initialize_jax_distributed_system(raw_keys):
     max_logging.log("Jax distributed system initialized on GPU!")
   else:
     jax.distributed.initialize()
+
+
+def get_tensor_sharding_info(tensor, name="tensor", loc=""):
+  """Print tensor sharding info using jax.debug.inspect_array_sharding.
+  
+  This function uses jax.debug.inspect_array_sharding which prints sharding
+  metadata without transferring the tensor data to host (avoiding OOM).
+  
+  Args:
+    tensor: JAX array to inspect
+    name: Human-readable name for the tensor (for logging)
+    loc: Location string (e.g., "MLP_INPUT", "FFN_OUTPUT") to identify where sharding is checked
+    
+  Returns:
+    The tensor unchanged (for use in chaining)
+  """
+  # jax.debug.inspect_array_sharding only prints metadata, not the data
+  # This avoids OOM issues with large tensors
+  loc_str = f" [{loc}]" if loc else ""
+  
+  # Create a custom callback that prefixes location info to each sharding line
+  def print_with_loc(msg):
+    print(f"[{loc}] {msg}" if loc else msg)
+  
+  jax.debug.inspect_array_sharding(tensor, callback=print_with_loc)
+  return tensor
