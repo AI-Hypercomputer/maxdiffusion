@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from abc import abstractmethod
 from typing import List, Union, Optional
 from functools import partial
 import numpy as np
@@ -100,7 +101,7 @@ def create_sharded_logical_transformer(
   if restored_checkpoint:
     wan_config = restored_checkpoint["wan_config"]
   else:
-    wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder="transformer")
+    wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
   wan_config["weights_dtype"] = config.weights_dtype
@@ -188,12 +189,10 @@ class WanPipeline:
   vae ([`AutoencoderKLWan`]):
       Variational Auto-Encoder (VAE) Model to encode and decode videos to and from latent representations.
   """
-
   def __init__(
       self,
       tokenizer: AutoTokenizer,
       text_encoder: UMT5EncoderModel,
-      transformer: WanModel,
       vae: AutoencoderKLWan,
       vae_cache: AutoencoderKLWanCache,
       scheduler: FlaxUniPCMultistepScheduler,
@@ -204,7 +203,6 @@ class WanPipeline:
   ):
     self.tokenizer = tokenizer
     self.text_encoder = text_encoder
-    self.transformer = transformer
     self.vae = vae
     self.vae_cache = vae_cache
     self.scheduler = scheduler
@@ -212,6 +210,7 @@ class WanPipeline:
     self.devices_array = devices_array
     self.mesh = mesh
     self.config = config
+    self.model_name = config.model_name
 
     self.vae_scale_factor_temporal = 2 ** sum(self.vae.temperal_downsample) if getattr(self, "vae", None) else 4
     self.vae_scale_factor_spatial = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
@@ -371,84 +370,6 @@ class WanPipeline:
     )
     return scheduler, scheduler_state
 
-  @classmethod
-  def from_checkpoint(cls, config: HyperParameters, restored_checkpoint=None, vae_only=False, load_transformer=True):
-    devices_array = max_utils.create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
-    rng = jax.random.key(config.seed)
-    rngs = nnx.Rngs(rng)
-    transformer = None
-    tokenizer = None
-    scheduler = None
-    scheduler_state = None
-    text_encoder = None
-    if not vae_only:
-      if load_transformer:
-        with mesh:
-          transformer = cls.load_transformer(
-              devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint, subfolder="transformer"
-          )
-
-      text_encoder = cls.load_text_encoder(config=config)
-      tokenizer = cls.load_tokenizer(config=config)
-
-      scheduler, scheduler_state = cls.load_scheduler(config=config)
-
-    with mesh:
-      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
-
-    return WanPipeline(
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-        transformer=transformer,
-        vae=wan_vae,
-        vae_cache=vae_cache,
-        scheduler=scheduler,
-        scheduler_state=scheduler_state,
-        devices_array=devices_array,
-        mesh=mesh,
-        config=config,
-    )
-
-  @classmethod
-  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
-    devices_array = max_utils.create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
-    rng = jax.random.key(config.seed)
-    rngs = nnx.Rngs(rng)
-    transformer = None
-    tokenizer = None
-    scheduler = None
-    scheduler_state = None
-    text_encoder = None
-    if not vae_only:
-      if load_transformer:
-        with mesh:
-          transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, subfolder="transformer")
-
-      text_encoder = cls.load_text_encoder(config=config)
-      tokenizer = cls.load_tokenizer(config=config)
-
-      scheduler, scheduler_state = cls.load_scheduler(config=config)
-
-    with mesh:
-      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
-
-    pipeline = WanPipeline(
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-        transformer=transformer,
-        vae=wan_vae,
-        vae_cache=vae_cache,
-        scheduler=scheduler,
-        scheduler_state=scheduler_state,
-        devices_array=devices_array,
-        mesh=mesh,
-        config=config,
-    )
-
-    pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, mesh)
-    return pipeline
 
   def _get_t5_prompt_embeds(
       self,
@@ -538,22 +459,66 @@ class WanPipeline:
 
     return latents
 
-  def __call__(
-      self,
-      prompt: Union[str, List[str]] = None,
-      negative_prompt: Union[str, List[str]] = None,
-      height: int = 480,
-      width: int = 832,
-      num_frames: int = 81,
-      num_inference_steps: int = 50,
-      guidance_scale: float = 5.0,
-      num_videos_per_prompt: Optional[int] = 1,
-      max_sequence_length: int = 512,
-      latents: jax.Array = None,
-      prompt_embeds: jax.Array = None,
-      negative_prompt_embeds: jax.Array = None,
-      vae_only: bool = False,
-  ):
+  def _denormalize_latents(self, latents: jax.Array) -> jax.Array:
+      """Denormalizes latents using VAE statistics."""
+      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
+      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
+      latents = latents / latents_std + latents_mean
+      latents = latents.astype(jnp.float32)
+      return latents
+
+  def _decode_latents_to_video(self, latents: jax.Array) -> np.ndarray:
+      """Decodes latents to video frames and postprocesses."""
+      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+          video = self.vae.decode(latents, self.vae_cache)[0]
+
+      video = jnp.transpose(video, (0, 4, 1, 2, 3))
+      video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
+      video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
+      return self.video_processor.postprocess_video(video, output_type="np")
+
+  @classmethod
+  def _create_common_components(cls, config, vae_only=False):
+      devices_array = max_utils.create_device_mesh(config)
+      mesh = Mesh(devices_array, config.mesh_axes)
+      rng = jax.random.key(config.seed)
+      rngs = nnx.Rngs(rng)
+
+      with mesh:
+          wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+
+      components = {
+          "vae": wan_vae, "vae_cache": vae_cache,
+          "devices_array": devices_array, "rngs": rngs, "mesh": mesh,
+          "tokenizer": None, "text_encoder": None, "scheduler": None, "scheduler_state": None
+      }
+
+      if not vae_only:
+          components["tokenizer"] = cls.load_tokenizer(config=config)
+          components["text_encoder"] = cls.load_text_encoder(config=config)
+          components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
+      return components
+
+  @abstractmethod
+  def _get_num_channel_latents(self) -> int:
+    """Returns the number of input channels for the transformer."""
+    pass
+
+  def _prepare_model_inputs(
+        self,
+        prompt: Union[str, List[str]] = None,
+        negative_prompt: Union[str, List[str]] = None,
+        height: int = 480,
+        width: int = 832,
+        num_frames: int = 81,
+        num_inference_steps: int = 50,
+        num_videos_per_prompt: Optional[int] = 1,
+        max_sequence_length: int = 512,
+        latents: jax.Array = None,
+        prompt_embeds: jax.Array = None,
+        negative_prompt_embeds: jax.Array = None,
+        vae_only: bool = False,
+    ):
     if not vae_only:
       if num_frames % self.vae_scale_factor_temporal != 1:
         max_logging.log(
@@ -576,7 +541,7 @@ class WanPipeline:
           negative_prompt_embeds=negative_prompt_embeds,
       )
 
-      num_channel_latents = self.transformer.config.in_channels
+      num_channel_latents = self._get_num_channel_latents()
       if latents is None:
         latents = self.prepare_latents(
             batch_size=batch_size,
@@ -601,40 +566,12 @@ class WanPipeline:
           self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
       )
 
-      graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
+      return latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames
 
-      p_run_inference = partial(
-          run_inference,
-          guidance_scale=guidance_scale,
-          num_inference_steps=num_inference_steps,
-          scheduler=self.scheduler,
-          scheduler_state=scheduler_state,
-          num_transformer_layers=self.transformer.config.num_layers,
-      )
-
-      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-        latents = p_run_inference(
-            graphdef=graphdef,
-            sharded_state=state,
-            rest_of_state=rest_of_state,
-            latents=latents,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-        )
-        latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
-        latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
-        latents = latents / latents_std + latents_mean
-        latents = latents.astype(jnp.float32)
-
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      video = self.vae.decode(latents, self.vae_cache)[0]
-
-    video = jnp.transpose(video, (0, 4, 1, 2, 3))
-    video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
-    video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
-    video = self.video_processor.postprocess_video(video, output_type="np")
-    return video
-
+  @abstractmethod
+  def __call__(self, **kwargs):
+        """Runs the inference pipeline."""
+        pass
 
 @partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
 def transformer_forward_pass(
@@ -657,40 +594,3 @@ def transformer_forward_pass(
     latents = latents[:bsz]
 
   return noise_pred, latents
-
-
-def run_inference(
-    graphdef,
-    sharded_state,
-    rest_of_state,
-    latents: jnp.array,
-    prompt_embeds: jnp.array,
-    negative_prompt_embeds: jnp.array,
-    guidance_scale: float,
-    num_inference_steps: int,
-    scheduler: FlaxUniPCMultistepScheduler,
-    num_transformer_layers: int,
-    scheduler_state,
-):
-  do_classifier_free_guidance = guidance_scale > 1.0
-  if do_classifier_free_guidance:
-    prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
-  for step in range(num_inference_steps):
-    t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
-    if do_classifier_free_guidance:
-      latents = jnp.concatenate([latents] * 2)
-    timestep = jnp.broadcast_to(t, latents.shape[0])
-
-    noise_pred, latents = transformer_forward_pass(
-        graphdef,
-        sharded_state,
-        rest_of_state,
-        latents,
-        timestep,
-        prompt_embeds,
-        do_classifier_free_guidance=do_classifier_free_guidance,
-        guidance_scale=guidance_scale,
-    )
-
-    latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
-  return latents

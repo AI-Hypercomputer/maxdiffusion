@@ -14,42 +14,17 @@
  limitations under the License.
 """
 
-from abc import ABC
 import json
-
 import jax
 import numpy as np
 from typing import Optional, Tuple
-from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
-from ..pipelines.wan.wan_pipeline2_2 import WanPipeline
-from .. import max_logging, max_utils
+from ..pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
+from .. import max_logging
 import orbax.checkpoint as ocp
 from etils import epath
+from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
 
-WAN_CHECKPOINT = "WAN_CHECKPOINT"
-
-
-class WanCheckpointer(ABC):
-
-  def __init__(self, config, checkpoint_type):
-    self.config = config
-    self.checkpoint_type = checkpoint_type
-    self.opt_state = None
-
-    self.checkpoint_manager: ocp.CheckpointManager = create_orbax_checkpoint_manager(
-        self.config.checkpoint_dir,
-        enable_checkpointing=True,
-        save_interval_steps=1,
-        checkpoint_type=checkpoint_type,
-        dataset_type=config.dataset_type,
-    )
-
-  def _create_optimizer(self, model, config, learning_rate):
-    learning_rate_scheduler = max_utils.create_learning_rate_schedule(
-        learning_rate, config.learning_rate_schedule_steps, config.warmup_steps_fraction, config.max_train_steps
-    )
-    tx = max_utils.create_optimizer(config, learning_rate_scheduler)
-    return tx, learning_rate_scheduler
+class WanCheckpointer2_2(WanCheckpointer):
 
   def load_wan_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
     if step is None:
@@ -61,6 +36,7 @@ class WanCheckpointer(ABC):
     max_logging.log(f"Loading WAN checkpoint from step {step}")
     metadatas = self.checkpoint_manager.item_metadata(step)
 
+    # Handle low_noise_transformer
     low_noise_transformer_metadata = metadatas.low_noise_transformer_state
     abstract_tree_structure_low_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, low_noise_transformer_metadata)
     low_params_restore = ocp.args.PyTreeRestore(
@@ -70,6 +46,7 @@ class WanCheckpointer(ABC):
         )
     )
 
+    # Handle high_noise_transformer
     high_noise_transformer_metadata = metadatas.high_noise_transformer_state
     abstract_tree_structure_high_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, high_noise_transformer_metadata)
     high_params_restore = ocp.args.PyTreeRestore(
@@ -79,7 +56,7 @@ class WanCheckpointer(ABC):
         )
     )
 
-    max_logging.log("Restoring WAN checkpoint")
+    max_logging.log("Restoring WAN 2.2 checkpoint")
     restored_checkpoint = self.checkpoint_manager.restore(
         directory=epath.Path(self.config.checkpoint_dir),
         step=step,
@@ -98,15 +75,15 @@ class WanCheckpointer(ABC):
     return restored_checkpoint, step
 
   def load_diffusers_checkpoint(self):
-    pipeline = WanPipeline.from_pretrained(self.config)
+    pipeline = WanPipeline2_2.from_pretrained(self.config)
     return pipeline
 
-  def load_checkpoint(self, step=None) -> Tuple[WanPipeline, Optional[dict], Optional[int]]:
+  def load_checkpoint(self, step=None) -> Tuple[WanPipeline2_2, Optional[dict], Optional[int]]:
     restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
     opt_state = None
     if restored_checkpoint:
       max_logging.log("Loading WAN pipeline from checkpoint")
-      pipeline = WanPipeline.from_checkpoint(self.config, restored_checkpoint)
+      pipeline = WanPipeline2_2.from_checkpoint(self.config, restored_checkpoint)
       # Check for optimizer state in either transformer
       if "opt_state" in restored_checkpoint.low_noise_transformer_state.keys():
         opt_state = restored_checkpoint.low_noise_transformer_state["opt_state"]
@@ -118,7 +95,7 @@ class WanCheckpointer(ABC):
 
     return pipeline, opt_state, step
 
-  def save_checkpoint(self, train_step, pipeline: WanPipeline, train_states: dict):
+  def save_checkpoint(self, train_step, pipeline: WanPipeline2_2, train_states: dict):
     """Saves the training state and model configurations."""
 
     def config_to_json(model_or_config):
@@ -135,73 +112,3 @@ class WanCheckpointer(ABC):
     # Save the checkpoint
     self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
     max_logging.log(f"Checkpoint for step {train_step} saved.")
-
-
-def save_checkpoint_orig(self, train_step, pipeline: WanPipeline, train_states: dict):
-  """Saves the training state and model configurations."""
-
-  def config_to_json(model_or_config):
-    """
-    only save the config that is needed and can be serialized to JSON.
-    """
-    if not hasattr(model_or_config, "config"):
-      return None
-    source_config = dict(model_or_config.config)
-
-    # 1. configs that can be serialized to JSON
-    SAFE_KEYS = [
-        "_class_name",
-        "_diffusers_version",
-        "model_type",
-        "patch_size",
-        "num_attention_heads",
-        "attention_head_dim",
-        "in_channels",
-        "out_channels",
-        "text_dim",
-        "freq_dim",
-        "ffn_dim",
-        "num_layers",
-        "cross_attn_norm",
-        "qk_norm",
-        "eps",
-        "image_dim",
-        "added_kv_proj_dim",
-        "rope_max_seq_len",
-        "pos_embed_seq_len",
-        "flash_min_seq_length",
-        "flash_block_sizes",
-        "attention",
-        "_use_default_values",
-    ]
-
-    # 2. save the config that are in the SAFE_KEYS list
-    clean_config = {}
-    for key in SAFE_KEYS:
-      if key in source_config:
-        clean_config[key] = source_config[key]
-
-    # 3. deal with special data type and precision
-    if "dtype" in source_config and hasattr(source_config["dtype"], "name"):
-      clean_config["dtype"] = source_config["dtype"].name  # e.g 'bfloat16'
-
-    if "weights_dtype" in source_config and hasattr(source_config["weights_dtype"], "name"):
-      clean_config["weights_dtype"] = source_config["weights_dtype"].name
-
-    if "precision" in source_config and isinstance(source_config["precision"]):
-      clean_config["precision"] = source_config["precision"].name  # e.g. 'HIGHEST'
-
-    return clean_config
-
-  items_to_save = {
-      "transformer_config": ocp.args.JsonSave(config_to_json(pipeline.transformer)),
-  }
-
-  items_to_save["transformer_states"] = ocp.args.PyTreeSave(train_states)
-
-  # Create CompositeArgs for Orbax
-  save_args = ocp.args.Composite(**items_to_save)
-
-  # Save the checkpoint
-  self.checkpoint_manager.save(train_step, args=save_args)
-  max_logging.log(f"Checkpoint for step {train_step} saved.")

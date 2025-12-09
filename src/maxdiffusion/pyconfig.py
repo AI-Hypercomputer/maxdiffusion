@@ -27,7 +27,24 @@ import yaml
 from . import max_logging
 from . import max_utils
 from .models.wan.wan_utils import CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH, WAN_21_FUSION_X_MODEL_NAME_OR_PATH
-from maxdiffusion.common_types import LENGTH, KV_LENGTH
+from maxdiffusion.common_types import LENGTH, KV_LENGTH, WAN2_1, WAN2_2
+
+_ALLOWED_MODEL_NAMES = {WAN2_1, WAN2_2}
+_ALLOWED_TRAINING_MODEL_NAMES = {WAN2_1}
+
+def _validate_model_name(model_name: str | None):
+  """Raise if model_name is not in the allowed list."""
+  if model_name is None:
+    return
+  if model_name not in _ALLOWED_MODEL_NAMES:
+    raise ValueError(f"Invalid config.model_name '{model_name}'. Allowed values: {sorted(_ALLOWED_MODEL_NAMES)}")
+
+def _validate_training_model_name(model_name: str | None):
+  """Raise if model_name is not in the allowed training list."""
+  if model_name is None:
+    return
+  if model_name not in _ALLOWED_TRAINING_MODEL_NAMES:
+    raise ValueError(f"Invalid config.model_name '{model_name}' for training. Allowed values: {sorted(_ALLOWED_TRAINING_MODEL_NAMES)}")
 
 
 def string_to_bool(s: str) -> bool:
@@ -261,6 +278,9 @@ class HyperParameters:  # pylint: disable=missing-class-docstring
 def initialize(argv, **kwargs):
   global _config, config
   _config = _HyperParameters(argv, **kwargs)
+  _validate_model_name(_config.keys.get("model_name") if hasattr(_config, "keys") else None)
+  if kwargs.get("validate_training", False):
+    _validate_training_model_name(_config.keys.get("model_name") if hasattr(_config, "keys") else None)
   config = HyperParameters()
 
 

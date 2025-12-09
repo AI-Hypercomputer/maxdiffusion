@@ -262,6 +262,10 @@ enable_profiler: False
 skip_first_n_steps_for_profiler: 5
 profiler_steps: 10
 
+# Enable JAX named scopes for detailed profiling and debugging
+# When enabled, adds named scopes around key operations in transformer and attention layers
+enable_jax_named_scopes: False
+
 # Generation parameters
 prompt: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
 prompt_2: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
@@ -272,9 +276,17 @@ width: 832
 num_frames: 81
 flow_shift: 3.0
 
-guidance_scale_low: 5.0    
-guidance_scale_high: 8.0   
-boundary_timestep: 15
+# Reference for below guidance scale and boundary values: https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_t2v_A14B.py
+# guidance scale factor for low noise transformer
+guidance_scale_low: 3.0    
+
+# guidance scale factor for high noise transformer
+guidance_scale_high: 4.0   
+
+# The timestep threshold. If `t` is at or above this value,
+# the `high_noise_model` is considered as the required model.
+# timestep to switch between low noise and high noise transformer
+boundary_timestep: 875
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0

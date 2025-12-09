@@ -14,34 +14,33 @@
  limitations under the License.
 """
 
-from abc import ABC
-import json
-
-import jax
-import numpy as np
+from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
-from ..pipelines.wan.wan_pipeline import WanPipeline
+from ..pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
+from ..pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
 from .. import max_logging, max_utils
 import orbax.checkpoint as ocp
-from etils import epath
+
 
 WAN_CHECKPOINT = "WAN_CHECKPOINT"
 
 
 class WanCheckpointer(ABC):
 
-  def __init__(self, config, checkpoint_type):
+  def __init__(self, config, checkpoint_type: str = WAN_CHECKPOINT):
     self.config = config
     self.checkpoint_type = checkpoint_type
     self.opt_state = None
 
-    self.checkpoint_manager: ocp.CheckpointManager = create_orbax_checkpoint_manager(
-        self.config.checkpoint_dir,
-        enable_checkpointing=True,
-        save_interval_steps=1,
-        checkpoint_type=checkpoint_type,
-        dataset_type=config.dataset_type,
+    self.checkpoint_manager: ocp.CheckpointManager = (
+        create_orbax_checkpoint_manager(
+            self.config.checkpoint_dir,
+            enable_checkpointing=True,
+            save_interval_steps=1,
+            checkpoint_type=checkpoint_type,
+            dataset_type=config.dataset_type,
+        )
     )
 
   def _create_optimizer(self, model, config, learning_rate):
@@ -51,76 +50,23 @@ class WanCheckpointer(ABC):
     tx = max_utils.create_optimizer(config, learning_rate_scheduler)
     return tx, learning_rate_scheduler
 
+  @abstractmethod
   def load_wan_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
-    if step is None:
-      step = self.checkpoint_manager.latest_step()
-      max_logging.log(f"Latest WAN checkpoint step: {step}")
-      if step is None:
-        max_logging.log("No WAN checkpoint found.")
-        return None, None
-    max_logging.log(f"Loading WAN checkpoint from step {step}")
-    metadatas = self.checkpoint_manager.item_metadata(step)
-    transformer_metadata = metadatas.wan_state
-    abstract_tree_structure_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, transformer_metadata)
-    params_restore = ocp.args.PyTreeRestore(
-        restore_args=jax.tree.map(
-            lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
-            abstract_tree_structure_params,
-        )
-    )
+    raise NotImplementedError
 
-    max_logging.log("Restoring WAN checkpoint")
-    restored_checkpoint = self.checkpoint_manager.restore(
-        directory=epath.Path(self.config.checkpoint_dir),
-        step=step,
-        args=ocp.args.Composite(
-            wan_state=params_restore,
-            wan_config=ocp.args.JsonRestore(),
-        ),
-    )
-    max_logging.log(f"restored checkpoint {restored_checkpoint.keys()}")
-    max_logging.log(f"restored checkpoint wan_state {restored_checkpoint.wan_state.keys()}")
-    max_logging.log(f"optimizer found in checkpoint {'opt_state' in restored_checkpoint.wan_state.keys()}")
-    max_logging.log(f"optimizer state saved in attribute self.opt_state {self.opt_state}")
-    return restored_checkpoint, step
-
+  @abstractmethod
   def load_diffusers_checkpoint(self):
-    pipeline = WanPipeline.from_pretrained(self.config)
-    return pipeline
+    raise NotImplementedError
 
-  def load_checkpoint(self, step=None) -> Tuple[WanPipeline, Optional[dict], Optional[int]]:
-    restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
-    opt_state = None
-    if restored_checkpoint:
-      max_logging.log("Loading WAN pipeline from checkpoint")
-      pipeline = WanPipeline.from_checkpoint(self.config, restored_checkpoint)
-      if "opt_state" in restored_checkpoint["wan_state"].keys():
-        opt_state = restored_checkpoint["wan_state"]["opt_state"]
-    else:
-      max_logging.log("No checkpoint found, loading default pipeline.")
-      pipeline = self.load_diffusers_checkpoint()
+  @abstractmethod
+  def load_checkpoint(self, step=None) -> Tuple[Optional[WanPipeline2_1 | WanPipeline2_2], Optional[dict], Optional[int]]:
+    raise NotImplementedError
 
-    return pipeline, opt_state, step
+  @abstractmethod
+  def save_checkpoint(self, train_step, pipeline, train_states: dict):
+    raise NotImplementedError
 
-  def save_checkpoint(self, train_step, pipeline: WanPipeline, train_states: dict):
-    """Saves the training state and model configurations."""
-
-    def config_to_json(model_or_config):
-      return json.loads(model_or_config.to_json_string())
-
-    max_logging.log(f"Saving checkpoint for step {train_step}")
-    items = {
-        "wan_config": ocp.args.JsonSave(config_to_json(pipeline.transformer)),
-    }
-
-    items["wan_state"] = ocp.args.PyTreeSave(train_states)
-
-    # Save the checkpoint
-    self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
-    max_logging.log(f"Checkpoint for step {train_step} saved.")
-
-
-def save_checkpoint_orig(self, train_step, pipeline: WanPipeline, train_states: dict):
+def save_checkpoint_orig(self, train_step, pipeline, train_states: dict):
   """Saves the training state and model configurations."""
 
   def config_to_json(model_or_config):

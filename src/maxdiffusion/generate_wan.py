@@ -16,12 +16,15 @@ from typing import Sequence
 import jax
 import time
 import os
+import subprocess
+from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
+from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
-import importlib
 from maxdiffusion.utils import export_to_video
 from google.cloud import storage
 import flax
+from maxdiffusion.common_types import WAN2_1, WAN2_2
 
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
@@ -60,28 +63,23 @@ def delete_file(file_path: str):
   else:
     max_logging.log(f"The file '{file_path}' does not exist.")
 
+def get_git_commit_hash():
+  """Tries to get the current Git commit hash."""
+  try:
+    commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
+    return commit_hash
+  except subprocess.CalledProcessError:
+    max_logging.log("Warning: 'git rev-parse HEAD' failed. Not running in a git repo?")
+    return None
+  except FileNotFoundError:
+    max_logging.log("Warning: 'git' command not found.")
+    return None
 
 jax.config.update("jax_use_shardy_partitioner", True)
 
-def get_pipeline(model_name: str):
-  if model_name == "wan2.1":
-    return importlib.import_module("maxdiffusion.pipelines.wan.wan_pipeline")
-  elif model_name == "wan2.2":
-    return importlib.import_module("maxdiffusion.pipelines.wan.wan_pipeline2_2")
-  else:
-    raise ValueError(f"Unsupported model_name in config: {model_name}")
-
-def get_checkpointer(model_name: str):
-  if model_name == "wan2.1":
-    return importlib.import_module("maxdiffusion.checkpointing.wan_checkpointer")
-  elif model_name == "wan2.2":
-    return importlib.import_module("maxdiffusion.checkpointing.wan_checkpointer2_2")
-  else:
-    raise ValueError(f"Unsupported model_name in config: {model_name}")
-
 def call_pipeline(config, pipeline, prompt, negative_prompt):
   model_key = config.model_name
-  if model_key == "wan2.1":
+  if model_key == WAN2_1:
     return pipeline(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -91,7 +89,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
         num_inference_steps=config.num_inference_steps,
         guidance_scale=config.guidance_scale,
     )
-  elif model_key == "wan2.2":
+  elif model_key == WAN2_2:
     return pipeline(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -131,21 +129,25 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
 
 def run(config, pipeline=None, filename_prefix=""):
   model_key = config.model_name
-  # Initialize TensorBoard writer
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
-  checkpointer_lib = get_checkpointer(model_key)
-  WanCheckpointer = checkpointer_lib.WanCheckpointer
-
-  checkpoint_loader = WanCheckpointer(config, "WAN_CHECKPOINT")
-  pipeline, _, _ = checkpoint_loader.load_checkpoint()
+    commit_hash = get_git_commit_hash()
+    if commit_hash:
+      writer.add_text("inference/git_commit_hash", commit_hash, global_step=0)
+      max_logging.log(f"Git Commit Hash: {commit_hash}")
+    else:
+      max_logging.log("Could not retrieve Git commit hash.")
 
   if pipeline is None:
-    pipeline_lib = get_pipeline(model_key)
-    WanPipeline = pipeline_lib.WanPipeline
-    pipeline = WanPipeline.from_pretrained(config)
+    if model_key == WAN2_1:
+      checkpoint_loader = WanCheckpointer2_1(config=config)
+    elif model_key == WAN2_2:
+      checkpoint_loader = WanCheckpointer2_2(config=config)
+    else:
+      raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
+    pipeline, _, _ = checkpoint_loader.load_checkpoint()
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on so not to create more config variables
@@ -155,8 +157,8 @@ def run(config, pipeline=None, filename_prefix=""):
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
   )
-
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")
   max_logging.log(f"model path: {config.pretrained_model_name_or_path}")
@@ -192,8 +194,6 @@ def run(config, pipeline=None, filename_prefix=""):
       max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
-
-
   s0 = time.perf_counter()
   if config.enable_profiler:
     max_utils.activate_profiler(config)
