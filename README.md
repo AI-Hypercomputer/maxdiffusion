@@ -48,6 +48,7 @@ MaxDiffusion supports
 * Dreambooth training support for Stable Diffusion 1.x,2.x.
 * LTX-Video text2vid, img2vid (inference).
 * Wan2.1 text2vid (training and inference).
+* Wan2.2 text2vid (inference).
 
 
 # Table of Contents
@@ -67,6 +68,7 @@ MaxDiffusion supports
     - [Dreambooth](#dreambooth)
   - [Inference](#inference)
     - [Wan2.1](#wan21)
+    - [Wan2.2](#wan22)
     - [LTX-Video](#ltx-video)
     - [Flux](#flux)
       - [Fused Attention for GPU](#fused-attention-for-gpu)
