@@ -25,6 +25,8 @@ from maxdiffusion.utils import export_to_video
 from google.cloud import storage
 import flax
 from maxdiffusion.common_types import WAN2_1, WAN2_2
+from flax import nnx
+from maxdiffusion.loaders.wan_lora_nnx_loader import WanNnxLoraLoader
 
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
@@ -148,6 +150,28 @@ def run(config, pipeline=None, filename_prefix=""):
     else:
       raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
+    pipeline_lib = get_pipeline(model_key)
+    WanPipeline = pipeline_lib.WanPipeline
+    pipeline = WanPipeline.from_pretrained(config)
+
+  # If LoRA is specified, inject layers and load weights.
+  if hasattr(config, "lora_config") and config.lora_config and config.lora_config["lora_model_name_or_path"]:
+    lora_loader = WanNnxLoraLoader()
+    lora_config = config.lora_config
+    
+    if len(lora_config["lora_model_name_or_path"]) > 1:
+        max_logging.warning("Found multiple LoRAs in config, but only loading the first one for WAN 2.2.")
+
+    pipeline = lora_loader.load_lora_weights(
+        pipeline,
+        lora_config["lora_model_name_or_path"][0],
+        high_noise_weight_name=lora_config["high_noise_weight_name"][0],
+        low_noise_weight_name=lora_config["low_noise_weight_name"][0],
+        rank=config.lora_rank,
+        scale=lora_config["scale"][0],
+        rng=jax.random.key(config.seed),
+    )
+
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on so not to create more config variables
