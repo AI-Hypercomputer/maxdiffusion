@@ -248,7 +248,7 @@ class WanFeedForward(nnx.Module):
       hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
       hidden_states = checkpoint_name(hidden_states, "ffn_activation")
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
-      with self.conditional_named_scope("proj_out"):
+      with jax.named_scope("proj_out"):
         return self.proj_out(hidden_states)  # output is (4, 75600, 5120)
 
 
@@ -362,7 +362,7 @@ class WanTransformerBlock(nnx.Module):
       encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", None))
 
     # 1. Self-attention
-    with self.conditional_named_scope("attn1"):
+    with jax.named_scope("attn1"):
         norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(
             hidden_states.dtype
         )
@@ -604,7 +604,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
-    with self.conditional_named_scope("proj_out"):
+    with jax.named_scope("proj_out"):
       hidden_states = self.proj_out(hidden_states)
 
     hidden_states = hidden_states.reshape(
