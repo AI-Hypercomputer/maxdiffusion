@@ -142,7 +142,7 @@ class WanTimeTextImageEmbedding(nnx.Module):
   ):
     timestep = self.timesteps_proj(timestep)
     temb = self.time_embedder(timestep)
-    with jax.name_scope("time_proj"):
+    with jax.named_scope("time_proj"):
       timestep_proj = self.time_proj(self.act_fn(temb))
 
     encoder_hidden_states = self.text_embedder(encoder_hidden_states)
