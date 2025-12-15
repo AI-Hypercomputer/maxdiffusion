@@ -113,6 +113,7 @@ def create_sharded_logical_transformer(
   wan_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
   wan_config["flash_min_seq_length"] = config.flash_min_seq_length
   wan_config["dropout"] = config.dropout
+  wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
 
@@ -533,13 +534,14 @@ class WanPipeline:
 
       batch_size = len(prompt)
 
-      prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-          prompt=prompt,
-          negative_prompt=negative_prompt,
-          max_sequence_length=max_sequence_length,
-          prompt_embeds=prompt_embeds,
-          negative_prompt_embeds=negative_prompt_embeds,
-      )
+      with jax.named_scope("Encode-Prompt"):
+        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            max_sequence_length=max_sequence_length,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+        )
 
       num_channel_latents = self._get_num_channel_latents()
       if latents is None:
