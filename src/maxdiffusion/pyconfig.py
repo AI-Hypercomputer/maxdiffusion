@@ -27,7 +27,7 @@ import yaml
 from . import max_logging
 from . import max_utils
 from .models.wan.wan_utils import CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH, WAN_21_FUSION_X_MODEL_NAME_OR_PATH
-from maxdiffusion.common_types import LENGTH, KV_LENGTH, WAN2_1, WAN2_2
+from maxdiffusion.common_types import LENGTH, KV_LENGTH, WAN2_1, WAN2_2, RING_ATTENTION_AXIS_RULES, SEQUENCE_PARALLEL_AXIS_RULES
 
 _ALLOWED_MODEL_NAMES = {WAN2_1, WAN2_2}
 _ALLOWED_TRAINING_MODEL_NAMES = {WAN2_1}
@@ -45,7 +45,6 @@ def _validate_training_model_name(model_name: str | None):
     return
   if model_name not in _ALLOWED_TRAINING_MODEL_NAMES:
     raise ValueError(f"Invalid config.model_name '{model_name}' for training. Allowed values: {sorted(_ALLOWED_TRAINING_MODEL_NAMES)}")
-
 
 def string_to_bool(s: str) -> bool:
   if s.lower() == "true":
@@ -196,15 +195,29 @@ class _HyperParameters:
 
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
     # Verify qkv is sharded across sequence.
-    if raw_keys["attention"] == "ring":
+    if raw_keys["attention"] == "ring" or raw_keys["attention_sharding_uniform"]:
+      max_logging.log(f"Adding sequence sharding to q and kv if not already present because {raw_keys['attention']}=='ring' or {raw_keys['attention_sharding_uniform']} is set.")
       logical_axis_rules = list(raw_keys["logical_axis_rules"])
+      max_logging.log(f"Initial logical axis rules: {logical_axis_rules}")
+      new_rules = []
       q_seq_sharding = (LENGTH, "fsdp")
       kv_seq_sharding = (KV_LENGTH, "fsdp")
       if q_seq_sharding not in logical_axis_rules:
         logical_axis_rules.append(q_seq_sharding)
       if kv_seq_sharding not in logical_axis_rules:
         logical_axis_rules.append(kv_seq_sharding)
-      raw_keys["logical_axis_rules"] = tuple(logical_axis_rules)
+      if raw_keys["attention"] == "ring":
+        for ring_attention_axis_rule in RING_ATTENTION_AXIS_RULES:
+          if ring_attention_axis_rule not in logical_axis_rules:
+            max_logging.log(f"Adding ring attention axis rule {ring_attention_axis_rule}")
+            new_rules.append(ring_attention_axis_rule)
+      else: # attention =flash but sequence parallel sharding requested for both self and cross attention
+        for seq_parallel_axis_rule in SEQUENCE_PARALLEL_AXIS_RULES:
+          if seq_parallel_axis_rule not in logical_axis_rules:
+            max_logging.log(f"Adding sequence parallel attention axis rule {seq_parallel_axis_rule}")
+            new_rules.append(seq_parallel_axis_rule)
+      raw_keys["logical_axis_rules"] = tuple(new_rules) + tuple(logical_axis_rules)
+      max_logging.log(f"Final logical axis rules: {raw_keys['logical_axis_rules']}")
 
     raw_keys["data_sharding"] = _lists_to_tuples(raw_keys["data_sharding"])
 

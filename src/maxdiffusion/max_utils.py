@@ -501,17 +501,26 @@ def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
   flash_block_sizes = None
   if len(config.flash_block_sizes.keys()) > 0:
-    use_fused_bwd_kernel = config.flash_block_sizes.get("use_fused_bwd_kernel", False)
+    attention_is_tokamax = "tokamax" in config.attention
+    user_block_sizes:Dict[str, int] = config.flash_block_sizes
+    if attention_is_tokamax:
+      max_logging.log("Tokamax kernel specified, Note: Tokamax only supports fused backward kernel."
+                      "Hence following flash block properties specified will be ignored:"
+                      f"block_q: {user_block_sizes['block_q']},"
+                      f"block_q_dq: {user_block_sizes.get('block_q_dq')},"
+                      f"block_kv_dq: {user_block_sizes.get('block_kv_dq')},"
+                      f"use_fused_bwd_kernel: {user_block_sizes.get('use_fused_bwd_kernel')}"
+                      )
     flash_block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=config.flash_block_sizes["block_q"],
-        block_kv_compute=config.flash_block_sizes["block_kv_compute"],
-        block_kv=config.flash_block_sizes["block_kv"],
-        block_q_dkv=config.flash_block_sizes["block_q_dkv"],
-        block_kv_dkv=config.flash_block_sizes["block_kv_dkv"],
-        block_kv_dkv_compute=config.flash_block_sizes["block_kv_dkv_compute"],
-        block_q_dq=value_or_none(config.flash_block_sizes, "block_q_dq"),
-        block_kv_dq=value_or_none(config.flash_block_sizes, "block_kv_dq"),
-        use_fused_bwd_kernel=value_or_none(config.flash_block_sizes, "use_fused_bwd_kernel"),
+        block_q=user_block_sizes.get("block_q_dkv", user_block_sizes["block_kv"]) if attention_is_tokamax else user_block_sizes["block_q"],
+        block_kv_compute=user_block_sizes["block_kv_compute"],
+        block_kv=user_block_sizes["block_kv"],
+        block_q_dkv=user_block_sizes["block_q_dkv"],
+        block_kv_dkv=user_block_sizes["block_kv_dkv"],
+        block_kv_dkv_compute=user_block_sizes["block_kv_dkv_compute"],
+        block_q_dq=None if attention_is_tokamax else value_or_none(user_block_sizes, "block_q_dq"),
+        block_kv_dq=None if attention_is_tokamax else value_or_none(user_block_sizes, "block_kv_dq"),
+        use_fused_bwd_kernel=True if attention_is_tokamax else value_or_none(user_block_sizes, "use_fused_bwd_kernel"),
     )
   return flash_block_sizes
 
