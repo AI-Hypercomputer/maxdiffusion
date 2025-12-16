@@ -1,13 +1,14 @@
 # Requirements for Building the MaxDifussion Docker Image
 # These requirements are additional to the dependencies present in the JAX AI base image.
 --extra-index-url https://download.pytorch.org/whl/cpu
-jax>=0.7.2
+# TODO: revert back to jax>=0.7.2 and flax>=0.12.0 once the issue with flax compatibility is resolved.
+jax==0.8.1
 jaxlib>=0.4.30
 grain
 google-cloud-storage>=2.17.0
 absl-py
 datasets
-flax>=0.12.0
+flax==0.12.1
 optax>=0.2.3
 torch>=2.6.0
 torchvision>=0.20.1
