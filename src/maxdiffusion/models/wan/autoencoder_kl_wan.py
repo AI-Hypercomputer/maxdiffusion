@@ -74,7 +74,7 @@ class WanCausalConv3d(nnx.Module):
     self._depth_padding_before = self._causal_padding[1][0]  # 2 * padding_tuple[0]
 
     # Set sharding dynamically based on out_channels.
-    num_fsdp_axis_devices = mesh.device_ids.shape[1]
+    num_fsdp_axis_devices = mesh.device_ids.shape[2]
     kernel_sharding = (None, None, None, None, None)
     if out_channels % num_fsdp_axis_devices == 0:
       kernel_sharding = (None, None, None, None, "conv_out")
