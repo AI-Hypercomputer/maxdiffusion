@@ -92,7 +92,7 @@ def _reshape_batch_dim_to_heads(tensor, heads):
   tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
   reshaped_tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
-  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD, D_KV))
+  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
   return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
 
 
@@ -106,7 +106,7 @@ def _reshape_heads_to_batch_dim(tensor, heads):
   else:
     batch_size, head_size, seq_len, head_dim = tensor.shape
     reshaped_tensor = tensor.reshape(batch_size * head_size, seq_len, head_dim)
-  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD, D_KV))
+  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
   return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
 
 
@@ -116,7 +116,7 @@ def _reshape_heads_to_head_dim(tensor):
   b, h, s, d = tensor.shape
   tensor = jnp.transpose(tensor, axes=[0, 2, 1, 3])
   reshaped_tensor = jnp.reshape(tensor, (b, -1, h * d))
-  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD, D_KV))
+  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
   return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
 
 
@@ -256,7 +256,11 @@ def _tpu_flash_attention(
         block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
         use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
     )
-  num_fsdp_shards = mesh.shape["fsdp"]
+  fsdp_key = "fsdp"
+  if "fsdp_tpu" in mesh.shape.keys():
+    fsdp_key = "fsdp_tpu"
+  
+  num_fsdp_shards = mesh.shape[fsdp_key]
   query = _reshape_data_for_flash(query, heads)
   key = _reshape_data_for_flash(key, heads)
   value = _reshape_data_for_flash(value, heads)
@@ -360,13 +364,13 @@ def _tpu_flash_attention(
 
         perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
 
-        k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
-        v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
+        k1 = jax.lax.ppermute(key, axis_name=fsdp_key, perm=perm)
+        v1 = jax.lax.ppermute(value, axis_name=fsdp_key, perm=perm)
 
         def ring_scan_body(carry, _):
           m, l, o, k_current, v_current = carry
-          k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
-          v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
+          k_next = jax.lax.ppermute(k_current, axis_name=fsdp_key, perm=perm)
+          v_next = jax.lax.ppermute(v_current, axis_name=fsdp_key, perm=perm)
 
           out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
 
@@ -393,7 +397,7 @@ def _tpu_flash_attention(
 
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
-  devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
+  devices_in_data_fsdp = mesh.shape["data"] * mesh.shape[fsdp_key]
   # This warning might show up when doing model eval for example, when calculating model flops
   # and that is expected.
   if not (query.shape[0] / devices_in_data_fsdp).is_integer():
@@ -748,6 +752,7 @@ class NNXAttentionOp(nnx.Module):
       mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
   ):
+    self.dpa_layer = None
     if attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
       jax.config.update("jax_use_shardy_partitioner", False)
