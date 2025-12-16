@@ -376,14 +376,15 @@ class WanTransformerBlock(nnx.Module):
         hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
 
     # 2. Cross-attention
-    norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32)).astype(hidden_states.dtype)
-    attn_output = self.attn2(
-        hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs
-    )
-    hidden_states = hidden_states + attn_output
+    with jax.named_scope('attn2'):
+     norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32)).astype(hidden_states.dtype)
+     attn_output = self.attn2(
+         hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs
+     )
+     hidden_states = hidden_states + attn_output
 
     # 3. Feed-forward
-    with self.conditional_named_scope("ffn"):
+    with jax.named_scope("ffn"):
         norm_hidden_states = (self.norm3(hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(
             hidden_states.dtype
         )
