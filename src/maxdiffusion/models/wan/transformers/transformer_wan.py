@@ -538,7 +538,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if scan_layers:
       self.blocks = init_block(rngs)
     else:
-      blocks = nnx.List([])
+      blocks = []
       for _ in range(num_layers):
         block = WanTransformerBlock(
             rngs=rngs,
@@ -560,7 +560,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             enable_jax_named_scopes=enable_jax_named_scopes,
         )
         blocks.append(block)
-      self.blocks = blocks
+      self.blocks = nnx.data(blocks)
 
     self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
     self.proj_out = nnx.Linear(

@@ -40,6 +40,7 @@ from skimage.metrics import structural_similarity as ssim
 from flax.training import train_state
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 from jax.experimental import multihost_utils
+from transformer_engine.jax.sharding import global_shard_guard, MeshResource
 
 
 class TrainState(train_state.TrainState):
@@ -307,7 +308,8 @@ class WanTrainer:
         pretty_string = pprint.pformat(state_spec.opt_state, indent=4, width=60)
         max_logging.log(pretty_string)
         max_logging.log("------------------------------------------------")
-    max_utils.delete_pytree(params)
+    if self.config.hardware != 'gpu':
+      max_utils.delete_pytree(params)
     data_shardings = self.get_data_shardings(mesh)
     eval_data_shardings = self.get_eval_data_shardings(mesh)
 
@@ -357,15 +359,24 @@ class WanTrainer:
     scheduler_state = pipeline.scheduler_state
     example_batch = load_next_batch(train_data_iterator, None, self.config)
 
+    # Designate the context parallel axis for sharding
+    cp_resource = ''
+    for rules in self.config.logical_axis_rules:
+      if rules[0] == "activation_length":
+        if isinstance(rules[1], list):
+          cp_resource = rules[1][0]
+        else:
+          cp_resource = rules[1]
+    mesh_resource = MeshResource(cp_resource=cp_resource)
+
     with ThreadPoolExecutor(max_workers=1) as executor:
       for step in np.arange(start_step, self.config.max_train_steps):
         if self.config.enable_profiler and step == first_profiling_step:
           max_utils.activate_profiler(self.config)
         start_step_time = datetime.datetime.now()
         next_batch_future = executor.submit(load_next_batch, train_data_iterator, example_batch, self.config)
-        with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(
-            self.config.logical_axis_rules
-        ):
+        with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, \
+        global_shard_guard(mesh_resource), nn_partitioning.axis_rules(self.config.logical_axis_rules):
           state, scheduler_state, train_metric, rng = p_train_step(state, example_batch, rng, scheduler_state)
           train_metric["scalar"]["learning/loss"].block_until_ready()
         last_step_completion = datetime.datetime.now()
