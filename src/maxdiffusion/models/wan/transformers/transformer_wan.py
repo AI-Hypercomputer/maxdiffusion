@@ -358,9 +358,11 @@ class WanTransformerBlock(nnx.Module):
         shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
             (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
         )
-      hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_heads"))
+      hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
       hidden_states = checkpoint_name(hidden_states, "hidden_states")
-      encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", None))
+      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_kv"))
+      encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
 
     # 1. Self-attention
     with self.conditional_named_scope("self_attn"):
