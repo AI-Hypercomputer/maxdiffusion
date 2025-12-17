@@ -27,6 +27,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
 from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
+from tokamax._src.ops.experimental.tpu.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from einops import rearrange
 from .. import common_types, max_logging
 
@@ -305,7 +306,16 @@ def _tpu_flash_attention(
           mask=mask,
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
           config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
-          save_residuals=True if attention_kernel == "ring" else False,
+          save_residuals=True if "ring" in attention_kernel else False,
+      )
+    elif attention_kernel == "tokamax_ring":
+      mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
+      splash_kernel = tokamax_ring_attention_kernel.make_ring_attention(
+          mask=mask,
+          is_mqa=False,
+          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          save_residuals=True,
+          ring_axis="fsdp",
       )
     else:
       splash_kernel = splash_attention_kernel.make_splash_mha(
@@ -313,54 +323,75 @@ def _tpu_flash_attention(
           head_shards=1,  # the sizes of the axis is sharding over heads
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
           block_sizes=block_sizes,
-          save_residuals=True if attention_kernel == "ring" else False,
+          save_residuals=True if "ring" in attention_kernel else False,
           residual_checkpoint_name=residual_checkpoint_name
       )
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
-    if not mask_padding_tokens:
-      segment_ids = None
-    if attention_kernel in ["flash", "tokamax_flash"]:
-      attention_output = vmapped_splash(query, key, value, segment_ids)
+    if attention_kernel == "tokamax_ring":
+      # For tokamax_ring, use the kernel directly without vmap
+      # The ring attention kernel handles the ring topology internally
+      if not mask_padding_tokens:
+        segment_ids = None
+      attention_output = splash_kernel(
+          fwd_mask_info=None,
+          dkv_mask_info=None,
+          q=query,
+          k=key,
+          v=value,
+          segment_ids=segment_ids,
+          is_mqa=False,
+          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          mask_value=-jnp.inf,
+          mask_function=None,
+          fwd_mask_sparsity=1.0,
+          save_residuals=True,
+      )
     else:
-      if num_fsdp_shards > 1:
-        out, (lse,) = vmapped_splash(query, key, value, segment_ids)
-        m = lse.astype(jnp.float32)
-        l = jnp.exp(lse - m)
-        o = out.astype(jnp.float32) * l[..., None]
+      vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
-        perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
-
-        k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
-        v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
-
-        def ring_scan_body(carry, _):
-          m, l, o, k_current, v_current = carry
-          k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
-          v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
-
-          out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
-
-          m_chunk = lse_chunk.astype(jnp.float32)
-          m_old = m
-          m = jnp.maximum(m_old, m_chunk)
-
-          exp_m_diff = jnp.exp(m_old - m)
-          exp_m_chunk_diff = jnp.exp(m_chunk - m)
-
-          l = l * exp_m_diff + jnp.exp(lse_chunk - m)
-          o = o * exp_m_diff[..., None]
-          o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
-
-          # Return the updated state for the next iteration
-          return (m, l, o, k_next, v_next), None
-
-        initial_carry = (m, l, o, k1, v1)
-        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
-
-        attention_output = o_final / l_final[..., None]
+      if not mask_padding_tokens:
+        segment_ids = None
+      if attention_kernel in ["flash", "tokamax_flash"]:
+        attention_output = vmapped_splash(query, key, value, segment_ids)
       else:
-        raise ValueError("ring attention requires fsdp > 1")
+        if num_fsdp_shards > 1:
+          out, (lse,) = vmapped_splash(query, key, value, segment_ids)
+          m = lse.astype(jnp.float32)
+          l = jnp.exp(lse - m)
+          o = out.astype(jnp.float32) * l[..., None]
+
+          perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
+
+          k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
+          v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
+
+          def ring_scan_body(carry, _):
+            m, l, o, k_current, v_current = carry
+            k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
+            v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
+
+            out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
+
+            m_chunk = lse_chunk.astype(jnp.float32)
+            m_old = m
+            m = jnp.maximum(m_old, m_chunk)
+
+            exp_m_diff = jnp.exp(m_old - m)
+            exp_m_chunk_diff = jnp.exp(m_chunk - m)
+
+            l = l * exp_m_diff + jnp.exp(lse_chunk - m)
+            o = o * exp_m_diff[..., None]
+            o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
+
+            # Return the updated state for the next iteration
+            return (m, l, o, k_next, v_next), None
+
+          initial_carry = (m, l, o, k1, v1)
+          (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
+
+          attention_output = o_final / l_final[..., None]
+        else:
+          raise ValueError("ring attention requires fsdp > 1")
 
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
@@ -536,7 +567,7 @@ def _apply_attention(
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
     )
-  elif attention_kernel == "ring":
+  elif "ring" in attention_kernel:
     return _tpu_flash_attention(
         query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel,
         mask_padding_tokens=mask_padding_tokens,
@@ -545,6 +576,7 @@ def _apply_attention(
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:
     raise ValueError(f"Unexpected attention kernel {attention_kernel=}.")
+
 
 
 def _query_chunk_attention(query, key, value, precision, key_chunk_size: int = 4096):

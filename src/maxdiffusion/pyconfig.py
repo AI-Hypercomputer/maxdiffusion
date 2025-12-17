@@ -195,8 +195,8 @@ class _HyperParameters:
 
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
     # Verify qkv is sharded across sequence.
-    if raw_keys["attention"] == "ring" or raw_keys["attention_sharding_uniform"]:
-      max_logging.log(f"Adding sequence sharding to q and kv if not already present because {raw_keys['attention']}=='ring' or {raw_keys['attention_sharding_uniform']} is set.")
+    if "ring" in raw_keys["attention"] or raw_keys["attention_sharding_uniform"]:
+      max_logging.log(f"Adding sequence sharding to q and kv if not already present because '{raw_keys['attention']}' contains 'ring' or {raw_keys['attention_sharding_uniform']} is set.")
       logical_axis_rules = list(raw_keys["logical_axis_rules"])
       max_logging.log(f"Initial logical axis rules: {logical_axis_rules}")
       new_rules = []
@@ -206,12 +206,12 @@ class _HyperParameters:
         logical_axis_rules.append(q_seq_sharding)
       if kv_seq_sharding not in logical_axis_rules:
         logical_axis_rules.append(kv_seq_sharding)
-      if raw_keys["attention"] == "ring":
+      if "ring" in raw_keys["attention"]:
         for ring_attention_axis_rule in RING_ATTENTION_AXIS_RULES:
           if ring_attention_axis_rule not in logical_axis_rules:
             max_logging.log(f"Adding ring attention axis rule {ring_attention_axis_rule}")
             new_rules.append(ring_attention_axis_rule)
-      else: # attention =flash but sequence parallel sharding requested for both self and cross attention
+      else: # attention contains 'flash' but sequence parallel sharding requested for both self and cross attention
         for seq_parallel_axis_rule in SEQUENCE_PARALLEL_AXIS_RULES:
           if seq_parallel_axis_rule not in logical_axis_rules:
             max_logging.log(f"Adding sequence parallel attention axis rule {seq_parallel_axis_rule}")
