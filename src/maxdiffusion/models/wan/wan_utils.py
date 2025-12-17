@@ -256,13 +256,13 @@ def load_base_wan_transformer(
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
       if "image_embedder" in renamed_pt_key:
-        if "net.0" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("net.0", "net_0.proj")
-        elif "net.2" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("net.2", "net_2.proj")
-        renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
-        if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
+          if "net.0" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("net.0", "net_0.proj")
+          elif "net.2" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("net.2", "net_2.proj")
+          renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
+          if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
