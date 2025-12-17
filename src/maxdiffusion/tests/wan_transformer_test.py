@@ -332,8 +332,8 @@ class WanTransformerTest(unittest.TestCase):
     config_fp8_full = Mock(spec=HyperParameters)
     config_fp8_full.use_qwix_quantization = True
     config_fp8_full.quantization = "fp8_full"
-    config_fp8_full.weight_quantization_calibration_method = "absmax"
-    config_fp8_full.act_quantization_calibration_method = "absmax"
+    config_fp8_full.weight_quantization_calibration_method = "fixed,-224,224"
+    config_fp8_full.act_quantization_calibration_method = "fixed,-224,224"
     config_fp8_full.bwd_quantization_calibration_method = "absmax"
     config_fp8_full.qwix_module_path = ".*"
     provider_fp8_full = WanPipeline.get_qt_provider(config_fp8_full)
