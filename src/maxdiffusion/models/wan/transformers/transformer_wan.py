@@ -545,8 +545,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             precision=precision,
             attention=attention,
             enable_jax_named_scopes=enable_jax_named_scopes,
-            added_kv_proj_dim=added_kv_proj_dim,
-            image_seq_len=pos_embed_seq_len,
         )
         blocks.append(block)
       self.blocks = blocks
