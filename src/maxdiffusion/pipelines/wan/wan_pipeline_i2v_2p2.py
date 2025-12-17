@@ -22,7 +22,6 @@ from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.sharding import NamedSharding, PartitionSpec as P
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 from ...max_utils import randn_tensor
@@ -86,7 +85,7 @@ class WanPipelineI2V_2_2(WanPipeline):
     latents: Optional[jax.Array] = None,
     last_image: Optional[jax.Array] = None,
 ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
-    num_channels_latents = self.vae.config['z_dim']
+    num_channels_latents = self.vae.z_dim
     num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
     latent_height = height // self.vae_scale_factor_spatial
     latent_width = width // self.vae_scale_factor_spatial
