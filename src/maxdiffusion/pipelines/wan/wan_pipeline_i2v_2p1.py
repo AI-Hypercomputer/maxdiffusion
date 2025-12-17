@@ -218,7 +218,7 @@ def run_inference_2_1_i2v(
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
-    rng: jax.random.KeyArray,
+    rng: jax.Array,
     expand_timesteps: bool,
     first_frame_mask: Optional[jnp.array],
 ):

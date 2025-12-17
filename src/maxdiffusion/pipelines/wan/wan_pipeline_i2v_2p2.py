@@ -143,7 +143,7 @@ class WanPipelineI2V_2_2(WanPipeline):
     image_embeds: Optional[jax.Array] = None,
     last_image: Optional[PipelineImageInput] = None,
     output_type: Optional[str] = "np",
-    rng: Optional[jax.random.KeyArray] = None,
+    rng: Optional[jax.Array] = None,
   ):
     height = height or self.config.height
     width = width or self.config.width
@@ -236,7 +236,7 @@ def run_inference_2_2_i2v(
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
-    rng: jax.random.KeyArray,
+    rng: jax.Array,
     expand_timesteps: bool,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
