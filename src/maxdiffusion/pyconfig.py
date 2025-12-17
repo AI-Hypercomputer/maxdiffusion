@@ -195,6 +195,9 @@ class _HyperParameters:
     max_utils.write_config_raw_keys_for_gcs(raw_keys)
 
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
+    logical_axis_rules = list(raw_keys["logical_axis_rules"])
+    logical_axis_rules.append(('bias', 'tensor'))
+    raw_keys["logical_axis_rules"] = tuple(logical_axis_rules)
     # Verify qkv is sharded across sequence.
     if raw_keys["attention"] == "ring":
       logical_axis_rules = list(raw_keys["logical_axis_rules"])
