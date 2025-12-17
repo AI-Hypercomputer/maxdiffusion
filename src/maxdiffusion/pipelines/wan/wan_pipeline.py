@@ -532,8 +532,8 @@ class WanPipeline:
           encoded_output = self.vae.encode(video_condition, self.vae_cache)[0].mode()
 
       # Normalize latents
-      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
-      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
+      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
+      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, 1, 1, 1, self.vae.z_dim)
       latent_condition = (encoded_output - latents_mean) * latents_std
       latent_condition = latent_condition.astype(dtype)
 
