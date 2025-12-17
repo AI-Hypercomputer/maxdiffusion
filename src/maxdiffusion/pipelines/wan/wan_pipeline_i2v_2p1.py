@@ -87,7 +87,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       latents: Optional[jax.Array] = None,
       last_image: Optional[jax.Array] = None,
   ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
-        num_channels_latents = self.vae.config.z_dim
+        num_channels_latents = self.vae.config['z_dim']
         num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
         latent_height = height // self.vae_scale_factor_spatial
         latent_width = width // self.vae_scale_factor_spatial
