@@ -107,6 +107,8 @@ def create_sharded_logical_transformer(
     wan_config = restored_checkpoint["wan_config"]
   else:
     wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
+  if config.model_type == "I2V":
+    wan_config["added_kv_proj_dim"] = 1024
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
   wan_config["weights_dtype"] = config.weights_dtype
