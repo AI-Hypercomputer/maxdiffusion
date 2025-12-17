@@ -259,7 +259,8 @@ def load_base_wan_transformer(
         renamed_pt_key = renamed_pt_key.replace("net.0", "net_0")
         renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
         renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
-        renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
+        if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")

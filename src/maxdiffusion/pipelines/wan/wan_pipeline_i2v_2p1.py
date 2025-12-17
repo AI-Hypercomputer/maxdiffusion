@@ -112,7 +112,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         if last_image is None:
             mask_lat_size = mask_lat_size.at[:, :, 1:, :, :].set(0)
         else:
-            mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)
+            mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)     
         first_frame_mask = mask_lat_size[:, :, 0:1]
         first_frame_mask = jnp.repeat(first_frame_mask, self.vae_scale_factor_temporal, axis=2)
         mask_lat_size = jnp.concatenate([first_frame_mask, mask_lat_size[:, :, 1:]], axis=2)
@@ -120,7 +120,9 @@ class WanPipelineI2V_2_1(WanPipeline):
             batch_size, -1, self.vae_scale_factor_temporal, latent_height, latent_width
         )
         mask_lat_size = jnp.swapaxes(mask_lat_size, 1, 2)
-        condition = jnp.concatenate([mask_lat_size, latent_condition], axis=1)
+        mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 3, 4, 1))
+        condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)
+
         return latents, condition, None
 
 
