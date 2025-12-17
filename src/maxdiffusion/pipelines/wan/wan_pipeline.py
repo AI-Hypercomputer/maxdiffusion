@@ -617,7 +617,7 @@ class WanPipeline:
     # 2. Encode Image
     if image_embeds is None:
         images_to_encode = [image]
-        if last_image is not None:
+        if last_image is None:
             images_to_encode = [image]
         else:
             images_to_encode = [image, last_image]
