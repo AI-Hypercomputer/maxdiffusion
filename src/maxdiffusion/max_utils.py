@@ -20,7 +20,7 @@
 import functools
 from functools import partial, reduce
 from contextlib import nullcontext
-from typing import Dict, Callable
+from typing import Dict, Callable, List, Optional, Tuple, Union
 import json
 import yaml
 import os
@@ -642,3 +642,35 @@ def maybe_initialize_jax_distributed_system(raw_keys):
     max_logging.log("Jax distributed system initialized on GPU!")
   else:
     jax.distributed.initialize()
+
+def randn_tensor(
+    shape: Union[Tuple, List],
+    generator: Optional[Union[List[jax.random.KeyArray], jax.random.KeyArray]] = None,
+    config=None,
+    dtype: Optional[jnp.dtype] = None,
+):
+  """A helper function to create random tensors on the desired `device` with the desired `dtype`.
+  When passing a list of generators, you can seed each batch size individually.
+  """
+  batch_size = shape[0]
+  if generator is None:
+    if config is None:
+      raise ValueError("config must be provided if generator is None.")
+    generator = jax.random.key(config.seed)
+
+  if isinstance(generator, list) and len(generator) == 1:
+    generator = generator[0]
+
+  if isinstance(generator, list):
+    if len(generator) != batch_size:
+      raise ValueError(
+          f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+          f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+      )
+    shape = (1,) + shape[1:]
+    latents = [jax.random.normal(generator[i], shape=shape, dtype=dtype) for i in range(batch_size)]
+    latents = jnp.concatenate(latents, axis=0)
+  else:
+    latents = jax.random.normal(generator, shape=shape, dtype=dtype)
+
+  return latents
