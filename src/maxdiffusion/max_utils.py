@@ -645,7 +645,7 @@ def maybe_initialize_jax_distributed_system(raw_keys):
 
 def randn_tensor(
     shape: Union[Tuple, List],
-    generator: Optional[Union[List[jax.random.KeyArray], jax.random.KeyArray]] = None,
+    generator: Optional[Union[List[jax.Array], jax.Array]] = None,
     config=None,
     dtype: Optional[jnp.dtype] = None,
 ):
