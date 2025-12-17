@@ -41,7 +41,8 @@ class WanPipeline2_2(WanPipeline):
             rngs=common_components["rngs"],
             config=config,
             restored_checkpoint=restored_checkpoint,
-            subfolder="transformer"
+            subfolder="transformer",
+            use_real=False
         )
         high_noise_transformer = super().load_transformer(
             devices_array=common_components["devices_array"],
@@ -49,7 +50,8 @@ class WanPipeline2_2(WanPipeline):
             rngs=common_components["rngs"],
             config=config,
             restored_checkpoint=restored_checkpoint,
-            subfolder="transformer_2"
+            subfolder="transformer_2",
+            use_real=False
         )
 
         pipeline = cls(

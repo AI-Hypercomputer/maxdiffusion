@@ -41,7 +41,8 @@ class WanPipeline2_1(WanPipeline):
             rngs=common_components["rngs"],
             config=config,
             restored_checkpoint=restored_checkpoint,
-            subfolder="transformer"
+            subfolder="transformer",
+            use_real=False
         )
 
         pipeline = cls(

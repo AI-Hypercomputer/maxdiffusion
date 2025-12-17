@@ -28,6 +28,7 @@ from .... import common_types
 from ...modeling_flax_utils import FlaxModelMixin, get_activation
 from ....configuration_utils import ConfigMixin, register_to_config
 from ...embeddings_flax import (
+    NNXWanImageEmbedding,
     get_1d_rotary_pos_embed,
     NNXFlaxTimesteps,
     NNXTimestepEmbedding,
@@ -40,12 +41,12 @@ from ...gradient_checkpoint import GradientCheckpointType
 BlockSizes = common_types.BlockSizes
 
 
-def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
+def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int, use_real: bool):
   h_dim = w_dim = 2 * (attention_head_dim // 6)
   t_dim = attention_head_dim - h_dim - w_dim
   freqs = []
   for dim in [t_dim, h_dim, w_dim]:
-    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float32, use_real=False)
+    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float32, use_real=use_real)
     freqs.append(freq)
   freqs = jnp.concatenate(freqs, axis=1)
   t_size = attention_head_dim // 2 - 2 * (attention_head_dim // 6)
@@ -62,18 +63,19 @@ def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
 
 class WanRotaryPosEmbed(nnx.Module):
 
-  def __init__(self, attention_head_dim: int, patch_size: Tuple[int, int, int], max_seq_len: int, theta: float = 10000.0):
+  def __init__(self, attention_head_dim: int, patch_size: Tuple[int, int, int], max_seq_len: int, theta: float = 10000.0, use_real: bool = False):
     self.attention_head_dim = attention_head_dim
     self.patch_size = patch_size
     self.max_seq_len = max_seq_len
     self.theta = theta
+    self.use_real = use_real
 
   def __call__(self, hidden_states: jax.Array) -> jax.Array:
     _, num_frames, height, width, _ = hidden_states.shape
     p_t, p_h, p_w = self.patch_size
     ppf, pph, ppw = num_frames // p_t, height // p_h, width // p_w
 
-    freqs_split = get_frequencies(self.max_seq_len, self.theta, self.attention_head_dim)
+    freqs_split = get_frequencies(self.max_seq_len, self.theta, self.attention_head_dim, self.use_real)
 
     freqs_f = jnp.expand_dims(jnp.expand_dims(freqs_split[0][:ppf], axis=1), axis=1)
     freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, freqs_split[0].shape[-1]))
@@ -137,17 +139,31 @@ class WanTimeTextImageEmbedding(nnx.Module):
         act_fn="gelu_tanh",
     )
 
+    self.image_embedder = nnx.data(None)
+    if image_embed_dim is not None:
+      self.image_embedder = NNXWanImageEmbedding(
+          rngs=rngs,
+          in_features=image_embed_dim,
+          out_features=dim,
+          pos_embed_seq_len=pos_embed_seq_len,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
+      )
+
   def __call__(
-      self, timestep: jax.Array, encoder_hidden_states: jax.Array, encoder_hidden_states_image: Optional[jax.Array] = None
+      self, timestep: jax.Array, encoder_hidden_states: jax.Array, encoder_hidden_states_image: Optional[jax.Array] = None, timestep_seq_len: Optional[int] = None
   ):
     timestep = self.timesteps_proj(timestep)
+    if timestep_seq_len is not None:
+        timestep = jnp.reshape(timestep, (-1, timestep_seq_len) + timestep.shape[1:])
     temb = self.time_embedder(timestep)
 
     timestep_proj = self.time_proj(self.act_fn(temb))
 
     encoder_hidden_states = self.text_embedder(encoder_hidden_states)
     if encoder_hidden_states_image is not None:
-      raise NotImplementedError("currently img2vid is not supported")
+      encoder_hidden_states_image = self.image_embedder(encoder_hidden_states_image)
     return temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image
 
 
@@ -263,6 +279,8 @@ class WanTransformerBlock(nnx.Module):
       qk_norm: str = "rms_norm_across_heads",
       cross_attn_norm: bool = False,
       eps: float = 1e-6,
+      added_kv_proj_dim: Optional[int] = None,
+      image_seq_len: Optional[int] = None,
       # In torch, this is none, so it can be ignored.
       # added_kv_proj_dim: Optional[int] = None,
       flash_min_seq_length: int = 4096,
@@ -307,6 +325,8 @@ class WanTransformerBlock(nnx.Module):
         dim_head=dim // num_heads,
         qk_norm=qk_norm,
         eps=eps,
+        added_kv_proj_dim=added_kv_proj_dim,
+        image_seq_len=image_seq_len,
         flash_min_seq_length=flash_min_seq_length,
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
@@ -437,15 +457,17 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       names_which_can_be_offloaded: list = [],
       scan_layers: bool = True,
       enable_jax_named_scopes: bool = False,
+      use_real: bool = False,
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
     self.num_layers = num_layers
     self.scan_layers = scan_layers
     self.enable_jax_named_scopes = enable_jax_named_scopes
+    self.use_real = use_real
 
     # 1. Patch & position embedding
-    self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
+    self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len, use_real=self.use_real)
     self.patch_embedding = nnx.Conv(
         in_channels,
         inner_dim,
@@ -493,6 +515,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           precision=precision,
           attention=attention,
           dropout=dropout,
+          use_real=False,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
@@ -511,6 +534,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             qk_norm=qk_norm,
             cross_attn_norm=cross_attn_norm,
             eps=eps,
+            added_kv_proj_dim=added_kv_proj_dim,
+            image_seq_len=pos_embed_seq_len,
             flash_min_seq_length=flash_min_seq_length,
             flash_block_sizes=flash_block_sizes,
             mesh=mesh,
@@ -519,6 +544,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             precision=precision,
             attention=attention,
             enable_jax_named_scopes=enable_jax_named_scopes,
+            use_real=False,
         )
         blocks.append(block)
       self.blocks = blocks
@@ -566,14 +592,24 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     hidden_states = self.patch_embedding(hidden_states)
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
+    if timestep.ndim == 2:
+        ts_seq_len = timestep.shape[1]
+        timestep = timestep.flatten()  # batch_size * seq_len
+    else:
+        ts_seq_len = None
 
     temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
-        timestep, encoder_hidden_states, encoder_hidden_states_image
+        timestep, encoder_hidden_states, encoder_hidden_states_image, timestep_seq_len=ts_seq_len
     )
-    timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
+    if ts_seq_len is not None:
+        # batch_size, seq_len, 6, inner_dim
+        timestep_proj = jnp.reshape(timestep_proj, (timestep_proj.shape[0], timestep_proj.shape[1], 6, -1))
+    else:
+        # batch_size, 6, inner_dim
+        timestep_proj = jnp.reshape(timestep_proj, (timestep_proj.shape[0], 6, -1))
 
     if encoder_hidden_states_image is not None:
-      raise NotImplementedError("img2vid is not yet implemented.")
+        encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states], axis=1)
 
     if self.scan_layers:
 
@@ -608,7 +644,13 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         )
         hidden_states = rematted_layer_forward(hidden_states)
 
-    shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
+    if temb.ndim == 3:
+        # batch_size, seq_len, inner_dim (wan 2.2 ti2v)
+        scale_shift_values = self.scale_shift_table.value[jnp.newaxis, jnp.newaxis, :, :] + temb.unsqueeze(2)
+        shift, scale = scale_shift_values[:, :, 0], scale_shift_values[:, :, 1]
+    else:
+        shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
+
     with self.conditional_named_scope("output_norm"):
       hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
     with self.conditional_named_scope("output_proj"):

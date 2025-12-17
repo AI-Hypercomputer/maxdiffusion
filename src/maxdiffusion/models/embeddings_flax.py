@@ -19,6 +19,8 @@ import jax.numpy as jnp
 from typing import List, Union
 import jax
 from .modeling_flax_utils import get_activation
+from ..models.attention_flax import NNXSimpleFeedForward
+from ..normalization_flax import FP32LayerNorm
 
 
 def get_sinusoidal_embeddings(
@@ -246,6 +248,27 @@ def get_1d_rotary_pos_embed(
     # Wan 2.1
     out = jnp.exp(1j * freqs)
   return out
+
+
+class NNXWanImageEmbedding(nnx.Module):
+  def __init__(self, rngs: nnx.Rngs, in_features: int, out_features: int, dtype: jnp.dtype, weights_dtype: jnp.dtype, precision: jax.lax.Precision, pos_embed_seq_len=None):
+    self.norm1 = FP32LayerNorm(rngs=rngs, dim=in_features, elementwise_affine=True, eps=1e-6)
+    self.ff = NNXSimpleFeedForward(rngs=rngs, dim=in_features, dim_out=out_features, mult=1, activation_fn="gelu", dtype=dtype, weights_dtype=weights_dtype, precision=precision)
+    self.norm2 = FP32LayerNorm(rngs=rngs, dim=out_features, elementwise_affine=True, eps=1e-6)
+    if pos_embed_seq_len is not None:
+      self.pos_embed = nnx.Param(jnp.zeros((1, pos_embed_seq_len, in_features), dtype=dtype))
+    else:
+      self.pos_embed = nnx.data(None)
+
+  def __call__(self, encoder_hidden_states_image: jax.Array) -> jax.Array:
+    if self.pos_embed is not None:
+      batch_size, seq_len, embed_dim = encoder_hidden_states_image.shape
+      encoder_hidden_states_image = encoder_hidden_states_image.reshape((-1, 2 * seq_len, embed_dim))
+      encoder_hidden_states_image = encoder_hidden_states_image + self.pos_embed
+    hidden_states = self.norm1(encoder_hidden_states_image)
+    hidden_states = self.ff(hidden_states)
+    hidden_states = self.norm2(hidden_states)
+    return hidden_states
 
 
 class NNXPixArtAlphaTextProjection(nnx.Module):

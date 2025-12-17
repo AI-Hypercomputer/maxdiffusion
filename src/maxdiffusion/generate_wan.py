@@ -19,9 +19,11 @@ import os
 import subprocess
 from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
+from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
+from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
-from maxdiffusion.utils import export_to_video
+from maxdiffusion.utils import export_to_video, load_image
 from google.cloud import storage
 import flax
 from maxdiffusion.common_types import WAN2_1, WAN2_2
@@ -79,30 +81,59 @@ jax.config.update("jax_use_shardy_partitioner", True)
 
 def call_pipeline(config, pipeline, prompt, negative_prompt):
   model_key = config.model_name
-  if model_key == WAN2_1:
-    return pipeline(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        height=config.height,
-        width=config.width,
-        num_frames=config.num_frames,
-        num_inference_steps=config.num_inference_steps,
-        guidance_scale=config.guidance_scale,
-    )
-  elif model_key == WAN2_2:
-    return pipeline(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        height=config.height,
-        width=config.width,
-        num_frames=config.num_frames,
-        num_inference_steps=config.num_inference_steps,
-        guidance_scale_low=config.guidance_scale_low,
-        guidance_scale_high=config.guidance_scale_high,
-        boundary=config.boundary_timestep,
-    )
-  else:
-    raise ValueError(f"Unsupported model_name in config: {model_key}")
+  model_type = config.model_type
+  if model_type == "I2V":
+    image = load_image(config.image_url)
+    if model_key == WAN2_1:
+      return pipeline(
+          prompt=prompt,
+          image=image,
+          negative_prompt=negative_prompt,
+          height=config.height,
+          width=config.width,
+          num_frames=config.num_frames,
+          num_inference_steps=config.num_inference_steps,
+          guidance_scale=config.guidance_scale,
+      )
+    elif model_key == WAN2_2:
+      return pipeline(
+          prompt=prompt,
+          image=image,
+          negative_prompt=negative_prompt,
+          height=config.height,
+          width=config.width,
+          num_frames=config.num_frames,
+          num_inference_steps=config.num_inference_steps,
+          guidance_scale=config.guidance_scale_high,
+          guidance_scale_2=config.guidance_scale_low,
+      )
+    else:
+      raise ValueError(f"Unsupported model_name for I2V in config: {model_key}")
+  elif model_type == "T2V":
+    if model_key == WAN2_1:
+      return pipeline(
+          prompt=prompt,
+          negative_prompt=negative_prompt,
+          height=config.height,
+          width=config.width,
+          num_frames=config.num_frames,
+          num_inference_steps=config.num_inference_steps,
+          guidance_scale=config.guidance_scale,
+      )
+    elif model_key == WAN2_2:
+      return pipeline(
+          prompt=prompt,
+          negative_prompt=negative_prompt,
+          height=config.height,
+          width=config.width,
+          num_frames=config.num_frames,
+          num_inference_steps=config.num_inference_steps,
+          guidance_scale_low=config.guidance_scale_low,
+          guidance_scale_high=config.guidance_scale_high,
+          boundary=config.boundary_timestep,
+      )
+    else:
+      raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")
 
 
 def inference_generate_video(config, pipeline, filename_prefix=""):
@@ -141,10 +172,17 @@ def run(config, pipeline=None, filename_prefix=""):
       max_logging.log("Could not retrieve Git commit hash.")
 
   if pipeline is None:
+    model_type = config.model_type
     if model_key == WAN2_1:
-      checkpoint_loader = WanCheckpointer2_1(config=config)
+      if model_type == "I2V":
+        checkpoint_loader = WanCheckpointerI2V_2_1(config=config)
+      else:
+        checkpoint_loader = WanCheckpointer2_1(config=config)
     elif model_key == WAN2_2:
-      checkpoint_loader = WanCheckpointer2_2(config=config)
+      if model_type == "I2V":
+        checkpoint_loader = WanCheckpointerI2V_2_2(config=config)
+      else:
+        checkpoint_loader = WanCheckpointer2_2(config=config)
     else:
       raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
@@ -162,7 +200,7 @@ def run(config, pipeline=None, filename_prefix=""):
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")
   max_logging.log(f"model path: {config.pretrained_model_name_or_path}")
-  max_logging.log("model type: t2v")
+  max_logging.log(f"model type: {config.model_type}")
   max_logging.log(f"hardware: {jax.devices()[0].platform}")
   max_logging.log(f"number of devices: {jax.device_count()}")
   max_logging.log(f"per_device_batch_size: {config.per_device_batch_size}")
