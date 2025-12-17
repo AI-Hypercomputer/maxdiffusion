@@ -20,7 +20,7 @@ from typing import List, Union
 import jax
 from .modeling_flax_utils import get_activation
 from ..models.attention_flax import NNXSimpleFeedForward
-from ..normalization_flax import FP32LayerNorm
+from ..models.normalization_flax import FP32LayerNorm
 
 
 def get_sinusoidal_embeddings(
