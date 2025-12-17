@@ -383,7 +383,9 @@ class WanTransformerTest(unittest.TestCase):
     mock_config.quantization = "fp8_full"
     mock_config.qwix_module_path = ".*"
     mock_config.per_device_batch_size = 1
-    mock_config.quantization_calibration_method = "absmax"
+    mock_config.weight_quantization_calibration_method = "fixed,-224,224"
+    mock_config.act_quantization_calibration_method = "fixed,-224,224"
+    mock_config.bwd_quantization_calibration_method = "absmax"
 
     mock_model = Mock(spec=WanModel)
     mock_pipeline = Mock()
