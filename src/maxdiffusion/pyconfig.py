@@ -197,6 +197,7 @@ class _HyperParameters:
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
     logical_axis_rules = list(raw_keys["logical_axis_rules"])
     logical_axis_rules.append(('bias', 'tensor'))
+    logical_axis_rules.append(('attn2', 'add_k_proj', 'bias', 'tensor'))
     raw_keys["logical_axis_rules"] = tuple(logical_axis_rules)
     # Verify qkv is sharded across sequence.
     if raw_keys["attention"] == "ring":
