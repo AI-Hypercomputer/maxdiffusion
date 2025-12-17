@@ -210,7 +210,8 @@ class WanTrainer:
     return data_iterator
 
   def start_training(self):
-    pipeline, opt_state, step = self.checkpointer.load_checkpoint()
+    with nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      pipeline, opt_state, step = self.checkpointer.load_checkpoint()
     restore_args = {}
     if opt_state and step:
       restore_args = {"opt_state": opt_state, "step": step}
@@ -360,13 +361,7 @@ class WanTrainer:
     example_batch = load_next_batch(train_data_iterator, None, self.config)
 
     # Designate the context parallel axis for sharding
-    cp_resource = ''
-    for rules in self.config.logical_axis_rules:
-      if rules[0] == "activation_length":
-        if isinstance(rules[1], list):
-          cp_resource = rules[1][0]
-        else:
-          cp_resource = rules[1]
+    cp_resource = max_utils.get_axis_names("activation_length", config=self.config)
     mesh_resource = MeshResource(cp_resource=cp_resource)
 
     with ThreadPoolExecutor(max_workers=1) as executor:

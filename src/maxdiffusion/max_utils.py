@@ -666,3 +666,15 @@ def maybe_initialize_jax_distributed_system(raw_keys):
     max_logging.log("Jax distributed system initialized on GPU!")
   else:
     jax.distributed.initialize()
+  
+def get_axis_names(axis_key: str, config=None) -> str:
+  """Returns the mesh axis names given the logical axis key from config.logical_axis_rules."""
+  axis_name = ''
+  if config:
+    axis_rules = config.logical_axis_rules
+  else:
+    axis_rules = nn.get_logical_axis_rules()
+  for rules in axis_rules:
+    if rules[0] == axis_key:
+      axis_name = rules[1]
+  return axis_name

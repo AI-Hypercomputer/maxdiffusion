@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from ...configuration_utils import ConfigMixin
+from ... import max_utils
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
 from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput)
@@ -74,7 +75,10 @@ class WanCausalConv3d(nnx.Module):
     self._depth_padding_before = self._causal_padding[1][0]  # 2 * padding_tuple[0]
 
     # Set sharding dynamically based on out_channels.
-    num_fsdp_axis_devices = mesh.device_ids.shape[2]
+    fspd_key = max_utils.get_axis_names("activation_length")
+    if not fspd_key:
+      fspd_key = "fsdp"
+    num_fsdp_axis_devices = mesh.shape[fspd_key]
     kernel_sharding = (None, None, None, None, None)
     if out_channels % num_fsdp_axis_devices == 0:
       kernel_sharding = (None, None, None, None, "conv_out")
