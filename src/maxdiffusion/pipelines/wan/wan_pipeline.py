@@ -108,7 +108,7 @@ def create_sharded_logical_transformer(
   else:
     wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
   if config.model_type == "I2V":
-    wan_config["added_kv_proj_dim"] = 1024
+    wan_config["added_kv_proj_dim"] = 5120
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
   wan_config["weights_dtype"] = config.weights_dtype
@@ -529,7 +529,7 @@ class WanPipeline:
       video_condition = video_condition.astype(vae_dtype)
 
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-          encoded_output = self.vae.encode(video_condition, self.vae_cache)[0]
+          encoded_output = self.vae.encode(video_condition, self.vae_cache)[0].mode()
 
       # Normalize latents
       latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)

@@ -255,6 +255,10 @@ def load_base_wan_transformer(
     del flattened_dict
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
+      renamed_pt_key = renamed_pt_key.replace("image_embedder.ff.net.0", "image_embedder.ff.net_0")
+      renamed_pt_key = renamed_pt_key.replace("image_embedder.ff.net.2", "image_embedder.ff.net_2")
+      if "image_embedder.norm1.scale" in renamed_pt_key:
+        renamed_pt_key = renamed_pt_key.replace("norm1.scale", "norm1.kernel")
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
