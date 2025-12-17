@@ -23,7 +23,8 @@ from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
-from maxdiffusion.utils import export_to_video, load_image
+from maxdiffusion.utils import export_to_video
+from maxdiffusion.utils.loading_utils import load_image
 from google.cloud import storage
 import flax
 from maxdiffusion.common_types import WAN2_1, WAN2_2
