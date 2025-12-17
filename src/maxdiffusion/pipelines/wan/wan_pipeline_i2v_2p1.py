@@ -163,8 +163,7 @@ class WanPipelineI2V_2_1(WanPipeline):
 
     prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size = self._prepare_model_inputs_i2v(
         prompt, image, negative_prompt, num_videos_per_prompt, max_sequence_length,
-        prompt_embeds, negative_prompt_embeds, image_embeds, last_image,
-        num_videos_per_prompt=num_videos_per_prompt,
+        prompt_embeds, negative_prompt_embeds, image_embeds, last_image
     )
 
     image_tensor = self.video_processor.preprocess(image, height=height, width=width)
