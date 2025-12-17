@@ -94,7 +94,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         shape = (batch_size, num_channels_latents, num_latent_frames, latent_height, latent_width)
 
         if latents is None:
-            latents = randn_tensor(rng, shape, self.config, dtype)
+            latents = randn_tensor(shape, rng, self.config, dtype)
         else:
             latents = latents.astype(dtype)
         latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)
