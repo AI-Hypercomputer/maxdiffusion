@@ -82,7 +82,7 @@ class WanPipelineI2V_2_2(WanPipeline):
     width: int,
     num_frames: int,
     dtype: jnp.dtype,
-    rng: jax.random.KeyArray,
+    rng: jax.Array,
     latents: Optional[jax.Array] = None,
     last_image: Optional[jax.Array] = None,
 ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:

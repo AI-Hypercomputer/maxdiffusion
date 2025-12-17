@@ -83,7 +83,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       width: int,
       num_frames: int,
       dtype: jnp.dtype,
-      rng: jax.random.KeyArray,
+      rng: jax.Array,
       latents: Optional[jax.Array] = None,
       last_image: Optional[jax.Array] = None,
   ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
@@ -133,7 +133,7 @@ class WanPipelineI2V_2_1(WanPipeline):
     image_embeds: Optional[jax.Array] = None,
     last_image: Optional[PipelineImageInput] = None,
     output_type: Optional[str] = "np",
-    rng: Optional[jax.random.KeyArray] = None,
+    rng: Optional[jax.Array] = None,
   ):
     height = height or self.config.height
     width = width or self.config.width
