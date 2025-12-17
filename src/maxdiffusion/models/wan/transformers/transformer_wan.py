@@ -515,7 +515,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           precision=precision,
           attention=attention,
           dropout=dropout,
-          use_real=False,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
@@ -544,7 +543,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             precision=precision,
             attention=attention,
             enable_jax_named_scopes=enable_jax_named_scopes,
-            use_real=False,
         )
         blocks.append(block)
       self.blocks = blocks
