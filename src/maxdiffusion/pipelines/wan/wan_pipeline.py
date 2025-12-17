@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from abc import abstractmethod
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Tuple
 from functools import partial
 from maxdiffusion.image_processor import PipelineImageInput
 import numpy as np
