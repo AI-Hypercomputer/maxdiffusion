@@ -27,6 +27,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 from einops import rearrange
 from .. import common_types, max_logging
+from .. import max_utils
 
 from . import quantizations
 
@@ -205,10 +206,7 @@ def _tpu_flash_attention(
         block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
         use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
     )
-  fsdp_key = "fsdp"
-  if "fsdp_tpu" in mesh.shape.keys():
-    fsdp_key = "fsdp_tpu"
-  
+  fsdp_key = max_utils.get_axis_names("activation_length")
   num_fsdp_shards = mesh.shape[fsdp_key]
   query = _reshape_data_for_flash(query, heads)
   key = _reshape_data_for_flash(key, heads)
