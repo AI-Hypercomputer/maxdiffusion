@@ -85,6 +85,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       rng: jax.Array,
       latents: Optional[jax.Array] = None,
       last_image: Optional[jax.Array] = None,
+      num_videos_per_prompt: int = 1,
   ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
         
         if hasattr(image, "detach"):
@@ -96,12 +97,17 @@ class WanPipelineI2V_2_1(WanPipeline):
                 last_image = last_image.detach().cpu().numpy()
             last_image = jnp.array(last_image)
         
+        if num_videos_per_prompt > 1:
+           image = jnp.repeat(image, num_videos_per_prompt, axis=0)
+           if last_image is not None:
+              last_image = jnp.repeat(last_image, num_videos_per_prompt, axis=0)
+        
         num_channels_latents = self.vae.z_dim
         num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
         latent_height = height // self.vae_scale_factor_spatial
         latent_width = width // self.vae_scale_factor_spatial
 
-        shape = (batch_size, num_channels_latents, num_latent_frames, latent_height, latent_width)
+        shape = (batch_size, num_latent_frames, latent_height, latent_width, num_channels_latents)
 
         if latents is None:
             latents = randn_tensor(shape, rng, self.config, dtype)
@@ -119,7 +125,6 @@ class WanPipelineI2V_2_1(WanPipeline):
         mask_lat_size = mask_lat_size.reshape(
             batch_size, -1, self.vae_scale_factor_temporal, latent_height, latent_width
         )
-        mask_lat_size = jnp.swapaxes(mask_lat_size, 1, 2)
         mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 3, 4, 1))
         condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)
 
@@ -146,13 +151,20 @@ class WanPipelineI2V_2_1(WanPipeline):
     output_type: Optional[str] = "np",
     rng: Optional[jax.Array] = None,
   ):
+    
+    if num_videos_per_prompt == 1:
+      n_devices = jax.device_count()
+      if n_devices > 1:
+        num_videos_per_prompt = n_devices
+    
     height = height or self.config.height
     width = width or self.config.width
     num_frames = num_frames or self.config.num_frames
 
     prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size = self._prepare_model_inputs_i2v(
         prompt, image, negative_prompt, num_videos_per_prompt, max_sequence_length,
-        prompt_embeds, negative_prompt_embeds, image_embeds, last_image
+        prompt_embeds, negative_prompt_embeds, image_embeds, last_image,
+        num_videos_per_prompt=num_videos_per_prompt,
     )
 
     image_tensor = self.video_processor.preprocess(image, height=height, width=width)
@@ -174,6 +186,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         rng=latents_rng,
         latents=latents,
         last_image=last_image_tensor,
+        num_videos_per_prompt=num_videos_per_prompt,
     )
 
     scheduler_state = self.scheduler.set_timesteps(
@@ -254,7 +267,7 @@ def run_inference_2_1_i2v(
     if do_classifier_free_guidance:
         latents_input = jnp.concatenate([latents, latents], axis=0)
 
-    latent_model_input = jnp.concatenate([latents_input, condition], axis=1)
+    latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
     timestep = jnp.broadcast_to(t, latents.shape[0])  
 
 

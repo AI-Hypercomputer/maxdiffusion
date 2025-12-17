@@ -100,7 +100,7 @@ class WanPipelineI2V_2_2(WanPipeline):
     latent_height = height // self.vae_scale_factor_spatial
     latent_width = width // self.vae_scale_factor_spatial
 
-    shape = (batch_size, num_channels_latents, num_latent_frames, latent_height, latent_width)
+    shape = (batch_size, num_latent_frames, latent_height, latent_width, num_channels_latents)
 
     if latents is None:
         latents = randn_tensor(shape, rng, self.config, dtype)
