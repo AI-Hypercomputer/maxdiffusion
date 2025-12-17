@@ -888,14 +888,26 @@ class FlaxWanAttention(nnx.Module):
     if self.added_kv_proj_dim is not None:
       self.add_k_proj = nnx.Linear(
           self.added_kv_proj_dim, self.inner_dim, rngs=rngs,
-          dtype=dtype, param_dtype=weights_dtype, precision=precision
+          dtype=dtype, param_dtype=weights_dtype, precision=precision,
+          bias_init=nnx.with_partitioning(
+              nnx.initializers.zeros,
+              ("embed",), 
+          ),
       )
       self.add_v_proj = nnx.Linear(
           self.added_kv_proj_dim, self.inner_dim, rngs=rngs,
-          dtype=dtype, param_dtype=weights_dtype, precision=precision
+          dtype=dtype, param_dtype=weights_dtype, precision=precision,
+          bias_init=nnx.with_partitioning(
+              nnx.initializers.zeros,
+              ("embed",),
+          ),
       )
       self.norm_added_k = nnx.RMSNorm(
-          num_features=self.inner_dim, rngs=rngs, epsilon=eps, dtype=dtype, param_dtype=weights_dtype
+          num_features=self.inner_dim, rngs=rngs, epsilon=eps, dtype=dtype, param_dtype=weights_dtype,
+          scale_init=nnx.with_partitioning(
+              nnx.initializers.ones,
+              ("norm",),
+          ),
       )
 
   def _apply_rope(self, xq: jax.Array, xk: jax.Array, freqs_cis: jax.Array) -> Tuple[jax.Array, jax.Array]:
