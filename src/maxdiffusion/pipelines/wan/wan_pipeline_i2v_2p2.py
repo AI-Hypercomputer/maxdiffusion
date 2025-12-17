@@ -85,6 +85,16 @@ class WanPipelineI2V_2_2(WanPipeline):
     latents: Optional[jax.Array] = None,
     last_image: Optional[jax.Array] = None,
 ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
+    
+    if hasattr(image, "detach"):
+        image = image.detach().cpu().numpy()
+    image = jnp.array(image)
+
+    if last_image is not None:
+        if hasattr(last_image, "detach"):
+            last_image = last_image.detach().cpu().numpy()
+        last_image = jnp.array(last_image)
+    
     num_channels_latents = self.vae.z_dim
     num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
     latent_height = height // self.vae_scale_factor_spatial
