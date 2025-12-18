@@ -283,11 +283,6 @@ def load_base_wan_transformer(
             # Rename weight to kernel
             if "weight" in renamed_pt_key:
                 renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
-                
-                # CRITICAL FIX: Transpose the weights
-                # PyTorch Linear is (Out, In), JAX Dense is (In, Out).
-                # Ensure 'pt_tensor' is the variable holding your weight tensor.
-                pt_tensor = pt_tensor.T
 
       # 5. Fix for 'norm_added_q' which showed up in your missing keys list
       # The error said 'kernel' was missing, implying this specific norm might act like a dense layer
