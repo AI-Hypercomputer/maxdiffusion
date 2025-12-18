@@ -262,8 +262,6 @@ def load_base_wan_transformer(
            tensor = tensor.T
            norm_added_q_buffer[block_idx] = tensor
            continue
-      if "norm_added_q" in pt_key:
-          debug_original = renamed_pt_key
       if "image_embedder" in renamed_pt_key:
           if "net.0" in renamed_pt_key or "net_0" in renamed_pt_key or \
              "net.2" in renamed_pt_key or "net_2" in renamed_pt_key:
@@ -288,17 +286,8 @@ def load_base_wan_transformer(
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
       renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
       renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
-      renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
-      if "norm_added_q" in pt_key:
-          print(f"DEBUG REPORT for {pt_key}:")
-          print(f"  1. After rename_key : {debug_original}")
-          print(f"  2. Final Key String : {renamed_pt_key}")
-          
-          # Test parsing
-          pt_tuple_key = tuple(renamed_pt_key.split("."))
-          flax_key, _ = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
-          print(f"  3. Parsed Flax Key  : {flax_key}")
-          print("-" * 20)
+      if "norm2.layer_norm" not in renamed_pt_key:
+        renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
       pt_tuple_key = tuple(renamed_pt_key.split("."))
       flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
