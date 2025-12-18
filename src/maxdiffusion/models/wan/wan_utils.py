@@ -253,8 +253,15 @@ def load_base_wan_transformer(
       string_tuple = tuple([str(item) for item in key])
       random_flax_state_dict[string_tuple] = flattened_dict[key]
     del flattened_dict
+    norm_added_q_buffer = {}
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
+      if "norm_added_q" in pt_key:
+           parts = pt_key.split(".")
+           block_idx = int(parts[1])
+           tensor = tensor.T
+           norm_added_q_buffer[block_idx] = tensor
+           continue
       if "norm_added_q" in pt_key:
           debug_original = renamed_pt_key
       if "image_embedder" in renamed_pt_key:
@@ -276,13 +283,6 @@ def load_base_wan_transformer(
           if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
               renamed_pt_key = renamed_pt_key.replace("weight", "scale")
               renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
-
-      if "norm_added_q" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
-          tensor = tensor.T
-      renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
-
-      
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
@@ -302,6 +302,11 @@ def load_base_wan_transformer(
       pt_tuple_key = tuple(renamed_pt_key.split("."))
       flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+    if norm_added_q_buffer:
+        sorted_tensors = [norm_added_q_buffer[i] for i in sorted(norm_added_q_buffer.keys())]
+        stacked_tensor = jnp.stack(sorted_tensors, axis=0)
+        final_key = ('blocks', 'attn2', 'norm_added_q', 'kernel')
+        flax_state_dict[final_key] = jax.device_put(stacked_tensor, device=cpu)
 
     validate_flax_state_dict(eval_shapes, flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
