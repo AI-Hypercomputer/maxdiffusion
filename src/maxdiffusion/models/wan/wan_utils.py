@@ -275,9 +275,12 @@ def load_base_wan_transformer(
               renamed_pt_key = renamed_pt_key.replace("weight", "scale")
               renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
 
-      if "attn2.norm_added_q" in renamed_pt_key:
-        if renamed_pt_key.endswith(".weight") or renamed_pt_key.endswith(".kernel"):
-          renamed_pt_key = renamed_pt_key.rsplit(".", 1)[0] + ".scale"
+      if ".attn2.norm_added_q." in renamed_pt_key:
+        if renamed_pt_key.endswith(".weight"):
+          renamed_pt_key = renamed_pt_key[:-len(".weight")] + ".scale"
+        elif renamed_pt_key.endswith(".kernel"):
+          renamed_pt_key = renamed_pt_key[:-len(".kernel")] + ".scale"
+      
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
