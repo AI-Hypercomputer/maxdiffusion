@@ -256,37 +256,35 @@ def load_base_wan_transformer(
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
       if "image_embedder" in renamed_pt_key:
-        # 1. Handle Layer 0: PyTorch "net.0.proj" -> JAX "net_0"
-        # The JAX model likely defines net_0 as a Dense layer directly, not a block with a 'proj' sub-layer.
-        # We must strip ".proj" out.
-        if "net.0.proj" in renamed_pt_key:
-            renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
-        elif "net.0" in renamed_pt_key:
-            renamed_pt_key = renamed_pt_key.replace("net.0", "net_0")
+          # 1. Handle Layer 0: "net.0" -> "net_0"
+          # Source: ...ff.net.0.proj.weight
+          # We ONLY change net.0 to net_0. We KEEP .proj because JAX wants it.
+          if "net.0" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("net.0", "net_0")
+          
+          # 2. Handle Layer 2: "net.2" -> "net_2.proj"
+          # Source: ...ff.net.2.weight (No proj in file)
+          # We ADD .proj because JAX expects symmetry with Layer 0.
+          elif "net.2" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("net.2", "net_2.proj")
 
-        # 2. Handle Layer 2: PyTorch "net.2" -> JAX "net_2"
-        # Do NOT add ".proj" here unless your JAX definition explicitly has it. 
-        # The shape mismatch error suggests the model found 'net_2' but the shape was wrong.
-        if "net.2" in renamed_pt_key:
-            renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
+          # 3. Handle Norm1: "norm1" -> "norm1.layer_norm"
+          renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
 
-        # 3. Handle Norms: "norm1" -> "norm1.layer_norm" (Keeping your logic if JAX uses this structure)
-        # If standard Flax LayerNorm is used, usually just "norm1" is sufficient.
-        # Ensure "weight" becomes "scale".
-        if "norm" in renamed_pt_key:
-            renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
-            renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
-            renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+          # 4. Fix Parameter Names (Critical Step)
+          # Norms (norm1, norm2) -> force 'scale'
+          if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+              renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
+          # Dense Layers (net_0, net_2) -> force 'kernel'
+          # This ensures that even if rename_key left it as 'weight', we force it to 'kernel'
+          elif "net_0" in renamed_pt_key or "net_2" in renamed_pt_key:
+               renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
 
-        # 4. Handle Dense Layers (Kernels) and Fix Shape Mismatch
-        if "net_0" in renamed_pt_key or "net_2" in renamed_pt_key:
-            # Rename weight to kernel
-            if "weight" in renamed_pt_key:
-                renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
-
-      # 5. Fix for 'norm_added_q' which showed up in your missing keys list
-      # The error said 'kernel' was missing, implying this specific norm might act like a dense layer
-      # OR it's a standard norm mismatch. We ensure it maps correctly to 'scale' first.
+      # 5. Global Norm Fix (Fixes 'norm_added_q', etc.)
+      # If JAX complained about missing 'kernel' for these, we respect that default.
+      # If it complains about missing 'scale', we can uncomment the lines below.
+      # Generally, JAX LayerNorms want 'scale'.
       if "norm_added" in renamed_pt_key:
            renamed_pt_key = renamed_pt_key.replace("weight", "scale")
            renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
