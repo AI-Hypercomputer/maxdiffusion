@@ -177,6 +177,26 @@ def load_causvid_transformer(
       return flax_state_dict
 
 
+def load_wan_transformer(
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    num_layers: int = 40,
+    scan_layers: bool = True,
+    subfolder: str = "",
+):
+
+  if pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
+    return load_causvid_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
+  elif pretrained_model_name_or_path == WAN_21_FUSION_X_MODEL_NAME_OR_PATH:
+    return load_fusionx_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
+  else:
+    return load_base_wan_transformer(
+        pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers, subfolder
+    )
+
+
 def load_base_wan_transformer(
     pretrained_model_name_or_path: str,
     eval_shapes: dict,
@@ -186,7 +206,6 @@ def load_base_wan_transformer(
     scan_layers: bool = True,
     subfolder: str = "",
 ):
-  print(f"\n=== DEBUG START: Loading Transformer from {pretrained_model_name_or_path} ===")
   device = jax.local_devices(backend=device)[0]
   filename = "diffusion_pytorch_model.safetensors.index.json"
   local_files = False
@@ -196,13 +215,14 @@ def load_base_wan_transformer(
       raise FileNotFoundError(f"File {index_file_path} not found for local directory.")
     local_files = True
   elif hf_download:
+    # download the index file for sharded models.
     index_file_path = hf_hub_download(
         pretrained_model_name_or_path,
         subfolder=subfolder,
         filename=filename,
     )
-  
   with jax.default_device(device):
+    # open the index file.
     with open(index_file_path, "r") as f:
       index_dict = json.load(f)
     model_files = set()
@@ -211,68 +231,37 @@ def load_base_wan_transformer(
 
     model_files = list(model_files)
     tensors = {}
-    print(f"=== DEBUG: Loading {len(model_files)} shard files... ===")
-    
     for model_file in model_files:
       if local_files:
         ckpt_shard_path = os.path.join(pretrained_model_name_or_path, subfolder, model_file)
       else:
         ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
-      
+      # now get all the filenames for the model that need downloading
       max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device}")
 
       if ckpt_shard_path is not None:
         with safe_open(ckpt_shard_path, framework="pt") as f:
           for k in f.keys():
             tensors[k] = torch2jax(f.get_tensor(k))
-    
-    print(f"=== DEBUG: Total tensors loaded: {len(tensors)} ===")
-
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
     flattened_dict = flatten_dict(eval_shapes)
+    # turn all block numbers to strings just for matching weights.
+    # Later they will be turned back to ints.
     random_flax_state_dict = {}
     for key in flattened_dict:
       string_tuple = tuple([str(item) for item in key])
       random_flax_state_dict[string_tuple] = flattened_dict[key]
     del flattened_dict
-
-    # --- 1. Initialize Buffer ---
     norm_added_q_buffer = {}
-    norm_added_q_debug_count = 0
-
-    print("=== DEBUG: Starting Tensor Loop ===")
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
-
-      # --- 2. Buffer 'norm_added_q' Logic ---
       if "norm_added_q" in pt_key:
-           norm_added_q_debug_count += 1
-           # Print the first 3 to confirm we are hitting this block
-           if norm_added_q_debug_count <= 3:
-               print(f"DEBUG: Catching norm_added_q key: {pt_key}")
-
-           try:
-               parts = pt_key.split(".")
-               # Robust parsing: Find the part that is a digit
-               block_idx = -1
-               for part in parts:
-                   if part.isdigit():
-                       block_idx = int(part)
-                       break
-               
-               if block_idx == -1:
-                   print(f"DEBUG ERROR: Could not find block index in {pt_key}")
-                   continue
-
-               tensor = tensor.T 
-               norm_added_q_buffer[block_idx] = tensor
-           except Exception as e:
-               print(f"DEBUG EXCEPTION parsing {pt_key}: {e}")
-           
-           continue # SKIP rest of loop
-
-      # --- 3. Image Embedder Logic ---
+           parts = pt_key.split(".")
+           block_idx = int(parts[1])
+           tensor = tensor.T
+           norm_added_q_buffer[block_idx] = tensor
+           continue
       if "image_embedder" in renamed_pt_key:
           if "net.0" in renamed_pt_key or "net_0" in renamed_pt_key or \
              "net.2" in renamed_pt_key or "net_2" in renamed_pt_key:
@@ -292,53 +281,22 @@ def load_base_wan_transformer(
           if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
               renamed_pt_key = renamed_pt_key.replace("weight", "scale")
               renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
-
-      # --- 4. Global Replacements ---
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
       renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
       renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
-      
       if "norm2.layer_norm" not in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
-
+        renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
       pt_tuple_key = tuple(renamed_pt_key.split("."))
       flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
-
-    # --- 5. Final Stack & Insert ---
-    print(f"=== DEBUG: Loop Finished. norm_added_q count: {len(norm_added_q_buffer)} ===")
-    
     if norm_added_q_buffer:
-        sorted_indices = sorted(norm_added_q_buffer.keys())
-        print(f"DEBUG: Stacking indices from {sorted_indices[0]} to {sorted_indices[-1]}")
-        
-        sorted_tensors = [norm_added_q_buffer[i] for i in sorted_indices]
+        sorted_tensors = [norm_added_q_buffer[i] for i in sorted(norm_added_q_buffer.keys())]
         stacked_tensor = jnp.stack(sorted_tensors, axis=0)
-        print(f"DEBUG: Final Stacked Shape: {stacked_tensor.shape}")
-        
-        # INSERT AND VERIFY
         final_key = ('blocks', 'attn2', 'norm_added_q', 'kernel')
         flax_state_dict[final_key] = jax.device_put(stacked_tensor, device=cpu)
-        
-        if final_key in flax_state_dict:
-             print(f"DEBUG: SUCCESS - Key {final_key} exists in dict.")
-        else:
-             print(f"DEBUG: CRITICAL FAILURE - Key insertion failed.")
-    else:
-        print("DEBUG: FAILURE - Buffer is EMPTY. No norm_added_q found!")
 
-    print("=== DEBUG: Starting Validation ===")
-    # Print what the validator EXPECTS vs what we HAVE
-    expected_keys = set(flatten_dict(eval_shapes).keys())
-    actual_keys = set(flax_state_dict.keys())
-    
-    missing = expected_keys - actual_keys
-    print(f"DEBUG: Missing Keys Count: {len(missing)}")
-    if len(missing) > 0 and len(missing) < 10:
-        print(f"DEBUG: Missing Keys: {missing}")
-    
     validate_flax_state_dict(eval_shapes, flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
     del tensors
