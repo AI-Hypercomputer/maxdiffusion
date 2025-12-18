@@ -276,15 +276,8 @@ def load_base_wan_transformer(
               renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
 
       if "norm_added_q" in renamed_pt_key:
-           # 1. Structural Fix: Ensure 'attn2' is separated from the block index
-           # 'blocks_0_attn2' -> 'blocks_0.attn2'
-           if "_attn2" in renamed_pt_key:
-               renamed_pt_key = renamed_pt_key.replace("_attn2", ".attn2")
-               
-           # 2. Restore hierarchy for the norm itself
-           # 'attn2_norm_added_q' -> 'attn2.norm_added_q'
-           if "attn2_norm_added_q" in renamed_pt_key:
-               renamed_pt_key = renamed_pt_key.replace("attn2_norm_added_q", "attn2.norm_added_q")
+           renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+           renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
            
            # 3. Force 'weight' -> 'scale'
            renamed_pt_key = renamed_pt_key.replace("weight", "scale")
