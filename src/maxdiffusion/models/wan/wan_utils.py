@@ -256,38 +256,30 @@ def load_base_wan_transformer(
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
       if "image_embedder" in renamed_pt_key:
-          # 1. Handle Layer 0: "net.0" -> "net_0"
-          # Source: ...ff.net.0.proj.weight
-          # We ONLY change net.0 to net_0. We KEEP .proj because JAX wants it.
-          if "net.0" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("net.0", "net_0")
           
-          # 2. Handle Layer 2: "net.2" -> "net_2.proj"
-          # Source: ...ff.net.2.weight (No proj in file)
-          # We ADD .proj because JAX expects symmetry with Layer 0.
-          elif "net.2" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("net.2", "net_2.proj")
+          # 1. FIX net_0 (Source has '.proj', Target does NOT)
+          # Source: ...ff.net.0.proj.weight -> Target: ...ff.net_0.kernel
+          if "net.0.proj" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
+              # FORCE 'weight' -> 'kernel' for this dense layer
+              renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
 
-          # 3. Handle Norm1: "norm1" -> "norm1.layer_norm"
+          # 2. FIX net_2 (Source has NO '.proj', Target likely NO '.proj' for symmetry)
+          # Source: ...ff.net.2.weight -> Target: ...ff.net_2.kernel
+          elif "net.2" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
+              # FORCE 'weight' -> 'kernel' for this dense layer
+              renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
+
+          # 3. FIX Norm1 Nesting
+          # Source: ...norm1.weight -> Target: ...norm1.layer_norm.scale
           renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
 
-          # 4. Fix Parameter Names (Critical Step)
-          # Norms (norm1, norm2) -> force 'scale'
+          # 4. FIX Norm Parameter Names (Scale vs Weight)
           if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
               renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+              # Handle case where rename_key might have already turned it into kernel
               renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
-          # Dense Layers (net_0, net_2) -> force 'kernel'
-          # This ensures that even if rename_key left it as 'weight', we force it to 'kernel'
-          elif "net_0" in renamed_pt_key or "net_2" in renamed_pt_key:
-               renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
-
-      # 5. Global Norm Fix (Fixes 'norm_added_q', etc.)
-      # If JAX complained about missing 'kernel' for these, we respect that default.
-      # If it complains about missing 'scale', we can uncomment the lines below.
-      # Generally, JAX LayerNorms want 'scale'.
-      if "norm_added" in renamed_pt_key:
-           renamed_pt_key = renamed_pt_key.replace("weight", "scale")
-           renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
