@@ -275,9 +275,10 @@ def load_base_wan_transformer(
               renamed_pt_key = renamed_pt_key.replace("weight", "scale")
               renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
 
-      if "norm_added_q" in pt_key:
-          print(f"DEBUG: Original: {pt_key}")
-          print(f"DEBUG: Renamed : {renamed_pt_key}")
+      if "norm_added_q" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
+              tensor = tensor.T
+      renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
