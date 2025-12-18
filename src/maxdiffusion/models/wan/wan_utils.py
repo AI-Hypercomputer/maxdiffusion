@@ -261,7 +261,7 @@ def load_base_wan_transformer(
           # This ensures the transpose happens regardless of what rename_key did.
           if "net.0" in renamed_pt_key or "net_0" in renamed_pt_key or \
              "net.2" in renamed_pt_key or "net_2" in renamed_pt_key:
-              tensor = tensor.T() 
+              tensor = tensor.T
 
           # 2. FIX net_0: Strip .proj (Handle both raw and renamed keys)
           if "net.0.proj" in renamed_pt_key:
