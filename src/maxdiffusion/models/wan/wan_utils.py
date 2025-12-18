@@ -256,33 +256,34 @@ def load_base_wan_transformer(
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
       if "image_embedder" in renamed_pt_key:
-          # 1. Handle Layer 0: "net.0" -> "net_0" (PRESERVE .proj)
-          # Source: ...ff.net.0.proj.weight -> Target: ...ff.net_0.proj.kernel
+          # 1. Handle Layer 0: PyTorch has "net.0.proj" -> JAX wants "net_0.proj"
+          # We just replace the separator "net.0" -> "net_0"
           if "net.0" in renamed_pt_key:
               renamed_pt_key = renamed_pt_key.replace("net.0", "net_0")
-              renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
           
-          # 2. Handle Layer 2: "net.2" -> "net_2"
-          # Source: ...ff.net.2.weight -> Target: ...ff.net_2.kernel
+          # 2. Handle Layer 2: PyTorch has "net.2" (NO proj) -> JAX likely wants "net_2.proj"
+          # We force the addition of ".proj" to match the symmetric JAX structure
           elif "net.2" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
-              renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
+              renamed_pt_key = renamed_pt_key.replace("net.2", "net_2.proj")
 
           # 3. Handle Norm1: "norm1" -> "norm1.layer_norm"
           renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
 
-          # 4. Force Norms to use "scale"
+          # 4. Fix Parameter Names:
+          # Norms (norm1, norm2) -> force 'scale'
           if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
               renamed_pt_key = renamed_pt_key.replace("weight", "scale")
               renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
-      
-      # 5. Global Norm Fix (Fixes 'norm_added_q', 'norm_k', etc.)
-      # Any key containing 'norm' that ends in 'weight'/'kernel' should likely be 'scale'
-      if "norm" in renamed_pt_key and ("weight" in renamed_pt_key or "kernel" in renamed_pt_key):
-           # Exclude 'norm2' if it's already handled, or specific dense layers that might be named norm (unlikely)
-           if "norm_added" in renamed_pt_key or "norm_k" in renamed_pt_key or "norm_q" in renamed_pt_key:
-                renamed_pt_key = renamed_pt_key.replace("weight", "scale")
-                renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
+          # Dense Layers (net_0, net_2) -> force 'kernel'
+          elif "net_0" in renamed_pt_key or "net_2" in renamed_pt_key:
+               renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
+
+      # 5. Fix for 'norm_added_q' which showed up in your missing keys list
+      # The error said 'kernel' was missing, implying this specific norm might act like a dense layer
+      # OR it's a standard norm mismatch. We ensure it maps correctly to 'scale' first.
+      if "norm_added" in renamed_pt_key:
+           renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+           renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
