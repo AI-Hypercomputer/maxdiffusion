@@ -256,38 +256,22 @@ def load_base_wan_transformer(
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
       if "image_embedder" in renamed_pt_key:
-          
-          # 1. FIX net_0: Source has '.proj', Target (JAX) does NOT.
-          # We check for BOTH "net.0.proj" (raw) and "net_0.proj" (renamed) to be safe.
-          if "net.0.proj" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
-          elif "net_0.proj" in renamed_pt_key:  # <--- THIS IS THE MISSING LINK
-              renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
-          
-          # 2. FIX net_2: Ensure consistent naming (net.2 -> net_2)
-          # JAX wants 'net_2', source is 'net.2'. 
-          if "net.2" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
-          
-          # 3. FIX Norm1: Add .layer_norm wrapper
-          renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
-
-          # 4. FIX Parameter Names (Weight -> Kernel/Scale)
-          # Force 'scale' for all norms
-          if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("weight", "scale")
-              renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
-          
-          # Force 'kernel' for dense layers (net_0 and net_2)
-          # We check 'net_0' because we just renamed it above.
-          elif "net_0" in renamed_pt_key or "net_2" in renamed_pt_key:
-               renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
-
-      # 5. Global Norm Fix (e.g. norm_added_q)
+        if "net.0.proj" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
+        elif "net_0.proj" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
+        if "net.2" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
+        renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
+        if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+          renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
+        elif "net_0" in renamed_pt_key or "net_2" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("weight", "kernel")
       if "norm" in renamed_pt_key and "image_embedder" not in renamed_pt_key:
-           if "norm_added" in renamed_pt_key or "norm_k" in renamed_pt_key or "norm_q" in renamed_pt_key:
-                renamed_pt_key = renamed_pt_key.replace("weight", "scale")
-                renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
+          if "norm_added" in renamed_pt_key or "norm_k" in renamed_pt_key or "norm_q" in renamed_pt_key:
+            renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+            renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
