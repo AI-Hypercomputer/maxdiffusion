@@ -275,9 +275,11 @@ def load_base_wan_transformer(
               renamed_pt_key = renamed_pt_key.replace("weight", "scale")
               renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
 
-      if "norm_added" in renamed_pt_key:
-           if "attn2_norm_added" in renamed_pt_key:
-               renamed_pt_key = renamed_pt_key.replace("attn2_norm_added", "attn2.norm_added")
+      if "norm_added_q" in renamed_pt_key:
+           # 1. Restore the dot before norm_added_q so JAX sees it as a submodule
+           renamed_pt_key = renamed_pt_key.replace("attn2_norm_added_q", "attn2.norm_added_q")
+           
+           # 2. Force 'weight' -> 'scale' (JAX requirement)
            renamed_pt_key = renamed_pt_key.replace("weight", "scale")
            renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
