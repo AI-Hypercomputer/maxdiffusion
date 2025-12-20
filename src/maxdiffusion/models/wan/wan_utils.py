@@ -254,11 +254,18 @@ def load_base_wan_transformer(
       random_flax_state_dict[string_tuple] = flattened_dict[key]
     del flattened_dict
     norm_added_q_buffer = {}
+    print(f"DEBUG: Total keys found in checkpoint: {len(tensors)}")
     for pt_key, tensor in tensors.items():
+      if "norm_added_q" in pt_key:
+          print(f"DEBUG: Found norm_added_q key: {pt_key}")
       renamed_pt_key = rename_key(pt_key)
       if "norm_added_q" in pt_key:
            parts = pt_key.split(".")
-           block_idx = int(parts[1])
+           try:
+            block_idx = int(parts[1])
+           except ValueError:
+             print(f"DEBUG: Failed to parse index from {pt_key}")
+             continue
            tensor = tensor.T
            norm_added_q_buffer[block_idx] = tensor
            continue
