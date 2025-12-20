@@ -256,19 +256,25 @@ def load_base_wan_transformer(
     norm_added_q_buffer = {}
     print(f"DEBUG: Total keys found in checkpoint: {len(tensors)}")
     for pt_key, tensor in tensors.items():
-      if "norm_added_q" in pt_key:
-          print(f"DEBUG: Found norm_added_q key: {pt_key}")
-      renamed_pt_key = rename_key(pt_key)
-      if "norm_added_q" in pt_key:
+      if "norm_added_q" in pt_key and "weight" in pt_key:
            parts = pt_key.split(".")
            try:
-            block_idx = int(parts[1])
+               # Robustly find the block index (handles 'blocks.0' and 'model...blocks.0')
+               if "blocks" in parts:
+                   block_idx_loc = parts.index("blocks") + 1
+                   block_idx = int(parts[block_idx_loc])
+                   
+                   # Transpose and buffer
+                   tensor = tensor.T
+                   norm_added_q_buffer[block_idx] = tensor
+               else:
+                   print(f"Warning: skipped {pt_key} (no 'blocks' found)")
            except ValueError:
-             print(f"DEBUG: Failed to parse index from {pt_key}")
-             continue
-           tensor = tensor.T
-           norm_added_q_buffer[block_idx] = tensor
+               print(f"Warning: skipped {pt_key} (index parse error)")
+           
+           # Skip the standard processing for these keys
            continue
+      renamed_pt_key = rename_key(pt_key)
       if "image_embedder" in renamed_pt_key:
           if "net.0" in renamed_pt_key or "net_0" in renamed_pt_key or \
              "net.2" in renamed_pt_key or "net_2" in renamed_pt_key:
@@ -299,10 +305,18 @@ def load_base_wan_transformer(
       flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
     if norm_added_q_buffer:
-        sorted_tensors = [norm_added_q_buffer[i] for i in sorted(norm_added_q_buffer.keys())]
+        # Sort by block index to ensure correct layer order
+        sorted_keys = sorted(norm_added_q_buffer.keys())
+        sorted_tensors = [norm_added_q_buffer[i] for i in sorted_keys]
+        
+        # Stack into shape (40, ...)
         stacked_tensor = jnp.stack(sorted_tensors, axis=0)
+        
+        # KEY FIX: The error demanded 'kernel', so we hardcode that key here.
         final_key = ('blocks', 'attn2', 'norm_added_q', 'kernel')
+        
         flax_state_dict[final_key] = jax.device_put(stacked_tensor, device=cpu)
+        print(f"Successfully injected {final_key} with shape {stacked_tensor.shape}")
 
     validate_flax_state_dict(eval_shapes, flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
