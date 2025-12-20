@@ -885,6 +885,7 @@ class FlaxWanAttention(nnx.Module):
     self.add_k_proj = nnx.data(None)
     self.add_v_proj = nnx.data(None)
     self.norm_added_k = nnx.data(None)
+    self.norm_added_q = nnx.data(None)
     if self.added_kv_proj_dim is not None:
       self.add_k_proj = nnx.Linear(
           self.added_kv_proj_dim, self.inner_dim, rngs=rngs,
@@ -903,6 +904,13 @@ class FlaxWanAttention(nnx.Module):
           ),
       )
       self.norm_added_k = nnx.RMSNorm(
+          num_features=self.inner_dim, rngs=rngs, epsilon=eps, dtype=dtype, param_dtype=weights_dtype,
+          scale_init=nnx.with_partitioning(
+              nnx.initializers.ones,
+              ("norm",),
+          ),
+      )
+      self.norm_added_q = nnx.RMSNorm(
           num_features=self.inner_dim, rngs=rngs, epsilon=eps, dtype=dtype, param_dtype=weights_dtype,
           scale_init=nnx.with_partitioning(
               nnx.initializers.ones,
@@ -1016,8 +1024,10 @@ class FlaxWanAttention(nnx.Module):
       # Attention - tensors are (B, S, D)
       with self.conditional_named_scope("cross_attn_text_apply"):
         attn_output_text = self.attention_op.apply_attention(query_proj, key_proj_text, value_proj_text)
+      with self.conditional_named_scope("norm_added_q"):
+        query_proj_img = self.norm_added_q(query_proj)
       with self.conditional_named_scope("cross_attn_img_apply"):
-        attn_output_img = self.attention_op.apply_attention(query_proj, key_proj_img, value_proj_img)
+        attn_output_img = self.attention_op.apply_attention(query_proj_img, key_proj_img, value_proj_img)
 
       attn_output = attn_output_text + attn_output_img
 
