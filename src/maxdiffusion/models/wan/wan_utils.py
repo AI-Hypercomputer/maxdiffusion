@@ -245,16 +245,15 @@ def load_base_wan_transformer(
             tensors[k] = torch2jax(f.get_tensor(k))
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
-    flattened_dict = flatten_dict(eval_shapes)
+    flattened_eval_shapes = flatten_dict(eval_shapes)
     # turn all block numbers to strings just for matching weights.
     # Later they will be turned back to ints.
     random_flax_state_dict = {}
-    for key in flattened_dict:
+    for key in flattened_eval_shapes:
       string_tuple = tuple([str(item) for item in key])
-      random_flax_state_dict[string_tuple] = flattened_dict[key]
+      random_flax_state_dict[string_tuple] = flattened_eval_shapes[key]
     # del flattened_dict
     norm_added_q_buffer = {}
-    print(f"DEBUG: Total keys found in checkpoint: {len(tensors)}")
     for pt_key, tensor in tensors.items():
       if "norm_added_q" in pt_key and "weight" in pt_key:
            parts = pt_key.split(".")
@@ -264,8 +263,8 @@ def load_base_wan_transformer(
                    block_idx = int(parts[block_idx_loc])
                    tensor = tensor.T
                    norm_added_q_buffer[block_idx] = tensor
-           except Exception as e:
-               print(f"Warning: skipped {pt_key} due to {e}")
+           except Exception:
+               pass
            continue
            
       renamed_pt_key = rename_key(pt_key)
@@ -302,33 +301,17 @@ def load_base_wan_transformer(
         sorted_keys = sorted(norm_added_q_buffer.keys())
         sorted_tensors = [norm_added_q_buffer[i] for i in sorted_keys]
         stacked_tensor = jnp.stack(sorted_tensors, axis=0)
-
-        target_key = None
-        print("DEBUG: Searching eval_shapes for norm_added_q...")
-        possible_keys = []
-
-        for key_tuple in flattened_dict.keys():
-            if "norm_added_q" in key_tuple:
-                possible_keys.append(key_tuple)
-            
-        if len(possible_keys) > 0:
-            # Pick the first one (should only be one for this specific layer)
-            target_key = possible_keys[0]
-            print(f"DEBUG: Found matching key in eval_shapes: {target_key}")
-            flax_state_dict[target_key] = jax.device_put(stacked_tensor, device=cpu)
-        else:
-            # If we still find nothing, print ALL keys to debug for the user
-            print("CRITICAL ERROR: 'norm_added_q' NOT FOUND in eval_shapes.")
-            print("DEBUG: Dumping sample keys from eval_shapes to help debug:")
-            for i, k in enumerate(list(flattened_dict.keys())[:20]):
-                print(f"  {k}")
-            
-            # Last resort fallback
-            manual_key = ('blocks', 'attn2', 'norm_added_q', 'kernel')
-            print(f"DEBUG: Attempting manual injection to {manual_key}")
-            flax_state_dict[manual_key] = jax.device_put(stacked_tensor, device=cpu)
-        
-    del flattened_dict
+        final_key = ('blocks', 'attn2', 'norm_added_q', 'kernel')
+        flax_state_dict[final_key] = jax.device_put(stacked_tensor, device=cpu)
+        print(f"DEBUG: Manually injected {final_key} into flax_state_dict")
+        if final_key not in flattened_eval_shapes:
+            print(f"DEBUG: Key {final_key} missing in eval_shapes. Patching it now.")
+            shape_struct = jax.ShapeDtypeStruct(
+                shape=stacked_tensor.shape, 
+                dtype=stacked_tensor.dtype
+            )
+            flattened_eval_shapes[final_key] = shape_struct
+            eval_shapes = unflatten_dict(flattened_eval_shapes)
 
     validate_flax_state_dict(eval_shapes, flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
