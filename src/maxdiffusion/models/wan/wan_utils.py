@@ -252,28 +252,22 @@ def load_base_wan_transformer(
     for key in flattened_dict:
       string_tuple = tuple([str(item) for item in key])
       random_flax_state_dict[string_tuple] = flattened_dict[key]
-    del flattened_dict
+    # del flattened_dict
     norm_added_q_buffer = {}
     print(f"DEBUG: Total keys found in checkpoint: {len(tensors)}")
     for pt_key, tensor in tensors.items():
       if "norm_added_q" in pt_key and "weight" in pt_key:
            parts = pt_key.split(".")
            try:
-               # Robustly find the block index (handles 'blocks.0' and 'model...blocks.0')
                if "blocks" in parts:
                    block_idx_loc = parts.index("blocks") + 1
                    block_idx = int(parts[block_idx_loc])
-                   
-                   # Transpose and buffer
                    tensor = tensor.T
                    norm_added_q_buffer[block_idx] = tensor
-               else:
-                   print(f"Warning: skipped {pt_key} (no 'blocks' found)")
-           except ValueError:
-               print(f"Warning: skipped {pt_key} (index parse error)")
-           
-           # Skip the standard processing for these keys
+           except Exception as e:
+               print(f"Warning: skipped {pt_key} due to {e}")
            continue
+           
       renamed_pt_key = rename_key(pt_key)
       if "image_embedder" in renamed_pt_key:
           if "net.0" in renamed_pt_key or "net_0" in renamed_pt_key or \
@@ -305,18 +299,29 @@ def load_base_wan_transformer(
       flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
     if norm_added_q_buffer:
-        # Sort by block index to ensure correct layer order
         sorted_keys = sorted(norm_added_q_buffer.keys())
         sorted_tensors = [norm_added_q_buffer[i] for i in sorted_keys]
-        
-        # Stack into shape (40, ...)
         stacked_tensor = jnp.stack(sorted_tensors, axis=0)
+
+        target_key = None
+
+        for key_tuple in flattened_dict.keys():
+            # Check if this tuple looks like what we want
+            # We check if it ends with 'norm_added_q' and 'kernel'
+            if len(key_tuple) >= 2 and key_tuple[-2:] == ('norm_added_q', 'kernel'):
+                 target_key = key_tuple
+                 break
+        if target_key:
+             print(f"DEBUG: Found authoritative key in eval_shapes: {target_key}")
+             flax_state_dict[target_key] = jax.device_put(stacked_tensor, device=cpu)
+             print(f"Successfully injected norm_added_q with shape {stacked_tensor.shape}")
+        else:
+             # Fallback (should typically not happen if error message was correct)
+             print("CRITICAL WARNING: Could not find norm_added_q key in eval_shapes! Using manual fallback.")
+             manual_key = ('blocks', 'attn2', 'norm_added_q', 'kernel')
+             flax_state_dict[manual_key] = jax.device_put(stacked_tensor, device=cpu)
         
-        # KEY FIX: The error demanded 'kernel', so we hardcode that key here.
-        final_key = ('blocks', 'attn2', 'norm_added_q', 'kernel')
-        
-        flax_state_dict[final_key] = jax.device_put(stacked_tensor, device=cpu)
-        print(f"Successfully injected {final_key} with shape {stacked_tensor.shape}")
+    del flattened_dict
 
     validate_flax_state_dict(eval_shapes, flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
