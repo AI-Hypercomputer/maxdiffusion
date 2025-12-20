@@ -304,22 +304,29 @@ def load_base_wan_transformer(
         stacked_tensor = jnp.stack(sorted_tensors, axis=0)
 
         target_key = None
+        print("DEBUG: Searching eval_shapes for norm_added_q...")
+        possible_keys = []
 
         for key_tuple in flattened_dict.keys():
-            # Check if this tuple looks like what we want
-            # We check if it ends with 'norm_added_q' and 'kernel'
-            if len(key_tuple) >= 2 and key_tuple[-2:] == ('norm_added_q', 'kernel'):
-                 target_key = key_tuple
-                 break
-        if target_key:
-             print(f"DEBUG: Found authoritative key in eval_shapes: {target_key}")
-             flax_state_dict[target_key] = jax.device_put(stacked_tensor, device=cpu)
-             print(f"Successfully injected norm_added_q with shape {stacked_tensor.shape}")
+            if "norm_added_q" in key_tuple:
+                possible_keys.append(key_tuple)
+            
+        if len(possible_keys) > 0:
+            # Pick the first one (should only be one for this specific layer)
+            target_key = possible_keys[0]
+            print(f"DEBUG: Found matching key in eval_shapes: {target_key}")
+            flax_state_dict[target_key] = jax.device_put(stacked_tensor, device=cpu)
         else:
-             # Fallback (should typically not happen if error message was correct)
-             print("CRITICAL WARNING: Could not find norm_added_q key in eval_shapes! Using manual fallback.")
-             manual_key = ('blocks', 'attn2', 'norm_added_q', 'kernel')
-             flax_state_dict[manual_key] = jax.device_put(stacked_tensor, device=cpu)
+            # If we still find nothing, print ALL keys to debug for the user
+            print("CRITICAL ERROR: 'norm_added_q' NOT FOUND in eval_shapes.")
+            print("DEBUG: Dumping sample keys from eval_shapes to help debug:")
+            for i, k in enumerate(list(flattened_dict.keys())[:20]):
+                print(f"  {k}")
+            
+            # Last resort fallback
+            manual_key = ('blocks', 'attn2', 'norm_added_q', 'kernel')
+            print(f"DEBUG: Attempting manual injection to {manual_key}")
+            flax_state_dict[manual_key] = jax.device_put(stacked_tensor, device=cpu)
         
     del flattened_dict
 
