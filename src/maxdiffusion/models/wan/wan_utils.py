@@ -215,12 +215,14 @@ def load_base_wan_transformer(
       raise FileNotFoundError(f"File {index_file_path} not found for local directory.")
     local_files = True
   elif hf_download:
+    # download the index file for sharded models.
     index_file_path = hf_hub_download(
         pretrained_model_name_or_path,
         subfolder=subfolder,
         filename=filename,
     )
   with jax.default_device(device):
+    # open the index file.
     with open(index_file_path, "r") as f:
       index_dict = json.load(f)
     model_files = set()
@@ -234,7 +236,7 @@ def load_base_wan_transformer(
         ckpt_shard_path = os.path.join(pretrained_model_name_or_path, subfolder, model_file)
       else:
         ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
-      
+      # now get all the filenames for the model that need downloading
       max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device}")
 
       if ckpt_shard_path is not None:
@@ -245,31 +247,29 @@ def load_base_wan_transformer(
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
     flattened_dict = flatten_dict(eval_shapes)
+    # turn all block numbers to strings just for matching weights.
+    # Later they will be turned back to ints.
     random_flax_state_dict = {}
     for key in flattened_dict:
       string_tuple = tuple([str(item) for item in key])
       random_flax_state_dict[string_tuple] = flattened_dict[key]
     del flattened_dict
 
-    # 1. Initialize buffer for norm_added_q
     norm_added_q_buffer = {}
 
     for pt_key, tensor in tensors.items():
-      # 2. Robustly Intercept norm_added_q keys
       if "norm_added_q" in pt_key and "weight" in pt_key:
            parts = pt_key.split(".")
            try:
-               # Find the block index regardless of prefix (blocks.0 vs model.blocks.0)
                if "blocks" in parts:
                    block_idx_loc = parts.index("blocks") + 1
                    block_idx = int(parts[block_idx_loc])
                    tensor = tensor.T
                    norm_added_q_buffer[block_idx] = tensor
            except Exception:
-               pass # Skip if unparseable
+               pass
            continue
 
-      # Standard processing
       renamed_pt_key = rename_key(pt_key)
       if "image_embedder" in renamed_pt_key:
           if "net.0" in renamed_pt_key or "net_0" in renamed_pt_key or \
@@ -303,13 +303,10 @@ def load_base_wan_transformer(
       flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 
-    # 3. Stack and Insert (Correct Key Name for RMSNorm is 'scale')
     if norm_added_q_buffer:
         sorted_keys = sorted(norm_added_q_buffer.keys())
         sorted_tensors = [norm_added_q_buffer[i] for i in sorted_keys]
         stacked_tensor = jnp.stack(sorted_tensors, axis=0)
-        
-        # 'scale' is the correct parameter name for Flax/NNX RMSNorm
         final_key = ('blocks', 'attn2', 'norm_added_q', 'scale')
         
         flax_state_dict[final_key] = jax.device_put(stacked_tensor, device=cpu)
