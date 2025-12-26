@@ -1026,6 +1026,30 @@ class WanDecoder3d(nnx.Module):
 
         return x, new_cache
 
+class AutoencoderKLWanCache:
+
+  def __init__(self, module):
+    self.module = module
+    self.clear_cache()
+
+  def clear_cache(self):
+    """Resets cache dictionaries and indices"""
+
+    def _count_conv3d(module):
+      count = 0
+      node_types = nnx.graph.iter_graph([module])
+      for _, value in node_types:
+        if isinstance(value, WanCausalConv3d):
+          count += 1
+      return count
+
+    self._conv_num = _count_conv3d(self.module.decoder)
+    self._conv_idx = [0]
+    self._feat_map = [None] * self._conv_num
+    # cache encode
+    self._enc_conv_num = _count_conv3d(self.module.encoder)
+    self._enc_conv_idx = [0]
+    self._enc_feat_map = [None] * self._enc_conv_num
 
 class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     def __init__(
