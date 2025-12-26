@@ -19,6 +19,7 @@ from typing import Tuple, List, Sequence, Union, Optional
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from jax.sharding import PartitionSpec as P
 from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
@@ -116,6 +117,7 @@ class WanCausalConv3d(nnx.Module):
       x_padded = jnp.pad(x, padding_to_apply, mode="constant", constant_values=0.0)
     else:
       x_padded = x
+    x_padded = jax.lax.with_sharding_constraint(x_padded, P(None, None, 'fsdp', None, None))
     out = self.conv(x_padded)
     return out
 
@@ -336,6 +338,7 @@ class WanResample(nnx.Module):
           x = x.reshape(b, t * 2, h, w, c)
     t = x.shape[1]
     x = x.reshape(b * t, h, w, c)
+    x = jax.lax.with_sharding_constraint(x, P(None, 'fsdp', None, None))
     x = self.resample(x)
     h_new, w_new, c_new = x.shape[1:]
     x = x.reshape(b, t, h_new, w_new, c_new)
@@ -485,6 +488,8 @@ class WanAttentionBlock(nnx.Module):
 
     identity = x
     batch_size, time, height, width, channels = x.shape
+
+    x = jax.lax.with_sharding_constraint(x, P(None, None, 'fsdp', None, None))
 
     x = x.reshape(batch_size * time, height, width, channels)
     x = self.norm(x)
