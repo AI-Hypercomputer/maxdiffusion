@@ -412,8 +412,10 @@ class WanResample(nnx.Module):
             h_new, w_new, c_new = x.shape[1:]
             x = x.reshape(b, t, h_new, w_new, c_new)
 
-            x, tc_cache = self.time_conv(x, cache.get("time_conv"))
-            new_cache["time_conv"] = tc_cache
+            prev_cache = cache.get("time_conv")
+            x_combined = jnp.concatenate([prev_cache, x], axis=1)
+            x, _ = self.time_conv(x_combined, cache_x=None)
+            new_cache["time_conv"] = x_combined[:, -CACHE_T:, ...]
 
         else:
             if hasattr(self, "resample"):
