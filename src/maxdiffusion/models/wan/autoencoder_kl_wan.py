@@ -57,6 +57,8 @@ class WanCausalConv3d(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
   ):
+    
+    self.mesh = mesh
     self.kernel_size = _canonicalize_tuple(kernel_size, 3, "kernel_size")
     self.stride = _canonicalize_tuple(stride, 3, "stride")
     padding_tuple = _canonicalize_tuple(padding, 3, "padding")  # (D, H, W) padding amounts
@@ -114,11 +116,23 @@ class WanCausalConv3d(nnx.Module):
     # Apply padding if any dimension requires it
     padding_to_apply = tuple(current_padding)
     if any(p > 0 for dim_pads in padding_to_apply for p in dim_pads):
-      x_padded = jnp.pad(x, padding_to_apply, mode="constant", constant_values=0.0)
+      x_internal = jnp.pad(x, padding_to_apply, mode="constant", constant_values=0.0)
     else:
-      x_padded = x
-    x_padded = jax.lax.with_sharding_constraint(x_padded, P(None, None, 'fsdp', None, None))
-    out = self.conv(x_padded)
+      x_internal = x
+
+    h_dim_after_conv_padding = x_internal.shape[2]
+    pad_h_fsdp = 0
+    if self.mesh and 'fsdp' in self.mesh.axis_names:
+        fsdp_size = self.mesh.shape['fsdp']
+        if fsdp_size > 1:
+            if h_dim_after_conv_padding % fsdp_size != 0:
+                pad_h_fsdp = fsdp_size - (h_dim_after_conv_padding % fsdp_size)
+                h_padding = ((0, 0), (0, 0), (0, pad_h_fsdp), (0, 0), (0, 0))
+                x_internal = jnp.pad(x_internal, h_padding, mode="constant", constant_values=0.0)
+    if self.mesh and 'fsdp' in self.mesh.axis_names and self.mesh.shape['fsdp'] > 1:
+      x_internal = jax.lax.with_sharding_constraint(x_internal, P(None, None, 'fsdp', None, None))
+
+    out = self.conv(x_internal)
     return out
 
 
@@ -225,6 +239,7 @@ class WanResample(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
   ):
+    self.mesh = mesh
     self.dim = dim
     self.mode = mode
     self.time_conv = nnx.data(None)
@@ -336,12 +351,46 @@ class WanResample(nnx.Module):
           x = x.reshape(b, t, h, w, 2, c)
           x = jnp.stack([x[:, :, :, :, 0, :], x[:, :, :, :, 1, :]], axis=1)
           x = x.reshape(b, t * 2, h, w, c)
-    t = x.shape[1]
-    x = x.reshape(b * t, h, w, c)
-    x = jax.lax.with_sharding_constraint(x, P(None, 'fsdp', None, None))
-    x = self.resample(x)
-    h_new, w_new, c_new = x.shape[1:]
-    x = x.reshape(b, t, h_new, w_new, c_new)
+      t = x.shape[1]
+      h = x.shape[2]
+
+    x_reshaped = x.reshape(b * t, h, w, c)
+
+    original_h = x_reshaped.shape[1]
+    pad_h_fsdp = 0
+    if self.mesh and 'fsdp' in self.mesh.axis_names:
+        fsdp_size = self.mesh.shape['fsdp']
+        if fsdp_size > 1:
+            if original_h % fsdp_size != 0:
+                pad_h_fsdp = fsdp_size - (original_h % fsdp_size)
+                h_padding = ((0, 0), (0, pad_h_fsdp), (0, 0), (0, 0))
+                x_reshaped = jnp.pad(x_reshaped, h_padding, mode="constant", constant_values=0.0)
+
+    if self.mesh and 'fsdp' in self.mesh.axis_names and self.mesh.shape['fsdp'] > 1:
+        x_reshaped = jax.lax.with_sharding_constraint(x_reshaped, P(None, 'fsdp', None, None))
+
+    resampled_x = self.resample(x_reshaped)
+
+    if pad_h_fsdp > 0:
+      if "upsample" in self.mode:
+          scale_factor_h = 1.0
+          if isinstance(self.resample, nnx.Sequential) and isinstance(self.resample.layers[0], WanUpsample):
+             scale_factor_h = self.resample.layers[0].scale_factor[0]
+          target_h = int(original_h * scale_factor_h)
+          resampled_x = resampled_x[:, :target_h, :, :]
+      elif "downsample" in self.mode:
+          stride_h = 1
+          if isinstance(self.resample, ZeroPaddedConv2D):
+              stride_h = self.resample.conv.strides[0]
+          elif isinstance(self.resample, nnx.Conv):
+               stride_h = self.resample.strides[0]
+
+          if stride_h > 1:
+              target_h = original_h // stride_h
+              resampled_x = resampled_x[:, :target_h, :, :]
+
+    h_new, w_new, c_new = resampled_x.shape[1:]
+    x = resampled_x.reshape(b, t, h_new, w_new, c_new)
 
     if self.mode == "downsample3d":
       if feat_cache is not None:
@@ -461,6 +510,7 @@ class WanAttentionBlock(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
   ):
+    self.mesh = mesh
     self.dim = dim
     self.norm = WanRMS_norm(rngs=rngs, dim=dim, channel_first=False)
     self.to_qkv = nnx.Conv(
@@ -488,29 +538,40 @@ class WanAttentionBlock(nnx.Module):
 
     identity = x
     batch_size, time, height, width, channels = x.shape
+    original_h = height
 
-    x = jax.lax.with_sharding_constraint(x, P(None, None, 'fsdp', None, None))
+    pad_h_fsdp = 0
+    if self.mesh and 'fsdp' in self.mesh.axis_names:
+        fsdp_size = self.mesh.shape['fsdp']
+        if fsdp_size > 1:
+            if original_h % fsdp_size != 0:
+                pad_h_fsdp = fsdp_size - (original_h % fsdp_size)
+                h_padding = ((0, 0), (0, 0), (0, pad_h_fsdp), (0, 0), (0, 0))
+                x = jnp.pad(x, h_padding, mode="constant", constant_values=0.0)
 
-    x = x.reshape(batch_size * time, height, width, channels)
-    x = self.norm(x)
+    if self.mesh and 'fsdp' in self.mesh.axis_names and self.mesh.shape['fsdp'] > 1:
+      x = jax.lax.with_sharding_constraint(x, P(None, None, 'fsdp', None, None))
 
-    qkv = self.to_qkv(x)  # Output: (N*D, H, W, C * 3)
-    # qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
+    current_height = x.shape[2]
+    x_reshaped = x.reshape(batch_size * time, current_height, width, channels)
+    x_normed = self.norm(x_reshaped)
+
+    qkv = self.to_qkv(x_normed)
     qkv = qkv.reshape(batch_size * time, 1, -1, channels * 3)
     qkv = jnp.transpose(qkv, (0, 1, 3, 2))
     q, k, v = jnp.split(qkv, 3, axis=-2)
     q = jnp.transpose(q, (0, 1, 3, 2))
     k = jnp.transpose(k, (0, 1, 3, 2))
     v = jnp.transpose(v, (0, 1, 3, 2))
-    x = jax.nn.dot_product_attention(q, k, v)
-    x = jnp.squeeze(x, 1).reshape(batch_size * time, height, width, channels)
+    attn_out = jax.nn.dot_product_attention(q, k, v)
+    attn_out = jnp.squeeze(attn_out, 1).reshape(batch_size * time, current_height, width, channels)
 
-    # output projection
-    x = self.proj(x)
-    # Reshape back
-    x = x.reshape(batch_size, time, height, width, channels)
+    x_proj = self.proj(attn_out)
+    x_proj = x_proj.reshape(batch_size, time, current_height, width, channels)
+    if pad_h_fsdp > 0:
+        x_proj = x_proj[:, :, :original_h, :, :]
 
-    return x + identity
+    return x_proj + identity
 
 
 class WanMidBlock(nnx.Module):
