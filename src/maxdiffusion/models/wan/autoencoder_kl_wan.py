@@ -1067,8 +1067,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         latents_mean: List[float] = [],
         latents_std: List[float] = [],
         mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
+        weights_dtype: jnp.dtype = jnp.bfloat16,
         precision: jax.lax.Precision = None,
     ):
         self.z_dim = z_dim
@@ -1132,6 +1132,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         if x.shape[-1] != 3:
             x = jnp.transpose(x, (0, 2, 3, 4, 1))
 
+        x = x.astype(jnp.bfloat16)
         x_scan = jnp.swapaxes(x, 0, 1)
         b, t, h, w, c = x.shape
         init_cache = self.encoder.init_cache(b, h, w, jnp.bfloat16)
@@ -1161,12 +1162,12 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     ) -> Union[FlaxDecoderOutput, jax.Array]:
         if z.shape[-1] != self.z_dim:
             z = jnp.transpose(z, (0, 2, 3, 4, 1))
-
+        z = z.astype(jnp.bfloat16)
         x, _ = self.post_quant_conv(z)
         x_scan = jnp.swapaxes(x, 0, 1)
 
         b, t, h, w, c = x.shape
-        init_cache = self.decoder.init_cache(b, h, w, x.dtype)
+        init_cache = self.decoder.init_cache(b, h, w, jnp.bfloat16)
 
         def scan_fn(carry, input_slice):
             # Expand Time dimension for Conv3d
@@ -1189,6 +1190,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         decoded = decoded.reshape(b, t_lat * t_sub, h, w, c)
 
         out = jnp.clip(decoded, min=-1.0, max=1.0)
+        out = out.astype(jnp.float32)
 
         if not return_dict:
             return (out,)
