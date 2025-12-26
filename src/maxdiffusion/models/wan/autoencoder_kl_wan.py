@@ -154,7 +154,7 @@ class WanCausalConv3d(nnx.Module):
 
         if cache_x is not None:
             x_concat = jnp.concatenate([cache_x, x], axis=1)
-            new_cache = x_concat[:, -CACHE_T:, ...]
+            new_cache = x_concat[:, -CACHE_T:, ...].astype(cache_x.dtype)
 
             padding_needed = self._depth_padding_before - cache_x.shape[1]
             if padding_needed < 0:
@@ -415,7 +415,7 @@ class WanResample(nnx.Module):
             prev_cache = cache.get("time_conv")
             x_combined = jnp.concatenate([prev_cache, x], axis=1)
             x, _ = self.time_conv(x_combined, cache_x=None)
-            new_cache["time_conv"] = x_combined[:, -CACHE_T:, ...]
+            new_cache["time_conv"] = x_combined[:, -CACHE_T:, ...].astype(prev_cache.dtype)
 
         else:
             if hasattr(self, "resample"):
