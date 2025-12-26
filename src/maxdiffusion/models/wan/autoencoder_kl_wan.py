@@ -1132,7 +1132,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
         x_scan = jnp.swapaxes(x, 0, 1)
         b, t, h, w, c = x.shape
-        init_cache = self.encoder.init_cache(b, h, w, x.dtype)
+        init_cache = self.encoder.init_cache(b, h, w, jnp.bfloat16)
 
         def scan_fn(carry, input_slice):
             # Expand Time dimension for Conv3d
