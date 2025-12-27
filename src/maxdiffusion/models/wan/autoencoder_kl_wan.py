@@ -891,7 +891,7 @@ class WanEncoder3d(nnx.Module):
         new_cache = {}
 
         x, c = self.conv_in(x, cache.get("conv_in"))
-        new_cache["conv_in"] = c.astype(self.dtype)
+        new_cache["conv_in"] = c
 
         new_cache["down_blocks"] = []
         current_down_caches = cache.get("down_blocks", [None] * len(self.down_blocks))
@@ -905,13 +905,13 @@ class WanEncoder3d(nnx.Module):
                 new_cache["down_blocks"].append(None)
 
         x, c = self.mid_block(x, cache.get("mid_block"))
-        new_cache["mid_block"] = c.astype(self.dtype)
+        new_cache["mid_block"] = c
 
         x = self.norm_out(x)
         x = self.nonlinearity(x)
 
         x, c = self.conv_out(x, cache.get("conv_out"))
-        new_cache["conv_out"] = c.astype(self.dtype)
+        new_cache["conv_out"] = c
 
         return x, new_cache
 
@@ -1029,10 +1029,10 @@ class WanDecoder3d(nnx.Module):
         new_cache = {}
 
         x, c = self.conv_in(x, cache.get("conv_in"))
-        new_cache["conv_in"] = c.astype(self.dtype)
+        new_cache["conv_in"] = c
 
         x, c = self.mid_block(x, cache.get("mid_block"))
-        new_cache["mid_block"] = c.astype(self.dtype)
+        new_cache["mid_block"] = c
 
         new_cache["up_blocks"] = []
         current_up_caches = cache.get("up_blocks", [None] * len(self.up_blocks))
@@ -1043,7 +1043,7 @@ class WanDecoder3d(nnx.Module):
         x = self.norm_out(x)
         x = self.nonlinearity(x)
         x, c = self.conv_out(x, cache.get("conv_out"))
-        new_cache["conv_out"] = c.astype(self.dtype)
+        new_cache["conv_out"] = c
 
         return x, new_cache
 
