@@ -511,7 +511,10 @@ class WanResidualBlock(nnx.Module):
         input_dtype = x.dtype
 
         h, sc_cache = self.conv_shortcut(x, cache.get("shortcut"))
-        new_cache["shortcut"] = sc_cache.astype(self.dtype)
+        if sc_cache is not None:
+            new_cache["shortcut"] = sc_cache.astype(self.dtype)
+        else:
+            new_cache["shortcut"] = None
 
         x = self.norm1(x)
         x = self.nonlinearity(x)
