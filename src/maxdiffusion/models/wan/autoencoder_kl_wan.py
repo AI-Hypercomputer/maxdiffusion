@@ -172,7 +172,7 @@ class WanCausalConv3d(nnx.Module):
         padding_to_apply = tuple(current_padding)
         if any(p > 0 for dim_pads in padding_to_apply for p in dim_pads):
             x_padded = jnp.pad(
-                x_input, padding_to_apply, mode="constant", constant_values=0.0
+                x_input, padding_to_apply, mode="constant", constant_values=jnp.array(0.0, dtype=self.dtype)
             )
         else:
             x_padded = x_input
