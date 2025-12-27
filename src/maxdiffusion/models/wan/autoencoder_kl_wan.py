@@ -136,6 +136,7 @@ class WanCausalConv3d(nnx.Module):
     def __call__(
         self, x: jax.Array, cache_x: Optional[jax.Array] = None
     ) -> Tuple[jax.Array, jax.Array]:
+        x = x.astype(self.dtype)
         # OPTIMIZATION: Spatial Partitioning during execution
         if self.mesh is not None and "fsdp" in self.mesh.axis_names:
             height = x.shape[2]
@@ -155,7 +156,7 @@ class WanCausalConv3d(nnx.Module):
 
         if cache_x is not None:
             x_concat = jnp.concatenate([cache_x.astype(x.dtype), x], axis=1)
-            new_cache = x_concat[:, -CACHE_T:, ...].astype(cache_x.dtype)
+            new_cache = x_concat[:, -CACHE_T:, ...].astype(self.dtype)
 
             padding_needed = self._depth_padding_before - cache_x.shape[1]
             if padding_needed < 0:
@@ -165,7 +166,7 @@ class WanCausalConv3d(nnx.Module):
                 x_input = x_concat
                 current_padding[1] = (padding_needed, 0)
         else:
-            new_cache = x[:, -CACHE_T:, ...].astype(x.dtype)
+            new_cache = x[:, -CACHE_T:, ...].astype(self.dtype)
             x_input = x
 
         padding_to_apply = tuple(current_padding)
@@ -376,6 +377,7 @@ class WanResample(nnx.Module):
     def __call__(
         self, x: jax.Array, cache: Dict[str, Any] = None
     ) -> Tuple[jax.Array, Dict[str, Any]]:
+        x = x.astype(self.dtype)
         if cache is None:
             cache = {}
         new_cache = {}
@@ -389,7 +391,7 @@ class WanResample(nnx.Module):
 
         elif self.mode == "upsample3d":
             x, tc_cache = self.time_conv(x, cache.get("time_conv"))
-            new_cache["time_conv"] = tc_cache.astype(cache["time_conv"].dtype)
+            new_cache["time_conv"] = tc_cache.astype(self.dtype)
 
             b, t, h, w, c = x.shape
             x = x.reshape(b, t, h, w, 2, c // 2)
@@ -419,7 +421,7 @@ class WanResample(nnx.Module):
             prev_cache = cache.get("time_conv")
             x_combined = jnp.concatenate([prev_cache.astype(x.dtype), x], axis=1)
             x, _ = self.time_conv(x_combined, cache_x=None)
-            new_cache["time_conv"] = x_combined[:, -CACHE_T:, ...].astype(prev_cache.dtype)
+            new_cache["time_conv"] = x_combined[:, -CACHE_T:, ...].astype(self.dtype)
 
         else:
             if hasattr(self, "resample"):
@@ -522,7 +524,7 @@ class WanResidualBlock(nnx.Module):
         x, c2 = self.conv2(x, cache.get("conv2"))
         new_cache["conv2"] = c2
 
-        x = (x + h).astype(input_dtype)
+        x = (x + h).astype(self.dtype)
         return x, new_cache
 
 
