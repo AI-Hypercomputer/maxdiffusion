@@ -61,8 +61,8 @@ class WanCausalConv3d(nnx.Module):
         padding: Union[int, Tuple[int, int, int]] = 0,
         use_bias: bool = True,
         mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
+        weights_dtype: jnp.dtype = jnp.bfloat16,
         precision: jax.lax.Precision = None,
     ):
         self.kernel_size = _canonicalize_tuple(kernel_size, 3, "kernel_size")
@@ -270,8 +270,8 @@ class WanResample(nnx.Module):
         mode: str,
         rngs: nnx.Rngs,
         mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
+        weights_dtype: jnp.dtype = jnp.bfloat16,
         precision: jax.lax.Precision = None,
     ):
         self.dtype = dtype
@@ -443,8 +443,8 @@ class WanResidualBlock(nnx.Module):
         dropout: float = 0.0,
         non_linearity: str = "silu",
         mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
+        weights_dtype: jnp.dtype = jnp.bfloat16,
         precision: jax.lax.Precision = None,
     ):
         self.dtype = dtype
@@ -511,19 +511,19 @@ class WanResidualBlock(nnx.Module):
         input_dtype = x.dtype
 
         h, sc_cache = self.conv_shortcut(x, cache.get("shortcut"))
-        new_cache["shortcut"] = sc_cache
+        new_cache["shortcut"] = sc_cache.astype(self.dtype)
 
         x = self.norm1(x)
         x = self.nonlinearity(x)
 
         x, c1 = self.conv1(x, cache.get("conv1"))
-        new_cache["conv1"] = c1
+        new_cache["conv1"] = c1.astype(self.dtype)
 
         x = self.norm2(x)
         x = self.nonlinearity(x)
 
         x, c2 = self.conv2(x, cache.get("conv2"))
-        new_cache["conv2"] = c2
+        new_cache["conv2"] = c2.astype(self.dtype)
 
         x = (x + h).astype(self.dtype)
         return x, new_cache
@@ -535,8 +535,8 @@ class WanAttentionBlock(nnx.Module):
         dim: int,
         rngs: nnx.Rngs,
         mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
+        weights_dtype: jnp.dtype = jnp.bfloat16,
         precision: jax.lax.Precision = None,
     ):
         self.dim = dim
@@ -597,10 +597,11 @@ class WanMidBlock(nnx.Module):
         non_linearity: str = "silu",
         num_layers: int = 1,
         mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
+        weights_dtype: jnp.dtype = jnp.bfloat16,
         precision: jax.lax.Precision = None,
     ):
+        self.dtype = dtype
         self.dim = dim
         self.resnets = nnx.List(
             [
@@ -657,13 +658,13 @@ class WanMidBlock(nnx.Module):
         new_cache = {"resnets": []}
 
         x, c = self.resnets[0](x, cache.get("resnets", [None])[0])
-        new_cache["resnets"].append(c)
+        new_cache["resnets"].append(c.astype(self.dtype))
 
         for i, (attn, resnet) in enumerate(zip(self.attentions, self.resnets[1:])):
             if attn is not None:
                 x = attn(x)
             x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i + 1])
-            new_cache["resnets"].append(c)
+            new_cache["resnets"].append(c.astype(self.dtype))
 
         return x, new_cache
 
@@ -679,10 +680,11 @@ class WanUpBlock(nnx.Module):
         upsample_mode: Optional[str] = None,
         non_linearity: str = "silu",
         mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
+        weights_dtype: jnp.dtype = jnp.bfloat16,
         precision: jax.lax.Precision = None,
     ):
+        self.dtype = dtype
         self.resnets = nnx.List([])
         current_dim = in_dim
         for _ in range(num_res_blocks + 1):
@@ -736,11 +738,11 @@ class WanUpBlock(nnx.Module):
 
         for i, resnet in enumerate(self.resnets):
             x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i])
-            new_cache["resnets"].append(c)
+            new_cache["resnets"].append(c.astype(self.dtype))
 
         if self.upsamplers:
             x, c = self.upsamplers[0](x, cache.get("upsamplers", [None])[0])
-            new_cache["upsamplers"].append(c)
+            new_cache["upsamplers"].append(c.astype(self.dtype))
         return x, new_cache
 
 
@@ -757,10 +759,11 @@ class WanEncoder3d(nnx.Module):
         dropout=0.0,
         non_linearity: str = "silu",
         mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
+        weights_dtype: jnp.dtype = jnp.bfloat16,
         precision: jax.lax.Precision = None,
     ):
+        self.dtype = dtype
         self.dim = dim
         self.z_dim = z_dim
         self.dim_mult = dim_mult
@@ -885,7 +888,7 @@ class WanEncoder3d(nnx.Module):
         new_cache = {}
 
         x, c = self.conv_in(x, cache.get("conv_in"))
-        new_cache["conv_in"] = c
+        new_cache["conv_in"] = c.astype(self.dtype)
 
         new_cache["down_blocks"] = []
         current_down_caches = cache.get("down_blocks", [None] * len(self.down_blocks))
@@ -893,19 +896,19 @@ class WanEncoder3d(nnx.Module):
         for i, layer in enumerate(self.down_blocks):
             if isinstance(layer, (WanResidualBlock, WanResample)):
                 x, c = layer(x, current_down_caches[i])
-                new_cache["down_blocks"].append(c)
+                new_cache["down_blocks"].append(c.astype(self.dtype))
             else:
                 x = layer(x)
                 new_cache["down_blocks"].append(None)
 
         x, c = self.mid_block(x, cache.get("mid_block"))
-        new_cache["mid_block"] = c
+        new_cache["mid_block"] = c.astype(self.dtype)
 
         x = self.norm_out(x)
         x = self.nonlinearity(x)
 
         x, c = self.conv_out(x, cache.get("conv_out"))
-        new_cache["conv_out"] = c
+        new_cache["conv_out"] = c.astype(self.dtype)
 
         return x, new_cache
 
@@ -923,10 +926,11 @@ class WanDecoder3d(nnx.Module):
         dropout=0.0,
         non_linearity: str = "silu",
         mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
+        weights_dtype: jnp.dtype = jnp.bfloat16,
         precision: jax.lax.Precision = None,
     ):
+        self.dtype = dtype
         self.dim = dim
         self.dim_mult = dim_mult
         self.nonlinearity = get_activation(non_linearity)
@@ -1022,21 +1026,21 @@ class WanDecoder3d(nnx.Module):
         new_cache = {}
 
         x, c = self.conv_in(x, cache.get("conv_in"))
-        new_cache["conv_in"] = c
+        new_cache["conv_in"] = c.astype(self.dtype)
 
         x, c = self.mid_block(x, cache.get("mid_block"))
-        new_cache["mid_block"] = c
+        new_cache["mid_block"] = c.astype(self.dtype)
 
         new_cache["up_blocks"] = []
         current_up_caches = cache.get("up_blocks", [None] * len(self.up_blocks))
         for i, up_block in enumerate(self.up_blocks):
             x, c = up_block(x, current_up_caches[i])
-            new_cache["up_blocks"].append(c)
+            new_cache["up_blocks"].append(c.astype(self.dtype))
 
         x = self.norm_out(x)
         x = self.nonlinearity(x)
         x, c = self.conv_out(x, cache.get("conv_out"))
-        new_cache["conv_out"] = c
+        new_cache["conv_out"] = c.astype(self.dtype)
 
         return x, new_cache
 
