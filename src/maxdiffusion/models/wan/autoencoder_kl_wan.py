@@ -155,7 +155,7 @@ class WanCausalConv3d(nnx.Module):
 
         if cache_x is not None:
             x_concat = jnp.concatenate([cache_x.astype(x.dtype), x], axis=1)
-            new_cache = x_concat[:, -CACHE_T:, ...].astype(self.dtype)
+            new_cache = x_concat[:, -CACHE_T:, ...].astype(cache_x.dtype)
 
             padding_needed = self._depth_padding_before - cache_x.shape[1]
             if padding_needed < 0:
@@ -165,7 +165,7 @@ class WanCausalConv3d(nnx.Module):
                 x_input = x_concat
                 current_padding[1] = (padding_needed, 0)
         else:
-            new_cache = x[:, -CACHE_T:, ...].astype(self.dtype)
+            new_cache = x[:, -CACHE_T:, ...].astype(x.dtype)
             x_input = x
 
         padding_to_apply = tuple(current_padding)
@@ -522,7 +522,7 @@ class WanResidualBlock(nnx.Module):
         x, c2 = self.conv2(x, cache.get("conv2"))
         new_cache["conv2"] = c2
 
-        x = (x + h).astype(self.dtype)
+        x = (x + h).astype(input_dtype)
         return x, new_cache
 
 
@@ -581,7 +581,7 @@ class WanAttentionBlock(nnx.Module):
         x = jnp.squeeze(x, 1).reshape(batch_size * time, height, width, channels)
         x = self.proj(x)
         x = x.reshape(batch_size, time, height, width, channels)
-        out = (x + identity).astype(self.dtype)
+        out = (x + identity).astype(input_dtype)
         return out
 
 
