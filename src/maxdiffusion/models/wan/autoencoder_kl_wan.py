@@ -153,7 +153,7 @@ class WanCausalConv3d(nnx.Module):
         current_padding = list(self._causal_padding)
 
         if cache_x is not None:
-            x_concat = jnp.concatenate([cache_x, x], axis=1)
+            x_concat = jnp.concatenate([cache_x.astype(x.dtype), x], axis=1)
             new_cache = x_concat[:, -CACHE_T:, ...].astype(cache_x.dtype)
 
             padding_needed = self._depth_padding_before - cache_x.shape[1]
@@ -198,14 +198,17 @@ class WanRMS_norm(nnx.Module):
         self.bias = nnx.Param(jnp.zeros(shape)) if use_bias else 0
 
     def __call__(self, x: jax.Array) -> jax.Array:
+        input_dtype = x.dtype
         normalized = jnp.linalg.norm(
             x, ord=2, axis=(1 if self.channel_first else -1), keepdims=True
         )
         normalized = x / jnp.maximum(normalized, self.eps)
         normalized = normalized * self.scale * self.gamma
         if self.bias:
-            return normalized + self.bias.value
-        return normalized
+            out = normalized + self.bias.value
+        else:
+            out = normalized
+        return out.astype(input_dtype)
 
 
 class WanUpsample(nnx.Module):
@@ -385,7 +388,7 @@ class WanResample(nnx.Module):
 
         elif self.mode == "upsample3d":
             x, tc_cache = self.time_conv(x, cache.get("time_conv"))
-            new_cache["time_conv"] = tc_cache
+            new_cache["time_conv"] = tc_cache.astype(cache["time_conv"].dtype)
 
             b, t, h, w, c = x.shape
             x = x.reshape(b, t, h, w, 2, c // 2)
@@ -413,7 +416,7 @@ class WanResample(nnx.Module):
             x = x.reshape(b, t, h_new, w_new, c_new)
 
             prev_cache = cache.get("time_conv")
-            x_combined = jnp.concatenate([prev_cache, x], axis=1)
+            x_combined = jnp.concatenate([prev_cache.astype(x.dtype), x], axis=1)
             x, _ = self.time_conv(x_combined, cache_x=None)
             new_cache["time_conv"] = x_combined[:, -CACHE_T:, ...].astype(prev_cache.dtype)
 
