@@ -274,6 +274,7 @@ class WanResample(nnx.Module):
         weights_dtype: jnp.dtype = jnp.float32,
         precision: jax.lax.Precision = None,
     ):
+        self.dtype = dtype
         self.dim = dim
         self.mode = mode
 
