@@ -71,6 +71,7 @@ class WanCausalConv3d(nnx.Module):
             padding, 3, "padding"
         )  # (D, H, W) padding amounts
         self.mesh = mesh
+        self.dtype = dtype
 
         self._causal_padding = (
             (0, 0),  # Batch dimension - no padding
@@ -154,7 +155,7 @@ class WanCausalConv3d(nnx.Module):
 
         if cache_x is not None:
             x_concat = jnp.concatenate([cache_x.astype(x.dtype), x], axis=1)
-            new_cache = x_concat[:, -CACHE_T:, ...].astype(cache_x.dtype)
+            new_cache = x_concat[:, -CACHE_T:, ...].astype(self.dtype)
 
             padding_needed = self._depth_padding_before - cache_x.shape[1]
             if padding_needed < 0:
@@ -164,7 +165,7 @@ class WanCausalConv3d(nnx.Module):
                 x_input = x_concat
                 current_padding[1] = (padding_needed, 0)
         else:
-            new_cache = x[:, -CACHE_T:, ...]
+            new_cache = x[:, -CACHE_T:, ...].astype(self.dtype)
             x_input = x
 
         padding_to_apply = tuple(current_padding)
@@ -443,6 +444,7 @@ class WanResidualBlock(nnx.Module):
         weights_dtype: jnp.dtype = jnp.float32,
         precision: jax.lax.Precision = None,
     ):
+        self.dtype = dtype
         self.nonlinearity = get_activation(non_linearity)
         self.norm1 = WanRMS_norm(
             dim=in_dim, rngs=rngs, images=False, channel_first=False
@@ -520,8 +522,8 @@ class WanResidualBlock(nnx.Module):
         x, c2 = self.conv2(x, cache.get("conv2"))
         new_cache["conv2"] = c2
 
-        out = (x + h).astype(input_dtype)
-        return out, new_cache
+        x = (x + h).astype(self.dtype)
+        return x, new_cache
 
 
 class WanAttentionBlock(nnx.Module):
@@ -535,6 +537,7 @@ class WanAttentionBlock(nnx.Module):
         precision: jax.lax.Precision = None,
     ):
         self.dim = dim
+        self.dtype = dtype
         self.norm = WanRMS_norm(rngs=rngs, dim=dim, channel_first=False)
         self.to_qkv = nnx.Conv(
             in_features=dim,
@@ -578,7 +581,7 @@ class WanAttentionBlock(nnx.Module):
         x = jnp.squeeze(x, 1).reshape(batch_size * time, height, width, channels)
         x = self.proj(x)
         x = x.reshape(batch_size, time, height, width, channels)
-        out = (x + identity).astype(input_dtype)
+        out = (x + identity).astype(self.dtype)
         return out
 
 
