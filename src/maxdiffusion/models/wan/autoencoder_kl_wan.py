@@ -661,13 +661,13 @@ class WanMidBlock(nnx.Module):
         new_cache = {"resnets": []}
 
         x, c = self.resnets[0](x, cache.get("resnets", [None])[0])
-        new_cache["resnets"].append(c.astype(self.dtype))
+        new_cache["resnets"].append(c)
 
         for i, (attn, resnet) in enumerate(zip(self.attentions, self.resnets[1:])):
             if attn is not None:
                 x = attn(x)
             x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i + 1])
-            new_cache["resnets"].append(c.astype(self.dtype))
+            new_cache["resnets"].append(c)
 
         return x, new_cache
 
@@ -741,11 +741,11 @@ class WanUpBlock(nnx.Module):
 
         for i, resnet in enumerate(self.resnets):
             x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i])
-            new_cache["resnets"].append(c.astype(self.dtype))
+            new_cache["resnets"].append(c)
 
         if self.upsamplers:
             x, c = self.upsamplers[0](x, cache.get("upsamplers", [None])[0])
-            new_cache["upsamplers"].append(c.astype(self.dtype))
+            new_cache["upsamplers"].append(c)
         return x, new_cache
 
 
@@ -899,7 +899,7 @@ class WanEncoder3d(nnx.Module):
         for i, layer in enumerate(self.down_blocks):
             if isinstance(layer, (WanResidualBlock, WanResample)):
                 x, c = layer(x, current_down_caches[i])
-                new_cache["down_blocks"].append(c.astype(self.dtype))
+                new_cache["down_blocks"].append(c)
             else:
                 x = layer(x)
                 new_cache["down_blocks"].append(None)
@@ -1038,7 +1038,7 @@ class WanDecoder3d(nnx.Module):
         current_up_caches = cache.get("up_blocks", [None] * len(self.up_blocks))
         for i, up_block in enumerate(self.up_blocks):
             x, c = up_block(x, current_up_caches[i])
-            new_cache["up_blocks"].append(c.astype(self.dtype))
+            new_cache["up_blocks"].append(c)
 
         x = self.norm_out(x)
         x = self.nonlinearity(x)
