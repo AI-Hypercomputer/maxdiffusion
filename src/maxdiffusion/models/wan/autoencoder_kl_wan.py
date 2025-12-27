@@ -503,6 +503,7 @@ class WanResidualBlock(nnx.Module):
         if cache is None:
             cache = {}
         new_cache = {}
+        input_dtype = x.dtype
 
         h, sc_cache = self.conv_shortcut(x, cache.get("shortcut"))
         new_cache["shortcut"] = sc_cache
@@ -519,8 +520,8 @@ class WanResidualBlock(nnx.Module):
         x, c2 = self.conv2(x, cache.get("conv2"))
         new_cache["conv2"] = c2
 
-        x = x + h
-        return x, new_cache
+        out = (x + h).astype(input_dtype)
+        return out, new_cache
 
 
 class WanAttentionBlock(nnx.Module):
@@ -562,6 +563,7 @@ class WanAttentionBlock(nnx.Module):
 
     def __call__(self, x: jax.Array):
         identity = x
+        input_dtype = x.dtype
         batch_size, time, height, width, channels = x.shape
         x = x.reshape(batch_size * time, height, width, channels)
         x = self.norm(x)
@@ -576,7 +578,8 @@ class WanAttentionBlock(nnx.Module):
         x = jnp.squeeze(x, 1).reshape(batch_size * time, height, width, channels)
         x = self.proj(x)
         x = x.reshape(batch_size, time, height, width, channels)
-        return x + identity
+        out = (x + identity).astype(input_dtype)
+        return out
 
 
 class WanMidBlock(nnx.Module):
