@@ -14,11 +14,13 @@
  limitations under the License.
 """
 
-from typing import Tuple, List, Sequence, Union, Optional
+from typing import Tuple, List, Sequence, Union, Optional, Dict, Any
 
+import flax
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from jax.sharding import PartitionSpec
 from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
@@ -27,7 +29,7 @@ from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistributio
 BlockSizes = common_types.BlockSizes
 
 CACHE_T = 2
-
+flax.config.update("flax_always_shard_variable", False)
 
 # Helper to ensure kernel_size, stride, padding are tuples of 3 integers
 def _canonicalize_tuple(x: Union[int, Sequence[int]], rank: int, name: str) -> Tuple[int, ...]:
@@ -59,6 +61,7 @@ class WanCausalConv3d(nnx.Module):
     self.kernel_size = _canonicalize_tuple(kernel_size, 3, "kernel_size")
     self.stride = _canonicalize_tuple(stride, 3, "stride")
     padding_tuple = _canonicalize_tuple(padding, 3, "padding")  # (D, H, W) padding amounts
+    self.mesh = mesh
 
     self._causal_padding = (
         (0, 0),  # Batch dimension - no padding
@@ -72,10 +75,13 @@ class WanCausalConv3d(nnx.Module):
     self._depth_padding_before = self._causal_padding[1][0]  # 2 * padding_tuple[0]
 
     # Set sharding dynamically based on out_channels.
-    num_fsdp_axis_devices = mesh.device_ids.shape[1]
+    num_fsdp_axis_devices = 1
+    if mesh is not None and "fsdp" in mesh.axis_names:
+        num_fsdp_axis_devices = mesh.shape["fsdp"]
+
     kernel_sharding = (None, None, None, None, None)
-    if out_channels % num_fsdp_axis_devices == 0:
-      kernel_sharding = (None, None, None, None, "conv_out")
+    if num_fsdp_axis_devices > 1 and out_channels % num_fsdp_axis_devices == 0:
+        kernel_sharding = (None, None, None, None, "conv_out")
 
     self.conv = nnx.Conv(
         in_features=in_channels,
@@ -91,33 +97,72 @@ class WanCausalConv3d(nnx.Module):
         precision=precision,
     )
 
-  def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None, idx=-1) -> jax.Array:
-    current_padding = list(self._causal_padding)  # Mutable copy
-    padding_needed = self._depth_padding_before
+  def initialize_cache(self, batch_size, height, width, dtype):
+    cache = jnp.zeros(
+        (batch_size, CACHE_T, height, width, self.conv.in_features), dtype=dtype
+    )
 
-    if cache_x is not None and padding_needed > 0:
-      # Ensure cache has same spatial/channel dims, potentially different depth
-      assert cache_x.shape[0] == x.shape[0] and cache_x.shape[2:] == x.shape[2:], "Cache spatial/channel dims mismatch"
-      cache_len = cache_x.shape[1]
-      x = jnp.concatenate([cache_x, x], axis=1)  # Concat along depth (D)
+    # OPTIMIZATION: Spatial Partitioning on Initialization
+    if self.mesh is not None and "fsdp" in self.mesh.axis_names:
+        num_fsdp_devices = self.mesh.shape["fsdp"]
+        # Axis 2 is Height
+        shard_axis = "fsdp" if (height % num_fsdp_devices == 0) else None
 
-      padding_needed -= cache_len
+        # If height isn't divisible, try width (Axis 3)
+        shard_width_axis = None
+        if shard_axis is None and width % num_fsdp_devices == 0:
+            shard_width_axis = "fsdp"
+
+        cache = jax.lax.with_sharding_constraint(
+            cache, PartitionSpec("data", None, shard_axis, shard_width_axis, None)
+        )
+    return cache
+
+  def __call__(
+      self, x: jax.Array, cache_x: Optional[jax.Array] = None
+  ) -> Tuple[jax.Array, jax.Array]:
+      # OPTIMIZATION: Spatial Partitioning during execution
+    if self.mesh is not None and "fsdp" in self.mesh.axis_names:
+      height = x.shape[2]
+      width = x.shape[3]
+      num_fsdp_devices = self.mesh.shape["fsdp"]
+
+      shard_axis = "fsdp" if (height % num_fsdp_devices == 0) else None
+      shard_width_axis = None
+      if shard_axis is None and width % num_fsdp_devices == 0:
+          shard_width_axis = "fsdp"
+
+      x = jax.lax.with_sharding_constraint(
+          x, PartitionSpec("data", None, shard_axis, shard_width_axis, None)
+      )
+
+    current_padding = list(self._causal_padding)
+
+    if cache_x is not None:
+      x_concat = jnp.concatenate([cache_x, x], axis=1)
+      new_cache = x_concat[:, -CACHE_T:, ...]
+
+      padding_needed = self._depth_padding_before - cache_x.shape[1]
       if padding_needed < 0:
-        # Cache longer than needed padding, trim from start
-        x = x[:, -padding_needed:, ...]
-        current_padding[1] = (0, 0)  # No explicit padding needed now
+          x_input = x_concat[:, -padding_needed:, ...]
+          current_padding[1] = (0, 0)
       else:
-        # Update depth padding needed
-        current_padding[1] = (padding_needed, 0)
+          x_input = x_concat
+          current_padding[1] = (padding_needed, 0)
+    else:
+      new_cache = x[:, -CACHE_T:, ...]
+      x_input = x
 
-    # Apply padding if any dimension requires it
     padding_to_apply = tuple(current_padding)
     if any(p > 0 for dim_pads in padding_to_apply for p in dim_pads):
-      x_padded = jnp.pad(x, padding_to_apply, mode="constant", constant_values=0.0)
+      x_padded = jnp.pad(
+          x_input, padding_to_apply, mode="constant", constant_values=0.0
+      )
     else:
-      x_padded = x
+      x_padded = x_input
+
     out = self.conv(x_padded)
-    return out
+    return out, new_cache
 
 
 class WanRMS_norm(nnx.Module):
@@ -172,9 +217,8 @@ class WanUpsample(nnx.Module):
 
 
 class Identity(nnx.Module):
-
-  def __call__(self, x):
-    return x
+  def __call__(self, x, cache=None):
+    return x, cache
 
 
 class ZeroPaddedConv2D(nnx.Module):
@@ -207,8 +251,8 @@ class ZeroPaddedConv2D(nnx.Module):
         precision=precision,
     )
 
-  def __call__(self, x):
-    return self.conv(x)
+  def __call__(self, x, cache=None):
+    return self.conv(x), cache
 
 
 class WanResample(nnx.Module):
@@ -307,52 +351,69 @@ class WanResample(nnx.Module):
     else:
       self.resample = Identity()
 
-  def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]) -> jax.Array:
-    # Input x: (N, D, H, W, C), assume C = self.dim
-    b, t, h, w, c = x.shape
-    assert c == self.dim
+  def initialize_cache(self, batch_size, height, width, dtype):
+    cache = {}
+    if hasattr(self, "time_conv"):
+        h_curr, w_curr = height, width
+        cache["time_conv"] = self.time_conv.initialize_cache(
+            batch_size, h_curr, w_curr, dtype
+        )
+    return cache
 
-    if self.mode == "upsample3d":
-      if feat_cache is not None:
-        idx = feat_idx[0]
-        if feat_cache[idx] is None:
-          feat_cache[idx] = "Rep"
-          feat_idx[0] += 1
-        else:
-          cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and feat_cache[idx] != "Rep":
-            # cache last frame of last two chunk
-            cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and feat_cache[idx] == "Rep":
-            cache_x = jnp.concatenate([jnp.zeros(cache_x.shape), cache_x], axis=1)
-          if feat_cache[idx] == "Rep":
-            x = self.time_conv(x)
-          else:
-            x = self.time_conv(x, feat_cache[idx])
-          feat_cache[idx] = cache_x
-          feat_idx[0] += 1
-          x = x.reshape(b, t, h, w, 2, c)
-          x = jnp.stack([x[:, :, :, :, 0, :], x[:, :, :, :, 1, :]], axis=1)
-          x = x.reshape(b, t * 2, h, w, c)
-    t = x.shape[1]
-    x = x.reshape(b * t, h, w, c)
-    x = self.resample(x)
-    h_new, w_new, c_new = x.shape[1:]
-    x = x.reshape(b, t, h_new, w_new, c_new)
+  def __call__(
+      self, x: jax.Array, cache: Dict[str, Any] = None
+  ) -> Tuple[jax.Array, Dict[str, Any]]:
+    if cache is None:
+        cache = {}
+    new_cache = {}
 
-    if self.mode == "downsample3d":
-      if feat_cache is not None:
-        idx = feat_idx[0]
-        if feat_cache[idx] is None:
-          feat_cache[idx] = jnp.copy(x)
-          feat_idx[0] += 1
-        else:
-          cache_x = jnp.copy(x[:, -1:, :, :, :])
-          x = self.time_conv(jnp.concatenate([feat_cache[idx][:, -1:, :, :, :], x], axis=1))
-          feat_cache[idx] = cache_x
-          feat_idx[0] += 1
+    if self.mode == "upsample2d":
+        b, t, h, w, c = x.shape
+        x = x.reshape(b * t, h, w, c)
+        x = self.resample(x)
+        h_new, w_new, c_new = x.shape[1:]
+        x = x.reshape(b, t, h_new, w_new, c_new)
 
-    return x
+    elif self.mode == "upsample3d":
+        x, tc_cache = self.time_conv(x, cache.get("time_conv"))
+        new_cache["time_conv"] = tc_cache
+
+        b, t, h, w, c = x.shape
+        x = x.reshape(b, t, h, w, 2, c // 2)
+        x = jnp.stack([x[:, :, :, :, 0, :], x[:, :, :, :, 1, :]], axis=1)
+        x = x.reshape(b, t * 2, h, w, c // 2)
+
+        b, t, h, w, c = x.shape
+        x = x.reshape(b * t, h, w, c)
+        x = self.resample(x)
+        h_new, w_new, c_new = x.shape[1:]
+        x = x.reshape(b, t, h_new, w_new, c_new)
+
+    elif self.mode == "downsample2d":
+        b, t, h, w, c = x.shape
+        x = x.reshape(b * t, h, w, c)
+        x, _ = self.resample(x, None)
+        h_new, w_new, c_new = x.shape[1:]
+        x = x.reshape(b, t, h_new, w_new, c_new)
+
+    elif self.mode == "downsample3d":
+        x, tc_cache = self.time_conv(x, cache.get("time_conv"))
+        new_cache["time_conv"] = tc_cache
+
+        b, t, h, w, c = x.shape
+        x = x.reshape(b * t, h, w, c)
+        x, _ = self.resample(x, None)
+        h_new, w_new, c_new = x.shape[1:]
+        x = x.reshape(b, t, h_new, w_new, c_new)
+
+    else:
+        if hasattr(self, "resample"):
+            if isinstance(self.resample, Identity):
+                x, _ = self.resample(x, None)
+            else:
+                x = self.resample(x)
+
+    return x, new_cache
 
 
 class WanResidualBlock(nnx.Module):
@@ -411,40 +472,41 @@ class WanResidualBlock(nnx.Module):
         else Identity()
     )
 
-  def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
-    # Apply shortcut connection
-    h = self.conv_shortcut(x)
+  def initialize_cache(self, batch_size, height, width, dtype):
+    cache = {
+        "conv1": self.conv1.initialize_cache(batch_size, height, width, dtype),
+        "conv2": self.conv2.initialize_cache(batch_size, height, width, dtype),
+    }
+    if isinstance(self.conv_shortcut, WanCausalConv3d):
+        cache["shortcut"] = self.conv_shortcut.initialize_cache(
+            batch_size, height, width, dtype
+        )
+    else:
+        cache["shortcut"] = None
+    return cache
+
+  def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
+    if cache is None:
+        cache = {}
+    new_cache = {}
+
+    h, sc_cache = self.conv_shortcut(x, cache.get("shortcut"))
+    new_cache["shortcut"] = sc_cache
 
     x = self.norm1(x)
     x = self.nonlinearity(x)
 
-    if feat_cache is not None:
-      idx = feat_idx[0]
-      cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x = self.conv1(x, feat_cache[idx], idx)
-      feat_cache[idx] = cache_x
-      feat_idx[0] += 1
-    else:
-      x = self.conv1(x)
+    x, c1 = self.conv1(x, cache.get("conv1"))
+    new_cache["conv1"] = c1
 
     x = self.norm2(x)
     x = self.nonlinearity(x)
-    idx = feat_idx[0]
 
-    if feat_cache is not None:
-      idx = feat_idx[0]
-      cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x = self.conv2(x, feat_cache[idx])
-      feat_cache[idx] = cache_x
-      feat_idx[0] += 1
-    else:
-      x = self.conv2(x)
+    x, c2 = self.conv2(x, cache.get("conv2"))
+    new_cache["conv2"] = c2
+
     x = x + h
-    return x
+    return x, new_cache
 
 
 class WanAttentionBlock(nnx.Module):
@@ -523,47 +585,70 @@ class WanMidBlock(nnx.Module):
       precision: jax.lax.Precision = None,
   ):
     self.dim = dim
-    resnets = [
-        WanResidualBlock(
-            in_dim=dim,
-            out_dim=dim,
-            rngs=rngs,
-            dropout=dropout,
-            non_linearity=non_linearity,
-            mesh=mesh,
-            dtype=dtype,
-            weights_dtype=weights_dtype,
-            precision=precision,
-        )
-    ]
-    attentions = []
+    self.resnets = nnx.List(
+        [
+            WanResidualBlock(
+                in_dim=dim,
+                out_dim=dim,
+                rngs=rngs,
+                dropout=dropout,
+                non_linearity=non_linearity,
+                mesh=mesh,
+                dtype=dtype,
+                weights_dtype=weights_dtype,
+                precision=precision,
+            )
+        ]
+    )
+    self.attentions = nnx.List([])
     for _ in range(num_layers):
-      attentions.append(
-          WanAttentionBlock(dim=dim, rngs=rngs, mesh=mesh, dtype=dtype, weights_dtype=weights_dtype, precision=precision)
-      )
-      resnets.append(
-          WanResidualBlock(
-              in_dim=dim,
-              out_dim=dim,
-              rngs=rngs,
-              dropout=dropout,
-              non_linearity=non_linearity,
-              mesh=mesh,
-              dtype=dtype,
-              weights_dtype=weights_dtype,
-              precision=precision,
-          )
-      )
-    self.attentions = nnx.data(attentions)
-    self.resnets = nnx.data(resnets)
+        self.attentions.append(
+            WanAttentionBlock(
+                dim=dim,
+                rngs=rngs,
+                mesh=mesh,
+                dtype=dtype,
+                weights_dtype=weights_dtype,
+                precision=precision,
+            )
+        )
+        self.resnets.append(
+            WanResidualBlock(
+                in_dim=dim,
+                out_dim=dim,
+                rngs=rngs,
+                dropout=dropout,
+                non_linearity=non_linearity,
+                mesh=mesh,
+                dtype=dtype,
+                weights_dtype=weights_dtype,
+                precision=precision,
+            )
+        )
 
-  def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
-    x = self.resnets[0](x, feat_cache, feat_idx)
-    for attn, resnet in zip(self.attentions, self.resnets[1:]):
-      if attn is not None:
-        x = attn(x)
-      x = resnet(x, feat_cache, feat_idx)
-    return x
+  def initialize_cache(self, batch_size, height, width, dtype):
+    cache = {"resnets": []}
+    for resnet in self.resnets:
+        cache["resnets"].append(
+            resnet.initialize_cache(batch_size, height, width, dtype)
+        )
+    return cache
+
+  def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
+    if cache is None:
+        cache = {}
+    new_cache = {"resnets": []}
+
+    x, c = self.resnets[0](x, cache.get("resnets", [None])[0])
+    new_cache["resnets"].append(c)
+
+    for i, (attn, resnet) in enumerate(zip(self.attentions, self.resnets[1:])):
+        if attn is not None:
+            x = attn(x)
+        x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i + 1])
+        new_cache["resnets"].append(c)
+
+    return x, new_cache
 
 
 class WanUpBlock(nnx.Module):
@@ -582,55 +667,65 @@ class WanUpBlock(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
   ):
-    # Create layers list
-    resnets = []
-    # Add residual blocks and attention if needed
+    self.resnets = nnx.List([])
     current_dim = in_dim
     for _ in range(num_res_blocks + 1):
-      resnets.append(
-          WanResidualBlock(
-              in_dim=current_dim,
-              out_dim=out_dim,
-              dropout=dropout,
-              non_linearity=non_linearity,
-              rngs=rngs,
-              mesh=mesh,
-              dtype=dtype,
-              weights_dtype=weights_dtype,
-              precision=precision,
-          )
-      )
-      current_dim = out_dim
-    self.resnets = nnx.data(resnets)
+        self.resnets.append(
+            WanResidualBlock(
+                in_dim=current_dim,
+                out_dim=out_dim,
+                dropout=dropout,
+                non_linearity=non_linearity,
+                rngs=rngs,
+                mesh=mesh,
+                dtype=dtype,
+                weights_dtype=weights_dtype,
+                precision=precision,
+            )
+        )
+        current_dim = out_dim
 
-    # Add upsampling layer if needed.
-    self.upsamplers = nnx.data(None)
+    self.upsamplers = nnx.List([])
     if upsample_mode is not None:
-      self.upsamplers = [
-          WanResample(
-              dim=out_dim,
-              mode=upsample_mode,
-              rngs=rngs,
-              mesh=mesh,
-              weights_dtype=weights_dtype,
-              dtype=dtype,
-              precision=precision,
-          )
-      ]
+        self.upsamplers.append(
+            WanResample(
+                dim=out_dim,
+                mode=upsample_mode,
+                rngs=rngs,
+                mesh=mesh,
+                weights_dtype=weights_dtype,
+                dtype=dtype,
+                precision=precision,
+            )
+        )
 
-  def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
+  def initialize_cache(self, batch_size, height, width, dtype):
+    cache = {"resnets": [], "upsamplers": []}
     for resnet in self.resnets:
-      if feat_cache is not None:
-        x = resnet(x, feat_cache, feat_idx)
-      else:
-        x = resnet(x)
+        cache["resnets"].append(
+            resnet.initialize_cache(batch_size, height, width, dtype)
+        )
 
-    if self.upsamplers is not None:
-      if feat_cache is not None:
-        x = self.upsamplers[0](x, feat_cache, feat_idx)
-      else:
-        x = self.upsamplers[0](x)
-    return x
+    h_curr, w_curr = height, width
+    if self.upsamplers:
+        cache["upsamplers"].append(
+            self.upsamplers[0].initialize_cache(batch_size, h_curr, w_curr, dtype)
+        )
+    return cache
+
+  def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
+    if cache is None:
+        cache = {}
+    new_cache = {"resnets": [], "upsamplers": []}
+
+    for i, resnet in enumerate(self.resnets):
+        x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i])
+        new_cache["resnets"].append(c)
+
+    if self.upsamplers:
+        x, c = self.upsamplers[0](x, cache.get("upsamplers", [None])[0])
+        new_cache["upsamplers"].append(c)
+    return x, new_cache
 
 
 class WanEncoder3d(nnx.Module):
@@ -677,7 +772,7 @@ class WanEncoder3d(nnx.Module):
     )
 
     # downsample blocks
-    self.down_blocks = []
+    self.down_blocks = nnx.List([])
     for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
       # residual (+attention) blocks
       for _ in range(num_res_blocks):
@@ -739,40 +834,65 @@ class WanEncoder3d(nnx.Module):
         precision=precision,
     )
 
-  def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
-    if feat_cache is not None:
-      idx = feat_idx[0]
-      cache_x = jnp.copy(x[:, -CACHE_T:, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
-        # cache last frame of the last two chunk
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x = self.conv_in(x, feat_cache[idx])
-      feat_cache[idx] = cache_x
-      feat_idx[0] += 1
-    else:
-      x = self.conv_in(x)
-    for layer in self.down_blocks:
-      if feat_cache is not None:
-        x = layer(x, feat_cache, feat_idx)
-      else:
-        x = layer(x)
+  def init_cache(self, batch_size, height, width, dtype):
+    cache = {}
+    cache["conv_in"] = self.conv_in.initialize_cache(
+        batch_size, height, width, dtype
+    )
+    cache["down_blocks"] = []
 
-    x = self.mid_block(x, feat_cache, feat_idx)
+    h_curr, w_curr = height, width
+    for layer in self.down_blocks:
+        if isinstance(layer, WanResidualBlock):
+            cache["down_blocks"].append(
+                layer.initialize_cache(batch_size, h_curr, w_curr, dtype)
+            )
+        elif isinstance(layer, WanResample):
+            cache["down_blocks"].append(
+                layer.initialize_cache(batch_size, h_curr, w_curr, dtype)
+            )
+            if layer.mode == "downsample2d" or layer.mode == "downsample3d":
+                h_curr, w_curr = h_curr // 2, w_curr // 2
+        else:
+            cache["down_blocks"].append(None)
+
+    cache["mid_block"] = self.mid_block.initialize_cache(
+        batch_size, h_curr, w_curr, dtype
+    )
+    cache["conv_out"] = self.conv_out.initialize_cache(
+        batch_size, h_curr, w_curr, dtype
+    )
+    return cache
+
+  def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
+    if cache is None:
+        cache = {}
+    new_cache = {}
+
+    x, c = self.conv_in(x, cache.get("conv_in"))
+    new_cache["conv_in"] = c
+
+    new_cache["down_blocks"] = []
+    current_down_caches = cache.get("down_blocks", [None] * len(self.down_blocks))
+
+    for i, layer in enumerate(self.down_blocks):
+        if isinstance(layer, (WanResidualBlock, WanResample)):
+            x, c = layer(x, current_down_caches[i])
+            new_cache["down_blocks"].append(c)
+        else:
+            x = layer(x)
+            new_cache["down_blocks"].append(None)
+
+    x, c = self.mid_block(x, cache.get("mid_block"))
+    new_cache["mid_block"] = c
 
     x = self.norm_out(x)
     x = self.nonlinearity(x)
-    if feat_cache is not None:
-      idx = feat_idx[0]
-      cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
-        # cache last frame of last two chunk
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x = self.conv_out(x, feat_cache[idx])
-      feat_cache[idx] = cache_x
-      feat_idx[0] += 1
-    else:
-      x = self.conv_out(x)
-    return x
+
+    x, c = self.conv_out(x, cache.get("conv_out"))
+    new_cache["conv_out"] = c
+
+    return x, new_cache
 
 
 class WanDecoder3d(nnx.Module):
@@ -845,7 +965,7 @@ class WanDecoder3d(nnx.Module):
     )
 
     # upsample blocks
-    self.up_blocks = []
+    self.up_blocks = nnx.List([])
     for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
       # residual (+attention) blocks
       if i > 0:
@@ -890,41 +1010,52 @@ class WanDecoder3d(nnx.Module):
         precision=precision,
     )
 
-  def __call__(self, x: jax.Array, feat_cache=None, feat_idx=[0]):
-    if feat_cache is not None:
-      idx = feat_idx[0]
-      cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
-        # cache last frame of the last two chunk
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x = self.conv_in(x, feat_cache[idx])
-      feat_cache[idx] = cache_x
-      feat_idx[0] += 1
-    else:
-      x = self.conv_in(x)
+  def init_cache(self, batch_size, height, width, dtype):
+    cache = {}
+    cache["conv_in"] = self.conv_in.initialize_cache(
+        batch_size, height, width, dtype
+    )
+    cache["mid_block"] = self.mid_block.initialize_cache(
+        batch_size, height, width, dtype
+    )
+    cache["up_blocks"] = []
 
-    ## middle
-    x = self.mid_block(x, feat_cache, feat_idx)
-    ## upsamples
-    for up_block in self.up_blocks:
-      x = up_block(x, feat_cache, feat_idx)
+    h_curr, w_curr = height, width
+    for block in self.up_blocks:
+        cache["up_blocks"].append(
+            block.initialize_cache(batch_size, h_curr, w_curr, dtype)
+        )
+        if block.upsamplers:
+            h_curr, w_curr = h_curr * 2, w_curr * 2
 
-    ## head
+    cache["conv_out"] = self.conv_out.initialize_cache(
+        batch_size, h_curr, w_curr, dtype
+    )
+    return cache
+
+  def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
+    if cache is None:
+        cache = {}
+    new_cache = {}
+
+    x, c = self.conv_in(x, cache.get("conv_in"))
+    new_cache["conv_in"] = c
+
+    x, c = self.mid_block(x, cache.get("mid_block"))
+    new_cache["mid_block"] = c
+
+    new_cache["up_blocks"] = []
+    current_up_caches = cache.get("up_blocks", [None] * len(self.up_blocks))
+    for i, up_block in enumerate(self.up_blocks):
+        x, c = up_block(x, current_up_caches[i])
+        new_cache["up_blocks"].append(c)
+
     x = self.norm_out(x)
     x = self.nonlinearity(x)
-    if feat_cache is not None:
-      idx = feat_idx[0]
-      cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
-        # cache last frame of the last two chunk
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x = self.conv_out(x, feat_cache[idx])
-      feat_cache[idx] = cache_x
-      feat_idx[0] += 1
-    else:
-      x = self.conv_out(x)
-    return x
+    x, c = self.conv_out(x, cache.get("conv_out"))
+    new_cache["conv_out"] = c
 
+    return x, new_cache
 
 class AutoencoderKLWanCache:
 
@@ -1062,86 +1193,72 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
-  def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
-    feat_cache.clear_cache()
+  def encode(
+      self, x: jax.Array, return_dict: bool = True
+  ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     if x.shape[-1] != 3:
       # reshape channel last for JAX
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
       assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
 
-    t = x.shape[1]
-    iter_ = 1 + (t - 1) // 4
-    for i in range(iter_):
-      feat_cache._enc_conv_idx = [0]
-      if i == 0:
-        out = self.encoder(x[:, :1, :, :, :], feat_cache=feat_cache._enc_feat_map, feat_idx=feat_cache._enc_conv_idx)
-      else:
-        out_ = self.encoder(
-            x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :],
-            feat_cache=feat_cache._enc_feat_map,
-            feat_idx=feat_cache._enc_conv_idx,
-        )
-        out = jnp.concatenate([out, out_], axis=1)
-    enc = self.quant_conv(out)
-    mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
-    enc = jnp.concatenate([mu, logvar], axis=-1)
-    feat_cache.clear_cache()
-    return enc
+    x_scan = jnp.swapaxes(x, 0, 1)
+    b, t, h, w, c = x.shape
+    init_cache = self.encoder.init_cache(b, h, w, x.dtype)
 
-  def encode(
-      self, x: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
-  ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
-    """Encode video into latent distribution."""
-    h = self._encode(x, feat_cache)
+    def scan_fn(carry, input_slice):
+        # Expand Time dimension for Conv3d
+        input_slice = jnp.expand_dims(input_slice, 1)
+        out_slice, new_carry = self.encoder(input_slice, carry)
+        # Squeeze Time dimension for scan stacking
+        out_slice = jnp.squeeze(out_slice, 1)
+        return new_carry, out_slice
+
+    final_cache, encoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
+    encoded = jnp.swapaxes(encoded_frames, 0, 1)
+    enc, _ = self.quant_conv(encoded)
+
+    mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
+    h = jnp.concatenate([mu, logvar], axis=-1)
+
     posterior = FlaxDiagonalGaussianDistribution(h)
     if not return_dict:
-      return (posterior,)
+        return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
-  def _decode(
-      self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
-  ) -> Union[FlaxDecoderOutput, jax.Array]:
-    feat_cache.clear_cache()
-    iter_ = z.shape[1]
-    x = self.post_quant_conv(z)
-    for i in range(iter_):
-      feat_cache._conv_idx = [0]
-      if i == 0:
-        out = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=feat_cache._feat_map, feat_idx=feat_cache._conv_idx)
-      else:
-        out_ = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=feat_cache._feat_map, feat_idx=feat_cache._conv_idx)
-
-        # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
-        # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
-        # Most likely due to an incorrect reshaping in the decoder.
-        fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
-        # When batch_size is 0, expand batch dim for contatenation
-        # else, expand frame dim for concatenation so that batch dim stays intact.
-        axis = 0
-        if fm1.shape[0] > 1:
-          axis = 1
-
-        if len(fm1.shape) == 4:
-          fm1 = jnp.expand_dims(fm1, axis=axis)
-          fm2 = jnp.expand_dims(fm2, axis=axis)
-          fm3 = jnp.expand_dims(fm3, axis=axis)
-          fm4 = jnp.expand_dims(fm4, axis=axis)
-        out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
-    out = jnp.clip(out, min=-1.0, max=1.0)
-    feat_cache.clear_cache()
-    if not return_dict:
-      return (out,)
-
-    return FlaxDecoderOutput(sample=out)
-
   def decode(
-      self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
+      self, z: jax.Array, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
     if z.shape[-1] != self.z_dim:
-      # reshape channel last for JAX
-      z = jnp.transpose(z, (0, 2, 3, 4, 1))
-      assert z.shape[-1] == self.z_dim, f"Expected input shape (N, D, H, W, {self.z_dim}, got {z.shape}"
-    decoded = self._decode(z, feat_cache).sample
+        z = jnp.transpose(z, (0, 2, 3, 4, 1))
+
+    x, _ = self.post_quant_conv(z)
+    x_scan = jnp.swapaxes(x, 0, 1)
+
+    b, t, h, w, c = x.shape
+    init_cache = self.decoder.init_cache(b, h, w, x.dtype)
+
+    def scan_fn(carry, input_slice):
+        # Expand Time dimension for Conv3d
+        input_slice = jnp.expand_dims(input_slice, 1)
+        # OPTIMIZATION: Force bfloat16 accumulation within the scan
+        # to save memory on the massive output buffer
+        out_slice, new_carry = self.decoder(input_slice, carry)
+        # out_slice = out_slice.astype(jnp.bfloat16)
+        return new_carry, out_slice
+
+    final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
+
+    # decoded_frames shape: (T_lat, B, 4, H, W, C)
+    # We need to flatten T_lat and 4.
+    # Transpose to (B, T_lat, 4, H, W, C)
+    decoded = jnp.transpose(decoded_frames, (1, 0, 2, 3, 4, 5))
+
+    # Reshape to (B, T_lat*4, H, W, C)
+    b, t_lat, t_sub, h, w, c = decoded.shape
+    decoded = decoded.reshape(b, t_lat * t_sub, h, w, c)
+
+    out = jnp.clip(decoded, min=-1.0, max=1.0)
+
     if not return_dict:
-      return (decoded,)
-    return FlaxDecoderOutput(sample=decoded)
+        return (out,)
+    return FlaxDecoderOutput(sample=out)
