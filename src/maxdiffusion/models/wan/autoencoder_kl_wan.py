@@ -1258,48 +1258,78 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
-  def _encode_jit(self, x: jax.Array) -> jax.Array:
-    """Core computation part to be JIT-compiled."""
-    if x.shape[-1] != 3:
-      # reshape channel last for JAX
-      x = jnp.transpose(x, (0, 2, 3, 4, 1))
-      assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
-
-    x_scan = jnp.swapaxes(x, 0, 1)
-    b, t, h, w, c = x.shape
-    init_cache = self.encoder.init_cache(b, h, w, x.dtype)
-
-    def scan_fn(carry, input_slice):
-        # Expand Time dimension for Conv3d
-        input_slice = jnp.expand_dims(input_slice, 1)
-        out_slice, new_carry = self.encoder(input_slice, carry)
-        # Squeeze Time dimension for scan stacking
-        out_slice = jnp.squeeze(out_slice, 1)
-        return new_carry, out_slice
-
-    final_cache, encoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
-    encoded = jnp.swapaxes(encoded_frames, 0, 1)
-    enc, _ = self.quant_conv(encoded)
-
-    # h contains the parameters for the distribution
-    h = enc # Or jnp.concatenate([mu, logvar], axis=-1) as originally
-    return h
-  _encode_compiled = nnx.jit(_encode_jit)
-
+  @nnx.jit
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
-    """Encodes the input, returning standard distribution objects."""
-    # Call the compiled function to get JAX arrays
-    h = self._encode_compiled(x)
+    if x.shape[-1] != 3:
+      x = jnp.transpose(x, (0, 2, 3, 4, 1))
+    assert x.shape[-1] == 3, "Input channels must be 3"
 
-    # Create custom objects outside the JIT scope
+    b, t, h, w, c = x.shape
+    chunk_size = 4  # Process in chunks of 4 frames
+
+    # Calculate padding needed to make the time dimension a multiple of chunk_size
+    num_chunks = math.ceil(t / chunk_size)
+    padded_t = num_chunks * chunk_size
+    padding_t = padded_t - t
+
+    if padding_t > 0:
+      paddings = [(0, 0)] * x.ndim
+      paddings[1] = (0, padding_t)  # Pad at the end of the time dimension
+      x_padded = jnp.pad(x, paddings, mode='constant', constant_values=0.0)
+    else:
+      x_padded = x
+
+    # Reshape for scan: (B, Num_Chunks, Chunk_T, H, W, C)
+    x_reshaped = x_padded.reshape((b, num_chunks, chunk_size, h, w, c))
+
+    # Swap axes for scan: (Num_Chunks, B, Chunk_T, H, W, C)
+    x_scannable = jnp.swapaxes(x_reshaped, 0, 1)
+
+    # Define the function to be executed in each step of the scan
+    def scan_fn(dummy_carry, x_chunk):
+      # x_chunk shape: (B, chunk_size, H, W, C)
+      b_c, _, h_c, w_c, _ = x_chunk.shape
+
+      # Reset cache for each chunk to ensure independence
+      init_cache = self.encoder.init_cache(b_c, h_c, w_c, x_chunk.dtype)
+
+      # Use gradient checkpointing to save memory
+      out_chunk, _ = nnx.checkpoint(self.encoder)(x_chunk, init_cache)
+      # Expected out_chunk shape: (B, 1, H', W', Z*2)
+      # as each 4-frame chunk is downsampled temporally by 4x.
+
+      return dummy_carry, out_chunk
+
+    # Initial carry for scan - not used for state propagation between chunks
+    initial_scan_carry = self.encoder.init_cache(b, h, w, x.dtype)
+
+    # Run the scan over the chunks
+    _, encoded_chunks = jax.lax.scan(scan_fn, initial_scan_carry, x_scannable)
+    # encoded_chunks shape: (num_chunks, B, 1, H', W', Z*2)
+
+    # Concatenate the results from each chunk
+    # Transpose back to (B, num_chunks, 1, H', W', Z*2)
+    encoded_combined = jnp.swapaxes(encoded_chunks, 0, 1)
+
+    # Reshape to (B, num_chunks, H', W', Z*2)
+    b_out, nc_out, t_out_chunk, h_out, w_out, c_out = encoded_combined.shape
+    encoded = encoded_combined.reshape((b_out, nc_out * t_out_chunk, h_out, w_out, c_out))
+    # Final 'encoded' shape: (B, num_chunks, H', W', Z*2)
+    # For T=9, num_chunks=3. This matches the expected (B, 3, H', W', Z*2)
+
+    # Post-processing to get distribution parameters
+    enc, _ = self.quant_conv(encoded, cache_x=None)
+    mu = enc[..., :self.z_dim]
+    logvar = enc[..., self.z_dim:]
+    h = jnp.concatenate([mu, logvar], axis=-1)
+
     posterior = FlaxDiagonalGaussianDistribution(h)
 
     if not return_dict:
-        return (posterior,)
+      return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
-
 
   @nnx.jit
   def decode(
@@ -1315,22 +1345,14 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     init_cache = self.decoder.init_cache(b, h, w, x.dtype)
 
     def scan_fn(carry, input_slice):
-        # Expand Time dimension for Conv3d
         input_slice = jnp.expand_dims(input_slice, 1)
-        # OPTIMIZATION: Force bfloat16 accumulation within the scan
-        # to save memory on the massive output buffer
         out_slice, new_carry = self.decoder(input_slice, carry)
-        # out_slice = out_slice.astype(jnp.bfloat16)
         return new_carry, out_slice
 
-    final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
+    final_cache, decoded_frames = jax.lax.scan(scan_fn, initial_scan_carry, x_scan)
 
-    # decoded_frames shape: (T_lat, B, 4, H, W, C)
-    # We need to flatten T_lat and 4.
-    # Transpose to (B, T_lat, 4, H, W, C)
     decoded = jnp.transpose(decoded_frames, (1, 0, 2, 3, 4, 5))
 
-    # Reshape to (B, T_lat*4, H, W, C)
     b, t_lat, t_sub, h, w, c = decoded.shape
     decoded = decoded.reshape(b, t_lat * t_sub, h, w, c)
 
