@@ -1193,6 +1193,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
+  @nnx.jit
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
@@ -1225,6 +1226,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
+  @nnx.jit
   def decode(
       self, z: jax.Array, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
