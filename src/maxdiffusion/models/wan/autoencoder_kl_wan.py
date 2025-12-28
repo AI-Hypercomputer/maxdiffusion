@@ -166,7 +166,6 @@ class WanCausalConv3d(nnx.Module):
 
     out = self.conv(x_padded)
     new_cache = new_cache.astype(jnp.bfloat16)
-    print(f"Exiting WanCausalConv3d: {out.shape}")
     return out, new_cache
 
 
@@ -194,13 +193,11 @@ class WanRMS_norm(nnx.Module):
       self.bias = 0
 
   def __call__(self, x: jax.Array) -> jax.Array:
-    print(f"Entering WanRMS_norm: {x.shape}")
     normalized = jnp.linalg.norm(x, ord=2, axis=(1 if self.channel_first else -1), keepdims=True)
     normalized = x / jnp.maximum(normalized, self.eps)
     normalized = normalized * self.scale * self.gamma
     if self.bias:
       return normalized + self.bias.value
-    print(f"Exiting WanRMS_norm: {normalized.shape}")
     return normalized
 
 
@@ -213,7 +210,6 @@ class WanUpsample(nnx.Module):
     self.method = method
 
   def __call__(self, x: jax.Array) -> jax.Array:
-    print(f"Entering WanUpsample: {x.shape}")
     input_dtype = x.dtype
     in_shape = x.shape
     assert len(in_shape) == 4, "This module only takes tensors with shape of 4."
@@ -222,14 +218,11 @@ class WanUpsample(nnx.Module):
     target_w = int(w * self.scale_factor[1])
     out = jax.image.resize(x.astype(jnp.float32), (n, target_h, target_w, c), method=self.method)
     out = out.astype(input_dtype)
-    print(f"Exiting WanUpsample: {out.shape}")
     return out
 
 
 class Identity(nnx.Module):
   def __call__(self, x, cache=None):
-    print(f"Entering Identity: {x.shape}")
-    print(f"Exiting Identity: {x.shape}")
     return x, cache
 
 
@@ -264,9 +257,7 @@ class ZeroPaddedConv2D(nnx.Module):
     )
 
   def __call__(self, x, cache=None):
-    print(f"Entering ZeroPaddedConv2D: {x.shape}")
     out = self.conv(x)
-    print(f"Exiting ZeroPaddedConv2D: {out.shape}")
     return out, cache
 
 
@@ -378,7 +369,6 @@ class WanResample(nnx.Module):
   def __call__(
       self, x: jax.Array, cache: Dict[str, Any] = None
   ) -> Tuple[jax.Array, Dict[str, Any]]:
-    print(f"Entering WanResample ({self.mode}): {x.shape}")
     if cache is None:
         cache = {}
     new_cache = {}
@@ -386,38 +376,29 @@ class WanResample(nnx.Module):
     if self.mode == "upsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        print(f"WanResample ({self.mode}) reshaped for resample: {x.shape}")
         x = self.resample(x)
-        print(f"WanResample ({self.mode}) after resample: {x.shape}")
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "upsample3d":
         x, tc_cache = self.time_conv(x, cache.get("time_conv"))
         new_cache["time_conv"] = tc_cache
-        print(f"WanResample ({self.mode}) after time_conv: {x.shape}")
 
         b, t, h, w, c = x.shape
         x = x.reshape(b, t, h, w, 2, c // 2)
         x = jnp.stack([x[:, :, :, :, 0, :], x[:, :, :, :, 1, :]], axis=1)
         x = x.reshape(b, t * 2, h, w, c // 2)
-        print(f"WanResample ({self.mode}) after time dim expand: {x.shape}")
-
 
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        print(f"WanResample ({self.mode}) reshaped for resample: {x.shape}")
         x = self.resample(x)
-        print(f"WanResample ({self.mode}) after resample: {x.shape}")
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample2d":
         b, t, h, w, c = x.shape
         x = x.reshape(b * t, h, w, c)
-        print(f"WanResample ({self.mode}) reshaped for resample: {x.shape}")
         x, _ = self.resample(x, None)
-        print(f"WanResample ({self.mode}) after resample: {x.shape}")
         h_new, w_new, c_new = x.shape[1:]
         x = x.reshape(b, t, h_new, w_new, c_new)
 
@@ -425,18 +406,14 @@ class WanResample(nnx.Module):
         if x.shape[1] >= self.time_conv.kernel_size[0]:
           x, tc_cache = self.time_conv(x, cache.get("time_conv"))
           new_cache["time_conv"] = tc_cache
-          print(f"WanResample ({self.mode}) after time_conv: {x.shape}")
         else:
           # Skip temporal downsampling if not enough frames
-          print(f"WanResample ({self.mode}): Skipping time_conv, input time dim {x.shape[1]} < kernel {self.time_conv.kernel_size[0]}")
           new_cache["time_conv"] = cache.get("time_conv") # Pass through cache
 
         b, t, h, w, c = x.shape
         if b * t > 0:
           x = x.reshape(b * t, h, w, c)
-          print(f"WanResample ({self.mode}) reshaped for resample: {x.shape}")
           x, _ = self.resample(x, None)
-          print(f"WanResample ({self.mode}) after resample: {x.shape}")
           h_new, w_new, c_new = x.shape[1:]
           x = x.reshape(b, t, h_new, w_new, c_new)
         else:
@@ -444,7 +421,6 @@ class WanResample(nnx.Module):
           h_new, w_new = h // self.resample.conv.strides[0], w // self.resample.conv.strides[1]
           c_new = self.resample.conv.out_features
           x = jnp.zeros((b, t, h_new, w_new, c_new), dtype=x.dtype)
-          print(f"WanResample ({self.mode}): Spatial downsample output shape {x.shape} (due to t=0)")
     else:
         if hasattr(self, "resample"):
             if isinstance(self.resample, Identity):
@@ -452,7 +428,6 @@ class WanResample(nnx.Module):
             else:
                 x = self.resample(x)
 
-    print(f"Exiting WanResample ({self.mode}): {x.shape}")
     return x, new_cache
 
 
@@ -526,33 +501,26 @@ class WanResidualBlock(nnx.Module):
     return cache
 
   def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
-    print(f"Entering WanResidualBlock (in={self.conv1.conv.in_features}, out={self.conv1.conv.out_features}): {x.shape}")
     if cache is None:
         cache = {}
     new_cache = {}
 
     h, sc_cache = self.conv_shortcut(x, cache.get("shortcut"))
     new_cache["shortcut"] = sc_cache
-    print(f"WanResidualBlock after shortcut: {h.shape}")
 
     x = self.norm1(x)
     x = self.nonlinearity(x)
-    print(f"WanResidualBlock after norm1/nl: {x.shape}")
 
     x, c1 = self.conv1(x, cache.get("conv1"))
     new_cache["conv1"] = c1
-    print(f"WanResidualBlock after conv1: {x.shape}")
 
     x = self.norm2(x)
     x = self.nonlinearity(x)
-    print(f"WanResidualBlock after norm2/nl: {x.shape}")
 
     x, c2 = self.conv2(x, cache.get("conv2"))
     new_cache["conv2"] = c2
-    print(f"WanResidualBlock after conv2: {x.shape}")
 
     x = x + h
-    print(f"Exiting WanResidualBlock: {x.shape}")
     return x, new_cache
 
 
@@ -591,17 +559,14 @@ class WanAttentionBlock(nnx.Module):
     )
 
   def __call__(self, x: jax.Array):
-    print(f"Entering WanAttentionBlock: {x.shape}")
     identity = x
     batch_size, time, height, width, channels = x.shape
 
     x = x.reshape(batch_size * time, height, width, channels)
-    print(f"WanAttentionBlock reshaped for norm: {x.shape}")
     x = self.norm(x)
 
     qkv = self.to_qkv(x)  # Output: (N*D, H, W, C * 3)
     # qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
-    print(f"WanAttentionBlock qkv shape: {qkv.shape}")
     qkv = qkv.reshape(batch_size * time, 1, -1, channels * 3)
     qkv = jnp.transpose(qkv, (0, 1, 3, 2))
     q, k, v = jnp.split(qkv, 3, axis=-2)
@@ -616,7 +581,6 @@ class WanAttentionBlock(nnx.Module):
     # Reshape back
     x = x.reshape(batch_size, time, height, width, channels)
     out = x + identity
-    print(f"Exiting WanAttentionBlock: {out.shape}")
     return out
 
 
@@ -685,26 +649,19 @@ class WanMidBlock(nnx.Module):
     return cache
 
   def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
-    print(f"Entering WanMidBlock: {x.shape}")
     if cache is None:
         cache = {}
     new_cache = {"resnets": []}
 
     x, c = self.resnets[0](x, cache.get("resnets", [None])[0])
     new_cache["resnets"].append(c)
-    print(f"WanMidBlock after resnets[0]: {x.shape}")
 
     for i, (attn, resnet) in enumerate(zip(self.attentions, self.resnets[1:])):
         if attn is not None:
-            print(f"WanMidBlock before attn {i}: {x.shape}")
             x = attn(x)
-            print(f"WanMidBlock after attn {i}: {x.shape}")
-        print(f"WanMidBlock before resnets[{i + 1}]: {x.shape}")
         x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i + 1])
         new_cache["resnets"].append(c)
-        print(f"WanMidBlock after resnets[{i + 1}]: {x.shape}")
 
-    print(f"Exiting WanMidBlock: {x.shape}")
     return x, new_cache
 
 
@@ -922,41 +879,32 @@ class WanEncoder3d(nnx.Module):
     return cache
 
   def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
-    print(f"Entering WanEncoder3d: {x.shape}")
     if cache is None:
         cache = {}
     new_cache = {}
 
     x, c = self.conv_in(x, cache.get("conv_in"))
     new_cache["conv_in"] = c
-    print(f"WanEncoder3d after conv_in: {x.shape}")
 
     new_cache["down_blocks"] = []
     current_down_caches = cache.get("down_blocks", [None] * len(self.down_blocks))
 
     for i, layer in enumerate(self.down_blocks):
-        print(f"WanEncoder3d before down_block {i} ({type(layer).__name__}): {x.shape}")
         if isinstance(layer, (WanResidualBlock, WanResample)):
             x, c = layer(x, current_down_caches[i])
             new_cache["down_blocks"].append(c)
         else:
             x = layer(x)
             new_cache["down_blocks"].append(None)
-        print(f"WanEncoder3d after down_block {i}: {x.shape}")
-
 
     x, c = self.mid_block(x, cache.get("mid_block"))
     new_cache["mid_block"] = c
-    print(f"WanEncoder3d after mid_block: {x.shape}")
 
     x = self.norm_out(x)
-    print(f"WanEncoder3d after norm_out: {x.shape}")
     x = self.nonlinearity(x)
-    print(f"WanEncoder3d after nonlinearity: {x.shape}")
 
     x, c = self.conv_out(x, cache.get("conv_out"))
     new_cache["conv_out"] = c
-    print(f"Exiting WanEncoder3d: {x.shape}")
 
     return x, new_cache
 
@@ -1270,8 +1218,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     # Process the first frame (Time=1)
     x_first = x[:, :1, ...]
     init_cache_first = self.encoder.init_cache(b, h, w, x_first.dtype)
-    encoder_checkpointed = jax.checkpoint(self.encoder)
-    out1, state_carry = encoder_checkpointed(x_first, init_cache_first)
+    out1, state_carry =  self.encoder(x_first, init_cache_first)
     all_outs.append(out1)
 
     # Process the remaining frames using scan over chunks of 4
@@ -1295,7 +1242,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       x_scannable = jnp.swapaxes(x_reshaped, 0, 1)
 
       def scan_fn(carry_state, x_chunk):
-          out_chunk, new_state = encoder_checkpointed(x_chunk, carry_state)
+          out_chunk, new_state = self.encoder(x_chunk, carry_state)
           return new_state, out_chunk
 
       _, encoded_chunks = jax.lax.scan(scan_fn, state_carry, x_scannable)
@@ -1331,11 +1278,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     
     b, t, h, w, c = x.shape
     init_cache = self.decoder.init_cache(b, h, w, x.dtype)
-    decoder_checkpointed = jax.checkpoint(self.decoder)
 
     all_decoded = []
     x_first = x[:, :1, ...]
-    out_first, state_carry = decoder_checkpointed(x_first, init_cache)
+    out_first, state_carry = self.decoder(x_first, init_cache)
     all_decoded.append(out_first)
     if t > 1:
         x_rest = x[:, 1:, ...]
@@ -1343,7 +1289,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
         def scan_fn(carry, input_slice):
             input_slice = jnp.expand_dims(input_slice, 1)
-            out_slice, new_carry = decoder_checkpointed(input_slice, carry)
+            out_slice, new_carry = self.decoder(input_slice, carry)
             out_swapped = out_slice[:, jnp.array([0, 2, 1, 3]), ...]
             
             return new_carry, out_swapped
