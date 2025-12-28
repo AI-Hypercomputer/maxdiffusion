@@ -881,14 +881,15 @@ class WanEncoder3d(nnx.Module):
     current_down_caches = cache.get("down_blocks", [None] * len(self.down_blocks))
 
     for i, layer in enumerate(self.down_blocks):
-        jax.debug.print(f"Encoder before down_block {i} ({type(layer).__name__}): {{shape}}", i=i, shape=x.shape)
+        jax.debug.print("Encoder before down_block {i} (" + type(layer).__name__ + "): {shape}", i=i, shape=x.shape)
         if isinstance(layer, (WanResidualBlock, WanResample)):
             x, c = layer(x, current_down_caches[i])
             new_cache["down_blocks"].append(c)
         else:
             x = layer(x)
             new_cache["down_blocks"].append(None)
-        jax.debug.print(f"Encoder after down_block {i}: {{shape}}", i=i, shape=x.shape)
+        jax.debug.print("Encoder after down_block {i} (" + type(layer).__name__ + "): {shape}", i=i, shape=x.shape)
+
 
     jax.debug.print("Encoder before mid_block: {shape}", shape=x.shape)
     x, c = self.mid_block(x, cache.get("mid_block"))
