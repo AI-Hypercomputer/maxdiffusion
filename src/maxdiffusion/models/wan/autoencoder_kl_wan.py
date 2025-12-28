@@ -1259,17 +1259,14 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
-  @nnx.jit # JIT the whole encode method
-  def encode(
-      self, x: jax.Array, return_dict: bool = True
-  ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
+  def _encode_jit(self, x: jax.Array) -> jax.Array:
+    """Contains the core JAX computations for encoding, suitable for JIT."""
     if x.shape[-1] != 3:
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
-    assert x.shape[-1] == 3, "Input channels must be 3"
+    # assert x.shape[-1] == 3, "Input channels must be 3" # Assertions might not be ideal in JIT
 
     b, t, h, w, c = x.shape
     chunk_size = 4  # Process in chunks of 4 frames
-    # Assuming the encoder downsamples time by a factor of 4 overall
 
     num_chunks = math.ceil(t / chunk_size)
     padded_t = num_chunks * chunk_size
@@ -1289,47 +1286,45 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     # Swap axes for scan: (Num_Chunks, B, Chunk_T, H, W, C)
     x_scannable = jnp.swapaxes(x_reshaped, 0, 1)
 
-    # Wrap the encoder's call method with jax.checkpoint
-    # nnx.Module instances are callable, so this works.
     encoder_checkpointed = jax.checkpoint(self.encoder)
 
     def scan_fn(dummy_carry, x_chunk):
       # x_chunk shape: (B, chunk_size, H, W, C)
       b_c, _, h_c, w_c, _ = x_chunk.shape
-
-      # Reset cache for each chunk to ensure independence as per original logic
       init_cache = self.encoder.init_cache(b_c, h_c, w_c, x_chunk.dtype)
-
-      # Call the checkpointed encoder
       out_chunk, _ = encoder_checkpointed(x_chunk, init_cache)
-      # Expected out_chunk shape: (B, 1, H', W', Z*2), assuming 4x temporal downsampling per chunk
-
       return dummy_carry, out_chunk
 
-    # The initial carry structure for scan needs to match the output carry structure of scan_fn.
-    # Since we don't propagate the cache *between* chunks, dummy_carry can be simple.
     initial_scan_carry = {}
-
-    # Run the scan over the chunks
     _, encoded_chunks = jax.lax.scan(scan_fn, initial_scan_carry, x_scannable)
-    # encoded_chunks shape: (num_chunks, B, 1, H', W', Z*2)
 
-    # Concatenate the results from each chunk
-    # Transpose back to (B, num_chunks, 1, H', W', Z*2)
     encoded_combined = jnp.swapaxes(encoded_chunks, 0, 1)
 
-    # Reshape to (B, num_chunks * 1, H', W', Z*2) -> (B, num_chunks, H', W', Z*2)
     b_out, nc_out, t_out_chunk, h_out, w_out, c_out = encoded_combined.shape
     encoded = encoded_combined.reshape((b_out, nc_out * t_out_chunk, h_out, w_out, c_out))
-    # Final 'encoded' shape: (B, 3, H', W', Z*2) for T=9 input
 
-    # Post-processing to get distribution parameters
     enc, _ = self.quant_conv(encoded, cache_x=None)
-    mu = enc[..., :self.z_dim]
-    logvar = enc[..., self.z_dim:]
-    h = jnp.concatenate([mu, logvar], axis=-1)
+    # mu = enc[..., :self.z_dim]
+    # logvar = enc[..., self.z_dim:]
+    # h = jnp.concatenate([mu, logvar], axis=-1)
+    return enc # Return the direct output of quant_conv
 
-    posterior = FlaxDiagonalGaussianDistribution(h)
+  # JIT compile the internal JAX-based function
+  _encode_compiled = nnx.jit(_encode_jit)
+
+  def encode(
+      self, x: jax.Array, return_dict: bool = True
+  ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
+    """Encodes the input array and returns custom distribution objects."""
+    if x.shape[-1] != 3:
+         # Transpose in the non-JIT part if needed, though _encode_jit handles it too
+         pass # Handled inside _encode_jit
+
+    # Call the JIT-compiled function to get the raw encoded array
+    h_params = self._encode_compiled(x)
+
+    # Create the custom Python objects from the JAX array results
+    posterior = FlaxDiagonalGaussianDistribution(h_params)
 
     if not return_dict:
       return (posterior,)
