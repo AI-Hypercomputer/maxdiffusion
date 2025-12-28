@@ -1259,7 +1259,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
-  @nnx.jit
+  @nnx.jit # JIT the whole encode method
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
@@ -1269,13 +1269,14 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     b, t, h, w, c = x.shape
     chunk_size = 4  # Process in chunks of 4 frames
+    # Assuming the encoder downsamples time by a factor of 4 overall
 
-    # Calculate padding needed to make the time dimension a multiple of chunk_size
     num_chunks = math.ceil(t / chunk_size)
     padded_t = num_chunks * chunk_size
     padding_t = padded_t - t
 
     if padding_t > 0:
+      # Pad the time dimension to be a multiple of chunk_size
       paddings = [(0, 0)] * x.ndim
       paddings[1] = (0, padding_t)  # Pad at the end of the time dimension
       x_padded = jnp.pad(x, paddings, mode='constant', constant_values=0.0)
@@ -1288,23 +1289,26 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     # Swap axes for scan: (Num_Chunks, B, Chunk_T, H, W, C)
     x_scannable = jnp.swapaxes(x_reshaped, 0, 1)
 
-    # Define the function to be executed in each step of the scan
+    # Wrap the encoder's call method with jax.checkpoint
+    # nnx.Module instances are callable, so this works.
+    encoder_checkpointed = jax.checkpoint(self.encoder)
+
     def scan_fn(dummy_carry, x_chunk):
       # x_chunk shape: (B, chunk_size, H, W, C)
       b_c, _, h_c, w_c, _ = x_chunk.shape
 
-      # Reset cache for each chunk to ensure independence
+      # Reset cache for each chunk to ensure independence as per original logic
       init_cache = self.encoder.init_cache(b_c, h_c, w_c, x_chunk.dtype)
 
-      # Use gradient checkpointing to save memory
-      out_chunk, _ = nnx.checkpoint(self.encoder)(x_chunk, init_cache)
-      # Expected out_chunk shape: (B, 1, H', W', Z*2)
-      # as each 4-frame chunk is downsampled temporally by 4x.
+      # Call the checkpointed encoder
+      out_chunk, _ = encoder_checkpointed(x_chunk, init_cache)
+      # Expected out_chunk shape: (B, 1, H', W', Z*2), assuming 4x temporal downsampling per chunk
 
       return dummy_carry, out_chunk
 
-    # Initial carry for scan - not used for state propagation between chunks
-    initial_scan_carry = self.encoder.init_cache(b, h, w, x.dtype)
+    # The initial carry structure for scan needs to match the output carry structure of scan_fn.
+    # Since we don't propagate the cache *between* chunks, dummy_carry can be simple.
+    initial_scan_carry = {}
 
     # Run the scan over the chunks
     _, encoded_chunks = jax.lax.scan(scan_fn, initial_scan_carry, x_scannable)
@@ -1314,11 +1318,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     # Transpose back to (B, num_chunks, 1, H', W', Z*2)
     encoded_combined = jnp.swapaxes(encoded_chunks, 0, 1)
 
-    # Reshape to (B, num_chunks, H', W', Z*2)
+    # Reshape to (B, num_chunks * 1, H', W', Z*2) -> (B, num_chunks, H', W', Z*2)
     b_out, nc_out, t_out_chunk, h_out, w_out, c_out = encoded_combined.shape
     encoded = encoded_combined.reshape((b_out, nc_out * t_out_chunk, h_out, w_out, c_out))
-    # Final 'encoded' shape: (B, num_chunks, H', W', Z*2)
-    # For T=9, num_chunks=3. This matches the expected (B, 3, H', W', Z*2)
+    # Final 'encoded' shape: (B, 3, H', W', Z*2) for T=9 input
 
     # Post-processing to get distribution parameters
     enc, _ = self.quant_conv(encoded, cache_x=None)
@@ -1350,7 +1353,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         out_slice, new_carry = self.decoder(input_slice, carry)
         return new_carry, out_slice
 
-    final_cache, decoded_frames = jax.lax.scan(scan_fn, initial_scan_carry, x_scan)
+    # Need to provide a valid initial cache structure for the scan
+    final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
 
     decoded = jnp.transpose(decoded_frames, (1, 0, 2, 3, 4, 5))
 
