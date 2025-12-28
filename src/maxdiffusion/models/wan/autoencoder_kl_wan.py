@@ -1247,65 +1247,34 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
-  # @nnx.jit
+  # REMOVE @nnx.jit for now to ensure this logic runs
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     if x.shape[-1] != 3:
-      # reshape channel last for JAX
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
       assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
 
     b, t, h, w, c = x.shape
-    all_outs = []
+    init_cache = self.encoder.init_cache(b, h, w, x.dtype)
 
-    def scan_fn_chunk(carry, input_slice):
-        # input_slice shape is (B, H, W, C)
-        input_slice = jnp.expand_dims(input_slice, 1) # Shape (B, 1, H, W, C) for encoder
-        out_slice, new_carry = self.encoder(input_slice, carry)
-        # out_slice shape is (B, 1, H', W', C')
-        out_slice = jnp.squeeze(out_slice, 1) # Shape (B, H', W', C') for scan output
-        return new_carry, out_slice
+    # Process first frame
+    out1, _ = self.encoder(x[:, :1, ...], init_cache)
 
-    # 1. Process the first frame
-    # Initialize cache for the first frame
-    init_cache_first = self.encoder.init_cache(b, h, w, x.dtype)
-    x_first_scan = jnp.expand_dims(x[:, 0, ...], axis=0) # Shape (1, B, H, W, C) for scan
-
-    _, out_first_frames = jax.lax.scan(scan_fn_chunk, init_cache_first, x_first_scan)
-    # out_first_frames shape is (1, B, H', W', C')
-    all_outs.append(jnp.swapaxes(out_first_frames, 0, 1)) # Shape (B, 1, H', W', C')
-
-    # 2. Process subsequent Chunks of 4
     if t > 1:
-        num_chunks = (t - 1 + 3) // 4 # Ceiling division
-        for i in range(num_chunks):
-            start_idx = 1 + 4 * i
-            end_idx = min(start_idx + 4, t)
+        # Process remaining frames in one chunk
+        # We need to manage cache updates manually if not using scan
+        # This part is tricky because the new encoder returns cache,
+        # but the old logic didn't seem to carry cache between chunks.
 
-            if start_idx >= t:
-                break
+        # Let's SIMPLIFY to match the OLD logic's spirit: Reset cache for the chunk
+        init_cache_rest = self.encoder.init_cache(b, h, w, x.dtype)
+        out_rest, _ = self.encoder(x[:, 1:, ...], init_cache_rest)
+        encoded = jnp.concatenate([out1, out_rest], axis=1)
+    else:
+        encoded = out1
 
-            chunk = x[:, start_idx:end_idx, ...]
-            # Prepare chunk for scan: shape (T_chunk, B, H, W, C)
-            x_scan = jnp.swapaxes(chunk, 0, 1)
-
-            # *** Cache Reset for EACH CHUNK ***
-            init_cache_chunk = self.encoder.init_cache(b, h, w, x.dtype)
-
-            _, encoded_frames_chunk = jax.lax.scan(scan_fn_chunk, init_cache_chunk, x_scan)
-            # encoded_frames_chunk shape is (T_chunk, B, H', W', C')
-
-            # Transpose back to (B, T_chunk, H', W', C')
-            out_chunk = jnp.swapaxes(encoded_frames_chunk, 0, 1)
-            all_outs.append(out_chunk)
-
-    # Concatenate results from all chunks along the time dimension
-    encoded = jnp.concatenate(all_outs, axis=1)
-
-    # Apply quant_conv - this layer also has a cache, but the old code didn't pipe it.
     enc, _ = self.quant_conv(encoded, cache_x=None)
-
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
     h = jnp.concatenate([mu, logvar], axis=-1)
 
