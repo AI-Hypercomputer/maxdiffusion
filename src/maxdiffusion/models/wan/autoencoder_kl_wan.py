@@ -1263,51 +1263,52 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     """Contains the core JAX computations for encoding, suitable for JIT."""
     if x.shape[-1] != 3:
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
-    # assert x.shape[-1] == 3, "Input channels must be 3" # Assertions might not be ideal in JIT
 
     b, t, h, w, c = x.shape
-    chunk_size = 4  # Process in chunks of 4 frames
+    all_outs = []
 
-    num_chunks = math.ceil(t / chunk_size)
-    padded_t = num_chunks * chunk_size
-    padding_t = padded_t - t
-
-    if padding_t > 0:
-      # Pad the time dimension to be a multiple of chunk_size
-      paddings = [(0, 0)] * x.ndim
-      paddings[1] = (0, padding_t)  # Pad at the end of the time dimension
-      x_padded = jnp.pad(x, paddings, mode='constant', constant_values=0.0)
-    else:
-      x_padded = x
-
-    # Reshape for scan: (B, Num_Chunks, Chunk_T, H, W, C)
-    x_reshaped = x_padded.reshape((b, num_chunks, chunk_size, h, w, c))
-
-    # Swap axes for scan: (Num_Chunks, B, Chunk_T, H, W, C)
-    x_scannable = jnp.swapaxes(x_reshaped, 0, 1)
-
+    # Process the first frame (Time=1)
+    x_first = x[:, :1, ...]
+    init_cache_first = self.encoder.init_cache(b, h, w, x_first.dtype)
     encoder_checkpointed = jax.checkpoint(self.encoder)
+    out1, state_carry = encoder_checkpointed(x_first, init_cache_first)
+    all_outs.append(out1)
 
-    def scan_fn(dummy_carry, x_chunk):
-      # x_chunk shape: (B, chunk_size, H, W, C)
-      b_c, _, h_c, w_c, _ = x_chunk.shape
-      init_cache = self.encoder.init_cache(b_c, h_c, w_c, x_chunk.dtype)
-      out_chunk, _ = encoder_checkpointed(x_chunk, init_cache)
-      return dummy_carry, out_chunk
+    # Process the remaining frames using scan over chunks of 4
+    if t > 1:
+      x_rest = x[:, 1:, ...]
+      t_rest = x_rest.shape[1]
+      chunk_size = 4
 
-    initial_scan_carry = {}
-    _, encoded_chunks = jax.lax.scan(scan_fn, initial_scan_carry, x_scannable)
+      num_chunks = math.ceil(t_rest / chunk_size)
+      padded_t_rest = num_chunks * chunk_size
+      padding_t = padded_t_rest - t_rest
 
-    encoded_combined = jnp.swapaxes(encoded_chunks, 0, 1)
+      if padding_t > 0:
+        paddings = [(0, 0)] * x_rest.ndim
+        paddings[1] = (0, padding_t)  # Pad at the end
+        x_rest_padded = jnp.pad(x_rest, paddings, mode='constant', constant_values=0.0)
+      else:
+        x_rest_padded = x_rest
 
-    b_out, nc_out, t_out_chunk, h_out, w_out, c_out = encoded_combined.shape
-    encoded = encoded_combined.reshape((b_out, nc_out * t_out_chunk, h_out, w_out, c_out))
+      x_reshaped = x_rest_padded.reshape((b, num_chunks, chunk_size, h, w, c))
+      x_scannable = jnp.swapaxes(x_reshaped, 0, 1)
+
+      def scan_fn(carry_state, x_chunk):
+          out_chunk, new_state = encoder_checkpointed(x_chunk, carry_state)
+          return new_state, out_chunk
+
+      _, encoded_chunks = jax.lax.scan(scan_fn, state_carry, x_scannable)
+      encoded_rest = jnp.swapaxes(encoded_chunks, 0, 1)
+      b_out, nc_out, t_out_chunk, h_out, w_out, c_out = encoded_rest.shape
+      encoded_rest = encoded_rest.reshape((b_out, nc_out * t_out_chunk, h_out, w_out, c_out))
+
+      all_outs.append(encoded_rest)
+
+    encoded = jnp.concatenate(all_outs, axis=1)
 
     enc, _ = self.quant_conv(encoded, cache_x=None)
-    # mu = enc[..., :self.z_dim]
-    # logvar = enc[..., self.z_dim:]
-    # h = jnp.concatenate([mu, logvar], axis=-1)
-    return enc # Return the direct output of quant_conv
+    return enc
 
   # JIT compile the internal JAX-based function
   _encode_compiled = nnx.jit(_encode_jit)
@@ -1316,48 +1317,59 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """Encodes the input array and returns custom distribution objects."""
-    if x.shape[-1] != 3:
-         # Transpose in the non-JIT part if needed, though _encode_jit handles it too
-         pass # Handled inside _encode_jit
-
-    # Call the JIT-compiled function to get the raw encoded array
     h_params = self._encode_compiled(x)
-
-    # Create the custom Python objects from the JAX array results
     posterior = FlaxDiagonalGaussianDistribution(h_params)
-
     if not return_dict:
       return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
-  @nnx.jit
+  def _decode_jit(self, z: jax.Array) -> jax.Array:
+    """Core JAX decoding logic with scan and frame swapping."""
+    if z.shape[-1] != self.z_dim:
+        z = jnp.transpose(z, (0, 2, 3, 4, 1))
+    x, _ = self.post_quant_conv(z)
+    
+    b, t, h, w, c = x.shape
+    init_cache = self.decoder.init_cache(b, h, w, x.dtype)
+    decoder_checkpointed = jax.checkpoint(self.decoder)
+
+    all_decoded = []
+    x_first = x[:, :1, ...]
+    out_first, state_carry = decoder_checkpointed(x_first, init_cache)
+    all_decoded.append(out_first)
+    if t > 1:
+        x_rest = x[:, 1:, ...]
+        x_scan = jnp.swapaxes(x_rest, 0, 1)
+
+        def scan_fn(carry, input_slice):
+            input_slice = jnp.expand_dims(input_slice, 1)
+            out_slice, new_carry = decoder_checkpointed(input_slice, carry)
+            out_swapped = out_slice[:, jnp.array([0, 2, 1, 3]), ...]
+            
+            return new_carry, out_swapped
+
+        _, decoded_rest = jax.lax.scan(scan_fn, state_carry, x_scan)
+
+        decoded_rest = jnp.swapaxes(decoded_rest, 0, 1)
+        
+        b_r, t_r, sub_t, h_r, w_r, c_r = decoded_rest.shape
+        decoded_rest = decoded_rest.reshape(b_r, t_r * sub_t, h_r, w_r, c_r)
+        
+        all_decoded.append(decoded_rest)
+
+    out = jnp.concatenate(all_decoded, axis=1)
+    out = jnp.clip(out, min=-1.0, max=1.0)
+    
+    return out
+  _decode_compiled = nnx.jit(_decode_jit)
+
   def decode(
       self, z: jax.Array, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
-    if z.shape[-1] != self.z_dim:
-        z = jnp.transpose(z, (0, 2, 3, 4, 1))
-
-    x, _ = self.post_quant_conv(z)
-    x_scan = jnp.swapaxes(x, 0, 1)
-
-    b, t, h, w, c = x.shape
-    init_cache = self.decoder.init_cache(b, h, w, x.dtype)
-
-    def scan_fn(carry, input_slice):
-        input_slice = jnp.expand_dims(input_slice, 1)
-        out_slice, new_carry = self.decoder(input_slice, carry)
-        return new_carry, out_slice
-
-    # Need to provide a valid initial cache structure for the scan
-    final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
-
-    decoded = jnp.transpose(decoded_frames, (1, 0, 2, 3, 4, 5))
-
-    b, t_lat, t_sub, h, w, c = decoded.shape
-    decoded = decoded.reshape(b, t_lat * t_sub, h, w, c)
-
-    out = jnp.clip(decoded, min=-1.0, max=1.0)
+    
+    decoded = self._decode_compiled(z)
 
     if not return_dict:
-        return (out,)
-    return FlaxDecoderOutput(sample=out)
+        return (decoded,)
+    
+    return FlaxDecoderOutput(sample=decoded)
