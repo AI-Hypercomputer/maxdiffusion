@@ -1197,84 +1197,34 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
-      if x.shape[-1] != 3:
-          x = jnp.transpose(x, (0, 2, 3, 4, 1))
-      
-      b, t, h, w, c = x.shape
-      
-      # --- STEP 1: Process First Frame (With Padding Hack) ---
-      x_first = x[:, :1, ...] # (B, 1, ...)
-      
-      # We PAD this single frame to T=4 so it survives the strides.
-      # We will take only the first result.
-      x_first_padded = jnp.concatenate([x_first] * 4, axis=1) # (B, 4, ...)
-      
-      # Initialize Cache
-      init_cache = self.encoder.init_cache(b, h, w, x.dtype)
-      
-      # Run Encoder on padded first frame
-      # We discard the cache update here because this is a "Fake" run to get the latent
-      # BUT wait, we need the cache state for the next frames.
-      # This is tricky. If we pad [0, 0, 0, 0], the cache will be filled with Frame 0's history.
-      # This is actually correct for a static image or start of video.
-      
-      enc_first_padded, cache_after_first = self.encoder(x_first_padded, init_cache)
-      
-      # Take only the first frame of the output
-      enc_first = enc_first_padded[:, :1, ...]
+    if x.shape[-1] != 3:
+      # reshape channel last for JAX
+      x = jnp.transpose(x, (0, 2, 3, 4, 1))
+      assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
 
-      # --- STEP 2: Process Rest of Frames (Chunks of 4) ---
-      x_rest = x[:, 1:, ...]
-      t_rest = t - 1
-      
-      # Pad remainder to be divisible by 4
-      pad_len = (4 - (t_rest % 4)) % 4
-      if pad_len > 0:
-          last = x_rest[:, -1:, ...]
-          padding = jnp.repeat(last, pad_len, axis=1)
-          x_rest_padded = jnp.concatenate([x_rest, padding], axis=1)
-      else:
-          x_rest_padded = x_rest
-          
-      num_chunks = x_rest_padded.shape[1] // 4
-      x_chunks = x_rest_padded.reshape(b, num_chunks, 4, h, w, c)
-      x_chunks = jnp.transpose(x_chunks, (1, 0, 2, 3, 4, 5))
+    x_scan = jnp.swapaxes(x, 0, 1)
+    b, t, h, w, c = x.shape
+    init_cache = self.encoder.init_cache(b, h, w, x.dtype)
 
-      # Scan Function
-      def scan_fn(carry, input_chunk):
-          out_chunk, new_carry = self.encoder(input_chunk, carry)
-          return new_carry, out_chunk
+    def scan_fn(carry, input_slice):
+        # Expand Time dimension for Conv3d
+        input_slice = jnp.expand_dims(input_slice, 1)
+        out_slice, new_carry = self.encoder(input_slice, carry)
+        # Squeeze Time dimension for scan stacking
+        out_slice = jnp.squeeze(out_slice, 1)
+        return new_carry, out_slice
 
-      final_cache, enc_rest_chunks = jax.lax.scan(scan_fn, cache_after_first, x_chunks)
+    final_cache, encoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
+    encoded = jnp.swapaxes(encoded_frames, 0, 1)
+    enc, _ = self.quant_conv(encoded)
 
-      # Flatten Rest
-      enc_rest_chunks = jnp.swapaxes(enc_rest_chunks, 0, 1)
-      b_out, n_chunks, t_chunk, h_out, w_out, c_out = enc_rest_chunks.shape
-      enc_rest = enc_rest_chunks.reshape(b_out, n_chunks * t_chunk, h_out, w_out, c_out)
-      
-      # Slice off padding from result if needed
-      # We padded input by 'pad_len'. Output is downsampled by 4 (likely).
-      # Actually, since we chunked by 4 and got 1 output, the mapping is 1-to-1 chunk-to-latent.
-      # If we added 1 chunk of padding, we remove 1 frame of output.
-      if pad_len > 0:
-          # We padded inputs. Does that mean we generated extra latents?
-          # If t_rest=5. Pad to 8. Chunks=2. Output=2 latents.
-          # Real latents needed: ceil(5/4) = 2.
-          # So actually, we don't need to slice! The ceiling behavior is what we want.
-          pass
+    mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
+    h = jnp.concatenate([mu, logvar], axis=-1)
 
-      # Concatenate
-      encoded = jnp.concatenate([enc_first, enc_rest], axis=1)
-
-      # Quantize
-      enc, _ = self.quant_conv(encoded)
-      mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
-      h_latents = jnp.concatenate([mu, logvar], axis=-1)
-
-      posterior = FlaxDiagonalGaussianDistribution(h_latents)
-      if not return_dict:
-          return (posterior,)
-      return FlaxAutoencoderKLOutput(latent_dist=posterior)
+    posterior = FlaxDiagonalGaussianDistribution(h)
+    if not return_dict:
+        return (posterior,)
+    return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
   @nnx.jit
   def decode(
