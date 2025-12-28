@@ -544,7 +544,7 @@ class WanAttentionBlock(nnx.Module):
     )
 
   def __call__(self, x: jax.Array):
-
+    jax.debug.print("AttentionBlock input shape: {shape}", shape=x.shape)
     identity = x
     batch_size, time, height, width, channels = x.shape
 
@@ -638,13 +638,17 @@ class WanMidBlock(nnx.Module):
     if cache is None:
         cache = {}
     new_cache = {"resnets": []}
+    jax.debug.print("MidBlock input shape: {shape}", shape=x.shape)
 
     x, c = self.resnets[0](x, cache.get("resnets", [None])[0])
     new_cache["resnets"].append(c)
+    jax.debug.print("MidBlock after resnets[0] shape: {shape}", shape=x.shape)
 
     for i, (attn, resnet) in enumerate(zip(self.attentions, self.resnets[1:])):
         if attn is not None:
+            jax.debug.print("MidBlock before attn {i}: {shape}", shape=x.shape)
             x = attn(x)
+            jax.debug.print("MidBlock after attn {i}: {shape}", shape=x.shape)
         x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i + 1])
         new_cache["resnets"].append(c)
 
@@ -868,23 +872,28 @@ class WanEncoder3d(nnx.Module):
     if cache is None:
         cache = {}
     new_cache = {}
-
+    jax.debug.print("Encoder input shape: {shape}", shape=x.shape)
     x, c = self.conv_in(x, cache.get("conv_in"))
     new_cache["conv_in"] = c
+    jax.debug.print("Encoder after conv_in shape: {shape}", shape=x.shape)
 
     new_cache["down_blocks"] = []
     current_down_caches = cache.get("down_blocks", [None] * len(self.down_blocks))
 
     for i, layer in enumerate(self.down_blocks):
+        jax.debug.print(f"Encoder before down_block {i} ({type(layer).__name__}): {{shape}}", shape=x.shape)
         if isinstance(layer, (WanResidualBlock, WanResample)):
             x, c = layer(x, current_down_caches[i])
             new_cache["down_blocks"].append(c)
         else:
             x = layer(x)
             new_cache["down_blocks"].append(None)
+        jax.debug.print(f"Encoder after down_block {i}: {{shape}}", shape=x.shape)
 
+    jax.debug.print("Encoder before mid_block: {shape}", shape=x.shape)
     x, c = self.mid_block(x, cache.get("mid_block"))
     new_cache["mid_block"] = c
+    jax.debug.print("Encoder after mid_block: {shape}", shape=x.shape)
 
     x = self.norm_out(x)
     x = self.nonlinearity(x)
@@ -1193,7 +1202,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
-  # @nnx.jit
+  @nnx.jit
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
