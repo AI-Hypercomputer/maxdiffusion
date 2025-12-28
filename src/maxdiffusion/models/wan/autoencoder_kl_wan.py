@@ -1258,10 +1258,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
-  @nnx.jit
-  def encode(
-      self, x: jax.Array, return_dict: bool = True
-  ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
+  def _encode_jit(self, x: jax.Array) -> jax.Array:
+    """Core computation part to be JIT-compiled."""
     if x.shape[-1] != 3:
       # reshape channel last for JAX
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
@@ -1283,13 +1281,25 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     encoded = jnp.swapaxes(encoded_frames, 0, 1)
     enc, _ = self.quant_conv(encoded)
 
-    mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
-    h = jnp.concatenate([mu, logvar], axis=-1)
+    # h contains the parameters for the distribution
+    h = enc # Or jnp.concatenate([mu, logvar], axis=-1) as originally
+    return h
+  _encode_compiled = nnx.jit(_encode_jit)
 
+  def encode(
+      self, x: jax.Array, return_dict: bool = True
+  ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
+    """Encodes the input, returning standard distribution objects."""
+    # Call the compiled function to get JAX arrays
+    h = self._encode_compiled(x)
+
+    # Create custom objects outside the JIT scope
     posterior = FlaxDiagonalGaussianDistribution(h)
+
     if not return_dict:
         return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
+
 
   @nnx.jit
   def decode(
