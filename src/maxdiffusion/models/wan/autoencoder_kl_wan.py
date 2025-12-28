@@ -353,7 +353,7 @@ class WanResample(nnx.Module):
 
   def initialize_cache(self, batch_size, height, width, dtype):
     cache = {}
-    if hasattr(self, "time_conv"):
+    if hasattr(self, "time_conv") and self.time_conv is not None:
         h_curr, w_curr = height, width
         cache["time_conv"] = self.time_conv.initialize_cache(
             batch_size, h_curr, w_curr, dtype
