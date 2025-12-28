@@ -529,7 +529,7 @@ class WanPipeline:
       video_condition = video_condition.astype(vae_dtype)
 
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-          encoded_output = self.vae.encode(video_condition, self.vae_cache)[0].mode()
+          encoded_output = self.vae.encode(video_condition)[0].mode()
 
       # Normalize latents
       latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
@@ -550,7 +550,7 @@ class WanPipeline:
   def _decode_latents_to_video(self, latents: jax.Array) -> np.ndarray:
       """Decodes latents to video frames and postprocesses."""
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-          video = self.vae.decode(latents, self.vae_cache)[0]
+          video = self.vae.decode(latents)[0]
 
       video = jnp.transpose(video, (0, 4, 1, 2, 3))
       video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
