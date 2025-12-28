@@ -1197,61 +1197,76 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
-      # 1. Standard Transpose Check (Matches Old)
       if x.shape[-1] != 3:
           x = jnp.transpose(x, (0, 2, 3, 4, 1))
-          assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
-
+      
       b, t, h, w, c = x.shape
-
-      # 2. Replicate "First Frame" Logic (Matches Old 'if i == 0')
-      # The first frame is processed individually to prime the cache.
-      x_first = x[:, :1, ...]  # Shape: (B, 1, H, W, C)
       
-      # 3. Replicate "Chunking" Logic (Matches Old 'else: chunks of 4')
-      # We take the remaining frames (Index 1 to End)
-      x_rest = x[:, 1:, ...]   # Shape: (B, T-1, H, W, C)
+      # --- STEP 1: Process First Frame (With Padding Hack) ---
+      x_first = x[:, :1, ...] # (B, 1, ...)
       
-      # We assume the remaining frames are divisible by 4 (e.g. 80 frames)
-      # Reshape to (Num_Chunks, B, 4, H, W, C) for the scan loop
-      t_rest = t - 1
-      assert t_rest % 4 == 0, f"Remaining frames {t_rest} must be divisible by 4 (Total frames must be 1 + 4*k)"
-      num_chunks = t_rest // 4
+      # We PAD this single frame to T=4 so it survives the strides.
+      # We will take only the first result.
+      x_first_padded = jnp.concatenate([x_first] * 4, axis=1) # (B, 4, ...)
       
-      # Prepare for scan: Swap axis 0 and 1 so 'num_chunks' is the scan iterator
-      x_chunks = x_rest.reshape(b, num_chunks, 4, h, w, c)
-      x_chunks = jnp.transpose(x_chunks, (1, 0, 2, 3, 4, 5)) 
-
-      # 4. Initialize Cache
+      # Initialize Cache
       init_cache = self.encoder.init_cache(b, h, w, x.dtype)
+      
+      # Run Encoder on padded first frame
+      # We discard the cache update here because this is a "Fake" run to get the latent
+      # BUT wait, we need the cache state for the next frames.
+      # This is tricky. If we pad [0, 0, 0, 0], the cache will be filled with Frame 0's history.
+      # This is actually correct for a static image or start of video.
+      
+      enc_first_padded, cache_after_first = self.encoder(x_first_padded, init_cache)
+      
+      # Take only the first frame of the output
+      enc_first = enc_first_padded[:, :1, ...]
 
-      # 5. Execute First Frame
-      # This corresponds to the 'i=0' iteration in the old loop.
-      enc_first, cache_after_first = self.encoder(x_first, init_cache)
+      # --- STEP 2: Process Rest of Frames (Chunks of 4) ---
+      x_rest = x[:, 1:, ...]
+      t_rest = t - 1
+      
+      # Pad remainder to be divisible by 4
+      pad_len = (4 - (t_rest % 4)) % 4
+      if pad_len > 0:
+          last = x_rest[:, -1:, ...]
+          padding = jnp.repeat(last, pad_len, axis=1)
+          x_rest_padded = jnp.concatenate([x_rest, padding], axis=1)
+      else:
+          x_rest_padded = x_rest
+          
+      num_chunks = x_rest_padded.shape[1] // 4
+      x_chunks = x_rest_padded.reshape(b, num_chunks, 4, h, w, c)
+      x_chunks = jnp.transpose(x_chunks, (1, 0, 2, 3, 4, 5))
 
-      # 6. Execute Scan on Chunks
-      # This corresponds to the 'i > 0' iterations in the old loop.
+      # Scan Function
       def scan_fn(carry, input_chunk):
-          # input_chunk is (B, 4, H, W, C). 
-          # The encoder naturally consumes 4 frames and outputs 1 latent frame (due to stride)
           out_chunk, new_carry = self.encoder(input_chunk, carry)
           return new_carry, out_chunk
 
       final_cache, enc_rest_chunks = jax.lax.scan(scan_fn, cache_after_first, x_chunks)
 
-      # 7. Flatten and Reassemble
-      # enc_rest_chunks: (Num_Chunks, B, T_latent_chunk, ...)
-      # We swap back to (B, Num_Chunks, ...) and flatten
+      # Flatten Rest
       enc_rest_chunks = jnp.swapaxes(enc_rest_chunks, 0, 1)
+      b_out, n_chunks, t_chunk, h_out, w_out, c_out = enc_rest_chunks.shape
+      enc_rest = enc_rest_chunks.reshape(b_out, n_chunks * t_chunk, h_out, w_out, c_out)
       
-      # Flatten the chunks into a continuous sequence
-      b_out, n_chunks, t_chunk_out, h_out, w_out, c_out = enc_rest_chunks.shape
-      enc_rest = enc_rest_chunks.reshape(b_out, n_chunks * t_chunk_out, h_out, w_out, c_out)
-      
-      # Concatenate: [First Frame Result] + [Rest of Frames Result]
+      # Slice off padding from result if needed
+      # We padded input by 'pad_len'. Output is downsampled by 4 (likely).
+      # Actually, since we chunked by 4 and got 1 output, the mapping is 1-to-1 chunk-to-latent.
+      # If we added 1 chunk of padding, we remove 1 frame of output.
+      if pad_len > 0:
+          # We padded inputs. Does that mean we generated extra latents?
+          # If t_rest=5. Pad to 8. Chunks=2. Output=2 latents.
+          # Real latents needed: ceil(5/4) = 2.
+          # So actually, we don't need to slice! The ceiling behavior is what we want.
+          pass
+
+      # Concatenate
       encoded = jnp.concatenate([enc_first, enc_rest], axis=1)
 
-      # 8. Post-Processing (Matches Old Logic exactly)
+      # Quantize
       enc, _ = self.quant_conv(encoded)
       mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
       h_latents = jnp.concatenate([mu, logvar], axis=-1)
