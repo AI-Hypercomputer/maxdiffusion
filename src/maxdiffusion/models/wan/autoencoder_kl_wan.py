@@ -421,18 +421,29 @@ class WanResample(nnx.Module):
         x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample3d":
-        x, tc_cache = self.time_conv(x, cache.get("time_conv"))
-        new_cache["time_conv"] = tc_cache
-        print(f"WanResample ({self.mode}) after time_conv: {x.shape}")
+        if x.shape[1] >= self.time_conv.kernel_size[0]:
+          x, tc_cache = self.time_conv(x, cache.get("time_conv"))
+          new_cache["time_conv"] = tc_cache
+          print(f"WanResample ({self.mode}) after time_conv: {x.shape}")
+        else:
+          # Skip temporal downsampling if not enough frames
+          print(f"WanResample ({self.mode}): Skipping time_conv, input time dim {x.shape[1]} < kernel {self.time_conv.kernel_size[0]}")
+          new_cache["time_conv"] = cache.get("time_conv") # Pass through cache
 
         b, t, h, w, c = x.shape
-        x = x.reshape(b * t, h, w, c)
-        print(f"WanResample ({self.mode}) reshaped for resample: {x.shape}")
-        x, _ = self.resample(x, None)
-        print(f"WanResample ({self.mode}) after resample: {x.shape}")
-        h_new, w_new, c_new = x.shape[1:]
-        x = x.reshape(b, t, h_new, w_new, c_new)
-
+        if b * t > 0:
+          x = x.reshape(b * t, h, w, c)
+          print(f"WanResample ({self.mode}) reshaped for resample: {x.shape}")
+          x, _ = self.resample(x, None)
+          print(f"WanResample ({self.mode}) after resample: {x.shape}")
+          h_new, w_new, c_new = x.shape[1:]
+          x = x.reshape(b, t, h_new, w_new, c_new)
+        else:
+          # If time dimension became 0, spatial shape changes, but batch and time are still 0
+          h_new, w_new = h // self.resample.conv.strides[0], w // self.resample.conv.strides[1]
+          c_new = self.resample.conv.out_features
+          x = jnp.zeros((b, t, h_new, w_new, c_new), dtype=x.dtype)
+          print(f"WanResample ({self.mode}): Spatial downsample output shape {x.shape} (due to t=0)")
     else:
         if hasattr(self, "resample"):
             if isinstance(self.resample, Identity):
