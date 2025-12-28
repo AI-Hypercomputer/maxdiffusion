@@ -1197,34 +1197,69 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
-    if x.shape[-1] != 3:
-      # reshape channel last for JAX
-      x = jnp.transpose(x, (0, 2, 3, 4, 1))
-      assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
+      # 1. Standard Transpose Check (Matches Old)
+      if x.shape[-1] != 3:
+          x = jnp.transpose(x, (0, 2, 3, 4, 1))
+          assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
 
-    x_scan = jnp.swapaxes(x, 0, 1)
-    b, t, h, w, c = x.shape
-    init_cache = self.encoder.init_cache(b, h, w, x.dtype)
+      b, t, h, w, c = x.shape
 
-    def scan_fn(carry, input_slice):
-        # Expand Time dimension for Conv3d
-        input_slice = jnp.expand_dims(input_slice, 1)
-        out_slice, new_carry = self.encoder(input_slice, carry)
-        # Squeeze Time dimension for scan stacking
-        out_slice = jnp.squeeze(out_slice, 1)
-        return new_carry, out_slice
+      # 2. Replicate "First Frame" Logic (Matches Old 'if i == 0')
+      # The first frame is processed individually to prime the cache.
+      x_first = x[:, :1, ...]  # Shape: (B, 1, H, W, C)
+      
+      # 3. Replicate "Chunking" Logic (Matches Old 'else: chunks of 4')
+      # We take the remaining frames (Index 1 to End)
+      x_rest = x[:, 1:, ...]   # Shape: (B, T-1, H, W, C)
+      
+      # We assume the remaining frames are divisible by 4 (e.g. 80 frames)
+      # Reshape to (Num_Chunks, B, 4, H, W, C) for the scan loop
+      t_rest = t - 1
+      assert t_rest % 4 == 0, f"Remaining frames {t_rest} must be divisible by 4 (Total frames must be 1 + 4*k)"
+      num_chunks = t_rest // 4
+      
+      # Prepare for scan: Swap axis 0 and 1 so 'num_chunks' is the scan iterator
+      x_chunks = x_rest.reshape(b, num_chunks, 4, h, w, c)
+      x_chunks = jnp.transpose(x_chunks, (1, 0, 2, 3, 4, 5)) 
 
-    final_cache, encoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
-    encoded = jnp.swapaxes(encoded_frames, 0, 1)
-    enc, _ = self.quant_conv(encoded)
+      # 4. Initialize Cache
+      init_cache = self.encoder.init_cache(b, h, w, x.dtype)
 
-    mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
-    h = jnp.concatenate([mu, logvar], axis=-1)
+      # 5. Execute First Frame
+      # This corresponds to the 'i=0' iteration in the old loop.
+      enc_first, cache_after_first = self.encoder(x_first, init_cache)
 
-    posterior = FlaxDiagonalGaussianDistribution(h)
-    if not return_dict:
-        return (posterior,)
-    return FlaxAutoencoderKLOutput(latent_dist=posterior)
+      # 6. Execute Scan on Chunks
+      # This corresponds to the 'i > 0' iterations in the old loop.
+      def scan_fn(carry, input_chunk):
+          # input_chunk is (B, 4, H, W, C). 
+          # The encoder naturally consumes 4 frames and outputs 1 latent frame (due to stride)
+          out_chunk, new_carry = self.encoder(input_chunk, carry)
+          return new_carry, out_chunk
+
+      final_cache, enc_rest_chunks = jax.lax.scan(scan_fn, cache_after_first, x_chunks)
+
+      # 7. Flatten and Reassemble
+      # enc_rest_chunks: (Num_Chunks, B, T_latent_chunk, ...)
+      # We swap back to (B, Num_Chunks, ...) and flatten
+      enc_rest_chunks = jnp.swapaxes(enc_rest_chunks, 0, 1)
+      
+      # Flatten the chunks into a continuous sequence
+      b_out, n_chunks, t_chunk_out, h_out, w_out, c_out = enc_rest_chunks.shape
+      enc_rest = enc_rest_chunks.reshape(b_out, n_chunks * t_chunk_out, h_out, w_out, c_out)
+      
+      # Concatenate: [First Frame Result] + [Rest of Frames Result]
+      encoded = jnp.concatenate([enc_first, enc_rest], axis=1)
+
+      # 8. Post-Processing (Matches Old Logic exactly)
+      enc, _ = self.quant_conv(encoded)
+      mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
+      h_latents = jnp.concatenate([mu, logvar], axis=-1)
+
+      posterior = FlaxDiagonalGaussianDistribution(h_latents)
+      if not return_dict:
+          return (posterior,)
+      return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
   @nnx.jit
   def decode(
