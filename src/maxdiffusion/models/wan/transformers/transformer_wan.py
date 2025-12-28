@@ -593,8 +593,18 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
   ) -> Union[jax.Array, Dict[str, jax.Array]]:
     print(f"[DEBUG] WanModel __call__ hidden_states IN shape: {hidden_states.shape}")
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
-    batch_size, _, num_frames, height, width = hidden_states.shape
-    print(f"[DEBUG] WanModel __call__ unpacked: B={batch_size}, C={c}, T={num_frames}, H={height}, W={width}")
+    dim0, dim1, dim2, dim3, dim4 = hidden_states.shape
+    print(f"[DEBUG] WanModel __call__ unpacked: dim0={dim0}, dim1={dim1}, dim2={dim2}, dim3={dim3}, dim4={dim4}")
+
+    batch_size = dim0
+    c = dim1          # This is ACTUALLY Time
+    num_frames = dim2 # This is ACTUALLY Height
+    height = dim3     # This is ACTUALLY Width
+    width = dim4      # This is ACTUALLY Channels
+
+
+    # batch_size, _, num_frames, height, width = hidden_states.shape
+    print(f"[DEBUG] WanModel __call__ INTERPRETED as B,C,T,H,W: B={batch_size}, C={c}, T={num_frames}, H={height}, W={width}")
     p_t, p_h, p_w = self.config.patch_size
     post_patch_num_frames = num_frames // p_t
     post_patch_height = height // p_h
