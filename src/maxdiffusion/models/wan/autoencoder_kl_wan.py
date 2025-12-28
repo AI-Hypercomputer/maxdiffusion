@@ -1258,34 +1258,31 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
-  # REMOVE @nnx.jit for now to ensure this logic runs
+  @nnx.jit
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     if x.shape[-1] != 3:
+      # reshape channel last for JAX
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
       assert x.shape[-1] == 3, f"Expected input shape (N, D, H, W, 3), got {x.shape}"
 
+    x_scan = jnp.swapaxes(x, 0, 1)
     b, t, h, w, c = x.shape
     init_cache = self.encoder.init_cache(b, h, w, x.dtype)
 
-    # Process first frame
-    out1, _ = self.encoder(x[:, :1, ...], init_cache)
+    def scan_fn(carry, input_slice):
+        # Expand Time dimension for Conv3d
+        input_slice = jnp.expand_dims(input_slice, 1)
+        out_slice, new_carry = self.encoder(input_slice, carry)
+        # Squeeze Time dimension for scan stacking
+        out_slice = jnp.squeeze(out_slice, 1)
+        return new_carry, out_slice
 
-    if t > 1:
-        # Process remaining frames in one chunk
-        # We need to manage cache updates manually if not using scan
-        # This part is tricky because the new encoder returns cache,
-        # but the old logic didn't seem to carry cache between chunks.
+    final_cache, encoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
+    encoded = jnp.swapaxes(encoded_frames, 0, 1)
+    enc, _ = self.quant_conv(encoded)
 
-        # Let's SIMPLIFY to match the OLD logic's spirit: Reset cache for the chunk
-        init_cache_rest = self.encoder.init_cache(b, h, w, x.dtype)
-        out_rest, _ = self.encoder(x[:, 1:, ...], init_cache_rest)
-        encoded = jnp.concatenate([out1, out_rest], axis=1)
-    else:
-        encoded = out1
-
-    enc, _ = self.quant_conv(encoded, cache_x=None)
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
     h = jnp.concatenate([mu, logvar], axis=-1)
 
@@ -1294,7 +1291,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
-  # @nnx.jit
+  @nnx.jit
   def decode(
       self, z: jax.Array, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
