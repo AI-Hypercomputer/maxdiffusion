@@ -646,9 +646,9 @@ class WanMidBlock(nnx.Module):
 
     for i, (attn, resnet) in enumerate(zip(self.attentions, self.resnets[1:])):
         if attn is not None:
-            jax.debug.print("MidBlock before attn {i}: {shape}", shape=x.shape)
+            jax.debug.print("MidBlock before attn {i}: {shape}", i=i, shape=x.shape)
             x = attn(x)
-            jax.debug.print("MidBlock after attn {i}: {shape}", shape=x.shape)
+            jax.debug.print("MidBlock after attn {i}: {shape}", i=i, shape=x.shape)
         x, c = resnet(x, cache.get("resnets", [None] * len(self.resnets))[i + 1])
         new_cache["resnets"].append(c)
 
@@ -881,14 +881,14 @@ class WanEncoder3d(nnx.Module):
     current_down_caches = cache.get("down_blocks", [None] * len(self.down_blocks))
 
     for i, layer in enumerate(self.down_blocks):
-        jax.debug.print(f"Encoder before down_block {i} ({type(layer).__name__}): {{shape}}", shape=x.shape)
+        jax.debug.print(f"Encoder before down_block {i} ({type(layer).__name__}): {{shape}}", i=i, shape=x.shape)
         if isinstance(layer, (WanResidualBlock, WanResample)):
             x, c = layer(x, current_down_caches[i])
             new_cache["down_blocks"].append(c)
         else:
             x = layer(x)
             new_cache["down_blocks"].append(None)
-        jax.debug.print(f"Encoder after down_block {i}: {{shape}}", shape=x.shape)
+        jax.debug.print(f"Encoder after down_block {i}: {{shape}}", i=i, shape=x.shape)
 
     jax.debug.print("Encoder before mid_block: {shape}", shape=x.shape)
     x, c = self.mid_block(x, cache.get("mid_block"))
