@@ -1193,7 +1193,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
-  @nnx.jit
+  # @nnx.jit
   def encode(
       self, x: jax.Array, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
