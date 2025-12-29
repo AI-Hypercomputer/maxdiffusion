@@ -272,6 +272,7 @@ def run_inference_2_1_i2v(
         latents_input = jnp.concatenate([latents, latents], axis=0)
 
     latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
+    timestep = jnp.broadcast_to(t, latents_input.shape[0])
     latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
     timestep = jnp.broadcast_to(t, latents.shape[0])  
 
