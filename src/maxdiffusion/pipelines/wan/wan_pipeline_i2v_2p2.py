@@ -274,7 +274,7 @@ def run_inference_2_2_i2v(
         timestep = jnp.expand_dims(temp_ts, axis=0)
         timestep = jnp.broadcast_to(timestep, (latents_input.shape[0], temp_ts.shape[0]))
     else:
-        latent_model_input = jnp.concatenate([latents_input, condition], axis=1)
+        latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
         timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
 
@@ -282,21 +282,27 @@ def run_inference_2_2_i2v(
 
     def high_noise_branch(operands):
         latents_input, ts_input, pe_input, ie_input = operands
-        return transformer_forward_pass(
+        latents_input = jnp.transpose(latents_input, (0, 4, 1, 2, 3))
+        noise_pred, latents_out = transformer_forward_pass(
             high_noise_graphdef, high_noise_state, high_noise_rest,
             latents_input, ts_input, pe_input,
             do_classifier_free_guidance=do_classifier_free_guidance, guidance_scale=guidance_scale,
             encoder_hidden_states_image=ie_input
         )
+        noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+        return noise_pred, latents_out
 
     def low_noise_branch(operands):
         latents_input, ts_input, pe_input, ie_input = operands
-        return transformer_forward_pass(
+        latents_input = jnp.transpose(latents_input, (0, 4, 1, 2, 3))
+        noise_pred, latents_out = transformer_forward_pass(
             low_noise_graphdef, low_noise_state, low_noise_rest,
             latents_input, ts_input, pe_input,
             do_classifier_free_guidance=do_classifier_free_guidance, guidance_scale=guidance_scale_2,
             encoder_hidden_states_image=ie_input
         )
+        noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+        return noise_pred, latents_out
 
     noise_pred, latents = jax.lax.cond(
         use_high_noise,
