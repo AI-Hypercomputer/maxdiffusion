@@ -518,13 +518,13 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     check_nan_jit(pred_res, "P pred_res", step)
 
     if self.config.predict_x0:
-      x_t_ = sigma_t / sigma_s0 * x - alpha_t * h_phi_1 * m0
+      x_t_ = sigma_t / (sigma_s0 + 1e-8) * x - alpha_t * h_phi_1 * m0
       check_nan_jit(x_t_, "P x_t_ term", step)
       term2 = alpha_t * B_h * pred_res
       check_nan_jit(term2, "P term2", step)
       x_t = x_t_ - term2
     else:  # Predict epsilon
-      x_t_ = alpha_t / alpha_s0 * x - sigma_t * h_phi_1 * m0
+      x_t_ = alpha_t / (alpha_s0 + 1e-8) * x - sigma_t * h_phi_1 * m0
       check_nan_jit(x_t_, "P x_t_ term eps", step)
       term2 = sigma_t * B_h * pred_res
       check_nan_jit(term2, "P term2 eps", step)
