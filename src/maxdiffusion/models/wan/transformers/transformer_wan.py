@@ -41,8 +41,11 @@ from ...gradient_checkpoint import GradientCheckpointType
 BlockSizes = common_types.BlockSizes
 
 def check_nan(tensor: jax.Array, name: str):
-    if jnp.isnan(tensor).any():
-        print(f"[DEBUG NaN Check] NaNs detected in {name} on process {jax.process_index()}")
+    has_nans = jnp.isnan(tensor).any()
+    has_infs = jnp.isinf(tensor).any()
+    # Use jax.debug.print to print during JITted execution
+    jax.debug.print(f"[DEBUG NaN Check] {name} on process {jax.process_index()}: "
+                    f"Has NaNs: {has_nans}, Has Infs: {has_infs}")
 
 def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int, use_real: bool):
   h_dim = w_dim = 2 * (attention_head_dim // 6)
