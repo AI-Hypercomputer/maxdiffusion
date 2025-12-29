@@ -265,16 +265,24 @@ def run_inference_2_2_i2v(
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
 
     latents_input = latents
+    condition_input = condition
+    prompt_embeds_input = prompt_embeds
+    image_embeds_input = image_embeds
     if do_classifier_free_guidance:
         latents_input = jnp.concatenate([latents, latents], axis=0)
+        condition_input = jnp.concatenate([condition, condition], axis=0)
+        prompt_embeds_input = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+        if image_embeds is not None:
+            image_embeds_input = jnp.concatenate([image_embeds, image_embeds], axis=0)
+
 
     if expand_timesteps:
-        latent_model_input = (1 - first_frame_mask) * condition + first_frame_mask * latents_input
+        latent_model_input = (1 - first_frame_mask) * condition_input + first_frame_mask * latents_input
         temp_ts = (first_frame_mask[0][0][:, ::2, ::2] * t).flatten()
         timestep = jnp.expand_dims(temp_ts, axis=0)
         timestep = jnp.broadcast_to(timestep, (latents_input.shape[0], temp_ts.shape[0]))
     else:
-        latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
+        latent_model_input = jnp.concatenate([latents_input, condition_input], axis=-1)
         timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
 
@@ -308,7 +316,7 @@ def run_inference_2_2_i2v(
         use_high_noise,
         high_noise_branch,
         low_noise_branch,
-        (latent_model_input, timestep, prompt_embeds, image_embeds)
+        (latent_model_input, timestep, prompt_embeds_input, image_embeds_input)
     )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
