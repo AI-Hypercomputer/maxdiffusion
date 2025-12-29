@@ -601,7 +601,7 @@ class WanPipeline:
   ):
     if prompt is not None and isinstance(prompt, str):
         prompt = [prompt]
-    batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0]
+    batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
     effective_batch_size = batch_size * num_videos_per_prompt
 
     # 1. Encode Prompts
@@ -632,11 +632,13 @@ class WanPipeline:
     if negative_prompt_embeds is not None:
       negative_prompt_embeds = negative_prompt_embeds.astype(transformer_dtype)
 
-    data_sharding = NamedSharding(self.mesh, P()) 
+    prompt_sharding = NamedSharding(self.mesh, P(*self.config.data_sharding))
+    image_sharding = NamedSharding(self.mesh, P())
 
-    prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
-    negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
-    image_embeds = jax.device_put(image_embeds, data_sharding)
+
+    prompt_embeds = jax.device_put(prompt_embeds, prompt_sharding)
+    negative_prompt_embeds = jax.device_put(negative_prompt_embeds, prompt_sharding)
+    image_embeds = jax.device_put(image_embeds, image_sharding)
 
     return prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size
 
