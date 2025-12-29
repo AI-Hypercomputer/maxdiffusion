@@ -1005,13 +1005,12 @@ class FlaxWanAttention(nnx.Module):
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
 
-    with self.conditional_named_scope("attn_qkv_proj"):
-      with self.conditional_named_scope("proj_query"):
-        query_proj = self.query(hidden_states)
-      with self.conditional_named_scope("proj_key"):
-        key_proj = self.key(encoder_hidden_states)
-      with self.conditional_named_scope("proj_value"):
-        value_proj = self.value(encoder_hidden_states)
+    with jax.named_scope("query_proj"):
+      query_proj = self.query(hidden_states)
+    with jax.named_scope("key_proj"):
+      key_proj = self.key(encoder_hidden_states)
+    with jax.named_scope("value_proj"):
+      value_proj = self.value(encoder_hidden_states)
 
     if self.qk_norm:
       with self.conditional_named_scope("attn_q_norm"):
@@ -1031,13 +1030,13 @@ class FlaxWanAttention(nnx.Module):
     key_proj = checkpoint_name(key_proj, "key_proj")
     value_proj = checkpoint_name(value_proj, "value_proj")
 
-    with self.conditional_named_scope("attn_compute"):
+    with jax.named_scope("apply_attention"):
       attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
 
-    with self.conditional_named_scope("attn_out_proj"):
+    with jax.named_scope("proj_attn"):
       hidden_states = self.proj_attn(attn_output)
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     return hidden_states

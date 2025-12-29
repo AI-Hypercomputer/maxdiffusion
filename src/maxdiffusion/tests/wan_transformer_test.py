@@ -346,7 +346,9 @@ class WanTransformerTest(unittest.TestCase):
     config_fp8_full = Mock(spec=HyperParameters)
     config_fp8_full.use_qwix_quantization = True
     config_fp8_full.quantization = "fp8_full"
-    config_fp8_full.quantization_calibration_method = "absmax"
+    config_fp8_full.weight_quantization_calibration_method = "fixed,-224,224"
+    config_fp8_full.act_quantization_calibration_method = "fixed,-224,224"
+    config_fp8_full.bwd_quantization_calibration_method = "absmax"
     config_fp8_full.qwix_module_path = ".*"
     provider_fp8_full = WanPipeline.get_qt_provider(config_fp8_full)
     self.assertIsNotNone(provider_fp8_full)
@@ -357,9 +359,9 @@ class WanTransformerTest(unittest.TestCase):
             act_qtype=jnp.float8_e4m3fn,
             bwd_qtype=jnp.float8_e5m2,
             disable_channelwise_axes=True,  # per_tensor calibration
-            weight_calibration_method=config_fp8_full.quantization_calibration_method,
-            act_calibration_method=config_fp8_full.quantization_calibration_method,
-            bwd_calibration_method=config_fp8_full.quantization_calibration_method,
+            weight_calibration_method=config_fp8_full.weight_quantization_calibration_method,
+            act_calibration_method=config_fp8_full.act_quantization_calibration_method,
+            bwd_calibration_method=config_fp8_full.bwd_quantization_calibration_method,
             op_names=("dot_general", "einsum"),
         ),
         call(
@@ -368,9 +370,9 @@ class WanTransformerTest(unittest.TestCase):
             act_qtype=jnp.float8_e4m3fn,
             bwd_qtype=jnp.float8_e4m3fn,
             disable_channelwise_axes=True,  # per_tensor calibration
-            weight_calibration_method=config_fp8_full.quantization_calibration_method,
-            act_calibration_method=config_fp8_full.quantization_calibration_method,
-            bwd_calibration_method=config_fp8_full.quantization_calibration_method,
+            weight_calibration_method=config_fp8_full.weight_quantization_calibration_method,
+            act_calibration_method=config_fp8_full.act_quantization_calibration_method,
+            bwd_calibration_method=config_fp8_full.bwd_quantization_calibration_method,
             op_names=("conv_general_dilated"),
         ),
     ]
@@ -395,7 +397,9 @@ class WanTransformerTest(unittest.TestCase):
     mock_config.quantization = "fp8_full"
     mock_config.qwix_module_path = ".*"
     mock_config.per_device_batch_size = 1
-    mock_config.quantization_calibration_method = "absmax"
+    mock_config.weight_quantization_calibration_method = "fixed,-224,224"
+    mock_config.act_quantization_calibration_method = "fixed,-224,224"
+    mock_config.bwd_quantization_calibration_method = "absmax"
 
     mock_model = Mock(spec=WanModel)
     mock_pipeline = Mock()
