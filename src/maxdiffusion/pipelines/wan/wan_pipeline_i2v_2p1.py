@@ -236,11 +236,16 @@ class WanPipelineI2V_2_1(WanPipeline):
       )
       if self.config.expand_timesteps:
          latents = (1 - first_frame_mask) * condition + first_frame_mask * latents
-      latents = self._denormalize_latents(latents)
+      latents_bcthw = jnp.transpose(latents, (0, 4, 1, 2, 3))
+      max_logging.log(f"[DEBUG CALL] latents shape before denorm: {latents_bcthw.shape}")
+
+      latents_denorm_bcthw = self._denormalize_latents(latents_bcthw)
+      max_logging.log(f"[DEBUG CALL] latents shape after denorm: {latents_denorm_bcthw.shape}")
+
 
     if output_type == "latent":
-      return latents
-    return self._decode_latents_to_video(latents)
+      return jnp.transpose(latents_denorm_bcthw, (0, 2, 3, 4, 1))
+    return self._decode_latents_to_video(latents_denorm_bcthw)
 
 def run_inference_2_1_i2v(
     graphdef, sharded_state, rest_of_state,
