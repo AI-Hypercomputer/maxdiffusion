@@ -283,10 +283,6 @@ def run_inference_2_1_i2v(
 
     prompt_embeds_input = prompt_embeds
     image_embeds_input = image_embeds
-    if do_classifier_free_guidance:
-        prompt_embeds_input = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
-        if image_embeds is not None:
-             image_embeds_input = jnp.concatenate([image_embeds, image_embeds], axis=0)
     print(f"[DEBUG LOOP {step}]   prompt_embeds_input local shape: {prompt_embeds_input.shape}")
     print(f"[DEBUG LOOP {step}]   image_embeds_input local shape: {image_embeds_input.shape}")
 
