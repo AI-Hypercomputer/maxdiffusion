@@ -46,7 +46,7 @@ def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int, use_r
   t_dim = attention_head_dim - h_dim - w_dim
   freqs = []
   for dim in [t_dim, h_dim, w_dim]:
-    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float32, use_real=use_real)
+    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float32, use_real=False)
     freqs.append(freq)
   freqs = jnp.concatenate(freqs, axis=1)
   t_size = attention_head_dim // 2 - 2 * (attention_head_dim // 6)
