@@ -276,8 +276,11 @@ def run_inference_2_1_i2v(
     latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
 
     prompt_embeds_input = prompt_embeds
+    image_embeds_input = image_embeds
     if do_classifier_free_guidance:
         prompt_embeds_input = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+        if image_embeds is not None:
+             image_embeds_input = jnp.concatenate([image_embeds, image_embeds], axis=0)
 
 
     noise_pred, latents = transformer_forward_pass(
@@ -285,7 +288,7 @@ def run_inference_2_1_i2v(
         latent_model_input, timestep, prompt_embeds_input,
         do_classifier_free_guidance=do_classifier_free_guidance,
         guidance_scale=guidance_scale,
-        encoder_hidden_states_image=image_embeds,
+        encoder_hidden_states_image=image_embeds_input,
     )
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
 
