@@ -719,7 +719,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     )
 
     # Convert model_output (noise/v_pred) to x0_pred or epsilon_pred, based on prediction_type
-    model_output_for_history = self.convert_model_output(state, model_output, sample)
+    model_output_for_history = self.convert_model_output(state, model_output, sample, step_val)
     check_nan_jit(model_output_for_history, "model_output_for_history", step_val)
 
     # Apply corrector if applicable
