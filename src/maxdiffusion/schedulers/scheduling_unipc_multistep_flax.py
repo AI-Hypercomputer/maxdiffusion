@@ -786,6 +786,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
         model_output=model_output,
         sample=sample,
         order=state.this_order,
+        step=step_val,
     )
 
     # Update lower_order_nums for warmup
