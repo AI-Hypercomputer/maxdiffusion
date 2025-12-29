@@ -731,6 +731,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
             last_sample=state.last_sample,
             this_sample=sample,
             order=state.this_order,
+            step=step_val
         ),
         lambda: sample,
     )
