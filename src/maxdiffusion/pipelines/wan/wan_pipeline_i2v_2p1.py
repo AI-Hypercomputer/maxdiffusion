@@ -205,12 +205,12 @@ class WanPipelineI2V_2_1(WanPipeline):
       # This call initializes the internal state arrays
       step_output = self.scheduler.step(scheduler_state, dummy_noise, t0, latents)
       max_logging.log(f"[DEBUG] scheduler.step output type: {type(step_output)}")
-      max_logging.log(f"[DEBUG] scheduler.step output value: {step_output}")
-      _, scheduler_state = step_output
+      scheduler_state = step_output.state
       max_logging.log(f"[DEBUG] After prime step: scheduler_state type: {type(scheduler_state)}")
-      max_logging.log(f"[DEBUG] After prime step: scheduler_state value: {scheduler_state}")
-      max_logging.log(f"[DEBUG] Scheduler state primed: step_index={scheduler_state.step_index is not None}, last_sample={scheduler_state.last_sample is not None}")
-
+      if hasattr(scheduler_state, 'step_index'):
+        max_logging.log(f"[DEBUG] Scheduler state primed: step_index={scheduler_state.step_index is not None}, last_sample={scheduler_state.last_sample is not None}")
+      else:
+        max_logging.log("[DEBUG] ERROR: scheduler_state object does not have expected attributes after priming.")
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
     data_sharding = NamedSharding(self.mesh, P(*self.config.data_sharding))
     latents = jax.device_put(latents, data_sharding)
