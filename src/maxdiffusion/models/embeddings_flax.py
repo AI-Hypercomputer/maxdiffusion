@@ -244,6 +244,7 @@ def get_1d_rotary_pos_embed(
     freqs_cos = jnp.cos(freqs)
     freqs_sin = jnp.sin(freqs)
     out = jnp.stack([freqs_cos, -freqs_sin, freqs_sin, freqs_cos], axis=-1)
+    print("Using real rotary embeddings (Flux-style)")
   else:
     # Wan 2.1
     print("Using complex rotary embeddings (Wan-style)")
