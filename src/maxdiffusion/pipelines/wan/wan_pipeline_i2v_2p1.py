@@ -237,10 +237,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       if self.config.expand_timesteps:
          latents = (1 - first_frame_mask) * condition + first_frame_mask * latents
       latents_bcthw = jnp.transpose(latents, (0, 4, 1, 2, 3))
-      max_logging.log(f"[DEBUG CALL] latents shape before denorm: {latents_bcthw.shape}")
-
       latents_denorm_bcthw = self._denormalize_latents(latents_bcthw)
-      max_logging.log(f"[DEBUG CALL] latents shape after denorm: {latents_denorm_bcthw.shape}")
 
 
     if output_type == "latent":
