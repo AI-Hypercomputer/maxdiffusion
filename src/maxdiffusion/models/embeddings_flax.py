@@ -251,23 +251,44 @@ def get_1d_rotary_pos_embed(
 
 
 class NNXWanImageEmbedding(nnx.Module):
-  def __init__(self, rngs: nnx.Rngs, in_features: int, out_features: int, dtype: jnp.dtype, weights_dtype: jnp.dtype, precision: jax.lax.Precision, pos_embed_seq_len=None):
+  def __init__(self, rngs: nnx.Rngs, in_features: int, out_features: int, dtype: jnp.dtype, weights_dtype: jnp.dtype, precision: jax.lax.Precision, pos_embed_seq_len=None, alignment: int = 128):
     self.norm1 = FP32LayerNorm(rngs=rngs, dim=in_features, elementwise_affine=True, eps=1e-6)
     self.ff = NNXSimpleFeedForward(rngs=rngs, dim=in_features, dim_out=out_features, mult=1, activation_fn="gelu", dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=out_features, elementwise_affine=True, eps=1e-6)
+    self.alignment = alignment
     if pos_embed_seq_len is not None:
       self.pos_embed = nnx.Param(jnp.zeros((1, pos_embed_seq_len, in_features), dtype=dtype))
     else:
       self.pos_embed = nnx.data(None)
 
   def __call__(self, encoder_hidden_states_image: jax.Array) -> jax.Array:
+    hidden_states = encoder_hidden_states_image
+    B, current_seq_len, D_in = hidden_states.shape
+
     if self.pos_embed is not None:
-      batch_size, seq_len, embed_dim = encoder_hidden_states_image.shape
-      encoder_hidden_states_image = encoder_hidden_states_image.reshape((-1, 2 * seq_len, embed_dim))
-      encoder_hidden_states_image = encoder_hidden_states_image + self.pos_embed
-    hidden_states = self.norm1(encoder_hidden_states_image)
+      pe_len = self.pos_embed.value.shape[1]
+      add_len = min(current_seq_len, pe_len)
+      # Apply pos_embed to the original sequence length
+      hidden_states = hidden_states.at[:, :add_len, :].add(self.pos_embed.value[:, :add_len, :])
+      if current_seq_len > pe_len:
+          print(f"[WARN] Input seq_len {current_seq_len} > pos_embed len {pe_len}")
+
+    hidden_states = self.norm1(hidden_states)
     hidden_states = self.ff(hidden_states)
     hidden_states = self.norm2(hidden_states)
+    # hidden_states shape: (B, current_seq_len, out_features)
+    B, current_seq_len, D_out = hidden_states.shape
+
+    # --- Dynamic Padding to nearest multiple of self.alignment ---
+    num_blocks = (current_seq_len + self.alignment - 1) // self.alignment
+    target_seq_len = num_blocks * self.alignment
+
+    if current_seq_len < target_seq_len:
+        padding_size = target_seq_len - current_seq_len
+        padding = jnp.zeros((B, padding_size, D_out), dtype=hidden_states.dtype)
+        hidden_states = jnp.concatenate([hidden_states, padding], axis=1)
+        print(f"[DEBUG EMB] Padded image embeds from {current_seq_len} to {target_seq_len}. New shape: {hidden_states.shape}")
+
     return hidden_states
 
 
