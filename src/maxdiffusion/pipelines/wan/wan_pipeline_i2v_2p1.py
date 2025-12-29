@@ -278,7 +278,7 @@ def run_inference_2_1_i2v(
     prompt_embeds_input = prompt_embeds
     image_embeds_input = image_embeds
 
-    noise_pred, latents = transformer_forward_pass(
+    noise_pred, _ = transformer_forward_pass(
         graphdef, sharded_state, rest_of_state,
         latent_model_input, timestep, prompt_embeds_input,
         do_classifier_free_guidance=do_classifier_free_guidance,
