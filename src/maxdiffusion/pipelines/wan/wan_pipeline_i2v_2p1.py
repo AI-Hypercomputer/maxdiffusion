@@ -267,6 +267,12 @@ def run_inference_2_1_i2v(
     rng, timestep_rng = jax.random.split(rng)
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
 
+    print(f"[DEBUG LOOP {step}] on process {jax.process_index()}:")
+    print(f"[DEBUG LOOP {step}]   initial latents local shape: {latents.shape}")
+    print(f"[DEBUG LOOP {step}]   initial prompt_embeds local shape: {prompt_embeds.shape}")
+    print(f"[DEBUG LOOP {step}]   initial image_embeds local shape: {image_embeds.shape}")
+
+
     latents_input = latents
     if do_classifier_free_guidance:
         latents_input = jnp.concatenate([latents, latents], axis=0)
@@ -281,7 +287,8 @@ def run_inference_2_1_i2v(
         prompt_embeds_input = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
         if image_embeds is not None:
              image_embeds_input = jnp.concatenate([image_embeds, image_embeds], axis=0)
-
+    print(f"[DEBUG LOOP {step}]   prompt_embeds_input local shape: {prompt_embeds_input.shape}")
+    print(f"[DEBUG LOOP {step}]   image_embeds_input local shape: {image_embeds_input.shape}")
 
     noise_pred, latents = transformer_forward_pass(
         graphdef, sharded_state, rest_of_state,

@@ -602,6 +602,7 @@ class WanPipeline:
     if prompt is not None and isinstance(prompt, str):
         prompt = [prompt]
     batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
+    print(f"[DEBUG PREP] num_prompts={batch_size}, num_videos_per_prompt={num_videos_per_prompt}")
     effective_batch_size = batch_size * num_videos_per_prompt
 
     # 1. Encode Prompts
@@ -613,6 +614,8 @@ class WanPipeline:
         prompt_embeds=prompt_embeds,
         negative_prompt_embeds=negative_prompt_embeds,
     )
+    print(f"[DEBUG PREP] prompt_embeds shape after encode_prompt: {prompt_embeds.shape}")
+
 
     # 2. Encode Image
     if image_embeds is None:
@@ -622,9 +625,11 @@ class WanPipeline:
         else:
             images_to_encode = [image, last_image]
         image_embeds = self.encode_image(images_to_encode, num_videos_per_prompt=num_videos_per_prompt)
+    print(f"[DEBUG PREP] image_embeds shape after encode_image: {image_embeds.shape}")
 
     if batch_size > 1:
         image_embeds = jnp.tile(image_embeds, (batch_size, 1, 1))
+    print(f"[DEBUG PREP] image_embeds shape after tile: {image_embeds.shape}")
     
     transformer_dtype = self.config.activations_dtype
     image_embeds = image_embeds.astype(transformer_dtype)
@@ -633,10 +638,20 @@ class WanPipeline:
       negative_prompt_embeds = negative_prompt_embeds.astype(transformer_dtype)
 
     data_sharding = NamedSharding(self.mesh, P(*self.config.data_sharding))
+    print(f"[DEBUG PREP] data_sharding spec: {self.config.data_sharding}")
 
     prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
     negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
     image_embeds = jax.device_put(image_embeds, data_sharding)
+
+    print(f"[DEBUG PREP] SHARDED prompt_embeds.shape: {prompt_embeds.shape}")
+    print(f"[DEBUG PREP] SHARDED image_embeds.shape: {image_embeds.shape}")
+    print(f"[DEBUG PREP] jax.process_index(): {jax.process_index()}")
+
+    if image_embeds.addressable_shards:
+        print(f"[DEBUG PREP] LOCAL image_embeds shape: {image_embeds.addressable_shards[0].data.shape}")
+    if prompt_embeds.addressable_shards:
+        print(f"[DEBUG PREP] LOCAL prompt_embeds shape: {prompt_embeds.addressable_shards[0].data.shape}")
 
     return prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size
 
