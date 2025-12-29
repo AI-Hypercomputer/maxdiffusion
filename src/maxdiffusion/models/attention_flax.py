@@ -51,16 +51,21 @@ Quant = quantizations.AqtQuantization
 def _maybe_aqt_einsum(quant: Quant):
   return jnp.einsum if quant is None else quant.einsum()
 
-def check_nan_attn(tensor: jax.Array, name: str, device_id: int):
-    if tensor is None: return
+def check_nan_attn(tensor: jax.Array, name: str, tag: str = ""):
+    if tensor is None:
+        # This print is fine, it's not in JIT on None
+        print(f"[DEBUG ATTN PY {jax.process_index()}] {tag} {name}: Tensor is None")
+        return
+
+    # These are JAX boolean arrays (tracers when JITted)
     has_nans = jnp.isnan(tensor).any()
     has_infs = jnp.isinf(tensor).any()
-    jax.debug.print(f"[DEBUG ATTN {device_id}] {name}: "
-                    "Has NaNs: {has_nans_val}, Has Infs: {has_infs_val}",
-                    has_nans_val=has_nans, has_infs_val=has_infs)
-    if has_nans or has_infs:
-        # Optional: Print more stats if non-finite
-        jax.debug.print(f"  {name} shape: {tensor.shape}, dtype: {tensor.dtype}")
+
+    # Pass the tracers as keyword arguments to jax.debug.print
+    jax.debug.print(f"[DEBUG ATTN JIT {jax.process_index()}] {tag} {name}: "
+                    "Shape: {shape}, Has NaNs: {has_nans_val}, Has Infs: {has_infs_val}",
+                    shape=tensor.shape, has_nans_val=has_nans, has_infs_val=has_infs)
+
 
 
 def _check_attention_inputs(query: Array, key: Array, value: Array) -> None:
