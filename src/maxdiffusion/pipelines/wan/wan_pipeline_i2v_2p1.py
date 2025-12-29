@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from maxdiffusion import max_logging
 from maxdiffusion.image_processor import PipelineImageInput
 from .wan_pipeline import WanPipeline, transformer_forward_pass
 from ...models.wan.transformers.transformer_wan import WanModel
@@ -197,33 +198,41 @@ class WanPipelineI2V_2_1(WanPipeline):
         self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
     )
 
+    if self.scheduler_state.last_sample is None or self.scheduler_state.step_index is None:
+      max_logging.log("[DEBUG] Priming scheduler state...")
+      t0 = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[0]
+      dummy_noise = jnp.zeros_like(latents)
+      # This call initializes the internal state arrays
+      _, scheduler_state = self.scheduler.step(scheduler_state, dummy_noise, t0, latents)
+      max_logging.log(f"[DEBUG] Scheduler state primed: step_index={scheduler_state.step_index is not None}, last_sample={scheduler_state.last_sample is not None}")
+
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
-
-    p_run_inference = partial(
-        run_inference_2_1_i2v,
-        guidance_scale=guidance_scale,
-        num_inference_steps=num_inference_steps,
-        scheduler=self.scheduler,
-        image_embeds=image_embeds,
-        expand_timesteps=self.config.expand_timesteps,
-        first_frame_mask=first_frame_mask,
-    )
-
     data_sharding = NamedSharding(self.mesh, P(*self.config.data_sharding))
     latents = jax.device_put(latents, data_sharding)
     condition = jax.device_put(condition, data_sharding)
     if first_frame_mask is not None:
         first_frame_mask = jax.device_put(first_frame_mask, data_sharding)
 
+    p_run_inference = partial(
+        run_inference_2_1_i2v,
+        graphdef=graphdef,
+        sharded_state=state,
+        rest_of_state=rest_of_state,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
+        scheduler=self.scheduler,
+        expand_timesteps=self.config.expand_timesteps
+    )
+
+    
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       latents = p_run_inference(
-          graphdef=graphdef,
-          sharded_state=state,
-          rest_of_state=rest_of_state,
           latents=latents,
           condition=condition,
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds,
+          image_embeds=image_embeds,
+          first_frame_mask=first_frame_mask,
           scheduler_state=scheduler_state,
           rng=inference_rng,
       )
