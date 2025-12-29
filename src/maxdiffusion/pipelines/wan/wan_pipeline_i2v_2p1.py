@@ -19,6 +19,7 @@ from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
 from ...pyconfig import HyperParameters
 from functools import partial
+import numpy as np
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 import jax
@@ -234,15 +235,26 @@ class WanPipelineI2V_2_1(WanPipeline):
           scheduler_state=scheduler_state,
           rng=inference_rng,
       )
+      max_logging.log(f"[DEBUG CALL] latents shape after loop: {latents.shape}")
+      max_logging.log(f"[DEBUG CALL] NaNs in latents AFTER loop: {jnp.isnan(latents).any()}, Infs: {jnp.isinf(latents).any()}")
       if self.config.expand_timesteps:
          latents = (1 - first_frame_mask) * condition + first_frame_mask * latents
+      max_logging.log(f"[DEBUG CALL] NaNs in latents AFTER frame mask: {jnp.isnan(latents).any()}")
       latents_bcthw = jnp.transpose(latents, (0, 4, 1, 2, 3))
+      max_logging.log(f"[DEBUG CALL] NaNs in latents BEFORE denorm: {jnp.isnan(latents_bcthw).any()}")
       latents_denorm_bcthw = self._denormalize_latents(latents_bcthw)
+      max_logging.log(f"[DEBUG CALL] NaNs in latents AFTER denorm: {jnp.isnan(latents_denorm_bcthw).any()}")
 
 
     if output_type == "latent":
       return jnp.transpose(latents_denorm_bcthw, (0, 2, 3, 4, 1))
-    return self._decode_latents_to_video(latents_denorm_bcthw)
+    max_logging.log(f"[DEBUG CALL] NaNs in latents BEFORE decode: {jnp.isnan(latents_denorm_bcthw).any()}")
+    decoded_video = self._decode_latents_to_video(latents_denorm_bcthw)
+    if isinstance(decoded_video, np.ndarray):
+      max_logging.log(f"[DEBUG CALL] NaNs in video AFTER decode: {np.isnan(decoded_video).any()}")
+    else:
+      max_logging.log(f"[DEBUG CALL] Decoded video type: {type(decoded_video)}")
+    return decoded_video
 
 def run_inference_2_1_i2v(
     graphdef, sharded_state, rest_of_state,
