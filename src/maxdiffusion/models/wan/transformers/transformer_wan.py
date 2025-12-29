@@ -40,6 +40,9 @@ from ...gradient_checkpoint import GradientCheckpointType
 
 BlockSizes = common_types.BlockSizes
 
+def check_nan(tensor: jax.Array, name: str):
+    if jnp.isnan(tensor).any():
+        print(f"[DEBUG NaN Check] NaNs detected in {name} on process {jax.process_index()}")
 
 def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int, use_real: bool):
   h_dim = w_dim = 2 * (attention_head_dim // 6)
@@ -373,8 +376,15 @@ class WanTransformerBlock(nnx.Module):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ):
+    check_nan(hidden_states, "TransformerBlock Input hidden_states")
+    check_nan(encoder_hidden_states, "TransformerBlock Input encoder_hidden_states")
+    check_nan(temb, "TransformerBlock Input temb")
+    if rotary_emb is not None:
+        check_nan(rotary_emb, "TransformerBlock Input rotary_emb")
     with self.conditional_named_scope("transformer_block"):
       with self.conditional_named_scope("adaln"):
+        scale_shift_all = (self.adaln_scale_shift_table.value + temb.astype(jnp.float32))
+        check_nan(scale_shift_all, "AdaLN scale_shift_all")
         shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
             (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
         )
@@ -385,9 +395,12 @@ class WanTransformerBlock(nnx.Module):
     # 1. Self-attention
     with self.conditional_named_scope("self_attn"):
       with self.conditional_named_scope("self_attn_norm"):
-        norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(
+        norm_hidden_states = self.norm1(hidden_states.astype(jnp.float32))
+        check_nan(norm_hidden_states, "Self-Attn norm1 output")
+        norm_hidden_states = (norm_hidden_states * (1 + scale_msa) + shift_msa).astype(
             hidden_states.dtype
         )
+        check_nan(norm_hidden_states, "Self-Attn norm_hidden_states after AdaLN")
       with self.conditional_named_scope("self_attn_attn"):
         attn_output = self.attn1(
             hidden_states=norm_hidden_states,
@@ -396,28 +409,42 @@ class WanTransformerBlock(nnx.Module):
             deterministic=deterministic,
             rngs=rngs,
         )
+        check_nan(attn_output, "Self-Attn attn_output (attn1)")
       with self.conditional_named_scope("self_attn_residual"):
         hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
+        check_nan(hidden_states, "Self-Attn hidden_states after residual")
 
     # 2. Cross-attention
+    residual = hidden_states
     norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32)).astype(hidden_states.dtype)
+    check_nan(norm_hidden_states, "Cross-Attn norm_hidden_states (norm2)")
     attn_output = self.attn2(
         hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs
     )
-    hidden_states = hidden_states + attn_output
+    check_nan(attn_output, "Cross-Attn attn_output (attn2)")
+    hidden_states = residual + attn_output
+    check_nan(hidden_states, "Cross-Attn hidden_states after residual")
 
     # 3. Feed-forward
+    residual = hidden_states
     with self.conditional_named_scope("mlp"):
       with self.conditional_named_scope("mlp_norm"):
-        norm_hidden_states = (self.norm3(hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(
+        norm_hidden_states = self.norm3(hidden_states.astype(jnp.float32))
+        check_nan(norm_hidden_states, "MLP norm3 output")
+        norm_hidden_states = (norm_hidden_states * (1 + c_scale_msa) + c_shift_msa).astype(
             hidden_states.dtype
         )
+        check_nan(norm_hidden_states, "MLP norm_hidden_states after AdaLN")
+  
     with self.conditional_named_scope("mlp_ffn"):
       ff_output = self.ffn(norm_hidden_states, deterministic=deterministic, rngs=rngs)
+      check_nan(ff_output, "MLP ff_output")
+
     with self.conditional_named_scope("mlp_residual"):
       hidden_states = (hidden_states.astype(jnp.float32) + ff_output.astype(jnp.float32) * c_gate_msa).astype(
             hidden_states.dtype
         )
+      check_nan(hidden_states, "MLP hidden_states after residual (Block Output)")
     return hidden_states
 
 
