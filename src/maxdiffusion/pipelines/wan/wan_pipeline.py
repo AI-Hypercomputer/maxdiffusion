@@ -403,9 +403,14 @@ class WanPipeline:
           image = [image]
       image_inputs = self.image_processor(images=image, return_tensors="np")
       pixel_values = jnp.array(image_inputs.pixel_values)
+      max_logging.log(f"[DEBUG ENC] pixel_values shape: {pixel_values.shape}")
 
-      image_embeds = self.image_encoder(pixel_values, output_hidden_states=True).hidden_states[-2]
+      image_encoder_output = self.image_encoder(pixel_values, output_hidden_states=True)
+      image_embeds = image_encoder_output.hidden_states[-2]
+      max_logging.log(f"[DEBUG ENC] Shape of image_embeds from image_encoder: {image_embeds.shape}")
+      
       image_embeds = jnp.repeat(image_embeds, num_videos_per_prompt, axis=0)
+      max_logging.log(f"[DEBUG ENC] Shape of image_embeds after repeat: {image_embeds.shape}")
       return image_embeds
 
 
