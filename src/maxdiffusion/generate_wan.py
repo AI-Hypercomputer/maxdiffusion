@@ -213,8 +213,10 @@ def run(config, pipeline=None, filename_prefix=""):
     writer.add_scalar("inference/compile_time", compile_time, global_step=0)
   saved_video_path = []
   for i in range(len(videos)):
+    video_single = videos[i]
     video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
-    export_to_video(videos[i], video_path, fps=config.fps)
+    frames_list = [frame for frame in video_single]
+    export_to_video(frames_list, video_path, fps=config.fps)
     saved_video_path.append(video_path)
     if config.output_dir.startswith("gs://"):
       upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
