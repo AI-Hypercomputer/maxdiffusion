@@ -71,25 +71,14 @@ class WanRotaryPosEmbed(nnx.Module):
     self.use_real = use_real
 
   def __call__(self, hidden_states: jax.Array) -> jax.Array:
-    print(f"[DEBUG] WanRotaryPosEmbed hidden_states shape: {hidden_states.shape}")
     _, num_frames, height, width, _ = hidden_states.shape
-    print(f"[DEBUG] WanRotaryPosEmbed unpacked shapes: num_frames={num_frames}, height={height}, width={width}")
     p_t, p_h, p_w = self.patch_size
-    print(f"[DEBUG] WanRotaryPosEmbed patch_size: p_t={p_t}, p_h={p_h}, p_w={p_w}")
     ppf, pph, ppw = num_frames // p_t, height // p_h, width // p_w
-    print(f"[DEBUG] WanRotaryPosEmbed ppf={ppf}, pph={pph}, ppw={ppw}")
 
     freqs_split = get_frequencies(self.max_seq_len, self.theta, self.attention_head_dim, self.use_real)
-    print(f"[DEBUG] WanRotaryPosEmbed freqs_split shapes: { [f.shape for f in freqs_split] }")
 
     freqs_f = jnp.expand_dims(jnp.expand_dims(freqs_split[0][:ppf], axis=1), axis=1)
-    print(f"[DEBUG] WanRotaryPosEmbed freqs_f shape BEFORE broadcast: {freqs_f.shape}")
-
-    target_shape_f = (ppf, pph, ppw, freqs_split[0].shape[-1])
-    print(f"[DEBUG] WanRotaryPosEmbed freqs_f TARGET shape: {target_shape_f}")
-
-    freqs_f = jnp.broadcast_to(freqs_f, target_shape_f)
-    print(f"[DEBUG] WanRotaryPosEmbed freqs_f shape AFTER broadcast: {freqs_f.shape}")
+    freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, freqs_split[0].shape[-1]))
 
     freqs_h = jnp.expand_dims(jnp.expand_dims(freqs_split[1][:pph], axis=0), axis=2)
     freqs_h = jnp.broadcast_to(freqs_h, (ppf, pph, ppw, freqs_split[1].shape[-1]))
@@ -591,32 +580,17 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> Union[jax.Array, Dict[str, jax.Array]]:
-    print(f"[DEBUG] WanModel __call__ hidden_states IN shape: {hidden_states.shape}")
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
-    dim0, dim1, dim2, dim3, dim4 = hidden_states.shape
-    print(f"[DEBUG] WanModel __call__ unpacked: dim0={dim0}, dim1={dim1}, dim2={dim2}, dim3={dim3}, dim4={dim4}")
-
-    batch_size = dim0
-    c = dim1          # This is ACTUALLY Time
-    num_frames = dim2 # This is ACTUALLY Height
-    height = dim3     # This is ACTUALLY Width
-    width = dim4      # This is ACTUALLY Channels
-
-
-    # batch_size, _, num_frames, height, width = hidden_states.shape
-    print(f"[DEBUG] WanModel __call__ INTERPRETED as B,C,T,H,W: B={batch_size}, C={c}, T={num_frames}, H={height}, W={width}")
+    batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size
     post_patch_num_frames = num_frames // p_t
     post_patch_height = height // p_h
     post_patch_width = width // p_w
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
-    print(f"[DEBUG] WanModel __call__ hidden_states AFTER transpose: {hidden_states.shape}")
     rotary_emb = self.rope(hidden_states)
-    print(f"[DEBUG] WanModel __call__ rotary_emb shape: {rotary_emb.shape}")
 
     hidden_states = self.patch_embedding(hidden_states)
-    print(f"[DEBUG] WanModel __call__ hidden_states after patch_embedding: {hidden_states.shape}")
     hidden_states = jax.lax.collapse(hidden_states, 1, -1)
     if timestep.ndim == 2:
         ts_seq_len = timestep.shape[1]
