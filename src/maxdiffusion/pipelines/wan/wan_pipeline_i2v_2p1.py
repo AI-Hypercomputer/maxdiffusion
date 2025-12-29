@@ -272,6 +272,7 @@ def run_inference_2_1_i2v(
         latents_input = jnp.concatenate([latents, latents], axis=0)
 
     latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
+    latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
     timestep = jnp.broadcast_to(t, latents.shape[0])  
 
 
@@ -282,6 +283,7 @@ def run_inference_2_1_i2v(
         guidance_scale=guidance_scale,
         encoder_hidden_states_image=image_embeds,
     )
+    noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     return latents, scheduler_state, rng
