@@ -196,49 +196,42 @@ def export_to_video(
   if output_video_path is None:
     output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
 
+  processed_frames = []
   if isinstance(video_frames[0], np.ndarray):
     logger.info("Processing np.ndarray frames for video export.")
-    processed_frames = []
     for i, frame in enumerate(video_frames):
+        # --- DEBUG PRINTS for RAW frame ---
+        has_nan = np.isnan(frame).any()
+        has_inf = np.isinf(frame).any()
+        min_val = np.min(frame) if not has_nan and not has_inf else np.nan
+        max_val = np.max(frame) if not has_nan and not has_inf else np.nan
+        mean_val = np.mean(frame) if not has_nan and not has_inf else np.nan
+        logger.info(f"[EXPORT RAW {i}] shape={frame.shape}, dtype={frame.dtype}, "
+                    f"NaNs={has_nan}, Infs={has_inf}, "
+                    f"Min={min_val:.4f}, Max={max_val:.4f}, Mean={mean_val:.4f}")
+        if has_nan or has_inf:
+             logger.warning(f"  Frame {i} RAW has non-finite values!")
+        # ------------------------------------
+
         if frame.dtype != np.float32:
-            frame = frame.astype(np.float32) # Ensure float32 for checks
+            frame = frame.astype(np.float32)
 
-        # --- Check for non-finite values ---
-        is_finite = np.isfinite(frame)
-        if not np.all(is_finite):
-            nan_count = np.isnan(frame).sum()
-            inf_count = np.isinf(frame).sum()
-            logger.warning(f"[EXPORT WARN] Frame {i}: Non-finite values detected! "
-                           f"NaNs: {nan_count}, Infs: {inf_count}")
-            # Sanitize: Replace NaNs with 0, Infs with 0 or 1
-            frame = np.nan_to_num(frame, nan=0.0, posinf=1.0, neginf=0.0)
-            logger.info(f"[EXPORT INFO] Frame {i}: Non-finite values replaced.")
+        # Sanitize
+        frame = np.nan_to_num(frame, nan=0.0, posinf=1.0, neginf=0.0)
+        frame = np.clip(frame, 0.0, 1.0)
 
-        # --- Check for out-of-range values [0.0, 1.0] ---
-        min_val = np.min(frame)
-        max_val = np.max(frame)
-        if min_val < 0.0 or max_val > 1.0:
-            logger.warning(f"[EXPORT WARN] Frame {i}: Values out of [0.0, 1.0] range. "
-                           f"Min={min_val:.4f}, Max={max_val:.4f}")
-            # Clip values to the valid range
-            frame = np.clip(frame, 0.0, 1.0)
-            logger.info(f"[EXPORT INFO] Frame {i}: Values clipped to [0.0, 1.0].")
+        frame_uint8 = (frame * 255.0).astype(np.uint8)
+        processed_frames.append(frame_uint8)
 
-        # --- Convert to uint8 ---
-        try:
-            frame_uint8 = (frame * 255.0).astype(np.uint8)
-            processed_frames.append(frame_uint8)
-        except Exception as e:
-            logger.error(f"[EXPORT ERROR] Frame {i}: Failed to convert to uint8: {e}")
-            # Fallback: append a black frame
-            if len(video_frames) > 0 and isinstance(video_frames[0], np.ndarray):
-                 processed_frames.append(np.zeros(video_frames[0].shape, dtype=np.uint8))
-
-    video_frames = processed_frames # Use the sanitized and converted frames
+    video_frames = processed_frames
 
 
   elif isinstance(video_frames[0], PIL.Image.Image):
     video_frames = [np.array(frame) for frame in video_frames]
+    
+  if not video_frames:
+      logger.error("No frames to write to video.")
+      return ""
 
   with imageio.get_writer(
       output_video_path, fps=fps, quality=quality, bitrate=bitrate, macro_block_size=macro_block_size
