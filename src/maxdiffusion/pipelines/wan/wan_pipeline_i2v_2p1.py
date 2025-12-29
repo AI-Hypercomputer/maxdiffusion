@@ -199,18 +199,11 @@ class WanPipelineI2V_2_1(WanPipeline):
     )
 
     if self.scheduler_state.last_sample is None or self.scheduler_state.step_index is None:
-      max_logging.log("[DEBUG] Priming scheduler state...")
       t0 = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[0]
       dummy_noise = jnp.zeros_like(latents)
       # This call initializes the internal state arrays
       step_output = self.scheduler.step(scheduler_state, dummy_noise, t0, latents)
-      max_logging.log(f"[DEBUG] scheduler.step output type: {type(step_output)}")
       scheduler_state = step_output.state
-      max_logging.log(f"[DEBUG] After prime step: scheduler_state type: {type(scheduler_state)}")
-      if hasattr(scheduler_state, 'step_index'):
-        max_logging.log(f"[DEBUG] Scheduler state primed: step_index={scheduler_state.step_index is not None}, last_sample={scheduler_state.last_sample is not None}")
-      else:
-        max_logging.log("[DEBUG] ERROR: scheduler_state object does not have expected attributes after priming.")
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
     data_sharding = NamedSharding(self.mesh, P(*self.config.data_sharding))
     latents = jax.device_put(latents, data_sharding)
@@ -278,6 +271,7 @@ def run_inference_2_1_i2v(
 
   def loop_body(step, vals):
     latents, scheduler_state, rng = vals
+    original_dtype = latents.dtype
     rng, timestep_rng = jax.random.split(rng)
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
 
@@ -302,6 +296,7 @@ def run_inference_2_1_i2v(
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+    latents = latents.astype(original_dtype)
     return latents, scheduler_state, rng
 
   latents, _, _ = jax.lax.fori_loop(0, num_inference_steps, loop_body, (latents, scheduler_state, rng))
