@@ -30,6 +30,16 @@ from .scheduling_utils_flax import (
     add_noise_common,
 )
 
+def check_nan_jit(tensor: jax.Array, name: str, step: jax.Array):
+    if tensor is None:
+      return
+
+    has_nans = jnp.isnan(tensor).any()
+    has_infs = jnp.isinf(tensor).any()
+    jax.debug.print(f"[DEBUG SCHEDULER {jax.process_index()}] Step: {{step}} - {name}: "
+                    "Shape: {shape}, Has NaNs: {has_nans_val}, Has Infs: {has_infs_val}",
+                    step=step, shape=tensor.shape, has_nans_val=has_nans, has_infs_val=has_infs)
+
 
 @flax.struct.dataclass
 class UniPCMultistepSchedulerState:
@@ -285,14 +295,18 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
       state: UniPCMultistepSchedulerState,
       model_output: jnp.ndarray,
       sample: jnp.ndarray,
+      step: jax.Array,
   ) -> jnp.ndarray:
     """
     Converts the model output based on the prediction type and current state.
     """
     sigma = state.sigmas[state.step_index]  # Current sigma
+    check_nan_jit(sigma, "convert_model_output sigma", step)
 
     # Ensure sigma is a JAX array for _sigma_to_alpha_sigma_t
     alpha_t, sigma_t = self._sigma_to_alpha_sigma_t(sigma)
+    check_nan_jit(alpha_t, "convert_model_output alpha_t", step)
+    check_nan_jit(sigma_t, "convert_model_output sigma_t", step)
 
     if self.config.predict_x0:
       if self.config.prediction_type == "epsilon":
@@ -310,6 +324,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
             f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, `sample`, "
             "`v_prediction`, or `flow_prediction` for the UniPCMultistepScheduler."
         )
+      check_nan_jit(x0_pred, "convert_model_output x0_pred", step)
 
       if self.config.thresholding:
         raise NotImplementedError("Dynamic thresholding isn't implemented.")
@@ -336,6 +351,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
       model_output: jnp.ndarray,
       sample: jnp.ndarray,
       order: int,
+      step: jax.Array,
   ) -> jnp.ndarray:
     """
     One step for the UniP (B(h) version) - the Predictor.
@@ -358,6 +374,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     lambda_s0 = jnp.log(alpha_s0 + 1e-10) - jnp.log(sigma_s0 + 1e-10)
 
     h = lambda_t - lambda_s0
+    check_nan_jit(h, "predictor h", step)
 
     def rk_d1_loop_body(i, carry):
       # Loop from i = 0 to order-2
@@ -371,6 +388,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
 
       rk = (lambda_si - lambda_s0) / h
       Di = (mi - m0) / rk
+      check_nan_jit(Di, f"predictor Di[{i}]", step)
 
       rks = rks.at[i].set(rk)
       D1s = D1s.at[i].set(Di)
@@ -467,7 +485,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     else:  # Predict epsilon
       x_t_ = alpha_t / alpha_s0 * x - sigma_t * h_phi_1 * m0
       x_t = x_t_ - sigma_t * B_h * pred_res
-
+    check_nan_jit(x_t, "predictor x_t", step)
     return x_t.astype(x.dtype)
 
   def multistep_uni_c_bh_update(
@@ -477,6 +495,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
       last_sample: jnp.ndarray,  # Sample after predictor `x_{t-1}`
       this_sample: jnp.ndarray,  # Sample before corrector `x_t` (after predictor step)
       order: int,
+      step: jax.Array,
   ) -> jnp.ndarray:
     """
     One step for the UniC (B(h) version) - the Corrector.
@@ -620,7 +639,8 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     else:
       x_t_ = alpha_t / alpha_s0 * x - sigma_t * h_phi_1 * m0
       x_t = x_t_ - sigma_t * B_h * (corr_res + final_rho * D1_t)
-
+    
+    check_nan_jit(x_t, "corrector x_t", step)
     return x_t.astype(x.dtype)
 
   def index_for_timestep(
@@ -674,6 +694,10 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     Predict the sample from the previous timestep by reversing the SDE. This function propagates the sample with
     the multistep UniPC.
     """
+    step_val = state.step_index # For debug, might be None initially
+
+    check_nan_jit(model_output, "step input model_output", step_val)
+    check_nan_jit(sample, "step input sample", step_val)
 
     sample = sample.astype(jnp.float32)
 
@@ -685,6 +709,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     # Initialize step_index if it's the first step
     if state.step_index is None:
       state = self._init_step_index(state, timestep_scalar)
+    step_val = state.step_index 
 
     # Determine if corrector should be used
     use_corrector = (
@@ -695,6 +720,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
 
     # Convert model_output (noise/v_pred) to x0_pred or epsilon_pred, based on prediction_type
     model_output_for_history = self.convert_model_output(state, model_output, sample)
+    check_nan_jit(model_output_for_history, "model_output_for_history", step_val)
 
     # Apply corrector if applicable
     sample = jax.lax.cond(
@@ -708,6 +734,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
         ),
         lambda: sample,
     )
+    check_nan_jit(sample, "sample_corrected", step_val)
 
     # Update history buffers (model_outputs and timestep_list)
     # Shift existing elements to the left and add new one at the end.
