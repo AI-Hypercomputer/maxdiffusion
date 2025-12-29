@@ -203,7 +203,12 @@ class WanPipelineI2V_2_1(WanPipeline):
       t0 = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[0]
       dummy_noise = jnp.zeros_like(latents)
       # This call initializes the internal state arrays
-      _, scheduler_state = self.scheduler.step(scheduler_state, dummy_noise, t0, latents)
+      step_output = self.scheduler.step(scheduler_state, dummy_noise, t0, latents)
+      max_logging.log(f"[DEBUG] scheduler.step output type: {type(step_output)}")
+      max_logging.log(f"[DEBUG] scheduler.step output value: {step_output}")
+      _, scheduler_state = step_output
+      max_logging.log(f"[DEBUG] After prime step: scheduler_state type: {type(scheduler_state)}")
+      max_logging.log(f"[DEBUG] After prime step: scheduler_state value: {scheduler_state}")
       max_logging.log(f"[DEBUG] Scheduler state primed: step_index={scheduler_state.step_index is not None}, last_sample={scheduler_state.last_sample is not None}")
 
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
