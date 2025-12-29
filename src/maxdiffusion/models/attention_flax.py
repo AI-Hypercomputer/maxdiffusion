@@ -51,6 +51,17 @@ Quant = quantizations.AqtQuantization
 def _maybe_aqt_einsum(quant: Quant):
   return jnp.einsum if quant is None else quant.einsum()
 
+def check_nan_attn(tensor: jax.Array, name: str, device_id: int):
+    if tensor is None: return
+    has_nans = jnp.isnan(tensor).any()
+    has_infs = jnp.isinf(tensor).any()
+    jax.debug.print(f"[DEBUG ATTN {device_id}] {name}: "
+                    "Has NaNs: {has_nans_val}, Has Infs: {has_infs_val}",
+                    has_nans_val=has_nans, has_infs_val=has_infs)
+    if has_nans or has_infs:
+        # Optional: Print more stats if non-finite
+        jax.debug.print(f"  {name} shape: {tensor.shape}, dtype: {tensor.dtype}")
+
 
 def _check_attention_inputs(query: Array, key: Array, value: Array) -> None:
   """Check attention inputs."""
@@ -945,7 +956,14 @@ class FlaxWanAttention(nnx.Module):
       rotary_emb: Optional[jax.Array] = None,
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
+      tag: str = "attn"
   ) -> jax.Array:
+    check_nan_attn(hidden_states, "Input hidden_states", tag)
+    if encoder_hidden_states is not None:
+        check_nan_attn(encoder_hidden_states, "Input encoder_hidden_states", tag)
+    if rotary_emb is not None:
+        check_nan_attn(rotary_emb, "Input rotary_emb", tag)
+
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", "tensor"))
     dtype = hidden_states.dtype
@@ -959,60 +977,79 @@ class FlaxWanAttention(nnx.Module):
       with self.conditional_named_scope("attn_qkv_proj"):
         with self.conditional_named_scope("proj_query"):
           query_proj = self.query(hidden_states)
+          check_nan_attn(query_proj, "query_proj", tag)
         with self.conditional_named_scope("proj_key"):
           key_proj = self.key(encoder_hidden_states)
+          check_nan_attn(key_proj, "key_proj", tag)
         with self.conditional_named_scope("proj_value"):
           value_proj = self.value(encoder_hidden_states)
+          check_nan_attn(value_proj, "value_proj", tag)
 
       if self.qk_norm:
         with self.conditional_named_scope("attn_q_norm"):
           query_proj = self.norm_q(query_proj)
+          check_nan_attn(query_proj, "query_proj normed", tag)
         with self.conditional_named_scope("attn_k_norm"):
           key_proj = self.norm_k(key_proj)
+          check_nan_attn(key_proj, "key_proj normed", tag)
 
       if rotary_emb is not None:  # Only for SELF-ATTENTION
         with self.conditional_named_scope("attn_rope"):
           # Unflatten is done HERE for RoPE
           query_proj = _unflatten_heads(query_proj, self.heads)
+          check_nan_attn(query_proj, "query_proj unflattened", tag)
           key_proj = _unflatten_heads(key_proj, self.heads)
+          check_nan_attn(key_proj, "key_proj unflattened", tag)
           value_proj = _unflatten_heads(value_proj, self.heads)
+          check_nan_attn(value_proj, "value_proj unflattened", tag)
           # output of _unflatten_heads Batch, heads, seq_len, head_dim
           query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
-        
-        
+          check_nan_attn(query_proj, "query_proj after RoPE", tag)
+          check_nan_attn(key_proj, "key_proj after RoPE", tag)
       query_proj = checkpoint_name(query_proj, "query_proj")
       key_proj = checkpoint_name(key_proj, "key_proj")
       value_proj = checkpoint_name(value_proj, "value_proj")
       with self.conditional_named_scope("attn_compute"):
         attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+        check_nan_attn(attn_output, "attn_output from attention_op", tag)
 
     else:
       # NEW PATH for I2V CROSS-ATTENTION
       with self.conditional_named_scope("proj_query"):
         query_proj = self.query(hidden_states)
+        check_nan_attn(query_proj, "query_proj I2V", tag)
       if self.qk_norm:
         with self.conditional_named_scope("attn_q_norm"):
           query_proj = self.norm_q(query_proj)
+          check_nan_attn(query_proj, "query_proj normed I2V", tag)
 
       encoder_hidden_states_img = encoder_hidden_states[:, :self.image_seq_len, :]
       encoder_hidden_states_text = encoder_hidden_states[:, self.image_seq_len:, :]
+      check_nan_attn(encoder_hidden_states_img, "EHS_img", tag)
+      check_nan_attn(encoder_hidden_states_text, "EHS_text", tag)
 
       # Text K/V
       with self.conditional_named_scope("proj_key"):
         key_proj_text = self.key(encoder_hidden_states_text)
+        check_nan_attn(key_proj_text, "key_proj_text", tag)
       if self.qk_norm:
         with self.conditional_named_scope("attn_k_norm"):
           key_proj_text = self.norm_k(key_proj_text)
+          check_nan_attn(key_proj_text, "key_proj_text normed", tag)
       with self.conditional_named_scope("proj_value"):
         value_proj_text = self.value(encoder_hidden_states_text)
+        check_nan_attn(value_proj_text, "value_proj_text", tag)
 
       # Image K/V
       with self.conditional_named_scope("add_proj_k"):
         key_proj_img = self.add_k_proj(encoder_hidden_states_img)
+        check_nan_attn(key_proj_img, "key_proj_img", tag)
       with self.conditional_named_scope("norm_add_k"):
         key_proj_img = self.norm_added_k(key_proj_img)
+        check_nan_attn(key_proj_img, "key_proj_img normed", tag)
       with self.conditional_named_scope("add_proj_v"):
         value_proj_img = self.add_v_proj(encoder_hidden_states_img)
+        check_nan_attn(value_proj_img, "value_proj_img", tag)
 
       # Checkpointing
       query_proj = checkpoint_name(query_proj, "query_proj")
@@ -1024,19 +1061,25 @@ class FlaxWanAttention(nnx.Module):
       # Attention - tensors are (B, S, D)
       with self.conditional_named_scope("cross_attn_text_apply"):
         attn_output_text = self.attention_op.apply_attention(query_proj, key_proj_text, value_proj_text)
+        check_nan_attn(attn_output_text, "attn_output_text_h", tag)
       with self.conditional_named_scope("norm_added_q"):
         query_proj_img = self.norm_added_q(query_proj)
+        check_nan_attn(query_proj_img, "query_proj_img normed", tag)
       with self.conditional_named_scope("cross_attn_img_apply"):
         attn_output_img = self.attention_op.apply_attention(query_proj_img, key_proj_img, value_proj_img)
+        check_nan_attn(attn_output_img, "attn_output_img", tag)
 
       attn_output = attn_output_text + attn_output_img
+      check_nan_attn(attn_output, "attn_output final I2V", tag)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
 
     with self.conditional_named_scope("attn_out_proj"):
       hidden_states = self.proj_attn(attn_output)
+      check_nan_attn(hidden_states, "hidden_states after proj_attn", tag)
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
+      check_nan_attn(hidden_states, "hidden_states after dropout", tag)
     return hidden_states
 
 

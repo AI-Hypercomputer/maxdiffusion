@@ -420,6 +420,7 @@ class WanTransformerBlock(nnx.Module):
             rotary_emb=rotary_emb,
             deterministic=deterministic,
             rngs=rngs,
+            tag="SELF",
         )
         check_nan(attn_output, "Self-Attn attn_output (attn1)")
       with self.conditional_named_scope("self_attn_residual"):
@@ -431,7 +432,7 @@ class WanTransformerBlock(nnx.Module):
     norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32)).astype(hidden_states.dtype)
     check_nan(norm_hidden_states, "Cross-Attn norm_hidden_states (norm2)")
     attn_output = self.attn2(
-        hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs
+        hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states, deterministic=deterministic, rngs=rngs, tag="CROSS"
     )
     check_nan(attn_output, "Cross-Attn attn_output (attn2)")
     hidden_states = residual + attn_output
