@@ -107,6 +107,10 @@ class WanPipelineI2V_2_1(WanPipeline):
         
         num_channels_latents = self.vae.z_dim
         num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
+        jax.debug.print("num_frames: {nf}, num_latent_frames: {nlf}, expected: {exp}",
+                        nf=num_frames,
+                        nlf=latents.shape[1],
+                        exp=num_latent_frames)
         latent_height = height // self.vae_scale_factor_spatial
         latent_width = width // self.vae_scale_factor_spatial
 
@@ -124,6 +128,13 @@ class WanPipelineI2V_2_1(WanPipeline):
             mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)     
         first_frame_mask = mask_lat_size[:, :, 0:1]
         first_frame_mask = jnp.repeat(first_frame_mask, self.vae_scale_factor_temporal, axis=2)
+        jax.debug.print("first_frame_mask.shape:{shape}, is None:{isnone}",
+                        shape = first_frame_mask.shape if first_frame_mask is not None else (-1,),
+                        isnone = first_frame_mask is None)
+        jax.debug.print("first_frame_mask_stats: min={mn:.2f}, max={mx:.2f}, mean={mean:.2f}",
+                        mn=jnp.min(first_frame_mask) if first_frame_mask is not None else 0.0,
+                        mx=jnp.max(first_frame_mask) if first_frame_mask is not None else 0.0,
+                        mean=jnp.mean(first_frame_mask) if first_frame_mask is not None else 0.0)
         mask_lat_size = jnp.concatenate([first_frame_mask, mask_lat_size[:, :, 1:]], axis=2)
         mask_lat_size = mask_lat_size.reshape(
           batch_size, 
@@ -135,6 +146,12 @@ class WanPipelineI2V_2_1(WanPipeline):
         )
         mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 4, 5, 3, 1)).squeeze(-1)
         condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)
+        jax.debug.print("condition shape: {shape}, channel dim: {c}",
+                        shape=condition.shape,
+                        c=condition.shape[-1])
+        jax.debug.print("condition stats: mask_mean={mm:.4f}, latent_mean={lm:.4f}",
+                        mm=jnp.mean(condition[..., 0]),
+                        lm=jnp.mean(condition[..., 1:]))
 
         return latents, condition, None
 
@@ -300,11 +317,24 @@ def run_inference_2_1_i2v(
         encoder_hidden_states_image=image_embeds_input,
     )
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+    jax.debug.print("Step {s}: latents_prev std={std:.6f}, mean={mean:.6f}",
+                    s=step,
+                    std=jnp.std(latents),
+                    mean=jnp.mean(latents))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+    jax.debug.print("Step {s}: latents_next std={std:.6f}, mean={mean:.6f}",
+                    s=step,
+                    std=jnp.std(latents),
+                    mean=jnp.mean(latents))
     latents = latents.astype(original_dtype)
     return latents, scheduler_state, rng
 
   max_logging.log(f"Running fori_loop for {num_inference_steps} steps.")
   latents, _, _ = jax.lax.fori_loop(0, num_inference_steps, loop_body, (latents, scheduler_state, rng))
+  jax.debug.print("Final latents states: min={lmin:.6f}, max={lmax:.6f}, mean={lmean:.6f}, std={lstd:.6f}",
+                  lmin=jnp.min(latents),
+                  lmax=jnp.max(latents),
+                  lmean=jnp.mean(latents),
+                  lstd=jnp.std(latents))
   max_logging.log("Finished fori_loop.")
   return latents

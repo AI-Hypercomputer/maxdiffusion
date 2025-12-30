@@ -1291,6 +1291,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
             input_slice = jnp.expand_dims(input_slice, 1)
             out_slice, new_carry = self.decoder(input_slice, carry)
             out_swapped = out_slice[:, jnp.array([0, 2, 1, 3]), ...]
+            jax.debug.print("Decoder output shape: {shape}", shape=out_slice.shape)
+            jax.debug.print("After swap shape: {shape}", shape=out_swapped.shape)
             
             return new_carry, out_swapped
 

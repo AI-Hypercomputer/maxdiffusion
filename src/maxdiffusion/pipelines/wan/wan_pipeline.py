@@ -532,11 +532,13 @@ class WanPipeline:
 
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
           encoded_output = self.vae.encode(video_condition)[0].mode()
+      
+      encoded_output = jnp.transpose(encoded_output, (0, 2, 3, 4, 1))
 
       # Normalize latents
       latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
-      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, 1, 1, 1, self.vae.z_dim)
-      latent_condition = (encoded_output - latents_mean) * latents_std
+      latents_std = jnp.array(self.vae.latents_std).reshape(1, 1, 1, 1, self.vae.z_dim)
+      latent_condition = (encoded_output - latents_mean) / latents_std
       latent_condition = latent_condition.astype(dtype)
 
       return latent_condition, video_condition
