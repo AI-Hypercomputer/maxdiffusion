@@ -387,7 +387,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     lambda_s0 = jnp.log(alpha_s0 + 1e-10) - jnp.log(sigma_s0 + 1e-10)
     check_nan_jit(lambda_s0, "P lambda_s0", step)
 
-    h = jnp.clip(lambda_t - lambda_s0, -20.0, 20.0)
+    h = lambda_t - lambda_s0
     check_nan_jit(h, "P h", step)
 
     def rk_d1_loop_body(i, carry):
