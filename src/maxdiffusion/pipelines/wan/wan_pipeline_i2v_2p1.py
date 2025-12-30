@@ -257,15 +257,6 @@ class WanPipelineI2V_2_1(WanPipeline):
       max_logging.log(f"[DEBUG CALL] Decoded video type: {type(decoded_video)}")
     return decoded_video
 
-def check_nan_jit(tensor: jax.Array, name: str, step: jax.Array):
-    if tensor is None:
-      return
-
-    has_nans = jnp.isnan(tensor).any()
-    has_infs = jnp.isinf(tensor).any()
-    jax.debug.print(f"[DEBUG JIT {jax.process_index()}] Step: {{step}} - {name}: "
-                    "Shape: {shape}, Has NaNs: {has_nans_val}, Has Infs: {has_infs_val}",
-                    step=step, shape=tensor.shape, has_nans_val=has_nans, has_infs_val=has_infs)
 
 def run_inference_2_1_i2v(
     graphdef, sharded_state, rest_of_state,
@@ -300,23 +291,16 @@ def run_inference_2_1_i2v(
     rng, timestep_rng = jax.random.split(rng)
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
 
-    check_nan_jit(latents, "latents_prev at loop start", step)
-
     latents_input = latents
     if do_classifier_free_guidance:
         latents_input = jnp.concatenate([latents, latents], axis=0)
-    check_nan_jit(latents_input, "latents_input after CFG concat", step)
 
     latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
-    check_nan_jit(latent_model_input, "latent_model_input after cond concat", step)
     timestep = jnp.broadcast_to(t, latents_input.shape[0])
     latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
-    check_nan_jit(latent_model_input, "latent_model_input for transformer", step)
 
     prompt_embeds_input = prompt_embeds
     image_embeds_input = image_embeds
-    check_nan_jit(prompt_embeds_input, "prompt_embeds_input for transformer", step)
-    check_nan_jit(image_embeds_input, "image_embeds_input for transformer", step)
 
 
     noise_pred, _ = transformer_forward_pass(
@@ -326,14 +310,9 @@ def run_inference_2_1_i2v(
         guidance_scale=guidance_scale,
         encoder_hidden_states_image=image_embeds_input,
     )
-    check_nan_jit(noise_pred, "noise_pred_bcthw from transformer", step)
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
-    check_nan_jit(noise_pred, "noise_pred after transpose", step)
-
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
-    check_nan_jit(latents, "latents_next after scheduler", step)
     latents = latents.astype(original_dtype)
-    check_nan_jit(latents, "latents_next after dtype cast", step)
     return latents, scheduler_state, rng
 
   max_logging.log(f"Running fori_loop for {num_inference_steps} steps.")
