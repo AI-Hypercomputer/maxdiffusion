@@ -372,10 +372,10 @@ def run_inference_2_1_i2v(
                     s=step,
                     std=jnp.std(latents),
                     mean=jnp.mean(latents))
-    jax.debug.print("first_frame_mask shape:", first_frame_mask.shape if first_frame_mask is not None else (-1,))
-    jax.debug.print("first_frame_mask unique values:", jnp.unique(first_frame_mask))
-    jax.debug.print("condition shape:", condition.shape)
-    jax.debug.print("condition stats:", jnp.min(condition), jnp.max(condition), jnp.mean(condition))
+    jax.debug.print("first_frame_mask shape: {}", first_frame_mask.shape if first_frame_mask is not None else (-1,))
+    jax.debug.print("first_frame_mask unique values: {}", jnp.unique(first_frame_mask))
+    jax.debug.print("condition shape: {}", condition.shape)
+    jax.debug.print("condition stats: {}, {}, {}", jnp.min(condition), jnp.max(condition), jnp.mean(condition))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     if first_frame_mask is not None:
        clean_latents = condition[..., 4:]
