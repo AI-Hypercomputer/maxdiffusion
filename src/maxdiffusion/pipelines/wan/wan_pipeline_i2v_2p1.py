@@ -25,7 +25,7 @@ from flax.linen import partitioning as nn_partitioning
 import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
-from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
+from ...schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler
 from ...max_utils import randn_tensor
 
 class WanPipelineI2V_2_1(WanPipeline):
@@ -65,6 +65,19 @@ class WanPipelineI2V_2_1(WanPipeline):
       config=config,
     )
     return pipeline, transformer
+  
+  @classmethod
+  def load_scheduler(cls, config):
+      """Overrides the base scheduler loader to use Flow Matching for I2V."""
+      # Wan 2.1 I2V requires Flow Matching with these specific settings:
+      # shift=1.0, num_train_timesteps=1000, and usually reverse_sigmas=True (1.0 -> 0.0)
+      scheduler, scheduler_state = FlaxFlowMatchScheduler.from_pretrained(
+          config.pretrained_model_name_or_path,
+          subfolder="scheduler",
+          shift=1.0,
+          reverse_sigmas=True, 
+      )
+      return scheduler, scheduler_state
 
   @classmethod
   def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
@@ -275,7 +288,7 @@ def run_inference_2_1_i2v(
     image_embeds: jnp.array,
     guidance_scale: float,
     num_inference_steps: int,
-    scheduler: FlaxUniPCMultistepScheduler,
+    scheduler: FlaxFlowMatchScheduler,
     scheduler_state,
     rng: jax.Array,
     expand_timesteps: bool,
@@ -323,7 +336,16 @@ def run_inference_2_1_i2v(
                     s=step,
                     std=jnp.std(latents),
                     mean=jnp.mean(latents))
-    latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+    
+    step_output = scheduler.step(
+        state=scheduler_state,
+        model_output=noise_pred,
+        timestep=t,
+        sample=latents,
+        return_dict=True
+    )
+    
+    latents = step_output.prev_sample
     jax.debug.print("Step {s}: latents_next std={std}, mean={mean}",
                     s=step,
                     std=jnp.std(latents),
