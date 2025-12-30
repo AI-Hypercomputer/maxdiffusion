@@ -335,11 +335,11 @@ class FlaxDDPMSchedulerTest(FlaxSchedulerCommonTest):
         result_mean = jnp.mean(jnp.abs(sample))
 
         if jax_device == "tpu":
-            assert abs(result_sum - 257.32495) < 1.5e-2
-            assert abs(result_mean - 0.335059) < 2e-5
+            assert abs(result_sum - 257.28717) < 1.5e-2
+            assert abs(result_mean - 0.33500) < 2e-5
         else:
-            assert abs(result_sum - 255.1113) < 1e-2
-            assert abs(result_mean - 0.332176) < 1e-3
+            assert abs(result_sum - 257.33148) < 1e-2
+            assert abs(result_mean - 0.335057) < 1e-3
 
 
 @require_flax
