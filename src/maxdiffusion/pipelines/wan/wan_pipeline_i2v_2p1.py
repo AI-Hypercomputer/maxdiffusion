@@ -154,7 +154,7 @@ class WanPipelineI2V_2_1(WanPipeline):
                         lm=jnp.mean(condition[..., 1:]))
         jax.debug.print("condition latent std={std}", std=jnp.std(condition[..., 1:]))
 
-        return latents, condition, None
+        return latents, condition, first_frame_mask
 
 
   def __call__(
@@ -213,6 +213,14 @@ class WanPipelineI2V_2_1(WanPipeline):
         last_image=last_image_tensor,
         num_videos_per_prompt=num_videos_per_prompt,
     )
+    if first_frame_mask is not None:
+       jax.debug.print("FIRST FRAME MASK stats: min={mn}, max={mx}, mean={mean}, shape={shape}",
+                       mn=jnp.min(first_frame_mask),
+                       mx=jnp.max(first_frame_mask),
+                       mean=jnp.mean(first_frame_mask),
+                       shape=first_frame_mask.shape)
+    else:
+        jax.debug.print("FIRST FRAME MASK is None")
 
     scheduler_state = self.scheduler.set_timesteps(
         self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
@@ -341,6 +349,13 @@ def run_inference_2_1_i2v(
         encoder_hidden_states_image=image_embeds_input,
     )
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+    if step == 0:
+       jax.debug.print("STEP 0: latents std={ls}, noise_pred std ={ns}, latents mean={lm}, noise mean={nm}",
+                       ls=jnp.std(latents),
+                       ns=jnp.std(noise_pred),
+                       lm=jnp.mean(latents),
+                       nm=jnp.mean(noise_pred))
+
     jax.debug.print("Step {s}: noise_pred stats min={mn}, max={mx}, mean={mean}, std={std}",
                     s=step,
                     mn=jnp.min(noise_pred),
@@ -351,11 +366,14 @@ def run_inference_2_1_i2v(
                     s=step,
                     std=jnp.std(latents),
                     mean=jnp.mean(latents))
-    jax.debug.print("first_frame_mask shape:", first_frame_mask.shape)
+    jax.debug.print("first_frame_mask shape:", first_frame_mask.shape if first_frame_mask is not None else (-1,))
     jax.debug.print("first_frame_mask unique values:", jnp.unique(first_frame_mask))
     jax.debug.print("condition shape:", condition.shape)
     jax.debug.print("condition stats:", jnp.min(condition), jnp.max(condition), jnp.mean(condition))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+    if first_frame_mask is not None:
+       clean_latents = condition[..., 4:]
+       latents = first_frame_mask * clean_latents + (1.0 - first_frame_mask) * latents
     jax.debug.print("Step {s}: latents_next std={std}, mean={mean}",
                     s=step,
                     std=jnp.std(latents),
