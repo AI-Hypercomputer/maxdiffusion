@@ -131,7 +131,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         jax.debug.print("first_frame_mask.shape:{shape}, is None:{isnone}",
                         shape = first_frame_mask.shape if first_frame_mask is not None else (-1,),
                         isnone = first_frame_mask is None)
-        jax.debug.print("first_frame_mask_stats: min={mn:.2f}, max={mx:.2f}, mean={mean:.2f}",
+        jax.debug.print("first_frame_mask_stats: min={mn}, max={mx}, mean={mean}",
                         mn=jnp.min(first_frame_mask) if first_frame_mask is not None else 0.0,
                         mx=jnp.max(first_frame_mask) if first_frame_mask is not None else 0.0,
                         mean=jnp.mean(first_frame_mask) if first_frame_mask is not None else 0.0)
@@ -149,7 +149,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         jax.debug.print("condition shape: {shape}, channel dim: {c}",
                         shape=condition.shape,
                         c=condition.shape[-1])
-        jax.debug.print("condition stats: mask_mean={mm:.4f}, latent_mean={lm:.4f}",
+        jax.debug.print("condition stats: mask_mean={mm}, latent_mean={lm}",
                         mm=jnp.mean(condition[..., 0]),
                         lm=jnp.mean(condition[..., 1:]))
 
@@ -317,12 +317,12 @@ def run_inference_2_1_i2v(
         encoder_hidden_states_image=image_embeds_input,
     )
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
-    jax.debug.print("Step {s}: latents_prev std={std:.6f}, mean={mean:.6f}",
+    jax.debug.print("Step {s}: latents_prev std={std}, mean={mean}",
                     s=step,
                     std=jnp.std(latents),
                     mean=jnp.mean(latents))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
-    jax.debug.print("Step {s}: latents_next std={std:.6f}, mean={mean:.6f}",
+    jax.debug.print("Step {s}: latents_next std={std}, mean={mean}",
                     s=step,
                     std=jnp.std(latents),
                     mean=jnp.mean(latents))
@@ -331,7 +331,7 @@ def run_inference_2_1_i2v(
 
   max_logging.log(f"Running fori_loop for {num_inference_steps} steps.")
   latents, _, _ = jax.lax.fori_loop(0, num_inference_steps, loop_body, (latents, scheduler_state, rng))
-  jax.debug.print("Final latents states: min={lmin:.6f}, max={lmax:.6f}, mean={lmean:.6f}, std={lstd:.6f}",
+  jax.debug.print("Final latents states: min={lmin}, max={lmax}, mean={lmean}, std={lstd}",
                   lmin=jnp.min(latents),
                   lmax=jnp.max(latents),
                   lmean=jnp.mean(latents),
