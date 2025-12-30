@@ -263,6 +263,11 @@ class WanPipelineI2V_2_1(WanPipeline):
     if output_type == "latent":
       return jnp.transpose(latents_denorm_bcthw, (0, 2, 3, 4, 1))
     decoded_video = self._decode_latents_to_video(latents_denorm_bcthw)
+    jax.debug.print("Decoded video: min={mn}, max={mx}, mean={mean}, std={std}",
+                    mn=jnp.min(decoded_video),
+                    mx=jnp.max(decoded_video),
+                    mean=jnp.mean(decoded_video),
+                    std=jnp.std(decoded_video))
     return decoded_video
 
 
