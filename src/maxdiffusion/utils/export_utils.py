@@ -165,9 +165,6 @@ def export_to_video(
   """
   # TODO: Dhruv. Remove by Diffusers release 0.33.0
   # Added to prevent breaking existing code
-  if not video_frames:
-    logger.warning("export_to_video: video_frames list is empty.")
-    return ""
   if not is_imageio_available():
     logger.warning(
         (
@@ -196,42 +193,11 @@ def export_to_video(
   if output_video_path is None:
     output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
 
-  processed_frames = []
   if isinstance(video_frames[0], np.ndarray):
-    logger.info("Processing np.ndarray frames for video export.")
-    for i, frame in enumerate(video_frames):
-        # --- DEBUG PRINTS for RAW frame ---
-        has_nan = np.isnan(frame).any()
-        has_inf = np.isinf(frame).any()
-        min_val = np.min(frame) if not has_nan and not has_inf else np.nan
-        max_val = np.max(frame) if not has_nan and not has_inf else np.nan
-        mean_val = np.mean(frame) if not has_nan and not has_inf else np.nan
-        logger.info(f"[EXPORT RAW {i}] shape={frame.shape}, dtype={frame.dtype}, "
-                    f"NaNs={has_nan}, Infs={has_inf}, "
-                    f"Min={min_val:.4f}, Max={max_val:.4f}, Mean={mean_val:.4f}")
-        if has_nan or has_inf:
-             logger.warning(f"  Frame {i} RAW has non-finite values!")
-        # ------------------------------------
-
-        if frame.dtype != np.float32:
-            frame = frame.astype(np.float32)
-
-        # Sanitize
-        frame = np.nan_to_num(frame, nan=0.0, posinf=1.0, neginf=0.0)
-        frame = np.clip(frame, 0.0, 1.0)
-
-        frame_uint8 = (frame * 255.0).astype(np.uint8)
-        processed_frames.append(frame_uint8)
-
-    video_frames = processed_frames
-
+    video_frames = [(frame * 255).astype(np.uint8) for frame in video_frames]
 
   elif isinstance(video_frames[0], PIL.Image.Image):
     video_frames = [np.array(frame) for frame in video_frames]
-    
-  if not video_frames:
-      logger.error("No frames to write to video.")
-      return ""
 
   with imageio.get_writer(
       output_video_path, fps=fps, quality=quality, bitrate=bitrate, macro_block_size=macro_block_size
