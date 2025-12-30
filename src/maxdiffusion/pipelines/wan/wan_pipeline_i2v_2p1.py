@@ -107,10 +107,6 @@ class WanPipelineI2V_2_1(WanPipeline):
         
         num_channels_latents = self.vae.z_dim
         num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
-        jax.debug.print("num_frames: {nf}, num_latent_frames: {nlf}, expected: {exp}",
-                        nf=num_frames,
-                        nlf=latents.shape[1],
-                        exp=num_latent_frames)
         latent_height = height // self.vae_scale_factor_spatial
         latent_width = width // self.vae_scale_factor_spatial
 
@@ -120,6 +116,10 @@ class WanPipelineI2V_2_1(WanPipeline):
             latents = randn_tensor(shape, rng, self.config, dtype)
         else:
             latents = latents.astype(dtype)
+        jax.debug.print("num_frames: {nf}, num_latent_frames: {nlf}, expected: {exp}",
+                        nf=num_frames,
+                        nlf=latents.shape[1],
+                        exp=num_latent_frames)
         latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)
         mask_lat_size = jnp.ones((batch_size, 1, num_frames, latent_height, latent_width), dtype=dtype)
         if last_image is None:
