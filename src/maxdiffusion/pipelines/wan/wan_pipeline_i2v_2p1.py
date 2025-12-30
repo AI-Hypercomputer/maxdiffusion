@@ -349,13 +349,19 @@ def run_inference_2_1_i2v(
         encoder_hidden_states_image=image_embeds_input,
     )
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
-    if step == 0:
-       jax.debug.print("STEP 0: latents std={ls}, noise_pred std ={ns}, latents mean={lm}, noise mean={nm}",
-                       ls=jnp.std(latents),
-                       ns=jnp.std(noise_pred),
-                       lm=jnp.mean(latents),
-                       nm=jnp.mean(noise_pred))
-
+    def print_step_zero_stats(operands):
+        l, np_pred = operands
+        jax.debug.print("STEP 0: latents std={ls}, noise_pred std ={ns}, latents mean={lm}, noise mean={nm}",
+                       ls=jnp.std(l),
+                       ns=jnp.std(np_pred),
+                       lm=jnp.mean(l),
+                       nm=jnp.mean(np_pred))
+    jax.lax.cond(
+        step == 0,
+        print_step_zero_stats,
+        lambda _: None, # Do nothing if step != 0
+        (latents, noise_pred)
+    )
     jax.debug.print("Step {s}: noise_pred stats min={mn}, max={mx}, mean={mean}, std={std}",
                     s=step,
                     mn=jnp.min(noise_pred),
