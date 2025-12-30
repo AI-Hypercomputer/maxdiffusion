@@ -68,7 +68,8 @@ class WanPipelineI2V_2_1(WanPipeline):
 
   @classmethod
   def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
-    pipeline , _ = cls._load_and_init(config, None, vae_only, load_transformer)
+    pipeline , transformer = cls._load_and_init(config, None, vae_only, load_transformer)
+    pipeline.transformer = cls.quantize_transformer(config, transformer, pipeline, pipeline.mesh)
     return pipeline
 
   @classmethod

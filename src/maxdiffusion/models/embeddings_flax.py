@@ -287,7 +287,6 @@ class NNXWanImageEmbedding(nnx.Module):
         padding_size = target_seq_len - current_seq_len
         padding = jnp.zeros((B, padding_size, D_out), dtype=hidden_states.dtype)
         hidden_states = jnp.concatenate([hidden_states, padding], axis=1)
-        print(f"[DEBUG EMB] Padded image embeds from {current_seq_len} to {target_seq_len}. New shape: {hidden_states.shape}")
 
     return hidden_states
 
