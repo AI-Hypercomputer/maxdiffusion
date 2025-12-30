@@ -230,12 +230,12 @@ class WanPipelineI2V_2_1(WanPipeline):
         self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
     )
 
-    if self.scheduler_state.last_sample is None or self.scheduler_state.step_index is None:
-      t0 = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[0]
-      dummy_noise = jnp.zeros_like(latents)
-      # This call initializes the internal state arrays
-      step_output = self.scheduler.step(scheduler_state, dummy_noise, t0, latents)
-      scheduler_state = step_output.state
+    # if self.scheduler_state.last_sample is None or self.scheduler_state.step_index is None:
+    #   t0 = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[0]
+    #   dummy_noise = jnp.zeros_like(latents)
+    #   # This call initializes the internal state arrays
+    #   step_output = self.scheduler.step(scheduler_state, dummy_noise, t0, latents)
+    #   scheduler_state = step_output.state
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
     data_sharding = NamedSharding(self.mesh, P(*self.config.data_sharding))
     latents = jax.device_put(latents, data_sharding)
