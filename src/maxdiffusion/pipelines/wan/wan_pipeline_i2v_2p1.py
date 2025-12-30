@@ -189,7 +189,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         height=height,
         width=width,
         num_frames=num_frames,
-        dtype=jnp.float32,
+        dtype=image_embeds.dtype,
         rng=latents_rng,
         latents=latents,
         last_image=last_image_tensor,

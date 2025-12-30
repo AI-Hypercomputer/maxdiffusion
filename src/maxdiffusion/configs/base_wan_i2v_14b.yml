@@ -113,11 +113,10 @@ timestep_bias: {
 
 # Override parameters from checkpoints's scheduler.
 diffusion_scheduler_config: {
-  _class_name: 'FlaxUniPCMultistepScheduler',
+  _class_name: 'FlaxEulerDiscreteScheduler',
   prediction_type: 'epsilon',
   rescale_zero_terminal_snr: False,
-  timestep_spacing: 'trailing',
-  final_sigmas_type: 'sigma_min'
+  timestep_spacing: 'trailing'
 }
 
 # Output directory
