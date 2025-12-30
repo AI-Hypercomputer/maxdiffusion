@@ -255,7 +255,8 @@ class WanPipelineI2V_2_1(WanPipeline):
       )
       if self.config.expand_timesteps:
          jax.debug.print("Applying first frame preservation with expand_timesteps.")
-         latents = (1 - first_frame_mask) * condition + first_frame_mask * latents
+         clean_latents = condition[..., 4:]
+         latents = first_frame_mask * clean_latents + (1 - first_frame_mask) * latents
       latents_bcthw = jnp.transpose(latents, (0, 4, 1, 2, 3))
       latents_denorm_bcthw = self._denormalize_latents(latents_bcthw)
 
