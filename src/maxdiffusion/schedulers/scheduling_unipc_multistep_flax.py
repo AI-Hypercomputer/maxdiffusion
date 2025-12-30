@@ -387,7 +387,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     lambda_s0 = jnp.log(alpha_s0 + 1e-10) - jnp.log(sigma_s0 + 1e-10)
     check_nan_jit(lambda_s0, "P lambda_s0", step)
 
-    h = lambda_t - lambda_s0
+    h = jnp.clip(lambda_t - lambda_s0, -20.0, 20.0)
     check_nan_jit(h, "P h", step)
 
     def rk_d1_loop_body(i, carry):
@@ -867,12 +867,16 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     return add_noise_common(state.common, original_samples, noise, timesteps)
 
   def _sigma_to_alpha_sigma_t(self, sigma):
+    eps = 1e-10
     if self.config.use_flow_sigmas:
       alpha_t = 1 - sigma
       sigma_t = sigma
     else:
-      alpha_t = 1 / ((sigma**2 + 1) ** 0.5)
-      sigma_t = sigma * alpha_t
+      sigma_clamped = jnp.maximum(sigma, eps)
+      alpha_t = 1 / ((sigma_clamped**2 + 1) ** 0.5)
+      sigma_t = sigma_clamped * alpha_t
+    alpha_t = jnp.maximum(alpha_t, eps)
+    sigma_t = jnp.maximum(sigma_t, eps)
 
     return alpha_t, sigma_t
 
