@@ -380,9 +380,9 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     check_nan_jit(alpha_s0, "P alpha_s0", step)
     check_nan_jit(sigma_s0, "P sigma_s0", step)
 
-    lambda_t = jnp.log(alpha_t + 1e-10) - jnp.log(sigma_t + 1e-10)
+    lambda_t = jnp.log(alpha_t + 1e-5) - jnp.log(sigma_t + 1e-5)
     check_nan_jit(lambda_t, "P lambda_t", step)
-    lambda_s0 = jnp.log(alpha_s0 + 1e-10) - jnp.log(sigma_s0 + 1e-10)
+    lambda_s0 = jnp.log(alpha_s0 + 1e-5) - jnp.log(sigma_s0 + 1e-5)
     check_nan_jit(lambda_s0, "P lambda_s0", step)
 
     h = lambda_t - lambda_s0
