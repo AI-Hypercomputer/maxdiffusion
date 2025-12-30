@@ -33,13 +33,15 @@ from .scheduling_utils_flax import (
 def check_nan_jit(tensor: jax.Array, name: str, step: jax.Array):
     if tensor is None:
       return
-
     has_nans = jnp.isnan(tensor).any()
     has_infs = jnp.isinf(tensor).any()
-    jax.debug.print(f"[DEBUG SCHEDULER {jax.process_index()}] Step: {{step}} - {name}: "
-                    "Shape: {shape}, Has NaNs: {has_nans_val}, Has Infs: {has_infs_val}",
-                    step=step, shape=tensor.shape, has_nans_val=has_nans, has_infs_val=has_infs)
+    if step is None:
+        step = -1
 
+    # Print the actual dtype of the tensor's data
+    jax.debug.print(f"[DEBUG SCHEDULER {jax.process_index()}] Step: {{step}} - {name}: "
+                    "Shape: {shape}, tensor.dtype: {dtype}, Has NaNs: {has_nans_val}, Has Infs: {has_infs_val}",
+                    step=step, shape=tensor.shape, dtype=tensor.dtype, has_nans_val=has_nans, has_infs_val=has_infs)
 
 @flax.struct.dataclass
 class UniPCMultistepSchedulerState:
