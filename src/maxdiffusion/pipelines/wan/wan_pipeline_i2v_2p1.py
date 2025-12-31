@@ -291,11 +291,9 @@ def run_inference_2_1_i2v(
   if do_classifier_free_guidance:
     prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
     image_embeds = jnp.concatenate([image_embeds, image_embeds], axis=0)
-    if  expand_timesteps:
-        condition = jnp.concatenate([condition] * 2)
+    condition = jnp.concatenate([condition] * 2)
+    if first_frame_mask is not None:
         first_frame_mask = jnp.concatenate([first_frame_mask] * 2)
-    else:
-        condition = jnp.concatenate([condition] * 2)
 
 
   def loop_body(step, vals):
@@ -333,6 +331,10 @@ def run_inference_2_1_i2v(
                     s=step,
                     std=jnp.std(latents),
                     mean=jnp.mean(latents))
+    # Apply first frame preservation
+    if first_frame_mask is not None:
+      clean_latents = condition[..., 4:]
+      latents = first_frame_mask * clean_latents + (1 - first_frame_mask) * latents
     latents = latents.astype(original_dtype)
     return latents, scheduler_state, rng
 
