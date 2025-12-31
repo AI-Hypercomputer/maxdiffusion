@@ -152,9 +152,8 @@ class WanPipelineI2V_2_1(WanPipeline):
         jax.debug.print("condition stats: mask_mean={mm}, latent_mean={lm}",
                         mm=jnp.mean(condition[..., 0]),
                         lm=jnp.mean(condition[..., 1:]))
-        jax.debug.print("condition latent std={std}", std=jnp.std(condition[..., 1:]))
 
-        return latents, condition, first_frame_mask
+        return latents, condition, None
 
 
   def __call__(
@@ -213,12 +212,6 @@ class WanPipelineI2V_2_1(WanPipeline):
         last_image=last_image_tensor,
         num_videos_per_prompt=num_videos_per_prompt,
     )
-    if first_frame_mask is not None:
-       jax.debug.print("FIRST FRAME MASK stats: min={mn}, max={mx}, mean={mean}, shape={shape}",
-                       mn=jnp.min(first_frame_mask),
-                       mx=jnp.max(first_frame_mask),
-                       mean=jnp.mean(first_frame_mask),
-                       shape=first_frame_mask.shape)
 
     scheduler_state = self.scheduler.set_timesteps(
         self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
@@ -310,30 +303,14 @@ def run_inference_2_1_i2v(
     original_dtype = latents.dtype
     rng, timestep_rng = jax.random.split(rng)
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
-    jax.debug.print("Step {s}: timestep={t}", s=step, t=t)
 
     latents_input = latents
     if do_classifier_free_guidance:
         latents_input = jnp.concatenate([latents, latents], axis=0)
-    jax.debug.print("Step{s}: latents_input stats min={mn}, max={mx}, mean={mean}, std={std}",
-                    s=step,
-                    mn=jnp.min(latents_input),
-                    mx=jnp.max(latents_input),
-                    mean=jnp.mean(latents_input),
-                    std=jnp.std(latents_input))
 
     latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
     timestep = jnp.broadcast_to(t, latents_input.shape[0])
     latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
-
-    jax.debug.print("Step {s}: latent_model_input shape: {shape}",
-                    s=step,
-                    shape=latent_model_input.shape)
-
-    channel_energy = jnp.sum(latent_model_input*latent_model_input,axis=(0,2,3,4))
-    jax.debug.print("Step {s}: channel energy first 10={ce}",
-                    s=step,
-                    ce=channel_energy[:10])
 
     prompt_embeds_input = prompt_embeds
     image_embeds_input = image_embeds
@@ -347,23 +324,10 @@ def run_inference_2_1_i2v(
         encoder_hidden_states_image=image_embeds_input,
     )
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
-    jax.debug.print("Step {s}: noise_pred stats min={mn}, max={mx}, mean={mean}, std={std}",
-                    s=step,
-                    mn=jnp.min(noise_pred),
-                    mx=jnp.max(noise_pred),
-                    mean=jnp.mean(noise_pred),
-                    std=jnp.std(noise_pred))
     jax.debug.print("Step {s}: latents_prev std={std}, mean={mean}",
                     s=step,
                     std=jnp.std(latents),
                     mean=jnp.mean(latents))
-    jax.debug.print("first_frame_mask shape:", first_frame_mask.shape if first_frame_mask is not None else (-1,))
-    jax.debug.print("first_frame_mask unique values:", jnp.unique(first_frame_mask))
-    jax.debug.print("condition shape:", condition.shape)
-    jax.debug.print("condition stats:", jnp.min(condition), jnp.max(condition), jnp.mean(condition))
-    if first_frame_mask is not None:
-       clean_latents = condition[..., 4:]
-       latents = first_frame_mask * clean_latents + (1 - first_frame_mask) * latents
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     jax.debug.print("Step {s}: latents_next std={std}, mean={mean}",
                     s=step,
