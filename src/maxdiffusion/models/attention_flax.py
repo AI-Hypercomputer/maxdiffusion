@@ -25,6 +25,9 @@ import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
+from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
+from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
+from tokamax._src.ops.experimental.tpu.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from einops import rearrange
 from .. import common_types, max_logging
 
@@ -45,6 +48,13 @@ HEAD = common_types.HEAD
 D_KV = common_types.D_KV
 EMBED = common_types.EMBED
 Quant = quantizations.AqtQuantization
+
+SELF_ATTN_HEAD = common_types.SELF_ATTN_HEAD
+SELF_ATTN_Q_LENGTH = common_types.SELF_ATTN_Q_LENGTH
+SELF_ATTN_KV_LENGTH = common_types.SELF_ATTN_KV_LENGTH
+CROSS_ATTN_HEAD = common_types.CROSS_ATTN_HEAD
+CROSS_ATTN_Q_LENGTH = common_types.CROSS_ATTN_Q_LENGTH
+CROSS_ATTN_KV_LENGTH = common_types.CROSS_ATTN_KV_LENGTH
 
 
 def _maybe_aqt_einsum(quant: Quant):
@@ -163,6 +173,40 @@ def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
 
   return tensor, kv_size, seq_len
 
+def convert_to_tokamax_splash_config( block_sizes: BlockSizes,
+                                      q_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+                                      k_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+                                      v_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+                                      residual_checkpoint_name: str | None = None,
+                                      attn_logits_soft_cap: float | None = None,
+                                      fuse_reciprocal: bool = True,
+                                      use_base2_exp: bool = False,
+                                      max_logit_const: float | None = None,
+                                      interpret: bool = False,
+                                      dq_reduction_steps: int | None = None) -> tokamax_splash_attention_kernel.SplashConfig:
+  assert block_sizes.use_fused_bwd_kernel, "Tokamax Splash attention only supports fused bwd kernel."
+  return tokamax_splash_attention_kernel.SplashConfig(
+      block_q=block_sizes.block_q,
+      block_kv=block_sizes.block_kv,
+      block_kv_compute=block_sizes.block_kv_compute,
+      block_q_dkv=block_sizes.block_q_dkv,
+      block_kv_dkv=block_sizes.block_kv_dkv,
+      block_kv_dkv_compute=block_sizes.block_kv_dkv_compute,
+      block_q_dq= None if block_sizes.use_fused_bwd_kernel else block_sizes.block_q_dq,
+      block_kv_dq=None if block_sizes.use_fused_bwd_kernel else block_sizes.block_kv_dq,
+      use_fused_bwd_kernel=block_sizes.use_fused_bwd_kernel,
+      q_layout=q_layout,
+      k_layout=k_layout,
+      v_layout=v_layout,
+      residual_checkpoint_name=residual_checkpoint_name,
+      attn_logits_soft_cap=attn_logits_soft_cap,
+      fuse_reciprocal=fuse_reciprocal,
+      use_base2_exp=use_base2_exp,
+      max_logit_const=max_logit_const,
+      interpret=interpret,
+      dq_reduction_steps=dq_reduction_steps,
+  )
+
 
 def _tpu_flash_attention(
     query: jax.Array,
@@ -175,6 +219,7 @@ def _tpu_flash_attention(
     flash_block_sizes: BlockSizes,
     dtype: jnp.dtype = jnp.float32,
     attention_kernel: str = "flash",
+    mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
 ) -> jax.Array:
   """TPU Flash Attention"""
@@ -254,55 +299,98 @@ def _tpu_flash_attention(
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
-    splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask,
-        head_shards=1,  # the sizes of the axis is sharding over heads
-        q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
-        block_sizes=block_sizes,
-        save_residuals=True if attention_kernel == "ring" else False,
-        residual_checkpoint_name=residual_checkpoint_name,
-    )
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
-
-    if attention_kernel == "flash":
-      attention_output = vmapped_splash(query, key, value, segment_ids)
+    if attention_kernel == "tokamax_flash":
+      mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
+      splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
+          mask=mask,
+          q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          save_residuals=True if "ring" in attention_kernel else False,
+      )
+    elif attention_kernel == "tokamax_ring":
+      mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
+      splash_kernel = tokamax_ring_attention_kernel.make_ring_attention(
+          mask=mask,
+          is_mqa=False,
+          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          save_residuals=True,
+          ring_axis="fsdp",
+      )
     else:
-      if num_fsdp_shards > 1:
-        out, (lse,) = vmapped_splash(query, key, value, segment_ids)
-        m = lse.astype(jnp.float32)
-        l = jnp.exp(lse - m)
-        o = out.astype(jnp.float32) * l[..., None]
+      splash_kernel = splash_attention_kernel.make_splash_mha(
+          mask=multi_head_mask,
+          head_shards=1,  # the sizes of the axis is sharding over heads
+          q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+          block_sizes=block_sizes,
+          save_residuals=True if "ring" in attention_kernel else False,
+          residual_checkpoint_name=residual_checkpoint_name
+      )
 
-        perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
+    if attention_kernel == "tokamax_ring":
+      # For tokamax_ring, use the kernel directly without vmap
+      # The ring attention kernel handles the ring topology internally
+      if not mask_padding_tokens:
+        segment_ids = None
+      attention_output = splash_kernel(
+          fwd_mask_info=None,
+          dkv_mask_info=None,
+          q=query,
+          k=key,
+          v=value,
+          segment_ids=segment_ids,
+          is_mqa=False,
+          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          mask_value=-jnp.inf,
+          mask_function=None,
+          fwd_mask_sparsity=1.0,
+          save_residuals=True,
+      )
+    else:
+      vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
-        k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
-        v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
+      if not mask_padding_tokens:
+        segment_ids = None
+      if attention_kernel in ["flash", "tokamax_flash"]:
+        attention_output = vmapped_splash(query, key, value, segment_ids)
+      else:
+        if num_fsdp_shards > 1:
+          out, (lse,) = vmapped_splash(query, key, value, segment_ids)
+          m = lse.astype(jnp.float32)
+          l = jnp.exp(lse - m)
+          o = out.astype(jnp.float32) * l[..., None]
 
-        def ring_scan_body(carry, _):
-          m, l, o, k_current, v_current = carry
-          k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
-          v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
+          perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
 
-          out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
+          k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
+          v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
 
-          m_chunk = lse_chunk.astype(jnp.float32)
-          m_old = m
-          m = jnp.maximum(m_old, m_chunk)
+          def ring_scan_body(carry, _):
+            m, l, o, k_current, v_current = carry
+            k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
+            v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
 
-          exp_m_diff = jnp.exp(m_old - m)
-          exp_m_chunk_diff = jnp.exp(m_chunk - m)
+            out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
 
-          l = l * exp_m_diff + jnp.exp(lse_chunk - m)
-          o = o * exp_m_diff[..., None]
-          o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
+            m_chunk = lse_chunk.astype(jnp.float32)
+            m_old = m
+            m = jnp.maximum(m_old, m_chunk)
 
-          # Return the updated state for the next iteration
-          return (m, l, o, k_next, v_next), None
+            exp_m_diff = jnp.exp(m_old - m)
+            exp_m_chunk_diff = jnp.exp(m_chunk - m)
 
-        initial_carry = (m, l, o, k1, v1)
-        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
+            l = l * exp_m_diff + jnp.exp(lse_chunk - m)
+            o = o * exp_m_diff[..., None]
+            o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
 
-        attention_output = o_final / l_final[..., None]
+            # Return the updated state for the next iteration
+            return (m, l, o, k_next, v_next), None
+
+          initial_carry = (m, l, o, k1, v1)
+          (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
+
+          attention_output = o_final / l_final[..., None]
+        else:
+          raise ValueError("ring attention requires fsdp > 1")
 
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
@@ -443,6 +531,7 @@ def _apply_attention(
     axis_names_kv: AxisNames,
     flash_block_sizes: BlockSizes,
     dpa_layer: Callable,
+    mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
 ):
   """Routes to different attention kernels."""
@@ -450,7 +539,7 @@ def _apply_attention(
   seq_len_idx = 1
   if query.ndim == 4:
     seq_len_idx = 2
-  if attention_kernel == "flash":
+  if attention_kernel in ["flash", "tokamax_flash"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -462,7 +551,7 @@ def _apply_attention(
     return _apply_attention_dot(
         query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
     )
-  elif attention_kernel == "flash":
+  elif attention_kernel in ["flash", "tokamax_flash"]:
     return _tpu_flash_attention(
         query,
         key * scale,
@@ -473,16 +562,20 @@ def _apply_attention(
         axis_names_kv,
         flash_block_sizes,
         dtype,
+        attention_kernel,
+        mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
     )
-  elif attention_kernel == "ring":
+  elif "ring" in attention_kernel:
     return _tpu_flash_attention(
-        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel
+        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel,
+        mask_padding_tokens=mask_padding_tokens,
     )
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:
     raise ValueError(f"Unexpected attention kernel {attention_kernel=}.")
+
 
 
 def _query_chunk_attention(query, key, value, precision, key_chunk_size: int = 4096):
@@ -608,6 +701,7 @@ class NNXAttentionOp(nnx.Module):
       flash_block_sizes: BlockSizes = None,
       dtype: DType = jnp.float32,
       quant: Quant = None,
+      mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
   ):
     self.dpa_layer = None
@@ -628,6 +722,7 @@ class NNXAttentionOp(nnx.Module):
     self.flash_block_sizes = flash_block_sizes
     self.dtype = dtype
     self.quant = quant
+    self.mask_padding_tokens = mask_padding_tokens
     self.residual_checkpoint_name = residual_checkpoint_name
 
   def apply_attention(self, query: Array, key: Array, value: Array):
@@ -649,6 +744,7 @@ class NNXAttentionOp(nnx.Module):
         axis_names_kv=self.axis_names_kv,
         flash_block_sizes=self.flash_block_sizes,
         dpa_layer=self.dpa_layer,
+        mask_padding_tokens=self.mask_padding_tokens,
         residual_checkpoint_name=self.residual_checkpoint_name,
     )
 
@@ -738,6 +834,8 @@ class FlaxWanAttention(nnx.Module):
       precision: jax.lax.Precision = None,
       qkv_bias: bool = False,
       quant: Quant = None,
+      is_self_attention: bool = True,
+      mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
       enable_jax_named_scopes: bool = False,
   ):
@@ -751,11 +849,18 @@ class FlaxWanAttention(nnx.Module):
     self.inner_dim = dim_head * heads
     scale = dim_head**-0.5
     self.qk_norm = qk_norm
-    self.enable_jax_named_scopes = enable_jax_named_scopes
     self.query_axis_names = query_axis_names
     self.key_axis_names = key_axis_names
     self.value_axis_names = value_axis_names
     self.out_axis_names = out_axis_names
+    self.enable_jax_named_scopes = enable_jax_named_scopes
+
+    if is_self_attention:
+      axis_names_q = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_Q_LENGTH, D_KV)
+      axis_names_kv = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_KV_LENGTH, D_KV)
+    else:
+      axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
+      axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
 
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
@@ -766,10 +871,13 @@ class FlaxWanAttention(nnx.Module):
         use_memory_efficient_attention=use_memory_efficient_attention,
         split_head_dim=split_head_dim,
         float32_qk_product=False,
+        axis_names_q=axis_names_q,
+        axis_names_kv=axis_names_kv,
         flash_min_seq_length=flash_min_seq_length,
         flash_block_sizes=flash_block_sizes,
         dtype=dtype,
         quant=quant,
+        mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
     )
     # None axes corresponds to the stacked weights across all blocks

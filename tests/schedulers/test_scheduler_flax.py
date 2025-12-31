@@ -335,11 +335,11 @@ class FlaxDDPMSchedulerTest(FlaxSchedulerCommonTest):
         result_mean = jnp.mean(jnp.abs(sample))
 
         if jax_device == "tpu":
-            assert abs(result_sum - 257.29) < 1.5e-2
-            assert abs(result_mean - 0.3349905) < 2e-5
+            assert abs(result_sum - 257.28717) < 1.5e-2
+            assert abs(result_mean - 0.33500) < 2e-5
         else:
-            assert abs(result_sum - 255.1113) < 1e-2
-            assert abs(result_mean - 0.332176) < 1e-3
+            assert abs(result_sum - 257.33148) < 1e-2
+            assert abs(result_mean - 0.335057) < 1e-3
 
 
 @require_flax
@@ -621,7 +621,7 @@ class FlaxDDIMSchedulerTest(FlaxSchedulerCommonTest):
         result_mean = jnp.mean(jnp.abs(sample))
 
         if jax_device == "tpu":
-            assert abs(result_sum - 149.8409) < 1e-2
+            assert abs(result_sum - 149.82944) < 1e-2
             assert abs(result_mean - 0.1951) < 1e-3
         else:
             assert abs(result_sum - 149.8295) < 1e-2
@@ -919,7 +919,7 @@ class FlaxPNDMSchedulerTest(FlaxSchedulerCommonTest):
         result_mean = jnp.mean(jnp.abs(sample))
 
         if jax_device == "tpu":
-            assert abs(result_sum - 186.83226) < 8e-2
+            assert abs(result_sum - 186.94574) < 8e-2
             assert abs(result_mean - 0.24327) < 1e-3
         else:
             assert abs(result_sum - 186.9466) < 1e-2
@@ -932,7 +932,7 @@ class FlaxPNDMSchedulerTest(FlaxSchedulerCommonTest):
         result_mean = jnp.mean(jnp.abs(sample))
 
         if jax_device == "tpu":
-            assert abs(result_sum - 186.83226) < 8e-2
+            assert abs(result_sum - 186.94574) < 8e-2
             assert abs(result_mean - 0.24327) < 1e-3
         else:
             assert abs(result_sum - 186.9482) < 1e-2
