@@ -121,19 +121,21 @@ class WanPipelineI2V_2_1(WanPipeline):
                         nlf=latents.shape[1],
                         exp=num_latent_frames)
         latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)
-        # 1. Create a base mask at the latent frame level
-        mask_lat_size = jnp.ones((batch_size, 1, num_latent_frames, latent_height, latent_width), dtype=dtype)
-        # 2. Apply masking based on last_image
+        mask_lat_size = jnp.ones((batch_size, 1, num_frames, latent_height, latent_width), dtype=dtype)
         if last_image is None:
             mask_lat_size = mask_lat_size.at[:, :, 1:, :, :].set(0)
         else:
-            mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)
-        
-        # 3. Expand the mask to match the temporal scale factor during reshape
-        mask_lat_size = jnp.repeat(mask_lat_size, self.vae_scale_factor_temporal, axis=2)
-        jax.debug.print("mask_lat_size shape after repeat: {shape}", shape=mask_lat_size.shape)
-
-        # 4. Reshape to combine latent frames and temporal scale factor
+            mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)     
+        first_frame_mask = mask_lat_size[:, :, 0:1]
+        first_frame_mask = jnp.repeat(first_frame_mask, self.vae_scale_factor_temporal, axis=2)
+        jax.debug.print("first_frame_mask.shape:{shape}, is None:{isnone}",
+                        shape = first_frame_mask.shape if first_frame_mask is not None else (-1,),
+                        isnone = first_frame_mask is None)
+        jax.debug.print("first_frame_mask_stats: min={mn}, max={mx}, mean={mean}",
+                        mn=jnp.min(first_frame_mask) if first_frame_mask is not None else 0.0,
+                        mx=jnp.max(first_frame_mask) if first_frame_mask is not None else 0.0,
+                        mean=jnp.mean(first_frame_mask) if first_frame_mask is not None else 0.0)
+        mask_lat_size = jnp.concatenate([first_frame_mask, mask_lat_size[:, :, 1:]], axis=2)
         mask_lat_size = mask_lat_size.reshape(
           batch_size, 
           1,
@@ -142,21 +144,16 @@ class WanPipelineI2V_2_1(WanPipeline):
           latent_height, 
           latent_width
         )
-        # 5. Transpose and squeeze to get the final mask shape (B, F_l, H_l, W_l, T_sf)
         mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 4, 5, 3, 1)).squeeze(-1)
-        jax.debug.print("mask_lat_size final shape: {shape}", shape=mask_lat_size.shape)
-
-        # 6. Concatenate with latent_condition
         condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)
         jax.debug.print("condition shape: {shape}, channel dim: {c}",
                         shape=condition.shape,
                         c=condition.shape[-1])
         jax.debug.print("condition stats: mask_mean={mm}, latent_mean={lm}",
-                        mm=jnp.mean(condition[..., :self.vae_scale_factor_temporal]),
-                        lm=jnp.mean(condition[..., self.vae_scale_factor_temporal:]))
+                        mm=jnp.mean(condition[..., 0]),
+                        lm=jnp.mean(condition[..., 1:]))
 
-        first_frame_mask = mask_lat_size[:, 0:1, :, :, :] # (B, 1, H_l, W_l, 4)
-        return latents, condition, first_frame_mask
+        return latents, condition, None
 
 
   def __call__(
@@ -291,20 +288,6 @@ def run_inference_2_1_i2v(
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
 
-  jax.debug.print(
-      "run_inference_2_1_i2v - Initial Inputs:\n"
-      "  latents shape: {l_shape}, dtype: {l_dtype}\n"
-      "  condition shape: {c_shape}, dtype: {c_dtype}\n"
-      "  prompt_embeds shape: {pe_shape}, dtype: {pe_dtype}\n"
-      "  negative_prompt_embeds shape: {npe_shape}, dtype: {npe_dtype}\n"
-      "  image_embeds shape: {ie_shape}, dtype: {ie_dtype}",
-      l_shape=latents.shape, l_dtype=latents.dtype,
-      c_shape=condition.shape, c_dtype=condition.dtype,
-      pe_shape=prompt_embeds.shape, pe_dtype=prompt_embeds.dtype,
-      npe_shape=negative_prompt_embeds.shape, npe_dtype=negative_prompt_embeds.dtype,
-      ie_shape=image_embeds.shape, ie_dtype=image_embeds.dtype
-  )
-
   if do_classifier_free_guidance:
     prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
     image_embeds = jnp.concatenate([image_embeds, image_embeds], axis=0)
@@ -336,13 +319,9 @@ def run_inference_2_1_i2v(
         latent_model_input, timestep, prompt_embeds_input,
         do_classifier_free_guidance=do_classifier_free_guidance,
         guidance_scale=guidance_scale,
-        encoder_hidden_states_image=image_embeds_input
+        encoder_hidden_states_image=image_embeds_input,
     )
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
-    jax.debug.print("  noise_pred shape: {np_shape}, dtype: {np_dtype}", np_shape=noise_pred.shape, np_dtype=noise_pred.dtype)
-    jax.debug.print("  noise_pred stats: min={mn}, max={mx}, mean={mean}, std={std}",
-                    mn=jnp.min(noise_pred), mx=jnp.max(noise_pred), mean=jnp.mean(noise_pred), std=jnp.std(noise_pred))
-
     jax.debug.print("Step {s}: latents_prev std={std}, mean={mean}",
                     s=step,
                     std=jnp.std(latents),
@@ -354,20 +333,14 @@ def run_inference_2_1_i2v(
                     mean=jnp.mean(latents))
     # Apply first frame preservation
     if first_frame_mask is not None:
-      jax.debug.print("  Applying first frame preservation.")
       clean_latents = condition[..., 4:]
       latents = first_frame_mask * clean_latents + (1 - first_frame_mask) * latents
-      jax.debug.print("  latents shape after first frame preservation: {l_shape}, dtype: {l_dtype}", l_shape=latents.shape, l_dtype=latents.dtype)
-      jax.debug.print("  latents stats after first frame preservation: min={mn}, max={mx}, mean={mean}, std={std}",
-                      mn=jnp.min(latents), mx=jnp.max(latents), mean=jnp.mean(latents), std=jnp.std(latents))
-
     latents = latents.astype(original_dtype)
     return latents, scheduler_state, rng
 
   max_logging.log(f"Running fori_loop for {num_inference_steps} steps.")
   latents, _, _ = jax.lax.fori_loop(0, num_inference_steps, loop_body, (latents, scheduler_state, rng))
-  jax.debug.print("Final latents shape: {l_shape}, dtype: {l_dtype}", l_shape=latents.shape, l_dtype=latents.dtype)
-  jax.debug.print("Final latents stats: min={lmin}, max={lmax}, mean={lmean}, std={lstd}",
+  jax.debug.print("Final latents states: min={lmin}, max={lmax}, mean={lmean}, std={lstd}",
                   lmin=jnp.min(latents),
                   lmax=jnp.max(latents),
                   lmean=jnp.mean(latents),
