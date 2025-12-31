@@ -121,40 +121,36 @@ class WanPipelineI2V_2_1(WanPipeline):
                         nlf=latents.shape[1],
                         exp=num_latent_frames)
         latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)
-        mask_lat_size = jnp.ones((batch_size, 1, num_frames, latent_height, latent_width), dtype=dtype)
+        num_latent_frames = latents.shape[1] # Use the shape from latents
+
+        # Create a base mask at the latent frame level
+        mask_lat_size = jnp.ones((batch_size, num_latent_frames, latent_height, latent_width, 1), dtype=dtype)
+
+        # Apply masking based on last_image
         if last_image is None:
-            mask_lat_size = mask_lat_size.at[:, :, 1:, :, :].set(0)
+            mask_lat_size = mask_lat_size.at[:, 1:, :, :, :].set(0)
         else:
-            mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)     
-        first_frame_mask = mask_lat_size[:, :, 0:1]
-        first_frame_mask = jnp.repeat(first_frame_mask, self.vae_scale_factor_temporal, axis=2)
-        jax.debug.print("first_frame_mask.shape:{shape}, is None:{isnone}",
-                        shape = first_frame_mask.shape if first_frame_mask is not None else (-1,),
-                        isnone = first_frame_mask is None)
-        jax.debug.print("first_frame_mask_stats: min={mn}, max={mx}, mean={mean}",
-                        mn=jnp.min(first_frame_mask) if first_frame_mask is not None else 0.0,
-                        mx=jnp.max(first_frame_mask) if first_frame_mask is not None else 0.0,
-                        mean=jnp.mean(first_frame_mask) if first_frame_mask is not None else 0.0)
-        mask_lat_size = jnp.concatenate([first_frame_mask, mask_lat_size[:, :, 1:]], axis=2)
-        mask_lat_size = mask_lat_size.reshape(
-          batch_size, 
-          1,
-          num_latent_frames, 
-          self.vae_scale_factor_temporal, 
-          latent_height, 
-          latent_width
-        )
-        mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 4, 5, 3, 1)).squeeze(-1)
-        condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)
+            mask_lat_size = mask_lat_size.at[:, 1:-1, :, :, :].set(0)
+        
+        # We need mask_lat_size to have 4 channels to match `self.vae_scale_factor_temporal`
+        # and result in 36 total channels after concatenation with latent_condition (16 channels).
+        mask_channels = self.vae_scale_factor_temporal # Should be 4
+        mask_lat_size_expanded = jnp.repeat(mask_lat_size, mask_channels, axis=-1)
+        # Shape: (B, num_latent_frames, H_l, W_l, 4)
+
+        # Concatenate with latent_condition
+        condition = jnp.concatenate([mask_lat_size_expanded, latent_condition], axis=-1)
+        # Shape: (B, num_latent_frames, H_l, W_l, 4 + 16) = (B, num_latent_frames, H_l, W_l, 20)
+
         jax.debug.print("condition shape: {shape}, channel dim: {c}",
                         shape=condition.shape,
                         c=condition.shape[-1])
         jax.debug.print("condition stats: mask_mean={mm}, latent_mean={lm}",
-                        mm=jnp.mean(condition[..., 0]),
-                        lm=jnp.mean(condition[..., 1:]))
+                        mm=jnp.mean(condition[..., :mask_channels]),
+                        lm=jnp.mean(condition[..., mask_channels:]))
 
-        return latents, condition, None
-
+        first_frame_mask = mask_lat_size_expanded[:, 0:1, :, :, :] # (B, 1, H_l, W_l, 4)
+        return latents, condition, first_frame_mask
 
   def __call__(
     self,
