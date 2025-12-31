@@ -288,6 +288,20 @@ def run_inference_2_1_i2v(
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
 
+  jax.debug.print(
+      "run_inference_2_1_i2v - Initial Inputs:\n"
+      "  latents shape: {l_shape}, dtype: {l_dtype}\n"
+      "  condition shape: {c_shape}, dtype: {c_dtype}\n"
+      "  prompt_embeds shape: {pe_shape}, dtype: {pe_dtype}\n"
+      "  negative_prompt_embeds shape: {npe_shape}, dtype: {npe_dtype}\n"
+      "  image_embeds shape: {ie_shape}, dtype: {ie_dtype}",
+      l_shape=latents.shape, l_dtype=latents.dtype,
+      c_shape=condition.shape, c_dtype=condition.dtype,
+      pe_shape=prompt_embeds.shape, pe_dtype=prompt_embeds.dtype,
+      npe_shape=negative_prompt_embeds.shape, npe_dtype=negative_prompt_embeds.dtype,
+      ie_shape=image_embeds.shape, ie_dtype=image_embeds.dtype
+  )
+
   if do_classifier_free_guidance:
     prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
     image_embeds = jnp.concatenate([image_embeds, image_embeds], axis=0)
@@ -319,9 +333,13 @@ def run_inference_2_1_i2v(
         latent_model_input, timestep, prompt_embeds_input,
         do_classifier_free_guidance=do_classifier_free_guidance,
         guidance_scale=guidance_scale,
-        encoder_hidden_states_image=image_embeds_input,
+        encoder_hidden_states_image=image_embeds_input
     )
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+    jax.debug.print("  noise_pred shape: {np_shape}, dtype: {np_dtype}", np_shape=noise_pred.shape, np_dtype=noise_pred.dtype)
+    jax.debug.print("  noise_pred stats: min={mn}, max={mx}, mean={mean}, std={std}",
+                    mn=jnp.min(noise_pred), mx=jnp.max(noise_pred), mean=jnp.mean(noise_pred), std=jnp.std(noise_pred))
+
     jax.debug.print("Step {s}: latents_prev std={std}, mean={mean}",
                     s=step,
                     std=jnp.std(latents),
@@ -333,14 +351,20 @@ def run_inference_2_1_i2v(
                     mean=jnp.mean(latents))
     # Apply first frame preservation
     if first_frame_mask is not None:
+      jax.debug.print("  Applying first frame preservation.")
       clean_latents = condition[..., 4:]
       latents = first_frame_mask * clean_latents + (1 - first_frame_mask) * latents
+      jax.debug.print("  latents shape after first frame preservation: {l_shape}, dtype: {l_dtype}", l_shape=latents.shape, l_dtype=latents.dtype)
+      jax.debug.print("  latents stats after first frame preservation: min={mn}, max={mx}, mean={mean}, std={std}",
+                      mn=jnp.min(latents), mx=jnp.max(latents), mean=jnp.mean(latents), std=jnp.std(latents))
+
     latents = latents.astype(original_dtype)
     return latents, scheduler_state, rng
 
   max_logging.log(f"Running fori_loop for {num_inference_steps} steps.")
   latents, _, _ = jax.lax.fori_loop(0, num_inference_steps, loop_body, (latents, scheduler_state, rng))
-  jax.debug.print("Final latents states: min={lmin}, max={lmax}, mean={lmean}, std={lstd}",
+  jax.debug.print("Final latents shape: {l_shape}, dtype: {l_dtype}", l_shape=latents.shape, l_dtype=latents.dtype)
+  jax.debug.print("Final latents stats: min={lmin}, max={lmax}, mean={lmean}, std={lstd}",
                   lmin=jnp.min(latents),
                   lmax=jnp.max(latents),
                   lmean=jnp.mean(latents),
