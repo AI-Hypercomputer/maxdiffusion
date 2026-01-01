@@ -113,6 +113,7 @@ def create_sharded_logical_transformer(
   wan_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
   wan_config["flash_min_seq_length"] = config.flash_min_seq_length
   wan_config["dropout"] = config.dropout
+  wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
 
@@ -302,9 +303,9 @@ class WanPipeline:
             act_qtype=jnp.float8_e4m3fn,
             bwd_qtype=jnp.float8_e5m2,
             disable_channelwise_axes=True,  # per_tensor calibration
-            weight_calibration_method=config.quantization_calibration_method,
-            act_calibration_method=config.quantization_calibration_method,
-            bwd_calibration_method=config.quantization_calibration_method,
+            weight_calibration_method=config.weight_quantization_calibration_method,
+            act_calibration_method=config.act_quantization_calibration_method,
+            bwd_calibration_method=config.bwd_quantization_calibration_method,
             op_names=("dot_general", "einsum"),
         ),
         qwix.QtRule(
@@ -313,9 +314,9 @@ class WanPipeline:
             act_qtype=jnp.float8_e4m3fn,
             bwd_qtype=jnp.float8_e4m3fn,
             disable_channelwise_axes=True,  # per_tensor calibration
-            weight_calibration_method=config.quantization_calibration_method,
-            act_calibration_method=config.quantization_calibration_method,
-            bwd_calibration_method=config.quantization_calibration_method,
+            weight_calibration_method=config.weight_quantization_calibration_method,
+            act_calibration_method=config.act_quantization_calibration_method,
+            bwd_calibration_method=config.bwd_quantization_calibration_method,
             op_names=("conv_general_dilated"),
         ),
     ]
@@ -533,13 +534,14 @@ class WanPipeline:
 
       batch_size = len(prompt)
 
-      prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-          prompt=prompt,
-          negative_prompt=negative_prompt,
-          max_sequence_length=max_sequence_length,
-          prompt_embeds=prompt_embeds,
-          negative_prompt_embeds=negative_prompt_embeds,
-      )
+      with jax.named_scope("Encode-Prompt"):
+        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            max_sequence_length=max_sequence_length,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+        )
 
       num_channel_latents = self._get_num_channel_latents()
       if latents is None:

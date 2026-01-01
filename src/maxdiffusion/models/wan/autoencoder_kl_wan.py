@@ -16,6 +16,7 @@
 
 from typing import Tuple, List, Sequence, Union, Optional
 
+import flax
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -28,7 +29,10 @@ from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistributio
 BlockSizes = common_types.BlockSizes
 
 CACHE_T = 2
-
+try:
+  flax.config.update('flax_always_shard_variable', False)
+except:
+  pass
 
 # Helper to ensure kernel_size, stride, padding are tuples of 3 integers
 def _canonicalize_tuple(x: Union[int, Sequence[int]], rank: int, name: str) -> Tuple[int, ...]:
@@ -73,10 +77,10 @@ class WanCausalConv3d(nnx.Module):
     self._depth_padding_before = self._causal_padding[1][0]  # 2 * padding_tuple[0]
 
     # Set sharding dynamically based on out_channels.
-    fspd_key = max_utils.get_axis_names("activation_length")
-    if not fspd_key:
-      fspd_key = "fsdp"
-    num_fsdp_axis_devices = mesh.shape[fspd_key]
+    fsdp_key = max_utils.get_axis_names("activation_length")
+    if not fsdp_key:
+      fsdp_key = "fsdp_tpu"
+    num_fsdp_axis_devices = mesh.shape[fsdp_key]
     kernel_sharding = (None, None, None, None, None)
     if out_channels % num_fsdp_axis_devices == 0:
       kernel_sharding = (None, None, None, None, "conv_out")

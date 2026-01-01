@@ -60,7 +60,17 @@ jit_initializers: True
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring
-flash_min_seq_length: 4096
+flash_min_seq_length: 0
+
+# If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
+# Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
+# However, when padding tokens are significant, this will lead to worse quality and should be set to True.
+mask_padding_tokens: True 
+# Maxdiffusion has 2 types of attention sharding strategies:
+# 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
+# 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
+#    in cross attention q.
+attention_sharding_uniform: True 
 dropout: 0.1
 
 flash_block_sizes: {
@@ -70,7 +80,7 @@ flash_block_sizes: {
   "block_q_dkv" : 2048,
   "block_kv_dkv" : 2048,
   "block_kv_dkv_compute" : 512,
-  "use_fused_bwd_kernel" : True
+  "use_fused_bwd_kernel": True
 }
 # Use on v6e
 # flash_block_sizes: {
@@ -79,10 +89,21 @@ flash_block_sizes: {
 #   "block_kv" : 2048,
 #   "block_q_dkv" : 3024,
 #   "block_kv_dkv" : 2048,
-#   "block_kv_dkv_compute" : 2048,
+#   "block_kv_dkv_compute" : 1024,
 #   "block_q_dq" : 3024,
 #   "block_kv_dq" : 2048,
 #   "use_fused_bwd_kernel": False,
+# }
+# Use on v5p
+# flash_block_sizes: {
+#   "block_q" : 3024,
+#   "block_kv_compute" : 1024,
+#   "block_kv" : 2048,
+#   "block_q_dkv" : 1024,
+#   "block_kv_dkv" : 3072,
+#   "block_kv_dkv_compute" : 256,
+#   "block_q_dq" : 1024,
+#   "block_kv_dq" : 3072
 # }
 # GroupNorm groups
 norm_num_groups: 32
@@ -145,6 +166,8 @@ logical_axis_rules: [
                       ['batch', ['data', 'fsdp_gpu']],
                       ['activation_batch', ['data', 'fsdp_gpu']],
                       ['activation_length', 'fsdp_tpu'],
+                      ['activation_self_attn_heads', ['fsdp_tpu', 'tensor']], 
+                      ['activation_cross_attn_q_length', ['fsdp_tpu', 'tensor']],
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
                       ['embed', ['fsdp_tpu', 'fsdp_gpu']],
@@ -280,7 +303,7 @@ flow_shift: 3.0
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 30
-fps: 24
+fps: 16
 save_final_checkpoint: False
 
 # SDXL Lightning parameters
@@ -320,8 +343,10 @@ quantization: ''
 quantization_local_shard_count: -1
 compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
 use_qwix_quantization: False # Whether to use qwix for quantization. If set to True, the transformer of WAN will be quantized using qwix.
-# Quantization calibration method used for weights and activations. Supported methods can be found in https://github.com/google/qwix/blob/dc2a0770351c740e5ab3cce7c0efe9f7beacce9e/qwix/qconfig.py#L70-L80
-quantization_calibration_method: "absmax"
+# Quantization calibration method used for weights, activations and bwd. Supported methods can be found in https://github.com/google/qwix/blob/dc2a0770351c740e5ab3cce7c0efe9f7beacce9e/qwix/qconfig.py#L70-L80
+weight_quantization_calibration_method: "absmax"
+act_quantization_calibration_method: "absmax"
+bwd_quantization_calibration_method: "absmax"
 qwix_module_path: ".*"
 
 # Eval model on per eval_every steps. -1 means don't eval.

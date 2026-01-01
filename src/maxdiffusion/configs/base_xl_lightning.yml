@@ -48,6 +48,15 @@ jit_initializers: True
 from_pt: False
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash
+# If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
+# Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
+# However, when padding tokens are significant, this will lead to worse quality and should be set to True.
+mask_padding_tokens: True 
+# Maxdiffusion has 2 types of attention sharding strategies:
+# 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
+# 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
+#    in cross attention q.
+attention_sharding_uniform: True 
 flash_block_sizes: {}
 # GroupNorm groups
 norm_num_groups: 32
@@ -77,7 +86,7 @@ skip_jax_distributed_system: False
 base_output_directory: ""
 
 # Parallelism
-mesh_axes: ['data', 'fsdp', 'tensor']
+mesh_axes: ['data', 'fsdp_tpu', 'tensor']
 
 # batch : batch dimension of data and activations
 # hidden :
@@ -93,16 +102,16 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
                       ['batch', 'data'],
-                      ['activation_batch', ['data','fsdp']],
+                      ['activation_batch', ['data','fsdp_tpu']],
                       ['activation_heads', 'tensor'],
                       ['activation_kv', 'tensor'],
-                      ['embed','fsdp'],
+                      ['embed','fsdp_tpu'],
                       ['heads', 'tensor'],
-                      ['conv_batch', ['data','fsdp']],
+                      ['conv_batch', ['data','fsdp_tpu']],
                       ['out_channels', 'tensor'],
-                      ['conv_out', 'fsdp'],
+                      ['conv_out', 'fsdp_tpu'],
                     ]
-data_sharding: [['data', 'fsdp', 'tensor']]
+data_sharding: [['data', 'fsdp_tpu', 'tensor']]
 
 # One axis for each parallelism type may hold a placeholder (-1)
 # value to auto-shard based on available slices and devices.
