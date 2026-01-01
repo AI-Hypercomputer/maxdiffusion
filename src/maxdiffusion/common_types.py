@@ -35,7 +35,7 @@ BlockSizes = splash_attention_kernel.BlockSizes
 AxisNames = tuple[str, ...]
 # Physical axis names for device meshes.
 DATA = "data"
-FSDP = "fsdp"
+FSDP = "fsdp_tpu"
 TENSOR = "tensor"
 # Logical axis names for model parameters and activations.
 BATCH = "activation_batch"

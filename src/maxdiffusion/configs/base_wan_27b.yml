@@ -137,7 +137,7 @@ hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
 skip_jax_distributed_system: False
 
 # Parallelism
-mesh_axes: ['data', 'fsdp', 'tensor']
+mesh_axes: ['data', 'fsdp_tpu', 'tensor']
 
 # batch : batch dimension of data and activations
 # hidden :
@@ -154,18 +154,18 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 logical_axis_rules: [
                       ['batch', 'data'],
                       ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
+                      ['activation_length', 'fsdp_tpu'],
                       
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
-                      ['embed','fsdp'],
+                      ['embed','fsdp_tpu'],
                       ['heads', 'tensor'],
                       ['norm', 'tensor'],
-                      ['conv_batch', ['data','fsdp']],
+                      ['conv_batch', ['data','fsdp_tpu']],
                       ['out_channels', 'tensor'],
-                      ['conv_out', 'fsdp'],
+                      ['conv_out', 'fsdp_tpu'],
                     ]
-data_sharding: [['data', 'fsdp', 'tensor']]
+data_sharding: [['data', 'fsdp_tpu', 'tensor']]
 
 # One axis for each parallelism type may hold a placeholder (-1)
 # value to auto-shard based on available slices and devices.
