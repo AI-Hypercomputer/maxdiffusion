@@ -268,18 +268,18 @@ def create_device_mesh(config, devices=None, logging=True):
   max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
 
   multi_slice_env = num_slices > 1
-  if "dcn_fsdp_tpu_parallelism" in config.get_keys():
+  if "dcn_fsdp_batch_parallelism" in config.get_keys():
     dcn_parallelism = [
         config.dcn_data_parallelism,
         config.dcn_tensor_parallelism,
-        config.dcn_fsdp_tpu_parallelism,
-        config.dcn_fsdp_gpu_parallelism,
+        config.dcn_fsdp_parallelism,
+        config.dcn_fsdp_batch_parallelism,
     ]
     ici_parallelism = [
         config.ici_data_parallelism,
         config.ici_tensor_parallelism,
-        config.ici_fsdp_tpu_parallelism,
-        config.ici_fsdp_gpu_parallelism,
+        config.ici_fsdp_parallelism,
+        config.ici_fsdp_batch_parallelism,
     ]
   else:
     dcn_parallelism = [

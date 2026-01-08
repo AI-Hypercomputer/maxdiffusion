@@ -79,7 +79,7 @@ class WanCausalConv3d(nnx.Module):
     # Set sharding dynamically based on out_channels.
     fsdp_key = max_utils.get_axis_names("activation_length")
     if not fsdp_key:
-      fsdp_key = "fsdp_tpu"
+      fsdp_key = "fsdp"
     num_fsdp_axis_devices = mesh.shape[fsdp_key]
     kernel_sharding = (None, None, None, None, None)
     if out_channels % num_fsdp_axis_devices == 0:
