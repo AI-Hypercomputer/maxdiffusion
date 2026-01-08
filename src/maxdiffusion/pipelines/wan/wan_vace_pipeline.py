@@ -162,15 +162,36 @@ class VaceWanPipeline(WanPipeline):
     Based on https://github.com/huggingface/diffusers/blob/17c0e79dbdf53fb6705e9c09cc1a854b84c39249/src/diffusers/pipelines/wan/pipeline_wan_vace.py#L414
     """
     if video is not None:
-      raise NotImplementedError("Video support is not yet implemented.")
+      base = self.vae_scale_factor_spatial * (
+          self.transformer.config.patch_size[1]
+          if self.transformer is not None
+          else self.transformer_2.config.patch_size[1]
+      )
+      video_height, video_width = self.video_processor.get_default_height_width(video[0])
+
+      if video_height * video_width > height * width:
+          scale = min(width / video_width, height / video_width)
+          video_height, video_width = int(video_height * scale), int(video_width * scale)
+
+      if video_height % base != 0 or video_width % base != 0:
+          video_height = (video_height // base) * base
+          video_width = (video_width // base) * base
+
+      assert video_height * video_width <= height * width
+
+      video = self.video_processor.preprocess_video(video, video_height, video_width)
+      video = jnp.array(np.asarray(video), dtype=dtype)
+      image_size = (video_height, video_width)  # Use the height/width of video (with possible rescaling)
     else:
       video = jnp.zeros(
-          (batch_size, num_frames, height, width, 3), dtype=dtype
+          (batch_size, 3, num_frames, height, width), dtype=dtype
       )
       image_size = (height, width)  # Use the height/width provider by user
 
     if mask is not None:
-      raise NotImplementedError("Mask support is not yet implemented.")
+      mask = self.video_processor.preprocess_video(mask, image_size[0], image_size[1])
+      mask = jnp.array(np.asarray(mask), dtype=video.dtype)
+      mask = jnp.clip((mask + 1) / 2, a_min=0, a_max=1)
     else:
       mask = jnp.ones_like(video)
 
@@ -239,10 +260,10 @@ class VaceWanPipeline(WanPipeline):
 
   def prepare_masks(
       self,
-      mask: torch.Tensor,
+      mask: jax.Array,
       reference_images: Optional[List[torch.Tensor]] = None,
   ):
-    masks_torch = torch.Tensor(np.array(mask).transpose(0, 4, 1, 2, 3))
+    masks_torch = torch.Tensor(np.array(mask))
     mask = masks_torch
     if reference_images is None:
       # For each batch of video, we set no reference image (as one or more can
@@ -614,8 +635,8 @@ class VaceWanPipeline(WanPipeline):
   def prepare_video_latents(
       self,
       data_sharding: NamedSharding,
-      video: torch.Tensor,
-      mask: torch.Tensor,
+      video: jax.Array,
+      mask: jax.Array,
       reference_images: Optional[List[List[torch.Tensor]]] = None,
       rngs=None,
   ) -> jax.Array:
