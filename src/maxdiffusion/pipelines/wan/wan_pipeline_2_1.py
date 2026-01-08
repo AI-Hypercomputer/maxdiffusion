@@ -17,11 +17,13 @@ from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
 from functools import partial
+from contextlib import nullcontext
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 import jax
 import jax.numpy as jnp
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
+from maxdiffusion import max_utils
 
 
 class WanPipeline2_1(WanPipeline):
@@ -30,6 +32,7 @@ class WanPipeline2_1(WanPipeline):
   def __init__(self, config: HyperParameters, transformer: Optional[WanModel], **kwargs):
     super().__init__(config=config, **kwargs)
     self.transformer = transformer
+    self.config = config
 
   @classmethod
   def _load_and_init(cls, config, restored_checkpoint=None, vae_only=False, load_transformer=True):
@@ -115,8 +118,15 @@ class WanPipeline2_1(WanPipeline):
         scheduler=self.scheduler,
         scheduler_state=scheduler_state,
     )
+    # Set the TE shard_guard context_manager if using TE cudnn_flash attention
+    if self.config.attention == "cudnn_flash_te":
+      from transformer_engine.jax.sharding import global_shard_guard, MeshResource # pytype: disable=import-error
+      cp_resource = max_utils.get_axis_names("activation_length", config=self.config)
+      shard_guard = global_shard_guard(MeshResource(cp_resource=cp_resource))
+    else:
+      shard_guard = nullcontext()
 
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules), shard_guard:
       latents = p_run_inference(
           graphdef=graphdef,
           sharded_state=state,

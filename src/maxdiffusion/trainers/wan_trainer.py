@@ -20,6 +20,7 @@ import functools
 import pprint
 import numpy as np
 import threading
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 import tensorflow as tf
 import jax.numpy as jnp
@@ -40,7 +41,6 @@ from skimage.metrics import structural_similarity as ssim
 from flax.training import train_state
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 from jax.experimental import multihost_utils
-from transformer_engine.jax.sharding import global_shard_guard, MeshResource
 
 
 class TrainState(train_state.TrainState):
@@ -360,18 +360,23 @@ class WanTrainer:
     scheduler_state = pipeline.scheduler_state
     example_batch = load_next_batch(train_data_iterator, None, self.config)
 
-    # Designate the context parallel axis for sharding
-    cp_resource = max_utils.get_axis_names("activation_length", config=self.config)
-    mesh_resource = MeshResource(cp_resource=cp_resource)
-
     with ThreadPoolExecutor(max_workers=1) as executor:
       for step in np.arange(start_step, self.config.max_train_steps):
         if self.config.enable_profiler and step == first_profiling_step:
           max_utils.activate_profiler(self.config)
         start_step_time = datetime.datetime.now()
+
+        # Designate the context parallel axis for sharding
+        if self.config.attention == "cudnn_flash_te":
+          from transformer_engine.jax.sharding import global_shard_guard, MeshResource # pytype: disable=import-error
+          cp_resource = max_utils.get_axis_names("activation_length", config=self.config)
+          shard_guard = global_shard_guard(MeshResource(cp_resource=cp_resource))
+        else:
+          shard_guard = nullcontext()
+
         next_batch_future = executor.submit(load_next_batch, train_data_iterator, example_batch, self.config)
         with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, \
-        global_shard_guard(mesh_resource), nn_partitioning.axis_rules(self.config.logical_axis_rules):
+        shard_guard, nn_partitioning.axis_rules(self.config.logical_axis_rules):
           state, scheduler_state, train_metric, rng = p_train_step(state, example_batch, rng, scheduler_state)
           train_metric["scalar"]["learning/loss"].block_until_ready()
         last_step_completion = datetime.datetime.now()

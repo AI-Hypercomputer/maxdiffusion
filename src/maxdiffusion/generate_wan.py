@@ -251,7 +251,10 @@ def run(config, pipeline=None, filename_prefix=""):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
-  flax.config.update("flax_always_shard_variable", False)
+  try:
+    flax.config.update("flax_always_shard_variable", False)
+  except:
+    pass
   run(pyconfig.config)
 
 
