@@ -21,7 +21,6 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from ...configuration_utils import ConfigMixin
-from ... import max_utils
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
 from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput)

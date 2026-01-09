@@ -30,7 +30,6 @@ from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_
 from tokamax._src.ops.experimental.tpu.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from einops import rearrange
 from .. import common_types, max_logging
-from .. import max_utils
 
 from . import quantizations
 
