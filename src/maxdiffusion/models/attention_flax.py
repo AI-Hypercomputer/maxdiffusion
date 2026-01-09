@@ -253,8 +253,7 @@ def _tpu_flash_attention(
         block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
         use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
     )
-  fsdp_key = max_utils.get_axis_names("activation_length")
-  num_fsdp_shards = mesh.shape[fsdp_key]
+  num_fsdp_shards = mesh.shape["fsdp"]
   query = _reshape_data_for_flash(query, heads)
   key = _reshape_data_for_flash(key, heads)
   value = _reshape_data_for_flash(value, heads)
@@ -368,13 +367,13 @@ def _tpu_flash_attention(
 
           perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
 
-          k1 = jax.lax.ppermute(key, axis_name=fsdp_key, perm=perm)
-          v1 = jax.lax.ppermute(value, axis_name=fsdp_key, perm=perm)
+          k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
+          v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
 
           def ring_scan_body(carry, _):
             m, l, o, k_current, v_current = carry
-            k_next = jax.lax.ppermute(k_current, axis_name=fsdp_key, perm=perm)
-            v_next = jax.lax.ppermute(v_current, axis_name=fsdp_key, perm=perm)
+            k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
+            v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
 
             out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
 
@@ -401,7 +400,7 @@ def _tpu_flash_attention(
 
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
-  devices_in_data_fsdp = mesh.shape["data"] * mesh.shape[fsdp_key]
+  devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
   # This warning might show up when doing model eval for example, when calculating model flops
   # and that is expected.
   if not (query.shape[0] / devices_in_data_fsdp).is_integer():
