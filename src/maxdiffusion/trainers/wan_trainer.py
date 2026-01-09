@@ -369,8 +369,7 @@ class WanTrainer:
         # Designate the context parallel axis for sharding
         if self.config.attention == "cudnn_flash_te":
           from transformer_engine.jax.sharding import global_shard_guard, MeshResource # pytype: disable=import-error
-          cp_resource = max_utils.get_axis_names("activation_length", config=self.config)
-          shard_guard = global_shard_guard(MeshResource(cp_resource=cp_resource))
+          shard_guard = global_shard_guard(MeshResource(cp_resource="fsdp"))
         else:
           shard_guard = nullcontext()
 

@@ -151,7 +151,7 @@ hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
 skip_jax_distributed_system: False
 
 # Parallelism
-mesh_axes: ['data', 'tensor', 'fsdp', 'fsdp_batch']
+mesh_axes: ['data', 'fsdp_batch', 'fsdp', 'tensor']
 
 # batch : batch dimension of data and activations
 # hidden :
@@ -180,20 +180,20 @@ logical_axis_rules: [
                       ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
                     ]
-data_sharding: [['data', 'tensor', 'fsdp', 'fsdp_batch']]
+data_sharding: [['data', 'fsdp_batch', 'fsdp', 'tensor']]
 
 # One axis for each parallelism type may hold a placeholder (-1)
 # value to auto-shard based on available slices and devices.
 # By default, product of the DCN axes should equal number of slices
 # and product of the ICI axes should equal number of devices per slice.
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
-dcn_tensor_parallelism: 1
+dcn_fsdp_batch_parallelism: 1
 dcn_fsdp_parallelism: -1
-dcn_fsdp_batch_parallelism: 1   # recommended DCN axis to be auto-sharded
+dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
+ici_fsdp_batch_parallelism: 1
+ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
-ici_fsdp_parallelism: -1
-ici_fsdp_batch_parallelism: 1   # recommended ICI axis to be auto-sharded
 
 allow_split_physical_axes: False
 

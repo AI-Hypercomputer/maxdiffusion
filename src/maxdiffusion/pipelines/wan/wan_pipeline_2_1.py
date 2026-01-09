@@ -32,7 +32,6 @@ class WanPipeline2_1(WanPipeline):
   def __init__(self, config: HyperParameters, transformer: Optional[WanModel], **kwargs):
     super().__init__(config=config, **kwargs)
     self.transformer = transformer
-    self.config = config
 
   @classmethod
   def _load_and_init(cls, config, restored_checkpoint=None, vae_only=False, load_transformer=True):
@@ -121,8 +120,7 @@ class WanPipeline2_1(WanPipeline):
     # Set the TE shard_guard context_manager if using TE cudnn_flash attention
     if self.config.attention == "cudnn_flash_te":
       from transformer_engine.jax.sharding import global_shard_guard, MeshResource # pytype: disable=import-error
-      cp_resource = max_utils.get_axis_names("activation_length", config=self.config)
-      shard_guard = global_shard_guard(MeshResource(cp_resource=cp_resource))
+      shard_guard = global_shard_guard(MeshResource(cp_resource="fsdp"))
     else:
       shard_guard = nullcontext()
 
