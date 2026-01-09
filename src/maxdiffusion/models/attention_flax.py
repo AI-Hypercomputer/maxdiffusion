@@ -29,7 +29,6 @@ from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_
 from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
 from einops import rearrange
 from .. import common_types, max_logging
-from .. import max_utils
 
 from . import quantizations
 from .modeling_flax_utils import get_activation

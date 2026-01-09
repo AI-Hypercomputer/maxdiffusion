@@ -23,7 +23,6 @@ from flax.linen import partitioning as nn_partitioning
 import jax
 import jax.numpy as jnp
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
-from maxdiffusion import max_utils
 
 
 class WanPipeline2_1(WanPipeline):
