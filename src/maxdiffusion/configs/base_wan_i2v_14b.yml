@@ -27,7 +27,7 @@ gcs_metrics: False
 save_config_to_gcs: False
 log_period: 100
 
-pretrained_model_name_or_path: 'Wan-AI/Wan2.1-I2V-14B-720P-Diffusers'
+pretrained_model_name_or_path: 'Wan-AI/Wan2.1-I2V-14B-480P-Diffusers'
 model_name: wan2.1
 model_type: 'I2V'
 
