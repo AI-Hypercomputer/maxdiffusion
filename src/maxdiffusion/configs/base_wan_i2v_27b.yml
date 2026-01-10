@@ -68,6 +68,7 @@ dropout: 0.1
 # Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
 # However, when padding tokens are significant, this will lead to worse quality and should be set to True.
 mask_padding_tokens: True 
+attention_sharding_uniform: True
 
 flash_block_sizes: {
   "block_q" : 1024,
@@ -151,8 +152,9 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 logical_axis_rules: [
                       ['batch', 'data'],
                       ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
-                      
+                      ['activation_self_attn_heads', ['fsdp', 'tensor']], 
+                      ['activation_cross_attn_q_length', ['fsdp', 'tensor']],
+                      ['activation_length', 'fsdp'],  
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
                       ['embed','fsdp'],
