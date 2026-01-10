@@ -31,6 +31,7 @@ from einops import rearrange
 from .. import common_types, max_logging
 
 from . import quantizations
+from .modeling_flax_utils import get_activation
 
 
 Array = common_types.Array
@@ -220,6 +221,7 @@ def _tpu_flash_attention(
     attention_kernel: str = "flash",
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
+    attention_mask: jax.Array = None,
 ) -> jax.Array:
   """TPU Flash Attention"""
 
@@ -294,6 +296,28 @@ def _tpu_flash_attention(
     kv_padded_len = key.shape[2]
     kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+
+    # If attention_mask is provided, apply it to kv_segment_ids
+    # attention_mask shape: (B, original_kv_seq_len) with 1 for real tokens, 0 for padded
+    if attention_mask is not None:
+      # Take the first item since padding pattern is same across batch (especially with CFG)
+      # This keeps kv_segment_ids as (kv_padded_len,) for compatibility with vmapped_splash
+      mask_len = min(key_seq_len, attention_mask.shape[1])
+      kv_mask_for_batch = attention_mask[0, :mask_len]  # (mask_len,)
+      # If key_seq_len > mask_len, pad the mask with 1s (assume remaining tokens are valid)
+      if key_seq_len > mask_len:
+        extra_valid = jnp.ones((key_seq_len - mask_len,), dtype=jnp.int32)
+        kv_mask_for_batch = jnp.concatenate([kv_mask_for_batch, extra_valid], axis=0)  # (key_seq_len,)
+      # Pad to kv_padded_len
+      if kv_padded_len > key_seq_len:
+        padding = jnp.zeros((kv_padded_len - key_seq_len,), dtype=jnp.int32)
+        kv_mask_padded = jnp.concatenate([kv_mask_for_batch, padding], axis=0)  # (kv_padded_len,)
+      else:
+        kv_mask_padded = kv_mask_for_batch
+      # Combine with existing kv_segment_ids (which handles block alignment padding)
+      # Both are (kv_padded_len,) - element-wise multiplication
+      kv_segment_ids = (kv_segment_ids * kv_mask_padded).astype(jnp.int32)
+
     segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
@@ -502,6 +526,7 @@ def _apply_attention(
     dpa_layer: Callable,
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
+    attention_mask: Array = None,
 ):
   """Routes to different attention kernels."""
   _check_attention_inputs(query, key, value)
@@ -534,6 +559,7 @@ def _apply_attention(
         attention_kernel,
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
+        attention_mask=attention_mask,
     )
   elif attention_kernel == "ring":
     return _tpu_flash_attention(
@@ -649,6 +675,20 @@ def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
 
   return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
 
+# New Class for Wan I2V
+class NNXSimpleFeedForward(nnx.Module):
+  def __init__(self, rngs: nnx.Rngs, dim: int, dim_out: Optional[int] = None, mult: int = 4, activation_fn: str = "gelu", dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: Optional[jax.lax.Precision] = None):
+    inner_dim = int(dim * mult)
+    dim_out = dim_out if dim_out is not None else dim
+    self.net_0 = nnx.Linear(dim, inner_dim, rngs=rngs, use_bias=True, dtype=dtype, param_dtype=weights_dtype, precision=precision)
+    self.act = get_activation(activation_fn)
+    self.net_2 = nnx.Linear(inner_dim, dim_out, rngs=rngs, use_bias=True, dtype=dtype, param_dtype=weights_dtype, precision=precision)
+
+  def __call__(self, hidden_states: Array) -> Array:
+    hidden_states = self.net_0(hidden_states)
+    hidden_states = self.act(hidden_states)
+    hidden_states = self.net_2(hidden_states)
+    return hidden_states
 
 class NNXAttentionOp(nnx.Module):
 
@@ -693,7 +733,7 @@ class NNXAttentionOp(nnx.Module):
     self.mask_padding_tokens = mask_padding_tokens
     self.residual_checkpoint_name = residual_checkpoint_name
 
-  def apply_attention(self, query: Array, key: Array, value: Array):
+  def apply_attention(self, query: Array, key: Array, value: Array, attention_mask: Array = None):
     return _apply_attention(
         query=query,
         key=key,
@@ -714,6 +754,7 @@ class NNXAttentionOp(nnx.Module):
         dpa_layer=self.dpa_layer,
         mask_padding_tokens=self.mask_padding_tokens,
         residual_checkpoint_name=self.residual_checkpoint_name,
+        attention_mask=attention_mask,
     )
 
 
@@ -753,7 +794,7 @@ class AttentionOp(nn.Module):
           transpose_batch_sequence=False,
       )
 
-  def apply_attention(self, query: Array, key: Array, value: Array):
+  def apply_attention(self, query: Array, key: Array, value: Array, attention_mask: Array = None):
     return _apply_attention(
         query=query,
         key=key,
@@ -772,6 +813,7 @@ class AttentionOp(nn.Module):
         axis_names_kv=self.axis_names_kv,
         flash_block_sizes=self.flash_block_sizes,
         dpa_layer=self.dpa_layer,
+        attention_mask=attention_mask,
     )
 
 
@@ -806,6 +848,8 @@ class FlaxWanAttention(nnx.Module):
       mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
       enable_jax_named_scopes: bool = False,
+      added_kv_proj_dim: Optional[int] = None, # New for I2V
+      image_seq_len: Optional[int] = None, # New for I2V
   ):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
@@ -829,6 +873,8 @@ class FlaxWanAttention(nnx.Module):
     else:
       axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
       axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
+    self.added_kv_proj_dim = added_kv_proj_dim # New for I2V
+    self.image_seq_len = image_seq_len # New for I2V
 
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
@@ -938,6 +984,35 @@ class FlaxWanAttention(nnx.Module):
           param_dtype=weights_dtype,
       )
 
+    # New layers for I2V image conditioning
+    self.add_k_proj = nnx.data(None)
+    self.add_v_proj = nnx.data(None)
+    self.norm_added_k = nnx.data(None)
+    if self.added_kv_proj_dim is not None:
+      self.add_k_proj = nnx.Linear(
+          self.added_kv_proj_dim, self.inner_dim, rngs=rngs,
+          dtype=dtype, param_dtype=weights_dtype, precision=precision,
+          bias_init=nnx.with_partitioning(
+              nnx.initializers.zeros,
+              ("embed",), 
+          ),
+      )
+      self.add_v_proj = nnx.Linear(
+          self.added_kv_proj_dim, self.inner_dim, rngs=rngs,
+          dtype=dtype, param_dtype=weights_dtype, precision=precision,
+          bias_init=nnx.with_partitioning(
+              nnx.initializers.zeros,
+              ("embed",),
+          ),
+      )
+      self.norm_added_k = nnx.RMSNorm(
+          num_features=self.inner_dim, rngs=rngs, epsilon=eps, dtype=dtype, param_dtype=weights_dtype,
+          scale_init=nnx.with_partitioning(
+              nnx.initializers.ones,
+              ("norm",),
+          ),
+      )
+
   def _apply_rope(self, xq: jax.Array, xk: jax.Array, freqs_cis: jax.Array) -> Tuple[jax.Array, jax.Array]:
     dtype = xq.dtype
     reshape_xq = xq.astype(jnp.float32).reshape(*xq.shape[:-1], -1, 2)
@@ -969,36 +1044,123 @@ class FlaxWanAttention(nnx.Module):
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", "tensor"))
     dtype = hidden_states.dtype
+    is_self_attention = encoder_hidden_states is None
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
 
-    with jax.named_scope("query_proj"):
-      query_proj = self.query(hidden_states)
-    with jax.named_scope("key_proj"):
-      key_proj = self.key(encoder_hidden_states)
-    with jax.named_scope("value_proj"):
-      value_proj = self.value(encoder_hidden_states)
+    is_i2v_cross_attention = self.added_kv_proj_dim is not None and not is_self_attention
 
-    if self.qk_norm:
-      with self.conditional_named_scope("attn_q_norm"):
-        query_proj = self.norm_q(query_proj)
-      with self.conditional_named_scope("attn_k_norm"):
-        key_proj = self.norm_k(key_proj)
+    if not is_i2v_cross_attention:
+      with jax.named_scope("query_proj"):
+        query_proj = self.query(hidden_states)
+      with jax.named_scope("key_proj"):
+        key_proj = self.key(encoder_hidden_states)
+      with jax.named_scope("value_proj"):
+        value_proj = self.value(encoder_hidden_states)
 
-    if rotary_emb is not None:
-      with self.conditional_named_scope("attn_rope"):
-        query_proj = _unflatten_heads(query_proj, self.heads)
-        key_proj = _unflatten_heads(key_proj, self.heads)
-        value_proj = _unflatten_heads(value_proj, self.heads)
-        # output of _unflatten_heads Batch, heads, seq_len, head_dim
-        query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_q_norm"):
+          query_proj = self.norm_q(query_proj)
+        with self.conditional_named_scope("attn_k_norm"):
+          key_proj = self.norm_k(key_proj)
 
-    query_proj = checkpoint_name(query_proj, "query_proj")
-    key_proj = checkpoint_name(key_proj, "key_proj")
-    value_proj = checkpoint_name(value_proj, "value_proj")
+      if rotary_emb is not None:
+        with self.conditional_named_scope("attn_rope"):
+          query_proj = _unflatten_heads(query_proj, self.heads)
+          key_proj = _unflatten_heads(key_proj, self.heads)
+          value_proj = _unflatten_heads(value_proj, self.heads)
+          # output of _unflatten_heads Batch, heads, seq_len, head_dim
+          query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
-    with jax.named_scope("apply_attention"):
-      attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+      query_proj = checkpoint_name(query_proj, "query_proj")
+      key_proj = checkpoint_name(key_proj, "key_proj")
+      value_proj = checkpoint_name(value_proj, "value_proj")
+
+      with jax.named_scope("apply_attention"):
+        attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+
+    else:
+      # NEW PATH for I2V CROSS-ATTENTION
+      with self.conditional_named_scope("proj_query"):
+        query_proj_raw = self.query(hidden_states)
+
+      # Image embeddings are padded to multiples of 128 for TPU flash attention
+      # Calculate the padded length to correctly split image and text embeddings
+      if self.added_kv_proj_dim is not None:
+        alignment = 128
+        if self.image_seq_len is not None:
+          image_seq_len_actual = self.image_seq_len
+        else:
+          image_seq_len_actual = 257
+        padded_img_len = ((image_seq_len_actual + alignment - 1) // alignment) * alignment  # 257 -> 384
+
+        encoder_hidden_states_img = encoder_hidden_states[:, :padded_img_len, :]
+        encoder_hidden_states_text = encoder_hidden_states[:, padded_img_len:, :]
+
+        encoder_attention_mask_img = jnp.ones((encoder_hidden_states_img.shape[0], padded_img_len), dtype=jnp.int32)
+        if image_seq_len_actual < padded_img_len:
+             encoder_attention_mask_img = encoder_attention_mask_img.at[:, image_seq_len_actual:].set(0)
+
+        # Extract image portion of attention mask (includes padded tokens)
+        # encoder_attention_mask_img = None
+        # if encoder_attention_mask is not None:
+        #   encoder_attention_mask_img = encoder_attention_mask[:, :padded_img_len]
+      else:
+        # If no image_seq_len is specified, treat all as text
+        encoder_hidden_states_img = None
+        encoder_hidden_states_text = encoder_hidden_states
+        encoder_attention_mask_img = None
+      
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_q_norm"):
+          query_proj_text = self.norm_q(query_proj_raw)
+      else:
+          query_proj_text = query_proj_raw
+
+      # Text K/V
+      with self.conditional_named_scope("proj_key"):
+        key_proj_text = self.key(encoder_hidden_states_text)
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_k_norm"):
+          key_proj_text = self.norm_k(key_proj_text)
+      with self.conditional_named_scope("proj_value"):
+        value_proj_text = self.value(encoder_hidden_states_text)
+
+      # Image K/V (only if image embeddings are present)
+      if encoder_hidden_states_img is not None:
+        with self.conditional_named_scope("add_proj_k"):
+          key_proj_img = self.add_k_proj(encoder_hidden_states_img)
+        with self.conditional_named_scope("norm_add_k"):
+          key_proj_img = self.norm_added_k(key_proj_img)
+        with self.conditional_named_scope("add_proj_v"):
+          value_proj_img = self.add_v_proj(encoder_hidden_states_img)
+        query_proj_img = query_proj_raw
+        # Check norm_added_k too
+        # Checkpointing
+        query_proj_text = checkpoint_name(query_proj_text, "query_proj")
+        key_proj_text = checkpoint_name(key_proj_text, "key_proj_text")
+        value_proj_text = checkpoint_name(value_proj_text, "value_proj_text")
+        key_proj_img = checkpoint_name(key_proj_img, "key_proj_img")
+        value_proj_img = checkpoint_name(value_proj_img, "value_proj_img")
+        query_proj_img = checkpoint_name(query_proj_img, "query_proj_img")
+
+
+        # Attention - tensors are (B, S, D)
+        with self.conditional_named_scope("cross_attn_text_apply"):
+          attn_output_text = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
+        with self.conditional_named_scope("cross_attn_img_apply"):
+          # Pass encoder_attention_mask_img for image cross-attention to mask padded tokens
+          attn_output_img = self.attention_op.apply_attention(query_proj_img, key_proj_img, value_proj_img, attention_mask=encoder_attention_mask_img)
+
+        attn_output = attn_output_text + attn_output_img
+      else:
+        # No image embeddings, only text cross-attention
+        query_proj_text = checkpoint_name(query_proj_text, "query_proj")
+        key_proj_text = checkpoint_name(key_proj_text, "key_proj_text")
+        value_proj_text = checkpoint_name(value_proj_text, "value_proj_text")
+
+        with self.conditional_named_scope("cross_attn_text_apply"):
+          attn_output = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
