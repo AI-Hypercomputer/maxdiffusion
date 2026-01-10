@@ -373,7 +373,6 @@ class WanTransformerBlock(nnx.Module):
       rotary_emb: jax.Array,
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
-      encoder_attention_mask: jax.Array = None,
   ):
     with self.conditional_named_scope("transformer_block"):
       shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
