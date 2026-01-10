@@ -408,7 +408,6 @@ class WanTransformerBlock(nnx.Module):
           attn_output = self.attn2(
               hidden_states=norm_hidden_states,
               encoder_hidden_states=encoder_hidden_states,
-              encoder_attention_mask=encoder_attention_mask,
               deterministic=deterministic,
               rngs=rngs,
           )
