@@ -26,7 +26,6 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
-from ...max_utils import randn_tensor
 
 class WanPipelineI2V_2_1(WanPipeline):
   """Pipeline for WAN 2.1 Image-to-Video."""
@@ -112,7 +111,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         shape = (batch_size, num_latent_frames, latent_height, latent_width, num_channels_latents)
 
         if latents is None:
-            latents = randn_tensor(shape, rng, self.config, dtype)
+            latents = jax.random.normal(rng, shape=shape, dtype=jnp.float32)
         else:
             latents = latents.astype(dtype)
         latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)
