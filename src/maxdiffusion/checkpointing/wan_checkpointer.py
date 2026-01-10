@@ -19,6 +19,8 @@ from typing import Optional, Tuple
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
 from ..pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
 from ..pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
+from ..pipelines.wan.wan_pipeline_i2v_2p1 import WanPipelineI2V_2_1
+from ..pipelines.wan.wan_pipeline_i2v_2p2 import WanPipelineI2V_2_2
 from .. import max_logging, max_utils
 import orbax.checkpoint as ocp
 
@@ -59,7 +61,7 @@ class WanCheckpointer(ABC):
     raise NotImplementedError
 
   @abstractmethod
-  def load_checkpoint(self, step=None) -> Tuple[Optional[WanPipeline2_1 | WanPipeline2_2], Optional[dict], Optional[int]]:
+  def load_checkpoint(self, step=None) -> Tuple[Optional[WanPipeline2_1 | WanPipeline2_2 | WanPipelineI2V_2_1 | WanPipelineI2V_2_2], Optional[dict], Optional[int]]:
     raise NotImplementedError
 
   @abstractmethod

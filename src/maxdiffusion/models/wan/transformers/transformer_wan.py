@@ -28,6 +28,7 @@ from .... import common_types
 from ...modeling_flax_utils import FlaxModelMixin, get_activation
 from ....configuration_utils import ConfigMixin, register_to_config
 from ...embeddings_flax import (
+    NNXWanImageEmbedding,
     get_1d_rotary_pos_embed,
     NNXFlaxTimesteps,
     NNXTimestepEmbedding,
@@ -137,6 +138,18 @@ class WanTimeTextImageEmbedding(nnx.Module):
         act_fn="gelu_tanh",
     )
 
+    self.image_embedder = nnx.data(None)
+    if image_embed_dim is not None:
+      self.image_embedder = NNXWanImageEmbedding(
+          rngs=rngs,
+          in_features=image_embed_dim,
+          out_features=dim,
+          pos_embed_seq_len=pos_embed_seq_len,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
+      )
+
   def __call__(
       self, timestep: jax.Array, encoder_hidden_states: jax.Array, encoder_hidden_states_image: Optional[jax.Array] = None
   ):
@@ -146,9 +159,10 @@ class WanTimeTextImageEmbedding(nnx.Module):
       timestep_proj = self.time_proj(self.act_fn(temb))
 
     encoder_hidden_states = self.text_embedder(encoder_hidden_states)
+    encoder_attention_mask = None
     if encoder_hidden_states_image is not None:
-      raise NotImplementedError("currently img2vid is not supported")
-    return temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image
+      encoder_hidden_states_image, encoder_attention_mask = self.image_embedder(encoder_hidden_states_image)
+    return temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image, encoder_attention_mask
 
 
 class ApproximateGELU(nnx.Module):
@@ -263,8 +277,8 @@ class WanTransformerBlock(nnx.Module):
       qk_norm: str = "rms_norm_across_heads",
       cross_attn_norm: bool = False,
       eps: float = 1e-6,
-      # In torch, this is none, so it can be ignored.
-      # added_kv_proj_dim: Optional[int] = None,
+      added_kv_proj_dim: Optional[int] = None,
+      image_seq_len: Optional[int] = None,
       flash_min_seq_length: int = 4096,
       flash_block_sizes: BlockSizes = None,
       mesh: jax.sharding.Mesh = None,
@@ -310,6 +324,8 @@ class WanTransformerBlock(nnx.Module):
         dim_head=dim // num_heads,
         qk_norm=qk_norm,
         eps=eps,
+        added_kv_proj_dim=added_kv_proj_dim,
+        image_seq_len=image_seq_len,
         flash_min_seq_length=flash_min_seq_length,
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
@@ -357,6 +373,7 @@ class WanTransformerBlock(nnx.Module):
       rotary_emb: jax.Array,
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
+      encoder_attention_mask: jax.Array = None,
   ):
     with self.conditional_named_scope("transformer_block"):
       shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
@@ -391,6 +408,7 @@ class WanTransformerBlock(nnx.Module):
           attn_output = self.attn2(
               hidden_states=norm_hidden_states,
               encoder_hidden_states=encoder_hidden_states,
+              encoder_attention_mask=encoder_attention_mask,
               deterministic=deterministic,
               rngs=rngs,
           )
@@ -436,6 +454,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       added_kv_proj_dim: Optional[int] = None,
       rope_max_seq_len: int = 1024,
       pos_embed_seq_len: Optional[int] = None,
+      image_seq_len: Optional[int] = None,
       flash_min_seq_length: int = 4096,
       flash_block_sizes: BlockSizes = None,
       mesh: jax.sharding.Mesh = None,
@@ -507,6 +526,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           dropout=dropout,
           mask_padding_tokens=mask_padding_tokens,
           enable_jax_named_scopes=enable_jax_named_scopes,
+          added_kv_proj_dim=added_kv_proj_dim,
+          image_seq_len=image_seq_len,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
@@ -525,6 +546,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             qk_norm=qk_norm,
             cross_attn_norm=cross_attn_norm,
             eps=eps,
+            added_kv_proj_dim=added_kv_proj_dim,
+            image_seq_len=image_seq_len,
             flash_min_seq_length=flash_min_seq_length,
             flash_block_sizes=flash_block_sizes,
             mesh=mesh,
@@ -583,20 +606,25 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       hidden_states = self.patch_embedding(hidden_states)
       hidden_states = jax.lax.collapse(hidden_states, 1, -1)
     with self.conditional_named_scope("condition_embedder"):
-      temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
+      temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image, encoder_attention_mask = self.condition_embedder(
           timestep, encoder_hidden_states, encoder_hidden_states_image
       )
     timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
 
     if encoder_hidden_states_image is not None:
-      raise NotImplementedError("img2vid is not yet implemented.")
+        encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states], axis=1)
+        if encoder_attention_mask is not None:
+            text_mask = jnp.ones((encoder_hidden_states.shape[0], encoder_hidden_states.shape[1] - encoder_hidden_states_image.shape[1]), dtype=jnp.int32)
+            encoder_attention_mask = jnp.concatenate([encoder_attention_mask, text_mask], axis=1)
+        encoder_hidden_states = encoder_hidden_states.astype(hidden_states.dtype)
 
     if self.scan_layers:
 
       def scan_fn(carry, block):
         hidden_states_carry, rngs_carry = carry
         hidden_states = block(
-            hidden_states_carry, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs_carry
+            hidden_states_carry, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs_carry,
+            encoder_attention_mask=encoder_attention_mask
         )
         new_carry = (hidden_states, rngs_carry)
         return new_carry, None
@@ -617,7 +645,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       for block in self.blocks:
 
         def layer_forward(hidden_states):
-          return block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs)
+          return block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs, encoder_attention_mask=encoder_attention_mask)
 
         rematted_layer_forward = self.gradient_checkpoint.apply(
             layer_forward, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
