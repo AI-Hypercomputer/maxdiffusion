@@ -621,8 +621,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       def scan_fn(carry, block):
         hidden_states_carry, rngs_carry = carry
         hidden_states = block(
-            hidden_states_carry, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs_carry,
-            encoder_attention_mask=encoder_attention_mask
+            hidden_states_carry, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs_carry
         )
         new_carry = (hidden_states, rngs_carry)
         return new_carry, None
