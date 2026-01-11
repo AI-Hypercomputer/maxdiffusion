@@ -403,7 +403,10 @@ class WanPipeline:
     _, seq_len, _ = prompt_embeds.shape
     prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
     prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
-
+    print("Prompt embeds shape:")
+    print(prompt_embeds.shape)
+    print("Prompt embeds:")
+    print(prompt_embeds)
     return prompt_embeds
 
   def encode_prompt(

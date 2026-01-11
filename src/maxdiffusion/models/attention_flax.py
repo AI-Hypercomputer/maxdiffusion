@@ -283,6 +283,7 @@ def _tpu_flash_attention(
 
     block_kv = max(*block_kv_sizes)
     key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
+    print("Key seq len after padding:", key_seq_len)
     value, _, _ = _pad_data_for_flash(value, heads, block_kv)
 
     mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
@@ -293,8 +294,10 @@ def _tpu_flash_attention(
     q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
 
     kv_padded_len = key.shape[2]
+    print("KV padded len:", kv_padded_len)
     kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+    print("KV segment ids:", kv_segment_ids)
     segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
@@ -1008,8 +1011,10 @@ class FlaxWanAttention(nnx.Module):
       query_proj = self.query(hidden_states)
     with jax.named_scope("key_proj"):
       key_proj = self.key(encoder_hidden_states)
+      print("key_proj shape:", key_proj.shape)
     with jax.named_scope("value_proj"):
       value_proj = self.value(encoder_hidden_states)
+      print("value_proj shape:", value_proj.shape)
 
     if self.qk_norm:
       with self.conditional_named_scope("attn_q_norm"):
