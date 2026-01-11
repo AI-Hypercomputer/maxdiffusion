@@ -409,11 +409,11 @@ class WanCheckpointerI2V_2_2Test(unittest.TestCase):
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once()
-    mock_wan_pipeline_i2v_2p2.from_checkpoint.asset_called_once_with(self.config, restored_mock)
+    mock_wan_pipeline_i2v_2p2.from_checkpoint.assert_called_once_with(self.config, restored_mock)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.001)
-    self.assertEqual(step,1)
+    self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
   @patch("maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2.WanPipelineI2V_2_2")
