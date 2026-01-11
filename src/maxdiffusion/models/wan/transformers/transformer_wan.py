@@ -373,6 +373,7 @@ class WanTransformerBlock(nnx.Module):
       rotary_emb: jax.Array,
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
+      encoder_attention_mask: Optional[jax.Array] = None,
   ):
     with self.conditional_named_scope("transformer_block"):
       shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
@@ -409,6 +410,7 @@ class WanTransformerBlock(nnx.Module):
               encoder_hidden_states=encoder_hidden_states,
               deterministic=deterministic,
               rngs=rngs,
+              encoder_attention_mask = encoder_attention_mask
           )
         with self.conditional_named_scope("cross_attn_residual"):
           hidden_states = hidden_states + attn_output
@@ -621,7 +623,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       def scan_fn(carry, block):
         hidden_states_carry, rngs_carry = carry
         hidden_states = block(
-            hidden_states_carry, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs_carry
+            hidden_states_carry, encoder_hidden_states, timestep_proj, rotary_emb, deterministic, rngs_carry, encoder_attention_mask
         )
         new_carry = (hidden_states, rngs_carry)
         return new_carry, None
