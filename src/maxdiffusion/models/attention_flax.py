@@ -294,11 +294,12 @@ def _tpu_flash_attention(
     q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
 
     kv_padded_len = key.shape[2]
-    print("KV padded len:", kv_padded_len)
     kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
-    jax.debug.print("KV indices: {x}", x=kv_indices)
     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
-    jax.debug.print("KV segment ids: {x}", x=kv_segment_ids)
+    num_ones_in_kv_segment_ids = jnp.sum(kv_segment_ids)
+    jax.debug.print("KV padded len: {kv_len}, Number of 1s in KV segment ids: {num_ones}", kv_len=kv_padded_len, num_ones=num_ones_in_kv_segment_ids)
+
+
     segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
