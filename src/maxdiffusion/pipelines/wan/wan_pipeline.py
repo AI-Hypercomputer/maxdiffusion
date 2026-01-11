@@ -393,6 +393,7 @@ class WanPipeline:
     )
     text_input_ids, mask = text_inputs.input_ids, text_inputs.attention_mask
     seq_lens = mask.gt(0).sum(dim=1).long()
+    print("Seq lens:", seq_lens)
     prompt_embeds = self.text_encoder(text_input_ids, mask).last_hidden_state
     prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
     prompt_embeds = torch.stack(
