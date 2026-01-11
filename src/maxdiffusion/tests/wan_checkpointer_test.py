@@ -312,13 +312,13 @@ class WanCheckpointerI2V_2_1Test(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline_i2v_2p1.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointerI2V_2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once()
-    mock_wan_pipeline_i2v_2p1.from_checkpoint.assert_called_once_with(self.config, restored_mock)
+    mock_from_checkpoint.assert_called_once_with(self.config, restored_mock)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.001)
