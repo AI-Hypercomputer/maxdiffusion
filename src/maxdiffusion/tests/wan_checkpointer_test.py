@@ -17,6 +17,7 @@ from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
+from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p1 import WanPipelineI2V_2_1
 
 class WanCheckpointer2_1Test(unittest.TestCase):
   """Tests for WAN 2.1 checkpointer."""

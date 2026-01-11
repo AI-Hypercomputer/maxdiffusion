@@ -1132,11 +1132,6 @@ class FlaxWanAttention(nnx.Module):
         encoder_attention_mask_img = jnp.ones((encoder_hidden_states_img.shape[0], padded_img_len), dtype=jnp.int32)
         if image_seq_len_actual < padded_img_len:
              encoder_attention_mask_img = encoder_attention_mask_img.at[:, image_seq_len_actual:].set(0)
-
-        # Extract image portion of attention mask (includes padded tokens)
-        # encoder_attention_mask_img = None
-        # if encoder_attention_mask is not None:
-        #   encoder_attention_mask_img = encoder_attention_mask[:, :padded_img_len]
       else:
         # If no image_seq_len is specified, treat all as text
         encoder_hidden_states_img = None
