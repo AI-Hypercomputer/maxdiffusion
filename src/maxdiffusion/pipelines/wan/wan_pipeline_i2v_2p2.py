@@ -228,7 +228,6 @@ class WanPipelineI2V_2_2(WanPipeline):
         num_inference_steps=num_inference_steps,
         scheduler=self.scheduler,
         image_embeds=image_embeds,
-        first_frame_mask=first_frame_mask,
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -254,14 +253,12 @@ def run_inference_2_2_i2v(
     prompt_embeds: jnp.array,
     negative_prompt_embeds: jnp.array,
     image_embeds: jnp.array,
-    first_frame_mask: Optional[jnp.array],
     guidance_scale_low: float,
     guidance_scale_high: float,
     boundary: int,
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
-    rng: jax.Array,
 ):
     do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
     def high_noise_branch(operands):

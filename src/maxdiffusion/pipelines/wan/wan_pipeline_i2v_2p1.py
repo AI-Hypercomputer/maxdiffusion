@@ -265,8 +265,6 @@ def run_inference_2_1_i2v(
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
-    rng: jax.Array,
-    first_frame_mask: Optional[jnp.array],
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
 
