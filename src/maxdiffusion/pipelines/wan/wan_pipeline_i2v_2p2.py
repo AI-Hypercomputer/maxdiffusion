@@ -97,11 +97,6 @@ class WanPipelineI2V_2_2(WanPipeline):
             last_image = last_image.detach().cpu().numpy()
         last_image = jnp.array(last_image)
 
-    if num_videos_per_prompt > 1:
-           image = jnp.repeat(image, num_videos_per_prompt, axis=0)
-           if last_image is not None:
-              last_image = jnp.repeat(last_image, num_videos_per_prompt, axis=0)
-    
     num_channels_latents = self.vae.z_dim
     num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
     latent_height = height // self.vae_scale_factor_spatial
