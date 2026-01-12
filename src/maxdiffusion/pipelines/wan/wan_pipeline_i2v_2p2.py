@@ -171,9 +171,20 @@ class WanPipelineI2V_2_2(WanPipeline):
     )
 
     image_tensor = self.video_processor.preprocess(image, height=height, width=width)
+    if image_tensor.ndim == 3:
+        image_tensor = image_tensor[None, ...] 
     last_image_tensor = None
     if last_image:
         last_image_tensor = self.video_processor.preprocess(last_image, height=height, width=width)
+        if last_image_tensor.ndim == 3:
+            last_image_tensor = last_image_tensor[None, ...] # Add batch dimension
+    
+    if effective_batch_size > 1:
+        image_tensor = jnp.repeat(image_tensor, effective_batch_size, axis=0)
+        if last_image_tensor is not None:
+            last_image_tensor = jnp.repeat(last_image_tensor, effective_batch_size, axis=0)
+
+
 
     if rng is None:
         rng = jax.random.key(self.config.seed)
