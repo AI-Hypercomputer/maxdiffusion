@@ -164,22 +164,19 @@ class WanPipelineI2V_2_2(WanPipeline):
         prompt, image, negative_prompt, num_videos_per_prompt, max_sequence_length,
         prompt_embeds, negative_prompt_embeds, image_embeds, last_image
     )
+    def _process_image_input(img_input, height, width, num_videos_per_prompt):
+        if img_input is None:
+            return None
+        tensor = self.video_processor.preprocess(img_input, height=height, width=width)
+        jax_array = jnp.array(tensor.cpu().numpy())
+        if jax_array.ndim == 3:
+            jax_array = jax_array[None, ...] # Add batch dimension
+        if num_videos_per_prompt > 1:
+            jax_array = jnp.repeat(jax_array, num_videos_per_prompt, axis=0)
+        return jax_array
 
-    image_tensor = self.video_processor.preprocess(image, height=height, width=width)
-    if image_tensor.ndim == 3:
-        image_tensor = image_tensor[None, ...] 
-    last_image_tensor = None
-    if last_image:
-        last_image_tensor = self.video_processor.preprocess(last_image, height=height, width=width)
-        if last_image_tensor.ndim == 3:
-            last_image_tensor = last_image_tensor[None, ...] # Add batch dimension
-    
-    if effective_batch_size > 1:
-        image_tensor = jnp.repeat(image_tensor, effective_batch_size, axis=0)
-        if last_image_tensor is not None:
-            last_image_tensor = jnp.repeat(last_image_tensor, effective_batch_size, axis=0)
-
-
+    image_tensor = _process_image_input(image, height, width, effective_batch_size)
+    last_image_tensor = _process_image_input(last_image, height, width, effective_batch_size)
 
     if rng is None:
         rng = jax.random.key(self.config.seed)
