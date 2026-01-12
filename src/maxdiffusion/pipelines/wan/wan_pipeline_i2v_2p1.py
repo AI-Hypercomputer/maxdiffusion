@@ -242,9 +242,7 @@ class WanPipelineI2V_2_1(WanPipeline):
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds,
           image_embeds=image_embeds,
-          first_frame_mask=first_frame_mask,
           scheduler_state=scheduler_state,
-          rng=inference_rng,
       )
       latents = jnp.transpose(latents, (0, 4, 1, 2, 3))
       latents = self._denormalize_latents(latents)

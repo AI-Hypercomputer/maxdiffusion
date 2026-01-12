@@ -236,7 +236,7 @@ class WanPipelineI2V_2_2(WanPipeline):
           high_noise_graphdef=high_noise_graphdef, high_noise_state=high_noise_state, high_noise_rest=high_noise_rest,
           latents=latents, condition=condition,
           prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_prompt_embeds,
-          scheduler_state=scheduler_state, rng=inference_rng,
+          scheduler_state=scheduler_state,
       )
       latents = jnp.transpose(latents, (0, 4, 1, 2, 3))
       latents = self._denormalize_latents(latents)
