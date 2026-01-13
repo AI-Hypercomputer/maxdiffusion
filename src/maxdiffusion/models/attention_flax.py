@@ -298,10 +298,7 @@ def _tpu_flash_attention(
     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
 
     # If attention_mask is provided, apply it to kv_segment_ids
-    # attention_mask shape: (B, original_kv_seq_len) with 1 for real tokens, 0 for padded
     if attention_mask is not None:
-      # Take the first item since padding pattern is same across batch (especially with CFG)
-      # This keeps kv_segment_ids as (kv_padded_len,) for compatibility with vmapped_splash
       mask_len = min(key_seq_len, attention_mask.shape[1])
       kv_mask_for_batch = attention_mask[0, :mask_len]  # (mask_len,)
       # If key_seq_len > mask_len, pad the mask with 1s (assume remaining tokens are valid)
@@ -314,7 +311,6 @@ def _tpu_flash_attention(
         kv_mask_padded = jnp.concatenate([kv_mask_for_batch, padding], axis=0)  # (kv_padded_len,)
       else:
         kv_mask_padded = kv_mask_for_batch
-      # Combine with existing kv_segment_ids (which handles block alignment padding)
       # Both are (kv_padded_len,) - element-wise multiplication
       kv_segment_ids = (kv_segment_ids * kv_mask_padded).astype(jnp.int32)
 
@@ -1101,12 +1097,12 @@ class FlaxWanAttention(nnx.Module):
         encoder_hidden_states_img = encoder_hidden_states[:, :padded_img_len, :]
         encoder_hidden_states_text = encoder_hidden_states[:, padded_img_len:, :]
 
-        # Use the passed encoder_attention_mask (created in embeddings_flax.py)
+        # Use the passed encoder_attention_mask (created in embeddings_flax.py) if using Flash Attention
         # It contains the image mask: [1]*257 + [0]*127 for 257 real image tokens padded to 384
         if encoder_attention_mask is not None:
             encoder_attention_mask_img = encoder_attention_mask[:, :padded_img_len]
         else:
-            # Fallback: no mask means treat all as valid
+            # Fallback: no mask means treat all as valid (for dot product attention)
             encoder_attention_mask_img = None
       else:
         # If no image_seq_len is specified, treat all as text
