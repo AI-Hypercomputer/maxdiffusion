@@ -1095,8 +1095,8 @@ class FlaxWanAttention(nnx.Module):
           image_seq_len_actual = 257
         padded_img_len = ((image_seq_len_actual + alignment - 1) // alignment) * alignment  # 257 -> 384
 
-        if encoder_attention_mask is None:
-          padded_img_len = image_seq_len_actual
+        # if encoder_attention_mask is None:
+        #   padded_img_len = image_seq_len_actual
 
         encoder_hidden_states_img = encoder_hidden_states[:, :padded_img_len, :]
         encoder_hidden_states_text = encoder_hidden_states[:, padded_img_len:, :]
