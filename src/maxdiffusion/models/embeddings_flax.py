@@ -250,11 +250,12 @@ def get_1d_rotary_pos_embed(
   return out
 
 class NNXWanImageEmbedding(nnx.Module):
-  def __init__(self, rngs: nnx.Rngs, in_features: int, out_features: int, dtype: jnp.dtype, weights_dtype: jnp.dtype, precision: jax.lax.Precision, pos_embed_seq_len=None, alignment: int = 128):
+  def __init__(self, rngs: nnx.Rngs, in_features: int, out_features: int, dtype: jnp.dtype, weights_dtype: jnp.dtype, precision: jax.lax.Precision, pos_embed_seq_len=None, alignment: int = 128, flash_min_seq_length: int = 4096):
     self.norm1 = FP32LayerNorm(rngs=rngs, dim=in_features, elementwise_affine=True, eps=1e-6)
     self.ff = NNXSimpleFeedForward(rngs=rngs, dim=in_features, dim_out=out_features, mult=1, activation_fn="gelu", dtype=dtype, weights_dtype=weights_dtype, precision=precision)
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=out_features, elementwise_affine=True, eps=1e-6)
     self.alignment = alignment
+    self.flash_min_seq_length = flash_min_seq_length
     if pos_embed_seq_len is not None:
       self.pos_embed = nnx.Param(jnp.zeros((1, pos_embed_seq_len, in_features), dtype=dtype))
     else:
@@ -277,10 +278,14 @@ class NNXWanImageEmbedding(nnx.Module):
     hidden_states = self.norm2(hidden_states)
     # hidden_states shape: (B, current_seq_len, out_features)
     B, current_seq_len, D_out = hidden_states.shape
+    use_flash_attn = current_seq_len>=self.flash_min_seq_length
 
-    # --- Dynamic Padding to nearest multiple of self.alignment ---
-    num_blocks = (current_seq_len + self.alignment - 1) // self.alignment
-    target_seq_len = num_blocks * self.alignment
+    if use_flash_attn:
+      # --- Dynamic Padding to nearest multiple of self.alignment ---
+      num_blocks = (current_seq_len + self.alignment - 1) // self.alignment
+      target_seq_len = num_blocks * self.alignment
+    else:
+      target_seq_len = current_seq_len
 
     # Create attention mask: 1 for real tokens, 0 for padded tokens
     attention_mask = jnp.ones((B, current_seq_len), dtype=jnp.int32)
@@ -293,7 +298,8 @@ class NNXWanImageEmbedding(nnx.Module):
         # Extend mask with zeros for padded positions
         padding_mask = jnp.zeros((B, padding_size), dtype=jnp.int32)
         attention_mask = jnp.concatenate([attention_mask, padding_mask], axis=1)
-
+    if not use_flash_attn:
+      attention_mask = None
     return hidden_states, attention_mask
 
 

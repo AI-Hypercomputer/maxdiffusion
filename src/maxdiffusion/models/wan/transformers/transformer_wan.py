@@ -104,6 +104,7 @@ class WanTimeTextImageEmbedding(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      flash_min_seq_length: int = 4096
   ):
     self.timesteps_proj = NNXFlaxTimesteps(dim=time_freq_dim, flip_sin_to_cos=True, freq_shift=0)
     self.time_embedder = NNXTimestepEmbedding(
@@ -148,6 +149,7 @@ class WanTimeTextImageEmbedding(nnx.Module):
           dtype=dtype,
           weights_dtype=weights_dtype,
           precision=precision,
+          flash_min_seq_length=flash_min_seq_length
       )
 
   def __call__(
@@ -502,6 +504,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         text_embed_dim=text_dim,
         image_embed_dim=image_dim,
         pos_embed_seq_len=pos_embed_seq_len,
+        flash_min_seq_length=flash_min_seq_length
     )
 
     # 3. Transformer blocks
