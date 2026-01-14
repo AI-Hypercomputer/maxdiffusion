@@ -96,7 +96,7 @@ class Train(unittest.TestCase):
 
     delete_blobs(os.path.join(output_dir, run_name))
 
-  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version.")
   def test_dreambooth_orbax(self):
     num_class_images = 100
     output_dir = "gs://maxdiffusion-github-runner-test-assets"
@@ -149,7 +149,7 @@ class Train(unittest.TestCase):
     cleanup(class_class_local_dir)
     delete_blobs(os.path.join(output_dir, run_name))
 
-  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version.")
   def test_sd15_orbax(self):
     output_dir = "gs://maxdiffusion-github-runner-test-assets"
     run_name = "sd15_orbax_smoke_test"

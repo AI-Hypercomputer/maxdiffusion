@@ -20,6 +20,7 @@ import pathlib
 import shutil
 import subprocess
 import unittest
+import pytest
 from absl.testing import absltest
 import numpy as np
 import tensorflow as tf
@@ -431,6 +432,7 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
     )
 
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
   def test_make_laion_grain_iterator(self):
     try:
       subprocess.check_output(
@@ -486,7 +488,8 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
         8,
     )
-
+    
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
   def test_make_laion_tfrecord_iterator(self):
     pyconfig.initialize(
         [
