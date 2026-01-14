@@ -399,7 +399,7 @@ class WanPipeline:
         flow_shift=config.flow_shift,  # 5.0 for 720p, 3.0 for 480p
     )
     return scheduler, scheduler_state
-  
+
   def encode_image(self, image: PipelineImageInput, num_videos_per_prompt: int = 1):
       if not isinstance(image, list):
           image = [image]
@@ -516,7 +516,7 @@ class WanPipeline:
       """
       height, width = image.shape[-2:]
       image = image[:, :, jnp.newaxis, :, :]  # [B, C, 1, H, W]
-      
+
       if last_image is None:
           video_condition = jnp.concatenate(
               [image, jnp.zeros((image.shape[0], image.shape[1], num_frames - 1, height, width), dtype=image.dtype)], axis=2
@@ -574,7 +574,7 @@ class WanPipeline:
           "vae": wan_vae, "vae_cache": vae_cache,
           "devices_array": devices_array, "rngs": rngs, "mesh": mesh,
           "tokenizer": None, "text_encoder": None, "scheduler": None, "scheduler_state": None,
-          "image_processor": None, "image_encoder": None 
+          "image_processor": None, "image_encoder": None
       }
 
       if not vae_only:
@@ -621,7 +621,7 @@ class WanPipeline:
     # 2. Encode Image (only for WAN 2.1 I2V which uses CLIP image embeddings)
     # WAN 2.2 I2V does not use CLIP image embeddings, it uses VAE latent conditioning instead
     transformer_dtype = self.config.activations_dtype
-    
+
     if self.config.model_name == "wan2.1":
         # WAN 2.1 I2V: Use CLIP image encoder
         if image_embeds is None:
@@ -635,7 +635,7 @@ class WanPipeline:
 
         if batch_size > 1:
             image_embeds = jnp.tile(image_embeds, (batch_size, 1, 1))
-        
+
         image_embeds = image_embeds.astype(transformer_dtype)
     else:
         # WAN 2.2 I2V: No CLIP image embeddings, set to None or empty tensor

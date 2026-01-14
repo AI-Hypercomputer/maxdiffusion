@@ -19,7 +19,6 @@ from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
 from ...pyconfig import HyperParameters
 from functools import partial
-import numpy as np
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 import jax
@@ -88,7 +87,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       last_image: Optional[jax.Array] = None,
       num_videos_per_prompt: int = 1,
   ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
-        
+
         if hasattr(image, "detach"):
             image = image.detach().cpu().numpy()
         image = jnp.array(image)
@@ -97,12 +96,12 @@ class WanPipelineI2V_2_1(WanPipeline):
             if hasattr(last_image, "detach"):
                 last_image = last_image.detach().cpu().numpy()
             last_image = jnp.array(last_image)
-        
+
         if num_videos_per_prompt > 1:
            image = jnp.repeat(image, num_videos_per_prompt, axis=0)
            if last_image is not None:
               last_image = jnp.repeat(last_image, num_videos_per_prompt, axis=0)
-        
+
         num_channels_latents = self.vae.z_dim
         num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
         latent_height = height // self.vae_scale_factor_spatial
@@ -119,16 +118,16 @@ class WanPipelineI2V_2_1(WanPipeline):
         if last_image is None:
             mask_lat_size = mask_lat_size.at[:, :, 1:, :, :].set(0)
         else:
-            mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)     
+            mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)
         first_frame_mask = mask_lat_size[:, :, 0:1]
         first_frame_mask = jnp.repeat(first_frame_mask, self.vae_scale_factor_temporal, axis=2)
         mask_lat_size = jnp.concatenate([first_frame_mask, mask_lat_size[:, :, 1:]], axis=2)
         mask_lat_size = mask_lat_size.reshape(
-          batch_size, 
+          batch_size,
           1,
-          num_latent_frames, 
-          self.vae_scale_factor_temporal, 
-          latent_height, 
+          num_latent_frames,
+          self.vae_scale_factor_temporal,
+          latent_height,
           latent_width
         )
         mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 4, 5, 3, 1)).squeeze(-1)
@@ -210,7 +209,7 @@ class WanPipelineI2V_2_1(WanPipeline):
     scheduler_state = self.scheduler.set_timesteps(
         self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
     )
-    
+
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
     data_sharding = NamedSharding(self.mesh, P())
     if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
@@ -234,7 +233,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         scheduler=self.scheduler,
     )
 
-    
+
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       latents = p_run_inference(
           latents=latents,
@@ -246,7 +245,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       )
       latents = jnp.transpose(latents, (0, 4, 1, 2, 3))
       latents = self._denormalize_latents(latents)
-      
+
     if output_type == "latent":
       return latents
     return self._decode_latents_to_video(latents)
@@ -287,5 +286,5 @@ def run_inference_2_1_i2v(
         encoder_hidden_states_image=image_embeds,
     )
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
-    latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents, return_dict=False)  
+    latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents, return_dict=False)
   return latents

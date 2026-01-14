@@ -87,7 +87,7 @@ class WanPipelineI2V_2_2(WanPipeline):
     last_image: Optional[jax.Array] = None,
     num_videos_per_prompt: int = 1,
 ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
-    
+
     if hasattr(image, "detach"):
         image = image.detach().cpu().numpy()
     image = jnp.array(image)
@@ -109,12 +109,12 @@ class WanPipelineI2V_2_2(WanPipeline):
     else:
         latents = latents.astype(dtype)
 
-    latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)    
+    latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)
     mask_lat_size = jnp.ones((batch_size, 1, num_frames, latent_height, latent_width), dtype=dtype)
     if last_image is None:
         mask_lat_size = mask_lat_size.at[:, :, 1:, :, :].set(0)
     else:
-        mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)     
+        mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)
 
     first_frame_mask = mask_lat_size[:, :, 0:1]
     first_frame_mask = jnp.repeat(first_frame_mask, self.vae_scale_factor_temporal, axis=2)
@@ -123,9 +123,9 @@ class WanPipelineI2V_2_2(WanPipeline):
         batch_size, 1, num_latent_frames, self.vae_scale_factor_temporal, latent_height, latent_width
     )
     mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 4, 5, 3, 1)).squeeze(-1)
-    condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)        
+    condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)
     return latents, condition, None
- 
+
   def __call__(
     self,
     prompt: Union[str, List[str]],
@@ -297,7 +297,7 @@ def run_inference_2_2_i2v(
             latents_input = jnp.concatenate([latents, latents], axis=0)
         latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
         timestep = jnp.broadcast_to(t, latents_input.shape[0])
-            
+
         use_high_noise = jnp.greater_equal(t, boundary)
         noise_pred, _ = jax.lax.cond(
         use_high_noise,

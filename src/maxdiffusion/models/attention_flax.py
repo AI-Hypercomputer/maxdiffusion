@@ -1010,7 +1010,7 @@ class FlaxWanAttention(nnx.Module):
           dtype=dtype, param_dtype=weights_dtype, precision=precision,
           bias_init=nnx.with_partitioning(
               nnx.initializers.zeros,
-              ("embed",), 
+              ("embed",),
           ),
       )
       self.add_v_proj = nnx.Linear(
@@ -1129,7 +1129,7 @@ class FlaxWanAttention(nnx.Module):
         encoder_hidden_states_img = None
         encoder_hidden_states_text = encoder_hidden_states
         encoder_attention_mask_img = None
-      
+
       if self.qk_norm:
         with self.conditional_named_scope("attn_q_norm"):
           query_proj_text = self.norm_q(query_proj_raw)
