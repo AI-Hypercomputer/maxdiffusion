@@ -716,7 +716,7 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "embed")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", None)),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
     self.act = get_activation(activation_fn)
