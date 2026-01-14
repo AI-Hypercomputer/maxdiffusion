@@ -473,7 +473,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
         class_obj = import_flax_or_no_model(pipeline_module, class_name)
 
         importable_classes = ALL_IMPORTABLE_CLASSES
-        class_candidates = dict.fromkeys(importable_classes.keys(), class_obj)
+        class_candidates = {c: class_obj for c in importable_classes.keys()}
       else:
         # else we just import it from the library.
 
