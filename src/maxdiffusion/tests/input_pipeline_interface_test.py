@@ -488,7 +488,7 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
         8,
     )
-    
+
   @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
   def test_make_laion_tfrecord_iterator(self):
     pyconfig.initialize(
