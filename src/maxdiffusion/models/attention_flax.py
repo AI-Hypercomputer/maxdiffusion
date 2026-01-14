@@ -676,9 +676,29 @@ class NNXSimpleFeedForward(nnx.Module):
   def __init__(self, rngs: nnx.Rngs, dim: int, dim_out: Optional[int] = None, mult: int = 4, activation_fn: str = "gelu", dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: Optional[jax.lax.Precision] = None):
     inner_dim = int(dim * mult)
     dim_out = dim_out if dim_out is not None else dim
-    self.net_0 = nnx.Linear(dim, inner_dim, rngs=rngs, use_bias=True, dtype=dtype, param_dtype=weights_dtype, precision=precision)
+    self.net_0 = nnx.Linear(
+        dim,
+        inner_dim,
+        rngs=rngs,
+        use_bias=True,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        precision=precision,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+    )
     self.act = get_activation(activation_fn)
-    self.net_2 = nnx.Linear(inner_dim, dim_out, rngs=rngs, use_bias=True, dtype=dtype, param_dtype=weights_dtype, precision=precision)
+    self.net_2 = nnx.Linear(
+        inner_dim,
+        dim_out,
+        rngs=rngs,
+        use_bias=True,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        precision=precision,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+    )
 
   def __call__(self, hidden_states: Array) -> Array:
     hidden_states = self.net_0(hidden_states)
