@@ -129,7 +129,7 @@ Now let's change the configuration as follows:
 
 Then our mesh will look like `Mesh('data': 2, 'fsdp': 2, 'tensor': 1)`.
 
-The `logical_axis_rules` specifies the sharding across the mesh. You are encouranged to add or remove rules and find what best works for you. 
+The `logical_axis_rules` specifies the sharding across the mesh. You are encouraged to add or remove rules and find what best works for you. 
 
 ### Checkpointing
 

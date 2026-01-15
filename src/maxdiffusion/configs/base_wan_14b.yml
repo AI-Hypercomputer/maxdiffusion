@@ -74,13 +74,15 @@ attention_sharding_uniform: True
 dropout: 0.1
 
 flash_block_sizes: {
-  "block_q" : 2048,
+  "block_q" : 512,
   "block_kv_compute" : 512,
-  "block_kv" : 2048,
-  "block_q_dkv" : 2048,
-  "block_kv_dkv" : 2048,
+  "block_kv" : 512,
+  "block_q_dkv" : 512,
+  "block_kv_dkv" : 512,
   "block_kv_dkv_compute" : 512,
-  "use_fused_bwd_kernel": True
+  "block_q_dq" : 512,
+  "block_kv_dq" : 512,
+  "use_fused_bwd_kernel": False,
 }
 # Use on v6e
 # flash_block_sizes: {

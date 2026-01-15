@@ -504,7 +504,7 @@ def _convert_kohya_flux_lora_to_diffusers(state_dict):
       )
 
     if len(sds_sd) > 0:
-      max_logging.log(f"Unsuppored keys for ai-toolkit: {sds_sd.keys()}")
+      max_logging.log(f"Unsupported keys for ai-toolkit: {sds_sd.keys()}")
 
     return ait_sd
 

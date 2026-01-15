@@ -279,7 +279,7 @@ After installation completes, run the training script.
 
   ### Deploying with XPK
 
-  This assummes the user has already created an xpk cluster, installed all dependencies and the also created the dataset from the step above. For getting started with MaxDiffusion and xpk see [this guide](docs/getting_started/run_maxdiffusion_via_xpk.md).
+  This assumes the user has already created an xpk cluster, installed all dependencies and the also created the dataset from the step above. For getting started with MaxDiffusion and xpk see [this guide](docs/getting_started/run_maxdiffusion_via_xpk.md).
   
   Using v5p-256 Then the command to run on xpk is as follows:
 

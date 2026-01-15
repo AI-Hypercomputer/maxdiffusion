@@ -97,7 +97,7 @@ def _make_tfrecord_iterator(
   # Dataset cache in github runner test doesn't contain all the features since its shared, Use the default tfrecord iterator.
   # if is_training is True, loads the training dataset. If False, loads the evaluation dataset.
 
-  # checks that the dataset path is valid. In case of gcs, the existance of the dir is not checked.
+  # checks that the dataset path is valid. In case of gcs, the existence of the dir is not checked.
   is_dataset_dir_valid = "gs://" in config.dataset_save_location or os.path.isdir(config.dataset_save_location)
 
   # Determine whether to use the "cached" dataset, which requires externally

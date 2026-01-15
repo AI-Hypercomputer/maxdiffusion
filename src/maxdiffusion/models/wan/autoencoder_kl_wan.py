@@ -157,7 +157,7 @@ class WanUpsample(nnx.Module):
 
   def __init__(self, scale_factor: Tuple[float, float], method: str = "nearest"):
     # scale_factor for (H, W)
-    # JAX resize works on spatial dims, H, W assumming (N, D, H, W, C) or (N, H, W, C)
+    # JAX resize works on spatial dims, H, W assuming (N, D, H, W, C) or (N, H, W, C)
     self.scale_factor = scale_factor
     self.method = method
 
@@ -1116,7 +1116,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
         # Most likely due to an incorrect reshaping in the decoder.
         fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
-        # When batch_size is 0, expand batch dim for contatenation
+        # When batch_size is 0, expand batch dim for concatenation
         # else, expand frame dim for concatenation so that batch dim stays intact.
         axis = 0
         if fm1.shape[0] > 1:

@@ -20,6 +20,7 @@ import pathlib
 import shutil
 import subprocess
 import unittest
+import pytest
 from absl.testing import absltest
 import numpy as np
 import tensorflow as tf
@@ -134,6 +135,7 @@ class InputPipelineInterface(unittest.TestCase):
     cleanup(instance_class_local_dir)
     cleanup(class_class_local_dir)
 
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
   def test_make_pokemon_hf_iterator(self):
     pyconfig.initialize(
         [
@@ -237,6 +239,7 @@ class InputPipelineInterface(unittest.TestCase):
     assert data["input_ids"].shape == (device_count, 2, 77)
     assert data["pixel_values"].shape == (device_count, 3, config.resolution, config.resolution)
 
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
   def test_make_pokemon_tf_iterator_cache(self):
     pyconfig.initialize(
         [
@@ -299,6 +302,7 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
     )
 
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
   def test_make_pokemon_iterator_no_cache(self):
     pyconfig.initialize(
         [
@@ -431,6 +435,7 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
     )
 
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
   def test_make_laion_grain_iterator(self):
     try:
       subprocess.check_output(
@@ -487,6 +492,7 @@ class InputPipelineInterface(unittest.TestCase):
         8,
     )
 
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
   def test_make_laion_tfrecord_iterator(self):
     pyconfig.initialize(
         [
@@ -547,6 +553,7 @@ class InputPipelineInterface(unittest.TestCase):
         8,
     )
 
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
   def test_tfrecord(self):
     """Validate latents match a deterministic output image"""
 
