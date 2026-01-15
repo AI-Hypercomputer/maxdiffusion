@@ -20,7 +20,7 @@ from typing import Sequence, List, Optional, Union
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXVideoPipeline
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXMultiScalePipeline, ConditioningItem
 import maxdiffusion.pipelines.ltx_video.crf_compressor as crf_compressor
-from maxdiffusion import pyconfig, max_logging
+from maxdiffusion import pyconfig, max_logging, max_utils
 import torchvision.transforms.functional as TVF
 import imageio
 from datetime import datetime
@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from PIL import Image
 import torch
+import jax
 
 
 def calculate_padding(
@@ -206,19 +207,40 @@ def run(config):
       else None
   )
 
+  pipeline_args = {
+      "height": height_padded,
+      "width": width_padded,
+      "num_frames": num_frames_padded,
+      "is_video": True,
+      "output_type": "pt",
+      "config": config,
+      "enhance_prompt": enhance_prompt,
+      "conditioning_items": conditioning_items,
+      "seed": config.seed,
+  }
+
+
+  # Warm-up call
   s0 = time.perf_counter()
-  images = pipeline(
-      height=height_padded,
-      width=width_padded,
-      num_frames=num_frames_padded,
-      is_video=True,
-      output_type="pt",
-      config=config,
-      enhance_prompt=enhance_prompt,
-      conditioning_items=conditioning_items,
-      seed=config.seed,
-  )
-  max_logging.log(f"Compile time: {time.perf_counter() - s0:.1f}s.")
+  images = pipeline(**pipeline_args)
+  max_logging.log(f"Warmup time: {time.perf_counter() - s0:.1f}s.")
+
+  # Normal call
+  s0 = time.perf_counter()
+  images = pipeline(**pipeline_args)
+  max_logging.log(f"Generation time: {time.perf_counter() - s0:.1f}s.")
+
+  # Profiled call
+  if config.enable_profiler:
+    profile_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    profiler_output_path = f"gs://hjajoo-ai-ninja-bucket/ltx-video/profiler_traces/{profile_timestamp}"
+    jax.profiler.start_trace(profiler_output_path)
+    max_logging.log(f"JAX profiler started. Traces will be saved to: {profiler_output_path}")
+    s0 = time.perf_counter()
+    images = pipeline(**pipeline_args)
+    jax.profiler.stop_trace()
+    max_logging.log(f"JAX profiler stopped.")
+    max_logging.log(f"Generation time with profiler: {time.perf_counter() - s0:.1f}s.")
 
   (pad_left, pad_right, pad_top, pad_bottom) = padding
   pad_bottom = -pad_bottom
