@@ -29,6 +29,7 @@ log_period: 100
 
 pretrained_model_name_or_path: 'Wan-AI/Wan2.2-T2V-A14B-Diffusers'
 model_name: wan2.2
+model_type: 'T2V'
 
 # Overrides the transformer from pretrained_model_name_or_path
 wan_transformer_pretrained_model_name_or_path: ''

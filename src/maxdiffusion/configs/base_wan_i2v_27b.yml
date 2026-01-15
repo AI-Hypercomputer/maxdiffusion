@@ -27,9 +27,9 @@ gcs_metrics: False
 save_config_to_gcs: False
 log_period: 100
 
-pretrained_model_name_or_path: 'Wan-AI/Wan2.1-T2V-14B-Diffusers'
-model_name: wan2.1
-model_type: 'T2V'
+pretrained_model_name_or_path: 'Wan-AI/Wan2.2-I2V-A14B-Diffusers'
+model_name: wan2.2
+model_type: 'I2V'
 
 # Overrides the transformer from pretrained_model_name_or_path
 wan_transformer_pretrained_model_name_or_path: ''
@@ -61,29 +61,24 @@ jit_initializers: True
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring
-flash_min_seq_length: 0
+flash_min_seq_length: 4096
+dropout: 0.1
 
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
 # Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
 # However, when padding tokens are significant, this will lead to worse quality and should be set to True.
 mask_padding_tokens: True 
-# Maxdiffusion has 2 types of attention sharding strategies:
-# 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
-# 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
-#    in cross attention q.
-attention_sharding_uniform: True 
-dropout: 0.1
+attention_sharding_uniform: True
 
 flash_block_sizes: {
-  "block_q" : 512,
-  "block_kv_compute" : 512,
-  "block_kv" : 512,
-  "block_q_dkv" : 512,
-  "block_kv_dkv" : 512,
-  "block_kv_dkv_compute" : 512,
-  "block_q_dq" : 512,
-  "block_kv_dq" : 512,
-  "use_fused_bwd_kernel": False,
+  "block_q" : 1024,
+  "block_kv_compute" : 256,
+  "block_kv" : 1024,
+  "block_q_dkv" : 1024,
+  "block_kv_dkv" : 1024,
+  "block_kv_dkv_compute" : 256,
+  "block_q_dq" : 1024,
+  "block_kv_dq" : 1024
 }
 # Use on v6e
 # flash_block_sizes: {
@@ -92,21 +87,10 @@ flash_block_sizes: {
 #   "block_kv" : 2048,
 #   "block_q_dkv" : 3024,
 #   "block_kv_dkv" : 2048,
-#   "block_kv_dkv_compute" : 1024,
+#   "block_kv_dkv_compute" : 2048,
 #   "block_q_dq" : 3024,
-#   "block_kv_dq" : 2048,
+#   "block_kv_dq" : 2048
 #   "use_fused_bwd_kernel": False,
-# }
-# Use on v5p
-# flash_block_sizes: {
-#   "block_q" : 3024,
-#   "block_kv_compute" : 1024,
-#   "block_kv" : 2048,
-#   "block_q_dkv" : 1024,
-#   "block_kv_dkv" : 3072,
-#   "block_kv_dkv_compute" : 256,
-#   "block_q_dq" : 1024,
-#   "block_kv_dq" : 3072
 # }
 # GroupNorm groups
 norm_num_groups: 32
@@ -170,7 +154,7 @@ logical_axis_rules: [
                       ['activation_batch', 'data'],
                       ['activation_self_attn_heads', ['fsdp', 'tensor']], 
                       ['activation_cross_attn_q_length', ['fsdp', 'tensor']],
-                      ['activation_length', 'fsdp'],
+                      ['activation_length', 'fsdp'],  
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
                       ['embed','fsdp'],
@@ -291,20 +275,31 @@ profiler_steps: 10
 enable_jax_named_scopes: False
 
 # Generation parameters
-prompt: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
-prompt_2: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
+prompt: "An astronaut hatching from an egg, on the surface of the moon, the darkness and depth of space realised in the background. High quality, ultrarealistic detail and breath-taking movie-like camera shot."
+prompt_2: "An astronaut hatching from an egg, on the surface of the moon, the darkness and depth of space realised in the background. High quality, ultrarealistic detail and breath-taking movie-like camera shot."
 negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 do_classifier_free_guidance: True
 height: 480
 width: 832
 num_frames: 81
-guidance_scale: 5.0
 flow_shift: 3.0
+
+# Reference for below guidance scale and boundary values: https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_t2v_A14B.py
+# guidance scale factor for low noise transformer
+guidance_scale_low: 3.0    
+
+# guidance scale factor for high noise transformer
+guidance_scale_high: 4.0   
+
+# The timestep threshold. If `t` is at or above this value,
+# the `high_noise_model` is considered as the required model.
+# timestep to switch between low noise and high noise transformer
+boundary_ratio: 0.875
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 30
-fps: 16
+fps: 24
 save_final_checkpoint: False
 
 # SDXL Lightning parameters
@@ -344,10 +339,8 @@ quantization: ''
 quantization_local_shard_count: -1
 compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
 use_qwix_quantization: False # Whether to use qwix for quantization. If set to True, the transformer of WAN will be quantized using qwix.
-# Quantization calibration method used for weights, activations and bwd. Supported methods can be found in https://github.com/google/qwix/blob/dc2a0770351c740e5ab3cce7c0efe9f7beacce9e/qwix/qconfig.py#L70-L80
-weight_quantization_calibration_method: "absmax"
-act_quantization_calibration_method: "absmax"
-bwd_quantization_calibration_method: "absmax"
+# Quantization calibration method used for weights and activations. Supported methods can be found in https://github.com/google/qwix/blob/dc2a0770351c740e5ab3cce7c0efe9f7beacce9e/qwix/qconfig.py#L70-L80
+quantization_calibration_method: "absmax"
 qwix_module_path: ".*"
 
 # Eval model on per eval_every steps. -1 means don't eval.
@@ -357,3 +350,8 @@ enable_generate_video_for_eval: False # This will increase the used TPU memory.
 eval_max_number_of_samples_in_bucket: 60 # The number of samples per bucket for evaluation. This is calculated by num_eval_samples / len(timesteps_list).
 
 enable_ssim: False
+
+# i2v specific parameters
+# I2V Input Image
+# URL or local path to the conditioning image
+image_url: "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/astronaut.jpg"

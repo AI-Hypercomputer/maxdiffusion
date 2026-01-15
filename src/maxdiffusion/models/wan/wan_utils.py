@@ -254,7 +254,30 @@ def load_base_wan_transformer(
       random_flax_state_dict[string_tuple] = flattened_dict[key]
     del flattened_dict
     for pt_key, tensor in tensors.items():
+      # The diffusers implementation explicitly describes this key in keys to be ignored.
+      if "norm_added_q" in pt_key:
+        continue
       renamed_pt_key = rename_key(pt_key)
+
+      if "condition_embedder" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("time_embedding_0", "time_embedder.linear_1")
+          renamed_pt_key = renamed_pt_key.replace("time_embedding_2", "time_embedder.linear_2")
+          renamed_pt_key = renamed_pt_key.replace("time_projection_1", "time_proj")
+          renamed_pt_key = renamed_pt_key.replace("text_embedding_0", "text_embedder.linear_1")
+          renamed_pt_key = renamed_pt_key.replace("text_embedding_2", "text_embedder.linear_2")
+
+      if "image_embedder" in renamed_pt_key:
+          if "net.0.proj" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
+          elif "net_0.proj" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
+          if "net.2" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
+          renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
+          if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
+              renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+              renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
+
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
       renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
