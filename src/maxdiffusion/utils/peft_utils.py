@@ -114,7 +114,7 @@ def get_peft_kwargs(rank_dict, network_alpha_dict, peft_state_dict, is_unet=True
   r = lora_alpha = list(rank_dict.values())[0]
 
   if len(set(rank_dict.values())) > 1:
-    # get the rank occuring the most number of times
+    # get the rank occurring the most number of times
     r = collections.Counter(rank_dict.values()).most_common()[0][0]
 
     # for modules with rank different from the most occuring rank, add it to the `rank_pattern`
@@ -178,7 +178,7 @@ def set_weights_and_activate_adapters(model, adapter_names, weights):
   for adapter_name, weight in zip(adapter_names, weights):
     for module in model.modules():
       if isinstance(module, BaseTunerLayer):
-        # For backward compatbility with previous PEFT versions
+        # For backward compatibility with previous PEFT versions
         if hasattr(module, "set_adapter"):
           module.set_adapter(adapter_name)
         else:
@@ -188,7 +188,7 @@ def set_weights_and_activate_adapters(model, adapter_names, weights):
   # set multiple active adapters
   for module in model.modules():
     if isinstance(module, BaseTunerLayer):
-      # For backward compatbility with previous PEFT versions
+      # For backward compatibility with previous PEFT versions
       if hasattr(module, "set_adapter"):
         module.set_adapter(adapter_names)
       else:

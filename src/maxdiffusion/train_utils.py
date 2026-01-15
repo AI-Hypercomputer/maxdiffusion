@@ -50,7 +50,7 @@ def validate_train_config(config):
 
   assert (
       config.max_train_steps > 0 or config.num_train_epochs > 0
-  ), "You must set steps or learning_rate_schedule_steps to a positive interger."
+  ), "You must set steps or learning_rate_schedule_steps to a positive integer."
 
   if config.checkpoint_every > 0 and len(config.checkpoint_dir) <= 0:
     raise AssertionError("Need to set checkpoint_dir when checkpoint_every is set.")
@@ -201,7 +201,7 @@ def generate_timestep_weights(config, num_timesteps):
 
 @contextmanager
 def transformer_engine_context():
-  """If TransformerEngine is available, this context manager will provide the library with MaxDiffusion-specific details needed for correcct operation."""
+  """If TransformerEngine is available, this context manager will provide the library with MaxDiffusion-specific details needed for correct operation."""
   try:
     from transformer_engine.jax.sharding import global_shard_guard, MeshResource
     # Inform TransformerEngine of MaxDiffusion's physical mesh resources.

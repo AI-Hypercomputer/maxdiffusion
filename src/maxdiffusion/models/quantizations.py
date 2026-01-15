@@ -221,7 +221,7 @@ def match_aqt_and_unquantized_param(aqt_params, params):
   )
   param_tree_flat, _ = jax.tree_util.tree_flatten_with_path(params)
   aqt_paths = []
-  # Orginal path of quantized AQT param path.
+  # Original path of quantized AQT param path.
   param_paths = []
 
   for aqt_k, _ in aqt_param_flat:

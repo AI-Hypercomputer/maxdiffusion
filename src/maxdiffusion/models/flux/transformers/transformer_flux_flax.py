@@ -302,7 +302,7 @@ class FluxTransformerBlock(nn.Module):
 @flax_register_to_config
 class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   r"""
-  The Tranformer model introduced in Flux.
+  The Transformer model introduced in Flux.
 
   Reference: https://blackforestlabs.ai/announcing-black-forest-labs/
 
