@@ -485,15 +485,15 @@ class WanResidualBlock(nnx.Module):
     self.conv_shortcut = Identity()
     if in_dim != out_dim:
       self.conv_shortcut = WanCausalConv3d(
-          rngs=rngs,
-          in_channels=in_dim,
-          out_channels=out_dim,
-          kernel_size=1,
-          mesh=mesh,
-          dtype=dtype,
-          weights_dtype=weights_dtype,
-          precision=precision,
-      )
+            rngs=rngs,
+            in_channels=in_dim,
+            out_channels=out_dim,
+            kernel_size=1,
+            mesh=mesh,
+            dtype=dtype,
+            weights_dtype=weights_dtype,
+            precision=precision,
+        )
 
   def initialize_cache(self, batch_size, height, width, dtype):
     """Initialize cache for all convolutions."""
@@ -572,42 +572,42 @@ class WanAttentionBlock(nnx.Module):
     )
 
   def __call__(self, x: jax.Array):
-      identity = x
-      batch_size, time, height, width, channels = x.shape
-      
+    identity = x
+    batch_size, time, height, width, channels = x.shape
+
       # Reshape to process all frames together
-      x = x.reshape(batch_size * time, height, width, channels)
-      x = self.norm(x)
-      
-      qkv = self.to_qkv(x)  # (B*T, H, W, C*3)
-      
-      # Get actual shape after to_qkv to avoid using stale variables
-      bt, h, w, c3 = qkv.shape
-      
-      # Flatten spatial dimensions for attention
-      qkv = qkv.reshape(bt, h * w, c3)  # (B*T, H*W, C*3)
-      qkv = jnp.transpose(qkv, (0, 2, 1))  # (B*T, C*3, H*W)
-      
-      q, k, v = jnp.split(qkv, 3, axis=1)  # Each: (B*T, C, H*W)
-      q = jnp.transpose(q, (0, 2, 1))  # (B*T, H*W, C)
-      k = jnp.transpose(k, (0, 2, 1))  # (B*T, H*W, C)
-      v = jnp.transpose(v, (0, 2, 1))  # (B*T, H*W, C)
-      
-      # Add head dimension for dot_product_attention
-      q = jnp.expand_dims(q, 1)  # (B*T, 1, H*W, C)
-      k = jnp.expand_dims(k, 1)  # (B*T, 1, H*W, C)
-      v = jnp.expand_dims(v, 1)  # (B*T, 1, H*W, C)
-      
-      x = jax.nn.dot_product_attention(q, k, v)  # (B*T, 1, H*W, C)
-      x = jnp.squeeze(x, 1)  # (B*T, H*W, C)
-      
-      # Reshape back to spatial dimensions
-      x = x.reshape(bt, h, w, channels)
-      x = self.proj(x)
-      
+    x = x.reshape(batch_size * time, height, width, channels)
+    x = self.norm(x)
+
+    qkv = self.to_qkv(x)  # (B*T, H, W, C*3)
+    
+    # Get actual shape after to_qkv to avoid using stale variables
+    bt, h, w, c3 = qkv.shape
+    
+    # Flatten spatial dimensions for attention
+    qkv = qkv.reshape(bt, h * w, c3)  # (B*T, H*W, C*3)
+    qkv = jnp.transpose(qkv, (0, 2, 1))  # (B*T, C*3, H*W)
+    
+    q, k, v = jnp.split(qkv, 3, axis=1)  # Each: (B*T, C, H*W)
+    q = jnp.transpose(q, (0, 2, 1))  # (B*T, H*W, C)
+    k = jnp.transpose(k, (0, 2, 1))  # (B*T, H*W, C)
+    v = jnp.transpose(v, (0, 2, 1))  # (B*T, H*W, C)
+    
+    # Add head dimension for dot_product_attention
+    q = jnp.expand_dims(q, 1)  # (B*T, 1, H*W, C)
+    k = jnp.expand_dims(k, 1)  # (B*T, 1, H*W, C)
+    v = jnp.expand_dims(v, 1)  # (B*T, 1, H*W, C)
+    
+    x = jax.nn.dot_product_attention(q, k, v)  # (B*T, 1, H*W, C)
+    x = jnp.squeeze(x, 1)  # (B*T, H*W, C)
+    
+    # Reshape back to spatial dimensions
+    x = x.reshape(bt, h, w, channels)
+    x = self.proj(x)
+
       # Reshape back to original shape
-      x = x.reshape(batch_size, time, height, width, channels)
-      return x + identity
+    x = x.reshape(batch_size, time, height, width, channels)
+    return x + identity
 
 
 class WanMidBlock(nnx.Module):
@@ -626,18 +626,18 @@ class WanMidBlock(nnx.Module):
     self.dim = dim
     self.resnets = nnx.List(
         [
-            WanResidualBlock(
-                in_dim=dim,
-                out_dim=dim,
-                rngs=rngs,
-                dropout=dropout,
-                non_linearity=non_linearity,
-                mesh=mesh,
-                dtype=dtype,
-                weights_dtype=weights_dtype,
-                precision=precision,
-            )
-        ]
+        WanResidualBlock(
+            in_dim=dim,
+            out_dim=dim,
+            rngs=rngs,
+            dropout=dropout,
+            non_linearity=non_linearity,
+            mesh=mesh,
+            dtype=dtype,
+            weights_dtype=weights_dtype,
+            precision=precision,
+        )
+    ]
     )
     self.attentions = nnx.List([])
     for _ in range(num_layers):
@@ -991,18 +991,18 @@ class WanDecoder3d(nnx.Module):
         upsample_mode = "upsample3d" if temperal_upsample[i] else "upsample2d"
       self.up_blocks.append(
           WanUpBlock(
-              in_dim=in_dim,
-              out_dim=out_dim,
-              num_res_blocks=num_res_blocks,
-              dropout=dropout,
-              upsample_mode=upsample_mode,
-              non_linearity=non_linearity,
-              rngs=rngs,
-              mesh=mesh,
-              dtype=dtype,
-              weights_dtype=weights_dtype,
-              precision=precision,
-          )
+          in_dim=in_dim,
+          out_dim=out_dim,
+          num_res_blocks=num_res_blocks,
+          dropout=dropout,
+          upsample_mode=upsample_mode,
+          non_linearity=non_linearity,
+          rngs=rngs,
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
+      )
       )
 
     self.norm_out = WanRMS_norm(
@@ -1176,22 +1176,44 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     if x.shape[-1] != 3:
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
 
-    x_scan = jnp.swapaxes(x, 0, 1)  # (B, T, H, W, C) -> (T, B, H, W, C)
+    # Calculate temporal downsampling factor
+    temporal_downsample_factor = 1
+    for ds in self.temperal_downsample:
+      if ds:
+        temporal_downsample_factor *= 2
+    
     b, t, h, w, c = x.shape
+    
+    # Process frames in chunks that match temporal downsampling
+    # This prevents frames from being downsampled to 0
+    chunk_size = temporal_downsample_factor
+    
+    # Pad time dimension if needed to make it divisible by chunk_size
+    if t % chunk_size != 0:
+      pad_frames = chunk_size - (t % chunk_size)
+      x = jnp.pad(x, ((0, 0), (0, pad_frames), (0, 0), (0, 0), (0, 0)), mode='edge')
+    t = x.shape[1]
+    
+    # Reshape to process chunks: (B, T, H, W, C) -> (T//chunk_size, B, chunk_size, H, W, C)
+    x_chunks = x.reshape(b, t // chunk_size, chunk_size, h, w, c)
+    x_scan = jnp.swapaxes(x_chunks, 0, 1)  # -> (T//chunk_size, B, chunk_size, H, W, C)
+    
     init_cache = self.encoder.init_cache(b, h, w, x.dtype)
 
-    def scan_fn(carry, input_slice):
-      """Scan function processes one frame at a time."""
-      # Expand time dimension for Conv3d compatibility
-      input_slice = jnp.expand_dims(input_slice, 1)  # (B, H, W, C) -> (B, 1, H, W, C)
-      out_slice, new_carry = self.encoder(input_slice, carry)
-      # Squeeze time dimension for scan stacking
-      out_slice = jnp.squeeze(out_slice, 1)  # (B, 1, H', W', C') -> (B, H', W', C')
-      return new_carry, out_slice
+    def scan_fn(carry, input_chunk):
+      """Scan function processes one chunk of frames at a time."""
+      # input_chunk shape: (B, chunk_size, H, W, C)
+      out_chunk, new_carry = self.encoder(input_chunk, carry)
+      return new_carry, out_chunk
 
     # Use jax.lax.scan for JIT-compilable temporal iteration
-    final_cache, encoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
-    encoded = jnp.swapaxes(encoded_frames, 0, 1)  # (T, B, H', W', C') -> (B, T, H', W', C')
+    final_cache, encoded_chunks = jax.lax.scan(scan_fn, init_cache, x_scan)
+    # encoded_chunks shape: (T//chunk_size, B, T_out_per_chunk, H', W', C')
+    
+    # Reshape back: (T//chunk_size, B, T_out, H', W', C') -> (B, T_total, H', W', C')
+    n_chunks, batch, t_per_chunk, h_out, w_out, c_out = encoded_chunks.shape
+    encoded = jnp.transpose(encoded_chunks, (1, 0, 2, 3, 4, 5))  # (B, n_chunks, T_out, H', W', C')
+    encoded = encoded.reshape(batch, n_chunks * t_per_chunk, h_out, w_out, c_out)
 
     # Apply quantization convolution
     enc, _ = self.quant_conv(encoded)
@@ -1221,9 +1243,18 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     # Apply post-quantization convolution
     x, _ = self.post_quant_conv(z)
-    x_scan = jnp.swapaxes(x, 0, 1)  # (B, T, H, W, C) -> (T, B, H, W, C)
-
+    
+    # Calculate temporal upsampling factor
+    temporal_upsample_factor = 1
+    for us in self.temporal_upsample:
+      if us:
+        temporal_upsample_factor *= 2
+    
     b, t, h, w, c = x.shape
+    
+    # For decoder, we still process one frame at a time but output will be upsampled
+    x_scan = jnp.swapaxes(x, 0, 1)  # (B, T, H, W, C) -> (T, B, H, W, C)
+    
     init_cache = self.decoder.init_cache(b, h, w, x.dtype)
 
     def scan_fn(carry, input_slice):
@@ -1238,11 +1269,11 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     # Use jax.lax.scan for JIT-compilable temporal iteration
     final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
 
-    # decoded_frames shape: (T_lat, B, 4, H, W, C)
-    # Transpose to (B, T_lat, 4, H, W, C)
+    # decoded_frames shape: (T_lat, B, T_upsample, H, W, C)
+    # Transpose to (B, T_lat, T_upsample, H, W, C)
     decoded = jnp.transpose(decoded_frames, (1, 0, 2, 3, 4, 5))
 
-    # Reshape to (B, T_lat*4, H, W, C)
+    # Reshape to (B, T_lat * T_upsample, H, W, C)
     b, t_lat, t_sub, h, w, c = decoded.shape
     decoded = decoded.reshape(b, t_lat * t_sub, h, w, c)
 
