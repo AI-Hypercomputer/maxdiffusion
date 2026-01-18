@@ -672,101 +672,6 @@ class WanMidBlock(nnx.Module):
         return x, new_cache
 
 
-class WanDownBlock(nnx.Module):
-    def __init__(
-        self,
-        in_dim: int,
-        out_dim: int,
-        num_res_blocks: int,
-        rngs: nnx.Rngs,
-        dropout: float = 0.0,
-        downsample_mode: Optional[str] = None,
-        add_attention: bool = False,
-        non_linearity: str = "silu",
-        mesh: jax.sharding.Mesh = None,
-        dtype: jnp.dtype = jnp.float32,
-        weights_dtype: jnp.dtype = jnp.float32,
-        precision: jax.lax.Precision = None,
-    ):
-        self.layers = nnx.List([])
-        current_dim = in_dim
-        for _ in range(num_res_blocks):
-            self.layers.append(
-                WanResidualBlock(
-                    in_dim=current_dim,
-                    out_dim=out_dim,
-                    dropout=dropout,
-                    non_linearity=non_linearity,
-                    rngs=rngs,
-                    mesh=mesh,
-                    dtype=dtype,
-                    weights_dtype=weights_dtype,
-                    precision=precision,
-                )
-            )
-            if add_attention:
-                self.layers.append(
-                    WanAttentionBlock(
-                        dim=out_dim,
-                        rngs=rngs,
-                        mesh=mesh,
-                        dtype=dtype,
-                        weights_dtype=weights_dtype,
-                        precision=precision,
-                    )
-                )
-            current_dim = out_dim
-
-        if downsample_mode is not None:
-            self.layers.append(
-                WanResample(
-                    out_dim,
-                    mode=downsample_mode,
-                    rngs=rngs,
-                    mesh=mesh,
-                    dtype=dtype,
-                    weights_dtype=weights_dtype,
-                    precision=precision,
-                )
-            )
-
-    def initialize_cache(self, batch_size, height, width, dtype):
-        """Initialize cache for all layers."""
-        cache = {"layers": []}
-        h_curr, w_curr = height, width
-        for layer in self.layers:
-            if isinstance(layer, WanResidualBlock):
-                cache["layers"].append(
-                    layer.initialize_cache(batch_size, h_curr, w_curr, dtype)
-                )
-            elif isinstance(layer, WanResample):
-                cache["layers"].append(
-                    layer.initialize_cache(batch_size, h_curr, w_curr, dtype)
-                )
-                if layer.mode in ["downsample2d", "downsample3d"]:
-                    h_curr, w_curr = h_curr // 2, w_curr // 2
-            else:  # Attention
-                cache["layers"].append(None)
-        return cache
-
-    def __call__(self, x: jax.Array, cache: Dict[str, Any] = None):
-        """Pure function: returns (output, new_cache)."""
-        if cache is None:
-            cache = {}
-        new_cache = {"layers": []}
-
-        current_caches = cache.get("layers", [None] * len(self.layers))
-        for i, layer in enumerate(self.layers):
-            if isinstance(layer, (WanResidualBlock, WanResample)):
-                x, c = layer(x, current_caches[i])
-                new_cache["layers"].append(c)
-            else:  # Attention
-                x = layer(x)
-                new_cache["layers"].append(None)
-
-        return x, new_cache
-
-
 class WanUpBlock(nnx.Module):
     def __init__(
         self,
@@ -883,27 +788,45 @@ class WanEncoder3d(nnx.Module):
 
         self.down_blocks = nnx.List([])
         for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
-            add_attention = scale in attn_scales
-            downsample_mode = None
-            if i != len(dim_mult) - 1:
-                downsample_mode = "downsample3d" if temperal_downsample[i] else "downsample2d"
-                scale /= 2.0
-
-            self.down_blocks.append(
-                WanDownBlock(
-                    in_dim=in_dim,
-                    out_dim=out_dim,
-                    num_res_blocks=num_res_blocks,
-                    dropout=dropout,
-                    downsample_mode=downsample_mode,
-                    add_attention=add_attention,
-                    rngs=rngs,
-                    mesh=mesh,
-                    dtype=dtype,
-                    weights_dtype=weights_dtype,
-                    precision=precision,
+            for _ in range(num_res_blocks):
+                self.down_blocks.append(
+                    WanResidualBlock(
+                        in_dim=in_dim,
+                        out_dim=out_dim,
+                        dropout=dropout,
+                        rngs=rngs,
+                        mesh=mesh,
+                        dtype=dtype,
+                        weights_dtype=weights_dtype,
+                        precision=precision,
+                    )
                 )
-            )
+                if scale in attn_scales:
+                    self.down_blocks.append(
+                        WanAttentionBlock(
+                            dim=out_dim,
+                            rngs=rngs,
+                            mesh=mesh,
+                            dtype=dtype,
+                            weights_dtype=weights_dtype,
+                            precision=precision,
+                        )
+                    )
+                in_dim = out_dim
+            if i != len(dim_mult) - 1:
+                mode = "downsample3d" if temperal_downsample[i] else "downsample2d"
+                self.down_blocks.append(
+                    WanResample(
+                        out_dim,
+                        mode=mode,
+                        rngs=rngs,
+                        mesh=mesh,
+                        dtype=dtype,
+                        weights_dtype=weights_dtype,
+                        precision=precision,
+                    )
+                )
+                scale /= 2.0
 
         self.mid_block = WanMidBlock(
             dim=out_dim,
@@ -940,14 +863,19 @@ class WanEncoder3d(nnx.Module):
         cache["down_blocks"] = []
 
         h_curr, w_curr = height, width
-        for block in self.down_blocks:
-            cache["down_blocks"].append(
-                block.initialize_cache(batch_size, h_curr, w_curr, dtype)
-            )
-            # Update dimensions if downsampling
-            if block.layers and isinstance(block.layers[-1], WanResample):
-                if block.layers[-1].mode in ["downsample2d", "downsample3d"]:
+        for layer in self.down_blocks:
+            if isinstance(layer, WanResidualBlock):
+                cache["down_blocks"].append(
+                    layer.initialize_cache(batch_size, h_curr, w_curr, dtype)
+                )
+            elif isinstance(layer, WanResample):
+                cache["down_blocks"].append(
+                    layer.initialize_cache(batch_size, h_curr, w_curr, dtype)
+                )
+                if layer.mode in ["downsample2d", "downsample3d"]:
                     h_curr, w_curr = h_curr // 2, w_curr // 2
+            else:  # Attention
+                cache["down_blocks"].append(None)
 
         cache["mid_block"] = self.mid_block.initialize_cache(
             batch_size, h_curr, w_curr, dtype
@@ -969,9 +897,13 @@ class WanEncoder3d(nnx.Module):
         new_cache["down_blocks"] = []
         current_down_caches = cache.get("down_blocks", [None] * len(self.down_blocks))
 
-        for i, block in enumerate(self.down_blocks):
-            x, c = block(x, current_down_caches[i])
-            new_cache["down_blocks"].append(c)
+        for i, layer in enumerate(self.down_blocks):
+            if isinstance(layer, (WanResidualBlock, WanResample)):
+                x, c = layer(x, current_down_caches[i])
+                new_cache["down_blocks"].append(c)
+            else:  # Attention
+                x = layer(x)
+                new_cache["down_blocks"].append(None)
 
         x, c = self.mid_block(x, cache.get("mid_block"))
         new_cache["mid_block"] = c
