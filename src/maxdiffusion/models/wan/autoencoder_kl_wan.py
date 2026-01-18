@@ -1196,7 +1196,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         )
         out = jnp.concatenate([out, out_], axis=1)
     
-    enc = self.quant_conv(out)
+    enc, _ = self.quant_conv(out)  # Unpack tuple (output, cache)
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
     enc = jnp.concatenate([mu, logvar], axis=-1)
     feat_cache.clear_cache()
@@ -1222,7 +1222,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     """
     feat_cache.clear_cache()
     iter_ = z.shape[1]
-    x = self.post_quant_conv(z)
+    x, _ = self.post_quant_conv(z)  # Unpack tuple (output, cache)
     
     # Explicitly manage cache state across iterations (pure function style)
     current_cache = feat_cache._feat_map
