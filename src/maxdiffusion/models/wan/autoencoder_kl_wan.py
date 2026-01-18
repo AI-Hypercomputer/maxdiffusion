@@ -1188,10 +1188,11 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       if i == 0:
         out, current_cache, current_idx = self.encoder(x[:, :1, :, :, :], feat_cache=current_cache, feat_idx=0)
       else:
+        # Reset feat_idx to 0 for each iteration - cache values are reused but index restarts
         out_, current_cache, current_idx = self.encoder(
             x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :],
             current_cache,
-            current_idx
+            0  # Reset index to 0 for each chunk
         )
         out = jnp.concatenate([out, out_], axis=1)
     
@@ -1231,7 +1232,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       if i == 0:
         out, current_cache, current_idx = self.decoder(x[:, i : i + 1, :, :, :], current_cache, 0)
       else:
-        out_, current_cache, current_idx = self.decoder(x[:, i : i + 1, :, :, :], current_cache, current_idx)
+        # Reset feat_idx to 0 for each iteration - cache values are reused but index restarts
+        out_, current_cache, current_idx = self.decoder(x[:, i : i + 1, :, :, :], current_cache, 0)
 
         # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
         # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
