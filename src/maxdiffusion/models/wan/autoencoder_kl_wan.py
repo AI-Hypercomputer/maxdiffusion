@@ -1165,8 +1165,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       self, x: jax.Array, feat_cache: Optional[AutoencoderKLWanCache] = None, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """
-    Encode video using jax.lax.scan for temporal iteration.
-    This enables proper JIT compilation while managing memory efficiently.
+    Encode video. Process the full video at once to handle temporal downsampling.
 
     Args:
         x: Input video tensor
@@ -1176,44 +1175,13 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     if x.shape[-1] != 3:
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
 
-    # Calculate temporal downsampling factor
-    temporal_downsample_factor = 1
-    for ds in self.temperal_downsample:
-      if ds:
-        temporal_downsample_factor *= 2
-    
     b, t, h, w, c = x.shape
     
-    # Process frames in chunks that match temporal downsampling
-    # This prevents frames from being downsampled to 0
-    chunk_size = temporal_downsample_factor
-    
-    # Pad time dimension if needed to make it divisible by chunk_size
-    if t % chunk_size != 0:
-      pad_frames = chunk_size - (t % chunk_size)
-      x = jnp.pad(x, ((0, 0), (0, pad_frames), (0, 0), (0, 0), (0, 0)), mode='edge')
-    t = x.shape[1]
-    
-    # Reshape to process chunks: (B, T, H, W, C) -> (T//chunk_size, B, chunk_size, H, W, C)
-    x_chunks = x.reshape(b, t // chunk_size, chunk_size, h, w, c)
-    x_scan = jnp.swapaxes(x_chunks, 0, 1)  # -> (T//chunk_size, B, chunk_size, H, W, C)
-    
+    # Initialize cache once
     init_cache = self.encoder.init_cache(b, h, w, x.dtype)
-
-    def scan_fn(carry, input_chunk):
-      """Scan function processes one chunk of frames at a time."""
-      # input_chunk shape: (B, chunk_size, H, W, C)
-      out_chunk, new_carry = self.encoder(input_chunk, carry)
-      return new_carry, out_chunk
-
-    # Use jax.lax.scan for JIT-compilable temporal iteration
-    final_cache, encoded_chunks = jax.lax.scan(scan_fn, init_cache, x_scan)
-    # encoded_chunks shape: (T//chunk_size, B, T_out_per_chunk, H', W', C')
     
-    # Reshape back: (T//chunk_size, B, T_out, H', W', C') -> (B, T_total, H', W', C')
-    n_chunks, batch, t_per_chunk, h_out, w_out, c_out = encoded_chunks.shape
-    encoded = jnp.transpose(encoded_chunks, (1, 0, 2, 3, 4, 5))  # (B, n_chunks, T_out, H', W', C')
-    encoded = encoded.reshape(batch, n_chunks * t_per_chunk, h_out, w_out, c_out)
+    # Process the full video through encoder (handles temporal downsampling internally)
+    encoded, _ = self.encoder(x, init_cache)
 
     # Apply quantization convolution
     enc, _ = self.quant_conv(encoded)
@@ -1230,8 +1198,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       self, z: jax.Array, feat_cache: Optional[AutoencoderKLWanCache] = None, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
     """
-    Decode latents using jax.lax.scan for temporal iteration.
-    This enables proper JIT compilation while managing memory efficiently.
+    Decode latents. Process the full latent at once to handle temporal upsampling.
 
     Args:
         z: Latent tensor
@@ -1244,38 +1211,13 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     # Apply post-quantization convolution
     x, _ = self.post_quant_conv(z)
     
-    # Calculate temporal upsampling factor
-    temporal_upsample_factor = 1
-    for us in self.temporal_upsample:
-      if us:
-        temporal_upsample_factor *= 2
-    
     b, t, h, w, c = x.shape
     
-    # For decoder, we still process one frame at a time but output will be upsampled
-    x_scan = jnp.swapaxes(x, 0, 1)  # (B, T, H, W, C) -> (T, B, H, W, C)
-    
+    # Initialize cache once
     init_cache = self.decoder.init_cache(b, h, w, x.dtype)
 
-    def scan_fn(carry, input_slice):
-      """Scan function processes one latent frame at a time."""
-      # Expand time dimension for Conv3d compatibility
-      input_slice = jnp.expand_dims(input_slice, 1)  # (B, H, W, C) -> (B, 1, H, W, C)
-      # Use bfloat16 accumulation to save memory
-      out_slice, new_carry = self.decoder(input_slice, carry)
-      out_slice = out_slice.astype(jnp.bfloat16)
-      return new_carry, out_slice
-
-    # Use jax.lax.scan for JIT-compilable temporal iteration
-    final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
-
-    # decoded_frames shape: (T_lat, B, T_upsample, H, W, C)
-    # Transpose to (B, T_lat, T_upsample, H, W, C)
-    decoded = jnp.transpose(decoded_frames, (1, 0, 2, 3, 4, 5))
-
-    # Reshape to (B, T_lat * T_upsample, H, W, C)
-    b, t_lat, t_sub, h, w, c = decoded.shape
-    decoded = decoded.reshape(b, t_lat * t_sub, h, w, c)
+    # Process the full latent through decoder (handles temporal upsampling internally)
+    decoded, _ = self.decoder(x, init_cache)
 
     out = jnp.clip(decoded, min=-1.0, max=1.0)
 
