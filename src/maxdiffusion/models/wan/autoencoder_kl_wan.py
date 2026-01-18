@@ -571,39 +571,43 @@ class WanAttentionBlock(nnx.Module):
         precision=precision,
     )
 
-  def __call__(self, x: jax.Array):
-    identity = x
-    batch_size, time, height, width, channels = x.shape
-
-    # Reshape to process all frames together
-    x = x.reshape(batch_size * time, height, width, channels)
-    x = self.norm(x)
-
-    qkv = self.to_qkv(x)  # (B*T, H, W, C*3)
-    # Flatten spatial dimensions for attention
-    qkv = qkv.reshape(batch_size * time, -1, channels * 3)  # (B*T, H*W, C*3)
-    qkv = jnp.transpose(qkv, (0, 2, 1))  # (B*T, C*3, H*W)
-
-    q, k, v = jnp.split(qkv, 3, axis=1)  # Each: (B*T, C, H*W)
-    q = jnp.transpose(q, (0, 2, 1))  # (B*T, H*W, C)
-    k = jnp.transpose(k, (0, 2, 1))  # (B*T, H*W, C)
-    v = jnp.transpose(v, (0, 2, 1))  # (B*T, H*W, C)
-
-    # Add head dimension for dot_product_attention
-    q = jnp.expand_dims(q, 1)  # (B*T, 1, H*W, C)
-    k = jnp.expand_dims(k, 1)  # (B*T, 1, H*W, C)
-    v = jnp.expand_dims(v, 1)  # (B*T, 1, H*W, C)
-
-    x = jax.nn.dot_product_attention(q, k, v)  # (B*T, 1, H*W, C)
-    x = jnp.squeeze(x, 1)  # (B*T, H*W, C)
-
-    # Reshape back to spatial dimensions
-    x = x.reshape(batch_size * time, height, width, channels)
-    x = self.proj(x)
-
-    # Reshape back to original shape
-    x = x.reshape(batch_size, time, height, width, channels)
-    return x + identity
+    def __call__(self, x: jax.Array):
+        identity = x
+        batch_size, time, height, width, channels = x.shape
+        
+        # Reshape to process all frames together
+        x = x.reshape(batch_size * time, height, width, channels)
+        x = self.norm(x)
+        
+        qkv = self.to_qkv(x)  # (B*T, H, W, C*3)
+        
+        # Get actual shape after to_qkv to avoid using stale variables
+        bt, h, w, c3 = qkv.shape
+        
+        # Flatten spatial dimensions for attention
+        qkv = qkv.reshape(bt, h * w, c3)  # (B*T, H*W, C*3)
+        qkv = jnp.transpose(qkv, (0, 2, 1))  # (B*T, C*3, H*W)
+        
+        q, k, v = jnp.split(qkv, 3, axis=1)  # Each: (B*T, C, H*W)
+        q = jnp.transpose(q, (0, 2, 1))  # (B*T, H*W, C)
+        k = jnp.transpose(k, (0, 2, 1))  # (B*T, H*W, C)
+        v = jnp.transpose(v, (0, 2, 1))  # (B*T, H*W, C)
+        
+        # Add head dimension for dot_product_attention
+        q = jnp.expand_dims(q, 1)  # (B*T, 1, H*W, C)
+        k = jnp.expand_dims(k, 1)  # (B*T, 1, H*W, C)
+        v = jnp.expand_dims(v, 1)  # (B*T, 1, H*W, C)
+        
+        x = jax.nn.dot_product_attention(q, k, v)  # (B*T, 1, H*W, C)
+        x = jnp.squeeze(x, 1)  # (B*T, H*W, C)
+        
+        # Reshape back to spatial dimensions
+        x = x.reshape(bt, h, w, channels)
+        x = self.proj(x)
+        
+        # Reshape back to original shape
+        x = x.reshape(batch_size, time, height, width, channels)
+        return x + identity
 
 
 class WanMidBlock(nnx.Module):
