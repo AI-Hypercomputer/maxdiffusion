@@ -1001,7 +1001,7 @@ class AutoencoderKLWanCache:
     self.clear_cache()
 
   def clear_cache(self):
-    """Resets cache to empty dict"""
+    """Resets cache to dict with None values for all indices"""
 
     def _count_conv3d(module):
       count = 0
@@ -1012,14 +1012,14 @@ class AutoencoderKLWanCache:
       return count
 
     self._conv_num = _count_conv3d(self.module.decoder)
-    # Python dict mapping int -> JAX array (or None or "Rep")
-    # Indexing happens outside JIT boundary
-    self._feat_map = {}
+    # Pre-populate dict with None values for all expected indices
+    self._feat_map = {i: None for i in range(self._conv_num)}
     self._feat_map_size = self._conv_num
     
     # cache encode
     self._enc_conv_num = _count_conv3d(self.module.encoder)
-    self._enc_feat_map = {}
+    # Pre-populate dict with None values for all expected indices
+    self._enc_feat_map = {i: None for i in range(self._enc_conv_num)}
     self._enc_feat_map_size = self._enc_conv_num
 
 
