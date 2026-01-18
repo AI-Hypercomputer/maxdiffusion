@@ -121,8 +121,12 @@ class WanCausalConv3d(nnx.Module):
     
     # Spatial partitioning: shard along height dimension before convolution
     # This reduces HBM usage and enables XLA to handle halo exchange for edge tensors
+    # Only apply if height dimension is divisible by the number of devices in fsdp axis
     if self.mesh is not None:
-      x_padded = jax.lax.with_sharding_constraint(x_padded, jax.sharding.PartitionSpec(None, None, "fsdp", None, None))
+      num_fsdp_devices = self.mesh.device_ids.shape[1]
+      height_dim = x_padded.shape[2]
+      if height_dim % num_fsdp_devices == 0:
+        x_padded = jax.lax.with_sharding_constraint(x_padded, jax.sharding.PartitionSpec(None, None, "fsdp", None, None))
     
     out = self.conv(x_padded)
     return out
