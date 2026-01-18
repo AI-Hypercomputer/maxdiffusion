@@ -349,7 +349,7 @@ class WanResample(nnx.Module):
                 out_channels=dim,
                 kernel_size=(3, 1, 1),
                 stride=(2, 1, 1),
-                padding=(0, 0, 0),
+                padding=(1, 0, 0),
                 mesh=mesh,
                 dtype=dtype,
                 weights_dtype=weights_dtype,
