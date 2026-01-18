@@ -60,6 +60,7 @@ class WanCausalConv3d(nnx.Module):
     self.kernel_size = _canonicalize_tuple(kernel_size, 3, "kernel_size")
     self.stride = _canonicalize_tuple(stride, 3, "stride")
     padding_tuple = _canonicalize_tuple(padding, 3, "padding")  # (D, H, W) padding amounts
+    self.mesh = mesh  # Store mesh for spatial partitioning
 
     self._causal_padding = (
         (0, 0),  # Batch dimension - no padding
@@ -117,6 +118,12 @@ class WanCausalConv3d(nnx.Module):
       x_padded = jnp.pad(x, padding_to_apply, mode="constant", constant_values=0.0)
     else:
       x_padded = x
+    
+    # Spatial partitioning: shard along height dimension before convolution
+    # This reduces HBM usage and enables XLA to handle halo exchange for edge tensors
+    if self.mesh is not None:
+      x_padded = jax.lax.with_sharding_constraint(x_padded, jax.sharding.PartitionSpec(None, None, "fsdp", None, None))
+    
     out = self.conv(x_padded)
     return out
 
@@ -1072,16 +1079,24 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     t = x.shape[1]
     iter_ = 1 + (t - 1) // 4
+    
+    # Iterate through chunks with compiled graphs
+    # Each iteration uses JIT compilation for better performance
+    # This avoids full loop unrolling while still optimizing individual iterations
     for i in range(iter_):
       feat_cache._enc_conv_idx = [0]
+      # Use optimization_barrier to prevent full loop unrolling
+      # This keeps memory usage manageable while allowing JIT optimization per iteration
       if i == 0:
         out = self.encoder(x[:, :1, :, :, :], feat_cache=feat_cache._enc_feat_map, feat_idx=feat_cache._enc_conv_idx)
+        out = jax.lax.optimization_barrier(out)
       else:
         out_ = self.encoder(
             x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :],
             feat_cache=feat_cache._enc_feat_map,
             feat_idx=feat_cache._enc_conv_idx,
         )
+        out_ = jax.lax.optimization_barrier(out_)
         out = jnp.concatenate([out, out_], axis=1)
     enc = self.quant_conv(out)
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
@@ -1105,12 +1120,18 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     feat_cache.clear_cache()
     iter_ = z.shape[1]
     x = self.post_quant_conv(z)
+    
+    # Iterate through chunks with compiled graphs
+    # Each iteration uses JIT compilation for better performance
+    # This avoids full loop unrolling while still optimizing individual iterations
     for i in range(iter_):
       feat_cache._conv_idx = [0]
       if i == 0:
         out = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=feat_cache._feat_map, feat_idx=feat_cache._conv_idx)
+        out = jax.lax.optimization_barrier(out)
       else:
         out_ = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=feat_cache._feat_map, feat_idx=feat_cache._conv_idx)
+        out_ = jax.lax.optimization_barrier(out_)
 
         # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
         # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
