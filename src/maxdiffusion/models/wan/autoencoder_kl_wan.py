@@ -1118,6 +1118,24 @@ class WanDecoder3d(nnx.Module):
         return x, new_cache
 
 
+class AutoencoderKLWanCache:
+    """
+    Cache management for WAN VAE.
+    
+    Note: With jax.lax.scan architecture, cache is managed internally.
+    This class exists for API compatibility with existing pipelines but doesn't
+    actually store persistent cache anymore.
+    """
+
+    def __init__(self, module):
+        self.module = module
+        # No persistent cache needed with jax.lax.scan
+
+    def clear_cache(self):
+        """No-op for API compatibility. Cache is created fresh for each encode/decode call."""
+        pass
+
+
 class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     def __init__(
         self,
@@ -1192,11 +1210,16 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         )
 
     def encode(
-        self, x: jax.Array, return_dict: bool = True
+        self, x: jax.Array, feat_cache: Optional[AutoencoderKLWanCache] = None, return_dict: bool = True
     ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
         """
         Encode video using jax.lax.scan for temporal iteration.
         This enables proper JIT compilation while managing memory efficiently.
+        
+        Args:
+            x: Input video tensor
+            feat_cache: Cache object (for API compatibility, not used internally)
+            return_dict: Whether to return FlaxAutoencoderKLOutput or tuple
         """
         if x.shape[-1] != 3:
             x = jnp.transpose(x, (0, 2, 3, 4, 1))
@@ -1230,11 +1253,16 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
     def decode(
-        self, z: jax.Array, return_dict: bool = True
+        self, z: jax.Array, feat_cache: Optional[AutoencoderKLWanCache] = None, return_dict: bool = True
     ) -> Union[FlaxDecoderOutput, jax.Array]:
         """
         Decode latents using jax.lax.scan for temporal iteration.
         This enables proper JIT compilation while managing memory efficiently.
+        
+        Args:
+            z: Latent tensor
+            feat_cache: Cache object (for API compatibility, not used internally)
+            return_dict: Whether to return FlaxDecoderOutput or tuple
         """
         if z.shape[-1] != self.z_dim:
             z = jnp.transpose(z, (0, 2, 3, 4, 1))
