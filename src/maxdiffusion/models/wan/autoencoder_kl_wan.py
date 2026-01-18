@@ -991,13 +991,17 @@ class WanDecoder3d(nnx.Module):
 
 
 class AutoencoderKLWanCache:
+  """
+  Cache management for WAN VAE.
+  Uses Python dict to store JAX arrays - indexing happens outside JIT boundary.
+  """
 
   def __init__(self, module):
     self.module = module
     self.clear_cache()
 
   def clear_cache(self):
-    """Resets cache dictionaries and indices - using None placeholders for JAX compatibility"""
+    """Resets cache to empty dict"""
 
     def _count_conv3d(module):
       count = 0
@@ -1008,14 +1012,15 @@ class AutoencoderKLWanCache:
       return count
 
     self._conv_num = _count_conv3d(self.module.decoder)
-    self._conv_idx = [0]
-    # Use Python list of None values - we'll handle indexing outside JIT
-    self._feat_map = [None] * self._conv_num
+    # Python dict mapping int -> JAX array (or None or "Rep")
+    # Indexing happens outside JIT boundary
+    self._feat_map = {}
+    self._feat_map_size = self._conv_num
+    
     # cache encode
     self._enc_conv_num = _count_conv3d(self.module.encoder)
-    self._enc_conv_idx = [0]
-    # Use Python list of None values - we'll handle indexing outside JIT
-    self._enc_feat_map = [None] * self._enc_conv_num
+    self._enc_feat_map = {}
+    self._enc_feat_map_size = self._enc_conv_num
 
 
 class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
@@ -1130,9 +1135,9 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
     """
-    Encode with explicit cache threading (pure function style).
-    Note: We don't JIT this level because cache uses Python lists with dynamic indexing.
-    JAX can still optimize the internal operations (conv, norm, etc.).
+    Encode with explicit cache threading.
+    Cache uses Python dict - indexing happens outside potential JIT boundaries.
+    Individual operations inside encoder are still optimized by XLA.
     """
     feat_cache.clear_cache()
     if x.shape[-1] != 3:
@@ -1143,7 +1148,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     t = x.shape[1]
     iter_ = 1 + (t - 1) // 4
     
-    # Explicitly manage cache state across iterations (pure function style)
+    # Manage cache state across iterations
     current_cache = feat_cache._enc_feat_map
     current_idx = 0
     
