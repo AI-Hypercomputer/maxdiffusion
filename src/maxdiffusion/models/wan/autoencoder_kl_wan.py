@@ -336,26 +336,33 @@ class WanResample(nnx.Module):
     assert c == self.dim
     
     # Convert dict to list of values (sorted by key to maintain order)
-    updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())] if feat_cache is not None else None
+    # Handle both dict (from top-level) and list (from intermediate layers)
+    if feat_cache is not None:
+      if isinstance(feat_cache, dict):
+        updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())]
+      else:
+        updated_cache = list(feat_cache)  # Already a list/tuple, make mutable copy
+    else:
+      updated_cache = None
     updated_idx = feat_idx
 
     if self.mode == "upsample3d":
-      if feat_cache is not None:
+      if updated_cache is not None:
         idx = feat_idx
-        if feat_cache[idx] is None:
+        if updated_cache[idx] is None:
           updated_cache[idx] = "Rep"
           updated_idx += 1
         else:
           cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and feat_cache[idx] != "Rep":
+          if cache_x.shape[1] < 2 and updated_cache[idx] is not None and updated_cache[idx] != "Rep":
             # cache last frame of last two chunk
-            cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and feat_cache[idx] == "Rep":
+            cache_x = jnp.concatenate([jnp.expand_dims(updated_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+          if cache_x.shape[1] < 2 and updated_cache[idx] is not None and updated_cache[idx] == "Rep":
             cache_x = jnp.concatenate([jnp.zeros(cache_x.shape), cache_x], axis=1)
-          if feat_cache[idx] == "Rep":
+          if updated_cache[idx] == "Rep":
             x, _ = self.time_conv(x)
           else:
-            x, _ = self.time_conv(x, feat_cache[idx])
+            x, _ = self.time_conv(x, updated_cache[idx])
           updated_cache[idx] = cache_x
           updated_idx += 1
           x = x.reshape(b, t, h, w, 2, c)
@@ -368,14 +375,14 @@ class WanResample(nnx.Module):
     x = x.reshape(b, t, h_new, w_new, c_new)
 
     if self.mode == "downsample3d":
-      if feat_cache is not None:
+      if updated_cache is not None:
         idx = updated_idx
-        if feat_cache[idx] is None:
+        if updated_cache[idx] is None:
           updated_cache[idx] = jnp.copy(x)
           updated_idx += 1
         else:
           cache_x = jnp.copy(x[:, -1:, :, :, :])
-          x, _ = self.time_conv(jnp.concatenate([feat_cache[idx][:, -1:, :, :, :], x], axis=1))
+          x, _ = self.time_conv(jnp.concatenate([updated_cache[idx][:, -1:, :, :, :], x], axis=1))
           updated_cache[idx] = cache_x
           updated_idx += 1
 
@@ -443,7 +450,14 @@ class WanResidualBlock(nnx.Module):
     Pure function: returns (output, updated_cache, updated_idx).
     """
     # Convert dict to list of values (sorted by key to maintain order)
-    updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())] if feat_cache is not None else None
+    # Handle both dict (from top-level) and list (from intermediate layers)
+    if feat_cache is not None:
+      if isinstance(feat_cache, dict):
+        updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())]
+      else:
+        updated_cache = list(feat_cache)  # Already a list/tuple, make mutable copy
+    else:
+      updated_cache = None
     updated_idx = feat_idx
     
     # Apply shortcut connection
@@ -455,12 +469,12 @@ class WanResidualBlock(nnx.Module):
     x = self.norm1(x)
     x = self.nonlinearity(x)
 
-    if feat_cache is not None:
+    if updated_cache is not None:
       idx = updated_idx
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x, new_cache_val = self.conv1(x, feat_cache[idx], idx)
+      if cache_x.shape[1] < 2 and updated_cache[idx] is not None:
+        cache_x = jnp.concatenate([jnp.expand_dims(updated_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+      x, new_cache_val = self.conv1(x, updated_cache[idx], idx)
       updated_cache[idx] = cache_x
       updated_idx += 1
     else:
@@ -469,12 +483,12 @@ class WanResidualBlock(nnx.Module):
     x = self.norm2(x)
     x = self.nonlinearity(x)
 
-    if feat_cache is not None:
+    if updated_cache is not None:
       idx = updated_idx
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x, new_cache_val = self.conv2(x, feat_cache[idx])
+      if cache_x.shape[1] < 2 and updated_cache[idx] is not None:
+        cache_x = jnp.concatenate([jnp.expand_dims(updated_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+      x, new_cache_val = self.conv2(x, updated_cache[idx])
       updated_cache[idx] = cache_x
       updated_idx += 1
     else:
@@ -793,23 +807,30 @@ class WanEncoder3d(nnx.Module):
     Pure function: returns (output, updated_cache, updated_idx).
     """
     # Convert dict to list of values (sorted by key to maintain order)
-    updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())] if feat_cache is not None else None
+    # Handle both dict (from top-level) and list (from intermediate layers)
+    if feat_cache is not None:
+      if isinstance(feat_cache, dict):
+        updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())]
+      else:
+        updated_cache = list(feat_cache)  # Already a list/tuple, make mutable copy
+    else:
+      updated_cache = None
     updated_idx = feat_idx
     
-    if feat_cache is not None:
+    if updated_cache is not None:
       idx = updated_idx
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
+      if cache_x.shape[1] < 2 and updated_cache[idx] is not None:
         # cache last frame of the last two chunk
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x, _ = self.conv_in(x, feat_cache[idx])
+        cache_x = jnp.concatenate([jnp.expand_dims(updated_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+      x, _ = self.conv_in(x, updated_cache[idx])
       updated_cache[idx] = cache_x
       updated_idx += 1
     else:
       x, _ = self.conv_in(x)
       
     for layer in self.down_blocks:
-      if feat_cache is not None:
+      if updated_cache is not None:
         # Check if layer is WanResidualBlock, WanAttentionBlock, or WanResample
         if isinstance(layer, (WanResidualBlock, WanResample)):
           x, updated_cache, updated_idx = layer(x, updated_cache, updated_idx)
@@ -822,13 +843,13 @@ class WanEncoder3d(nnx.Module):
 
     x = self.norm_out(x)
     x = self.nonlinearity(x)
-    if feat_cache is not None:
+    if updated_cache is not None:
       idx = updated_idx
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
+      if cache_x.shape[1] < 2 and updated_cache[idx] is not None:
         # cache last frame of last two chunk
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x, _ = self.conv_out(x, feat_cache[idx])
+        cache_x = jnp.concatenate([jnp.expand_dims(updated_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+      x, _ = self.conv_out(x, updated_cache[idx])
       updated_cache[idx] = cache_x
       updated_idx += 1
     else:
@@ -956,16 +977,23 @@ class WanDecoder3d(nnx.Module):
     Pure function: returns (output, updated_cache, updated_idx).
     """
     # Convert dict to list of values (sorted by key to maintain order)
-    updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())] if feat_cache is not None else None
+    # Handle both dict (from top-level) and list (from intermediate layers)
+    if feat_cache is not None:
+      if isinstance(feat_cache, dict):
+        updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())]
+      else:
+        updated_cache = list(feat_cache)  # Already a list/tuple, make mutable copy
+    else:
+      updated_cache = None
     updated_idx = feat_idx
     
-    if feat_cache is not None:
+    if updated_cache is not None:
       idx = updated_idx
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
+      if cache_x.shape[1] < 2 and updated_cache[idx] is not None:
         # cache last frame of the last two chunk
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x, _ = self.conv_in(x, feat_cache[idx])
+        cache_x = jnp.concatenate([jnp.expand_dims(updated_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+      x, _ = self.conv_in(x, updated_cache[idx])
       updated_cache[idx] = cache_x
       updated_idx += 1
     else:
@@ -980,13 +1008,13 @@ class WanDecoder3d(nnx.Module):
     ## head
     x = self.norm_out(x)
     x = self.nonlinearity(x)
-    if feat_cache is not None:
+    if updated_cache is not None:
       idx = updated_idx
       cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-      if cache_x.shape[1] < 2 and feat_cache[idx] is not None:
+      if cache_x.shape[1] < 2 and updated_cache[idx] is not None:
         # cache last frame of the last two chunk
-        cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-      x, _ = self.conv_out(x, feat_cache[idx])
+        cache_x = jnp.concatenate([jnp.expand_dims(updated_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
+      x, _ = self.conv_out(x, updated_cache[idx])
       updated_cache[idx] = cache_x
       updated_idx += 1
     else:
