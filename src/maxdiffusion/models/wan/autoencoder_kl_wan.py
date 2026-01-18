@@ -1167,9 +1167,9 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
     """
-    Encode with explicit cache threading.
-    Cache uses Python dict - indexing happens outside potential JIT boundaries.
-    Individual operations inside encoder are still optimized by XLA.
+    Encode with JIT-compiled encoder calls and explicit cache threading.
+    The encoder is called once per iteration with JIT compilation.
+    Cache is managed as pure functions (explicit returns, no side effects).
     """
     feat_cache.clear_cache()
     if x.shape[-1] != 3:
@@ -1180,16 +1180,19 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     t = x.shape[1]
     iter_ = 1 + (t - 1) // 4
     
+    # JIT compile the encoder - it's now a pure function
+    encoder_jit = jax.jit(self.encoder)
+    
     # Manage cache state across iterations
     current_cache = feat_cache._enc_feat_map
     current_idx = 0
     
     for i in range(iter_):
       if i == 0:
-        out, current_cache, current_idx = self.encoder(x[:, :1, :, :, :], feat_cache=current_cache, feat_idx=0)
+        out, current_cache, current_idx = encoder_jit(x[:, :1, :, :, :], feat_cache=current_cache, feat_idx=0)
       else:
         # Reset feat_idx to 0 for each iteration - cache values are reused but index restarts
-        out_, current_cache, current_idx = self.encoder(
+        out_, current_cache, current_idx = encoder_jit(
             x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :],
             current_cache,
             0  # Reset index to 0 for each chunk
@@ -1216,13 +1219,16 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
     """
-    Decode with explicit cache threading (pure function style).
-    Note: We don't JIT this level because cache uses Python lists with dynamic indexing.
-    JAX can still optimize the internal operations (conv, norm, etc.).
+    Decode with JIT-compiled decoder calls and explicit cache threading.
+    The decoder is called once per iteration with JIT compilation.
+    Cache is managed as pure functions (explicit returns, no side effects).
     """
     feat_cache.clear_cache()
     iter_ = z.shape[1]
     x, _ = self.post_quant_conv(z)  # Unpack tuple (output, cache)
+    
+    # JIT compile the decoder - it's now a pure function
+    decoder_jit = jax.jit(self.decoder)
     
     # Explicitly manage cache state across iterations (pure function style)
     current_cache = feat_cache._feat_map
@@ -1230,10 +1236,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     
     for i in range(iter_):
       if i == 0:
-        out, current_cache, current_idx = self.decoder(x[:, i : i + 1, :, :, :], current_cache, 0)
+        out, current_cache, current_idx = decoder_jit(x[:, i : i + 1, :, :, :], current_cache, 0)
       else:
         # Reset feat_idx to 0 for each iteration - cache values are reused but index restarts
-        out_, current_cache, current_idx = self.decoder(x[:, i : i + 1, :, :, :], current_cache, 0)
+        out_, current_cache, current_idx = decoder_jit(x[:, i : i + 1, :, :, :], current_cache, 0)
 
         # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
         # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
