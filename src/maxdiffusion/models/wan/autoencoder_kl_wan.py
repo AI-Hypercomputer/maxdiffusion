@@ -391,7 +391,7 @@ class WanResample(nnx.Module):
     new_cache = {}
 
     if self.mode == "upsample2d":
-      b, t, h, w, c = x.shape
+    b, t, h, w, c = x.shape
       x = x.reshape(b * t, h, w, c)
       x = self.resample(x)
       h_new, w_new, c_new = x.shape[1:]
@@ -403,14 +403,14 @@ class WanResample(nnx.Module):
 
       b, t, h, w, c = x.shape
       x = x.reshape(b, t, h, w, 2, c // 2)
-      x = jnp.stack([x[:, :, :, :, 0, :], x[:, :, :, :, 1, :]], axis=1)
+          x = jnp.stack([x[:, :, :, :, 0, :], x[:, :, :, :, 1, :]], axis=1)
       x = x.reshape(b, t * 2, h, w, c // 2)
 
       b, t, h, w, c = x.shape
-      x = x.reshape(b * t, h, w, c)
-      x = self.resample(x)
-      h_new, w_new, c_new = x.shape[1:]
-      x = x.reshape(b, t, h_new, w_new, c_new)
+    x = x.reshape(b * t, h, w, c)
+    x = self.resample(x)
+    h_new, w_new, c_new = x.shape[1:]
+    x = x.reshape(b, t, h_new, w_new, c_new)
 
     elif self.mode == "downsample2d":
       b, t, h, w, c = x.shape
@@ -429,7 +429,7 @@ class WanResample(nnx.Module):
       x, tc_cache = self.time_conv(x, cache.get("time_conv"))
       new_cache["time_conv"] = tc_cache
 
-    else:
+        else:
       if hasattr(self, "resample"):
         if isinstance(self.resample, Identity):
           x, _ = self.resample(x, None)
@@ -485,15 +485,15 @@ class WanResidualBlock(nnx.Module):
     self.conv_shortcut = Identity()
     if in_dim != out_dim:
       self.conv_shortcut = WanCausalConv3d(
-          rngs=rngs,
-          in_channels=in_dim,
-          out_channels=out_dim,
-          kernel_size=1,
-          mesh=mesh,
-          dtype=dtype,
-          weights_dtype=weights_dtype,
-          precision=precision,
-      )
+            rngs=rngs,
+            in_channels=in_dim,
+            out_channels=out_dim,
+            kernel_size=1,
+            mesh=mesh,
+            dtype=dtype,
+            weights_dtype=weights_dtype,
+            precision=precision,
+        )
 
   def initialize_cache(self, batch_size, height, width, dtype):
     """Initialize cache for all convolutions."""
@@ -571,43 +571,43 @@ class WanAttentionBlock(nnx.Module):
         precision=precision,
     )
 
-    def __call__(self, x: jax.Array):
-        identity = x
-        batch_size, time, height, width, channels = x.shape
-        
-        # Reshape to process all frames together
-        x = x.reshape(batch_size * time, height, width, channels)
-        x = self.norm(x)
-        
-        qkv = self.to_qkv(x)  # (B*T, H, W, C*3)
-        
-        # Get actual shape after to_qkv to avoid using stale variables
-        bt, h, w, c3 = qkv.shape
-        
-        # Flatten spatial dimensions for attention
-        qkv = qkv.reshape(bt, h * w, c3)  # (B*T, H*W, C*3)
-        qkv = jnp.transpose(qkv, (0, 2, 1))  # (B*T, C*3, H*W)
-        
-        q, k, v = jnp.split(qkv, 3, axis=1)  # Each: (B*T, C, H*W)
-        q = jnp.transpose(q, (0, 2, 1))  # (B*T, H*W, C)
-        k = jnp.transpose(k, (0, 2, 1))  # (B*T, H*W, C)
-        v = jnp.transpose(v, (0, 2, 1))  # (B*T, H*W, C)
-        
-        # Add head dimension for dot_product_attention
-        q = jnp.expand_dims(q, 1)  # (B*T, 1, H*W, C)
-        k = jnp.expand_dims(k, 1)  # (B*T, 1, H*W, C)
-        v = jnp.expand_dims(v, 1)  # (B*T, 1, H*W, C)
-        
-        x = jax.nn.dot_product_attention(q, k, v)  # (B*T, 1, H*W, C)
-        x = jnp.squeeze(x, 1)  # (B*T, H*W, C)
-        
-        # Reshape back to spatial dimensions
-        x = x.reshape(bt, h, w, channels)
-        x = self.proj(x)
-        
-        # Reshape back to original shape
-        x = x.reshape(batch_size, time, height, width, channels)
-        return x + identity
+  def __call__(self, x: jax.Array):
+    identity = x
+    batch_size, time, height, width, channels = x.shape
+
+    # Reshape to process all frames together
+    x = x.reshape(batch_size * time, height, width, channels)
+    x = self.norm(x)
+
+    qkv = self.to_qkv(x)  # (B*T, H, W, C*3)
+    
+    # Get actual shape after to_qkv to avoid using stale variables
+    bt, h, w, c3 = qkv.shape
+    
+    # Flatten spatial dimensions for attention
+    qkv = qkv.reshape(bt, h * w, c3)  # (B*T, H*W, C*3)
+    qkv = jnp.transpose(qkv, (0, 2, 1))  # (B*T, C*3, H*W)
+    
+    q, k, v = jnp.split(qkv, 3, axis=1)  # Each: (B*T, C, H*W)
+    q = jnp.transpose(q, (0, 2, 1))  # (B*T, H*W, C)
+    k = jnp.transpose(k, (0, 2, 1))  # (B*T, H*W, C)
+    v = jnp.transpose(v, (0, 2, 1))  # (B*T, H*W, C)
+    
+    # Add head dimension for dot_product_attention
+    q = jnp.expand_dims(q, 1)  # (B*T, 1, H*W, C)
+    k = jnp.expand_dims(k, 1)  # (B*T, 1, H*W, C)
+    v = jnp.expand_dims(v, 1)  # (B*T, 1, H*W, C)
+    
+    x = jax.nn.dot_product_attention(q, k, v)  # (B*T, 1, H*W, C)
+    x = jnp.squeeze(x, 1)  # (B*T, H*W, C)
+    
+    # Reshape back to spatial dimensions
+    x = x.reshape(bt, h, w, channels)
+    x = self.proj(x)
+
+    # Reshape back to original shape
+    x = x.reshape(batch_size, time, height, width, channels)
+    return x + identity
 
 
 class WanMidBlock(nnx.Module):
@@ -626,18 +626,18 @@ class WanMidBlock(nnx.Module):
     self.dim = dim
     self.resnets = nnx.List(
         [
-            WanResidualBlock(
-                in_dim=dim,
-                out_dim=dim,
-                rngs=rngs,
-                dropout=dropout,
-                non_linearity=non_linearity,
-                mesh=mesh,
-                dtype=dtype,
-                weights_dtype=weights_dtype,
-                precision=precision,
-            )
-        ]
+        WanResidualBlock(
+            in_dim=dim,
+            out_dim=dim,
+            rngs=rngs,
+            dropout=dropout,
+            non_linearity=non_linearity,
+            mesh=mesh,
+            dtype=dtype,
+            weights_dtype=weights_dtype,
+            precision=precision,
+        )
+    ]
     )
     self.attentions = nnx.List([])
     for _ in range(num_layers):
@@ -991,18 +991,18 @@ class WanDecoder3d(nnx.Module):
         upsample_mode = "upsample3d" if temperal_upsample[i] else "upsample2d"
       self.up_blocks.append(
           WanUpBlock(
-              in_dim=in_dim,
-              out_dim=out_dim,
-              num_res_blocks=num_res_blocks,
-              dropout=dropout,
-              upsample_mode=upsample_mode,
-              non_linearity=non_linearity,
-              rngs=rngs,
-              mesh=mesh,
-              dtype=dtype,
-              weights_dtype=weights_dtype,
-              precision=precision,
-          )
+          in_dim=in_dim,
+          out_dim=out_dim,
+          num_res_blocks=num_res_blocks,
+          dropout=dropout,
+          upsample_mode=upsample_mode,
+          non_linearity=non_linearity,
+          rngs=rngs,
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
+      )
       )
 
     self.norm_out = WanRMS_norm(
