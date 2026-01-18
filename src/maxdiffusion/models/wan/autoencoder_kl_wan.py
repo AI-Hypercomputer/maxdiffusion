@@ -335,7 +335,8 @@ class WanResample(nnx.Module):
     b, t, h, w, c = x.shape
     assert c == self.dim
     
-    updated_cache = list(feat_cache) if feat_cache is not None else None
+    # Convert dict to list of values (sorted by key to maintain order)
+    updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())] if feat_cache is not None else None
     updated_idx = feat_idx
 
     if self.mode == "upsample3d":
@@ -441,7 +442,8 @@ class WanResidualBlock(nnx.Module):
     """
     Pure function: returns (output, updated_cache, updated_idx).
     """
-    updated_cache = list(feat_cache) if feat_cache is not None else None
+    # Convert dict to list of values (sorted by key to maintain order)
+    updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())] if feat_cache is not None else None
     updated_idx = feat_idx
     
     # Apply shortcut connection
@@ -790,7 +792,8 @@ class WanEncoder3d(nnx.Module):
     """
     Pure function: returns (output, updated_cache, updated_idx).
     """
-    updated_cache = list(feat_cache) if feat_cache is not None else None
+    # Convert dict to list of values (sorted by key to maintain order)
+    updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())] if feat_cache is not None else None
     updated_idx = feat_idx
     
     if feat_cache is not None:
@@ -952,7 +955,8 @@ class WanDecoder3d(nnx.Module):
     """
     Pure function: returns (output, updated_cache, updated_idx).
     """
-    updated_cache = list(feat_cache) if feat_cache is not None else None
+    # Convert dict to list of values (sorted by key to maintain order)
+    updated_cache = [feat_cache[i] for i in sorted(feat_cache.keys())] if feat_cache is not None else None
     updated_idx = feat_idx
     
     if feat_cache is not None:
