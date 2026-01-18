@@ -1165,10 +1165,11 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       self, x: jax.Array, feat_cache: Optional[AutoencoderKLWanCache] = None, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """
-    Encode video. Process the full video at once to handle temporal downsampling.
+    Encode video using jax.lax.scan for memory-efficient frame-by-frame processing.
+    Uses caching to maintain temporal context across frames.
 
     Args:
-        x: Input video tensor
+        x: Input video tensor (B, T, H, W, C)
         feat_cache: Cache object (for API compatibility, not used internally)
         return_dict: Whether to return FlaxAutoencoderKLOutput or tuple
     """
@@ -1177,11 +1178,36 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     b, t, h, w, c = x.shape
     
-    # Initialize cache once
+    # Initialize cache for encoder
     init_cache = self.encoder.init_cache(b, h, w, x.dtype)
     
-    # Process the full video through encoder (handles temporal downsampling internally)
-    encoded, _ = self.encoder(x, init_cache)
+    # Prepare for scan: swap batch and time to iterate over time
+    x_scan = jnp.swapaxes(x, 0, 1)  # (T, B, H, W, C)
+    
+    def scan_fn(carry, x_frame):
+      """Process one frame at a time with cache."""
+      # x_frame shape: (B, H, W, C)
+      # Add time dimension for processing
+      x_frame = jnp.expand_dims(x_frame, axis=1)  # (B, 1, H, W, C)
+      
+      # Process through encoder with cache
+      out_frame, new_cache = self.encoder(x_frame, carry)
+      
+      # out_frame shape: (B, T_out, H', W', C') where T_out depends on temporal downsampling
+      # For stability, we keep the time dimension
+      return new_cache, out_frame
+    
+    # Scan over time dimension
+    final_cache, encoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
+    # encoded_frames shape: (T, B, T_out_per_frame, H', W', C')
+    
+    # Concatenate along time dimension: (T, B, T_out, H', W', C') -> (B, T*T_out, H', W', C')
+    # First, swap to (B, T, T_out, H', W', C')
+    encoded_frames = jnp.swapaxes(encoded_frames, 0, 1)
+    
+    # Then reshape to merge time dimensions
+    shape = encoded_frames.shape
+    encoded = encoded_frames.reshape(shape[0], shape[1] * shape[2], shape[3], shape[4], shape[5])
 
     # Apply quantization convolution
     enc, _ = self.quant_conv(encoded)
@@ -1198,10 +1224,11 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       self, z: jax.Array, feat_cache: Optional[AutoencoderKLWanCache] = None, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
     """
-    Decode latents. Process the full latent at once to handle temporal upsampling.
+    Decode latents using jax.lax.scan for memory-efficient frame-by-frame processing.
+    Uses caching to maintain temporal context across frames.
 
     Args:
-        z: Latent tensor
+        z: Latent tensor (B, T, H, W, C)
         feat_cache: Cache object (for API compatibility, not used internally)
         return_dict: Whether to return FlaxDecoderOutput or tuple
     """
@@ -1213,11 +1240,35 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     
     b, t, h, w, c = x.shape
     
-    # Initialize cache once
+    # Initialize cache for decoder
     init_cache = self.decoder.init_cache(b, h, w, x.dtype)
-
-    # Process the full latent through decoder (handles temporal upsampling internally)
-    decoded, _ = self.decoder(x, init_cache)
+    
+    # Prepare for scan: swap batch and time to iterate over time
+    x_scan = jnp.swapaxes(x, 0, 1)  # (T, B, H, W, C)
+    
+    def scan_fn(carry, x_frame):
+      """Process one latent frame at a time with cache."""
+      # x_frame shape: (B, H, W, C)
+      # Add time dimension for processing
+      x_frame = jnp.expand_dims(x_frame, axis=1)  # (B, 1, H, W, C)
+      
+      # Process through decoder with cache (will upsample temporally)
+      out_frame, new_cache = self.decoder(x_frame, carry)
+      
+      # out_frame shape: (B, T_out, H', W', C') where T_out depends on temporal upsampling
+      return new_cache, out_frame
+    
+    # Scan over time dimension
+    final_cache, decoded_frames = jax.lax.scan(scan_fn, init_cache, x_scan)
+    # decoded_frames shape: (T, B, T_out_per_frame, H', W', C')
+    
+    # Concatenate along time dimension: (T, B, T_out, H', W', C') -> (B, T*T_out, H', W', C')
+    # First, swap to (B, T, T_out, H', W', C')
+    decoded_frames = jnp.swapaxes(decoded_frames, 0, 1)
+    
+    # Then reshape to merge time dimensions
+    shape = decoded_frames.shape
+    decoded = decoded_frames.reshape(shape[0], shape[1] * shape[2], shape[3], shape[4], shape[5])
 
     out = jnp.clip(decoded, min=-1.0, max=1.0)
 
