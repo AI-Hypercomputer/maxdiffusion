@@ -756,7 +756,7 @@ class WanEncoder3d(nnx.Module):
         precision=precision,
     )
 
-  @nnx.jit
+  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -787,7 +787,7 @@ class WanEncoder3d(nnx.Module):
       feat_idx += 1
     else:
       x = self.conv_out(x)
-    return x, feat_cache, feat_idx
+    return x, feat_cache, jnp.array(feat_idx, dtype=jnp.int32)
 
 
 class WanDecoder3d(nnx.Module):
@@ -905,7 +905,7 @@ class WanDecoder3d(nnx.Module):
         precision=precision,
     )
 
-  @nnx.jit
+  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -939,7 +939,7 @@ class WanDecoder3d(nnx.Module):
       feat_idx += 1
     else:
       x = self.conv_out(x)
-    return x, feat_cache, feat_idx
+    return x, feat_cache, jnp.array(feat_idx, dtype=jnp.int32)
 
 
 class WanDiagonalGaussianDistribution(FlaxDiagonalGaussianDistribution):
