@@ -940,6 +940,30 @@ class WanDecoder3d(nnx.Module):
     return x, feat_cache, feat_idx
 
 
+class WanDiagonalGaussianDistribution(FlaxDiagonalGaussianDistribution):
+  pass
+
+def _wan_diag_gauss_dist_flatten(dist):
+  return (dist.mean, dist.logvar, dist.std, dist.var), (dist.deterministic,)
+
+def _wan_diag_gauss_dist_unflatten(aux, children):
+  mean, logvar, std, var = children
+  deterministic = aux[0]
+  obj = WanDiagonalGaussianDistribution.__new__(WanDiagonalGaussianDistribution)
+  obj.mean = mean
+  obj.logvar = logvar
+  obj.std = std
+  obj.var = var
+  obj.deterministic = deterministic
+  return obj
+
+tree_util.register_pytree_node(
+    WanDiagonalGaussianDistribution,
+    _wan_diag_gauss_dist_flatten,
+    _wan_diag_gauss_dist_unflatten,
+)
+
+
 class AutoencoderKLWanCache:
 
   def __init__(self, module):
@@ -1133,7 +1157,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """Encode video into latent distribution."""
     h = self._encode(x, feat_cache)
-    posterior = FlaxDiagonalGaussianDistribution(h)
+    posterior = WanDiagonalGaussianDistribution(h)
     if not return_dict:
       return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
