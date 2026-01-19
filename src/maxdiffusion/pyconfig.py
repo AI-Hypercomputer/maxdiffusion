@@ -205,8 +205,8 @@ class _HyperParameters:
       logical_axis_rules = list(raw_keys["logical_axis_rules"])
       max_logging.log(f"Initial logical axis rules: {logical_axis_rules}")
       new_rules = []
-      q_seq_sharding = (LENGTH, "fsdp")
-      kv_seq_sharding = (KV_LENGTH, "fsdp")
+      q_seq_sharding = (LENGTH, "context")
+      kv_seq_sharding = (KV_LENGTH, "context")
       if q_seq_sharding not in logical_axis_rules:
         logical_axis_rules.append(q_seq_sharding)
       if kv_seq_sharding not in logical_axis_rules:

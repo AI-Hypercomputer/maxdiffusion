@@ -151,7 +151,7 @@ hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
 skip_jax_distributed_system: False
 
 # Parallelism
-mesh_axes: ['data', 'fsdp_batch', 'fsdp', 'tensor']
+mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 
 # batch : batch dimension of data and activations
 # hidden :
@@ -166,33 +166,33 @@ mesh_axes: ['data', 'fsdp_batch', 'fsdp', 'tensor']
 # conv_in : conv.shape[2] weight
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
-                      ['batch', ['data', 'fsdp_batch']],
-                      ['activation_batch', ['data', 'fsdp_batch']],
-                      ['activation_self_attn_heads', ['fsdp', 'tensor']], 
-                      ['activation_cross_attn_q_length', ['fsdp', 'tensor']],
-                      ['activation_length', 'fsdp'],
+                      ['batch', ['data', 'fsdp']],
+                      ['activation_batch', ['data', 'fsdp']],
+                      ['activation_self_attn_heads', ['context', 'tensor']],
+                      ['activation_cross_attn_q_length', ['context', 'tensor']],
+                      ['activation_length', 'context'],
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
-                      ['embed', ['fsdp', 'fsdp_batch']],
+                      ['embed', ['context', 'fsdp']],
                       ['heads', 'tensor'],
                       ['norm', 'tensor'],
-                      ['conv_batch', ['data', 'fsdp', 'fsdp_batch']],
+                      ['conv_batch', ['data', 'context', 'fsdp']],
                       ['out_channels', 'tensor'],
-                      ['conv_out', 'fsdp'],
+                      ['conv_out', 'context'],
                     ]
-data_sharding: [['data', 'fsdp_batch', 'fsdp', 'tensor']]
+data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 
 # One axis for each parallelism type may hold a placeholder (-1)
 # value to auto-shard based on available slices and devices.
 # By default, product of the DCN axes should equal number of slices
 # and product of the ICI axes should equal number of devices per slice.
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
-dcn_fsdp_batch_parallelism: 1
-dcn_fsdp_parallelism: -1
+dcn_fsdp_parallelism: 1
+dcn_context_parallelism: -1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_batch_parallelism: 1
-ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_fsdp_parallelism: 1
+ici_context_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
 allow_split_physical_axes: False

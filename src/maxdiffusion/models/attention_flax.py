@@ -256,7 +256,7 @@ def _tpu_flash_attention(
         block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
         use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
     )
-  num_fsdp_shards = mesh.shape["fsdp"]
+  num_context_shards = mesh.shape["context"]
   query = _reshape_data_for_flash(query, heads)
   key = _reshape_data_for_flash(key, heads)
   value = _reshape_data_for_flash(value, heads)
@@ -352,21 +352,21 @@ def _tpu_flash_attention(
     if attention_kernel in ["flash", "tokamax_flash"]:
       attention_output = vmapped_splash(query, key, value, segment_ids)
     else:
-      if num_fsdp_shards > 1:
+      if num_context_shards > 1:
         out, (lse,) = vmapped_splash(query, key, value, segment_ids)
         m = lse.astype(jnp.float32)
         l = jnp.exp(lse - m)
         o = out.astype(jnp.float32) * l[..., None]
 
-        perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
+        perm = [(j, (j + 1) % num_context_shards) for j in range(num_context_shards)]
 
-        k1 = jax.lax.ppermute(key, axis_name=fsdp_key, perm=perm)
-        v1 = jax.lax.ppermute(value, axis_name=fsdp_key, perm=perm)
+        k1 = jax.lax.ppermute(key, axis_name="context", perm=perm)
+        v1 = jax.lax.ppermute(value, axis_name="context", perm=perm)
 
         def ring_scan_body(carry, _):
           m, l, o, k_current, v_current = carry
-          k_next = jax.lax.ppermute(k_current, axis_name=fsdp_key, perm=perm)
-          v_next = jax.lax.ppermute(v_current, axis_name=fsdp_key, perm=perm)
+          k_next = jax.lax.ppermute(k_current, axis_name="context", perm=perm)
+          v_next = jax.lax.ppermute(v_current, axis_name="context", perm=perm)
 
           out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
 
@@ -385,58 +385,20 @@ def _tpu_flash_attention(
           return (m, l, o, k_next, v_next), None
 
         initial_carry = (m, l, o, k1, v1)
-        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
+        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_context_shards - 1)
 
         attention_output = o_final / l_final[..., None]
       else:
-        if num_fsdp_shards > 1:
-          out, (lse,) = vmapped_splash(query, key, value, segment_ids)
-          m = lse.astype(jnp.float32)
-          l = jnp.exp(lse - m)
-          o = out.astype(jnp.float32) * l[..., None]
-
-          perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
-
-          k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
-          v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
-
-          def ring_scan_body(carry, _):
-            m, l, o, k_current, v_current = carry
-            k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
-            v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
-
-            out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
-
-            m_chunk = lse_chunk.astype(jnp.float32)
-            m_old = m
-            m = jnp.maximum(m_old, m_chunk)
-
-            exp_m_diff = jnp.exp(m_old - m)
-            exp_m_chunk_diff = jnp.exp(m_chunk - m)
-
-            l = l * exp_m_diff + jnp.exp(lse_chunk - m)
-            o = o * exp_m_diff[..., None]
-            o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
-
-            # Return the updated state for the next iteration
-            return (m, l, o, k_next, v_next), None
-
-          initial_carry = (m, l, o, k1, v1)
-          (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
-
-          attention_output = o_final / l_final[..., None]
-        else:
-          raise ValueError("ring attention requires fsdp > 1")
-
+        raise ValueError("ring attention requires context > 1")
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
-  devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
+  devices_in_data_context = mesh.shape["data"] * mesh.shape["context"]
   # This warning might show up when doing model eval for example, when calculating model flops
   # and that is expected.
-  if not (query.shape[0] / devices_in_data_fsdp).is_integer():
+  if not (query.shape[0] / devices_in_data_context).is_integer():
     max_logging.log(
-        "Warning, batch dimension should be shardable among the devices in data and fsdp"
-        f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
+        "Warning, batch dimension should be shardable among the devices in data and context"
+        f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
     )
   x = wrap_flash_attention(query, key, value)
   x = _reshape_heads_to_head_dim(x)
