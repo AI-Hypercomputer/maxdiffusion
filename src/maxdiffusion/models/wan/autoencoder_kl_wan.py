@@ -134,7 +134,10 @@ class WanCausalConv3d(nnx.Module):
     else:
       x_padded = x
 
-
+    if self.mesh is not None:
+      # (B, D, H, W, C)
+      if x_padded.shape[0] % self.mesh.shape['data'] == 0:
+        x_padded = with_sharding_constraint(x_padded, PartitionSpec('data', None, None, None, None))
 
     out = self.conv(x_padded)
     return out
