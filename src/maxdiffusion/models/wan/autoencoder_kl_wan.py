@@ -756,6 +756,7 @@ class WanEncoder3d(nnx.Module):
         precision=precision,
     )
 
+  @nnx.jit
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -904,6 +905,7 @@ class WanDecoder3d(nnx.Module):
         precision=precision,
     )
 
+  @nnx.jit
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -1151,7 +1153,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     feat_cache.init_cache()
     return enc
 
-  @nnx.jit
   def encode(
       self, x: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
@@ -1204,7 +1205,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     return FlaxDecoderOutput(sample=out)
 
-  @nnx.jit
   def decode(
       self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
