@@ -50,6 +50,12 @@ def _canonicalize_tuple(x: Union[int, Sequence[int]], rank: int, name: str) -> T
     raise ValueError(f"Argument '{name}' must be an integer or a sequence of {rank} integers. Got {x}")
 
 
+class RepSentinel:
+  def __eq__(self, other):
+    return isinstance(other, RepSentinel)
+
+tree_util.register_pytree_node(RepSentinel, lambda x: ((), None), lambda _, __: RepSentinel())
+
 class WanCausalConv3d(nnx.Module):
 
   def __init__(
@@ -332,16 +338,16 @@ class WanResample(nnx.Module):
       if feat_cache is not None:
         idx = feat_idx
         if feat_cache[idx] is None:
-          feat_cache = _update_cache(feat_cache, idx, "Rep")
+          feat_cache = _update_cache(feat_cache, idx, RepSentinel())
           feat_idx += 1
         else:
           cache_x = jnp.copy(x[:, -CACHE_T:, :, :, :])
-          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and feat_cache[idx] != "Rep":
+          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and not isinstance(feat_cache[idx], RepSentinel):
             # cache last frame of last two chunk
             cache_x = jnp.concatenate([jnp.expand_dims(feat_cache[idx][:, -1, :, :, :], axis=1), cache_x], axis=1)
-          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and feat_cache[idx] == "Rep":
+          if cache_x.shape[1] < 2 and feat_cache[idx] is not None and isinstance(feat_cache[idx], RepSentinel):
             cache_x = jnp.concatenate([jnp.zeros(cache_x.shape), cache_x], axis=1)
-          if feat_cache[idx] == "Rep":
+          if isinstance(feat_cache[idx], RepSentinel):
             x = self.time_conv(x)
           else:
             x = self.time_conv(x, feat_cache[idx])
