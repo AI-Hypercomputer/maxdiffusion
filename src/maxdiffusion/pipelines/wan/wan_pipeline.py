@@ -532,7 +532,7 @@ class WanPipeline:
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
           sharding_spec = P(self.config.mesh_axes[0], None, None, None, None)
           video_condition = jax.lax.with_sharding_constraint(
-            video_condition, 
+            video_condition,
             sharding_spec
           )
           encoded_output = self.vae.encode(video_condition, self.vae_cache)[0].mode()
