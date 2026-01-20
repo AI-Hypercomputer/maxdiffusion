@@ -26,8 +26,10 @@ import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 
+
 class WanPipelineI2V_2_1(WanPipeline):
   """Pipeline for WAN 2.1 Image-to-Video."""
+
   def __init__(self, config: HyperParameters, transformer: Optional[WanModel], **kwargs):
     super().__init__(config=config, **kwargs)
     self.transformer = transformer
@@ -44,28 +46,28 @@ class WanPipelineI2V_2_1(WanPipeline):
             rngs=common_components["rngs"],
             config=config,
             restored_checkpoint=restored_checkpoint,
-            subfolder="transformer"
+            subfolder="transformer",
         )
 
     pipeline = cls(
-      tokenizer=common_components["tokenizer"],
-      text_encoder=common_components["text_encoder"],
-      image_processor=common_components["image_processor"],
-      image_encoder=common_components["image_encoder"],
-      transformer=transformer,
-      vae=common_components["vae"],
-      vae_cache=common_components["vae_cache"],
-      scheduler=common_components["scheduler"],
-      scheduler_state=common_components["scheduler_state"],
-      devices_array=common_components["devices_array"],
-      mesh=common_components["mesh"],
-      config=config,
+        tokenizer=common_components["tokenizer"],
+        text_encoder=common_components["text_encoder"],
+        image_processor=common_components["image_processor"],
+        image_encoder=common_components["image_encoder"],
+        transformer=transformer,
+        vae=common_components["vae"],
+        vae_cache=common_components["vae_cache"],
+        scheduler=common_components["scheduler"],
+        scheduler_state=common_components["scheduler_state"],
+        devices_array=common_components["devices_array"],
+        mesh=common_components["mesh"],
+        config=config,
     )
     return pipeline, transformer
 
   @classmethod
   def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
-    pipeline , transformer = cls._load_and_init(config, None, vae_only, load_transformer)
+    pipeline, transformer = cls._load_and_init(config, None, vae_only, load_transformer)
     pipeline.transformer = cls.quantize_transformer(config, transformer, pipeline, pipeline.mesh)
     return pipeline
 
@@ -87,110 +89,109 @@ class WanPipelineI2V_2_1(WanPipeline):
       last_image: Optional[jax.Array] = None,
       num_videos_per_prompt: int = 1,
   ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
+    if hasattr(image, "detach"):
+      image = image.detach().cpu().numpy()
+    image = jnp.array(image)
 
-        if hasattr(image, "detach"):
-            image = image.detach().cpu().numpy()
-        image = jnp.array(image)
+    if last_image is not None:
+      if hasattr(last_image, "detach"):
+        last_image = last_image.detach().cpu().numpy()
+      last_image = jnp.array(last_image)
 
-        if last_image is not None:
-            if hasattr(last_image, "detach"):
-                last_image = last_image.detach().cpu().numpy()
-            last_image = jnp.array(last_image)
+    if num_videos_per_prompt > 1:
+      image = jnp.repeat(image, num_videos_per_prompt, axis=0)
+      if last_image is not None:
+        last_image = jnp.repeat(last_image, num_videos_per_prompt, axis=0)
 
-        if num_videos_per_prompt > 1:
-           image = jnp.repeat(image, num_videos_per_prompt, axis=0)
-           if last_image is not None:
-              last_image = jnp.repeat(last_image, num_videos_per_prompt, axis=0)
+    num_channels_latents = self.vae.z_dim
+    num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
+    latent_height = height // self.vae_scale_factor_spatial
+    latent_width = width // self.vae_scale_factor_spatial
 
-        num_channels_latents = self.vae.z_dim
-        num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
-        latent_height = height // self.vae_scale_factor_spatial
-        latent_width = width // self.vae_scale_factor_spatial
+    shape = (batch_size, num_latent_frames, latent_height, latent_width, num_channels_latents)
 
-        shape = (batch_size, num_latent_frames, latent_height, latent_width, num_channels_latents)
-
-        if latents is None:
-            latents = jax.random.normal(rng, shape=shape, dtype=jnp.float32)
-        else:
-            latents = latents.astype(dtype)
-        latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)
-        mask_lat_size = jnp.ones((batch_size, 1, num_frames, latent_height, latent_width), dtype=dtype)
-        if last_image is None:
-            mask_lat_size = mask_lat_size.at[:, :, 1:, :, :].set(0)
-        else:
-            mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)
-        first_frame_mask = mask_lat_size[:, :, 0:1]
-        first_frame_mask = jnp.repeat(first_frame_mask, self.vae_scale_factor_temporal, axis=2)
-        mask_lat_size = jnp.concatenate([first_frame_mask, mask_lat_size[:, :, 1:]], axis=2)
-        mask_lat_size = mask_lat_size.reshape(
-          batch_size,
-          1,
-          num_latent_frames,
-          self.vae_scale_factor_temporal,
-          latent_height,
-          latent_width
-        )
-        mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 4, 5, 3, 1)).squeeze(-1)
-        condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)
-        return latents, condition, None
-
+    if latents is None:
+      latents = jax.random.normal(rng, shape=shape, dtype=jnp.float32)
+    else:
+      latents = latents.astype(dtype)
+    latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)
+    mask_lat_size = jnp.ones((batch_size, 1, num_frames, latent_height, latent_width), dtype=dtype)
+    if last_image is None:
+      mask_lat_size = mask_lat_size.at[:, :, 1:, :, :].set(0)
+    else:
+      mask_lat_size = mask_lat_size.at[:, :, 1:-1, :, :].set(0)
+    first_frame_mask = mask_lat_size[:, :, 0:1]
+    first_frame_mask = jnp.repeat(first_frame_mask, self.vae_scale_factor_temporal, axis=2)
+    mask_lat_size = jnp.concatenate([first_frame_mask, mask_lat_size[:, :, 1:]], axis=2)
+    mask_lat_size = mask_lat_size.reshape(
+        batch_size, 1, num_latent_frames, self.vae_scale_factor_temporal, latent_height, latent_width
+    )
+    mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 4, 5, 3, 1)).squeeze(-1)
+    condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)
+    return latents, condition, None
 
   def __call__(
-    self,
-    prompt: Union[str, List[str]],
-    image: PipelineImageInput,
-    negative_prompt: Optional[Union[str, List[str]]] = None,
-    height: Optional[int] = None,
-    width: Optional[int] = None,
-    num_frames: Optional[int] = None,
-    num_inference_steps: int = 50,
-    guidance_scale: float = 5.0,
-    num_videos_per_prompt: int = 1,
-    max_sequence_length: int = 512,
-    latents: Optional[jax.Array] = None,
-    prompt_embeds: Optional[jax.Array] = None,
-    negative_prompt_embeds: Optional[jax.Array] = None,
-    image_embeds: Optional[jax.Array] = None,
-    last_image: Optional[PipelineImageInput] = None,
-    output_type: Optional[str] = "np",
-    rng: Optional[jax.Array] = None,
+      self,
+      prompt: Union[str, List[str]],
+      image: PipelineImageInput,
+      negative_prompt: Optional[Union[str, List[str]]] = None,
+      height: Optional[int] = None,
+      width: Optional[int] = None,
+      num_frames: Optional[int] = None,
+      num_inference_steps: int = 50,
+      guidance_scale: float = 5.0,
+      num_videos_per_prompt: int = 1,
+      max_sequence_length: int = 512,
+      latents: Optional[jax.Array] = None,
+      prompt_embeds: Optional[jax.Array] = None,
+      negative_prompt_embeds: Optional[jax.Array] = None,
+      image_embeds: Optional[jax.Array] = None,
+      last_image: Optional[PipelineImageInput] = None,
+      output_type: Optional[str] = "np",
+      rng: Optional[jax.Array] = None,
   ):
-
     height = height or self.config.height
     width = width or self.config.width
     num_frames = num_frames or self.config.num_frames
 
     # Validate and adjust num_frames to ensure proper reshaping in prepare_latents
     if num_frames % self.vae_scale_factor_temporal != 1:
-        max_logging.log(
-            f"`num_frames - 1` has to be divisible by {self.vae_scale_factor_temporal}. "
-            f"Rounding {num_frames} to the nearest valid number."
-        )
-        num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
-        max_logging.log(f"Adjusted num_frames to: {num_frames}")
+      max_logging.log(
+          f"`num_frames - 1` has to be divisible by {self.vae_scale_factor_temporal}. "
+          f"Rounding {num_frames} to the nearest valid number."
+      )
+      num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
+      max_logging.log(f"Adjusted num_frames to: {num_frames}")
     num_frames = max(num_frames, 1)
 
     prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size = self._prepare_model_inputs_i2v(
-        prompt, image, negative_prompt, num_videos_per_prompt, max_sequence_length,
-        prompt_embeds, negative_prompt_embeds, image_embeds, last_image
+        prompt,
+        image,
+        negative_prompt,
+        num_videos_per_prompt,
+        max_sequence_length,
+        prompt_embeds,
+        negative_prompt_embeds,
+        image_embeds,
+        last_image,
     )
 
     def _process_image_input(img_input, height, width, num_videos_per_prompt):
-        if img_input is None:
-            return None
-        tensor = self.video_processor.preprocess(img_input, height=height, width=width)
-        jax_array = jnp.array(tensor.cpu().numpy())
-        if jax_array.ndim == 3:
-            jax_array = jax_array[None, ...] # Add batch dimension
-        if num_videos_per_prompt > 1:
-            jax_array = jnp.repeat(jax_array, num_videos_per_prompt, axis=0)
-        return jax_array
+      if img_input is None:
+        return None
+      tensor = self.video_processor.preprocess(img_input, height=height, width=width)
+      jax_array = jnp.array(tensor.cpu().numpy())
+      if jax_array.ndim == 3:
+        jax_array = jax_array[None, ...]  # Add batch dimension
+      if num_videos_per_prompt > 1:
+        jax_array = jnp.repeat(jax_array, num_videos_per_prompt, axis=0)
+      return jax_array
 
     image_tensor = _process_image_input(image, height, width, effective_batch_size)
     last_image_tensor = _process_image_input(last_image, height, width, effective_batch_size)
 
     if rng is None:
-        rng = jax.random.key(self.config.seed)
+      rng = jax.random.key(self.config.seed)
     latents_rng, inference_rng = jax.random.split(rng)
 
     latents, condition, first_frame_mask = self.prepare_latents(
@@ -213,7 +214,7 @@ class WanPipelineI2V_2_1(WanPipeline):
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
     data_sharding = NamedSharding(self.mesh, P())
     if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
-        data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
+      data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
 
     latents = jax.device_put(latents, data_sharding)
     condition = jax.device_put(condition, data_sharding)
@@ -221,7 +222,7 @@ class WanPipelineI2V_2_1(WanPipeline):
     negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
     image_embeds = jax.device_put(image_embeds, data_sharding)
     if first_frame_mask is not None:
-        first_frame_mask = jax.device_put(first_frame_mask, data_sharding)
+      first_frame_mask = jax.device_put(first_frame_mask, data_sharding)
 
     p_run_inference = partial(
         run_inference_2_1_i2v,
@@ -232,7 +233,6 @@ class WanPipelineI2V_2_1(WanPipeline):
         num_inference_steps=num_inference_steps,
         scheduler=self.scheduler,
     )
-
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       latents = p_run_inference(
@@ -252,7 +252,9 @@ class WanPipelineI2V_2_1(WanPipeline):
 
 
 def run_inference_2_1_i2v(
-    graphdef, sharded_state, rest_of_state,
+    graphdef,
+    sharded_state,
+    rest_of_state,
     latents: jnp.array,
     condition: jnp.array,
     prompt_embeds: jnp.array,
@@ -273,14 +275,18 @@ def run_inference_2_1_i2v(
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
     latents_input = latents
     if do_classifier_free_guidance:
-        latents_input = jnp.concatenate([latents, latents], axis=0)
+      latents_input = jnp.concatenate([latents, latents], axis=0)
 
     latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
     timestep = jnp.broadcast_to(t, latents_input.shape[0])
     latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
     noise_pred, _ = transformer_forward_pass(
-        graphdef, sharded_state, rest_of_state,
-        latent_model_input, timestep, prompt_embeds,
+        graphdef,
+        sharded_state,
+        rest_of_state,
+        latent_model_input,
+        timestep,
+        prompt_embeds,
         do_classifier_free_guidance=do_classifier_free_guidance,
         guidance_scale=guidance_scale,
         encoder_hidden_states_image=image_embeds,

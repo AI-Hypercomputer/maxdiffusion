@@ -1,18 +1,18 @@
 """
- Copyright 2025 Google LLC
+Copyright 2025 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 from typing import Tuple
 import jax
@@ -180,7 +180,6 @@ class FluxTransformerBlock(nn.Module):
   attention_kernel: str = "dot_product"
 
   def setup(self):
-
     self.img_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
     self.txt_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
 
@@ -203,29 +202,27 @@ class FluxTransformerBlock(nn.Module):
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
     )
-    self.img_mlp = nn.Sequential(
-        [
-            nn.Dense(
-                int(self.dim * self.mlp_ratio),
-                use_bias=True,
-                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
-                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-                dtype=self.dtype,
-                param_dtype=self.weights_dtype,
-                precision=self.precision,
-            ),
-            nn.gelu,
-            nn.Dense(
-                self.dim,
-                use_bias=True,
-                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-                dtype=self.dtype,
-                param_dtype=self.weights_dtype,
-                precision=self.precision,
-            ),
-        ]
-    )
+    self.img_mlp = nn.Sequential([
+        nn.Dense(
+            int(self.dim * self.mlp_ratio),
+            use_bias=True,
+            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            precision=self.precision,
+        ),
+        nn.gelu,
+        nn.Dense(
+            self.dim,
+            use_bias=True,
+            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            precision=self.precision,
+        ),
+    ])
 
     self.txt_norm2 = nn.LayerNorm(
         use_bias=False,
@@ -234,29 +231,27 @@ class FluxTransformerBlock(nn.Module):
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
     )
-    self.txt_mlp = nn.Sequential(
-        [
-            nn.Dense(
-                int(self.dim * self.mlp_ratio),
-                use_bias=True,
-                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
-                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-                dtype=self.dtype,
-                param_dtype=self.weights_dtype,
-                precision=self.precision,
-            ),
-            nn.gelu,
-            nn.Dense(
-                self.dim,
-                use_bias=True,
-                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-                dtype=self.dtype,
-                param_dtype=self.weights_dtype,
-                precision=self.precision,
-            ),
-        ]
-    )
+    self.txt_mlp = nn.Sequential([
+        nn.Dense(
+            int(self.dim * self.mlp_ratio),
+            use_bias=True,
+            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            precision=self.precision,
+        ),
+        nn.gelu,
+        nn.Dense(
+            self.dim,
+            use_bias=True,
+            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            precision=self.precision,
+        ),
+    ])
 
     # let chunk size default to None
     self._chunk_size = None

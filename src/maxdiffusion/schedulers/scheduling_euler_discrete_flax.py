@@ -256,7 +256,6 @@ class FlaxEulerDiscreteScheduler(FlaxSchedulerMixin, ConfigMixin):
       timesteps: jnp.ndarray,
       flux: bool = False,
   ) -> jnp.ndarray:
-
     if flux:
       t = state.timesteps[timesteps]
       t = t[:, None, None]

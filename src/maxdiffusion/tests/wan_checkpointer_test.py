@@ -1,15 +1,15 @@
 """
- Copyright 2025 Google LLC
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-      https://www.apache.org/licenses/LICENSE-2.0
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Copyright 2025 Google LLC
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+     https://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 import unittest
 from unittest.mock import patch, MagicMock
@@ -18,6 +18,7 @@ from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
 from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p1 import WanPipelineI2V_2_1
+
 
 class WanCheckpointer2_1Test(unittest.TestCase):
   """Tests for WAN 2.1 checkpointer."""
@@ -237,6 +238,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     self.assertEqual(opt_state["learning_rate"], 0.002)
     self.assertEqual(step, 1)
 
+
 class WanCheckpointerI2V_2_1Test(unittest.TestCase):
   """Tests for WAN 2.1 I2V checkpointer."""
 
@@ -323,6 +325,7 @@ class WanCheckpointerI2V_2_1Test(unittest.TestCase):
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.001)
     self.assertEqual(step, 1)
+
 
 class WanCheckpointerI2V_2_2Test(unittest.TestCase):
   """Tests for WAN 2.2 I2V checkpointer."""
@@ -446,6 +449,7 @@ class WanCheckpointerI2V_2_2Test(unittest.TestCase):
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.002)
     self.assertEqual(step, 1)
+
 
 class WanCheckpointerEdgeCasesTest(unittest.TestCase):
   """Tests for edge cases and error handling."""

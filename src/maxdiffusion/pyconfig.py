@@ -1,18 +1,18 @@
 """
- Copyright 2024 Google LLC
+Copyright 2024 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 # pylint: disable=missing-module-docstring
 import os
@@ -32,6 +32,7 @@ from maxdiffusion.common_types import LENGTH, KV_LENGTH, WAN2_1, WAN2_2, RING_AT
 _ALLOWED_MODEL_NAMES = {WAN2_1, WAN2_2}
 _ALLOWED_TRAINING_MODEL_NAMES = {WAN2_1}
 
+
 def _validate_model_name(model_name: str | None):
   """Raise if model_name is not in the allowed list."""
   if model_name is None:
@@ -39,12 +40,16 @@ def _validate_model_name(model_name: str | None):
   if model_name not in _ALLOWED_MODEL_NAMES:
     raise ValueError(f"Invalid config.model_name '{model_name}'. Allowed values: {sorted(_ALLOWED_MODEL_NAMES)}")
 
+
 def _validate_training_model_name(model_name: str | None):
   """Raise if model_name is not in the allowed training list."""
   if model_name is None:
     return
   if model_name not in _ALLOWED_TRAINING_MODEL_NAMES:
-    raise ValueError(f"Invalid config.model_name '{model_name}' for training. Allowed values: {sorted(_ALLOWED_TRAINING_MODEL_NAMES)}")
+    raise ValueError(
+        f"Invalid config.model_name '{model_name}' for training. Allowed values: {sorted(_ALLOWED_TRAINING_MODEL_NAMES)}"
+    )
+
 
 def string_to_bool(s: str) -> bool:
   if s.lower() == "true":
@@ -196,7 +201,9 @@ class _HyperParameters:
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
     # Verify qkv is sharded across sequence.
     if raw_keys["attention"] == "ring" or raw_keys["attention_sharding_uniform"]:
-      max_logging.log(f"Adding sequence sharding to q and kv if not already present because {raw_keys['attention']}=='ring' or {raw_keys['attention_sharding_uniform']} is set.")
+      max_logging.log(
+          f"Adding sequence sharding to q and kv if not already present because {raw_keys['attention']}=='ring' or {raw_keys['attention_sharding_uniform']} is set."
+      )
       logical_axis_rules = list(raw_keys["logical_axis_rules"])
       max_logging.log(f"Initial logical axis rules: {logical_axis_rules}")
       new_rules = []
@@ -211,7 +218,7 @@ class _HyperParameters:
           if ring_attention_axis_rule not in logical_axis_rules:
             max_logging.log(f"Adding ring attention axis rule {ring_attention_axis_rule}")
             new_rules.append(ring_attention_axis_rule)
-      else: # attention =flash but sequence parallel sharding requested for both self and cross attention
+      else:  # attention =flash but sequence parallel sharding requested for both self and cross attention
         for seq_parallel_axis_rule in SEQUENCE_PARALLEL_AXIS_RULES:
           if seq_parallel_axis_rule not in logical_axis_rules:
             max_logging.log(f"Adding sequence parallel attention axis rule {seq_parallel_axis_rule}")
@@ -244,9 +251,10 @@ class _HyperParameters:
     raw_keys["total_train_batch_size"] = max_utils.get_global_batch_size(raw_keys["per_device_batch_size"])
     raw_keys["num_slices"] = get_num_slices(raw_keys)
     raw_keys["quantization_local_shard_count"] = get_quantization_local_shard_count(raw_keys)
-    raw_keys["global_batch_size_to_load"], raw_keys["global_batch_size_to_train_on"] = (
-        _HyperParameters.calculate_global_batch_sizes(raw_keys["per_device_batch_size"])
-    )
+    (
+        raw_keys["global_batch_size_to_load"],
+        raw_keys["global_batch_size_to_train_on"],
+    ) = _HyperParameters.calculate_global_batch_sizes(raw_keys["per_device_batch_size"])
 
 
 def get_num_slices(raw_keys):
