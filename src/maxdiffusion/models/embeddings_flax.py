@@ -249,10 +249,32 @@ def get_1d_rotary_pos_embed(
     out = jnp.exp(1j * freqs)
   return out
 
+
 class NNXWanImageEmbedding(nnx.Module):
-  def __init__(self, rngs: nnx.Rngs, in_features: int, out_features: int, dtype: jnp.dtype, weights_dtype: jnp.dtype, precision: jax.lax.Precision, pos_embed_seq_len=None, alignment: int = 128, flash_min_seq_length: int = 4096):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      in_features: int,
+      out_features: int,
+      dtype: jnp.dtype,
+      weights_dtype: jnp.dtype,
+      precision: jax.lax.Precision,
+      pos_embed_seq_len=None,
+      alignment: int = 128,
+      flash_min_seq_length: int = 4096,
+  ):
     self.norm1 = FP32LayerNorm(rngs=rngs, dim=in_features, elementwise_affine=True, eps=1e-6)
-    self.ff = NNXSimpleFeedForward(rngs=rngs, dim=in_features, dim_out=out_features, mult=1, activation_fn="gelu", dtype=dtype, weights_dtype=weights_dtype, precision=precision)
+    self.ff = NNXSimpleFeedForward(
+        rngs=rngs,
+        dim=in_features,
+        dim_out=out_features,
+        mult=1,
+        activation_fn="gelu",
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        precision=precision,
+    )
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=out_features, elementwise_affine=True, eps=1e-6)
     self.alignment = alignment
     self.flash_min_seq_length = flash_min_seq_length
@@ -271,14 +293,14 @@ class NNXWanImageEmbedding(nnx.Module):
       # Apply pos_embed to the original sequence length
       hidden_states = hidden_states.at[:, :add_len, :].add(self.pos_embed.value[:, :add_len, :])
       if current_seq_len > pe_len:
-          print(f"[WARN] Input seq_len {current_seq_len} > pos_embed len {pe_len}")
+        print(f"[WARN] Input seq_len {current_seq_len} > pos_embed len {pe_len}")
 
     hidden_states = self.norm1(hidden_states)
     hidden_states = self.ff(hidden_states)
     hidden_states = self.norm2(hidden_states)
     # hidden_states shape: (B, current_seq_len, out_features)
     B, current_seq_len, D_out = hidden_states.shape
-    use_flash_attn = current_seq_len>=self.flash_min_seq_length
+    use_flash_attn = current_seq_len >= self.flash_min_seq_length
 
     if use_flash_attn:
       # --- Dynamic Padding to nearest multiple of self.alignment ---
@@ -291,13 +313,13 @@ class NNXWanImageEmbedding(nnx.Module):
     attention_mask = jnp.ones((B, current_seq_len), dtype=jnp.int32)
 
     if current_seq_len < target_seq_len:
-        padding_size = target_seq_len - current_seq_len
-        padding = jnp.zeros((B, padding_size, D_out), dtype=hidden_states.dtype)
-        hidden_states = jnp.concatenate([hidden_states, padding], axis=1)
+      padding_size = target_seq_len - current_seq_len
+      padding = jnp.zeros((B, padding_size, D_out), dtype=hidden_states.dtype)
+      hidden_states = jnp.concatenate([hidden_states, padding], axis=1)
 
-        # Extend mask with zeros for padded positions
-        padding_mask = jnp.zeros((B, padding_size), dtype=jnp.int32)
-        attention_mask = jnp.concatenate([attention_mask, padding_mask], axis=1)
+      # Extend mask with zeros for padded positions
+      padding_mask = jnp.zeros((B, padding_size), dtype=jnp.int32)
+      attention_mask = jnp.concatenate([attention_mask, padding_mask], axis=1)
     if not use_flash_attn:
       attention_mask = None
     return hidden_states, attention_mask

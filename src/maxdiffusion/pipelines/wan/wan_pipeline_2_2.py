@@ -23,9 +23,17 @@ import jax
 import jax.numpy as jnp
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 
+
 class WanPipeline2_2(WanPipeline):
   """Pipeline for WAN 2.2 with dual transformers."""
-  def __init__(self, config: HyperParameters, low_noise_transformer: Optional[WanModel], high_noise_transformer: Optional[WanModel], **kwargs):
+
+  def __init__(
+      self,
+      config: HyperParameters,
+      low_noise_transformer: Optional[WanModel],
+      high_noise_transformer: Optional[WanModel],
+      **kwargs
+  ):
     super().__init__(config=config, **kwargs)
     self.low_noise_transformer = low_noise_transformer
     self.high_noise_transformer = high_noise_transformer
@@ -35,24 +43,24 @@ class WanPipeline2_2(WanPipeline):
     common_components = cls._create_common_components(config, vae_only)
     low_noise_transformer, high_noise_transformer = None, None
     if not vae_only and load_transformer:
-        low_noise_transformer = super().load_transformer(
-            devices_array=common_components["devices_array"],
-            mesh=common_components["mesh"],
-            rngs=common_components["rngs"],
-            config=config,
-            restored_checkpoint=restored_checkpoint,
-            subfolder="transformer_2"
-        )
-        high_noise_transformer = super().load_transformer(
-            devices_array=common_components["devices_array"],
-            mesh=common_components["mesh"],
-            rngs=common_components["rngs"],
-            config=config,
-            restored_checkpoint=restored_checkpoint,
-            subfolder="transformer"
-        )
+      low_noise_transformer = super().load_transformer(
+          devices_array=common_components["devices_array"],
+          mesh=common_components["mesh"],
+          rngs=common_components["rngs"],
+          config=config,
+          restored_checkpoint=restored_checkpoint,
+          subfolder="transformer_2",
+      )
+      high_noise_transformer = super().load_transformer(
+          devices_array=common_components["devices_array"],
+          mesh=common_components["mesh"],
+          rngs=common_components["rngs"],
+          config=config,
+          restored_checkpoint=restored_checkpoint,
+          subfolder="transformer",
+      )
 
-        pipeline = cls(
+      pipeline = cls(
           tokenizer=common_components["tokenizer"],
           text_encoder=common_components["text_encoder"],
           low_noise_transformer=low_noise_transformer,
@@ -64,7 +72,7 @@ class WanPipeline2_2(WanPipeline):
           devices_array=common_components["devices_array"],
           mesh=common_components["mesh"],
           config=config,
-        )
+      )
     return pipeline, low_noise_transformer, high_noise_transformer
 
   @classmethod
@@ -76,29 +84,31 @@ class WanPipeline2_2(WanPipeline):
 
   @classmethod
   def from_checkpoint(cls, config: HyperParameters, restored_checkpoint=None, vae_only=False, load_transformer=True):
-    pipeline, low_noise_transformer, high_noise_transformer = cls._load_and_init(config, restored_checkpoint, vae_only, load_transformer)
+    pipeline, low_noise_transformer, high_noise_transformer = cls._load_and_init(
+        config, restored_checkpoint, vae_only, load_transformer
+    )
     return pipeline
 
   def _get_num_channel_latents(self) -> int:
     return self.low_noise_transformer.config.in_channels
 
   def __call__(
-    self,
-    prompt: Union[str, List[str]] = None,
-    negative_prompt: Union[str, List[str]] = None,
-    height: int = 480,
-    width: int = 832,
-    num_frames: int = 81,
-    num_inference_steps: int = 50,
-    guidance_scale_low: float = 3.0,
-    guidance_scale_high: float = 4.0,
-    boundary: int = 875,
-    num_videos_per_prompt: Optional[int] = 1,
-    max_sequence_length: int = 512,
-    latents: jax.Array = None,
-    prompt_embeds: jax.Array = None,
-    negative_prompt_embeds: jax.Array = None,
-    vae_only: bool = False,
+      self,
+      prompt: Union[str, List[str]] = None,
+      negative_prompt: Union[str, List[str]] = None,
+      height: int = 480,
+      width: int = 832,
+      num_frames: int = 81,
+      num_inference_steps: int = 50,
+      guidance_scale_low: float = 3.0,
+      guidance_scale_high: float = 4.0,
+      boundary: int = 875,
+      num_videos_per_prompt: Optional[int] = 1,
+      max_sequence_length: int = 512,
+      latents: jax.Array = None,
+      prompt_embeds: jax.Array = None,
+      negative_prompt_embeds: jax.Array = None,
+      vae_only: bool = False,
   ):
     latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
         prompt,
@@ -143,6 +153,7 @@ class WanPipeline2_2(WanPipeline):
       latents = self._denormalize_latents(latents)
     return self._decode_latents_to_video(latents)
 
+
 def run_inference_2_2(
     low_noise_graphdef,
     low_noise_state,
@@ -167,17 +178,27 @@ def run_inference_2_2(
   def low_noise_branch(operands):
     latents, timestep, prompt_embeds = operands
     return transformer_forward_pass(
-        low_noise_graphdef, low_noise_state, low_noise_rest,
-        latents, timestep, prompt_embeds,
-        do_classifier_free_guidance, guidance_scale_low
+        low_noise_graphdef,
+        low_noise_state,
+        low_noise_rest,
+        latents,
+        timestep,
+        prompt_embeds,
+        do_classifier_free_guidance,
+        guidance_scale_low,
     )
 
   def high_noise_branch(operands):
     latents, timestep, prompt_embeds = operands
     return transformer_forward_pass(
-        high_noise_graphdef, high_noise_state, high_noise_rest,
-        latents, timestep, prompt_embeds,
-        do_classifier_free_guidance, guidance_scale_high
+        high_noise_graphdef,
+        high_noise_state,
+        high_noise_rest,
+        latents,
+        timestep,
+        prompt_embeds,
+        do_classifier_free_guidance,
+        guidance_scale_high,
     )
 
   for step in range(num_inference_steps):
@@ -192,10 +213,7 @@ def run_inference_2_2(
     # - high_noise_model: Used for early diffusion steps where t >= config.boundary_timestep (high noise).
     # - low_noise_model: Used for later diffusion steps where t < config.boundary_timestep (low noise).
     noise_pred, latents = jax.lax.cond(
-        use_high_noise,
-        high_noise_branch,
-        low_noise_branch,
-        (latents, timestep, prompt_embeds)
+        use_high_noise, high_noise_branch, low_noise_branch, (latents, timestep, prompt_embeds)
     )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

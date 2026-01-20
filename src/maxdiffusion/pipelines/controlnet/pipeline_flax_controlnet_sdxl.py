@@ -112,7 +112,6 @@ class FlaxStableDiffusionXLControlNetPipeline(FlaxDiffusionPipeline):
       output_type: str = None,
       jit: bool = False,
   ):
-
     if isinstance(guidance_scale, float) and jit:
       # Convert to a tensor so each device gets a copy.
       guidance_scale = jnp.array([guidance_scale] * prompt_ids.shape[0])

@@ -131,7 +131,6 @@ class FluxPipeline(FlaxDiffusionPipeline):
       dtype: jnp.dtype,
       rng: Array,
   ):
-
     # VAE applies 8x compression on images but we must also account for packing which
     # requires latent height and width to be divisibly by 2.
     height = 2 * (height // (vae_scale_factor * 2))
@@ -194,7 +193,6 @@ class FluxPipeline(FlaxDiffusionPipeline):
       encode_in_batches=False,
       encode_batch_size=None,
   ):
-
     prompt = [prompt] if isinstance(prompt, str) else prompt
     batch_size = len(prompt)
 
@@ -243,7 +241,6 @@ class FluxPipeline(FlaxDiffusionPipeline):
       encode_in_batches: bool = False,
       encode_batch_size: int = None,
   ):
-
     if encode_in_batches:
       assert encode_in_batches is not None
 
@@ -271,7 +268,6 @@ class FluxPipeline(FlaxDiffusionPipeline):
   def _generate(
       self, flux_params, vae_params, latents, latent_image_ids, prompt_embeds, txt_ids, vec, guidance_vec, c_ts, p_ts
   ):
-
     def loop_body(
         step,
         args,
