@@ -73,6 +73,7 @@ class WanCausalConv3d(nnx.Module):
 
     # Store the amount of padding needed *before* the depth dimension for caching logic
     self._depth_padding_before = self._causal_padding[1][0]  # 2 * padding_tuple[0]
+    self.mesh = mesh
 
     # Set sharding dynamically based on out_channels.
     num_fsdp_axis_devices = mesh.device_ids.shape[1]
