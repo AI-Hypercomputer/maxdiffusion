@@ -30,7 +30,7 @@ BlockSizes = common_types.BlockSizes
 CACHE_T = 2
 try:
   flax.config.update('flax_always_shard_variable', False)
-except:
+except LookupError:
   pass
 
 # Helper to ensure kernel_size, stride, padding are tuples of 3 integers

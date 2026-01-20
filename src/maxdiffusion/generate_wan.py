@@ -253,7 +253,7 @@ def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   try:
     flax.config.update("flax_always_shard_variable", False)
-  except:
+  except LookupError:
     pass
   run(pyconfig.config)
 

@@ -20,7 +20,6 @@ import flax.linen as nn
 from flax import nnx
 import jax
 from jax.ad_checkpoint import checkpoint_name
-from jax.sharding import PartitionSpec
 import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
@@ -494,7 +493,7 @@ def _cudnn_flash_attention(query: Array, key: Array, value: Array, heads: int, m
   query = jax.lax.with_sharding_constraint(query, axis_names)
   key = jax.lax.with_sharding_constraint(key, axis_names)
   value = jax.lax.with_sharding_constraint(value, axis_names)
-  
+
   out = dpa_layer(query, key, value, mask=None)
   return _reshape_data_from_cudnn_flash(out)
 

@@ -37,7 +37,7 @@ def main(argv: Sequence[str]) -> None:
   max_logging.log(f"Found {jax.device_count()} devices.")
   try:
     flax.config.update("flax_always_shard_variable", False)
-  except:
+  except LookupError:
     pass
   train(config)
 

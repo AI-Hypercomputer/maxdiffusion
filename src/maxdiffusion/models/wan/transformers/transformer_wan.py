@@ -19,7 +19,6 @@ import contextlib
 import math
 import jax
 import jax.numpy as jnp
-from jax.sharding import PartitionSpec
 from jax.ad_checkpoint import checkpoint_name
 from flax import nnx
 import flax.linen as nn
