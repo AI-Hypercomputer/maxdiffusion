@@ -31,7 +31,8 @@ from ...models.wan.wan_utils import load_wan_transformer
 from ...models.wan.transformers.transformer_wan_vace import WanVACEModel
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 from ...models.modeling_flax_pytorch_utils import torch2jax
-from .wan_pipeline import WanPipeline, cast_with_exclusion
+from .wan_pipeline import cast_with_exclusion
+from .wan_pipeline_2_1 import WanPipeline2_1
 import torch
 import PIL
 
@@ -125,12 +126,12 @@ def create_sharded_logical_transformer(
   return wan_transformer
 
 
-class VaceWanPipeline(WanPipeline):
+class VaceWanPipeline2_1(WanPipeline2_1):
   r"""Pipeline for video generation using Wan + VACE.
 
   Currently it only supports reference image(s) + text to video generation.
 
-  It extends `WanPipeline` to support additional conditioning signals.
+  It extends `WanPipeline2_1` to support additional conditioning signals.
 
   tokenizer ([`T5Tokenizer`]):
       Tokenizer from [T5](https://huggingface.co/docs/transformers/en/model_doc/t5#transformers.T5Tokenizer),
@@ -164,8 +165,6 @@ class VaceWanPipeline(WanPipeline):
     if video is not None:
       base = self.vae_scale_factor_spatial * (
           self.transformer.config.patch_size[1]
-          if self.transformer is not None
-          else self.transformer_2.config.patch_size[1]
       )
       video_height, video_width = self.video_processor.get_default_height_width(video[0])
 
@@ -280,11 +279,7 @@ class VaceWanPipeline(WanPipeline):
           "Generating with more than one video is not yet supported. This may be supported in the future."
       )
 
-    transformer_patch_size = (
-        self.transformer.config.patch_size[1]
-        if self.transformer is not None
-        else self.transformer_2.config.patch_size[1]
-    )
+    transformer_patch_size = self.transformer.config.patch_size[1]
 
     mask_list = []
     for mask_, reference_images_batch in zip(mask, reference_images):
@@ -374,11 +369,9 @@ class VaceWanPipeline(WanPipeline):
   ):
     if self.transformer is not None:
       base = self.vae_scale_factor_spatial * self.transformer.config.patch_size[1]
-    elif self.transformer_2 is not None:
-      base = self.vae_scale_factor_spatial * self.transformer_2.config.patch_size[1]
     else:
       raise ValueError(
-          "`transformer` or `transformer_2` component must be set in order to run inference with this pipeline"
+          "`transformer` component must be set in order to run inference with this pipeline"
       )
 
     if height % base != 0 or width % base != 0:
@@ -520,12 +513,7 @@ class VaceWanPipeline(WanPipeline):
       )
 
       transformer_dtype = self.transformer.proj_out.bias.dtype
-
-      vace_layers = (
-          self.transformer.config.vace_layers
-          if self.transformer is not None
-          else self.transformer_2.config.vace_layers
-      )
+      vace_layers = self.transformer.config.vace_layers
 
       if isinstance(conditioning_scale, (int, float)):
         conditioning_scale = [conditioning_scale] * len(vace_layers)
