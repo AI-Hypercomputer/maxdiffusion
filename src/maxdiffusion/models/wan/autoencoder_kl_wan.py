@@ -358,6 +358,7 @@ class WanResample(nnx.Module):
       if feat_cache is not None:
         idx = feat_idx[0]
         if feat_cache[idx] is None:
+          print(f"DEBUG: WanResample Frame 0 - Caching but SKIPPING time_conv! Frame shape: {x.shape}")
           feat_cache[idx] = jnp.copy(x)
           feat_idx[0] += 1
         else:
