@@ -255,6 +255,17 @@ After installation completes, run the training script.
   - In Wan2.1, the ici_fsdp_parallelism axis is used for sequence parallelism, the ici_tensor_parallelism axis is used for head parallelism. 
     - You can enable both, keeping in mind that Wan2.1 has 40 heads and 40 must be evenly divisible by ici_tensor_parallelism.
     - For Sequence parallelism, the code pads the sequence length to evenly divide the sequence. Try out different ici_fsdp_parallelism numbers, but we find 2 and 4 to be the best right now.
+  - For benchmarking training performance on multiple data dimension input without downloading/re-processing the dataset, the synthetic data iterator is supported.
+    - Set dataset_type='synthetic' and synthetic_num_samples=null to enable the synthetic data iterator.
+    - The following overrides on data dimensions are supported:
+      - synthetic_override_height: 720
+      - synthetic_override_width: 1280
+      - synthetic_override_num_frames: 85
+      - synthetic_override_max_sequence_length: 512
+      - synthetic_override_text_embed_dim: 4096
+      - synthetic_override_num_channels_latents: 16
+      - synthetic_override_vae_scale_factor_spatial: 8
+      - synthetic_override_vae_scale_factor_temporal: 4
 
   You should eventually see a training run as:
 
