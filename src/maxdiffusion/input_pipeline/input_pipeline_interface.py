@@ -23,6 +23,7 @@ import jax
 from maxdiffusion.input_pipeline import _hf_data_processing
 from maxdiffusion.input_pipeline import _grain_data_processing
 from maxdiffusion.input_pipeline import _tfds_data_processing
+from maxdiffusion.input_pipeline import synthetic_data_iterator
 from maxdiffusion import multihost_dataloading
 from maxdiffusion.maxdiffusion_utils import tokenize_captions, transform_images, vae_apply
 from maxdiffusion.dreambooth.dreambooth_constants import (
@@ -54,8 +55,9 @@ def make_data_iterator(
     feature_description=None,
     prepare_sample_fn=None,
     is_training=True,
+    pipeline=None,
 ):
-  """Make data iterator for SD1, 2, XL, dataset_types in (hf, tf, tfrecord)"""
+  """Make data iterator for SD1, 2, XL, dataset_types in (hf, tf, tfrecord, grain, synthetic)"""
 
   if config.dataset_type == "hf" or config.dataset_type == "tf":
     if tokenize_fn is None or image_transforms_fn is None:
@@ -110,8 +112,16 @@ def make_data_iterator(
         prepare_sample_fn,
         is_training,
     )
+  elif config.dataset_type == "synthetic":
+    return synthetic_data_iterator.make_synthetic_iterator(
+        config=config,
+        mesh=mesh,
+        global_batch_size=global_batch_size,
+        pipeline=pipeline,
+        is_training=is_training,
+    )
   else:
-    assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be in (tf, tfrecord, hf, grain)"
+    assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be in (tf, tfrecord, hf, grain, synthetic)"
 
 
 def make_dreambooth_train_iterator(config, mesh, global_batch_size, tokenizer, vae, vae_params):
