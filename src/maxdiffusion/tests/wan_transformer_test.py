@@ -125,7 +125,7 @@ class WanTransformerTest(unittest.TestCase):
 
       encoder_hidden_states_shape = (batch_size, time_freq_dim * 2, text_embed_dim)
       dummy_encoder_hidden_states = jnp.ones(encoder_hidden_states_shape)
-      temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = layer(
+      temb, timestep_proj, encoder_hidden_states, _, _ = layer(
           dummy_timestep, dummy_encoder_hidden_states
       )
       assert temb.shape == (batch_size, dim)
