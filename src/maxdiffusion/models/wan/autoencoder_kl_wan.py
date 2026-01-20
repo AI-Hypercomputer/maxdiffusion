@@ -24,6 +24,8 @@ from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
 from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput)
+from jax.sharding import PartitionSpec
+from jax.lax import with_sharding_constraint
 
 BlockSizes = common_types.BlockSizes
 
@@ -117,6 +119,12 @@ class WanCausalConv3d(nnx.Module):
       x_padded = jnp.pad(x, padding_to_apply, mode="constant", constant_values=0.0)
     else:
       x_padded = x
+
+    if self.mesh is not None:
+      # (B, D, H, W, C)
+      if x_padded.shape[0] % self.mesh.shape['data'] == 0:
+        x_padded = with_sharding_constraint(x_padded, PartitionSpec('data', None, None, None, None))
+
     out = self.conv(x_padded)
     return out
 
