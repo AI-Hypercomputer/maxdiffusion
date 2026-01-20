@@ -164,7 +164,18 @@ class WanTrainer:
     data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding, "timesteps": data_sharding}
     return data_sharding
 
-  def load_dataset(self, mesh, is_training=True):
+  def load_dataset(self, mesh, pipeline=None, is_training=True):
+    """
+    Load dataset - supports both real tfrecord and synthetic data.
+    
+    Args:
+        mesh: JAX mesh for sharding
+        pipeline: Optional WAN pipeline to extract dimensions from (for synthetic data)
+        is_training: Whether this is for training or evaluation
+    
+    Returns:
+        Data iterator
+    """
     # Stages of training as described in the Wan 2.1 paper - https://arxiv.org/pdf/2503.20314
     # Image pre-training - txt2img 256px
     # Image-video joint training - stage 1. 256 px images and 192px 5 sec videos at fps=16
@@ -173,6 +184,21 @@ class WanTrainer:
     # prompt embeds shape: (1, 512, 4096)
     # For now, we will pass the same latents over and over
     # TODO - create a dataset
+
+    config = self.config
+    
+    # If using synthetic data
+    if config.dataset_type == "synthetic":
+        return make_data_iterator(
+            config,
+            jax.process_index(),
+            jax.process_count(),
+            mesh,
+            config.global_batch_size_to_load,
+            pipeline=pipeline,  # Pass pipeline to extract dimensions
+            is_training=is_training,
+        )
+
     config = self.config
     if config.dataset_type != "tfrecord" and not config.cache_latents_text_encoder_outputs:
       raise ValueError(
@@ -226,7 +252,7 @@ class WanTrainer:
       del pipeline.vae_cache
 
     mesh = pipeline.mesh
-    train_data_iterator = self.load_dataset(mesh, is_training=True)
+    train_data_iterator = self.load_dataset(mesh, pipeline=pipeline, is_training=True)
 
     # Load FlowMatch scheduler
     scheduler, scheduler_state = self.create_scheduler()
