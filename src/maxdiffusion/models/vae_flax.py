@@ -74,7 +74,6 @@ class FlaxUpsample2D(nn.Module):
   weights_dtype: jnp.dtype = jnp.float32
 
   def setup(self):
-
     self.conv = nn.Conv(
         self.in_channels,
         kernel_size=(3, 3),

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch - Flax general utilities."""
+"""PyTorch - Flax general utilities."""
 import re
 
 import torch
@@ -348,10 +348,14 @@ def convert_lora_pytorch_state_dict_to_flax(pt_state_dict, params, network_alpha
     text_encoder_2_params = flatten_dict(unfreeze(params["text_encoder_2"]))
   else:
     text_encoder_2_params = None
-  (unet_state_dict, text_encoder_state_dict, text_encoder_2_state_dict, rank, network_alphas) = (
-      create_flax_params_from_pytorch_state(
-          pt_state_dict, unet_params, text_encoder_params, text_encoder_2_params, network_alphas, adapter_name, is_lora=True
-      )
+  (
+      unet_state_dict,
+      text_encoder_state_dict,
+      text_encoder_2_state_dict,
+      rank,
+      network_alphas,
+  ) = create_flax_params_from_pytorch_state(
+      pt_state_dict, unet_params, text_encoder_params, text_encoder_2_params, network_alphas, adapter_name, is_lora=True
   )
   params["unet"] = unflatten_dict(unet_state_dict)
   params["text_encoder"] = unflatten_dict(text_encoder_state_dict)

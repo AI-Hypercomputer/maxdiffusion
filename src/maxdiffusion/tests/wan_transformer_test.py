@@ -1,18 +1,18 @@
 """
- Copyright 2025 Google LLC
+Copyright 2025 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 import os
 import jax
@@ -64,7 +64,6 @@ class WanTransformerTest(unittest.TestCase):
     self.config = config
     devices_array = create_device_mesh(config)
     self.mesh = Mesh(devices_array, config.mesh_axes)
-
 
   def test_rotary_pos_embed(self):
     batch_size = 1
@@ -198,12 +197,7 @@ class WanTransformerTest(unittest.TestCase):
   def test_wan_attention(self):
     for attention_kernel in ["flash", "tokamax_flash"]:
       pyconfig.initialize(
-          [
-              None,
-              os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
-              f"attention={attention_kernel}"
-          ],
-          unittest=True
+          [None, os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"), f"attention={attention_kernel}"], unittest=True
       )
       config = pyconfig.config
       batch_size = 1
@@ -286,7 +280,9 @@ class WanTransformerTest(unittest.TestCase):
     batch_size = 1
     num_layers = 1
     with nn_partitioning.axis_rules(config.logical_axis_rules):
-      wan_model = WanModel(rngs=rngs, attention="flash", mesh=mesh, flash_block_sizes=flash_block_sizes, num_layers=num_layers)
+      wan_model = WanModel(
+          rngs=rngs, attention="flash", mesh=mesh, flash_block_sizes=flash_block_sizes, num_layers=num_layers
+      )
 
     dummy_timestep = jnp.ones((batch_size))
     dummy_encoder_hidden_states = jnp.ones((batch_size, 512, 4096))

@@ -36,9 +36,7 @@ import torch
 import PIL
 
 
-def retrieve_latents(
-    encoder_output: torch.Tensor, rngs=None, sample_mode: str = "sample"
-):
+def retrieve_latents(encoder_output: torch.Tensor, rngs=None, sample_mode: str = "sample"):
   """Extracts the latent codes from the encoder object.
 
   From https://github.com/huggingface/diffusers/blob/8d415a6f481ff1b26168c046267628419650f930/src/diffusers/pipelines/wan/pipeline_wan_vace.py#L128C1-L128C4
@@ -55,9 +53,13 @@ def retrieve_latents(
 
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(
-    devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None, subfolder: str = ""
+    devices_array: np.array,
+    mesh: Mesh,
+    rngs: nnx.Rngs,
+    config: HyperParameters,
+    restored_checkpoint=None,
+    subfolder: str = "",
 ):
-
   def create_model(rngs: nnx.Rngs, wan_config: dict):
     wan_vace_transformer = WanVACEModel(**wan_config, rngs=rngs)
     return wan_vace_transformer
@@ -147,35 +149,33 @@ class VaceWanPipeline(WanPipeline):
   """
 
   def preprocess_conditions(
-    self,
-    video: Optional[PipelineImageInput] = None,
-    mask: Optional[PipelineImageInput] = None,
-    reference_images: Optional[PipelineImageInput] = None,
-    batch_size: int = 1,
-    height: int = 480,
-    width: int = 832,
-    num_frames: int = 81,
-    dtype = None,
-):
+      self,
+      video: Optional[PipelineImageInput] = None,
+      mask: Optional[PipelineImageInput] = None,
+      reference_images: Optional[PipelineImageInput] = None,
+      batch_size: int = 1,
+      height: int = 480,
+      width: int = 832,
+      num_frames: int = 81,
+      dtype=None,
+  ):
     """Prepares the conditional data for inference.
 
     Based on https://github.com/huggingface/diffusers/blob/17c0e79dbdf53fb6705e9c09cc1a854b84c39249/src/diffusers/pipelines/wan/pipeline_wan_vace.py#L414
     """
     if video is not None:
       base = self.vae_scale_factor_spatial * (
-          self.transformer.config.patch_size[1]
-          if self.transformer is not None
-          else self.transformer_2.config.patch_size[1]
+          self.transformer.config.patch_size[1] if self.transformer is not None else self.transformer_2.config.patch_size[1]
       )
       video_height, video_width = self.video_processor.get_default_height_width(video[0])
 
       if video_height * video_width > height * width:
-          scale = min(width / video_width, height / video_width)
-          video_height, video_width = int(video_height * scale), int(video_width * scale)
+        scale = min(width / video_width, height / video_width)
+        video_height, video_width = int(video_height * scale), int(video_width * scale)
 
       if video_height % base != 0 or video_width % base != 0:
-          video_height = (video_height // base) * base
-          video_width = (video_width // base) * base
+        video_height = (video_height // base) * base
+        video_width = (video_width // base) * base
 
       assert video_height * video_width <= height * width
 
@@ -183,9 +183,7 @@ class VaceWanPipeline(WanPipeline):
       video = jnp.array(np.asarray(video), dtype=dtype)
       image_size = (video_height, video_width)  # Use the height/width of video (with possible rescaling)
     else:
-      video = jnp.zeros(
-          (batch_size, 3, num_frames, height, width), dtype=dtype
-      )
+      video = jnp.zeros((batch_size, 3, num_frames, height, width), dtype=dtype)
       image_size = (height, width)  # Use the height/width provider by user
 
     if mask is not None:
@@ -202,9 +200,7 @@ class VaceWanPipeline(WanPipeline):
     # per video
     if reference_images is None or isinstance(reference_images, PIL.Image.Image):
       reference_images = [[reference_images] for _ in range(video.shape[0])]
-    elif isinstance(reference_images, (list, tuple)) and isinstance(
-        next(iter(reference_images)), PIL.Image.Image
-    ):
+    elif isinstance(reference_images, (list, tuple)) and isinstance(next(iter(reference_images)), PIL.Image.Image):
       reference_images = [reference_images]
     elif (
         isinstance(reference_images, (list, tuple))
@@ -243,14 +239,16 @@ class VaceWanPipeline(WanPipeline):
         # TODO: should we use jax/TF-based resizing here?
         resized_image = torch.nn.functional.interpolate(
             image, size=(new_height, new_width), mode="bilinear", align_corners=False
-        ).squeeze(0)  # [C, H, W]
+        ).squeeze(
+            0
+        )  # [C, H, W]
 
         top = (image_size[0] - new_height) // 2
         left = (image_size[1] - new_width) // 2
         canvas = torch.ones(3, *image_size, dtype=torch.float32)
         canvas[:, top : top + new_height, left : left + new_width] = resized_image
 
-        canvas = canvas.permute(1, 2, 0) # Bring back to Jax
+        canvas = canvas.permute(1, 2, 0)  # Bring back to Jax
         canvas = torch2jax(canvas)
 
         preprocessed_images.append(canvas)
@@ -276,14 +274,10 @@ class VaceWanPipeline(WanPipeline):
         )
 
     if mask.shape[0] != 1:
-      raise ValueError(
-          "Generating with more than one video is not yet supported. This may be supported in the future."
-      )
+      raise ValueError("Generating with more than one video is not yet supported. This may be supported in the future.")
 
     transformer_patch_size = (
-        self.transformer.config.patch_size[1]
-        if self.transformer is not None
-        else self.transformer_2.config.patch_size[1]
+        self.transformer.config.patch_size[1] if self.transformer is not None else self.transformer_2.config.patch_size[1]
     )
 
     mask_list = []
@@ -293,14 +287,12 @@ class VaceWanPipeline(WanPipeline):
       new_height = height // (self.vae_scale_factor_spatial * transformer_patch_size) * transformer_patch_size
       new_width = width // (self.vae_scale_factor_spatial * transformer_patch_size) * transformer_patch_size
       mask_ = mask_[0, :, :, :]
-      mask_ = mask_.view(
-            num_frames, new_height, self.vae_scale_factor_spatial, new_width, self.vae_scale_factor_spatial
-        )
+      mask_ = mask_.view(num_frames, new_height, self.vae_scale_factor_spatial, new_width, self.vae_scale_factor_spatial)
       # TODO: should we refactor to use Jax/TF?
       mask_ = mask_.permute(2, 4, 0, 1, 3).flatten(0, 1)  # [8x8, num_frames, new_height, new_width]
       mask_ = torch.nn.functional.interpolate(
-            mask_.unsqueeze(0), size=(new_num_frames, new_height, new_width), mode="nearest-exact"
-        ).squeeze(0)
+          mask_.unsqueeze(0), size=(new_num_frames, new_height, new_width), mode="nearest-exact"
+      ).squeeze(0)
       num_ref_images = len(reference_images_batch)
       if num_ref_images > 0:
         mask_padding = torch.zeros_like(mask_[:, :num_ref_images, :, :])
@@ -312,10 +304,22 @@ class VaceWanPipeline(WanPipeline):
 
   @classmethod
   def load_transformer(
-      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None, subfolder="transformer"):
+      cls,
+      devices_array: np.array,
+      mesh: Mesh,
+      rngs: nnx.Rngs,
+      config: HyperParameters,
+      restored_checkpoint=None,
+      subfolder="transformer",
+  ):
     with mesh:
       wan_transformer = create_sharded_logical_transformer(
-          devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint, subfolder=subfolder
+          devices_array=devices_array,
+          mesh=mesh,
+          rngs=rngs,
+          config=config,
+          restored_checkpoint=restored_checkpoint,
+          subfolder=subfolder,
       )
     return wan_transformer
 
@@ -333,7 +337,9 @@ class VaceWanPipeline(WanPipeline):
     if not vae_only:
       if load_transformer:
         with mesh:
-          transformer = cls.load_transformer(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, subfolder="transformer")
+          transformer = cls.load_transformer(
+              devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, subfolder="transformer"
+          )
 
       text_encoder = cls.load_text_encoder(config=config)
       tokenizer = cls.load_tokenizer(config=config)
@@ -377,9 +383,7 @@ class VaceWanPipeline(WanPipeline):
     elif self.transformer_2 is not None:
       base = self.vae_scale_factor_spatial * self.transformer_2.config.patch_size[1]
     else:
-      raise ValueError(
-          "`transformer` or `transformer_2` component must be set in order to run inference with this pipeline"
-      )
+      raise ValueError("`transformer` or `transformer_2` component must be set in order to run inference with this pipeline")
 
     if height % base != 0 or width % base != 0:
       raise ValueError(f"`height` and `width` have to be divisible by {base} but are {height} and {width}.")
@@ -389,52 +393,50 @@ class VaceWanPipeline(WanPipeline):
 
     if prompt is not None and prompt_embeds is not None:
       raise ValueError(
-        f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
-        " only forward one of the two."
+          f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
+          " only forward one of the two."
       )
     elif negative_prompt is not None and negative_prompt_embeds is not None:
       raise ValueError(
-        f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`: {negative_prompt_embeds}. Please make sure to"
-        " only forward one of the two."
+          f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`: {negative_prompt_embeds}. Please make sure to"
+          " only forward one of the two."
       )
     elif prompt is None and prompt_embeds is None:
       raise ValueError(
-        "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
+          "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
       )
     elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
       raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
-    elif negative_prompt is not None and (
-        not isinstance(negative_prompt, str) and not isinstance(negative_prompt, list)
-    ):
+    elif negative_prompt is not None and (not isinstance(negative_prompt, str) and not isinstance(negative_prompt, list)):
       raise ValueError(f"`negative_prompt` has to be of type `str` or `list` but is {type(negative_prompt)}")
 
     if video is not None:
       if mask is not None:
         if len(video) != len(mask):
           raise ValueError(
-            f"Length of `video` {len(video)} and `mask` {len(mask)} do not match. Please make sure that"
-            " they have the same length."
+              f"Length of `video` {len(video)} and `mask` {len(mask)} do not match. Please make sure that"
+              " they have the same length."
           )
       if reference_images is not None:
         is_pil_image = isinstance(reference_images, PIL.Image.Image)
         is_list_of_pil_images = isinstance(reference_images, list) and all(
-          isinstance(ref_img, PIL.Image.Image) for ref_img in reference_images
+            isinstance(ref_img, PIL.Image.Image) for ref_img in reference_images
         )
         is_list_of_list_of_pil_images = isinstance(reference_images, list) and all(
-          isinstance(ref_img, list) and all(isinstance(ref_img_, PIL.Image.Image) for ref_img_ in ref_img)
-          for ref_img in reference_images
+            isinstance(ref_img, list) and all(isinstance(ref_img_, PIL.Image.Image) for ref_img_ in ref_img)
+            for ref_img in reference_images
         )
         if not (is_pil_image or is_list_of_pil_images or is_list_of_list_of_pil_images):
           raise ValueError(
-            "`reference_images` has to be of type `PIL.Image.Image` or `list` of `PIL.Image.Image`, or "
-            "`list` of `list` of `PIL.Image.Image`, but is {type(reference_images)}"
+              "`reference_images` has to be of type `PIL.Image.Image` or `list` of `PIL.Image.Image`, or "
+              "`list` of `list` of `PIL.Image.Image`, but is {type(reference_images)}"
           )
         if is_list_of_list_of_pil_images and len(reference_images) != 1:
           raise ValueError(
-            "The pipeline only supports generating one video at a time at the moment. When passing a list "
-            "of list of reference images, where the outer list corresponds to the batch size and the inner "
-            "list corresponds to list of conditioning images per video, please make sure to only pass "
-            "one inner list of reference images (i.e., `[[<image1>, <image2>, ...]]`"
+              "The pipeline only supports generating one video at a time at the moment. When passing a list "
+              "of list of reference images, where the outer list corresponds to the batch size and the inner "
+              "list corresponds to list of conditioning images per video, please make sure to only pass "
+              "one inner list of reference images (i.e., `[[<image1>, <image2>, ...]]`"
           )
     elif mask is not None:
       raise ValueError("`mask` can only be passed if `video` is passed as well.")
@@ -445,7 +447,6 @@ class VaceWanPipeline(WanPipeline):
       mask: Optional[List[PipelineImageInput]] = None,
       reference_images: Optional[List[PipelineImageInput]] = None,
       conditioning_scale: Union[float, List[float], torch.Tensor] = 1.0,
-
       prompt: Union[str, List[str]] = None,
       negative_prompt: Union[str, List[str]] = None,
       height: int = 480,
@@ -491,7 +492,7 @@ class VaceWanPipeline(WanPipeline):
         negative_prompt_embeds=negative_prompt_embeds,
         video=video,
         mask=mask,
-        reference_images=reference_images
+        reference_images=reference_images,
     )
     if not vae_only:
       if num_frames % self.vae_scale_factor_temporal != 1:
@@ -507,9 +508,7 @@ class VaceWanPipeline(WanPipeline):
 
       batch_size = len(prompt)
       if num_videos_per_prompt != 1:
-        raise ValueError(
-            "Generating multiple videos per prompt is not yet supported. This may be supported in the future."
-        )
+        raise ValueError("Generating multiple videos per prompt is not yet supported. This may be supported in the future.")
 
       prompt_embeds, negative_prompt_embeds = self.encode_prompt(
           prompt=prompt,
@@ -522,9 +521,7 @@ class VaceWanPipeline(WanPipeline):
       transformer_dtype = self.transformer.proj_out.bias.dtype
 
       vace_layers = (
-          self.transformer.config.vace_layers
-          if self.transformer is not None
-          else self.transformer_2.config.vace_layers
+          self.transformer.config.vace_layers if self.transformer is not None else self.transformer_2.config.vace_layers
       )
 
       if isinstance(conditioning_scale, (int, float)):
@@ -532,8 +529,8 @@ class VaceWanPipeline(WanPipeline):
       if isinstance(conditioning_scale, list):
         if len(conditioning_scale) != len(vace_layers):
           raise ValueError(
-                  f"Length of `conditioning_scale` {len(conditioning_scale)} does not match number of layers {len(vace_layers)}."
-              )
+              f"Length of `conditioning_scale` {len(conditioning_scale)} does not match number of layers {len(vace_layers)}."
+          )
         conditioning_scale = jnp.array(conditioning_scale)
       if isinstance(conditioning_scale, jax.Array):
         if conditioning_scale.shape[0] != len(vace_layers):
@@ -557,7 +554,9 @@ class VaceWanPipeline(WanPipeline):
       if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
         data_sharding = NamedSharding(self.mesh, P(*self.config.data_sharding))
 
-      conditioning_latents = self.prepare_video_latents(data_sharding=data_sharding, video=video, mask=mask, reference_images=reference_images, rngs=None)
+      conditioning_latents = self.prepare_video_latents(
+          data_sharding=data_sharding, video=video, mask=mask, reference_images=reference_images, rngs=None
+      )
 
       mask = self.prepare_masks(mask, reference_images)
       conditioning_latents = conditioning_latents.transpose(0, 4, 1, 2, 3)
@@ -640,7 +639,6 @@ class VaceWanPipeline(WanPipeline):
       reference_images: Optional[List[List[torch.Tensor]]] = None,
       rngs=None,
   ) -> jax.Array:
-
     if reference_images is None:
       # For each batch of video, we set no re
       # ference image (as one or more can be passed by user)
@@ -652,9 +650,7 @@ class VaceWanPipeline(WanPipeline):
         )
 
     if video.shape[0] != 1:
-      raise ValueError(
-          "Generating with more than one video is not yet supported. This may be supported in the future."
-      )
+      raise ValueError("Generating with more than one video is not yet supported. This may be supported in the future.")
 
     vae_dtype = self.vae.decoder.conv_in.conv.bias.dtype
     video = video.astype(dtype=vae_dtype)
@@ -683,7 +679,9 @@ class VaceWanPipeline(WanPipeline):
         reference_image = jax.device_put(reference_image, data_sharding)
         reference_image = reference_image[None, None, :, :, :]  # [1, 1, H, W, C]
 
-        reference_latent = retrieve_latents(self.vae.encode(reference_image, feat_cache=self.vae_cache), rngs=None, sample_mode="argmax")
+        reference_latent = retrieve_latents(
+            self.vae.encode(reference_image, feat_cache=self.vae_cache), rngs=None, sample_mode="argmax"
+        )
 
         reference_latent = ((reference_latent.astype(jnp.float32) - latents_mean) * latents_std).astype(vae_dtype)
 
@@ -739,7 +737,6 @@ def run_inference(
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
-
     control_hidden_states,
     control_hidden_states_scale,
 ):
@@ -763,7 +760,6 @@ def run_inference(
         prompt_embeds,
         control_hidden_states=control_hidden_states,
         control_hidden_states_scale=control_hidden_states_scale,
-
         do_classifier_free_guidance=do_classifier_free_guidance,
         guidance_scale=guidance_scale,
     )
