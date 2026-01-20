@@ -28,8 +28,10 @@ from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistributio
 BlockSizes = common_types.BlockSizes
 
 CACHE_T = 2
-flax.config.update("flax_always_shard_variable", False)
-
+try:
+  flax.config.update('flax_always_shard_variable', False)
+except:
+  pass
 
 # Helper to ensure kernel_size, stride, padding are tuples of 3 integers
 def _canonicalize_tuple(x: Union[int, Sequence[int]], rank: int, name: str) -> Tuple[int, ...]:

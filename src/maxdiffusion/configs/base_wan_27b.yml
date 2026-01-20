@@ -156,9 +156,9 @@ mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 logical_axis_rules: [
                       ['batch', ['data', 'fsdp']],
                       ['activation_batch', ['data', 'fsdp']],
-                      ['activation_length', 'context'],
                       ['activation_self_attn_heads', ['context', 'tensor']], 
                       ['activation_cross_attn_q_length', ['context', 'tensor']],
+                      ['activation_length', 'context'],
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
                       ['embed', ['context', 'fsdp']],
