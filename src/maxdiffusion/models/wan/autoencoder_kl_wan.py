@@ -123,8 +123,12 @@ class WanCausalConv3d(nnx.Module):
 
     if self.mesh is not None:
       # (B, D, H, W, C)
+      print(f"DEBUG: Checking sharding logic. Shape: {x_padded.shape}, Data Mesh: {self.mesh.shape['data']}")
       if x_padded.shape[0] % self.mesh.shape['data'] == 0:
+        print("DEBUG: Applying 'data' sharding constraint.")
         x_padded = with_sharding_constraint(x_padded, PartitionSpec('data', None, None, None, None))
+      else:
+        print("DEBUG: Skipping 'data' sharding constraint (not divisible).")
 
     out = self.conv(x_padded)
     return out
