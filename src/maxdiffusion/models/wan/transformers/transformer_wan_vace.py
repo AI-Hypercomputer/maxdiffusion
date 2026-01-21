@@ -474,6 +474,7 @@ class WanVACEModel(WanModel):
         timestep_proj,
         encoder_hidden_states,
         encoder_hidden_states_image,
+        _,
     ) = self.condition_embedder(  # We will need to mask out the text embedding.
         timestep, encoder_hidden_states, encoder_hidden_states_image
     )
