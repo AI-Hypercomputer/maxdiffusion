@@ -51,14 +51,16 @@ except OptionalDependencyNotAvailable:
 
   _dummy_objects.update(get_objects_from_module(dummy_torch_and_transformers_and_onnx_objects))
 else:
-  _import_structure["stable_diffusion"].extend([
-      "OnnxStableDiffusionImg2ImgPipeline",
-      "OnnxStableDiffusionInpaintPipeline",
-      "OnnxStableDiffusionInpaintPipelineLegacy",
-      "OnnxStableDiffusionPipeline",
-      "OnnxStableDiffusionUpscalePipeline",
-      "StableDiffusionOnnxPipeline",
-  ])
+  _import_structure["stable_diffusion"].extend(
+      [
+          "OnnxStableDiffusionImg2ImgPipeline",
+          "OnnxStableDiffusionInpaintPipeline",
+          "OnnxStableDiffusionInpaintPipelineLegacy",
+          "OnnxStableDiffusionPipeline",
+          "OnnxStableDiffusionUpscalePipeline",
+          "StableDiffusionOnnxPipeline",
+      ]
+  )
 
 try:
   if not is_flax_available():
@@ -80,14 +82,18 @@ else:
   _import_structure["controlnet"].extend(
       ["FlaxStableDiffusionControlNetPipeline", "FlaxStableDiffusionXLControlNetPipeline"]
   )
-  _import_structure["stable_diffusion"].extend([
-      "FlaxStableDiffusionImg2ImgPipeline",
-      "FlaxStableDiffusionInpaintPipeline",
-      "FlaxStableDiffusionPipeline",
-  ])
-  _import_structure["stable_diffusion_xl"].extend([
-      "FlaxStableDiffusionXLPipeline",
-  ])
+  _import_structure["stable_diffusion"].extend(
+      [
+          "FlaxStableDiffusionImg2ImgPipeline",
+          "FlaxStableDiffusionInpaintPipeline",
+          "FlaxStableDiffusionPipeline",
+      ]
+  )
+  _import_structure["stable_diffusion_xl"].extend(
+      [
+          "FlaxStableDiffusionXLPipeline",
+      ]
+  )
 if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
   try:
     if not is_onnx_available():

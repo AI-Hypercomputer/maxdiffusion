@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
+
 from typing import TYPE_CHECKING
 
 from ...utils import (
@@ -84,11 +85,13 @@ except OptionalDependencyNotAvailable:
       StableDiffusionPix2PixZeroPipeline,
   )
 
-  _dummy_objects.update({
-      "StableDiffusionDepth2ImgPipeline": StableDiffusionDepth2ImgPipeline,
-      "StableDiffusionDiffEditPipeline": StableDiffusionDiffEditPipeline,
-      "StableDiffusionPix2PixZeroPipeline": StableDiffusionPix2PixZeroPipeline,
-  })
+  _dummy_objects.update(
+      {
+          "StableDiffusionDepth2ImgPipeline": StableDiffusionDepth2ImgPipeline,
+          "StableDiffusionDiffEditPipeline": StableDiffusionDiffEditPipeline,
+          "StableDiffusionPix2PixZeroPipeline": StableDiffusionPix2PixZeroPipeline,
+      }
+  )
 else:
   _import_structure["pipeline_stable_diffusion_depth2img"] = ["StableDiffusionDepth2ImgPipeline"]
   _import_structure["pipeline_stable_diffusion_diffedit"] = ["StableDiffusionDiffEditPipeline"]

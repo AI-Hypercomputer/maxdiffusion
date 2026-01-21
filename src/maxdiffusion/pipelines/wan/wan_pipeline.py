@@ -521,43 +521,41 @@ class WanPipeline:
       dtype: jnp.dtype,
       last_image: Optional[jax.Array] = None,
   ) -> Tuple[jax.Array, jax.Array]:
-      """
-      Encodes the initial image(s) into latents to be used as conditioning.
-      Returns:
-          latent_condition: The VAE encoded latents of the image(s).
-          video_condition: The input to the VAE.
-      """
-      height, width = image.shape[-2:]
-      image = image[:, :, jnp.newaxis, :, :]  # [B, C, 1, H, W]
+    """
+    Encodes the initial image(s) into latents to be used as conditioning.
+    Returns:
+        latent_condition: The VAE encoded latents of the image(s).
+        video_condition: The input to the VAE.
+    """
+    height, width = image.shape[-2:]
+    image = image[:, :, jnp.newaxis, :, :]  # [B, C, 1, H, W]
 
-      if last_image is None:
-          video_condition = jnp.concatenate(
-              [image, jnp.zeros((image.shape[0], image.shape[1], num_frames - 1, height, width), dtype=image.dtype)], axis=2
-          )
-      else:
-          last_image = last_image[:, :, jnp.newaxis, :, :]
-          video_condition = jnp.concatenate(
-              [image, jnp.zeros((image.shape[0], image.shape[1], num_frames - 2, height, width), dtype=image.dtype), last_image], axis=2
-          )
+    if last_image is None:
+      video_condition = jnp.concatenate(
+          [image, jnp.zeros((image.shape[0], image.shape[1], num_frames - 1, height, width), dtype=image.dtype)], axis=2
+      )
+    else:
+      last_image = last_image[:, :, jnp.newaxis, :, :]
+      video_condition = jnp.concatenate(
+          [image, jnp.zeros((image.shape[0], image.shape[1], num_frames - 2, height, width), dtype=image.dtype), last_image],
+          axis=2,
+      )
 
-      vae_dtype = getattr(self.vae, "dtype", jnp.float32)
-      video_condition = video_condition.astype(vae_dtype)
-      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-          sharding_spec = P(self.config.mesh_axes[0], None, None, None, None)
-          video_condition = jax.lax.with_sharding_constraint(
-            video_condition,
-            sharding_spec
-          )
-          encoded_output = self.vae.encode(video_condition, self.vae_cache)[0].mode()
+    vae_dtype = getattr(self.vae, "dtype", jnp.float32)
+    video_condition = video_condition.astype(vae_dtype)
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      sharding_spec = P(self.config.mesh_axes[0], None, None, None, None)
+      video_condition = jax.lax.with_sharding_constraint(video_condition, sharding_spec)
+      encoded_output = self.vae.encode(video_condition, self.vae_cache)[0].mode()
 
-      # Normalize latents
-      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
-      latents_std = jnp.array(self.vae.latents_std).reshape(1, 1, 1, 1, self.vae.z_dim)
-      latent_condition = encoded_output
-      latent_condition = latent_condition.astype(dtype)
-      latent_condition = (latent_condition - latents_mean) / latents_std
+    # Normalize latents
+    latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
+    latents_std = jnp.array(self.vae.latents_std).reshape(1, 1, 1, 1, self.vae.z_dim)
+    latent_condition = encoded_output
+    latent_condition = latent_condition.astype(dtype)
+    latent_condition = (latent_condition - latents_mean) / latents_std
 
-      return latent_condition, video_condition
+    return latent_condition, video_condition
 
   def _denormalize_latents(self, latents: jax.Array) -> jax.Array:
     """Denormalizes latents using VAE statistics."""
