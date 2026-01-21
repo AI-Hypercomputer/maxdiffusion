@@ -94,9 +94,13 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
 
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(
-    devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None, subfolder: str = ""
+    devices_array: np.array,
+    mesh: Mesh,
+    rngs: nnx.Rngs,
+    config: HyperParameters,
+    restored_checkpoint=None,
+    subfolder: str = "",
 ):
-
   def create_model(rngs: nnx.Rngs, wan_config: dict):
     wan_transformer = WanModel(**wan_config, rngs=rngs)
     return wan_transformer
@@ -111,7 +115,7 @@ def create_sharded_logical_transformer(
     # WAN 2.2 I2V uses VAE-encoded latent conditioning (image_dim and added_kv_proj_dim are None in the transformer config)
     if config.model_name == "wan2.1":
       if wan_config.get("image_seq_len") is None:
-          wan_config["image_seq_len"] = 257
+        wan_config["image_seq_len"] = 257
 
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
@@ -201,6 +205,7 @@ class WanPipeline:
   vae ([`AutoencoderKLWan`]):
       Variational Auto-Encoder (VAE) Model to encode and decode videos to and from latent representations.
   """
+
   def __init__(
       self,
       tokenizer: AutoTokenizer,
@@ -252,21 +257,18 @@ class WanPipeline:
 
   @classmethod
   def load_image_encoder(cls, config: HyperParameters):
-    image_processor = CLIPImageProcessor.from_pretrained(
-        config.pretrained_model_name_or_path, subfolder="image_processor"
-    )
+    image_processor = CLIPImageProcessor.from_pretrained(config.pretrained_model_name_or_path, subfolder="image_processor")
     try:
-        image_encoder = FlaxCLIPVisionModel.from_pretrained(
-            config.pretrained_model_name_or_path, subfolder="image_encoder", dtype=jnp.float32
-        )
+      image_encoder = FlaxCLIPVisionModel.from_pretrained(
+          config.pretrained_model_name_or_path, subfolder="image_encoder", dtype=jnp.float32
+      )
     except Exception as e:
-        max_logging.error(f"Failed to load FlaxCLIPVisionModel: {e}")
-        raise
+      max_logging.error(f"Failed to load FlaxCLIPVisionModel: {e}")
+      raise
     return image_processor, image_encoder
 
   @classmethod
   def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
-
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
       wan_vae = AutoencoderKLWan.from_config(
           config.pretrained_model_name_or_path,
@@ -384,10 +386,22 @@ class WanPipeline:
 
   @classmethod
   def load_transformer(
-      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None, subfolder="transformer"):
+      cls,
+      devices_array: np.array,
+      mesh: Mesh,
+      rngs: nnx.Rngs,
+      config: HyperParameters,
+      restored_checkpoint=None,
+      subfolder="transformer",
+  ):
     with mesh:
       wan_transformer = create_sharded_logical_transformer(
-          devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint, subfolder=subfolder
+          devices_array=devices_array,
+          mesh=mesh,
+          rngs=rngs,
+          config=config,
+          restored_checkpoint=restored_checkpoint,
+          subfolder=subfolder,
       )
     return wan_transformer
 
@@ -401,17 +415,16 @@ class WanPipeline:
     return scheduler, scheduler_state
 
   def encode_image(self, image: PipelineImageInput, num_videos_per_prompt: int = 1):
-      if not isinstance(image, list):
-          image = [image]
-      image_inputs = self.image_processor(images=image, return_tensors="np")
-      pixel_values = jnp.array(image_inputs.pixel_values)
+    if not isinstance(image, list):
+      image = [image]
+    image_inputs = self.image_processor(images=image, return_tensors="np")
+    pixel_values = jnp.array(image_inputs.pixel_values)
 
-      image_encoder_output = self.image_encoder(pixel_values, output_hidden_states=True)
-      image_embeds = image_encoder_output.hidden_states[-2]
+    image_encoder_output = self.image_encoder(pixel_values, output_hidden_states=True)
+    image_embeds = image_encoder_output.hidden_states[-2]
 
-      image_embeds = jnp.repeat(image_embeds, num_videos_per_prompt, axis=0)
-      return image_embeds
-
+    image_embeds = jnp.repeat(image_embeds, num_videos_per_prompt, axis=0)
+    return image_embeds
 
   def _get_t5_prompt_embeds(
       self,
@@ -547,47 +560,54 @@ class WanPipeline:
       return latent_condition, video_condition
 
   def _denormalize_latents(self, latents: jax.Array) -> jax.Array:
-      """Denormalizes latents using VAE statistics."""
-      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
-      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
-      latents = latents / latents_std + latents_mean
-      latents = latents.astype(jnp.float32)
-      return latents
+    """Denormalizes latents using VAE statistics."""
+    latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
+    latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
+    latents = latents / latents_std + latents_mean
+    latents = latents.astype(jnp.float32)
+    return latents
 
   def _decode_latents_to_video(self, latents: jax.Array) -> np.ndarray:
-      """Decodes latents to video frames and postprocesses."""
-      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-          video = self.vae.decode(latents, self.vae_cache)[0]
+    """Decodes latents to video frames and postprocesses."""
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      video = self.vae.decode(latents, self.vae_cache)[0]
 
-      video = jnp.transpose(video, (0, 4, 1, 2, 3))
-      video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
-      video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
-      return self.video_processor.postprocess_video(video, output_type="np")
+    video = jnp.transpose(video, (0, 4, 1, 2, 3))
+    video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
+    video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
+    return self.video_processor.postprocess_video(video, output_type="np")
 
   @classmethod
   def _create_common_components(cls, config, vae_only=False, i2v=False):
-      devices_array = max_utils.create_device_mesh(config)
-      mesh = Mesh(devices_array, config.mesh_axes)
-      rng = jax.random.key(config.seed)
-      rngs = nnx.Rngs(rng)
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+    rng = jax.random.key(config.seed)
+    rngs = nnx.Rngs(rng)
 
-      with mesh:
-          wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+    with mesh:
+      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
 
-      components = {
-          "vae": wan_vae, "vae_cache": vae_cache,
-          "devices_array": devices_array, "rngs": rngs, "mesh": mesh,
-          "tokenizer": None, "text_encoder": None, "scheduler": None, "scheduler_state": None,
-          "image_processor": None, "image_encoder": None
-      }
+    components = {
+        "vae": wan_vae,
+        "vae_cache": vae_cache,
+        "devices_array": devices_array,
+        "rngs": rngs,
+        "mesh": mesh,
+        "tokenizer": None,
+        "text_encoder": None,
+        "scheduler": None,
+        "scheduler_state": None,
+        "image_processor": None,
+        "image_encoder": None,
+    }
 
-      if not vae_only:
-          components["tokenizer"] = cls.load_tokenizer(config=config)
-          components["text_encoder"] = cls.load_text_encoder(config=config)
-          components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
-          if i2v and config.model_name == 'wan2.1':
-            components["image_processor"], components["image_encoder"] = cls.load_image_encoder(config)
-      return components
+    if not vae_only:
+      components["tokenizer"] = cls.load_tokenizer(config=config)
+      components["text_encoder"] = cls.load_text_encoder(config=config)
+      components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
+      if i2v and config.model_name == "wan2.1":
+        components["image_processor"], components["image_encoder"] = cls.load_image_encoder(config)
+    return components
 
   @abstractmethod
   def _get_num_channel_latents(self) -> int:
@@ -607,7 +627,7 @@ class WanPipeline:
       last_image: Optional[PIL.Image.Image] = None,
   ):
     if prompt is not None and isinstance(prompt, str):
-        prompt = [prompt]
+      prompt = [prompt]
     batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
     effective_batch_size = batch_size * num_videos_per_prompt
 
@@ -621,30 +641,29 @@ class WanPipeline:
         negative_prompt_embeds=negative_prompt_embeds,
     )
 
-
     # 2. Encode Image (only for WAN 2.1 I2V which uses CLIP image embeddings)
     # WAN 2.2 I2V does not use CLIP image embeddings, it uses VAE latent conditioning instead
     transformer_dtype = self.config.activations_dtype
 
     if self.config.model_name == "wan2.1":
-        # WAN 2.1 I2V: Use CLIP image encoder
-        if image_embeds is None:
-            images_to_encode = [image]
-            if last_image is None:
-                images_to_encode = [image]
-            else:
-                images_to_encode = [image, last_image]
-            image_embeds = self.encode_image(images_to_encode, num_videos_per_prompt=num_videos_per_prompt)
-            self.image_seq_len = image_embeds.shape[1]
+      # WAN 2.1 I2V: Use CLIP image encoder
+      if image_embeds is None:
+        images_to_encode = [image]
+        if last_image is None:
+          images_to_encode = [image]
+        else:
+          images_to_encode = [image, last_image]
+        image_embeds = self.encode_image(images_to_encode, num_videos_per_prompt=num_videos_per_prompt)
+        self.image_seq_len = image_embeds.shape[1]
 
-        if batch_size > 1:
-            image_embeds = jnp.tile(image_embeds, (batch_size, 1, 1))
+      if batch_size > 1:
+        image_embeds = jnp.tile(image_embeds, (batch_size, 1, 1))
 
-        image_embeds = image_embeds.astype(transformer_dtype)
+      image_embeds = image_embeds.astype(transformer_dtype)
     else:
-        # WAN 2.2 I2V: No CLIP image embeddings, set to None or empty tensor
-        # The actual image conditioning happens via VAE latents in prepare_latents
-        image_embeds = None
+      # WAN 2.2 I2V: No CLIP image embeddings, set to None or empty tensor
+      # The actual image conditioning happens via VAE latents in prepare_latents
+      image_embeds = None
     prompt_embeds = prompt_embeds.astype(transformer_dtype)
     if negative_prompt_embeds is not None:
       negative_prompt_embeds = negative_prompt_embeds.astype(transformer_dtype)
@@ -652,7 +671,7 @@ class WanPipeline:
     # Use same sharding logic as T2V pipeline for consistent behavior
     data_sharding = NamedSharding(self.mesh, P())
     if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
-        data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
+      data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
 
     prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
     negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
@@ -660,22 +679,21 @@ class WanPipeline:
 
     return prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size
 
-
   def _prepare_model_inputs(
-        self,
-        prompt: Union[str, List[str]] = None,
-        negative_prompt: Union[str, List[str]] = None,
-        height: int = 480,
-        width: int = 832,
-        num_frames: int = 81,
-        num_inference_steps: int = 50,
-        num_videos_per_prompt: Optional[int] = 1,
-        max_sequence_length: int = 512,
-        latents: jax.Array = None,
-        prompt_embeds: jax.Array = None,
-        negative_prompt_embeds: jax.Array = None,
-        vae_only: bool = False,
-    ):
+      self,
+      prompt: Union[str, List[str]] = None,
+      negative_prompt: Union[str, List[str]] = None,
+      height: int = 480,
+      width: int = 832,
+      num_frames: int = 81,
+      num_inference_steps: int = 50,
+      num_videos_per_prompt: Optional[int] = 1,
+      max_sequence_length: int = 512,
+      latents: jax.Array = None,
+      prompt_embeds: jax.Array = None,
+      negative_prompt_embeds: jax.Array = None,
+      vae_only: bool = False,
+  ):
     if not vae_only:
       if num_frames % self.vae_scale_factor_temporal != 1:
         max_logging.log(
@@ -728,8 +746,9 @@ class WanPipeline:
 
   @abstractmethod
   def __call__(self, **kwargs):
-        """Runs the inference pipeline."""
-        pass
+    """Runs the inference pipeline."""
+    pass
+
 
 @partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
 def transformer_forward_pass(
@@ -744,7 +763,12 @@ def transformer_forward_pass(
     encoder_hidden_states_image=None,
 ):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  noise_pred = wan_transformer(hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds, encoder_hidden_states_image=encoder_hidden_states_image)
+  noise_pred = wan_transformer(
+      hidden_states=latents,
+      timestep=timestep,
+      encoder_hidden_states=prompt_embeds,
+      encoder_hidden_states_image=encoder_hidden_states_image,
+  )
   if do_classifier_free_guidance:
     bsz = latents.shape[0] // 2
     noise_cond = noise_pred[:bsz]  # First half = conditional

@@ -1,17 +1,17 @@
 """
- Copyright 2024 Google LLC
+Copyright 2024 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 """
 
 import os
@@ -70,7 +70,6 @@ class InputPipelineInterface(unittest.TestCase):
     InputPipelineInterface.dummy_data = {}
 
   def test_make_dreambooth_train_iterator(self):
-
     instance_class_gcs_dir = "gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/instance_class"
     class_class_gcs_dir = "gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/class_class"
     local_dir = "/tmp/"
@@ -135,7 +134,9 @@ class InputPipelineInterface(unittest.TestCase):
     cleanup(instance_class_local_dir)
     cleanup(class_class_local_dir)
 
-  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_pokemon_hf_iterator(self):
     pyconfig.initialize(
         [
@@ -239,7 +240,9 @@ class InputPipelineInterface(unittest.TestCase):
     assert data["input_ids"].shape == (device_count, 2, 77)
     assert data["pixel_values"].shape == (device_count, 3, config.resolution, config.resolution)
 
-  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_pokemon_tf_iterator_cache(self):
     pyconfig.initialize(
         [
@@ -302,7 +305,9 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
     )
 
-  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_pokemon_iterator_no_cache(self):
     pyconfig.initialize(
         [
@@ -435,7 +440,9 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
     )
 
-  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_laion_grain_iterator(self):
     try:
       subprocess.check_output(
@@ -492,7 +499,9 @@ class InputPipelineInterface(unittest.TestCase):
         8,
     )
 
-  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_laion_tfrecord_iterator(self):
     pyconfig.initialize(
         [
@@ -553,7 +562,9 @@ class InputPipelineInterface(unittest.TestCase):
         8,
     )
 
-  @pytest.mark.skip("This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace")
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_tfrecord(self):
     """Validate latents match a deterministic output image"""
 

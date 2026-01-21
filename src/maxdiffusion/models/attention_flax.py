@@ -173,17 +173,20 @@ def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
 
   return tensor, kv_size, seq_len
 
-def convert_to_tokamax_splash_config( block_sizes: BlockSizes,
-                                      q_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
-                                      k_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
-                                      v_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
-                                      residual_checkpoint_name: str | None = None,
-                                      attn_logits_soft_cap: float | None = None,
-                                      fuse_reciprocal: bool = True,
-                                      use_base2_exp: bool = False,
-                                      max_logit_const: float | None = None,
-                                      interpret: bool = False,
-                                      dq_reduction_steps: int | None = None) -> tokamax_splash_attention_kernel.SplashConfig:
+
+def convert_to_tokamax_splash_config(
+    block_sizes: BlockSizes,
+    q_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+    k_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+    v_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+    residual_checkpoint_name: str | None = None,
+    attn_logits_soft_cap: float | None = None,
+    fuse_reciprocal: bool = True,
+    use_base2_exp: bool = False,
+    max_logit_const: float | None = None,
+    interpret: bool = False,
+    dq_reduction_steps: int | None = None,
+) -> tokamax_splash_attention_kernel.SplashConfig:
   assert block_sizes.use_fused_bwd_kernel, "Tokamax Splash attention only supports fused bwd kernel."
   return tokamax_splash_attention_kernel.SplashConfig(
       block_q=block_sizes.block_q,
@@ -192,7 +195,7 @@ def convert_to_tokamax_splash_config( block_sizes: BlockSizes,
       block_q_dkv=block_sizes.block_q_dkv,
       block_kv_dkv=block_sizes.block_kv_dkv,
       block_kv_dkv_compute=block_sizes.block_kv_dkv_compute,
-      block_q_dq= None if block_sizes.use_fused_bwd_kernel else block_sizes.block_q_dq,
+      block_q_dq=None if block_sizes.use_fused_bwd_kernel else block_sizes.block_q_dq,
       block_kv_dq=None if block_sizes.use_fused_bwd_kernel else block_sizes.block_kv_dq,
       use_fused_bwd_kernel=block_sizes.use_fused_bwd_kernel,
       q_layout=q_layout,
@@ -319,7 +322,9 @@ def _tpu_flash_attention(
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
     if attention_kernel == "tokamax_flash":
-      mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
+      mask = tokamax_splash_attention_mask.FullMask(
+          _shape=(query.shape[2], key.shape[2]),
+      )
       splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
           mask=mask,
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
@@ -333,7 +338,7 @@ def _tpu_flash_attention(
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
           block_sizes=block_sizes,
           save_residuals=True if attention_kernel == "ring" else False,
-          residual_checkpoint_name=residual_checkpoint_name
+          residual_checkpoint_name=residual_checkpoint_name,
       )
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
@@ -559,7 +564,16 @@ def _apply_attention(
     )
   elif attention_kernel == "ring":
     return _tpu_flash_attention(
-        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel,
+        query,
+        key * scale,
+        value,
+        heads,
+        mesh,
+        axis_names_q,
+        axis_names_kv,
+        flash_block_sizes,
+        dtype,
+        attention_kernel,
         mask_padding_tokens=mask_padding_tokens,
     )
   elif attention_kernel == "cudnn_flash_te":
@@ -671,9 +685,21 @@ def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
 
   return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
 
+
 # New Class for Wan I2V
 class NNXSimpleFeedForward(nnx.Module):
-  def __init__(self, rngs: nnx.Rngs, dim: int, dim_out: Optional[int] = None, mult: int = 4, activation_fn: str = "gelu", dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32, precision: Optional[jax.lax.Precision] = None):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      dim: int,
+      dim_out: Optional[int] = None,
+      mult: int = 4,
+      activation_fn: str = "gelu",
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: Optional[jax.lax.Precision] = None,
+  ):
     inner_dim = int(dim * mult)
     dim_out = dim_out if dim_out is not None else dim
     self.net_0 = nnx.Linear(
@@ -705,6 +731,7 @@ class NNXSimpleFeedForward(nnx.Module):
     hidden_states = self.act(hidden_states)
     hidden_states = self.net_2(hidden_states)
     return hidden_states
+
 
 class NNXAttentionOp(nnx.Module):
 
@@ -864,8 +891,8 @@ class FlaxWanAttention(nnx.Module):
       mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
       enable_jax_named_scopes: bool = False,
-      added_kv_proj_dim: Optional[int] = None, # New for I2V
-      image_seq_len: Optional[int] = None, # New for I2V
+      added_kv_proj_dim: Optional[int] = None,  # New for I2V
+      image_seq_len: Optional[int] = None,  # New for I2V
   ):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
@@ -889,8 +916,8 @@ class FlaxWanAttention(nnx.Module):
     else:
       axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
       axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
-    self.added_kv_proj_dim = added_kv_proj_dim # New for I2V
-    self.image_seq_len = image_seq_len # New for I2V
+    self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
+    self.image_seq_len = image_seq_len  # New for I2V
 
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
@@ -1006,23 +1033,35 @@ class FlaxWanAttention(nnx.Module):
     self.norm_added_k = nnx.data(None)
     if self.added_kv_proj_dim is not None:
       self.add_k_proj = nnx.Linear(
-          self.added_kv_proj_dim, self.inner_dim, rngs=rngs,
-          dtype=dtype, param_dtype=weights_dtype, precision=precision,
+          self.added_kv_proj_dim,
+          self.inner_dim,
+          rngs=rngs,
+          dtype=dtype,
+          param_dtype=weights_dtype,
+          precision=precision,
           bias_init=nnx.with_partitioning(
               nnx.initializers.zeros,
               ("embed",),
           ),
       )
       self.add_v_proj = nnx.Linear(
-          self.added_kv_proj_dim, self.inner_dim, rngs=rngs,
-          dtype=dtype, param_dtype=weights_dtype, precision=precision,
+          self.added_kv_proj_dim,
+          self.inner_dim,
+          rngs=rngs,
+          dtype=dtype,
+          param_dtype=weights_dtype,
+          precision=precision,
           bias_init=nnx.with_partitioning(
               nnx.initializers.zeros,
               ("embed",),
           ),
       )
       self.norm_added_k = nnx.RMSNorm(
-          num_features=self.inner_dim, rngs=rngs, epsilon=eps, dtype=dtype, param_dtype=weights_dtype,
+          num_features=self.inner_dim,
+          rngs=rngs,
+          epsilon=eps,
+          dtype=dtype,
+          param_dtype=weights_dtype,
           scale_init=nnx.with_partitioning(
               nnx.initializers.ones,
               ("norm",),
@@ -1120,10 +1159,10 @@ class FlaxWanAttention(nnx.Module):
         # Use the passed encoder_attention_mask (created in embeddings_flax.py) if using Flash Attention
         # It contains the image mask: [1]*257 + [0]*127 for 257 real image tokens padded to 384
         if encoder_attention_mask is not None:
-            encoder_attention_mask_img = encoder_attention_mask[:, :padded_img_len]
+          encoder_attention_mask_img = encoder_attention_mask[:, :padded_img_len]
         else:
-            # Fallback: no mask means treat all as valid (for dot product attention)
-            encoder_attention_mask_img = None
+          # Fallback: no mask means treat all as valid (for dot product attention)
+          encoder_attention_mask_img = None
       else:
         # If no image_seq_len is specified, treat all as text
         encoder_hidden_states_img = None
@@ -1134,7 +1173,7 @@ class FlaxWanAttention(nnx.Module):
         with self.conditional_named_scope("attn_q_norm"):
           query_proj_text = self.norm_q(query_proj_raw)
       else:
-          query_proj_text = query_proj_raw
+        query_proj_text = query_proj_raw
 
       # Text K/V
       with self.conditional_named_scope("proj_key"):
@@ -1163,13 +1202,14 @@ class FlaxWanAttention(nnx.Module):
         value_proj_img = checkpoint_name(value_proj_img, "value_proj_img")
         query_proj_img = checkpoint_name(query_proj_img, "query_proj_img")
 
-
         # Attention - tensors are (B, S, D)
         with self.conditional_named_scope("cross_attn_text_apply"):
           attn_output_text = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
         with self.conditional_named_scope("cross_attn_img_apply"):
           # Pass encoder_attention_mask_img for image cross-attention to mask padded tokens
-          attn_output_img = self.attention_op.apply_attention(query_proj_img, key_proj_img, value_proj_img, attention_mask=encoder_attention_mask_img)
+          attn_output_img = self.attention_op.apply_attention(
+              query_proj_img, key_proj_img, value_proj_img, attention_mask=encoder_attention_mask_img
+          )
 
         attn_output = attn_output_text + attn_output_img
       else:

@@ -1,17 +1,17 @@
 """
- Copyright 2025 Google LLC
+Copyright 2025 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 """
 
 import os
@@ -186,7 +186,6 @@ def load_wan_transformer(
     scan_layers: bool = True,
     subfolder: str = "",
 ):
-
   if pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
     return load_causvid_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
   elif pretrained_model_name_or_path == WAN_21_FUSION_X_MODEL_NAME_OR_PATH:
@@ -260,23 +259,23 @@ def load_base_wan_transformer(
       renamed_pt_key = rename_key(pt_key)
 
       if "condition_embedder" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("time_embedding_0", "time_embedder.linear_1")
-          renamed_pt_key = renamed_pt_key.replace("time_embedding_2", "time_embedder.linear_2")
-          renamed_pt_key = renamed_pt_key.replace("time_projection_1", "time_proj")
-          renamed_pt_key = renamed_pt_key.replace("text_embedding_0", "text_embedder.linear_1")
-          renamed_pt_key = renamed_pt_key.replace("text_embedding_2", "text_embedder.linear_2")
+        renamed_pt_key = renamed_pt_key.replace("time_embedding_0", "time_embedder.linear_1")
+        renamed_pt_key = renamed_pt_key.replace("time_embedding_2", "time_embedder.linear_2")
+        renamed_pt_key = renamed_pt_key.replace("time_projection_1", "time_proj")
+        renamed_pt_key = renamed_pt_key.replace("text_embedding_0", "text_embedder.linear_1")
+        renamed_pt_key = renamed_pt_key.replace("text_embedding_2", "text_embedder.linear_2")
 
       if "image_embedder" in renamed_pt_key:
-          if "net.0.proj" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
-          elif "net_0.proj" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
-          if "net.2" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
-          renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
-          if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
-              renamed_pt_key = renamed_pt_key.replace("weight", "scale")
-              renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
+        if "net.0.proj" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
+        elif "net_0.proj" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
+        if "net.2" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
+        renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
+        if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+          renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
 
       renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
       renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")

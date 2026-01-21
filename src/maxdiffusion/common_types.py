@@ -66,19 +66,19 @@ WAN_MODEL = "Wan2.1"
 
 ### Common axis rules for ring attention ###
 RING_ATTENTION_AXIS_RULES = [
-        [SELF_ATTN_HEAD, None],
-        [SELF_ATTN_Q_LENGTH, FSDP],
-        [SELF_ATTN_KV_LENGTH, FSDP],
-        [CROSS_ATTN_HEAD, None],
-        [CROSS_ATTN_Q_LENGTH, FSDP],
-        [CROSS_ATTN_KV_LENGTH, FSDP],
+    [SELF_ATTN_HEAD, None],
+    [SELF_ATTN_Q_LENGTH, FSDP],
+    [SELF_ATTN_KV_LENGTH, FSDP],
+    [CROSS_ATTN_HEAD, None],
+    [CROSS_ATTN_Q_LENGTH, FSDP],
+    [CROSS_ATTN_KV_LENGTH, FSDP],
 ]
 
 SEQUENCE_PARALLEL_AXIS_RULES = [
-        [SELF_ATTN_HEAD, None],
-        [SELF_ATTN_Q_LENGTH, FSDP],
-        [SELF_ATTN_KV_LENGTH, None],
-        [CROSS_ATTN_HEAD, None],
-        [CROSS_ATTN_Q_LENGTH, FSDP],
-        [CROSS_ATTN_KV_LENGTH, None],
+    [SELF_ATTN_HEAD, None],
+    [SELF_ATTN_Q_LENGTH, FSDP],
+    [SELF_ATTN_KV_LENGTH, None],
+    [CROSS_ATTN_HEAD, None],
+    [CROSS_ATTN_Q_LENGTH, FSDP],
+    [CROSS_ATTN_KV_LENGTH, None],
 ]

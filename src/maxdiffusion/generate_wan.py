@@ -66,10 +66,11 @@ def delete_file(file_path: str):
   else:
     max_logging.log(f"The file '{file_path}' does not exist.")
 
+
 def get_git_commit_hash():
   """Tries to get the current Git commit hash."""
   try:
-    commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
+    commit_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).strip().decode("utf-8")
     return commit_hash
   except subprocess.CalledProcessError:
     max_logging.log("Warning: 'git rev-parse HEAD' failed. Not running in a git repo?")
@@ -78,7 +79,9 @@ def get_git_commit_hash():
     max_logging.log("Warning: 'git' command not found.")
     return None
 
+
 jax.config.update("jax_use_shardy_partitioner", True)
+
 
 def call_pipeline(config, pipeline, prompt, negative_prompt):
   model_key = config.model_name
