@@ -201,14 +201,12 @@ class _HyperParameters:
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
     # Verify qkv is sharded across sequence.
     if raw_keys["attention"] == "ring" or raw_keys["attention_sharding_uniform"]:
-      max_logging.log(
-          f"Adding sequence sharding to q and kv if not already present because {raw_keys['attention']}=='ring' or {raw_keys['attention_sharding_uniform']} is set."
-      )
+      max_logging.log(f"Adding sequence sharding to q and kv if not already present because {raw_keys['attention']}=='ring' or {raw_keys['attention_sharding_uniform']} is set.")
       logical_axis_rules = list(raw_keys["logical_axis_rules"])
       max_logging.log(f"Initial logical axis rules: {logical_axis_rules}")
       new_rules = []
-      q_seq_sharding = (LENGTH, "fsdp")
-      kv_seq_sharding = (KV_LENGTH, "fsdp")
+      q_seq_sharding = (LENGTH, "context")
+      kv_seq_sharding = (KV_LENGTH, "context")
       if q_seq_sharding not in logical_axis_rules:
         logical_axis_rules.append(q_seq_sharding)
       if kv_seq_sharding not in logical_axis_rules:

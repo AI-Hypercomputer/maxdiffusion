@@ -17,6 +17,7 @@ from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
 from functools import partial
+from contextlib import nullcontext
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 import jax
@@ -115,8 +116,14 @@ class WanPipeline2_1(WanPipeline):
         scheduler=self.scheduler,
         scheduler_state=scheduler_state,
     )
+    # Set the TE shard_guard context_manager if using TE cudnn_flash attention
+    if self.config.attention == "cudnn_flash_te":
+      from transformer_engine.jax.sharding import global_shard_guard, MeshResource # pytype: disable=import-error
+      shard_guard = global_shard_guard(MeshResource(cp_resource="context"))
+    else:
+      shard_guard = nullcontext()
 
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules), shard_guard:
       latents = p_run_inference(
           graphdef=graphdef,
           sharded_state=state,

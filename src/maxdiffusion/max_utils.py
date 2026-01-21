@@ -268,17 +268,30 @@ def create_device_mesh(config, devices=None, logging=True):
   max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
 
   multi_slice_env = num_slices > 1
-
-  dcn_parallelism = [
-      config.dcn_data_parallelism,
-      config.dcn_fsdp_parallelism,
-      config.dcn_tensor_parallelism,
-  ]
-  ici_parallelism = [
-      config.ici_data_parallelism,
-      config.ici_fsdp_parallelism,
-      config.ici_tensor_parallelism,
-  ]
+  if "dcn_context_parallelism" in config.get_keys() and "ici_context_parallelism" in config.get_keys():
+    dcn_parallelism = [
+        config.dcn_data_parallelism,
+        config.dcn_fsdp_parallelism,
+        config.dcn_context_parallelism,
+        config.dcn_tensor_parallelism,
+    ]
+    ici_parallelism = [
+        config.ici_data_parallelism,
+        config.ici_fsdp_parallelism,
+        config.ici_context_parallelism,
+        config.ici_tensor_parallelism,
+    ]
+  else:
+    dcn_parallelism = [
+        config.dcn_data_parallelism,
+        config.dcn_fsdp_parallelism,
+        config.dcn_tensor_parallelism,
+    ]
+    ici_parallelism = [
+        config.ici_data_parallelism,
+        config.ici_fsdp_parallelism,
+        config.ici_tensor_parallelism,
+    ]
 
   # Find possible unspecified parallelisms
   ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, "ICI")

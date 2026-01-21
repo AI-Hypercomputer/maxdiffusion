@@ -19,7 +19,6 @@ import contextlib
 import math
 import jax
 import jax.numpy as jnp
-from jax.sharding import PartitionSpec
 from jax.ad_checkpoint import checkpoint_name
 from flax import nnx
 import flax.linen as nn
@@ -380,9 +379,11 @@ class WanTransformerBlock(nnx.Module):
       shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
           (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
       )
-      hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_heads"))
+      hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
       hidden_states = checkpoint_name(hidden_states, "hidden_states")
-      encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", None))
+      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_kv"))
+      encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
 
       # 1. Self-attention
       with self.conditional_named_scope("self_attn"):
@@ -538,7 +539,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if scan_layers:
       self.blocks = init_block(rngs)
     else:
-      blocks = nnx.List([])
+      blocks = []
       for _ in range(num_layers):
         block = WanTransformerBlock(
             rngs=rngs,
@@ -560,7 +561,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             enable_jax_named_scopes=enable_jax_named_scopes,
         )
         blocks.append(block)
-      self.blocks = blocks
+      self.blocks = nnx.data(blocks)
 
     self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
     self.proj_out = nnx.Linear(

@@ -39,7 +39,7 @@ class AttentionTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base21.yml"),
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
             'flash_block_sizes={"block_q" : 512, "block_kv_compute": 512, "block_kv": 512,'
             '"block_q_dkv": 512, "block_kv_dkv": 512, "block_kv_dkv_compute": 512,'
             '"block_q_dq": 512, "block_kv_dq": 512}',
