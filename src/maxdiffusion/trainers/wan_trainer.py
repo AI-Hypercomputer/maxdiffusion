@@ -309,7 +309,7 @@ class WanTrainer:
         pretty_string = pprint.pformat(state_spec.opt_state, indent=4, width=60)
         max_logging.log(pretty_string)
         max_logging.log("------------------------------------------------")
-    if self.config.hardware != 'gpu':
+    if self.config.hardware != "gpu":
       max_utils.delete_pytree(params)
     data_shardings = self.get_data_shardings(mesh)
     eval_data_shardings = self.get_eval_data_shardings(mesh)
@@ -368,14 +368,16 @@ class WanTrainer:
 
         # Designate the context parallel axis for sharding
         if self.config.attention == "cudnn_flash_te":
-          from transformer_engine.jax.sharding import global_shard_guard, MeshResource # pytype: disable=import-error
+          from transformer_engine.jax.sharding import global_shard_guard, MeshResource  # pytype: disable=import-error
+
           shard_guard = global_shard_guard(MeshResource(cp_resource="context"))
         else:
           shard_guard = nullcontext()
 
         next_batch_future = executor.submit(load_next_batch, train_data_iterator, example_batch, self.config)
-        with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, \
-        shard_guard, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+        with jax.profiler.StepTraceAnnotation(
+            "train", step_num=step
+        ), pipeline.mesh, shard_guard, nn_partitioning.axis_rules(self.config.logical_axis_rules):
           state, scheduler_state, train_metric, rng = p_train_step(state, example_batch, rng, scheduler_state)
           train_metric["scalar"]["learning/loss"].block_until_ready()
         last_step_completion = datetime.datetime.now()
