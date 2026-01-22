@@ -196,6 +196,43 @@ def load_wan_transformer(
         pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers, subfolder
     )
 
+def apply_turbo_scaling(params):
+    """
+    Recursively traverses the unflattened state dict to find 'query' and 'key' 
+    layers and scales their kernels by 1/sqrt(2).
+    """
+    # Scale factor: 1/sqrt(2) ≈ 0.707
+    scale_factor = 1.0 / (2 ** 0.5)
+    
+    # Counter to verify we actually hit the tensors
+    scaled_count = 0
+
+    def _recursive_walk(d, path_prefix=""):
+        nonlocal scaled_count
+        # Iterate over a copy of keys to be safe, though we modify values in place
+        for key, value in d.items():
+            
+            # 1. Target Identification: Is this a Query or Key layer?
+            # We look for dicts named 'query' or 'key' that contain a 'kernel'
+            if key in ['query', 'key'] and isinstance(value, dict) and 'kernel' in value:
+                # Apply the scale
+                original_shape = value['kernel'].shape
+                value['kernel'] = value['kernel'] * scale_factor
+                scaled_count += 1
+                print(f"⚡ Turbo Scaled: {path_prefix}.{key}.kernel | Shape: {original_shape}")
+            
+            # 2. Recursion: If it's a container (like 'blocks' or 'attn1'), dive in.
+            elif isinstance(value, dict):
+                _recursive_walk(value, path_prefix=f"{path_prefix}.{key}" if path_prefix else key)
+
+    print("⚡ Starting Recursive Turbo Scaling...")
+    _recursive_walk(params)
+    
+    if scaled_count == 0:
+        raise ValueError("❌ Turbo Scaling Failed: No 'query' or 'key' kernels found! Check dictionary structure.")
+    
+    print(f"⚡ DONE. Scaled {scaled_count} tensors successfully.")
+    return params
 
 def load_base_wan_transformer(
     pretrained_model_name_or_path: str,
@@ -269,6 +306,7 @@ def load_base_wan_transformer(
     flax_state_dict = unflatten_dict(flax_state_dict)
     del tensors
     jax.clear_caches()
+    flax_state_dict = apply_turbo_scaling(flax_state_dict)
     return flax_state_dict
 
 

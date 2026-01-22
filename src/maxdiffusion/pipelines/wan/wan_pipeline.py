@@ -87,7 +87,6 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
   vs.sharding_rules = logical_axis_rules
   return vs
 
-
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(
     devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None, subfolder: str = ""
@@ -116,6 +115,8 @@ def create_sharded_logical_transformer(
   wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
+  wan_config["num_attention_heads"] = 20
+  wan_config["attention_head_dim"] = 256
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.

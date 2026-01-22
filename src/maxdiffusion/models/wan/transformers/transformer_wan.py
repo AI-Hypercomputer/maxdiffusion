@@ -73,7 +73,14 @@ class WanRotaryPosEmbed(nnx.Module):
     p_t, p_h, p_w = self.patch_size
     ppf, pph, ppw = num_frames // p_t, height // p_h, width // p_w
 
-    freqs_split = get_frequencies(self.max_seq_len, self.theta, self.attention_head_dim)
+    is_turbo_mode = (self.attention_head_dim == 256)
+
+    # 2. Force the frequency calculation to use 128.
+    # This preserves the original T/H/W split ratios (21/21/22) 
+    # instead of stretching them to (42/42/44).
+    calc_dim = 128 if is_turbo_mode else self.attention_head_dim
+
+    freqs_split = get_frequencies(self.max_seq_len, self.theta, calc_dim)
 
     freqs_f = jnp.expand_dims(jnp.expand_dims(freqs_split[0][:ppf], axis=1), axis=1)
     freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, freqs_split[0].shape[-1]))
@@ -85,6 +92,15 @@ class WanRotaryPosEmbed(nnx.Module):
     freqs_w = jnp.broadcast_to(freqs_w, (ppf, pph, ppw, freqs_split[2].shape[-1]))
 
     freqs_concat = jnp.concatenate([freqs_f, freqs_h, freqs_w], axis=-1)
+
+    # === TURBO ADAPTER TILING: START ===
+    if is_turbo_mode:
+        # We calculated frequencies for a 128-dim head.
+        # We must duplicate them so the "Second Fused Head" (indices 128-255)
+        # sees the exact same rotation as the "First Head" (indices 0-127).
+        freqs_concat = jnp.concatenate([freqs_concat, freqs_concat], axis=-1)
+    # === TURBO ADAPTER TILING: END ===
+
     freqs_final = jnp.reshape(freqs_concat, (1, 1, ppf * pph * ppw, -1))
     return freqs_final
 
