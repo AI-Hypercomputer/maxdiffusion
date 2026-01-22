@@ -544,7 +544,6 @@ class WanPipeline:
     vae_dtype = getattr(self.vae, "dtype", jnp.float32)
     video_condition = video_condition.astype(vae_dtype)
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      data_axis_name = self.config.mesh_axes[0]
       data_mesh_size = self.mesh.shape[self.config.mesh_axes[0]]
       if video_condition.shape[0] % data_mesh_size == 0:
         sharding_spec = P(self.config.mesh_axes[0], None, None, None, None)
