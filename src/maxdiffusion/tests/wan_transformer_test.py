@@ -396,7 +396,7 @@ class WanTransformerTest(unittest.TestCase):
     mock_config.weight_quantization_calibration_method = "fixed,-224,224"
     mock_config.act_quantization_calibration_method = "fixed,-224,224"
     mock_config.bwd_quantization_calibration_method = "absmax"
-    mock_config.global_batch_size_to_train_on=32
+    mock_config.global_batch_size_to_train_on = 32
 
     mock_model = Mock(spec=WanModel)
     mock_pipeline = Mock()
