@@ -1,3 +1,4 @@
+wan_pipeline_2_2.py
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,6 +39,7 @@ class WanPipeline2_2(WanPipeline):
     super().__init__(config=config, **kwargs)
     self.low_noise_transformer = low_noise_transformer
     self.high_noise_transformer = high_noise_transformer
+    self.boundary_ratio = config.boundary_ratio
 
   @classmethod
   def _load_and_init(cls, config, restored_checkpoint=None, vae_only=False, load_transformer=True):
@@ -103,7 +105,6 @@ class WanPipeline2_2(WanPipeline):
       num_inference_steps: int = 50,
       guidance_scale_low: float = 3.0,
       guidance_scale_high: float = 4.0,
-      boundary: int = 875,
       num_videos_per_prompt: Optional[int] = 1,
       max_sequence_length: int = 512,
       latents: jax.Array = None,
@@ -129,11 +130,13 @@ class WanPipeline2_2(WanPipeline):
     low_noise_graphdef, low_noise_state, low_noise_rest = nnx.split(self.low_noise_transformer, nnx.Param, ...)
     high_noise_graphdef, high_noise_state, high_noise_rest = nnx.split(self.high_noise_transformer, nnx.Param, ...)
 
+    boundary_timestep = self.boundary_ratio * self.scheduler.config.num_train_timesteps
+
     p_run_inference = partial(
         run_inference_2_2,
         guidance_scale_low=guidance_scale_low,
         guidance_scale_high=guidance_scale_high,
-        boundary=boundary,
+        boundary=boundary_timestep,
         num_inference_steps=num_inference_steps,
         scheduler=self.scheduler,
         scheduler_state=scheduler_state,

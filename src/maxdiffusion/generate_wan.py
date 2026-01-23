@@ -134,7 +134,6 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           num_inference_steps=config.num_inference_steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
-          boundary=config.boundary_timestep,
       )
     else:
       raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")

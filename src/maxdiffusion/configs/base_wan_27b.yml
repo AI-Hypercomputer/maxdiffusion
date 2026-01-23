@@ -300,7 +300,7 @@ guidance_scale_high: 4.0
 # The timestep threshold. If `t` is at or above this value,
 # the `high_noise_model` is considered as the required model.
 # timestep to switch between low noise and high noise transformer
-boundary_timestep: 875
+boundary_ratio: 0.875
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
