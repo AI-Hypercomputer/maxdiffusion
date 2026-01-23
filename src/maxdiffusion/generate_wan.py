@@ -168,7 +168,6 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
-
     if commit_hash:
       writer.add_text("inference/git_commit_hash", commit_hash, global_step=0)
       max_logging.log(f"Git Commit Hash: {commit_hash}")
