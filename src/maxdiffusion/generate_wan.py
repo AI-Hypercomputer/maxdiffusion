@@ -161,17 +161,11 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
   return
 
 
-def run(config, pipeline=None, filename_prefix="", commit_hash=None):
+def run(config, pipeline=None, filename_prefix=""):
   model_key = config.model_name
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
-
-    if commit_hash:
-      writer.add_text("inference/git_commit_hash", commit_hash, global_step=0)
-      max_logging.log(f"Git Commit Hash: {commit_hash}")
-    else:
-      max_logging.log("Could not retrieve Git commit hash.")
 
   if pipeline is None:
     model_type = config.model_type
@@ -248,13 +242,12 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
 
 def main(argv: Sequence[str]) -> None:
-  commit_hash = get_git_commit_hash()
   pyconfig.initialize(argv)
   try:
     flax.config.update("flax_always_shard_variable", False)
   except LookupError:
     pass
-  run(pyconfig.config, commit_hash=commit_hash)
+  run(pyconfig.config)
 
 
 if __name__ == "__main__":
