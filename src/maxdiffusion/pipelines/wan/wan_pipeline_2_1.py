@@ -118,7 +118,8 @@ class WanPipeline2_1(WanPipeline):
     )
     # Set the TE shard_guard context_manager if using TE cudnn_flash attention
     if self.config.attention == "cudnn_flash_te":
-      from transformer_engine.jax.sharding import global_shard_guard, MeshResource # pytype: disable=import-error
+      from transformer_engine.jax.sharding import global_shard_guard, MeshResource  # pytype: disable=import-error
+
       shard_guard = global_shard_guard(MeshResource(cp_resource="context"))
     else:
       shard_guard = nullcontext()

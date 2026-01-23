@@ -384,7 +384,9 @@ def _tpu_flash_attention(
           return (m, l, o, k_next, v_next), None
 
         initial_carry = (m, l, o, k1, v1)
-        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_context_shards - 1)
+        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(
+            ring_scan_body, initial_carry, None, length=num_context_shards - 1
+        )
 
         attention_output = o_final / l_final[..., None]
       else:
@@ -749,6 +751,7 @@ class NNXAttentionOp(nnx.Module):
     self.dpa_layer = None
     if attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
+
       jax.config.update("jax_use_shardy_partitioner", False)
 
       dpa_layer = DotProductAttention(
@@ -829,6 +832,7 @@ class AttentionOp(nn.Module):
     self.dpa_layer = None
     if self.attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
+
       jax.config.update("jax_use_shardy_partitioner", False)
 
       dpa_layer = DotProductAttention(
@@ -847,7 +851,6 @@ class AttentionOp(nn.Module):
       )
       variables = {}
       self.dpa_layer = functools.partial(dpa_layer.apply, variables)
-
 
   def apply_attention(self, query: Array, key: Array, value: Array, attention_mask: Array = None):
     return _apply_attention(
