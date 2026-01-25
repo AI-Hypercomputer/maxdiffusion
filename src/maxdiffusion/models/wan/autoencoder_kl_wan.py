@@ -38,10 +38,12 @@ except LookupError:
 from jax.sharding import PartitionSpec
 from jax.lax import with_sharding_constraint
 
+
 def _update_cache(cache, idx, value):
   if cache is None:
     return None
-  return cache[:idx] + (value,) + cache[idx+1:]
+  return cache[:idx] + (value,) + cache[idx + 1 :]
+
 
 # Helper to ensure kernel_size, stride, padding are tuples of 3 integers
 def _canonicalize_tuple(x: Union[int, Sequence[int]], rank: int, name: str) -> Tuple[int, ...]:
@@ -55,10 +57,13 @@ def _canonicalize_tuple(x: Union[int, Sequence[int]], rank: int, name: str) -> T
 
 
 class RepSentinel:
+
   def __eq__(self, other):
     return isinstance(other, RepSentinel)
 
+
 tree_util.register_pytree_node(RepSentinel, lambda x: ((), None), lambda _, __: RepSentinel())
+
 
 class WanCausalConv3d(nnx.Module):
 
@@ -503,7 +508,6 @@ class WanAttentionBlock(nnx.Module):
     )
 
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
-
     identity = x
     batch_size, time, height, width, channels = x.shape
 
@@ -949,8 +953,10 @@ class WanDecoder3d(nnx.Module):
 class WanDiagonalGaussianDistribution(FlaxDiagonalGaussianDistribution):
   pass
 
+
 def _wan_diag_gauss_dist_flatten(dist):
   return (dist.mean, dist.logvar, dist.std, dist.var), (dist.deterministic,)
+
 
 def _wan_diag_gauss_dist_unflatten(aux, children):
   mean, logvar, std, var = children
@@ -962,6 +968,7 @@ def _wan_diag_gauss_dist_unflatten(aux, children):
   obj.var = var
   obj.deterministic = deterministic
   return obj
+
 
 tree_util.register_pytree_node(
     WanDiagonalGaussianDistribution,
@@ -993,8 +1000,10 @@ class AutoencoderKLWanCache:
     # cache encode
     self._enc_feat_map = (None,) * self._enc_conv_num
 
+
 def _wan_cache_flatten(cache):
   return (cache._feat_map, cache._enc_feat_map), (cache._conv_num, cache._enc_conv_num)
+
 
 def _wan_cache_unflatten(aux, children):
   conv_num, enc_conv_num = aux
@@ -1009,8 +1018,9 @@ def _wan_cache_unflatten(aux, children):
   obj._enc_conv_num = enc_conv_num
   obj._feat_map = feat_map
   obj._enc_feat_map = enc_feat_map
-  obj.module = None # module is not needed inside the trace for the cache logic now
+  obj.module = None  # module is not needed inside the trace for the cache logic now
   return obj
+
 
 tree_util.register_pytree_node(AutoencoderKLWanCache, _wan_cache_flatten, _wan_cache_unflatten)
 
@@ -1147,10 +1157,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
             feat_idx=enc_conv_idx,
         )
         out = jnp.concatenate([out, out_], axis=1)
-    
+
     # Update back to the wrapper object if needed, but for result we use local vars
     feat_cache._enc_feat_map = enc_feat_map
-    
+
     enc = self.quant_conv(out)
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
     enc = jnp.concatenate([mu, logvar], axis=-1)
@@ -1173,7 +1183,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     feat_cache.init_cache()
     iter_ = z.shape[1]
     x = self.post_quant_conv(z)
-    
+
     dec_feat_map = feat_cache._feat_map
 
     for i in range(iter_):
@@ -1199,7 +1209,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
           fm3 = jnp.expand_dims(fm3, axis=axis)
           fm4 = jnp.expand_dims(fm4, axis=axis)
         out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
-    
+
     feat_cache._feat_map = dec_feat_map
 
     out = jnp.clip(out, min=-1.0, max=1.0)
