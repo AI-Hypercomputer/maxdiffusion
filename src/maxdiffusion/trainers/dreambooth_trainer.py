@@ -1,18 +1,18 @@
 """
- Copyright 2024 Google LLC
+Copyright 2024 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 from pathlib import Path
 import time
@@ -116,7 +116,6 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
     return data_sharding
 
   def load_dataset(self, pipeline, params, train_states):
-
     return make_dreambooth_train_iterator(
         self.config,
         self.mesh,
@@ -183,7 +182,6 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
       return p_train_step
 
   def training_loop(self, p_train_step, pipeline, params, train_states, data_iterator, learning_rate_scheduler):
-
     writer = max_utils.initialize_summary_writer(self.config)
     unet_state = train_states["unet_state"]
     text_encoder_state = train_states["text_encoder_state"]
@@ -265,7 +263,6 @@ def _train_step(unet_state, text_encoder_state, batch, train_rng, config, pipeli
   state_params = {"text_encoder": text_encoder_state.params, "unet": unet_state.params}
 
   def compute_loss(state_params):
-
     encoder_hidden_states = encode(input_ids, pipeline.text_encoder, state_params["text_encoder"])
 
     # Sample noise that we'll add to the latents

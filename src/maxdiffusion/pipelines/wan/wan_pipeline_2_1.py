@@ -17,14 +17,17 @@ from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
 from functools import partial
+from contextlib import nullcontext
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 import jax
 import jax.numpy as jnp
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 
+
 class WanPipeline2_1(WanPipeline):
   """Pipeline for WAN 2.1 with a single transformer."""
+
   def __init__(self, config: HyperParameters, transformer: Optional[WanModel], **kwargs):
     super().__init__(config=config, **kwargs)
     self.transformer = transformer
@@ -41,27 +44,27 @@ class WanPipeline2_1(WanPipeline):
             rngs=common_components["rngs"],
             config=config,
             restored_checkpoint=restored_checkpoint,
-            subfolder="transformer"
+            subfolder="transformer",
         )
 
         pipeline = cls(
-          tokenizer=common_components["tokenizer"],
-          text_encoder=common_components["text_encoder"],
-          transformer=transformer,
-          vae=common_components["vae"],
-          vae_cache=common_components["vae_cache"],
-          scheduler=common_components["scheduler"],
-          scheduler_state=common_components["scheduler_state"],
-          devices_array=common_components["devices_array"],
-          mesh=common_components["mesh"],
-          config=config,
+            tokenizer=common_components["tokenizer"],
+            text_encoder=common_components["text_encoder"],
+            transformer=transformer,
+            vae=common_components["vae"],
+            vae_cache=common_components["vae_cache"],
+            scheduler=common_components["scheduler"],
+            scheduler_state=common_components["scheduler_state"],
+            devices_array=common_components["devices_array"],
+            mesh=common_components["mesh"],
+            config=config,
         )
 
     return pipeline, transformer
 
   @classmethod
   def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
-    pipeline , transformer = cls._load_and_init(config, None, vae_only, load_transformer)
+    pipeline, transformer = cls._load_and_init(config, None, vae_only, load_transformer)
     pipeline.transformer = cls.quantize_transformer(config, transformer, pipeline, pipeline.mesh)
     return pipeline
 
@@ -74,20 +77,20 @@ class WanPipeline2_1(WanPipeline):
     return self.transformer.config.in_channels
 
   def __call__(
-    self,
-    prompt: Union[str, List[str]] = None,
-    negative_prompt: Union[str, List[str]] = None,
-    height: int = 480,
-    width: int = 832,
-    num_frames: int = 81,
-    num_inference_steps: int = 50,
-    guidance_scale: float = 5.0,
-    num_videos_per_prompt: Optional[int] = 1,
-    max_sequence_length: int = 512,
-    latents: Optional[jax.Array] = None,
-    prompt_embeds: Optional[jax.Array] = None,
-    negative_prompt_embeds: Optional[jax.Array] = None,
-    vae_only: bool = False,
+      self,
+      prompt: Union[str, List[str]] = None,
+      negative_prompt: Union[str, List[str]] = None,
+      height: int = 480,
+      width: int = 832,
+      num_frames: int = 81,
+      num_inference_steps: int = 50,
+      guidance_scale: float = 5.0,
+      num_videos_per_prompt: Optional[int] = 1,
+      max_sequence_length: int = 512,
+      latents: Optional[jax.Array] = None,
+      prompt_embeds: Optional[jax.Array] = None,
+      negative_prompt_embeds: Optional[jax.Array] = None,
+      vae_only: bool = False,
   ):
     latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
         prompt,
@@ -113,8 +116,15 @@ class WanPipeline2_1(WanPipeline):
         scheduler=self.scheduler,
         scheduler_state=scheduler_state,
     )
+    # Set the TE shard_guard context_manager if using TE cudnn_flash attention
+    if self.config.attention == "cudnn_flash_te":
+      from transformer_engine.jax.sharding import global_shard_guard, MeshResource  # pytype: disable=import-error
 
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      shard_guard = global_shard_guard(MeshResource(cp_resource="context"))
+    else:
+      shard_guard = nullcontext()
+
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules), shard_guard:
       latents = p_run_inference(
           graphdef=graphdef,
           sharded_state=state,
@@ -125,6 +135,7 @@ class WanPipeline2_1(WanPipeline):
       )
       latents = self._denormalize_latents(latents)
     return self._decode_latents_to_video(latents)
+
 
 def run_inference_2_1(
     graphdef,

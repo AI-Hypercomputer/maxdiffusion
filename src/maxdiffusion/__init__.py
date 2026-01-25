@@ -1,18 +1,18 @@
 """
- Copyright 2024 Google LLC
+Copyright 2024 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 __version__ = "0.22.0.dev0"
 
@@ -84,25 +84,23 @@ except OptionalDependencyNotAvailable:
   _import_structure["utils.dummy_pt_objects"] = [name for name in dir(dummy_pt_objects) if not name.startswith("_")]
 
 else:
-  _import_structure["models"].extend(
-      [
-          "AsymmetricAutoencoderKL",
-          "AutoencoderKL",
-          "AutoencoderTiny",
-          "ControlNetModel",
-          "ModelMixin",
-          "MultiAdapter",
-          "PriorTransformer",
-          "T2IAdapter",
-          "T5FilmDecoder",
-          "Transformer2DModel",
-          "UNet1DModel",
-          "UNet2DConditionModel",
-          "UNet2DModel",
-          "UNet3DConditionModel",
-          "VQModel",
-      ]
-  )
+  _import_structure["models"].extend([
+      "AsymmetricAutoencoderKL",
+      "AutoencoderKL",
+      "AutoencoderTiny",
+      "ControlNetModel",
+      "ModelMixin",
+      "MultiAdapter",
+      "PriorTransformer",
+      "T2IAdapter",
+      "T5FilmDecoder",
+      "Transformer2DModel",
+      "UNet1DModel",
+      "UNet2DConditionModel",
+      "UNet2DModel",
+      "UNet3DConditionModel",
+      "VQModel",
+  ])
   _import_structure["optimization"] = [
       "get_constant_schedule",
       "get_constant_schedule_with_warmup",
@@ -113,56 +111,52 @@ else:
       "get_scheduler",
   ]
 
-  _import_structure["pipelines"].extend(
-      [
-          "AudioPipelineOutput",
-          "AutoPipelineForImage2Image",
-          "AutoPipelineForInpainting",
-          "AutoPipelineForText2Image",
-          "ConsistencyModelPipeline",
-          "DanceDiffusionPipeline",
-          "DDIMPipeline",
-          "DDPMPipeline",
-          "DiffusionPipeline",
-          "DiTPipeline",
-          "ImagePipelineOutput",
-          "KarrasVePipeline",
-          "LDMPipeline",
-          "LDMSuperResolutionPipeline",
-          "PNDMPipeline",
-          "RePaintPipeline",
-          "ScoreSdeVePipeline",
-      ]
-  )
-  _import_structure["schedulers"].extend(
-      [
-          "CMStochasticIterativeScheduler",
-          "DDIMInverseScheduler",
-          "DDIMParallelScheduler",
-          "DDIMScheduler",
-          "DDPMParallelScheduler",
-          "DDPMScheduler",
-          "DDPMWuerstchenScheduler",
-          "DEISMultistepScheduler",
-          "DPMSolverMultistepInverseScheduler",
-          "DPMSolverMultistepScheduler",
-          "DPMSolverSinglestepScheduler",
-          "EulerAncestralDiscreteScheduler",
-          "EulerDiscreteScheduler",
-          "HeunDiscreteScheduler",
-          "IPNDMScheduler",
-          "KarrasVeScheduler",
-          "KDPM2AncestralDiscreteScheduler",
-          "KDPM2DiscreteScheduler",
-          "PNDMScheduler",
-          "RePaintScheduler",
-          "SchedulerMixin",
-          "ScoreSdeVeScheduler",
-          "UnCLIPScheduler",
-          "UniPCMultistepScheduler",
-          "VQDiffusionScheduler",
-      ]
-  )
+  _import_structure["pipelines"].extend([
+      "AudioPipelineOutput",
+      "AutoPipelineForImage2Image",
+      "AutoPipelineForInpainting",
+      "AutoPipelineForText2Image",
+      "ConsistencyModelPipeline",
+      "DanceDiffusionPipeline",
+      "DDIMPipeline",
+      "DDPMPipeline",
+      "DiffusionPipeline",
+      "DiTPipeline",
+      "ImagePipelineOutput",
+      "KarrasVePipeline",
+      "LDMPipeline",
+      "LDMSuperResolutionPipeline",
+      "PNDMPipeline",
+      "RePaintPipeline",
+      "ScoreSdeVePipeline",
+  ])
+  _import_structure["schedulers"].extend([
+      "CMStochasticIterativeScheduler",
+      "DDIMInverseScheduler",
+      "DDIMParallelScheduler",
+      "DDIMScheduler",
+      "DDPMParallelScheduler",
+      "DDPMScheduler",
+      "DDPMWuerstchenScheduler",
+      "DEISMultistepScheduler",
+      "DPMSolverMultistepInverseScheduler",
+      "DPMSolverMultistepScheduler",
+      "DPMSolverSinglestepScheduler",
+      "EulerAncestralDiscreteScheduler",
+      "EulerDiscreteScheduler",
+      "HeunDiscreteScheduler",
+      "IPNDMScheduler",
+      "KarrasVeScheduler",
+      "KDPM2AncestralDiscreteScheduler",
+      "KDPM2DiscreteScheduler",
+      "PNDMScheduler",
+      "RePaintScheduler",
+      "SchedulerMixin",
+      "ScoreSdeVeScheduler",
+      "UnCLIPScheduler",
+      "UniPCMultistepScheduler",
+      "VQDiffusionScheduler",
+  ])
   _import_structure["training_utils"] = ["EMAModel"]
 
 try:
@@ -202,100 +196,98 @@ except OptionalDependencyNotAvailable:
   ]
 
 else:
-  _import_structure["pipelines"].extend(
-      [
-          "AltDiffusionImg2ImgPipeline",
-          "AltDiffusionPipeline",
-          "AudioLDM2Pipeline",
-          "AudioLDM2ProjectionModel",
-          "AudioLDM2UNet2DConditionModel",
-          "AudioLDMPipeline",
-          "BlipDiffusionControlNetPipeline",
-          "BlipDiffusionPipeline",
-          "CLIPImageProjection",
-          "CycleDiffusionPipeline",
-          "IFImg2ImgPipeline",
-          "IFImg2ImgSuperResolutionPipeline",
-          "IFInpaintingPipeline",
-          "IFInpaintingSuperResolutionPipeline",
-          "IFPipeline",
-          "IFSuperResolutionPipeline",
-          "ImageTextPipelineOutput",
-          "KandinskyCombinedPipeline",
-          "KandinskyImg2ImgCombinedPipeline",
-          "KandinskyImg2ImgPipeline",
-          "KandinskyInpaintCombinedPipeline",
-          "KandinskyInpaintPipeline",
-          "KandinskyPipeline",
-          "KandinskyPriorPipeline",
-          "KandinskyV22CombinedPipeline",
-          "KandinskyV22ControlnetImg2ImgPipeline",
-          "KandinskyV22ControlnetPipeline",
-          "KandinskyV22Img2ImgCombinedPipeline",
-          "KandinskyV22Img2ImgPipeline",
-          "KandinskyV22InpaintCombinedPipeline",
-          "KandinskyV22InpaintPipeline",
-          "KandinskyV22Pipeline",
-          "KandinskyV22PriorEmb2EmbPipeline",
-          "KandinskyV22PriorPipeline",
-          "LDMTextToImagePipeline",
-          "MusicLDMPipeline",
-          "PaintByExamplePipeline",
-          "SemanticStableDiffusionPipeline",
-          "ShapEImg2ImgPipeline",
-          "ShapEPipeline",
-          "StableDiffusionAdapterPipeline",
-          "StableDiffusionAttendAndExcitePipeline",
-          "StableDiffusionControlNetImg2ImgPipeline",
-          "StableDiffusionControlNetInpaintPipeline",
-          "StableDiffusionControlNetPipeline",
-          "StableDiffusionDepth2ImgPipeline",
-          "StableDiffusionDiffEditPipeline",
-          "StableDiffusionGLIGENPipeline",
-          "StableDiffusionGLIGENTextImagePipeline",
-          "StableDiffusionImageVariationPipeline",
-          "StableDiffusionImg2ImgPipeline",
-          "StableDiffusionInpaintPipeline",
-          "StableDiffusionInpaintPipelineLegacy",
-          "StableDiffusionInstructPix2PixPipeline",
-          "StableDiffusionLatentUpscalePipeline",
-          "StableDiffusionLDM3DPipeline",
-          "StableDiffusionModelEditingPipeline",
-          "StableDiffusionPanoramaPipeline",
-          "StableDiffusionParadigmsPipeline",
-          "StableDiffusionPipeline",
-          "StableDiffusionPipelineSafe",
-          "StableDiffusionPix2PixZeroPipeline",
-          "StableDiffusionSAGPipeline",
-          "StableDiffusionUpscalePipeline",
-          "StableDiffusionXLAdapterPipeline",
-          "StableDiffusionXLControlNetImg2ImgPipeline",
-          "StableDiffusionXLControlNetInpaintPipeline",
-          "StableDiffusionXLControlNetPipeline",
-          "StableDiffusionXLImg2ImgPipeline",
-          "StableDiffusionXLInpaintPipeline",
-          "StableDiffusionXLInstructPix2PixPipeline",
-          "StableDiffusionXLPipeline",
-          "StableUnCLIPImg2ImgPipeline",
-          "StableUnCLIPPipeline",
-          "TextToVideoSDPipeline",
-          "TextToVideoZeroPipeline",
-          "UnCLIPImageVariationPipeline",
-          "UnCLIPPipeline",
-          "UniDiffuserModel",
-          "UniDiffuserPipeline",
-          "UniDiffuserTextDecoder",
-          "VersatileDiffusionDualGuidedPipeline",
-          "VersatileDiffusionImageVariationPipeline",
-          "VersatileDiffusionPipeline",
-          "VersatileDiffusionTextToImagePipeline",
-          "VideoToVideoSDPipeline",
-          "VQDiffusionPipeline",
-          "WuerstchenCombinedPipeline",
-          "WuerstchenDecoderPipeline",
-          "WuerstchenPriorPipeline",
-      ]
-  )
+  _import_structure["pipelines"].extend([
+      "AltDiffusionImg2ImgPipeline",
+      "AltDiffusionPipeline",
+      "AudioLDM2Pipeline",
+      "AudioLDM2ProjectionModel",
+      "AudioLDM2UNet2DConditionModel",
+      "AudioLDMPipeline",
+      "BlipDiffusionControlNetPipeline",
+      "BlipDiffusionPipeline",
+      "CLIPImageProjection",
+      "CycleDiffusionPipeline",
+      "IFImg2ImgPipeline",
+      "IFImg2ImgSuperResolutionPipeline",
+      "IFInpaintingPipeline",
+      "IFInpaintingSuperResolutionPipeline",
+      "IFPipeline",
+      "IFSuperResolutionPipeline",
+      "ImageTextPipelineOutput",
+      "KandinskyCombinedPipeline",
+      "KandinskyImg2ImgCombinedPipeline",
+      "KandinskyImg2ImgPipeline",
+      "KandinskyInpaintCombinedPipeline",
+      "KandinskyInpaintPipeline",
+      "KandinskyPipeline",
+      "KandinskyPriorPipeline",
+      "KandinskyV22CombinedPipeline",
+      "KandinskyV22ControlnetImg2ImgPipeline",
+      "KandinskyV22ControlnetPipeline",
+      "KandinskyV22Img2ImgCombinedPipeline",
+      "KandinskyV22Img2ImgPipeline",
+      "KandinskyV22InpaintCombinedPipeline",
+      "KandinskyV22InpaintPipeline",
+      "KandinskyV22Pipeline",
+      "KandinskyV22PriorEmb2EmbPipeline",
+      "KandinskyV22PriorPipeline",
+      "LDMTextToImagePipeline",
+      "MusicLDMPipeline",
+      "PaintByExamplePipeline",
+      "SemanticStableDiffusionPipeline",
+      "ShapEImg2ImgPipeline",
+      "ShapEPipeline",
+      "StableDiffusionAdapterPipeline",
+      "StableDiffusionAttendAndExcitePipeline",
+      "StableDiffusionControlNetImg2ImgPipeline",
+      "StableDiffusionControlNetInpaintPipeline",
+      "StableDiffusionControlNetPipeline",
+      "StableDiffusionDepth2ImgPipeline",
+      "StableDiffusionDiffEditPipeline",
+      "StableDiffusionGLIGENPipeline",
+      "StableDiffusionGLIGENTextImagePipeline",
+      "StableDiffusionImageVariationPipeline",
+      "StableDiffusionImg2ImgPipeline",
+      "StableDiffusionInpaintPipeline",
+      "StableDiffusionInpaintPipelineLegacy",
+      "StableDiffusionInstructPix2PixPipeline",
+      "StableDiffusionLatentUpscalePipeline",
+      "StableDiffusionLDM3DPipeline",
+      "StableDiffusionModelEditingPipeline",
+      "StableDiffusionPanoramaPipeline",
+      "StableDiffusionParadigmsPipeline",
+      "StableDiffusionPipeline",
+      "StableDiffusionPipelineSafe",
+      "StableDiffusionPix2PixZeroPipeline",
+      "StableDiffusionSAGPipeline",
+      "StableDiffusionUpscalePipeline",
+      "StableDiffusionXLAdapterPipeline",
+      "StableDiffusionXLControlNetImg2ImgPipeline",
+      "StableDiffusionXLControlNetInpaintPipeline",
+      "StableDiffusionXLControlNetPipeline",
+      "StableDiffusionXLImg2ImgPipeline",
+      "StableDiffusionXLInpaintPipeline",
+      "StableDiffusionXLInstructPix2PixPipeline",
+      "StableDiffusionXLPipeline",
+      "StableUnCLIPImg2ImgPipeline",
+      "StableUnCLIPPipeline",
+      "TextToVideoSDPipeline",
+      "TextToVideoZeroPipeline",
+      "UnCLIPImageVariationPipeline",
+      "UnCLIPPipeline",
+      "UniDiffuserModel",
+      "UniDiffuserPipeline",
+      "UniDiffuserTextDecoder",
+      "VersatileDiffusionDualGuidedPipeline",
+      "VersatileDiffusionImageVariationPipeline",
+      "VersatileDiffusionPipeline",
+      "VersatileDiffusionTextToImagePipeline",
+      "VideoToVideoSDPipeline",
+      "VQDiffusionPipeline",
+      "WuerstchenCombinedPipeline",
+      "WuerstchenDecoderPipeline",
+      "WuerstchenPriorPipeline",
+  ])
 
 try:
   if not (is_torch_available() and is_k_diffusion_available()):
@@ -321,16 +313,14 @@ except OptionalDependencyNotAvailable:
   ]
 
 else:
-  _import_structure["pipelines"].extend(
-      [
-          "OnnxStableDiffusionImg2ImgPipeline",
-          "OnnxStableDiffusionInpaintPipeline",
-          "OnnxStableDiffusionInpaintPipelineLegacy",
-          "OnnxStableDiffusionPipeline",
-          "OnnxStableDiffusionUpscalePipeline",
-          "StableDiffusionOnnxPipeline",
-      ]
-  )
+  _import_structure["pipelines"].extend([
+      "OnnxStableDiffusionImg2ImgPipeline",
+      "OnnxStableDiffusionInpaintPipeline",
+      "OnnxStableDiffusionInpaintPipelineLegacy",
+      "OnnxStableDiffusionPipeline",
+      "OnnxStableDiffusionUpscalePipeline",
+      "StableDiffusionOnnxPipeline",
+  ])
 
 try:
   if not (is_torch_available() and is_librosa_available()):
@@ -376,19 +366,17 @@ else:
   _import_structure["models.vae_flax"] = ["FlaxAutoencoderKL"]
   _import_structure["models.ltx_video.transformers.transformer3d"] = ["Transformer3DModel"]
   _import_structure["pipelines"].extend(["FlaxDiffusionPipeline"])
-  _import_structure["schedulers"].extend(
-      [
-          "FlaxDDIMScheduler",
-          "FlaxDDPMScheduler",
-          "FlaxDPMSolverMultistepScheduler",
-          "FlaxEulerDiscreteScheduler",
-          "FlaxKarrasVeScheduler",
-          "FlaxLMSDiscreteScheduler",
-          "FlaxPNDMScheduler",
-          "FlaxSchedulerMixin",
-          "FlaxScoreSdeVeScheduler",
-      ]
-  )
+  _import_structure["schedulers"].extend([
+      "FlaxDDIMScheduler",
+      "FlaxDDPMScheduler",
+      "FlaxDPMSolverMultistepScheduler",
+      "FlaxEulerDiscreteScheduler",
+      "FlaxKarrasVeScheduler",
+      "FlaxLMSDiscreteScheduler",
+      "FlaxPNDMScheduler",
+      "FlaxSchedulerMixin",
+      "FlaxScoreSdeVeScheduler",
+  ])
 
 
 try:
@@ -403,16 +391,14 @@ except OptionalDependencyNotAvailable:
 
 
 else:
-  _import_structure["pipelines"].extend(
-      [
-          "FlaxStableDiffusionControlNetPipeline",
-          "FlaxStableDiffusionXLControlNetPipeline",
-          "FlaxStableDiffusionImg2ImgPipeline",
-          "FlaxStableDiffusionInpaintPipeline",
-          "FlaxStableDiffusionPipeline",
-          "FlaxStableDiffusionXLPipeline",
-      ]
-  )
+  _import_structure["pipelines"].extend([
+      "FlaxStableDiffusionControlNetPipeline",
+      "FlaxStableDiffusionXLControlNetPipeline",
+      "FlaxStableDiffusionImg2ImgPipeline",
+      "FlaxStableDiffusionInpaintPipeline",
+      "FlaxStableDiffusionPipeline",
+      "FlaxStableDiffusionXLPipeline",
+  ])
 
 try:
   if not (is_note_seq_available()):

@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" ConfigMixin base class and utilities."""
+"""ConfigMixin base class and utilities."""
 import dataclasses
 import functools
 import importlib
@@ -611,7 +611,6 @@ class ConfigMixin:
         config_dict.pop(key)
 
     try:
-
       json_str = json.dumps(config_dict, indent=2, sort_keys=True, cls=CustomEncoder)
     except Exception as e:
       max_logging.log(f"Error serializing config to JSON: {e}")

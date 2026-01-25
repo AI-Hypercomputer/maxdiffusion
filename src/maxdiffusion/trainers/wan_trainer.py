@@ -1,18 +1,18 @@
 """
- Copyright 2025 Google LLC
+Copyright 2025 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 import os
 import datetime
@@ -20,6 +20,7 @@ import functools
 import pprint
 import numpy as np
 import threading
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 import tensorflow as tf
 import jax.numpy as jnp
@@ -105,7 +106,6 @@ class WanTrainer:
 
   @staticmethod
   def calculate_tflops(pipeline):
-
     maxdiffusion_config = pipeline.config
     # Model configuration
     height = pipeline.config.height
@@ -210,8 +210,8 @@ class WanTrainer:
     return data_iterator
 
   def start_training(self):
-
-    pipeline, opt_state, step = self.checkpointer.load_checkpoint()
+    with nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      pipeline, opt_state, step = self.checkpointer.load_checkpoint()
     restore_args = {}
     if opt_state and step:
       restore_args = {"opt_state": opt_state, "step": step}
@@ -309,7 +309,8 @@ class WanTrainer:
         pretty_string = pprint.pformat(state_spec.opt_state, indent=4, width=60)
         max_logging.log(pretty_string)
         max_logging.log("------------------------------------------------")
-    max_utils.delete_pytree(params)
+    if self.config.hardware != "gpu":
+      max_utils.delete_pytree(params)
     data_shardings = self.get_data_shardings(mesh)
     eval_data_shardings = self.get_eval_data_shardings(mesh)
 
@@ -364,10 +365,19 @@ class WanTrainer:
         if self.config.enable_profiler and step == first_profiling_step:
           max_utils.activate_profiler(self.config)
         start_step_time = datetime.datetime.now()
+
+        # Designate the context parallel axis for sharding
+        if self.config.attention == "cudnn_flash_te":
+          from transformer_engine.jax.sharding import global_shard_guard, MeshResource  # pytype: disable=import-error
+
+          shard_guard = global_shard_guard(MeshResource(cp_resource="context"))
+        else:
+          shard_guard = nullcontext()
+
         next_batch_future = executor.submit(load_next_batch, train_data_iterator, example_batch, self.config)
-        with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(
-            self.config.logical_axis_rules
-        ):
+        with jax.profiler.StepTraceAnnotation(
+            "train", step_num=step
+        ), pipeline.mesh, shard_guard, nn_partitioning.axis_rules(self.config.logical_axis_rules):
           state, scheduler_state, train_metric, rng = p_train_step(state, example_batch, rng, scheduler_state)
           train_metric["scalar"]["learning/loss"].block_until_ready()
         last_step_completion = datetime.datetime.now()

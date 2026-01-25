@@ -66,10 +66,11 @@ def delete_file(file_path: str):
   else:
     max_logging.log(f"The file '{file_path}' does not exist.")
 
+
 def get_git_commit_hash():
   """Tries to get the current Git commit hash."""
   try:
-    commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
+    commit_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).strip().decode("utf-8")
     return commit_hash
   except subprocess.CalledProcessError:
     max_logging.log("Warning: 'git rev-parse HEAD' failed. Not running in a git repo?")
@@ -78,7 +79,9 @@ def get_git_commit_hash():
     max_logging.log("Warning: 'git' command not found.")
     return None
 
+
 jax.config.update("jax_use_shardy_partitioner", True)
+
 
 def call_pipeline(config, pipeline, prompt, negative_prompt):
   model_key = config.model_name
@@ -131,7 +134,6 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           num_inference_steps=config.num_inference_steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
-          boundary=config.boundary_timestep,
       )
     else:
       raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")
@@ -159,13 +161,12 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
   return
 
 
-def run(config, pipeline=None, filename_prefix=""):
+def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   model_key = config.model_name
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
-    commit_hash = get_git_commit_hash()
     if commit_hash:
       writer.add_text("inference/git_commit_hash", commit_hash, global_step=0)
       max_logging.log(f"Git Commit Hash: {commit_hash}")
@@ -247,9 +248,13 @@ def run(config, pipeline=None, filename_prefix=""):
 
 
 def main(argv: Sequence[str]) -> None:
+  commit_hash = get_git_commit_hash()
   pyconfig.initialize(argv)
-  flax.config.update("flax_always_shard_variable", False)
-  run(pyconfig.config)
+  try:
+    flax.config.update("flax_always_shard_variable", False)
+  except LookupError:
+    pass
+  run(pyconfig.config, commit_hash=commit_hash)
 
 
 if __name__ == "__main__":

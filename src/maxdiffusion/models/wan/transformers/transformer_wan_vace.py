@@ -104,15 +104,11 @@ class WanVACETransformerBlock(nnx.Module):
           dtype=dtype,
           param_dtype=weights_dtype,
           precision=precision,
-          kernel_init=nnx.with_partitioning(
-              nnx.initializers.xavier_uniform(), ("embed", None)
-          ),
+          kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", None)),
       )
 
     # 2. Self-attention
-    self.norm1 = FP32LayerNorm(
-        rngs=rngs, dim=dim, eps=eps, elementwise_affine=False
-    )
+    self.norm1 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=False)
     self.attn1 = FlaxWanAttention(
         rngs=rngs,
         query_dim=dim,
@@ -150,9 +146,7 @@ class WanVACETransformerBlock(nnx.Module):
         residual_checkpoint_name="cross_attn",
     )
     assert cross_attn_norm is True, "cross_attn_norm must be True"
-    self.norm2 = FP32LayerNorm(
-        rngs=rngs, dim=dim, eps=eps, elementwise_affine=True
-    )
+    self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
 
     # 4. Feed-forward
     self.ffn = WanFeedForward(
@@ -166,9 +160,7 @@ class WanVACETransformerBlock(nnx.Module):
         dropout=dropout,
     )
 
-    self.norm3 = FP32LayerNorm(
-        rngs=rngs, dim=dim, eps=eps, elementwise_affine=False
-    )
+    self.norm3 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=False)
 
     # 5. Output projection
     self.proj_out = nnx.data([None])
@@ -180,9 +172,7 @@ class WanVACETransformerBlock(nnx.Module):
           dtype=dtype,
           param_dtype=weights_dtype,
           precision=precision,
-          kernel_init=nnx.with_partitioning(
-              nnx.initializers.xavier_uniform(), ("embed", None)
-          ),
+          kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", None)),
       )
 
     key = rngs.params()
@@ -205,19 +195,15 @@ class WanVACETransformerBlock(nnx.Module):
       control_hidden_states = self.proj_in(control_hidden_states)
       control_hidden_states = control_hidden_states + hidden_states
 
-    shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = (
-        jnp.split(
-            (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
-        )
+    shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
+        (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
     )
 
     control_hidden_states = jax.lax.with_sharding_constraint(
         control_hidden_states,
         PartitionSpec("data", "fsdp", "tensor"),
     )
-    control_hidden_states = checkpoint_name(
-        control_hidden_states, "control_hidden_states"
-    )
+    control_hidden_states = checkpoint_name(control_hidden_states, "control_hidden_states")
     encoder_hidden_states = jax.lax.with_sharding_constraint(
         encoder_hidden_states,
         PartitionSpec("data", "fsdp", None),
@@ -225,11 +211,9 @@ class WanVACETransformerBlock(nnx.Module):
 
     # 1. Self-attention
     with jax.named_scope("attn1"):
-      norm_hidden_states = (
-          self.norm1(control_hidden_states.astype(jnp.float32))
-          * (1 + scale_msa)
-          + shift_msa
-      ).astype(control_hidden_states.dtype)
+      norm_hidden_states = (self.norm1(control_hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(
+          control_hidden_states.dtype
+      )
       attn_output = self.attn1(
           hidden_states=norm_hidden_states,
           encoder_hidden_states=norm_hidden_states,
@@ -237,15 +221,13 @@ class WanVACETransformerBlock(nnx.Module):
           deterministic=deterministic,
           rngs=rngs,
       )
-      control_hidden_states = (
-          control_hidden_states.astype(jnp.float32) + attn_output * gate_msa
-      ).astype(control_hidden_states.dtype)
+      control_hidden_states = (control_hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(
+          control_hidden_states.dtype
+      )
 
     # 2. Cross-attention
     with jax.named_scope("attn2"):
-      norm_hidden_states = self.norm2(
-          control_hidden_states.astype(jnp.float32)
-      ).astype(control_hidden_states.dtype)
+      norm_hidden_states = self.norm2(control_hidden_states.astype(jnp.float32)).astype(control_hidden_states.dtype)
       attn_output = self.attn2(
           hidden_states=norm_hidden_states,
           encoder_hidden_states=encoder_hidden_states,
@@ -256,17 +238,12 @@ class WanVACETransformerBlock(nnx.Module):
 
     # 3. Feed-forward
     with jax.named_scope("ffn"):
-      norm_hidden_states = (
-          self.norm3(control_hidden_states.astype(jnp.float32))
-          * (1 + c_scale_msa)
-          + c_shift_msa
-      ).astype(control_hidden_states.dtype)
-      ff_output = self.ffn(
-          norm_hidden_states, deterministic=deterministic, rngs=rngs
+      norm_hidden_states = (self.norm3(control_hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(
+          control_hidden_states.dtype
       )
+      ff_output = self.ffn(norm_hidden_states, deterministic=deterministic, rngs=rngs)
       control_hidden_states = (
-          control_hidden_states.astype(jnp.float32)
-          + ff_output.astype(jnp.float32) * c_gate_msa
+          control_hidden_states.astype(jnp.float32) + ff_output.astype(jnp.float32) * c_gate_msa
       ).astype(control_hidden_states.dtype)
       conditioning_states = None
       if self.apply_output_projection:
@@ -327,9 +304,7 @@ class WanVACEModel(WanModel):
     self.scan_layers = scan_layers
 
     # 1. Patch & position embedding
-    self.rope = WanRotaryPosEmbed(
-        attention_head_dim, patch_size, rope_max_seq_len
-    )
+    self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
     self.patch_embedding = nnx.Conv(
         in_channels,
         inner_dim,
@@ -356,9 +331,7 @@ class WanVACEModel(WanModel):
         pos_embed_seq_len=pos_embed_seq_len,
     )
 
-    self.gradient_checkpoint = GradientCheckpointType.from_str(
-        remat_policy
-    )
+    self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
     self.names_which_can_be_offloaded = names_which_can_be_offloaded
     self.names_which_can_be_saved = names_which_can_be_saved
 
@@ -432,9 +405,7 @@ class WanVACEModel(WanModel):
         ),
     )
 
-    self.norm_out = FP32LayerNorm(
-        rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False
-    )
+    self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
     self.proj_out = nnx.Linear(
         rngs=rngs,
         in_features=inner_dim,
@@ -442,16 +413,12 @@ class WanVACEModel(WanModel):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(
-            nnx.initializers.xavier_uniform(), ("embed", None)
-        ),
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", None)),
     )
     key = rngs.params()
     self.scale_shift_table = nnx.Param(
         jax.random.normal(key, (1, 2, inner_dim)) / inner_dim**0.5,
-        kernel_init=nnx.with_partitioning(
-            nnx.initializers.xavier_uniform(), (None, None, "embed")
-        ),
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, "embed")),
     )
 
   @jax.named_scope("WanVACEModel")
@@ -468,9 +435,7 @@ class WanVACEModel(WanModel):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> jax.Array:
-    hidden_states = nn.with_logical_constraint(
-        hidden_states, ("batch", None, None, None, None)
-    )
+    hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, num_channels, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size
     post_patch_num_frames = num_frames // p_t
@@ -478,9 +443,7 @@ class WanVACEModel(WanModel):
     post_patch_width = width // p_w
 
     if control_hidden_states_scale is None:
-      control_hidden_states_scale = jnp.ones_like(
-          control_hidden_states, shape=(len(self.config.vace_layers),)
-      )
+      control_hidden_states_scale = jnp.ones_like(control_hidden_states, shape=(len(self.config.vace_layers),))
     if control_hidden_states_scale.shape[0] != len(self.config.vace_layers):
       raise ValueError(
           "Length of `control_hidden_states_scale`"
@@ -489,9 +452,7 @@ class WanVACEModel(WanModel):
       )
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
-    control_hidden_states = jnp.transpose(
-        control_hidden_states, (0, 2, 3, 4, 1)
-    )
+    control_hidden_states = jnp.transpose(control_hidden_states, (0, 2, 3, 4, 1))
     rotary_emb = self.rope(hidden_states)
 
     hidden_states = self.patch_embedding(hidden_states)
@@ -505,15 +466,17 @@ class WanVACEModel(WanModel):
         hidden_states.shape[2] - control_hidden_states.shape[2],
     ))
 
-    control_hidden_states = jnp.concatenate(
-        [control_hidden_states, control_hidden_states_padding], axis=2
-    )
+    control_hidden_states = jnp.concatenate([control_hidden_states, control_hidden_states_padding], axis=2)
 
     # Condition embedder is a FC layer.
-    temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = (
-        self.condition_embedder(  # We will need to mask out the text embedding.
-            timestep, encoder_hidden_states, encoder_hidden_states_image
-        )
+    (
+        temb,
+        timestep_proj,
+        encoder_hidden_states,
+        encoder_hidden_states_image,
+        _,
+    ) = self.condition_embedder(  # We will need to mask out the text embedding.
+        timestep, encoder_hidden_states, encoder_hidden_states_image
     )
     timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
 
@@ -526,6 +489,7 @@ class WanVACEModel(WanModel):
       # Prepare VACE hints
       control_hidden_states_list = nnx.List([])
       for i, vace_block in enumerate(self.vace_blocks):
+
         def layer_forward(hidden_states, control_hidden_states):
           return vace_block(
               hidden_states=hidden_states,
@@ -543,12 +507,8 @@ class WanVACEModel(WanModel):
             self.names_which_can_be_offloaded,
             prevent_cse=not self.scan_layers,
         )
-        conditioning_states, control_hidden_states = rematted_layer_forward(
-            hidden_states, control_hidden_states
-        )
-        control_hidden_states_list.append(
-            (conditioning_states, control_hidden_states_scale[i])
-        )
+        conditioning_states, control_hidden_states = rematted_layer_forward(hidden_states, control_hidden_states)
+        control_hidden_states_list.append((conditioning_states, control_hidden_states_scale[i]))
 
       control_hidden_states_list = control_hidden_states_list[::-1]
 
@@ -576,13 +536,9 @@ class WanVACEModel(WanModel):
           hidden_states = hidden_states + control_hint * scale
 
     # 6. Output norm, projection & unpatchify
-    shift, scale = jnp.split(
-        self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1
-    )
+    shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 
-    hidden_states = (
-        self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift
-    ).astype(hidden_states.dtype)
+    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
     with jax.named_scope("proj_out"):
       hidden_states = self.proj_out(hidden_states)  # Linear layer.
 

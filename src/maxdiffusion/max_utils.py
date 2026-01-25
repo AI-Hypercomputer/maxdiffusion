@@ -1,19 +1,19 @@
 # ruff: noqa
 """
- Copyright 2024 Google LLC
+Copyright 2024 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 # pylint: disable=bare-except, consider-using-generator
 """ Common Max Utils needed by multiple modules"""
@@ -268,17 +268,30 @@ def create_device_mesh(config, devices=None, logging=True):
   max_logging.log(f"Devices: {devices} (num_devices: {num_devices})")
 
   multi_slice_env = num_slices > 1
-
-  dcn_parallelism = [
-      config.dcn_data_parallelism,
-      config.dcn_fsdp_parallelism,
-      config.dcn_tensor_parallelism,
-  ]
-  ici_parallelism = [
-      config.ici_data_parallelism,
-      config.ici_fsdp_parallelism,
-      config.ici_tensor_parallelism,
-  ]
+  if "dcn_context_parallelism" in config.get_keys() and "ici_context_parallelism" in config.get_keys():
+    dcn_parallelism = [
+        config.dcn_data_parallelism,
+        config.dcn_fsdp_parallelism,
+        config.dcn_context_parallelism,
+        config.dcn_tensor_parallelism,
+    ]
+    ici_parallelism = [
+        config.ici_data_parallelism,
+        config.ici_fsdp_parallelism,
+        config.ici_context_parallelism,
+        config.ici_tensor_parallelism,
+    ]
+  else:
+    dcn_parallelism = [
+        config.dcn_data_parallelism,
+        config.dcn_fsdp_parallelism,
+        config.dcn_tensor_parallelism,
+    ]
+    ici_parallelism = [
+        config.ici_data_parallelism,
+        config.ici_fsdp_parallelism,
+        config.ici_tensor_parallelism,
+    ]
 
   # Find possible unspecified parallelisms
   ici_parallelism = fill_unspecified_mesh_axes(ici_parallelism, num_devices_per_slice, "ICI")
@@ -502,17 +515,20 @@ def get_flash_block_sizes(config):
   flash_block_sizes = None
   if len(config.flash_block_sizes.keys()) > 0:
     attention_is_tokamax = "tokamax" in config.attention
-    user_block_sizes:Dict[str, int] = config.flash_block_sizes
+    user_block_sizes: Dict[str, int] = config.flash_block_sizes
     if attention_is_tokamax:
-      max_logging.log("Tokamax kernel specified, Note: Tokamax only supports fused backward kernel."
-                      "Hence following flash block properties specified will be ignored:"
-                      f"block_q: {user_block_sizes['block_q']},"
-                      f"block_q_dq: {user_block_sizes.get('block_q_dq')},"
-                      f"block_kv_dq: {user_block_sizes.get('block_kv_dq')},"
-                      f"use_fused_bwd_kernel: {user_block_sizes.get('use_fused_bwd_kernel')}"
-                      )
+      max_logging.log(
+          "Tokamax kernel specified, Note: Tokamax only supports fused backward kernel."
+          "Hence following flash block properties specified will be ignored:"
+          f"block_q: {user_block_sizes['block_q']},"
+          f"block_q_dq: {user_block_sizes.get('block_q_dq')},"
+          f"block_kv_dq: {user_block_sizes.get('block_kv_dq')},"
+          f"use_fused_bwd_kernel: {user_block_sizes.get('use_fused_bwd_kernel')}"
+      )
     flash_block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=user_block_sizes.get("block_q_dkv", user_block_sizes["block_kv"]) if attention_is_tokamax else user_block_sizes["block_q"],
+        block_q=user_block_sizes.get("block_q_dkv", user_block_sizes["block_kv"])
+        if attention_is_tokamax
+        else user_block_sizes["block_q"],
         block_kv_compute=user_block_sizes["block_kv_compute"],
         block_kv=user_block_sizes["block_kv"],
         block_q_dkv=user_block_sizes["block_q_dkv"],
@@ -541,7 +557,6 @@ def get_memory_allocations():
 
 
 def get_live_arrays():
-
   backend = jax.extend.backend.get_backend()
   live_arrays = backend.live_arrays()
 

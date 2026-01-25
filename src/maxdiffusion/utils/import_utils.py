@@ -512,29 +512,27 @@ IMAGEIO_IMPORT_ERROR = """
 """
 
 
-BACKENDS_MAPPING = OrderedDict(
-    [
-        ("bs4", (is_bs4_available, BS4_IMPORT_ERROR)),
-        ("flax", (is_flax_available, FLAX_IMPORT_ERROR)),
-        ("inflect", (is_inflect_available, INFLECT_IMPORT_ERROR)),
-        ("onnx", (is_onnx_available, ONNX_IMPORT_ERROR)),
-        ("opencv", (is_opencv_available, OPENCV_IMPORT_ERROR)),
-        ("scipy", (is_scipy_available, SCIPY_IMPORT_ERROR)),
-        ("torch", (is_torch_available, PYTORCH_IMPORT_ERROR)),
-        ("unidecode", (is_unidecode_available, UNIDECODE_IMPORT_ERROR)),
-        ("librosa", (is_librosa_available, LIBROSA_IMPORT_ERROR)),
-        ("k_diffusion", (is_k_diffusion_available, K_DIFFUSION_IMPORT_ERROR)),
-        ("note_seq", (is_note_seq_available, NOTE_SEQ_IMPORT_ERROR)),
-        ("wandb", (is_wandb_available, WANDB_IMPORT_ERROR)),
-        ("omegaconf", (is_omegaconf_available, OMEGACONF_IMPORT_ERROR)),
-        ("tensorboard", (is_tensorboard_available, TENSORBOARD_IMPORT_ERROR)),
-        ("compel", (is_compel_available, COMPEL_IMPORT_ERROR)),
-        ("ftfy", (is_ftfy_available, FTFY_IMPORT_ERROR)),
-        ("torchsde", (is_torchsde_available, TORCHSDE_IMPORT_ERROR)),
-        ("imageio", (is_imageio_available, IMAGEIO_IMPORT_ERROR)),
-        ("invisible_watermark", (is_invisible_watermark_available, INVISIBLE_WATERMARK_IMPORT_ERROR)),
-    ]
-)
+BACKENDS_MAPPING = OrderedDict([
+    ("bs4", (is_bs4_available, BS4_IMPORT_ERROR)),
+    ("flax", (is_flax_available, FLAX_IMPORT_ERROR)),
+    ("inflect", (is_inflect_available, INFLECT_IMPORT_ERROR)),
+    ("onnx", (is_onnx_available, ONNX_IMPORT_ERROR)),
+    ("opencv", (is_opencv_available, OPENCV_IMPORT_ERROR)),
+    ("scipy", (is_scipy_available, SCIPY_IMPORT_ERROR)),
+    ("torch", (is_torch_available, PYTORCH_IMPORT_ERROR)),
+    ("unidecode", (is_unidecode_available, UNIDECODE_IMPORT_ERROR)),
+    ("librosa", (is_librosa_available, LIBROSA_IMPORT_ERROR)),
+    ("k_diffusion", (is_k_diffusion_available, K_DIFFUSION_IMPORT_ERROR)),
+    ("note_seq", (is_note_seq_available, NOTE_SEQ_IMPORT_ERROR)),
+    ("wandb", (is_wandb_available, WANDB_IMPORT_ERROR)),
+    ("omegaconf", (is_omegaconf_available, OMEGACONF_IMPORT_ERROR)),
+    ("tensorboard", (is_tensorboard_available, TENSORBOARD_IMPORT_ERROR)),
+    ("compel", (is_compel_available, COMPEL_IMPORT_ERROR)),
+    ("ftfy", (is_ftfy_available, FTFY_IMPORT_ERROR)),
+    ("torchsde", (is_torchsde_available, TORCHSDE_IMPORT_ERROR)),
+    ("imageio", (is_imageio_available, IMAGEIO_IMPORT_ERROR)),
+    ("invisible_watermark", (is_invisible_watermark_available, INVISIBLE_WATERMARK_IMPORT_ERROR)),
+])
 
 
 def requires_backends(obj, backends):
