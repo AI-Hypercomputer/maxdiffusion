@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import time
 from typing import Tuple, List, Sequence, Union, Optional
 
 import flax
@@ -1161,7 +1162,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       self, x: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """Encode video into latent distribution."""
+    s0 = time.perf_counter()
     h = self._encode(x, feat_cache)
+    h.block_until_ready()
+    print(f"VAE Encode time: {time.perf_counter() - s0:.4f}s")
     posterior = WanDiagonalGaussianDistribution(h)
     if not return_dict:
       return (posterior,)
@@ -1216,7 +1220,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       # reshape channel last for JAX
       z = jnp.transpose(z, (0, 2, 3, 4, 1))
       assert z.shape[-1] == self.z_dim, f"Expected input shape (N, D, H, W, {self.z_dim}, got {z.shape}"
+    s0 = time.perf_counter()
     decoded = self._decode(z, feat_cache).sample
+    decoded.block_until_ready()
+    print(f"VAE Decode time: {time.perf_counter() - s0:.4f}s")
     if not return_dict:
       return (decoded,)
     return FlaxDecoderOutput(sample=decoded)
