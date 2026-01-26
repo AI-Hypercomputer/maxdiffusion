@@ -39,6 +39,7 @@ try:
 except LookupError:
   pass
 
+
 def _update_cache(cache, idx, value):
   if cache is None:
     return None
