@@ -39,11 +39,6 @@ try:
 except LookupError:
   pass
 
-
-from jax.sharding import PartitionSpec
-from jax.lax import with_sharding_constraint
-
-
 def _update_cache(cache, idx, value):
   if cache is None:
     return None
