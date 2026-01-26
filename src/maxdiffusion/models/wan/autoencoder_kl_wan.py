@@ -24,7 +24,7 @@ from flax import nnx
 from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
-from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput)
+from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput, WanDiagonalGaussianDistribution)
 
 BlockSizes = common_types.BlockSizes
 
@@ -645,16 +645,10 @@ class WanUpBlock(nnx.Module):
 
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     for resnet in self.resnets:
-      if feat_cache is not None:
-        x, feat_cache, feat_idx = resnet(x, feat_cache, feat_idx)
-      else:
-        x, _, _ = resnet(x)
+      x, feat_cache, feat_idx = resnet(x, feat_cache, feat_idx)
 
     if self.upsamplers is not None:
-      if feat_cache is not None:
-        x, feat_cache, feat_idx = self.upsamplers[0](x, feat_cache, feat_idx)
-      else:
-        x, _, _ = self.upsamplers[0](x)
+      x, feat_cache, feat_idx = self.upsamplers[0](x, feat_cache, feat_idx)
     return x, feat_cache, feat_idx
 
 
@@ -950,31 +944,6 @@ class WanDecoder3d(nnx.Module):
     return x, feat_cache, jnp.array(feat_idx, dtype=jnp.int32)
 
 
-class WanDiagonalGaussianDistribution(FlaxDiagonalGaussianDistribution):
-  pass
-
-
-def _wan_diag_gauss_dist_flatten(dist):
-  return (dist.mean, dist.logvar, dist.std, dist.var), (dist.deterministic,)
-
-
-def _wan_diag_gauss_dist_unflatten(aux, children):
-  mean, logvar, std, var = children
-  deterministic = aux[0]
-  obj = WanDiagonalGaussianDistribution.__new__(WanDiagonalGaussianDistribution)
-  obj.mean = mean
-  obj.logvar = logvar
-  obj.std = std
-  obj.var = var
-  obj.deterministic = deterministic
-  return obj
-
-
-tree_util.register_pytree_node(
-    WanDiagonalGaussianDistribution,
-    _wan_diag_gauss_dist_flatten,
-    _wan_diag_gauss_dist_unflatten,
-)
 
 
 class AutoencoderKLWanCache:
