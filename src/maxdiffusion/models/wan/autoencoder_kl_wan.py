@@ -24,7 +24,12 @@ from flax import nnx
 from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
-from ..vae_flax import (FlaxAutoencoderKLOutput, FlaxDiagonalGaussianDistribution, FlaxDecoderOutput, WanDiagonalGaussianDistribution)
+from ..vae_flax import (
+    FlaxAutoencoderKLOutput,
+    FlaxDiagonalGaussianDistribution,
+    FlaxDecoderOutput,
+    WanDiagonalGaussianDistribution,
+)
 
 BlockSizes = common_types.BlockSizes
 
@@ -942,8 +947,6 @@ class WanDecoder3d(nnx.Module):
     else:
       x = self.conv_out(x)
     return x, feat_cache, jnp.array(feat_idx, dtype=jnp.int32)
-
-
 
 
 class AutoencoderKLWanCache:

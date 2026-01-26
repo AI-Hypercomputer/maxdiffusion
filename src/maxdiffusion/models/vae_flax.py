@@ -932,6 +932,7 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
 
     return FlaxDecoderOutput(sample=sample)
 
+
 class WanDiagonalGaussianDistribution(FlaxDiagonalGaussianDistribution):
   pass
 
