@@ -1115,10 +1115,12 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     iter_ = 1 + (t - 1) // 4
     enc_feat_map = feat_cache._enc_feat_map
 
+    encoder_chunks = []
     for i in range(iter_):
       enc_conv_idx = 0
       if i == 0:
         out, enc_feat_map, enc_conv_idx = self.encoder(x[:, :1, :, :, :], feat_cache=enc_feat_map, feat_idx=enc_conv_idx)
+        encoder_chunks.append(out)
       else:
         out_, enc_feat_map, enc_conv_idx = self.encoder(
             x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :],
@@ -1126,9 +1128,15 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
             feat_idx=enc_conv_idx,
         )
         start_concat = time.time()
-        out = jnp.concatenate([out, out_], axis=1)
-        out.block_until_ready()
+        encoder_chunks.append(out_)
+        out_.block_until_ready()
         print(f"Encode step {i} concat time: {time.time() - start_concat}")
+        # out = jnp.concatenate([out, out_], axis=1) # Removed quadratic concat
+        # out.block_until_ready()
+        # print(f"Encode step {i} concat time: {time.time() - start_concat}")
+
+    # Final concatenation
+    out = jnp.concatenate(encoder_chunks, axis=1)
 
     # Update back to the wrapper object if needed, but for result we use local vars
     feat_cache._enc_feat_map = enc_feat_map
@@ -1158,32 +1166,28 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     dec_feat_map = feat_cache._feat_map
 
+    decoder_chunks = []
     for i in range(iter_):
       conv_idx = 0
       if i == 0:
         out, dec_feat_map, conv_idx = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=dec_feat_map, feat_idx=conv_idx)
+        decoder_chunks.append(out)
       else:
         out_, dec_feat_map, conv_idx = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=dec_feat_map, feat_idx=conv_idx)
 
-        # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
-        # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
-        # Most likely due to an incorrect reshaping in the decoder.
+        # Reorder frames [0, 1, 2, 3] -> [0, 2, 1, 3] using advanced indexing
+        # This replaces the splitting, expanding, and concatenating logic.
+        # Original: fm1(0), fm2(1), fm3(2), fm4(3) -> concat(out, fm1, fm3, fm2, fm4)
+        # Sequence: prev, 0, 2, 1, 3
+        # We append the reordered chunk to the list.
         start_expand_concat = time.time()
-        fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
-        # When batch_size is 0, expand batch dim for concatenation
-        # else, expand frame dim for concatenation so that batch dim stays intact.
-        axis = 0
-        if fm1.shape[0] > 1:
-          axis = 1
-
-        if len(fm1.shape) == 4:
-          fm1 = jnp.expand_dims(fm1, axis=axis)
-          fm2 = jnp.expand_dims(fm2, axis=axis)
-          fm3 = jnp.expand_dims(fm3, axis=axis)
-          fm4 = jnp.expand_dims(fm4, axis=axis)
-        out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
-        out.block_until_ready()
+        out_chunk = out_[:, [0, 2, 1, 3], :, :, :]
+        decoder_chunks.append(out_chunk)
+        out_chunk.block_until_ready()
         print(f"Decode step {i} expand+concat time: {time.time() - start_expand_concat}")
+
+    feat_cache._feat_map = dec_feat_map
+    out = jnp.concatenate(decoder_chunks, axis=1)
 
     feat_cache._feat_map = dec_feat_map
 
