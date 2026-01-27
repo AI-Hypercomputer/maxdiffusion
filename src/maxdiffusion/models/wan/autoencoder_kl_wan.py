@@ -19,6 +19,7 @@ from typing import Tuple, List, Sequence, Union, Optional
 import flax
 import jax
 import jax.numpy as jnp
+import time
 from jax import tree_util
 from flax import nnx
 from ...configuration_utils import ConfigMixin
@@ -1124,7 +1125,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
             feat_cache=enc_feat_map,
             feat_idx=enc_conv_idx,
         )
+        start_concat = time.time()
         out = jnp.concatenate([out, out_], axis=1)
+        out.block_until_ready()
+        print(f"Encode step {i} concat time: {time.time() - start_concat}")
 
     # Update back to the wrapper object if needed, but for result we use local vars
     feat_cache._enc_feat_map = enc_feat_map
@@ -1164,6 +1168,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
         # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
         # Most likely due to an incorrect reshaping in the decoder.
+        start_expand_concat = time.time()
         fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
         # When batch_size is 0, expand batch dim for concatenation
         # else, expand frame dim for concatenation so that batch dim stays intact.
@@ -1177,6 +1182,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
           fm3 = jnp.expand_dims(fm3, axis=axis)
           fm4 = jnp.expand_dims(fm4, axis=axis)
         out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
+        out.block_until_ready()
+        print(f"Decode step {i} expand+concat time: {time.time() - start_expand_concat}")
 
     feat_cache._feat_map = dec_feat_map
 
