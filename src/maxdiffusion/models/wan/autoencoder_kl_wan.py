@@ -1127,13 +1127,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
             feat_cache=enc_feat_map,
             feat_idx=enc_conv_idx,
         )
-        start_concat = time.time()
         encoder_chunks.append(out_)
-        out_.block_until_ready()
-        print(f"Encode step {i} concat time: {time.time() - start_concat}")
-        # out = jnp.concatenate([out, out_], axis=1) # Removed quadratic concat
-        # out.block_until_ready()
-        # print(f"Encode step {i} concat time: {time.time() - start_concat}")
 
     # Final concatenation
     out = jnp.concatenate(encoder_chunks, axis=1)
@@ -1151,7 +1145,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       self, x: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """Encode video into latent distribution."""
+    s0 = time.perf_counter()
     h = self._encode(x, feat_cache)
+    h.block_until_ready()
+    print(f"VAE Encode time: {time.perf_counter() - s0:.4f}s")
     posterior = WanDiagonalGaussianDistribution(h)
     if not return_dict:
       return (posterior,)
@@ -1180,11 +1177,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         # Original: fm1(0), fm2(1), fm3(2), fm4(3) -> concat(out, fm1, fm3, fm2, fm4)
         # Sequence: prev, 0, 2, 1, 3
         # We append the reordered chunk to the list.
-        start_expand_concat = time.time()
         out_chunk = out_[:, [0, 2, 1, 3], :, :, :]
         decoder_chunks.append(out_chunk)
-        out_chunk.block_until_ready()
-        print(f"Decode step {i} expand+concat time: {time.time() - start_expand_concat}")
 
     feat_cache._feat_map = dec_feat_map
     out = jnp.concatenate(decoder_chunks, axis=1)
@@ -1205,7 +1199,10 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       # reshape channel last for JAX
       z = jnp.transpose(z, (0, 2, 3, 4, 1))
       assert z.shape[-1] == self.z_dim, f"Expected input shape (N, D, H, W, {self.z_dim}, got {z.shape}"
+    s0 = time.perf_counter()
     decoded = self._decode(z, feat_cache).sample
+    decoded.block_until_ready()
+    print(f"VAE Decode time: {time.perf_counter() - s0:.4f}s")
     if not return_dict:
       return (decoded,)
     return FlaxDecoderOutput(sample=decoded)
