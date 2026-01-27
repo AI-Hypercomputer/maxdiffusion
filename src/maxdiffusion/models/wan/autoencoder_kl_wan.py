@@ -1190,19 +1190,16 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
         # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
         # Most likely due to an incorrect reshaping in the decoder.
-        fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
+        # fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
         # When batch_size is 0, expand batch dim for concatenation
         # else, expand frame dim for concatenation so that batch dim stays intact.
         axis = 0
-        if fm1.shape[0] > 1:
+        if out_.shape[0] > 1:
           axis = 1
 
-        if len(fm1.shape) == 4:
-          fm1 = jnp.expand_dims(fm1, axis=axis)
-          fm2 = jnp.expand_dims(fm2, axis=axis)
-          fm3 = jnp.expand_dims(fm3, axis=axis)
-          fm4 = jnp.expand_dims(fm4, axis=axis)
-        out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
+        if len(out_.shape) == 4:
+          out_ = jnp.expand_dims(out_, axis=axis)
+        out = jnp.concatenate([out, out_], axis=1)
     
     feat_cache._feat_map = dec_feat_map
 
