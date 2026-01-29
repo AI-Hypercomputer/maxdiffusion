@@ -29,8 +29,8 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
 from maxdiffusion import pyconfig, max_utils
-from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 from maxdiffusion.video_processor import VideoProcessor
+from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 
 import tensorflow as tf
 
@@ -80,7 +80,13 @@ def text_encode(pipeline, prompt: Union[str, List[str]]):
 def vae_encode(video, rng, vae, vae_cache):
   latent = vae.encode(video, feat_cache=vae_cache)
   latent = latent.latent_dist.sample(rng)
-  return latent
+  latents = jnp.transpose(latent, (0, 4, 1, 2, 3))
+  latents_mean = jnp.array(vae.latents_mean).reshape(1, vae.z_dim, 1, 1, 1)
+  latents_std = jnp.array(vae.latents_std).reshape(1, vae.z_dim, 1, 1, 1)
+
+  # Apply normalization: (x - mean) / std
+  latents = (latents - latents_mean) / latents_std
+  return latents
 
 
 def generate_dataset(config, pipeline):
@@ -121,7 +127,6 @@ def generate_dataset(config, pipeline):
     video = jnp.array(np.squeeze(np.array(videos), axis=1), dtype=config.weights_dtype)
     with mesh:
       latents = p_vae_encode(video=video, rng=new_rng)
-      latents = jnp.transpose(latents, (0, 4, 1, 2, 3))
     encoder_hidden_states = text_encode(pipeline, text)
     for latent, encoder_hidden_state in zip(latents, encoder_hidden_states):
       writer.write(create_example(latent, encoder_hidden_state))
@@ -138,8 +143,10 @@ def generate_dataset(config, pipeline):
 
 
 def run(config):
-  pipeline = WanPipeline.from_pretrained(config, load_transformer=False)
+  checkpoint_loader = WanCheckpointer2_1(config=config)
+  pipeline, _, _ = checkpoint_loader.load_checkpoint()
   # Don't need the transformer for preprocessing.
+  del pipeline.transformer
   generate_dataset(config, pipeline)
 
 
