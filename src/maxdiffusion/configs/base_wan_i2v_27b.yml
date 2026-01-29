@@ -281,10 +281,10 @@ prompt: "An astronaut hatching from an egg, on the surface of the moon, the dark
 prompt_2: "An astronaut hatching from an egg, on the surface of the moon, the darkness and depth of space realised in the background. High quality, ultrarealistic detail and breath-taking movie-like camera shot."
 negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 do_classifier_free_guidance: True
-height: 480
-width: 832
+height: 720
+width: 1280
 num_frames: 81
-flow_shift: 3.0
+flow_shift: 5.0
 
 # Reference for below guidance scale and boundary values: https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_t2v_A14B.py
 # guidance scale factor for low noise transformer
@@ -300,8 +300,8 @@ boundary_ratio: 0.875
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
-num_inference_steps: 30
-fps: 24
+num_inference_steps: 50
+fps: 16
 save_final_checkpoint: False
 
 # SDXL Lightning parameters

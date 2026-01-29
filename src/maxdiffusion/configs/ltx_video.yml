@@ -1,6 +1,8 @@
 #hardware
 hardware: 'tpu'
 skip_jax_distributed_system: False
+attention: 'flash'
+attention_sharding_uniform: True 
 
 jax_cache_dir: ''
 weights_dtype: 'bfloat16'
