@@ -21,6 +21,8 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util
 from flax import nnx
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
 from ... import common_types
@@ -143,6 +145,14 @@ class WanCausalConv3d(nnx.Module):
       x_padded = jnp.pad(x, padding_to_apply, mode="constant", constant_values=0.0)
     else:
       x_padded = x
+
+    if self.mesh is not None:
+      # Shard height dimension (index 2) along 'context' axis
+      # Shape is (Batch, Time, Height, Width, Channels)
+      # We only shard if the dimension is divisible by the mesh size to avoid XLA errors
+      if x_padded.shape[2] % self.mesh.shape["context"] == 0:
+        sharding = NamedSharding(self.mesh, P(None, None, "context", None, None))
+        x_padded = jax.lax.with_sharding_constraint(x_padded, sharding)
 
     out = self.conv(x_padded)
     return out
