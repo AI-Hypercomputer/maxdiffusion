@@ -500,6 +500,12 @@ def _cudnn_flash_attention(query: Array, key: Array, value: Array, heads: int, m
   return _reshape_data_from_cudnn_flash(out)
 
 
+ATTENTION_KERNEL_REGISTRY = {}
+
+def register_attention_kernel(name: str, func: Callable):
+  """Registers a custom attention kernel."""
+  ATTENTION_KERNEL_REGISTRY[name] = func
+
 def _apply_attention(
     query: Array,
     key: Array,
@@ -524,6 +530,13 @@ def _apply_attention(
 ):
   """Routes to different attention kernels."""
   _check_attention_inputs(query, key, value)
+  
+  # Check Registry first
+  if attention_kernel in ATTENTION_KERNEL_REGISTRY:
+      return ATTENTION_KERNEL_REGISTRY[attention_kernel](
+          query, key, value, heads, dim_head, scale, dtype, mesh
+      )
+
   seq_len_idx = 1
   if query.ndim == 4:
     seq_len_idx = 2

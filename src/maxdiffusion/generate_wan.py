@@ -1,26 +1,24 @@
-# Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""
+Copyright 2025 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 from typing import Sequence
 import jax
 import time
 import os
 import subprocess
-from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
-from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
-from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
-from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
 from maxdiffusion.utils import export_to_video
@@ -29,6 +27,8 @@ from google.cloud import storage
 import flax
 from maxdiffusion.common_types import WAN2_1, WAN2_2
 from maxdiffusion.loaders.wan_lora_nnx_loader import Wan2_1NNXLoraLoader, Wan2_2NNXLoraLoader
+from maxdiffusion.inference.loader import InferenceLoader
+from maxdiffusion.inference.runner import DiffusionRunner
 
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
@@ -84,84 +84,6 @@ def get_git_commit_hash():
 jax.config.update("jax_use_shardy_partitioner", True)
 
 
-def call_pipeline(config, pipeline, prompt, negative_prompt):
-  model_key = config.model_name
-  model_type = config.model_type
-  if model_type == "I2V":
-    image = load_image(config.image_url)
-    if model_key == WAN2_1:
-      return pipeline(
-          prompt=prompt,
-          image=image,
-          negative_prompt=negative_prompt,
-          height=config.height,
-          width=config.width,
-          num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
-          guidance_scale=config.guidance_scale,
-      )
-    elif model_key == WAN2_2:
-      return pipeline(
-          prompt=prompt,
-          image=image,
-          negative_prompt=negative_prompt,
-          height=config.height,
-          width=config.width,
-          num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
-          guidance_scale_low=config.guidance_scale_low,
-          guidance_scale_high=config.guidance_scale_high,
-      )
-    else:
-      raise ValueError(f"Unsupported model_name for I2V in config: {model_key}")
-  elif model_type == "T2V":
-    if model_key == WAN2_1:
-      return pipeline(
-          prompt=prompt,
-          negative_prompt=negative_prompt,
-          height=config.height,
-          width=config.width,
-          num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
-          guidance_scale=config.guidance_scale,
-      )
-    elif model_key == WAN2_2:
-      return pipeline(
-          prompt=prompt,
-          negative_prompt=negative_prompt,
-          height=config.height,
-          width=config.width,
-          num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
-          guidance_scale_low=config.guidance_scale_low,
-          guidance_scale_high=config.guidance_scale_high,
-      )
-    else:
-      raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")
-
-
-def inference_generate_video(config, pipeline, filename_prefix=""):
-  s0 = time.perf_counter()
-  prompt = [config.prompt] * config.global_batch_size_to_train_on
-  negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
-
-  max_logging.log(
-      f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}, video: {filename_prefix}"
-  )
-
-  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
-
-  max_logging.log(f"video {filename_prefix}, compile time: {(time.perf_counter() - s0)}")
-  for i in range(len(videos)):
-    video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
-    export_to_video(videos[i], video_path, fps=config.fps)
-    if config.output_dir.startswith("gs://"):
-      upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
-      # Delete local files to avoid storing too manys videos
-      delete_file(f"./{video_path}")
-  return
-
-
 def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   model_key = config.model_name
   writer = max_utils.initialize_summary_writer(config)
@@ -174,23 +96,22 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     else:
       max_logging.log("Could not retrieve Git commit hash.")
 
+  loaded_model = None
   if pipeline is None:
-    model_type = config.model_type
-    if model_key == WAN2_1:
-      if model_type == "I2V":
-        checkpoint_loader = WanCheckpointerI2V_2_1(config=config)
-      else:
-        checkpoint_loader = WanCheckpointer2_1(config=config)
-    elif model_key == WAN2_2:
-      if model_type == "I2V":
-        checkpoint_loader = WanCheckpointerI2V_2_2(config=config)
-      else:
-        checkpoint_loader = WanCheckpointer2_2(config=config)
-    else:
-      raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
-    pipeline, _, _ = checkpoint_loader.load_checkpoint()
+    max_logging.log("Initializing InferenceLoader...")
+    loaded_model = InferenceLoader.load(config)
+    pipeline = loaded_model["pipeline"]
+  else:
+    # If pipeline passed explicitly (e.g. from test), wrap it
+    # But InferenceLoader logic assumes it creates it.
+    # We construct a dummy loaded_model dict
+    loaded_model = {
+        "pipeline": pipeline,
+        "mesh": getattr(config, "mesh", None) # Fallback
+    }
 
   # If LoRA is specified, inject layers and load weights.
+  # TODO: Move this into InferenceLoader._load_wan eventually
   if (
       config.enable_lora
       and hasattr(config, "lora_config")
@@ -225,17 +146,22 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
             scan_layers=config.scan_layers,
             dtype=config.weights_dtype,
         )
+    # Update loaded model with modified pipeline
+    loaded_model["pipeline"] = pipeline
 
   s0 = time.perf_counter()
 
-  # Using global_batch_size_to_train_on so not to create more config variables
-  prompt = [config.prompt] * config.global_batch_size_to_train_on
-  negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
+  max_logging.log("Initializing DiffusionRunner...")
+  runner = DiffusionRunner(loaded_model, config)
 
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
   )
-  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+  
+  # Using global_batch_size_to_train_on logic is handled by Runner/Pipeline mostly now
+  # But we can override args
+  
+  videos = runner.run()
 
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")
@@ -257,9 +183,10 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     saved_video_path.append(video_path)
     if config.output_dir.startswith("gs://"):
       upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
+      delete_file(f"./{video_path}")
 
   s0 = time.perf_counter()
-  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+  videos = runner.run()
   generation_time = time.perf_counter() - s0
   max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
@@ -272,10 +199,11 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
+  
   s0 = time.perf_counter()
   if config.enable_profiler:
     max_utils.activate_profiler(config)
-    videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+    videos = runner.run()
     max_utils.deactivate_profiler(config)
     generation_time_with_profiler = time.perf_counter() - s0
     max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
