@@ -28,6 +28,7 @@ from maxdiffusion.utils.loading_utils import load_image
 from google.cloud import storage
 import flax
 from maxdiffusion.common_types import WAN2_1, WAN2_2
+from maxdiffusion.loaders.wan_lora_nnx_loader import Wan2_1NNXLoraLoader, Wan2_2NNXLoraLoader
 
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
@@ -188,6 +189,43 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     else:
       raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
+
+  # If LoRA is specified, inject layers and load weights.
+  if (
+      config.enable_lora
+      and hasattr(config, "lora_config")
+      and config.lora_config
+      and config.lora_config["lora_model_name_or_path"]
+  ):
+    if model_key == WAN2_1:
+      lora_loader = Wan2_1NNXLoraLoader()
+      lora_config = config.lora_config
+      for i in range(len(lora_config["lora_model_name_or_path"])):
+        pipeline = lora_loader.load_lora_weights(
+            pipeline,
+            lora_config["lora_model_name_or_path"][i],
+            transformer_weight_name=lora_config["weight_name"][i],
+            rank=lora_config["rank"][i],
+            scale=lora_config["scale"][i],
+            scan_layers=config.scan_layers,
+            dtype=config.weights_dtype,
+        )
+
+    if model_key == WAN2_2:
+      lora_loader = Wan2_2NNXLoraLoader()
+      lora_config = config.lora_config
+      for i in range(len(lora_config["lora_model_name_or_path"])):
+        pipeline = lora_loader.load_lora_weights(
+            pipeline,
+            lora_config["lora_model_name_or_path"][i],
+            high_noise_weight_name=lora_config["high_noise_weight_name"][i],
+            low_noise_weight_name=lora_config["low_noise_weight_name"][i],
+            rank=lora_config["rank"][i],
+            scale=lora_config["scale"][i],
+            scan_layers=config.scan_layers,
+            dtype=config.weights_dtype,
+        )
+
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on so not to create more config variables

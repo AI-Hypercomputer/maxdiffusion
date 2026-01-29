@@ -316,12 +316,15 @@ lightning_repo: ""
 lightning_ckpt: ""
 
 # LoRA parameters
+enable_lora: False
 # Values are lists to support multiple LoRA loading during inference in the future.
 lora_config: {
-  lora_model_name_or_path: [],
-  weight_name: [],
-  adapter_name: [],
-  scale: [],
+  rank: [64],
+  lora_model_name_or_path: ["lightx2v/Wan2.2-Distill-Loras"],
+  high_noise_weight_name: ["wan2.2_t2v_A14b_high_noise_lora_rank64_lightx2v_4step_1217.safetensors"],
+  low_noise_weight_name: ["wan2.2_t2v_A14b_low_noise_lora_rank64_lightx2v_4step_1217.safetensors"],
+  adapter_name: ["wan22-distill-lora"],
+  scale: [1.0],
   from_pt: []
 }
 # Ex with values:

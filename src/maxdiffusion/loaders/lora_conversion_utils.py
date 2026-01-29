@@ -608,3 +608,98 @@ def _convert_xlabs_flux_lora_to_diffusers(old_state_dict):
     raise ValueError(f"`old_state_dict` should be at this point but has: {list(old_state_dict.keys())}.")
 
   return new_state_dict
+
+
+def preprocess_wan_lora_dict(state_dict):
+  """
+  Preprocesses WAN LoRA dict to convert diff_m to modulation.diff.
+  """
+  new_d = {}
+  for k, v in state_dict.items():
+    if k.endswith(".diff_m"):
+      new_k = k.removesuffix(".diff_m") + ".modulation.diff"
+      new_d[new_k] = v
+    else:
+      new_d[k] = v
+  return new_d
+
+
+def translate_wan_nnx_path_to_diffusers_lora(nnx_path_str, scan_layers=False):
+  """
+  Translates WAN NNX path to Diffusers/LoRA keys.
+  Verified against wan_utils.py mappings.
+  """
+
+  # --- 1. Embeddings (Exact Matches) ---
+  if nnx_path_str == "condition_embedder.text_embedder.linear_1":
+    return "diffusion_model.text_embedding.0"
+  if nnx_path_str == "condition_embedder.text_embedder.linear_2":
+    return "diffusion_model.text_embedding.2"
+  if nnx_path_str == "condition_embedder.time_embedder.linear_1":
+    return "diffusion_model.time_embedding.0"
+  if nnx_path_str == "condition_embedder.time_embedder.linear_2":
+    return "diffusion_model.time_embedding.2"
+  if nnx_path_str == "condition_embedder.image_embedder.norm1.layer_norm":
+    return "diffusion_model.img_emb.proj.0"
+  if nnx_path_str == "condition_embedder.image_embedder.ff.net_0":
+    return "diffusion_model.img_emb.proj.1"
+  if nnx_path_str == "condition_embedder.image_embedder.ff.net_2":
+    return "diffusion_model.img_emb.proj.3"
+  if nnx_path_str == "condition_embedder.image_embedder.norm2.layer_norm":
+    return "diffusion_model.img_emb.proj.4"
+  if nnx_path_str == "patch_embedding":
+    return "diffusion_model.patch_embedding"
+  if nnx_path_str == "proj_out":
+    return "diffusion_model.head.head"
+  if nnx_path_str == "scale_shift_table":
+    return "diffusion_model.head.modulation"
+  if nnx_path_str == "condition_embedder.time_proj":
+    return "diffusion_model.time_projection.1"
+
+  # --- 2. Map NNX Suffixes to LoRA Suffixes ---
+  suffix_map = {
+      # Self Attention (attn1)
+      "attn1.query": "self_attn.q",
+      "attn1.key": "self_attn.k",
+      "attn1.value": "self_attn.v",
+      "attn1.proj_attn": "self_attn.o",
+      # Self Attention Norms (QK Norm)
+      "attn1.norm_q": "self_attn.norm_q",
+      "attn1.norm_k": "self_attn.norm_k",
+      # Cross Attention (attn2)
+      "attn2.query": "cross_attn.q",
+      "attn2.key": "cross_attn.k",
+      "attn2.value": "cross_attn.v",
+      "attn2.proj_attn": "cross_attn.o",
+      # Cross Attention Norms (QK Norm)
+      "attn2.norm_q": "cross_attn.norm_q",
+      "attn2.norm_k": "cross_attn.norm_k",
+      # Cross Attention img
+      "attn2.add_k_proj": "cross_attn.k_img",
+      "attn2.add_v_proj": "cross_attn.v_img",
+      "attn2.norm_added_k": "cross_attn.norm_k_img",
+      # Feed Forward (ffn)
+      "ffn.act_fn.proj": "ffn.0",  # Up proj
+      "ffn.proj_out": "ffn.2",  # Down proj
+      # Global Norms & Modulation
+      "norm2.layer_norm": "norm3",
+      "adaln_scale_shift_table": "modulation",
+      "proj_out": "head.head",
+  }
+
+  # --- 3. Translation Logic ---
+  if scan_layers:
+    # Scanned Pattern: "blocks.attn1.query" -> "diffusion_model.blocks.{}.self_attn.q"
+    if nnx_path_str.startswith("blocks."):
+      inner_suffix = nnx_path_str[len("blocks.") :]
+      if inner_suffix in suffix_map:
+        return f"diffusion_model.blocks.{{}}.{suffix_map[inner_suffix]}"
+  else:
+    # Unscanned Pattern: "blocks.0.attn1.query" -> "diffusion_model.blocks.0.self_attn.q"
+    m = re.match(r"^blocks\.(\d+)\.(.+)$", nnx_path_str)
+    if m:
+      idx, inner_suffix = m.group(1), m.group(2)
+      if inner_suffix in suffix_map:
+        return f"diffusion_model.blocks.{idx}.{suffix_map[inner_suffix]}"
+
+  return None

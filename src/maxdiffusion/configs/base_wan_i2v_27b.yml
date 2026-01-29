@@ -277,8 +277,8 @@ profiler_steps: 10
 enable_jax_named_scopes: False
 
 # Generation parameters
-prompt: "An astronaut hatching from an egg, on the surface of the moon, the darkness and depth of space realised in the background. High quality, ultrarealistic detail and breath-taking movie-like camera shot."
-prompt_2: "An astronaut hatching from an egg, on the surface of the moon, the darkness and depth of space realised in the background. High quality, ultrarealistic detail and breath-taking movie-like camera shot."
+prompt: "orbit 180 around an astronaut on the moon, the darkness and depth of space realised in the background. High quality, ultrarealistic detail and breath-taking movie-like camera shot."
+prompt_2: "orbit 180 around an astronaut on the moon, the darkness and depth of space realised in the background. High quality, ultrarealistic detail and breath-taking movie-like camera shot."
 negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 do_classifier_free_guidance: True
 height: 720
@@ -288,10 +288,10 @@ flow_shift: 5.0
 
 # Reference for below guidance scale and boundary values: https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_t2v_A14B.py
 # guidance scale factor for low noise transformer
-guidance_scale_low: 3.0    
+guidance_scale_low: 3.0
 
 # guidance scale factor for high noise transformer
-guidance_scale_high: 4.0   
+guidance_scale_high: 4.0
 
 # The timestep threshold. If `t` is at or above this value,
 # the `high_noise_model` is considered as the required model.
@@ -312,12 +312,15 @@ lightning_repo: ""
 lightning_ckpt: ""
 
 # LoRA parameters
+enable_lora: False
 # Values are lists to support multiple LoRA loading during inference in the future.
 lora_config: {
-  lora_model_name_or_path: [],
-  weight_name: [],
-  adapter_name: [],
-  scale: [],
+  rank: [64, 16],
+  lora_model_name_or_path: ["lightx2v/Wan2.2-Distill-Loras", "ostris/wan22_i2v_14b_orbit_shot_lora"],
+  high_noise_weight_name: ["wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors", "wan22_14b_i2v_orbit_high_noise.safetensors"],
+  low_noise_weight_name: ["wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors", "wan22_14b_i2v_orbit_low_noise.safetensors"], # Empty or "wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors"
+  adapter_name: ["wan22-distill-lora", "wan22-orbit-lora"],
+  scale: [1.0, 1.0],
   from_pt: []
 }
 # Ex with values:
