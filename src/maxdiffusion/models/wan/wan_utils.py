@@ -72,7 +72,7 @@ def rename_for_custom_trasformer(key):
   return renamed_pt_key
 
 
-def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers):
+def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers=40):
   if scan_layers:
     if "blocks" in pt_tuple_key:
       new_key = ("blocks",) + pt_tuple_key[2:]
@@ -89,7 +89,7 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
       if flax_key in flax_state_dict:
         new_tensor = flax_state_dict[flax_key]
       else:
-        new_tensor = jnp.zeros((40,) + flax_tensor.shape)
+        new_tensor = jnp.zeros((num_layers,) + flax_tensor.shape)
       flax_tensor = new_tensor.at[block_index].set(flax_tensor)
   return flax_key, flax_tensor
 
@@ -127,7 +127,9 @@ def load_fusionx_transformer(
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
 
-        flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
+        flax_key, flax_tensor = get_key_and_value(
+            pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
+        )
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 
       validate_flax_state_dict(eval_shapes, flax_state_dict)
@@ -167,7 +169,9 @@ def load_causvid_transformer(
         renamed_pt_key = rename_for_custom_trasformer(renamed_pt_key)
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
-        flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
+        flax_key, flax_tensor = get_key_and_value(
+            pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
+        )
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 
       validate_flax_state_dict(eval_shapes, flax_state_dict)
@@ -284,7 +288,9 @@ def load_base_wan_transformer(
       renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
       renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
       pt_tuple_key = tuple(renamed_pt_key.split("."))
-      flax_key, flax_tensor = get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers)
+      flax_key, flax_tensor = get_key_and_value(
+          pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
+      )
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 
     validate_flax_state_dict(eval_shapes, flax_state_dict)
