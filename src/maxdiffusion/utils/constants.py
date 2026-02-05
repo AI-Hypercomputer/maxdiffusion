@@ -14,7 +14,7 @@
 import importlib
 import os
 
-from huggingface_hub.constants import HUGGINGFACE_HUB_CACHE, hf_cache_home
+from huggingface_hub.constants import HF_HOME, HUGGINGFACE_HUB_CACHE
 from packaging import version
 
 from .import_utils import is_peft_available
@@ -34,7 +34,7 @@ ONNX_EXTERNAL_WEIGHTS_NAME = "weights.pb"
 HUGGINGFACE_CO_RESOLVE_ENDPOINT = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
 DIFFUSERS_CACHE = default_cache_path
 DIFFUSERS_DYNAMIC_MODULE_NAME = "diffusers_modules"
-HF_MODULES_CACHE = os.getenv("HF_MODULES_CACHE", os.path.join(hf_cache_home, "modules"))
+HF_MODULES_CACHE = os.getenv("HF_MODULES_CACHE", os.path.join(HF_HOME, "modules"))
 DEPRECATED_REVISION_ARGS = ["fp16", "non-ema"]
 
 # Below should be `True` if the current version of `peft` and `transformers` are compatible with
