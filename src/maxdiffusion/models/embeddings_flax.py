@@ -501,3 +501,38 @@ class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
     conditioning = time_guidance_emb + pooled_projections
 
     return conditioning
+
+
+class NNXTimesteps(nnx.Module):
+  def __init__(self, num_channels: int, flip_sin_to_cos: bool, downscale_freq_shift: float, scale: int = 1):
+    self.num_channels = num_channels
+    self.flip_sin_to_cos = flip_sin_to_cos
+    self.downscale_freq_shift = downscale_freq_shift
+    self.scale = scale
+
+  def __call__(self, timesteps: jax.Array) -> jax.Array:
+    return get_sinusoidal_embeddings(
+        timesteps=timesteps,
+        embedding_dim=self.num_channels,
+        freq_shift=self.downscale_freq_shift,
+        flip_sin_to_cos=self.flip_sin_to_cos,
+        scale=self.scale
+    )
+
+
+class NNXPixArtAlphaCombinedTimestepSizeEmbeddings(nnx.Module):
+  def __init__(self, rngs: nnx.Rngs, embedding_dim: int, size_emb_dim: int, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32):
+    self.outdim = size_emb_dim
+    self.time_proj = NNXTimesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
+    self.timestep_embedder = NNXTimestepEmbedding(
+        rngs=rngs,
+        in_channels=256,
+        time_embed_dim=embedding_dim,
+        dtype=dtype,
+        weights_dtype=weights_dtype
+    )
+
+  def __call__(self, timestep: jax.Array, hidden_dtype: jnp.dtype = jnp.float32) -> jax.Array:
+    timesteps_proj = self.time_proj(timestep)
+    timesteps_emb = self.timestep_embedder(timesteps_proj.astype(hidden_dtype))
+    return timesteps_emb
