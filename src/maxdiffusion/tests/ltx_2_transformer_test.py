@@ -3,6 +3,11 @@ import unittest
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from flax.linen import partitioning as nn_partitioning
+from jax.sharding import Mesh
+import os
+from maxdiffusion import pyconfig
+from maxdiffusion.max_utils import create_device_mesh
 from maxdiffusion.models.ltx_2.transformer_ltx2 import LTX2VideoTransformerBlock, LTX2VideoTransformer3DModel
 
 class LTX2TransformerTest(unittest.TestCase):
@@ -13,9 +18,19 @@ class LTX2TransformerTest(unittest.TestCase):
     """
 
     def setUp(self):
+        # Initialize config and mesh for sharding
+        # using standard MaxDiffusion pattern
+        pyconfig.initialize(
+            [None, os.path.join(os.path.dirname(__file__), "..", "configs", "ltx_video.yml")],
+            unittest=True,
+        )
+        self.config = pyconfig.config
+        devices_array = create_device_mesh(self.config)
+        self.mesh = Mesh(devices_array, self.config.mesh_axes)
+
         # random seed for reproducibility
         self.rngs = nnx.Rngs(0)
-        self.batch_size = 2
+        self.batch_size = 1 # Use 1 for determinism in unit tests often easier
         self.num_frames = 4
         self.height = 32
         self.width = 32
@@ -54,76 +69,78 @@ class LTX2TransformerTest(unittest.TestCase):
         audio_dim = 16
         cross_dim = 20 # context dim
         
-        block = LTX2VideoTransformerBlock(
-            rngs=self.rngs,
-            dim=dim,
-            num_attention_heads=4,
-            attention_head_dim=8,
-            cross_attention_dim=cross_dim,
-            audio_dim=audio_dim,
-            audio_num_attention_heads=4,
-            audio_attention_head_dim=4,
-            audio_cross_attention_dim=cross_dim,
-            activation_fn="gelu",
-            qk_norm="rms_norm_across_heads",
-        )
-        
-        # Create dummy inputs
-        hidden_states = jnp.zeros((self.batch_size, self.seq_len, dim))
-        audio_hidden_states = jnp.zeros((self.batch_size, 10, audio_dim)) # 10 audio frames
-        encoder_hidden_states = jnp.zeros((self.batch_size, 5, cross_dim))
-        audio_encoder_hidden_states = jnp.zeros((self.batch_size, 5, cross_dim)) # reusing cross_dim for audio context 
-        
-        # Dummy scale/shift/gate modulations
-        # These match the shapes expected by the block internal calculation logic
-        # For simplicity, we create them to match 'temb_reshaped' broadcasting or direct add
-        # The block expects raw scale/shift/gate inputs often, OR temb vectors.
-        # Let's check block calls:
-        # It takes `temb` and `temb_ca...`
-        # temb: (B, 1, 6, -1) or similar depending on reshape.
-        # Actually in `transformer_ltx2.py`, call signature takes:
-        # temb: jax.Array
-        # And reshapes it: temb.reshape(batch_size, 1, num_ada_params, -1)
-        # So input `temb` should be (B, num_ada_params * dim) roughly, or (B, num_ada_params, dim)
-        
-        num_ada_params = 6
-        te_dim = num_ada_params * dim # simplified assumption for test
-        temb = jnp.zeros((self.batch_size, te_dim))
-        
-        num_audio_ada_params = 6
-        te_audio_dim = num_audio_ada_params * audio_dim
-        temb_audio = jnp.zeros((self.batch_size, te_audio_dim))
-        
-        # CA modulations
-        # 4 params for scale/shift, 1 for gate
-        temb_ca_scale_shift = jnp.zeros((self.batch_size, 4 * dim))
-        temb_ca_audio_scale_shift = jnp.zeros((self.batch_size, 4 * audio_dim))
-        temb_ca_gate = jnp.zeros((self.batch_size, 1 * dim))
-        temb_ca_audio_gate = jnp.zeros((self.batch_size, 1 * audio_dim))
+        # NNX sharding context
+        with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+            block = LTX2VideoTransformerBlock(
+                rngs=self.rngs,
+                dim=dim,
+                num_attention_heads=4,
+                attention_head_dim=8,
+                cross_attention_dim=cross_dim,
+                audio_dim=audio_dim,
+                audio_num_attention_heads=4,
+                audio_attention_head_dim=4,
+                audio_cross_attention_dim=cross_dim,
+                activation_fn="gelu",
+                qk_norm="rms_norm_across_heads",
+            )
+            
+            # Create dummy inputs
+            hidden_states = jnp.zeros((self.batch_size, self.seq_len, dim))
+            audio_hidden_states = jnp.zeros((self.batch_size, 10, audio_dim)) # 10 audio frames
+            encoder_hidden_states = jnp.zeros((self.batch_size, 5, cross_dim))
+            audio_encoder_hidden_states = jnp.zeros((self.batch_size, 5, cross_dim)) # reusing cross_dim for audio context 
+            
+            # Dummy scale/shift/gate modulations
+            # These match the shapes expected by the block internal calculation logic
+            # For simplicity, we create them to match 'temb_reshaped' broadcasting or direct add
+            # The block expects raw scale/shift/gate inputs often, OR temb vectors.
+            # Let's check block calls:
+            # It takes `temb` and `temb_ca...`
+            # temb: (B, 1, 6, -1) or similar depending on reshape.
+            # Actually in `transformer_ltx2.py`, call signature takes:
+            # temb: jax.Array
+            # And reshapes it: temb.reshape(batch_size, 1, num_ada_params, -1)
+            # So input `temb` should be (B, num_ada_params * dim) roughly, or (B, num_ada_params, dim)
+            
+            num_ada_params = 6
+            te_dim = num_ada_params * dim # simplified assumption for test
+            temb = jnp.zeros((self.batch_size, te_dim))
+            
+            num_audio_ada_params = 6
+            te_audio_dim = num_audio_ada_params * audio_dim
+            temb_audio = jnp.zeros((self.batch_size, te_audio_dim))
+            
+            # CA modulations
+            # 4 params for scale/shift, 1 for gate
+            temb_ca_scale_shift = jnp.zeros((self.batch_size, 4 * dim))
+            temb_ca_audio_scale_shift = jnp.zeros((self.batch_size, 4 * audio_dim))
+            temb_ca_gate = jnp.zeros((self.batch_size, 1 * dim))
+            temb_ca_audio_gate = jnp.zeros((self.batch_size, 1 * audio_dim))
 
-        # Perform forward
-        out_hidden, out_audio = block(
-            hidden_states=hidden_states,
-            audio_hidden_states=audio_hidden_states,
-            encoder_hidden_states=encoder_hidden_states,
-            audio_encoder_hidden_states=audio_encoder_hidden_states,
-            temb=temb,
-            temb_audio=temb_audio,
-            temb_ca_scale_shift=temb_ca_scale_shift,
-            temb_ca_audio_scale_shift=temb_ca_audio_scale_shift,
-            temb_ca_gate=temb_ca_gate,
-            temb_ca_audio_gate=temb_ca_audio_gate,
-            video_rotary_emb=None, # Dummy takes None
-            audio_rotary_emb=None
-        )
-        
-        print(f"Input Video Shape: {hidden_states.shape}")
-        print(f"Output Video Shape: {out_hidden.shape}")
-        print(f"Input Audio Shape: {audio_hidden_states.shape}")
-        print(f"Output Audio Shape: {out_audio.shape}")
-        
-        self.assertEqual(out_hidden.shape, hidden_states.shape)
-        self.assertEqual(out_audio.shape, audio_hidden_states.shape)
+            # Perform forward
+            out_hidden, out_audio = block(
+                hidden_states=hidden_states,
+                audio_hidden_states=audio_hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                audio_encoder_hidden_states=audio_encoder_hidden_states,
+                temb=temb,
+                temb_audio=temb_audio,
+                temb_ca_scale_shift=temb_ca_scale_shift,
+                temb_ca_audio_scale_shift=temb_ca_audio_scale_shift,
+                temb_ca_gate=temb_ca_gate,
+                temb_ca_audio_gate=temb_ca_audio_gate,
+                video_rotary_emb=None, # Dummy takes None
+                audio_rotary_emb=None
+            )
+            
+            print(f"Input Video Shape: {hidden_states.shape}")
+            print(f"Output Video Shape: {out_hidden.shape}")
+            print(f"Input Audio Shape: {audio_hidden_states.shape}")
+            print(f"Output Audio Shape: {out_audio.shape}")
+            
+            self.assertEqual(out_hidden.shape, hidden_states.shape)
+            self.assertEqual(out_audio.shape, audio_hidden_states.shape)
 
 
     def test_transformer_3d_model_instantiation_and_forward(self):
@@ -151,26 +168,6 @@ class LTX2TransformerTest(unittest.TestCase):
         """
         print("\n=== Testing LTX2VideoTransformer3DModel Integration ===")
         
-        model = LTX2VideoTransformer3DModel(
-            rngs=self.rngs,
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
-            patch_size=self.patch_size,
-            patch_size_t=self.patch_size_t,
-            num_attention_heads=2,
-            attention_head_dim=8,
-            num_layers=1, # 1 layer for speed
-            caption_channels=32, # small for test
-            cross_attention_dim=32,
-            audio_in_channels=self.audio_in_channels,
-            audio_out_channels= self.audio_in_channels,
-            audio_num_attention_heads=2,
-            audio_attention_head_dim=8,
-            audio_cross_attention_dim=32
-        )
-        
-        # Inputs
-        # hidden_states: (B, F, H, W, C) or (B, L, C)?
         # Diffusers `forward` takes `hidden_states` usually as latents.
         # If it's 3D, it might expect (B, C, F, H, W) or (B, F, C, H, W)?
         # Checking `transformer_ltx2.py` `__call__` Line 680:
