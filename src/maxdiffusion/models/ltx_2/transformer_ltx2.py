@@ -297,7 +297,15 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
         num_audio_ada_params = self.audio_scale_shift_table.shape[0]
         audio_scale_shift_table_reshaped = jnp.expand_dims(self.audio_scale_shift_table, axis=(0, 1))
+
+        print(f"DEBUG_BLOCK_AUDIO: audio_scale_shift_table_reshaped shape: {audio_scale_shift_table_reshaped.shape}")
+        print(f"DEBUG_BLOCK_AUDIO: temb_audio shape before reshape: {temb_audio.shape}")
+        sys.stdout.flush()
+
         temb_audio_reshaped = temb_audio.reshape(batch_size, 1, num_audio_ada_params, -1)
+
+        print(f"DEBUG_BLOCK_AUDIO: temb_audio_reshaped shape: {temb_audio_reshaped.shape}")
+        sys.stdout.flush()
         audio_ada_values = audio_scale_shift_table_reshaped + temb_audio_reshaped
 
         audio_shift_msa = audio_ada_values[:, :, 0, :]
@@ -512,6 +520,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         )
 
         print(f"DEBUG IN INIT: inner_dim={inner_dim}, num_attention_heads={num_attention_heads}, attention_head_dim={attention_head_dim}")
+        sys.stdout.flush()
         
         # 3. Timestep Modulation Params and Embedding
         self.time_embed = LTX2AdaLayerNormSingle(
