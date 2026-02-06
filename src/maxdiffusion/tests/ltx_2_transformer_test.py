@@ -21,7 +21,7 @@ class LTX2TransformerTest(unittest.TestCase):
         # Initialize config and mesh for sharding
         # using standard MaxDiffusion pattern
         pyconfig.initialize(
-            [None, os.path.join(os.path.dirname(__file__), "..", "configs", "ltx_video.yml")],
+            [None, os.path.join(os.path.dirname(__file__), "..", "configs", "ltx2_video.yml")],
             unittest=True,
         )
         self.config = pyconfig.config
