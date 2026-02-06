@@ -427,7 +427,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         audio_sampling_rate: int = 16000,
         audio_hop_length: int = 160,
         num_layers: int = 48,  # Shared arguments
-        activation_fn: str = "gelu-approximate",
+        activation_fn: str = "gelu",
         qk_norm: str = "rms_norm_across_heads",
         norm_elementwise_affine: bool = False,
         norm_eps: float = 1e-6,
