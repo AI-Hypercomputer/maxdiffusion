@@ -597,7 +597,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         )
 
         # 5. Transformer Blocks
-        self.transformer_blocks = [
+        self.transformer_blocks = nnx.List([
             LTX2VideoTransformerBlock(
                 rngs=rngs,
                 dim=inner_dim,
@@ -619,7 +619,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                 weights_dtype=self.weights_dtype
             )
             for _ in range(self.num_layers)
-        ]
+        ])
 
         # 6. Output layers
         self.norm_out = nnx.LayerNorm(inner_dim, epsilon=1e-6, use_scale=False, rngs=rngs, dtype=self.dtype, param_dtype=self.weights_dtype)
