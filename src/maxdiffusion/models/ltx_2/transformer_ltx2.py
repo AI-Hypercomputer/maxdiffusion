@@ -258,17 +258,21 @@ class LTX2VideoTransformerBlock(nnx.Module):
         # 1. Video and Audio Self-Attention
         norm_hidden_states = self.norm1(hidden_states)
 
+        import sys
+        
         # Calculate Video AdaLN values
         num_ada_params = self.scale_shift_table.shape[0]
         # table shape: (6, dim) -> (1, 1, 6, dim)
         scale_shift_table_reshaped = jnp.expand_dims(self.scale_shift_table, axis=(0, 1))
         # temb shape: (batch, temb_dim) -> (batch, 1, 6, dim)  (assuming temb_dim is num_ada_params * dim)
-        print(f"DEBUG: scale_shift_table_reshaped shape: {scale_shift_table_reshaped.shape}")
-        print(f"DEBUG: temb shape before reshape: {temb.shape}")
+        print(f"DEBUG_BLOCK: scale_shift_table_reshaped shape: {scale_shift_table_reshaped.shape}")
+        print(f"DEBUG_BLOCK: temb shape before reshape: {temb.shape}")
+        sys.stdout.flush()
         
         temb_reshaped = temb.reshape(batch_size, 1, num_ada_params, -1)
         
-        print(f"DEBUG: temb_reshaped shape: {temb_reshaped.shape}")
+        print(f"DEBUG_BLOCK: temb_reshaped shape: {temb_reshaped.shape}")
+        sys.stdout.flush()
         
         ada_values = scale_shift_table_reshaped + temb_reshaped
 
