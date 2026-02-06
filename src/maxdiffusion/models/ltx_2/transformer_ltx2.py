@@ -507,6 +507,8 @@ class LTX2VideoTransformer3DModel(nnx.Module):
             rngs=rngs, in_features=self.caption_channels, hidden_size=audio_inner_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
         )
 
+        print(f"DEBUG IN INIT: inner_dim={inner_dim}, num_attention_heads={num_attention_heads}, attention_head_dim={attention_head_dim}")
+        
         # 3. Timestep Modulation Params and Embedding
         self.time_embed = LTX2AdaLayerNormSingle(
             rngs=rngs, embedding_dim=inner_dim, num_mod_params=6, use_additional_conditions=False, dtype=self.dtype, weights_dtype=self.weights_dtype
