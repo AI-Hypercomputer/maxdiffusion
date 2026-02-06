@@ -221,7 +221,7 @@ class LTX2TransformerTest(unittest.TestCase):
         hidden_states = jnp.zeros((self.batch_size, self.seq_len, self.in_channels))
         audio_hidden_states = jnp.zeros((self.batch_size, 10, self.audio_in_channels))
         
-        timestep = jnp.array([1.0, 2.0]) # (B,)
+        timestep = jnp.array([1.0]) # (B,)
         
         encoder_hidden_states = jnp.zeros((self.batch_size, 5, 32)) # (B, Lc, Dc)
         audio_encoder_hidden_states = jnp.zeros((self.batch_size, 5, 32))

@@ -258,22 +258,12 @@ class LTX2VideoTransformerBlock(nnx.Module):
         # 1. Video and Audio Self-Attention
         norm_hidden_states = self.norm1(hidden_states)
 
-        import sys
-        
         # Calculate Video AdaLN values
         num_ada_params = self.scale_shift_table.shape[0]
         # table shape: (6, dim) -> (1, 1, 6, dim)
         scale_shift_table_reshaped = jnp.expand_dims(self.scale_shift_table, axis=(0, 1))
         # temb shape: (batch, temb_dim) -> (batch, 1, 6, dim)  (assuming temb_dim is num_ada_params * dim)
-        print(f"DEBUG_BLOCK: scale_shift_table_reshaped shape: {scale_shift_table_reshaped.shape}")
-        print(f"DEBUG_BLOCK: temb shape before reshape: {temb.shape}")
-        sys.stdout.flush()
-        
         temb_reshaped = temb.reshape(batch_size, 1, num_ada_params, -1)
-        
-        print(f"DEBUG_BLOCK: temb_reshaped shape: {temb_reshaped.shape}")
-        sys.stdout.flush()
-        
         ada_values = scale_shift_table_reshaped + temb_reshaped
 
         shift_msa = ada_values[:, :, 0, :]
@@ -297,15 +287,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
         num_audio_ada_params = self.audio_scale_shift_table.shape[0]
         audio_scale_shift_table_reshaped = jnp.expand_dims(self.audio_scale_shift_table, axis=(0, 1))
-
-        print(f"DEBUG_BLOCK_AUDIO: audio_scale_shift_table_reshaped shape: {audio_scale_shift_table_reshaped.shape}")
-        print(f"DEBUG_BLOCK_AUDIO: temb_audio shape before reshape: {temb_audio.shape}")
-        sys.stdout.flush()
-
         temb_audio_reshaped = temb_audio.reshape(batch_size, 1, num_audio_ada_params, -1)
-
-        print(f"DEBUG_BLOCK_AUDIO: temb_audio_reshaped shape: {temb_audio_reshaped.shape}")
-        sys.stdout.flush()
         audio_ada_values = audio_scale_shift_table_reshaped + temb_audio_reshaped
 
         audio_shift_msa = audio_ada_values[:, :, 0, :]
@@ -518,10 +500,6 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         self.audio_caption_projection = NNXPixArtAlphaTextProjection(
             rngs=rngs, in_features=self.caption_channels, hidden_size=audio_inner_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
         )
-        import sys
-        print(f"DEBUG IN INIT: inner_dim={inner_dim}, num_attention_heads={num_attention_heads}, attention_head_dim={attention_head_dim}")
-        sys.stdout.flush()
-        
         # 3. Timestep Modulation Params and Embedding
         self.time_embed = LTX2AdaLayerNormSingle(
             rngs=rngs, embedding_dim=inner_dim, num_mod_params=6, use_additional_conditions=False, dtype=self.dtype, weights_dtype=self.weights_dtype
