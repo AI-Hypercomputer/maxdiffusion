@@ -4,6 +4,9 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
+import flax
+# Matches WanTransformerTest: disable eager sharding to avoid "mesh context required" errors during init
+flax.config.update("flax_always_shard_variable", False)
 from jax.sharding import Mesh
 import os
 from maxdiffusion import pyconfig
