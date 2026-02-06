@@ -208,19 +208,21 @@ class LTX2VideoTransformerBlock(nnx.Module):
              weights_dtype=weights_dtype
         )
         
-        scale_rng, init_rng = nnx.split_rngs(rngs, "params", "initialization")
+
+        key = rngs.params()
+        k1, k2, k3, k4 = jax.random.split(key, 4)
 
         self.scale_shift_table = nnx.Param(
-            jax.random.normal(init_rng(), (6, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim)
+            jax.random.normal(k1, (6, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim)
         )
         self.audio_scale_shift_table = nnx.Param(
-            jax.random.normal(init_rng(), (6, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
+            jax.random.normal(k2, (6, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
         )
         self.video_a2v_cross_attn_scale_shift_table = nnx.Param(
-            jax.random.normal(init_rng(), (5, self.dim), dtype=weights_dtype)
+            jax.random.normal(k3, (5, self.dim), dtype=weights_dtype)
         )
         self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(
-            jax.random.normal(init_rng(), (5, audio_dim), dtype=weights_dtype)
+            jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype)
         )
 
     def __call__(
