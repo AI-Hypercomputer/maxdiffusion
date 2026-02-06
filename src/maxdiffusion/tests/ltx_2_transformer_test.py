@@ -168,6 +168,28 @@ class LTX2TransformerTest(unittest.TestCase):
         """
         print("\n=== Testing LTX2VideoTransformer3DModel Integration ===")
         
+        # NNX sharding context
+        with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+            model = LTX2VideoTransformer3DModel(
+                rngs=self.rngs,
+                in_channels=self.in_channels,
+                out_channels=self.out_channels,
+                patch_size=self.patch_size,
+                patch_size_t=self.patch_size_t,
+                num_attention_heads=2,
+                attention_head_dim=8,
+                num_layers=1, # 1 layer for speed
+                caption_channels=32, # small for test
+                cross_attention_dim=32,
+                audio_in_channels=self.audio_in_channels,
+                audio_out_channels= self.audio_in_channels,
+                audio_num_attention_heads=2,
+                audio_attention_head_dim=8,
+                audio_cross_attention_dim=32
+            )
+        
+        # Inputs
+        # hidden_states: (B, F, H, W, C) or (B, L, C)?
         # Diffusers `forward` takes `hidden_states` usually as latents.
         # If it's 3D, it might expect (B, C, F, H, W) or (B, F, C, H, W)?
         # Checking `transformer_ltx2.py` `__call__` Line 680:
@@ -202,19 +224,20 @@ class LTX2TransformerTest(unittest.TestCase):
         audio_encoder_hidden_states = jnp.zeros((self.batch_size, 5, 32))
         
         # Forward
-        output = model(
-            hidden_states=hidden_states,
-            audio_hidden_states=audio_hidden_states,
-            encoder_hidden_states=encoder_hidden_states,
-            audio_encoder_hidden_states=audio_encoder_hidden_states,
-            timestep=timestep,
-            num_frames=self.num_frames,
-            height=self.height,
-            width=self.width,
-            audio_num_frames=10,
-            fps=24.0,
-            return_dict=True
-        )
+        with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+            output = model(
+                hidden_states=hidden_states,
+                audio_hidden_states=audio_hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                audio_encoder_hidden_states=audio_encoder_hidden_states,
+                timestep=timestep,
+                num_frames=self.num_frames,
+                height=self.height,
+                width=self.width,
+                audio_num_frames=10,
+                fps=24.0,
+                return_dict=True
+            )
         
         sample = output["sample"]
         audio_sample = output["audio_sample"]
