@@ -518,7 +518,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         self.audio_caption_projection = NNXPixArtAlphaTextProjection(
             rngs=rngs, in_features=self.caption_channels, hidden_size=audio_inner_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
         )
-
+        import sys
         print(f"DEBUG IN INIT: inner_dim={inner_dim}, num_attention_heads={num_attention_heads}, attention_head_dim={attention_head_dim}")
         sys.stdout.flush()
         
