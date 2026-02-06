@@ -67,7 +67,7 @@ _import_structure = {
 if is_flax_available():
   from flax import config as flax_config
 
-  flax_config.update('flax_always_shard_variable', False)
+  flax_config.update("flax_always_shard_variable", False)
 
 try:
   if not is_onnx_available():
