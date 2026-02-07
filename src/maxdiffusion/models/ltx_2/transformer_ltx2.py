@@ -9,6 +9,13 @@ from maxdiffusion.models.ltx_2.rope import LTX2AudioVideoRotaryPosEmbed
 from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
 from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSizeEmbeddings, NNXPixArtAlphaTextProjection
 
+def print_shape(name: str, tensor: Optional[jax.Array]):
+    if tensor is not None:
+        print(f"MAXDIFF - Shape of {name}: {tensor.shape}")
+    else:
+        print(f"MAXDIFF - Shape of {name}: None")
+
+
 class LTX2AdaLayerNormSingle(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, embedding_dim: int, num_mod_params: int = 6, use_additional_conditions: bool = False, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32):
         self.num_mod_params = num_mod_params
@@ -254,9 +261,20 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
     ) -> Tuple[jax.Array, jax.Array]:
         batch_size = hidden_states.shape[0]
+        print_shape("Block Input hidden_states", hidden_states)
+        print_shape("Block Input audio_hidden_states", audio_hidden_states)
+        print_shape("Block Input encoder_hidden_states", encoder_hidden_states)
+        print_shape("Block Input audio_encoder_hidden_states", audio_encoder_hidden_states)
+        print_shape("Block Input temb", temb)
+        print_shape("Block Input temb_audio", temb_audio)
+        print_shape("Block Input temb_ca_scale_shift", temb_ca_scale_shift)
+        print_shape("Block Input temb_ca_audio_scale_shift", temb_ca_audio_scale_shift)
+        print_shape("Block Input temb_ca_gate", temb_ca_gate)
+        print_shape("Block Input temb_ca_audio_gate", temb_ca_audio_gate)
 
         # 1. Video and Audio Self-Attention
         norm_hidden_states = self.norm1(hidden_states)
+        print_shape("norm1 hidden_states", norm_hidden_states)
 
         # Calculate Video AdaLN values
         num_ada_params = self.scale_shift_table.shape[0]
@@ -265,6 +283,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         # temb shape: (batch, temb_dim) -> (batch, 1, 6, dim)  (assuming temb_dim is num_ada_params * dim)
         temb_reshaped = temb.reshape(batch_size, 1, num_ada_params, -1)
         ada_values = scale_shift_table_reshaped + temb_reshaped
+        print_shape("ada_values", ada_values)
 
         shift_msa = ada_values[:, :, 0, :]
         scale_msa = ada_values[:, :, 1, :]
@@ -272,23 +291,34 @@ class LTX2VideoTransformerBlock(nnx.Module):
         shift_mlp = ada_values[:, :, 3, :]
         scale_mlp = ada_values[:, :, 4, :]
         gate_mlp = ada_values[:, :, 5, :]
+        print_shape("shift_msa", shift_msa)
+        print_shape("scale_msa", scale_msa)
+        print_shape("gate_msa", gate_msa)
+        print_shape("shift_mlp", shift_mlp)
+        print_shape("scale_mlp", scale_mlp)
+        print_shape("gate_mlp", gate_mlp)
 
         norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
+        print_shape("mod_norm_hidden_states (Self-Attn)", norm_hidden_states)
 
         attn_hidden_states = self.attn1(
             hidden_states=norm_hidden_states,
             encoder_hidden_states=None,
             query_rotary_emb=video_rotary_emb,
         )
+        print_shape("attn1 output", attn_hidden_states)
         hidden_states = hidden_states + attn_hidden_states * gate_msa
+        print_shape("hidden_states after attn1", hidden_states)
 
         # Calculate Audio AdaLN values
         norm_audio_hidden_states = self.audio_norm1(audio_hidden_states)
+        print_shape("audio_norm1 audio_hidden_states", norm_audio_hidden_states)
 
         num_audio_ada_params = self.audio_scale_shift_table.shape[0]
         audio_scale_shift_table_reshaped = jnp.expand_dims(self.audio_scale_shift_table, axis=(0, 1))
         temb_audio_reshaped = temb_audio.reshape(batch_size, 1, num_audio_ada_params, -1)
         audio_ada_values = audio_scale_shift_table_reshaped + temb_audio_reshaped
+        print_shape("audio_ada_values", audio_ada_values)
 
         audio_shift_msa = audio_ada_values[:, :, 0, :]
         audio_scale_msa = audio_ada_values[:, :, 1, :]
@@ -296,38 +326,55 @@ class LTX2VideoTransformerBlock(nnx.Module):
         audio_shift_mlp = audio_ada_values[:, :, 3, :]
         audio_scale_mlp = audio_ada_values[:, :, 4, :]
         audio_gate_mlp = audio_ada_values[:, :, 5, :]
+        print_shape("audio_shift_msa", audio_shift_msa)
+        print_shape("audio_scale_msa", audio_scale_msa)
+        print_shape("audio_gate_msa", audio_gate_msa)
+        print_shape("audio_shift_mlp", audio_shift_mlp)
+        print_shape("audio_scale_mlp", audio_scale_mlp)
+        print_shape("audio_gate_mlp", audio_gate_mlp)
 
         norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_msa) + audio_shift_msa
+        print_shape("mod_norm_audio_hidden_states (Self-Attn)", norm_audio_hidden_states)
 
         attn_audio_hidden_states = self.audio_attn1(
             hidden_states=norm_audio_hidden_states,
             encoder_hidden_states=None,
             query_rotary_emb=audio_rotary_emb,
         )
+        print_shape("audio_attn1 output", attn_audio_hidden_states)
         audio_hidden_states = audio_hidden_states + attn_audio_hidden_states * audio_gate_msa
+        print_shape("audio_hidden_states after audio_attn1", audio_hidden_states)
 
         # 2. Video and Audio Cross-Attention with the text embeddings
         norm_hidden_states = self.norm2(hidden_states)
+        print_shape("norm2 hidden_states", norm_hidden_states)
         attn_hidden_states = self.attn2(
             norm_hidden_states,
             encoder_hidden_states=encoder_hidden_states,
             query_rotary_emb=None,
             attention_mask=encoder_attention_mask,
         )
+        print_shape("attn2 output", attn_hidden_states)
         hidden_states = hidden_states + attn_hidden_states
+        print_shape("hidden_states after attn2", hidden_states)
 
         norm_audio_hidden_states = self.audio_norm2(audio_hidden_states)
+        print_shape("norm2 audio_hidden_states", norm_audio_hidden_states)
         attn_audio_hidden_states = self.audio_attn2(
             norm_audio_hidden_states,
             encoder_hidden_states=audio_encoder_hidden_states,
             query_rotary_emb=None,
             attention_mask=audio_encoder_attention_mask,
         )
+        print_shape("attn2 audio output", attn_audio_hidden_states)
         audio_hidden_states = audio_hidden_states + attn_audio_hidden_states
+        print_shape("audio_hidden_states after attn2 audio", audio_hidden_states)
 
         # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
         norm_hidden_states = self.audio_to_video_norm(hidden_states)
+        print_shape("audio_to_video_norm hidden_states", norm_hidden_states)
         norm_audio_hidden_states = self.video_to_audio_norm(audio_hidden_states)
+        print_shape("video_to_audio_norm audio_hidden_states", norm_audio_hidden_states)
 
         # Calculate Cross-Attention Modulation values
         # Video
@@ -337,15 +384,22 @@ class LTX2VideoTransformerBlock(nnx.Module):
         # table: (4, dim) -> (1, 1, 4, dim)
         video_ca_scale_shift_table = jnp.expand_dims(video_per_layer_ca_scale_shift, axis=(0, 1)) + \
                                     temb_ca_scale_shift.reshape(batch_size, 1, 4, -1)
+        print_shape("video_ca_scale_shift_table", video_ca_scale_shift_table)
 
         video_a2v_ca_scale = video_ca_scale_shift_table[:, :, 0, :]
         video_a2v_ca_shift = video_ca_scale_shift_table[:, :, 1, :]
         video_v2a_ca_scale = video_ca_scale_shift_table[:, :, 2, :]
         video_v2a_ca_shift = video_ca_scale_shift_table[:, :, 3, :]
+        print_shape("video_a2v_ca_scale", video_a2v_ca_scale)
+        print_shape("video_a2v_ca_shift", video_a2v_ca_shift)
+        print_shape("video_v2a_ca_scale", video_v2a_ca_scale)
+        print_shape("video_v2a_ca_shift", video_v2a_ca_shift)
+
 
         # table: (1, dim) -> (1, 1, 1, dim)
         a2v_gate = (jnp.expand_dims(video_per_layer_ca_gate, axis=(0, 1)) + \
                     temb_ca_gate.reshape(batch_size, 1, 1, -1))[:, :, 0, :]
+        print_shape("a2v_gate", a2v_gate)
 
         # Audio
         audio_per_layer_ca_scale_shift = self.audio_a2v_cross_attn_scale_shift_table[:4, :]
@@ -353,18 +407,26 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
         audio_ca_scale_shift_table = (jnp.expand_dims(audio_per_layer_ca_scale_shift, axis=(0, 1)) + \
                                     temb_ca_audio_scale_shift.reshape(batch_size, 1, 4, -1))
+        print_shape("audio_ca_scale_shift_table", audio_ca_scale_shift_table)
 
         audio_a2v_ca_scale = audio_ca_scale_shift_table[:, :, 0, :]
         audio_a2v_ca_shift = audio_ca_scale_shift_table[:, :, 1, :]
         audio_v2a_ca_scale = audio_ca_scale_shift_table[:, :, 2, :]
         audio_v2a_ca_shift = audio_ca_scale_shift_table[:, :, 3, :]
+        print_shape("audio_a2v_ca_scale", audio_a2v_ca_scale)
+        print_shape("audio_a2v_ca_shift", audio_a2v_ca_shift)
+        print_shape("audio_v2a_ca_scale", audio_v2a_ca_scale)
+        print_shape("audio_v2a_ca_shift", audio_v2a_ca_shift)
 
         v2a_gate = (jnp.expand_dims(audio_per_layer_ca_gate, axis=(0, 1)) + \
                     temb_ca_audio_gate.reshape(batch_size, 1, 1, -1))[:, :, 0, :]
+        print_shape("v2a_gate", v2a_gate)
 
         # Audio-to-Video Cross Attention: Q: Video; K,V: Audio
         mod_norm_hidden_states = norm_hidden_states * (1 + video_a2v_ca_scale) + video_a2v_ca_shift
+        print_shape("mod_norm_hidden_states_a2v", mod_norm_hidden_states)
         mod_norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_a2v_ca_scale) + audio_a2v_ca_shift
+        print_shape("mod_norm_audio_hidden_states_a2v", mod_norm_audio_hidden_states)
 
         a2v_attn_hidden_states = self.audio_to_video_attn(
             mod_norm_hidden_states,
@@ -373,11 +435,15 @@ class LTX2VideoTransformerBlock(nnx.Module):
             key_rotary_emb=ca_audio_rotary_emb,
             attention_mask=a2v_cross_attention_mask,
         )
+        print_shape("a2v_attn_hidden_states", a2v_attn_hidden_states)
         hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
+        print_shape("hidden_states after a2v", hidden_states)
 
         # Video-to-Audio Cross Attention: Q: Audio; K,V: Video
         mod_norm_hidden_states_v2a = norm_hidden_states * (1 + video_v2a_ca_scale) + video_v2a_ca_shift
+        print_shape("mod_norm_hidden_states_v2a", mod_norm_hidden_states_v2a)
         mod_norm_audio_hidden_states_v2a = norm_audio_hidden_states * (1 + audio_v2a_ca_scale) + audio_v2a_ca_shift
+        print_shape("mod_norm_audio_hidden_states_v2a", mod_norm_audio_hidden_states_v2a)
 
         v2a_attn_hidden_states = self.video_to_audio_attn(
             mod_norm_audio_hidden_states_v2a,
@@ -386,18 +452,30 @@ class LTX2VideoTransformerBlock(nnx.Module):
             key_rotary_emb=ca_video_rotary_emb,
             attention_mask=v2a_cross_attention_mask,
         )
+        print_shape("v2a_attn_hidden_states", v2a_attn_hidden_states)
         audio_hidden_states = audio_hidden_states + v2a_gate * v2a_attn_hidden_states
+        print_shape("audio_hidden_states after v2a", audio_hidden_states)
+
 
         # 4. Feedforward
         norm_hidden_states = self.norm3(hidden_states)
         norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
+        print_shape("mod_norm_hidden_states (FF)", norm_hidden_states)
         ff_output = self.ff(norm_hidden_states)
+        print_shape("ff_output", ff_output)
         hidden_states = hidden_states + ff_output * gate_mlp
+        print_shape("hidden_states after ff", hidden_states)
 
         norm_audio_hidden_states = self.audio_norm3(audio_hidden_states)
         norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_mlp) + audio_shift_mlp
+        print_shape("mod_norm_audio_hidden_states (FF)", norm_audio_hidden_states)
         audio_ff_output = self.audio_ff(norm_audio_hidden_states)
+        print_shape("audio_ff_output", audio_ff_output)
         audio_hidden_states = audio_hidden_states + audio_ff_output * audio_gate_mlp
+        print_shape("audio_hidden_states after ff", audio_hidden_states)
+
+        print_shape("Block Output hidden_states", hidden_states)
+        print_shape("Block Output audio_hidden_states", audio_hidden_states)
 
         return hidden_states, audio_hidden_states
 
@@ -650,36 +728,54 @@ class LTX2VideoTransformer3DModel(nnx.Module):
 
         # Determine timestep for audio.
         audio_timestep = audio_timestep if audio_timestep is not None else timestep
+        if encoder_attention_mask is not None: print_shape("encoder_attention_mask input", encoder_attention_mask)
+        if audio_encoder_attention_mask is not None: print_shape("audio_encoder_attention_mask input", audio_encoder_attention_mask)
+
 
         if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
             encoder_attention_mask = (1 - encoder_attention_mask.astype(self.dtype)) * -10000.0
             encoder_attention_mask = jnp.expand_dims(encoder_attention_mask, axis=1)
+        if encoder_attention_mask is not None: print_shape("encoder_attention_mask bias", encoder_attention_mask)
 
         if audio_encoder_attention_mask is not None and audio_encoder_attention_mask.ndim == 2:
             audio_encoder_attention_mask = (1 - audio_encoder_attention_mask.astype(self.dtype)) * -10000.0
             audio_encoder_attention_mask = jnp.expand_dims(audio_encoder_attention_mask, axis=1)
+        if audio_encoder_attention_mask is not None: print_shape("audio_encoder_attention_mask bias", audio_encoder_attention_mask)
 
         batch_size = hidden_states.shape[0]
+        print_shape("Model Input hidden_states", hidden_states)
+        print_shape("Model Input audio_hidden_states", audio_hidden_states)
+        print_shape("Model Input encoder_hidden_states", encoder_hidden_states)
+        print_shape("Model Input audio_encoder_hidden_states", audio_encoder_hidden_states)
+        print_shape("Model Input timestep", timestep)
 
         # 1. Prepare RoPE positional embeddings
         if video_coords is None:
             video_coords = self.rope.prepare_video_coords(
                 batch_size, num_frames, height, width, fps=fps
             )
+            print_shape("video_coords", video_coords)
         if audio_coords is None:
             audio_coords = self.audio_rope.prepare_audio_coords(
                 batch_size, audio_num_frames
             )
+            print_shape("audio_coords", audio_coords)
 
         video_rotary_emb = self.rope(video_coords)
+        if video_rotary_emb: print_shape("video_rotary_emb[0]", video_rotary_emb[0]); print_shape("video_rotary_emb[1]", video_rotary_emb[1])
         audio_rotary_emb = self.audio_rope(audio_coords)
+        if audio_rotary_emb: print_shape("audio_rotary_emb[0]", audio_rotary_emb[0]); print_shape("audio_rotary_emb[1]", audio_rotary_emb[1])
 
         video_cross_attn_rotary_emb = self.cross_attn_rope(video_coords[:, 0:1, :])
+        if video_cross_attn_rotary_emb: print_shape("video_cross_attn_rotary_emb[0]", video_cross_attn_rotary_emb[0]); print_shape("video_cross_attn_rotary_emb[1]", video_cross_attn_rotary_emb[1])
         audio_cross_attn_rotary_emb = self.cross_attn_audio_rope(audio_coords[:, 0:1, :])
+        if audio_cross_attn_rotary_emb: print_shape("audio_cross_attn_rotary_emb[0]", audio_cross_attn_rotary_emb[0]); print_shape("audio_cross_attn_rotary_emb[1]", audio_cross_attn_rotary_emb[1])
 
         # 2. Patchify input projections
         hidden_states = self.proj_in(hidden_states)
+        print_shape("hidden_states after proj_in", hidden_states)
         audio_hidden_states = self.audio_proj_in(audio_hidden_states)
+        print_shape("audio_hidden_states after audio_proj_in", audio_hidden_states)
 
         # 3. Prepare timestep embeddings and modulation parameters
         timestep_cross_attn_gate_scale_factor = (
@@ -690,51 +786,72 @@ class LTX2VideoTransformer3DModel(nnx.Module):
             timestep.flatten(),
             hidden_dtype=hidden_states.dtype,
         )
+        print_shape("temb flat", temb)
+        print_shape("embedded_timestep flat", embedded_timestep)
         temb = temb.reshape(batch_size, -1, temb.shape[-1])
         embedded_timestep = embedded_timestep.reshape(batch_size, -1, embedded_timestep.shape[-1])
+        print_shape("temb reshaped", temb)
+        print_shape("embedded_timestep reshaped", embedded_timestep)
 
         temb_audio, audio_embedded_timestep = self.audio_time_embed(
             audio_timestep.flatten(),
             hidden_dtype=audio_hidden_states.dtype,
         )
+        print_shape("temb_audio flat", temb_audio)
+        print_shape("audio_embedded_timestep flat", audio_embedded_timestep)
         temb_audio = temb_audio.reshape(batch_size, -1, temb_audio.shape[-1])
         audio_embedded_timestep = audio_embedded_timestep.reshape(batch_size, -1, audio_embedded_timestep.shape[-1])
+        print_shape("temb_audio reshaped", temb_audio)
+        print_shape("audio_embedded_timestep reshaped", audio_embedded_timestep)
 
         video_cross_attn_scale_shift, _ = self.av_cross_attn_video_scale_shift(
             timestep.flatten(),
             hidden_dtype=hidden_states.dtype,
         )
+        print_shape("video_cross_attn_scale_shift flat", video_cross_attn_scale_shift)
         video_cross_attn_a2v_gate, _ = self.av_cross_attn_video_a2v_gate(
             timestep.flatten() * timestep_cross_attn_gate_scale_factor,
             hidden_dtype=hidden_states.dtype,
         )
+        print_shape("video_cross_attn_a2v_gate flat", video_cross_attn_a2v_gate)
         video_cross_attn_scale_shift = video_cross_attn_scale_shift.reshape(
             batch_size, -1, video_cross_attn_scale_shift.shape[-1]
         )
+        print_shape("video_cross_attn_scale_shift reshaped", video_cross_attn_scale_shift)
         video_cross_attn_a2v_gate = video_cross_attn_a2v_gate.reshape(batch_size, -1, video_cross_attn_a2v_gate.shape[-1])
+        print_shape("video_cross_attn_a2v_gate reshaped", video_cross_attn_a2v_gate)
 
         audio_cross_attn_scale_shift, _ = self.av_cross_attn_audio_scale_shift(
             audio_timestep.flatten(),
             hidden_dtype=audio_hidden_states.dtype,
         )
+        print_shape("audio_cross_attn_scale_shift flat", audio_cross_attn_scale_shift)
         audio_cross_attn_v2a_gate, _ = self.av_cross_attn_audio_v2a_gate(
             audio_timestep.flatten() * timestep_cross_attn_gate_scale_factor,
             hidden_dtype=audio_hidden_states.dtype,
         )
+        print_shape("audio_cross_attn_v2a_gate flat", audio_cross_attn_v2a_gate)
         audio_cross_attn_scale_shift = audio_cross_attn_scale_shift.reshape(
             batch_size, -1, audio_cross_attn_scale_shift.shape[-1]
         )
+        print_shape("audio_cross_attn_scale_shift reshaped", audio_cross_attn_scale_shift)
         audio_cross_attn_v2a_gate = audio_cross_attn_v2a_gate.reshape(batch_size, -1, audio_cross_attn_v2a_gate.shape[-1])
+        print_shape("audio_cross_attn_v2a_gate reshaped", audio_cross_attn_v2a_gate)
 
         # 4. Prepare prompt embeddings
         encoder_hidden_states = self.caption_projection(encoder_hidden_states)
+        print_shape("encoder_hidden_states pre reshape", encoder_hidden_states)
         encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
+        print_shape("encoder_hidden_states after projection", encoder_hidden_states)
 
         audio_encoder_hidden_states = self.audio_caption_projection(audio_encoder_hidden_states)
+        print_shape("audio_encoder_hidden_states pre reshape", audio_encoder_hidden_states)
         audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
+        print_shape("audio_encoder_hidden_states after projection", audio_encoder_hidden_states)
 
         # 5. Run transformer blocks
         for block in self.transformer_blocks:
+            print(f"--- MAXDIFF Block {i} ---")
             hidden_states, audio_hidden_states = block(
                 hidden_states=hidden_states,
                 audio_hidden_states=audio_hidden_states,
@@ -753,23 +870,37 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                 encoder_attention_mask=encoder_attention_mask,
                 audio_encoder_attention_mask=audio_encoder_attention_mask,
             )
+        print_shape("Model hidden_states after blocks", hidden_states)
+        print_shape("Model audio_hidden_states after blocks", audio_hidden_states)
 
         # 6. Output layers
         scale_shift_values = jnp.expand_dims(self.scale_shift_table, axis=(0, 1)) + jnp.expand_dims(embedded_timestep, axis=2)
+        print_shape("Output scale_shift_values", scale_shift_values)
         shift = scale_shift_values[:, :, 0, :]
         scale = scale_shift_values[:, :, 1, :]
+        print_shape("Output shift", shift)
+        print_shape("Output scale", scale)
 
         hidden_states = self.norm_out(hidden_states)
+        print_shape("hidden_states after norm_out", hidden_states)
         hidden_states = hidden_states * (1 + scale) + shift
+        print_shape("hidden_states after output mod", hidden_states)
         output = self.proj_out(hidden_states)
+        print_shape("Model Output sample", output)
 
         audio_scale_shift_values = jnp.expand_dims(self.audio_scale_shift_table, axis=(0, 1)) + jnp.expand_dims(audio_embedded_timestep, axis=2)
+        print_shape("Audio Output scale_shift_values", audio_scale_shift_values)
         audio_shift = audio_scale_shift_values[:, :, 0, :]
         audio_scale = audio_scale_shift_values[:, :, 1, :]
+        print_shape("Audio Output shift", audio_shift)
+        print_shape("Audio Output scale", audio_scale)
 
         audio_hidden_states = self.audio_norm_out(audio_hidden_states)
+        print_shape("audio_hidden_states after norm_out", audio_hidden_states)
         audio_hidden_states = audio_hidden_states * (1 + audio_scale) + audio_shift
+        print_shape("audio_hidden_states after output mod", audio_hidden_states)
         audio_output = self.audio_proj_out(audio_hidden_states)
+        print_shape("Model Output audio_sample", audio_output)
 
         if not return_dict:
             return (output, audio_output)
