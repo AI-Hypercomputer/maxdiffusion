@@ -164,17 +164,11 @@ class WanPipelineI2V_2_1(WanPipeline):
       max_logging.log(f"Adjusted num_frames to: {num_frames}")
     num_frames = max(num_frames, 1)
 
-    prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size = self._prepare_model_inputs_i2v(
-        prompt,
-        image,
-        negative_prompt,
-        num_videos_per_prompt,
-        max_sequence_length,
-        prompt_embeds,
-        negative_prompt_embeds,
-        image_embeds,
-        last_image,
-    )
+    # Calculate batch size early for prepare_latents dispatch overlap
+    if prompt is not None and isinstance(prompt, str):
+      prompt = [prompt]
+    batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
+    effective_batch_size = batch_size * num_videos_per_prompt
 
     def _process_image_input(img_input, height, width, num_videos_per_prompt):
       if img_input is None:
@@ -187,6 +181,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         jax_array = jnp.repeat(jax_array, num_videos_per_prompt, axis=0)
       return jax_array
 
+    # 1. Dispatch VAE (Step 3) - Prepare Latents
     image_tensor = _process_image_input(image, height, width, effective_batch_size)
     last_image_tensor = _process_image_input(last_image, height, width, effective_batch_size)
 
@@ -194,17 +189,34 @@ class WanPipelineI2V_2_1(WanPipeline):
       rng = jax.random.key(self.config.seed)
     latents_rng, inference_rng = jax.random.split(rng)
 
+    # Use config.activations_dtype since image_embeds is not yet available
+    latents_dtype = self.config.activations_dtype
+
     latents, condition, first_frame_mask = self.prepare_latents(
         image=image_tensor,
         batch_size=effective_batch_size,
         height=height,
         width=width,
         num_frames=num_frames,
-        dtype=image_embeds.dtype,
+        dtype=latents_dtype,
         rng=latents_rng,
         latents=latents,
         last_image=last_image_tensor,
         num_videos_per_prompt=num_videos_per_prompt,
+    )
+
+    # 2. Dispatch Text & CLIP (Steps 1 & 2)
+    # This might block on CPU/Text encoding, but VAE is already dispatched!
+    prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size = self._prepare_model_inputs_i2v(
+        prompt,
+        image,
+        negative_prompt,
+        num_videos_per_prompt,
+        max_sequence_length,
+        prompt_embeds,
+        negative_prompt_embeds,
+        image_embeds,
+        last_image,
     )
 
     scheduler_state = self.scheduler.set_timesteps(
