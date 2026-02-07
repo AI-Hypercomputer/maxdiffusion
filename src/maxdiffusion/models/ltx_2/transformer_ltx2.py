@@ -531,7 +531,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
 
         # 4. Rotary Positional Embeddings (RoPE)
         self.rope = LTX2AudioVideoRotaryPosEmbed(
-            dim=self.attention_head_dim, # Per head dim
+            dim=self.inner_dim,
             patch_size=self.patch_size,
             patch_size_t=self.patch_size_t,
             base_num_frames=self.pos_embed_max_pos,
@@ -547,7 +547,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
             dtype=self.dtype,
         )
         self.audio_rope = LTX2AudioVideoRotaryPosEmbed(
-            dim=self.audio_attention_head_dim, # Per head dim
+            dim=self.audio_inner_dim, # Per head dim
             patch_size=self.audio_patch_size,
             patch_size_t=self.audio_patch_size_t,
             base_num_frames=self.audio_pos_embed_max_pos,
@@ -565,7 +565,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
 
         cross_attn_pos_embed_max_pos = max(self.pos_embed_max_pos, self.audio_pos_embed_max_pos)
         self.cross_attn_rope = LTX2AudioVideoRotaryPosEmbed(
-            dim=self.attention_head_dim, # Per head dim
+            dim=self.audio_cross_attention_dim,
             patch_size=self.patch_size,
             patch_size_t=self.patch_size_t,
             base_num_frames=cross_attn_pos_embed_max_pos,
@@ -580,7 +580,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
              dtype=self.dtype,
         )
         self.cross_attn_audio_rope = LTX2AudioVideoRotaryPosEmbed(
-            dim=self.audio_attention_head_dim, # Per head dim
+            dim=self.audio_cross_attention_dim,
             patch_size=self.audio_patch_size,
             patch_size_t=self.audio_patch_size_t,
             base_num_frames=cross_attn_pos_embed_max_pos,
