@@ -180,7 +180,7 @@ class LTX2TransformerTest(unittest.TestCase):
                 patch_size=self.patch_size,
                 patch_size_t=self.patch_size_t,
                 num_attention_heads=2,
-                attention_head_dim=8,
+                attention_head_dim=16,
                 num_layers=1, # 1 layer for speed
                 caption_channels=32, # small for test
                 cross_attention_dim=32,
