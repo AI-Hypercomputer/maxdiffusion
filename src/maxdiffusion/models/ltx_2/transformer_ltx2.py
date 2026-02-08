@@ -942,7 +942,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                 rematted_scan_fn,
                 length=self.num_layers,
                 in_axes=(nnx.Carry, 0),
-                out_axes=(nnx.Carry, None),
+                out_axes=(nnx.Carry, 0),
                 transform_metadata={nnx.PARTITION_NAME: "layers"}
             )(carry, self.transformer_blocks)
         else:
