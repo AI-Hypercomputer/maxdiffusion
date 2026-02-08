@@ -31,8 +31,8 @@ def apply_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
     Logic matches LTX-2 PyTorch: pairs neighbors [-x2, x1].
     
     Args:
-        x: Input tensor [B, S, H, D]
-        freqs: Tuple of (cos, sin), broadcasting to [B, S, 1, D] or [B, S, H, D]
+        x: Input tensor [..., D]
+        freqs: Tuple of (cos, sin), broadcasting to [..., D]
     """
     cos, sin = freqs
     
@@ -71,7 +71,7 @@ class LTX2RotaryPosEmbed(nnx.Module):
                  - For Video 3D: Num_Axes=3 (Time, Height, Width)
                  - For Audio 1D: Num_Axes=1 (Time)
         Returns:
-            cos, sin: [B, S, 1, Dim] (Ready for broadcasting across heads)
+            cos, sin: [B, S, Dim]
         """
         num_axes = ids.shape[-1]
         dim_per_axis = self.dim // num_axes
@@ -97,8 +97,7 @@ class LTX2RotaryPosEmbed(nnx.Module):
         cos = jnp.repeat(cos, 2, axis=-1)
         sin = jnp.repeat(sin, 2, axis=-1)
         
-        # Add head dim for broadcasting: [B, S, 1, Inner_Dim]
-        return cos[:, :, None, :], sin[:, :, None, :]
+        return cos, sin
 
 
 class LTX2Attention(nnx.Module):
@@ -151,18 +150,6 @@ class LTX2Attention(nnx.Module):
             dtype=dtype,
         )
 
-    def _reshape_rope(self, rope_emb: Tuple[Array, Array]) -> Tuple[Array, Array]:
-        """Reshapes [B, S, 1, InnerDim] -> [B, S, Heads, DimHead] for broadcasting."""
-        cos, sin = rope_emb
-        # If tests pass already shaped tensors, return as is
-        if cos.ndim == 4 and cos.shape[-2] == self.heads and cos.shape[-1] == self.dim_head:
-             return cos, sin
-             
-        # Reshape: [B, S, 1, H*D] -> [B, S, H, D]
-        # We assume the last dimension is InnerDim = Heads * DimHead
-        new_shape = cos.shape[:-2] + (self.heads, self.dim_head)
-        return cos.reshape(new_shape), sin.reshape(new_shape)
-
     def __call__(
         self,
         hidden_states: Array,
@@ -184,33 +171,17 @@ class LTX2Attention(nnx.Module):
         query = self.norm_q(query)
         key = self.norm_k(key)
 
-        # 3. Reshape to Heads [B, S, H, D]
-        query = query.reshape(*query.shape[:-1], self.heads, self.dim_head)
-        key = key.reshape(*key.shape[:-1], self.heads, self.dim_head)
-        value = value.reshape(*value.shape[:-1], self.heads, self.dim_head)
-
-        # 4. Apply RoPE
+        # 3. Apply RoPE to tensors of shape [B, S, InnerDim]
+        # Frequencies are shape [B, S, InnerDim]
         if rotary_emb is not None:
-            # Reshape [1, Inner] -> [H, D]
-            q_rope = self._reshape_rope(rotary_emb)
-            query = apply_rotary_emb(query, q_rope)
-            
-            # Key RoPE Logic
+            query = apply_rotary_emb(query, rotary_emb)
             if k_rotary_emb is not None:
-                # Explicit Key RoPE (e.g. Cross-Modal)
-                k_rope = self._reshape_rope(k_rotary_emb)
-                key = apply_rotary_emb(key, k_rope)
-            elif encoder_hidden_states is None: 
-                # Self-Attention: Re-use q_rope
-                key = apply_rotary_emb(key, q_rope)
+                key = apply_rotary_emb(key, k_rotary_emb)
+            elif encoder_hidden_states is None:
+                key = apply_rotary_emb(key, rotary_emb)
 
-        # 5. Flatten back for AttentionOp [B, S, H*D]
-        # NNXAttentionOp expects flattened input for flash kernel
-        query = query.reshape(*query.shape[:-2], self.inner_dim)
-        key = key.reshape(*key.shape[:-2], self.inner_dim)
-        value = value.reshape(*value.shape[:-2], self.inner_dim)
-
-        # 6. Attention
+        # 4. Attention
+        # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
         attn_output = self.attention_op.apply_attention(
             query=query, key=key, value=value, attention_mask=attention_mask
         )
