@@ -17,147 +17,167 @@ import unittest
 from flax import nnx
 import jax
 import jax.numpy as jnp
-from ..models.ltx2.attention_ltx2 import LTX2Attention, LTX2AudioVideoRotaryPosEmbed
+# Adjust this import to match your file structure
+from ..models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 
 
 class LTX2AttentionTest(unittest.TestCase):
 
-  def test_rope_video_shapes(self):
+  def test_rope_video_shapes_3d(self):
+    """Test 3D RoPE generation for Video (Time, Height, Width)."""
     dim = 64
-    rope = LTX2AudioVideoRotaryPosEmbed(
-        dim=dim,
-        patch_size=1,
-        patch_size_t=1,
-        base_num_frames=8,
-        base_height=32,
-        base_width=32,
-        scale_factors=(1, 1, 1),  # Simplified scales
-        modality="video",
-        rope_type="interleaved",
-    )
+    # LTX-2 splits dim across axes. 60 is divisible by 3 (20 per axis).
+    dim = 60
+    rope = LTX2RotaryPosEmbed(dim=dim, theta=10000.0)
 
     batch_size = 2
-    num_frames = 8
-    height = 32
-    width = 32
+    seq_len = 16
+    
+    # Create dummy position IDs for [Time, Height, Width]
+    # Shape: [B, S, 3]
+    ids = jnp.zeros((batch_size, seq_len, 3), dtype=jnp.float32)
 
-    # We need to simulate prepare_video_coords call (usually done in model forward)
-    # But here we can call it manually.
-    coords = rope.prepare_video_coords(batch_size, num_frames, height, width)
-    # coords shape: [B, 3, patches, 2]
-    # patches = 8*32*32 = 8192
+    cos, sin = rope(ids)
 
-    self.assertEqual(coords.shape[0], batch_size)
-    # prepare_video_coords returns [B, 3, P, 2]
-    self.assertEqual(coords.shape[1], 3)
+    # Expected output: [B, S, 1, D] (The 1 is for broadcasting across heads)
+    # This confirms the RoPE module outputs the correct broadcasting shape.
+    self.assertEqual(cos.shape, (batch_size, seq_len, 1, dim))
+    self.assertEqual(sin.shape, (batch_size, seq_len, 1, dim))
 
-    cos, sin = rope(coords)
-
-    # Check shapes
-    # interleaved: [B, patches, dim] (or padded)
-    # freqs from rope:
-    # output: [B, Heads, T, D/2] ?? No wait, let's check LTX2AudioVideoRotaryPosEmbed.__call__ return
-    # It returns cos_freqs, sin_freqs
-    # If interleaved: [B, P, dim] (padded if needed)
-    # If split: [B, H, P, dim/2] roughly
-
-    # Let's check what __call__ actually returns for interleaved
-    # `freqs_out` is [B, P, steps, ndim] -> flatten -> [B, P, steps*ndim] = [B, P, dim//2]
-    # repeat -> [B, P, dim]
-
-    # Oh wait, prepare_video_coords in my optimized code returns [B, 3, P, 2].
-    # dimensions of grid: [B, 3, P].
-    # Oh wait, line 268: `grid = coords / max_positions_b`
-    # `coords` is passed to `__call__`.
-    # If `coords` is [B, 3, P, 2], `coords.ndim == 4`.
-    # Line 253: `coords = (coords[..., 0] + coords[..., 1]) / 2.0` -> [B, 3, P].
-
-    # So `grid` is [B, 3, P].
-
-    self.assertEqual(cos.shape[-1], dim)
-    self.assertEqual(sin.shape[-1], dim)
-    # self.assertEqual(cos.shape[1], num_frames * height * width) # P
-
-  def test_rope_audio_shapes(self):
+  def test_rope_audio_shapes_1d(self):
+    """Test 1D RoPE generation for Audio."""
     dim = 64
-    rope = LTX2AudioVideoRotaryPosEmbed(
-        dim=dim,
-        modality="audio",
-        rope_type="interleaved",
-        scale_factors=(1,),
-    )
+    rope = LTX2RotaryPosEmbed(dim=dim, theta=10000.0)
 
     batch_size = 2
-    num_frames = 100
+    seq_len = 20
+    
+    # Create dummy position IDs for [Time]
+    # Shape: [B, S, 1]
+    ids = jnp.zeros((batch_size, seq_len, 1), dtype=jnp.float32)
 
-    coords = rope.prepare_audio_coords(batch_size, num_frames)
-    # Coords: [B, 1, patches, 2]
+    cos, sin = rope(ids)
 
-    cos, sin = rope(coords)
-    self.assertEqual(cos.shape[-1], dim)
+    # Expected output: [B, S, 1, D]
+    self.assertEqual(cos.shape, (batch_size, seq_len, 1, dim))
+    self.assertEqual(sin.shape, (batch_size, seq_len, 1, dim))
 
-  def test_attention_forward(self):
-    dim = 128
+  def test_self_attention_forward(self):
+    """Test basic Self-Attention forward pass (Video <-> Video)."""
+    dim = 64
     heads = 4
-    dim_head = 32
+    dim_head = 16 # inner_dim = 64
+    
     model = LTX2Attention(
         query_dim=dim,
         heads=heads,
         dim_head=dim_head,
         rngs=nnx.Rngs(0),
     )
-
-    # Modify attention_op to use dot_product for CPU testing
-    model.attention_op.attention_kernel = "dot_product"
-
+    
+    # Standard input [B, S, D]
     x = jnp.ones((1, 16, dim))
 
-    # Simple forward
-    out = model(x)
-
+    # Forward
+    out = model(hidden_states=x)
+    
     self.assertEqual(out.shape, (1, 16, dim))
 
-  def test_attention_with_rope(self):
-    dim = 128
+  def test_cross_attention_forward(self):
+    """Test Cross-Attention forward pass (Video Query <-> Audio Context)."""
+    query_dim = 64
+    context_dim = 128 # Audio latents often have different dim
     heads = 4
-    dim_head = 32
+    dim_head = 16
+    
+    model = LTX2Attention(
+        query_dim=query_dim,
+        heads=heads,
+        dim_head=dim_head,
+        context_dim=context_dim, # Triggers cross-attention init
+        rngs=nnx.Rngs(0),
+    )
+    
+    x = jnp.ones((1, 16, query_dim))       # Video
+    context = jnp.ones((1, 20, context_dim)) # Audio
 
-    # Rope logic in LTX2Attention:
-    # It accepts `query_rotary_emb` which is usually (cos, sin).
-    # If interleaved, apply_interleaved_rotary_emb(query, rope)
-    # query: [B, S, H*D].
-    # apply_interleaved_rotary_emb expects [..., D].
+    out = model(hidden_states=x, encoder_hidden_states=context)
+    
+    self.assertEqual(out.shape, (1, 16, query_dim))
 
-    # LTX2AudioVideoRotaryPosEmbed.__call__ returns cos, sin.
-    # shapes?
-    # If interleaved: [B, P, dim].
-    # If query is [B, P, H*D], and rope is [B, P, dim]?
-    # H*D usually equals dim if rope_dim covers all heads.
-    # LTX2Attention sets inner_dim = dim_head * heads.
-    # So query is [B, S, inner_dim].
-    # So rope should match inner_dim?
-    # Yes, LTX2AudioVideoRotaryPosEmbed should be initialized with dim = dim_head * heads.
-
-    rope_dim = dim_head * heads
-
+  def test_attention_with_rope_integration(self):
+    """Test that passing RoPE embeddings works without shape errors."""
+    dim = 64
+    heads = 4
+    dim_head = 16
+    
     model = LTX2Attention(
         query_dim=dim,
         heads=heads,
         dim_head=dim_head,
         rngs=nnx.Rngs(0),
     )
-    model.attention_op.attention_kernel = "dot_product"
-
-    x = jnp.ones((1, 8, dim))
-
-    # Fake rope
-    cos = jnp.ones((1, 8, rope_dim))
-    sin = jnp.zeros((1, 8, rope_dim))
+    
+    x = jnp.ones((2, 8, dim))
+    
+    # Create manual RoPE embeddings matching the output of LTX2RotaryPosEmbed
+    # Shape: [B, S, 1, inner_dim]
+    cos = jnp.ones((2, 8, 1, 64))
+    sin = jnp.ones((2, 8, 1, 64))
     rope_emb = (cos, sin)
 
-    out = model(x, image_rotary_emb=rope_emb)
-    self.assertEqual(out.shape, (1, 8, dim))
-
+    out = model(hidden_states=x, rotary_emb=rope_emb)
+    self.assertEqual(out.shape, (2, 8, dim))
+    
+  def test_cross_modal_temporal_rope(self):
+    """
+    Test the specific LTX-2 requirement: 
+    Video (Spatial) attends to Audio (Temporal) using Temporal-Only RoPE.
+    """
+    query_dim = 64
+    heads = 4
+    dim_head = 16
+    
+    model = LTX2Attention(
+        query_dim=query_dim,
+        heads=heads,
+        dim_head=dim_head,
+        context_dim=query_dim, 
+        rngs=nnx.Rngs(0),
+    )
+    
+    x = jnp.ones((1, 16, query_dim))      # Video
+    context = jnp.ones((1, 20, query_dim)) # Audio
+    
+    # 1. Generate 3D IDs for Video (Time, Height, Width)
+    video_ids_3d = jnp.zeros((1, 16, 3))
+    
+    # 2. Extract ONLY Time axis for Cross-Attention RoPE
+    # The pipeline must do this slicing: ids[:, :, 0:1]
+    video_ids_temporal = video_ids_3d[..., 0:1] # Shape [1, 16, 1]
+    
+    # 3. Generate 1D IDs for Audio
+    audio_ids = jnp.zeros((1, 20, 1))
+    
+    rope_gen = LTX2RotaryPosEmbed(dim=64)
+    
+    # Generate RoPE using only the temporal IDs
+    q_rope = rope_gen(video_ids_temporal) 
+    k_rope = rope_gen(audio_ids)
+    
+    # Verify dimensions match for broadcasting
+    self.assertEqual(q_rope[0].shape, (1, 16, 1, 64))
+    self.assertEqual(k_rope[0].shape, (1, 20, 1, 64))
+    
+    # Forward Pass
+    out = model(
+        hidden_states=x, 
+        encoder_hidden_states=context, 
+        rotary_emb=q_rope, 
+        k_rotary_emb=k_rope
+    )
+    
+    self.assertEqual(out.shape, (1, 16, query_dim))
 
 if __name__ == "__main__":
   unittest.main()
