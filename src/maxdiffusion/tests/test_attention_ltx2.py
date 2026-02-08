@@ -381,7 +381,7 @@ class LTX2AttentionTest(unittest.TestCase):
         
         # Switch JAX model to use flash attention for this test
         jax_model.attention_op.attention_kernel = "flash"
-        jax_model.attention_op.mesh = Mesh(jax.devices(), ('context',))
+        jax_model.attention_op.mesh = Mesh(np.array(jax.devices()).reshape(1,-1), ('data', 'context'))
 
         np_x = np.random.randn(self.B, self.S, self.D).astype(np.float32)
         
