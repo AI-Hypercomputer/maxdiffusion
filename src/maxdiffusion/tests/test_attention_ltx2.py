@@ -21,8 +21,9 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import pandas as pd
+from jax.sharding import Mesh
 
-# Set JAX to use float32 for precision checks
+# Set JAX to use float32 for higher precision checks
 jax.config.update("jax_default_matmul_precision", "float32")
 
 # ==========================================
@@ -44,11 +45,11 @@ class PytorchLTX2RotaryPosEmbed(torch.nn.Module):
         num_axes = ids.shape[-1]
         dim_per_axis = self.dim // num_axes
         
-        freqs_list = []
         # Standard RoPE frequencies: theta^(-2i/d)
         freq_indices = torch.arange(0, dim_per_axis, 2, dtype=torch.float32)
         inv_freq = 1.0 / (self.theta ** (freq_indices / dim_per_axis))
         
+        freqs_list = []
         for i in range(num_axes):
             axis_pos = ids[..., i] # [B, S]
             # Outer product: [B, S, 1] * [1, 1, D/2] -> [B, S, D/2]
@@ -65,7 +66,7 @@ class PytorchLTX2RotaryPosEmbed(torch.nn.Module):
         cos = torch.repeat_interleave(cos, 2, dim=-1)
         sin = torch.repeat_interleave(sin, 2, dim=-1)
         
-        # Add head dim: [B, S, 1, D]
+        # Add head dim for broadcasting: [B, S, 1, D]
         return cos.unsqueeze(2), sin.unsqueeze(2)
 
 
@@ -77,7 +78,7 @@ def apply_rotary_emb_pt(x, cos, sin):
     x1, x2 = x_reshaped.unbind(-1)
     x_rotated = torch.stack((-x2, x1), dim=-1).view(b, h, s, d)
     
-    # Cast to float32 for rotation parity
+    # Cast to float32 for rotation parity with JAX
     orig_dtype = x.dtype
     x_f32 = x.to(torch.float32)
     rot_f32 = x_rotated.to(torch.float32)
@@ -108,7 +109,7 @@ class PytorchLTX2Attention(torch.nn.Module):
             torch.nn.Identity()
         )
 
-    def forward(self, x, context=None, q_rope=None, k_rope=None):
+    def forward(self, x, context=None, q_rope=None, k_rope=None, mask=None):
         q = self.to_q(x)
         ctx = x if context is None else context
         k = self.to_k(ctx)
@@ -133,15 +134,19 @@ class PytorchLTX2Attention(torch.nn.Module):
              k_cos, k_sin = k_rope
              k_h = apply_rotary_emb_pt(k_h, k_cos, k_sin)
 
-        out = torch.nn.functional.scaled_dot_product_attention(q_h, k_h, v_h, dropout_p=0.0)
+        # PyTorch Attention expects mask in [B, H, S, S] or additive
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q_h, k_h, v_h, attn_mask=mask, dropout_p=0.0
+        )
+        
         out = out.transpose(1, 2).reshape(b, s_q, -1)
         
-        return self.to_out(out)
+        return self.to_out(out), (q, k, v, q_norm, k_norm, out)
 
 # ==========================================
 # 2. JAX Imports
 # ==========================================
-from ..models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
+from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 
 class LTX2AttentionTest(unittest.TestCase):
     
@@ -192,48 +197,54 @@ class LTX2AttentionTest(unittest.TestCase):
         return pt_model, jax_model
 
     # ------------------------------------------
-    # 1. RoPE Frequency Parity Test
+    # 1. Output Shape Tests
+    # ------------------------------------------
+    def test_shapes(self):
+        """Verifies JAX model handles Video (3D) and Audio (1D) shapes."""
+        model = LTX2Attention(64, 4, 16, 64, rngs=self.rng, attention_kernel="dot_product")
+        
+        # Video: [B, S, D]
+        x_vid = jnp.zeros((1, 128, 64))
+        out_vid = model(x_vid)
+        self.assertEqual(out_vid.shape, (1, 128, 64))
+        
+        # Audio Cross-Attn: [B, S_vid, D] -> [B, S_aud, D]
+        x_aud = jnp.zeros((1, 32, 64))
+        out_cross = model(x_vid, encoder_hidden_states=x_aud)
+        self.assertEqual(out_cross.shape, (1, 128, 64)) 
+        print("\n[PASS] Shape Tests Passed.")
+
+    # ------------------------------------------
+    # 2. RoPE Frequency Parity
     # ------------------------------------------
     def test_rope_frequency_parity(self):
-        """
-        Verifies that LTX2RotaryPosEmbed (JAX) generates the EXACT same 
-        frequencies as the PyTorch reference for a given input ID set.
-        """
-        dim = 60 # Divisible by 3 for 3D test
-        
+        """Verifies JAX RoPE Frequencies match PyTorch."""
+        dim = 60
         rope_pt = PytorchLTX2RotaryPosEmbed(dim=dim)
         rope_jax = LTX2RotaryPosEmbed(dim=dim)
         
-        # Create random IDs [B, S, 3]
         np_ids = np.random.randint(0, 100, (2, 16, 3)).astype(np.float32)
         
-        # Run PyTorch
         pt_cos, pt_sin = rope_pt(torch.from_numpy(np_ids))
-        
-        # Run JAX
         jax_cos, jax_sin = rope_jax(jnp.array(np_ids))
         
-        # Compare
-        pt_cos_np = pt_cos.numpy()
-        jax_cos_np = np.array(jax_cos)
-        
         # 1e-5 tolerance for freq generation math
-        np.testing.assert_allclose(pt_cos_np, jax_cos_np, atol=1e-5)
+        np.testing.assert_allclose(pt_cos.numpy(), np.array(jax_cos), atol=1e-5)
         np.testing.assert_allclose(pt_sin.numpy(), np.array(jax_sin), atol=1e-5)
-        print("\n[PASS] RoPE Frequency Generation matches PyTorch.")
+        print("[PASS] RoPE Frequency Parity Verified.")
 
     # ------------------------------------------
-    # 2. Strict Parity Test (Full Model)
+    # 3. Strict Parity Test (Full Model, BF16)
     # ------------------------------------------
     def test_parity_bf16_strict(self):
-        """Checks if JAX(TPU) matches PyTorch(CPU) in BF16."""
+        """Checks if JAX matches PyTorch in BF16."""
         pt_model, jax_model = self._init_and_sync_models(dtype=jnp.bfloat16)
         
         pt_in = torch.from_numpy(self.np_x).to(device="cpu", dtype=torch.bfloat16)
         jax_in = jnp.array(self.np_x).astype(jnp.bfloat16)
 
         with torch.no_grad():
-            pt_out = pt_model(pt_in)
+            pt_out, _ = pt_model(pt_in)
             
         jax_out = jax_model(jax_in)
         
@@ -247,40 +258,18 @@ class LTX2AttentionTest(unittest.TestCase):
         print("\n[PASS] BF16 Strict Parity Test passed.")
 
     # ------------------------------------------
-    # 3. Layer-wise Stats (Corrected Shape Logic)
+    # 4. Layer-wise Diagnostics
     # ------------------------------------------
     def test_layer_wise_stats(self):
-        """Prints diagnostic stats for every layer."""
+        """Prints diagnostic stats for every layer (Bfloat16)."""
         pt_model, jax_model = self._init_and_sync_models(dtype=jnp.bfloat16)
         
         pt_in = torch.from_numpy(self.np_x).to(device="cpu", dtype=torch.bfloat16)
         jax_in = jnp.array(self.np_x).astype(jnp.bfloat16)
 
-        # 1. Run PyTorch Step-by-Step
+        # 1. Run PyTorch Step-by-Step (Get intermediates)
         with torch.no_grad():
-            # Projections
-            pt_q = pt_model.to_q(pt_in)
-            pt_k = pt_model.to_k(pt_in)
-            pt_v = pt_model.to_v(pt_in)
-            
-            # Norms
-            pt_qn = pt_model.q_norm(pt_q)
-            pt_kn = pt_model.k_norm(pt_k)
-            
-            # Attention Prep (Reshape -> Transpose)
-            b, s, _ = pt_qn.shape
-            pt_q_h = pt_qn.view(b, s, self.heads, self.dim_head).transpose(1, 2)
-            pt_k_h = pt_kn.view(b, s, self.heads, self.dim_head).transpose(1, 2)
-            pt_v_h = pt_v.view(b, s, self.heads, self.dim_head).transpose(1, 2)
-            
-            # Attention Op
-            pt_attn_out = torch.nn.functional.scaled_dot_product_attention(pt_q_h, pt_k_h, pt_v_h)
-            
-            # Reshape Back
-            pt_attn_flat = pt_attn_out.transpose(1, 2).reshape(b, s, -1)
-            
-            # Output
-            pt_out = pt_model.to_out(pt_attn_flat)
+             pt_out, (pt_q, pt_k, pt_v, pt_qn, pt_kn, pt_attn) = pt_model(pt_in)
 
         # 2. Run JAX Step-by-Step
         jax_q = jax_model.to_q(jax_in)
@@ -290,26 +279,29 @@ class LTX2AttentionTest(unittest.TestCase):
         jax_qn = jax_model.norm_q(jax_q)
         jax_kn = jax_model.norm_k(jax_k)
 
-        # Attention Op: Pass [B, S, Inner_Dim] directly
-        # The LTX2Attention.__call__ flattens inputs before calling apply_attention, 
-        # so we pass the flattened (Inner_Dim) tensors here.
+        # Pass 3D tensors [B, S, Inner_Dim] directly to attention op
+        # NNXAttentionOp handles the internal logic for the kernel
         jax_attn = jax_model.attention_op.apply_attention(jax_qn, jax_kn, jax_v)
         jax_out = jax_model.to_out(jax_attn)
 
-        # 3. Print Comparison Table
+        # 3. Build & Print Comparison Table
         stats = []
         def add_stat(name, pt_t, jax_t):
-            pt_val = pt_t.float().numpy() if isinstance(pt_t, torch.Tensor) else pt_t
+            # Ensure pt_t is a tensor before calling .float().numpy()
+            if isinstance(pt_t, torch.Tensor):
+                pt_val = pt_t.float().numpy()
+            else:
+                pt_val = pt_t
+            
             jax_val = np.array(jax_t, dtype=np.float32)
+            
             stats.append({
                 "Layer": name,
                 "PT Mean": f"{pt_val.mean():.4f}",
                 "JAX Mean": f"{jax_val.mean():.4f}",
                 "PT Min": f"{pt_val.min():.4f}",
                 "JAX Min": f"{jax_val.min():.4f}",
-                "PT Max": f"{pt_val.max():.4f}",
-                "JAX Max": f"{jax_val.max():.4f}",
-                "Diff (Mean L1)": f"{np.abs(pt_val - jax_val).mean():.6f}"
+                "Diff (L1)": f"{np.abs(pt_val - jax_val).mean():.6f}"
             })
 
         add_stat("Query Proj", pt_q, jax_q)
@@ -317,18 +309,103 @@ class LTX2AttentionTest(unittest.TestCase):
         add_stat("Value Proj", pt_v, jax_v)
         add_stat("Query Norm", pt_qn, jax_qn)
         add_stat("Key Norm", pt_kn, jax_kn)
-        add_stat("Attn Output", pt_attn_flat, jax_attn)
+        add_stat("Attn Output", pt_attn, jax_attn)
         add_stat("Final Output", pt_out, jax_out)
         
         df = pd.DataFrame(stats)
-        print("\n[DIAGNOSTIC] Layer-wise Stats (CPU vs TPU BFloat16):")
+        print("\n[DIAGNOSTIC] Layer-wise Stats:")
         print(df.to_string(index=False))
+
     # ------------------------------------------
-    # 4. Cross-Attention + RoPE Integration
+    # 5. Cross-Attention + RoPE Integration
     # ------------------------------------------
     def test_cross_attn_rope_integration(self):
-        """Verifies Video->Audio cross-attention with RoPE."""
+        """Verifies Video->Audio cross-attention with RoPE (Float32)."""
         S_Q, S_KV = 16, 20
         pt_model, jax_model = self._init_and_sync_models(dtype=jnp.float32)
 
         np_x = np.random.randn(self.B, S_Q, self.D).astype(np.float32)
+        np_ctx = np.random.randn(self.B, S_KV, self.D).astype(np.float32)
+        
+        rope_gen_pt = PytorchLTX2RotaryPosEmbed(dim=64)
+        
+        ids_q = torch.randint(0, 100, (self.B, S_Q, 1))
+        ids_k = torch.randint(0, 100, (self.B, S_KV, 1))
+        
+        q_cos_pt, q_sin_pt = rope_gen_pt(ids_q.float())
+        k_cos_pt, k_sin_pt = rope_gen_pt(ids_k.float())
+
+        def prep_pt(c, s): 
+            c = c.view(self.B, -1, self.heads, self.dim_head).transpose(1, 2)
+            s = s.view(self.B, -1, self.heads, self.dim_head).transpose(1, 2)
+            return c, s
+            
+        pt_q_rope = prep_pt(q_cos_pt, q_sin_pt)
+        pt_k_rope = prep_pt(k_cos_pt, k_sin_pt)
+
+        with torch.no_grad():
+            pt_out, _ = pt_model(
+                torch.from_numpy(np_x), 
+                context=torch.from_numpy(np_ctx),
+                q_rope=pt_q_rope,
+                k_rope=pt_k_rope
+            )
+
+        jax_q_rope = (jnp.array(q_cos_pt.numpy()), jnp.array(q_sin_pt.numpy()))
+        jax_k_rope = (jnp.array(k_cos_pt.numpy()), jnp.array(k_sin_pt.numpy()))
+
+        jax_out = jax_model(
+            jnp.array(np_x),
+            encoder_hidden_states=jnp.array(np_ctx),
+            rotary_emb=jax_q_rope,
+            k_rotary_emb=jax_k_rope
+        )
+
+        diff = np.abs(pt_out.numpy() - np.array(jax_out)).max()
+        print(f"\n[Cross-Attn + RoPE] Max Diff: {diff:.6f}")
+        np.testing.assert_allclose(pt_out.numpy(), np.array(jax_out), atol=1e-5)
+        print("[PASS] Cross-Attention with RoPE Parity Verified.")
+
+    # ------------------------------------------
+    # 6. Attention Mask Parity
+    # ------------------------------------------
+    def test_attention_mask_parity(self):
+        """
+        Verifies attention masks (padding) work identically using FLASH kernel.
+        Flash kernel in attention_flax expects a multiplicative mask [B, S],
+        while PyTorch SDPA expects an additive mask broadcastable to [B,H,S,S].
+        """
+        pt_model, jax_model = self._init_and_sync_models(dtype=jnp.float32)
+        
+        # Switch JAX model to use flash attention for this test
+        jax_model.attention_op.attention_kernel = "flash"
+        jax_model.attention_op.mesh = Mesh(jax.devices(), ('x',))
+
+        np_x = np.random.randn(self.B, self.S, self.D).astype(np.float32)
+        
+        # Create mask pattern: 1 = keep, 0 = mask out
+        # Shape: [B, S]
+        mask_pattern_np = np.random.randint(0, 2, (self.B, self.S)).astype(np.float32)
+        
+        # PyTorch needs ADDITIVE mask: 0 for keep, -inf for mask out
+        # Broadcastable to [B, H, S_q, S_kv]: [1, 1, 1, 16] is ok for B=1,H=4,S=16
+        pt_mask_additive = torch.from_numpy((1.0 - mask_pattern_np) * -1e9)[:, None, None, :]
+        
+        # JAX Flash attention needs MULTIPLICATIVE mask: [1, 16]
+        jax_mask_multiplicative = jnp.array(mask_pattern_np)
+
+        # PyTorch
+        with torch.no_grad():
+            pt_out, _ = pt_model(torch.from_numpy(np_x), mask=pt_mask_additive)
+
+        # JAX
+        jax_out = jax_model(
+            jnp.array(np_x),
+            attention_mask=jax_mask_multiplicative
+        )
+
+        np.testing.assert_allclose(pt_out.numpy(), np.array(jax_out), atol=1e-5)
+        print("[PASS] Attention Mask Parity Verified.")
+
+if __name__ == "__main__":
+    unittest.main()
