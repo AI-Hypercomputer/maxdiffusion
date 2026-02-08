@@ -444,19 +444,21 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
     noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
 
-    model_pred = model(
-        hidden_states=noisy_latents,
-        timestep=timesteps,
-        encoder_hidden_states=encoder_hidden_states,
-        deterministic=False,
-        rngs=nnx.Rngs(dropout_rng),
-    )
+    with jax.named_scope("forward_pass"):
+      model_pred = model(
+          hidden_states=noisy_latents,
+          timestep=timesteps,
+          encoder_hidden_states=encoder_hidden_states,
+          deterministic=False,
+          rngs=nnx.Rngs(dropout_rng),
+      )
 
-    training_target = scheduler.training_target(latents, noise, timesteps)
-    training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
-    loss = (training_target - model_pred) ** 2
-    loss = loss * training_weight
-    loss = jnp.mean(loss)
+    with jax.named_scope("loss"):
+      training_target = scheduler.training_target(latents, noise, timesteps)
+      training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
+      loss = (training_target - model_pred) ** 2
+      loss = loss * training_weight
+      loss = jnp.mean(loss)
 
     return loss
 
