@@ -772,7 +772,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                     names_which_can_be_offloaded=self.names_which_can_be_offloaded,
                 )
                 blocks.append(block)
-            self.transformer_blocks = blocks
+            self.transformer_blocks = nnx.List(blocks)
 
         # 6. Output layers
         self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
