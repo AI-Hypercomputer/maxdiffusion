@@ -22,6 +22,7 @@ import jax.numpy as jnp
 from flax import nnx
 import pandas as pd
 from jax.sharding import Mesh
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
 # Set JAX to use float32 for higher precision checks
 jax.config.update("jax_default_matmul_precision", "float32")
@@ -382,6 +383,16 @@ class LTX2AttentionTest(unittest.TestCase):
         # Switch JAX model to use flash attention for this test
         jax_model.attention_op.attention_kernel = "flash"
         jax_model.attention_op.mesh = Mesh(np.array(jax.devices()).reshape(1,-1), ('data', 'context'))
+        jax_model.attention_op.flash_block_sizes = splash_attention_kernel.BlockSizes(
+            block_q=512,
+            block_kv_compute=128,
+            block_kv=128,
+            block_q_dkv=512,
+            block_kv_dkv=128,
+            block_kv_dkv_compute=128,
+            block_q_dq=512,
+            block_kv_dq=128,
+        )
 
         np_x = np.random.randn(self.B, self.S, self.D).astype(np.float32)
         
