@@ -880,7 +880,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
             scan_fn,
             length=self.num_layers,
             in_axes=(nnx.Carry, 0),
-            out_axes=(nnx.Carry, None),
+            out_axes=(nnx.Carry, 0),
             transform_metadata={nnx.PARTITION_NAME: "layers"}
         )(carry, self.transformer_blocks)
         print_shape("Model hidden_states after blocks", hidden_states)
