@@ -713,7 +713,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         # 5. Transformer Blocks
         # 5. Transformer Blocks
         @nnx.split_rngs(splits=self.num_layers)
-        @nnx.vmap(in_axes=None, out_axes=0, axis_size=self.num_layers, transform_metadata={nnx.PARTITION_NAME: "layers"})
+        @nnx.vmap(in_axes=0, out_axes=0, axis_size=self.num_layers, transform_metadata={nnx.PARTITION_NAME: "layers"})
         def init_block(rngs):
             return LTX2VideoTransformerBlock(
                 rngs=rngs,
@@ -772,7 +772,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                     names_which_can_be_offloaded=self.names_which_can_be_offloaded,
                 )
                 blocks.append(block)
-            self.transformer_blocks = nnx.data(blocks)
+            self.transformer_blocks = blocks
 
         # 6. Output layers
         self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
