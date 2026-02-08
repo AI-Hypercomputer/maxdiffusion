@@ -412,10 +412,11 @@ class LTX2AttentionTest(unittest.TestCase):
             pt_out, _ = pt_model(torch.from_numpy(np_x), mask=pt_mask_additive)
 
         # JAX
-        jax_out = jax_model(
-            jnp.array(np_x),
-            attention_mask=jax_mask_multiplicative
-        )
+        with jax_model.attention_op.mesh:
+            jax_out = jax_model(
+                jnp.array(np_x),
+                attention_mask=jax_mask_multiplicative
+            )
 
         np.testing.assert_allclose(pt_out.numpy(), np.array(jax_out), atol=1e-5)
         print("[PASS] Attention Mask Parity Verified.")
