@@ -8,6 +8,8 @@ from maxdiffusion.models.ltx_2.attention_ltx2 import Attention
 from maxdiffusion.models.ltx_2.rope import LTX2AudioVideoRotaryPosEmbed
 from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
 from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSizeEmbeddings, NNXPixArtAlphaTextProjection
+from maxdiffusion.models.gradient_checkpoint import GradientCheckpointType
+from maxdiffusion.common_types import BlockSizes
 
 def print_shape(name: str, tensor: Optional[jax.Array]):
     if tensor is not None:
@@ -86,6 +88,11 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type: str = "interleaved",
         dtype: jnp.dtype = jnp.float32,
         weights_dtype: jnp.dtype = jnp.float32,
+        mesh: jax.sharding.Mesh = None,
+        remat_policy: str = "None",
+        precision: jax.lax.Precision = None,
+        names_which_can_be_saved: list = [],
+        names_which_can_be_offloaded: list = [],
     ):
         self.dim = dim
         self.norm_eps = norm_eps
@@ -522,6 +529,12 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         rope_type: str = "interleaved",
         dtype: jnp.dtype = jnp.float32,
         weights_dtype: jnp.dtype = jnp.float32,
+        mesh: jax.sharding.Mesh = None,
+        remat_policy: str = "None",
+        precision: jax.lax.Precision = None,
+        names_which_can_be_saved: list = [],
+        names_which_can_be_offloaded: list = [],
+        scan_layers: bool = True,
     ):
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -561,6 +574,12 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         self.rope_type = rope_type
         self.dtype = dtype
         self.weights_dtype = weights_dtype
+        self.mesh = mesh
+        self.remat_policy = remat_policy
+        self.precision = precision
+        self.names_which_can_be_saved = names_which_can_be_saved
+        self.names_which_can_be_offloaded = names_which_can_be_offloaded
+        self.scan_layers = scan_layers
 
         _out_channels = self.out_channels or self.in_channels
         _audio_out_channels = self.audio_out_channels or self.audio_in_channels
@@ -568,8 +587,24 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         audio_inner_dim = self.audio_num_attention_heads * self.audio_attention_head_dim
 
         # 1. Patchification input projections
-        self.proj_in = nnx.Linear(self.in_channels, inner_dim, rngs=rngs, dtype=self.dtype, param_dtype=self.weights_dtype)
-        self.audio_proj_in = nnx.Linear(self.audio_in_channels, audio_inner_dim, rngs=rngs, dtype=self.dtype, param_dtype=self.weights_dtype)
+        self.proj_in = nnx.Linear(
+            self.in_channels,
+            inner_dim,
+            rngs=rngs,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
+            bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",))
+        )
+        self.audio_proj_in = nnx.Linear(
+            self.audio_in_channels,
+            audio_inner_dim,
+            rngs=rngs,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
+            bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",))
+        )
 
         # 2. Prompt embeddings
         self.caption_projection = NNXPixArtAlphaTextProjection(
@@ -601,10 +636,12 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         # 3.3. Output Layer Scale/Shift Modulation parameters
         param_rng = rngs.params()
         self.scale_shift_table = nnx.Param(
-            jax.random.normal(param_rng, (2, inner_dim), dtype=self.weights_dtype) / jnp.sqrt(inner_dim)
+            jax.random.normal(param_rng, (2, inner_dim), dtype=self.weights_dtype) / jnp.sqrt(inner_dim),
+            kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed"))
         )
         self.audio_scale_shift_table = nnx.Param(
-            jax.random.normal(param_rng, (2, audio_inner_dim), dtype=self.weights_dtype) / jnp.sqrt(audio_inner_dim)
+            jax.random.normal(param_rng, (2, audio_inner_dim), dtype=self.weights_dtype) / jnp.sqrt(audio_inner_dim),
+            kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed"))
         )
 
         # 4. Rotary Positional Embeddings (RoPE)
@@ -696,16 +733,38 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                 norm_elementwise_affine=self.norm_elementwise_affine,
                 rope_type=self.rope_type,
                 dtype=self.dtype,
-                weights_dtype=self.weights_dtype
+                weights_dtype=self.weights_dtype,
+                mesh=self.mesh,
+                remat_policy=self.remat_policy,
+                precision=self.precision,
+                names_which_can_be_saved=self.names_which_can_be_saved,
+                names_which_can_be_offloaded=self.names_which_can_be_offloaded,
             )
         self.transformer_blocks = init_block(rngs)
 
         # 6. Output layers
+        self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
         self.norm_out = nnx.LayerNorm(inner_dim, epsilon=1e-6, use_scale=False, rngs=rngs, dtype=self.dtype, param_dtype=self.weights_dtype)
-        self.proj_out = nnx.Linear(inner_dim, _out_channels, rngs=rngs, dtype=self.dtype, param_dtype=self.weights_dtype)
+        self.proj_out = nnx.Linear(
+            inner_dim,
+            _out_channels,
+            rngs=rngs,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
+            bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",))
+        )
 
         self.audio_norm_out = nnx.LayerNorm(audio_inner_dim, epsilon=1e-6, use_scale=False, rngs=rngs, dtype=self.dtype, param_dtype=self.weights_dtype)
-        self.audio_proj_out = nnx.Linear(audio_inner_dim, _audio_out_channels, rngs=rngs, dtype=self.dtype, param_dtype=self.weights_dtype)
+        self.audio_proj_out = nnx.Linear(
+            audio_inner_dim,
+            _audio_out_channels,
+            rngs=rngs,
+            dtype=self.dtype,
+            param_dtype=self.weights_dtype,
+            kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
+            bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",))
+        )
 
     def __call__(
         self,
@@ -852,9 +911,8 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         print_shape("audio_encoder_hidden_states after projection", audio_encoder_hidden_states)
 
         # 5. Run transformer blocks
-        # 5. Run transformer blocks
         def scan_fn(carry, block):
-            hidden_states, audio_hidden_states = carry
+            hidden_states, audio_hidden_states, rngs_carry = carry
             hidden_states, audio_hidden_states = block(
                 hidden_states=hidden_states,
                 audio_hidden_states=audio_hidden_states,
@@ -873,16 +931,40 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                 encoder_attention_mask=encoder_attention_mask,
                 audio_encoder_attention_mask=audio_encoder_attention_mask,
             )
-            return (hidden_states, audio_hidden_states), None
+            return (hidden_states, audio_hidden_states, rngs_carry), None
 
-        carry = (hidden_states, audio_hidden_states)
-        (hidden_states, audio_hidden_states), _ = nnx.scan(
-            scan_fn,
-            length=self.num_layers,
-            in_axes=(nnx.Carry, 0),
-            out_axes=(nnx.Carry, 0),
-            transform_metadata={nnx.PARTITION_NAME: "layers"}
-        )(carry, self.transformer_blocks)
+        if self.scan_layers:
+            rematted_scan_fn = self.gradient_checkpoint.apply(
+                scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+            )
+            carry = (hidden_states, audio_hidden_states, nnx.Rngs(0)) # Placeholder RNGs for now if not used in block
+            (hidden_states, audio_hidden_states, _), _ = nnx.scan(
+                rematted_scan_fn,
+                length=self.num_layers,
+                in_axes=(nnx.Carry, 0),
+                out_axes=(nnx.Carry, 0),
+                transform_metadata={nnx.PARTITION_NAME: "layers"}
+            )(carry, self.transformer_blocks)
+        else:
+             for block in self.transformer_blocks:
+                hidden_states, audio_hidden_states = block(
+                    hidden_states=hidden_states,
+                    audio_hidden_states=audio_hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    audio_encoder_hidden_states=audio_encoder_hidden_states,
+                    temb=temb,
+                    temb_audio=temb_audio,
+                    temb_ca_scale_shift=video_cross_attn_scale_shift,
+                    temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
+                    temb_ca_gate=video_cross_attn_a2v_gate,
+                    temb_ca_audio_gate=audio_cross_attn_v2a_gate,
+                    video_rotary_emb=video_rotary_emb,
+                    audio_rotary_emb=audio_rotary_emb,
+                    ca_video_rotary_emb=video_cross_attn_rotary_emb,
+                    ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
+                    encoder_attention_mask=encoder_attention_mask,
+                    audio_encoder_attention_mask=audio_encoder_attention_mask,
+                )
         print_shape("Model hidden_states after blocks", hidden_states)
         print_shape("Model audio_hidden_states after blocks", audio_hidden_states)
 
