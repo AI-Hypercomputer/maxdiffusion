@@ -713,7 +713,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         # 5. Transformer Blocks
         # 5. Transformer Blocks
         @nnx.split_rngs(splits=self.num_layers)
-        @nnx.vmap(in_axes=0, out_axes=0, transform_metadata={nnx.PARTITION_NAME: "layers"})
+        @nnx.vmap(in_axes=None, out_axes=0, axis_size=self.num_layers, transform_metadata={nnx.PARTITION_NAME: "layers"})
         def init_block(rngs):
             return LTX2VideoTransformerBlock(
                 rngs=rngs,
@@ -725,12 +725,12 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                 audio_num_attention_heads=self.audio_num_attention_heads,
                 audio_attention_head_dim=self.audio_attention_head_dim,
                 audio_cross_attention_dim=self.audio_cross_attention_dim,
-                qk_norm=self.qk_norm,
                 activation_fn=self.activation_fn,
+                qk_norm=self.qk_norm,
                 attention_bias=self.attention_bias,
                 attention_out_bias=self.attention_out_bias,
-                norm_eps=self.norm_eps,
                 norm_elementwise_affine=self.norm_elementwise_affine,
+                norm_eps=self.norm_eps,
                 rope_type=self.rope_type,
                 dtype=self.dtype,
                 weights_dtype=self.weights_dtype,
@@ -740,7 +740,39 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                 names_which_can_be_saved=self.names_which_can_be_saved,
                 names_which_can_be_offloaded=self.names_which_can_be_offloaded,
             )
-        self.transformer_blocks = init_block(rngs)
+
+        if self.scan_layers:
+            self.transformer_blocks = init_block(rngs)
+        else:
+            blocks = []
+            for _ in range(self.num_layers):
+                block = LTX2VideoTransformerBlock(
+                    rngs=rngs,
+                    dim=inner_dim,
+                    num_attention_heads=self.num_attention_heads,
+                    attention_head_dim=self.attention_head_dim,
+                    cross_attention_dim=self.cross_attention_dim,
+                    audio_dim=audio_inner_dim,
+                    audio_num_attention_heads=self.audio_num_attention_heads,
+                    audio_attention_head_dim=self.audio_attention_head_dim,
+                    audio_cross_attention_dim=self.audio_cross_attention_dim,
+                    activation_fn=self.activation_fn,
+                    qk_norm=self.qk_norm,
+                    attention_bias=self.attention_bias,
+                    attention_out_bias=self.attention_out_bias,
+                    norm_elementwise_affine=self.norm_elementwise_affine,
+                    norm_eps=self.norm_eps,
+                    rope_type=self.rope_type,
+                    dtype=self.dtype,
+                    weights_dtype=self.weights_dtype,
+                    mesh=self.mesh,
+                    remat_policy=self.remat_policy,
+                    precision=self.precision,
+                    names_which_can_be_saved=self.names_which_can_be_saved,
+                    names_which_can_be_offloaded=self.names_which_can_be_offloaded,
+                )
+                blocks.append(block)
+            self.transformer_blocks = nnx.data(blocks)
 
         # 6. Output layers
         self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
