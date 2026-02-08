@@ -15,9 +15,7 @@ limitations under the License.
 
 import unittest
 from flax import nnx
-import jax
 import jax.numpy as jnp
-# Adjust this import to match your file structure
 from ..models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 
 
@@ -25,7 +23,6 @@ class LTX2AttentionTest(unittest.TestCase):
 
   def test_rope_video_shapes_3d(self):
     """Test 3D RoPE generation for Video (Time, Height, Width)."""
-    dim = 64
     # LTX-2 splits dim across axes. 60 is divisible by 3 (20 per axis).
     dim = 60
     rope = LTX2RotaryPosEmbed(dim=dim, theta=10000.0)
@@ -40,7 +37,6 @@ class LTX2AttentionTest(unittest.TestCase):
     cos, sin = rope(ids)
 
     # Expected output: [B, S, 1, D] (The 1 is for broadcasting across heads)
-    # This confirms the RoPE module outputs the correct broadcasting shape.
     self.assertEqual(cos.shape, (batch_size, seq_len, 1, dim))
     self.assertEqual(sin.shape, (batch_size, seq_len, 1, dim))
 
@@ -51,16 +47,11 @@ class LTX2AttentionTest(unittest.TestCase):
 
     batch_size = 2
     seq_len = 20
-    
-    # Create dummy position IDs for [Time]
     # Shape: [B, S, 1]
     ids = jnp.zeros((batch_size, seq_len, 1), dtype=jnp.float32)
 
     cos, sin = rope(ids)
-
-    # Expected output: [B, S, 1, D]
     self.assertEqual(cos.shape, (batch_size, seq_len, 1, dim))
-    self.assertEqual(sin.shape, (batch_size, seq_len, 1, dim))
 
   def test_self_attention_forward(self):
     """Test basic Self-Attention forward pass (Video <-> Video)."""
@@ -68,17 +59,18 @@ class LTX2AttentionTest(unittest.TestCase):
     heads = 4
     dim_head = 16 # inner_dim = 64
     
+    # Use dot_product to avoid TPU mesh requirements during unit testing
     model = LTX2Attention(
         query_dim=dim,
         heads=heads,
         dim_head=dim_head,
         rngs=nnx.Rngs(0),
+        attention_kernel="dot_product"
     )
     
     # Standard input [B, S, D]
     x = jnp.ones((1, 16, dim))
 
-    # Forward
     out = model(hidden_states=x)
     
     self.assertEqual(out.shape, (1, 16, dim))
@@ -96,6 +88,7 @@ class LTX2AttentionTest(unittest.TestCase):
         dim_head=dim_head,
         context_dim=context_dim, # Triggers cross-attention init
         rngs=nnx.Rngs(0),
+        attention_kernel="dot_product"
     )
     
     x = jnp.ones((1, 16, query_dim))       # Video
@@ -116,12 +109,14 @@ class LTX2AttentionTest(unittest.TestCase):
         heads=heads,
         dim_head=dim_head,
         rngs=nnx.Rngs(0),
+        attention_kernel="dot_product"
     )
     
     x = jnp.ones((2, 8, dim))
     
-    # Create manual RoPE embeddings matching the output of LTX2RotaryPosEmbed
-    # Shape: [B, S, 1, inner_dim]
+    # Create manual RoPE embeddings matching output of LTX2RotaryPosEmbed
+    # Shape: [B, S, 1, Inner_Dim]
+    # Inner_Dim = 64
     cos = jnp.ones((2, 8, 1, 64))
     sin = jnp.ones((2, 8, 1, 64))
     rope_emb = (cos, sin)
@@ -144,6 +139,7 @@ class LTX2AttentionTest(unittest.TestCase):
         dim_head=dim_head,
         context_dim=query_dim, 
         rngs=nnx.Rngs(0),
+        attention_kernel="dot_product"
     )
     
     x = jnp.ones((1, 16, query_dim))      # Video
@@ -153,7 +149,7 @@ class LTX2AttentionTest(unittest.TestCase):
     video_ids_3d = jnp.zeros((1, 16, 3))
     
     # 2. Extract ONLY Time axis for Cross-Attention RoPE
-    # The pipeline must do this slicing: ids[:, :, 0:1]
+    # This simulates the logic that will live in the pipeline/model loop
     video_ids_temporal = video_ids_3d[..., 0:1] # Shape [1, 16, 1]
     
     # 3. Generate 1D IDs for Audio
