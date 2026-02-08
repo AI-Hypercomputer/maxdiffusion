@@ -501,3 +501,80 @@ class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
     conditioning = time_guidance_emb + pooled_projections
 
     return conditioning
+
+
+class NNXTimesteps(nnx.Module):
+
+  def __init__(self, num_channels: int, flip_sin_to_cos: bool, downscale_freq_shift: float, scale: int = 1):
+    self.num_channels = num_channels
+    self.flip_sin_to_cos = flip_sin_to_cos
+    self.downscale_freq_shift = downscale_freq_shift
+    self.scale = scale
+
+  def __call__(self, timesteps: jax.Array) -> jax.Array:
+    return get_sinusoidal_embeddings(
+        timesteps=timesteps,
+        embedding_dim=self.num_channels,
+        freq_shift=self.downscale_freq_shift,
+        flip_sin_to_cos=self.flip_sin_to_cos,
+        scale=self.scale,
+    )
+
+
+class NNXPixArtAlphaCombinedTimestepSizeEmbeddings(nnx.Module):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      embedding_dim: int,
+      size_emb_dim: int,
+      use_additional_conditions: bool = False,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+  ):
+    self.outdim = size_emb_dim
+    self.use_additional_conditions = use_additional_conditions
+
+    self.time_proj = NNXTimesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
+    self.timestep_embedder = NNXTimestepEmbedding(
+        rngs=rngs, in_channels=256, time_embed_dim=embedding_dim, dtype=dtype, weights_dtype=weights_dtype
+    )
+
+    if use_additional_conditions:
+      self.additional_condition_proj = NNXTimesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
+      self.resolution_embedder = NNXTimestepEmbedding(
+          rngs=rngs, in_channels=256, time_embed_dim=size_emb_dim, dtype=dtype, weights_dtype=weights_dtype
+      )
+      self.aspect_ratio_embedder = NNXTimestepEmbedding(
+          rngs=rngs, in_channels=256, time_embed_dim=size_emb_dim, dtype=dtype, weights_dtype=weights_dtype
+      )
+
+  def __call__(
+      self,
+      timestep: jax.Array,
+      resolution: Optional[jax.Array] = None,
+      aspect_ratio: Optional[jax.Array] = None,
+      hidden_dtype: jnp.dtype = jnp.float32,
+  ) -> jax.Array:
+    timesteps_proj = self.time_proj(timestep)
+    timesteps_emb = self.timestep_embedder(timesteps_proj.astype(hidden_dtype))
+
+    if self.use_additional_conditions:
+      if resolution is None or aspect_ratio is None:
+        raise ValueError("resolution and aspect_ratio must be provided when use_additional_conditions is True")
+
+      resolution_emb = self.additional_condition_proj(resolution.flatten()).astype(hidden_dtype)
+      resolution_emb = self.resolution_embedder(resolution_emb)
+      # Reshape to (batch_size, -1) matching PyTorch's reshape(batch_size, -1)
+      # assuming resolution input was (batch_size, ...) so flatten logic holds.
+      resolution_emb = resolution_emb.reshape(timestep.shape[0], -1)
+
+      aspect_ratio_emb = self.additional_condition_proj(aspect_ratio.flatten()).astype(hidden_dtype)
+      aspect_ratio_emb = self.aspect_ratio_embedder(aspect_ratio_emb)
+      aspect_ratio_emb = aspect_ratio_emb.reshape(timestep.shape[0], -1)
+
+      conditioning = timesteps_emb + jnp.concatenate([resolution_emb, aspect_ratio_emb], axis=1)
+    else:
+      conditioning = timesteps_emb
+
+    return conditioning
