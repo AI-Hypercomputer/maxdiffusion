@@ -297,6 +297,8 @@ class LTX2AttentionTest(unittest.TestCase):
             
             stats.append({
                 "Layer": name,
+                "PT Max": f"{pt_val.max():.4f}",
+                "JAX Max": f"{jax_val.max():.4f}",
                 "PT Mean": f"{pt_val.mean():.4f}",
                 "JAX Mean": f"{jax_val.mean():.4f}",
                 "PT Min": f"{pt_val.min():.4f}",
@@ -379,7 +381,7 @@ class LTX2AttentionTest(unittest.TestCase):
         
         # Switch JAX model to use flash attention for this test
         jax_model.attention_op.attention_kernel = "flash"
-        jax_model.attention_op.mesh = Mesh(jax.devices(), ('x',))
+        jax_model.attention_op.mesh = Mesh(jax.devices(), ('context',))
 
         np_x = np.random.randn(self.B, self.S, self.D).astype(np.float32)
         
