@@ -225,6 +225,8 @@ class LTX2TransformerTest(unittest.TestCase):
         
         encoder_hidden_states = jnp.zeros((self.batch_size, 5, 32)) # (B, Lc, Dc)
         audio_encoder_hidden_states = jnp.zeros((self.batch_size, 5, 32))
+        encoder_attention_mask = jnp.ones((self.batch_size, 5), dtype=jnp.float32)
+        audio_encoder_attention_mask = jnp.ones((self.batch_size, 5), dtype=jnp.float32)
         
         # Forward
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -239,7 +241,9 @@ class LTX2TransformerTest(unittest.TestCase):
                 width=self.width,
                 audio_num_frames=10,
                 fps=24.0,
-                return_dict=True
+                return_dict=True,
+                encoder_attention_mask=encoder_attention_mask,
+                audio_encoder_attention_mask=audio_encoder_attention_mask
             )
         
         sample = output["sample"]
