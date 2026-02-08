@@ -674,8 +674,11 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         )
 
         # 5. Transformer Blocks
-        self.transformer_blocks = nnx.List([
-            LTX2VideoTransformerBlock(
+        # 5. Transformer Blocks
+        @nnx.split_rngs(splits=self.num_layers)
+        @nnx.vmap(in_axes=0, out_axes=0, transform_metadata={nnx.PARTITION_NAME: "layers"})
+        def init_block(rngs):
+            return LTX2VideoTransformerBlock(
                 rngs=rngs,
                 dim=inner_dim,
                 num_attention_heads=self.num_attention_heads,
@@ -695,8 +698,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                 dtype=self.dtype,
                 weights_dtype=self.weights_dtype
             )
-            for _ in range(self.num_layers)
-        ])
+        self.transformer_blocks = init_block(rngs)
 
         # 6. Output layers
         self.norm_out = nnx.LayerNorm(inner_dim, epsilon=1e-6, use_scale=False, rngs=rngs, dtype=self.dtype, param_dtype=self.weights_dtype)
@@ -850,8 +852,9 @@ class LTX2VideoTransformer3DModel(nnx.Module):
         print_shape("audio_encoder_hidden_states after projection", audio_encoder_hidden_states)
 
         # 5. Run transformer blocks
-        for block in self.transformer_blocks:
-            print(f"--- MAXDIFF Block {i} ---")
+        # 5. Run transformer blocks
+        def scan_fn(carry, block):
+            hidden_states, audio_hidden_states = carry
             hidden_states, audio_hidden_states = block(
                 hidden_states=hidden_states,
                 audio_hidden_states=audio_hidden_states,
@@ -870,6 +873,16 @@ class LTX2VideoTransformer3DModel(nnx.Module):
                 encoder_attention_mask=encoder_attention_mask,
                 audio_encoder_attention_mask=audio_encoder_attention_mask,
             )
+            return (hidden_states, audio_hidden_states), None
+
+        carry = (hidden_states, audio_hidden_states)
+        (hidden_states, audio_hidden_states), _ = nnx.scan(
+            scan_fn,
+            length=self.num_layers,
+            in_axes=(nnx.Carry, 0),
+            out_axes=(nnx.Carry, None),
+            transform_metadata={nnx.PARTITION_NAME: "layers"}
+        )(carry, self.transformer_blocks)
         print_shape("Model hidden_states after blocks", hidden_states)
         print_shape("Model audio_hidden_states after blocks", audio_hidden_states)
 
