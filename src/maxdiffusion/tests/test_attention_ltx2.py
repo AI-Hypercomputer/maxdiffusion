@@ -60,7 +60,7 @@ class PytorchLTX2RotaryPosEmbed(torch.nn.Module):
         cos = torch.repeat_interleave(cos, 2, dim=-1)
         sin = torch.repeat_interleave(sin, 2, dim=-1)
         
-        # CORRECT: Return [B, S, InnerDim] to match JAX/LTX-2 global RoPE
+        # Return [B, S, InnerDim] to match JAX/LTX-2 global RoPE
         return cos, sin
 
 
@@ -111,35 +111,37 @@ class PytorchLTX2Attention(torch.nn.Module):
         k = self.to_k(ctx)
         v = self.to_v(ctx)
 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        # Keep raw projections for test_layer_wise_stats
+        q_raw, k_raw = q, k
+
+        q_normed = self.q_norm(q)
+        k_normed = self.k_norm(k)
         
-        # CORRECT: Apply RoPE globally BEFORE splitting heads
         if q_rope is not None:
              q_cos, q_sin = q_rope
-             q = apply_rotary_emb_pt(q, q_cos, q_sin)
+             q_normed = apply_rotary_emb_pt(q_normed, q_cos, q_sin)
         
         if k_rope is not None:
              k_cos, k_sin = k_rope
-             k = apply_rotary_emb_pt(k, k_cos, k_sin)
+             k_normed = apply_rotary_emb_pt(k_normed, k_cos, k_sin)
 
         # Split Heads for Attention
-        b, s_q, _ = q.shape
-        _, s_kv, _ = k.shape
-        q_h = q.view(b, s_q, self.heads, self.dim_head).transpose(1, 2)
-        k_h = k.view(b, s_kv, self.heads, self.dim_head).transpose(1, 2)
+        b, s_q, _ = q_normed.shape
+        _, s_kv, _ = k_normed.shape
+        q_h = q_normed.view(b, s_q, self.heads, self.dim_head).transpose(1, 2)
+        k_h = k_normed.view(b, s_kv, self.heads, self.dim_head).transpose(1, 2)
         v_h = v.view(b, s_kv, self.heads, self.dim_head).transpose(1, 2)
 
         out = torch.nn.functional.scaled_dot_product_attention(
             q_h, k_h, v_h, attn_mask=mask, dropout_p=0.0
         )
         out = out.transpose(1, 2).reshape(b, s_q, -1)
-        return self.to_out(out), (q, k, v, q, k, out) # Returning normed q/k as placeholder
+        return self.to_out(out), (q_raw, k_raw, v, q_normed, k_normed, out)
 
 # ==========================================
 # 2. JAX Imports & Test Suite
 # ==========================================
-from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
+from ..models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 
 class LTX2AttentionTest(unittest.TestCase):
     
@@ -191,11 +193,11 @@ class LTX2AttentionTest(unittest.TestCase):
         model = LTX2Attention(64, 4, 16, 64, rngs=self.rng, attention_kernel="dot_product")
         
         x_vid = jnp.zeros((1, 128, 64))
-        out_vid = model(x_vid, deterministic=True)
+        out_vid = model(x_vid)
         self.assertEqual(out_vid.shape, (1, 128, 64))
         
         x_aud = jnp.zeros((1, 32, 64))
-        out_cross = model(x_vid, encoder_hidden_states=x_aud, deterministic=True)
+        out_cross = model(x_vid, encoder_hidden_states=x_aud)
         self.assertEqual(out_cross.shape, (1, 128, 64)) 
         print("\n[PASS] Shape Tests Passed.")
 
@@ -221,7 +223,7 @@ class LTX2AttentionTest(unittest.TestCase):
         with torch.no_grad():
             pt_out, _ = pt_model(pt_in)
         
-        jax_out = jax_model(jax_in, deterministic=True)
+        jax_out = jax_model(jax_in)
         
         pt_res = pt_out.float().numpy()
         jax_res = np.array(jax_out, dtype=np.float32)
@@ -259,8 +261,12 @@ class LTX2AttentionTest(unittest.TestCase):
             jax_val = np.array(jax_t, dtype=np.float32)
             stats.append({
                 "Layer": name,
+                "PT Max": f"{pt_val.max():.4f}",
+                "JAX Max": f"{jax_val.max():.4f}",
                 "PT Mean": f"{pt_val.mean():.4f}",
                 "JAX Mean": f"{jax_val.mean():.4f}",
+                "PT Min": f"{pt_val.min():.4f}",
+                "JAX Min": f"{jax_val.min():.4f}",
                 "Diff (L1)": f"{np.abs(pt_val - jax_val).mean():.6f}"
             })
 
@@ -291,7 +297,6 @@ class LTX2AttentionTest(unittest.TestCase):
         q_cos_pt, q_sin_pt = rope_gen_pt(ids_q.float())
         k_cos_pt, k_sin_pt = rope_gen_pt(ids_k.float())
 
-        # No reshape needed! Passed directly as [B, S, InnerDim]
         with torch.no_grad():
             pt_out, _ = pt_model(
                 torch.from_numpy(np_x), 
@@ -307,8 +312,7 @@ class LTX2AttentionTest(unittest.TestCase):
             jnp.array(np_x),
             encoder_hidden_states=jnp.array(np_ctx),
             rotary_emb=jax_q_rope,
-            k_rotary_emb=jax_k_rope,
-            deterministic=True
+            k_rotary_emb=jax_k_rope
         )
 
         diff = np.abs(pt_out.numpy() - np.array(jax_out)).max()
@@ -342,8 +346,7 @@ class LTX2AttentionTest(unittest.TestCase):
         with mesh:
              jax_out = jax_model(
                 jnp.array(np_x),
-                attention_mask=jax_mask_multiplicative,
-                deterministic=True
+                attention_mask=jax_mask_multiplicative
             )
 
         diff = np.abs(pt_out.numpy() - np.array(jax_out)).max()
