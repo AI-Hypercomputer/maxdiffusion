@@ -229,6 +229,7 @@ def _tpu_flash_attention(
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
     attention_mask: jax.Array = None,
+    scale: float = 1.0,
 ) -> jax.Array:
   """TPU Flash Attention"""
 
@@ -270,6 +271,7 @@ def _tpu_flash_attention(
       check_rep=False,
   )
   def wrap_flash_attention(query, key, value):
+    key = key * scale
     uses_fused_kernel = block_sizes.use_fused_bwd_kernel
     block_q_sizes = (
         block_sizes.block_q,
@@ -542,7 +544,7 @@ def _apply_attention(
   elif attention_kernel in ["flash", "tokamax_flash"]:
     return _tpu_flash_attention(
         query,
-        key * scale,
+        key,
         value,
         heads,
         mesh,
@@ -554,11 +556,12 @@ def _apply_attention(
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
         attention_mask=attention_mask,
+        scale=scale,
     )
   elif attention_kernel == "ring":
     return _tpu_flash_attention(
         query,
-        key * scale,
+        key,
         value,
         heads,
         mesh,
@@ -568,6 +571,7 @@ def _apply_attention(
         dtype,
         attention_kernel,
         mask_padding_tokens=mask_padding_tokens,
+        scale=scale,
     )
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
