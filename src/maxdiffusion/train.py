@@ -26,7 +26,6 @@ from maxdiffusion import (
 from maxdiffusion.train_utils import (
     validate_train_config,
 )
-
 from maxdiffusion.trainers.stable_diffusion_trainer import StableDiffusionTrainer
 
 
