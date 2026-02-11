@@ -570,21 +570,22 @@ class LTX2TransformerParityTest(unittest.TestCase):
 
     # 4. Run Forward
     print("Running MaxDiffusion forward pass...")
-    output = model(
-        hidden_states=jax_inputs["hidden_states"],
-        audio_hidden_states=jax_inputs["audio_hidden_states"],
-        encoder_hidden_states=jax_inputs["encoder_hidden_states"],
-        audio_encoder_hidden_states=jax_inputs["audio_encoder_hidden_states"],
-        timestep=jax_inputs["timestep"],
-        encoder_attention_mask=jax_inputs["encoder_attention_mask"],
-        audio_encoder_attention_mask=jax_inputs["audio_encoder_attention_mask"],
-        num_frames=config["num_frames"] if "num_frames" in config else 4,
-        height=config["height"] if "height" in config else 32,
-        width=config["width"] if "width" in config else 32,
-        audio_num_frames=128,
-        fps=24.0,
-        return_dict=True,
-    )
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      output = model(
+          hidden_states=jax_inputs["hidden_states"],
+          audio_hidden_states=jax_inputs["audio_hidden_states"],
+          encoder_hidden_states=jax_inputs["encoder_hidden_states"],
+          audio_encoder_hidden_states=jax_inputs["audio_encoder_hidden_states"],
+          timestep=jax_inputs["timestep"],
+          encoder_attention_mask=jax_inputs["encoder_attention_mask"],
+          audio_encoder_attention_mask=jax_inputs["audio_encoder_attention_mask"],
+          num_frames=config["num_frames"] if "num_frames" in config else 4,
+          height=config["height"] if "height" in config else 32,
+          width=config["width"] if "width" in config else 32,
+          audio_num_frames=128,
+          fps=24.0,
+          return_dict=True,
+      )
 
     max_sample = output["sample"]
     max_audio_sample = output["audio_sample"]

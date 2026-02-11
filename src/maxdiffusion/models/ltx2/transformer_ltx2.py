@@ -17,6 +17,7 @@ from typing import Optional, Tuple, Any, Dict, Union
 import jax
 import jax.numpy as jnp
 from flax import nnx
+import flax.linen as nn
 
 from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
@@ -320,6 +321,15 @@ class LTX2VideoTransformerBlock(nnx.Module):
       v2a_cross_attention_mask: Optional[jax.Array] = None,
   ) -> Tuple[jax.Array, jax.Array]:
     batch_size = hidden_states.shape[0]
+
+    axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+    hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
+    audio_hidden_states = jax.lax.with_sharding_constraint(audio_hidden_states, axis_names)
+
+    if encoder_hidden_states is not None:
+      encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
+    if audio_encoder_hidden_states is not None:
+      audio_encoder_hidden_states = jax.lax.with_sharding_constraint(audio_encoder_hidden_states, axis_names)
 
     # 1. Video and Audio Self-Attention
     norm_hidden_states = self.norm1(hidden_states)
