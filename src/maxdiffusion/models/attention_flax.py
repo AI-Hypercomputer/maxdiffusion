@@ -144,8 +144,11 @@ def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
   Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
   Pads seq_len to a multiple of flash_block_size, and ensures the resulting number of
   blocks is divisible by the number of shards.
+
+  Assumes input tensor is already in [batch, heads, seq, dim] layout.
   """
-  tensor = _reshape_data_for_flash(tensor, heads)
+  # NOTE: Optimization - removed the call to _reshape_data_for_flash to avoid HBM transpose.
+  # We assume 'tensor' is already [b, h, s, d] via local transpose in wrapper.
 
   # Pad head_dim to 128 if less than that.
   kv_size = tensor.shape[-1]
@@ -247,31 +250,51 @@ def _tpu_flash_attention(
     block_size_q = flash_block_sizes.block_q if flash_block_sizes else q_max_block_size
     block_sizes = splash_attention_kernel.BlockSizes(
         block_q=block_size_q,
-        block_kv_compute=min(kv_max_block_size, key.shape[2]),
-        block_kv=min(kv_max_block_size, key.shape[2]),
+        block_kv_compute=min(kv_max_block_size, key.shape[1]),
+        block_kv=min(kv_max_block_size, key.shape[1]),
         block_q_dkv=block_size_q,
-        block_kv_dkv=min(kv_max_block_size, key.shape[2]),
-        block_kv_dkv_compute=min(kv_max_block_size, query.shape[2]),
+        block_kv_dkv=min(kv_max_block_size, key.shape[1]),
+        block_kv_dkv_compute=min(kv_max_block_size, query.shape[1]),
         block_q_dq=None if attention_kernel == "tokamax_flash" else block_size_q,
-        block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
+        block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[1]),
         use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
     )
   num_context_shards = mesh.shape["context"]
-  query = _reshape_data_for_flash(query, heads)
-  key = _reshape_data_for_flash(key, heads)
-  value = _reshape_data_for_flash(value, heads)
+
+  # Optimization: Eliminate Redundant Transposition
+  # Instead of calling _reshape_data_for_flash which does a physical transpose in HBM,
+  # we simply view the data in [Batch, Length, Head, Dim] format and handle transpose locally.
+  if query.ndim == 3:
+      b, s, _ = query.shape
+      query = query.reshape(b, s, heads, -1)
+  if key.ndim == 3:
+      b, s, _ = key.shape
+      key = key.reshape(b, s, heads, -1)
+  if value.ndim == 3:
+      b, s, _ = value.shape
+      value = value.reshape(b, s, heads, -1)
+  
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+  native_layout_specs = nn.logical_to_mesh_axes((BATCH, HEAD, LENGTH, D_KV))
 
   @functools.partial(
       shard_map.shard_map,
       mesh=mesh,
       in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
-      out_specs=q_axis_names,
+      out_specs=native_layout_specs, # Output usually expects B, H, L, D or similar? 
+      # Actually, _tpu_flash_attention result is reshaped at the end using _reshape_heads_to_head_dim
+      # which expects [b, h, s, d]. So we output [b, h, s, d].
       check_rep=False,
   )
   def wrap_flash_attention(query, key, value):
-    key = key * scale
+    # Optimization: Local transpose in SRAM/Registers
+    # Transform [B, S, H, D] -> [B, H, S, D]
+    query = jnp.transpose(query, (0, 2, 1, 3))
+    key = jnp.transpose(key, (0, 2, 1, 3))
+    value = jnp.transpose(value, (0, 2, 1, 3))
+    # Optimization: Fused Scaling
+    key = (key * scale).astype(key.dtype)
     uses_fused_kernel = block_sizes.use_fused_bwd_kernel
     block_q_sizes = (
         block_sizes.block_q,
@@ -927,11 +950,11 @@ class FlaxWanAttention(nnx.Module):
     self.enable_jax_named_scopes = enable_jax_named_scopes
 
     if is_self_attention:
-      axis_names_q = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_Q_LENGTH, D_KV)
-      axis_names_kv = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_KV_LENGTH, D_KV)
+      axis_names_q = (BATCH, SELF_ATTN_Q_LENGTH, SELF_ATTN_HEAD, D_KV)
+      axis_names_kv = (BATCH, SELF_ATTN_KV_LENGTH, SELF_ATTN_HEAD, D_KV)
     else:
-      axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
-      axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
+      axis_names_q = (BATCH, CROSS_ATTN_Q_LENGTH, CROSS_ATTN_HEAD, D_KV)
+      axis_names_kv = (BATCH, CROSS_ATTN_KV_LENGTH, CROSS_ATTN_HEAD, D_KV)
     self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
     self.image_seq_len = image_seq_len  # New for I2V
 
@@ -1139,11 +1162,21 @@ class FlaxWanAttention(nnx.Module):
 
       if rotary_emb is not None:
         with self.conditional_named_scope("attn_rope"):
-          query_proj = _unflatten_heads(query_proj, self.heads)
-          key_proj = _unflatten_heads(key_proj, self.heads)
-          value_proj = _unflatten_heads(value_proj, self.heads)
-          # output of _unflatten_heads Batch, heads, seq_len, head_dim
+          # OPTIMIZATION: Manually reshape to [B, S, H, D] directly.
+          # This avoids the explicit transpose inside _unflatten_heads
+          b, _, _ = query_proj.shape
+          query_proj = query_proj.reshape(b, -1, self.heads, self.dim_head)
+          key_proj = key_proj.reshape(b, -1, self.heads, self.dim_head)
+          value_proj = value_proj.reshape(b, -1, self.heads, self.dim_head)
+          
+          # Apply rope on the natively shaped tensors
           query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
+      else:
+          # If no Rope, we still must reshape to [B, S, H, D] for the kernel
+          b, _, _ = query_proj.shape
+          query_proj = query_proj.reshape(b, -1, self.heads, self.dim_head)
+          key_proj = key_proj.reshape(b, -1, self.heads, self.dim_head)
+          value_proj = value_proj.reshape(b, -1, self.heads, self.dim_head)
 
       query_proj = checkpoint_name(query_proj, "query_proj")
       key_proj = checkpoint_name(key_proj, "key_proj")
@@ -1157,8 +1190,6 @@ class FlaxWanAttention(nnx.Module):
       with self.conditional_named_scope("proj_query"):
         query_proj_raw = self.query(hidden_states)
 
-      # Image embeddings are padded to multiples of 128 for TPU flash attention
-      # Calculate the padded length to correctly split image and text embeddings
       if self.added_kv_proj_dim is not None:
         alignment = 128
         if self.image_seq_len is not None:
@@ -1173,15 +1204,11 @@ class FlaxWanAttention(nnx.Module):
         encoder_hidden_states_img = encoder_hidden_states[:, :padded_img_len, :]
         encoder_hidden_states_text = encoder_hidden_states[:, padded_img_len:, :]
 
-        # Use the passed encoder_attention_mask (created in embeddings_flax.py) if using Flash Attention
-        # It contains the image mask: [1]*257 + [0]*127 for 257 real image tokens padded to 384
         if encoder_attention_mask is not None:
           encoder_attention_mask_img = encoder_attention_mask[:, :padded_img_len]
         else:
-          # Fallback: no mask means treat all as valid (for dot product attention)
           encoder_attention_mask_img = None
       else:
-        # If no image_seq_len is specified, treat all as text
         encoder_hidden_states_img = None
         encoder_hidden_states_text = encoder_hidden_states
         encoder_attention_mask_img = None
@@ -1210,7 +1237,7 @@ class FlaxWanAttention(nnx.Module):
         with self.conditional_named_scope("add_proj_v"):
           value_proj_img = self.add_v_proj(encoder_hidden_states_img)
         query_proj_img = query_proj_raw
-        # Check norm_added_k too
+        
         # Checkpointing
         query_proj_text = checkpoint_name(query_proj_text, "query_proj")
         key_proj_text = checkpoint_name(key_proj_text, "key_proj_text")
@@ -1219,28 +1246,44 @@ class FlaxWanAttention(nnx.Module):
         value_proj_img = checkpoint_name(value_proj_img, "value_proj_img")
         query_proj_img = checkpoint_name(query_proj_img, "query_proj_img")
 
-        # Attention - tensors are (B, S, D)
+        # Reshape to B, S, H, D manually to avoid HBM transposes
+        b, s, _ = query_proj_text.shape
+        query_proj_text = query_proj_text.reshape(b, s, self.heads, self.dim_head)
+        
+        b_k, s_k, _ = key_proj_text.shape
+        key_proj_text = key_proj_text.reshape(b_k, s_k, self.heads, self.dim_head)
+        value_proj_text = value_proj_text.reshape(b_k, s_k, self.heads, self.dim_head)
+        
+        b_ki, s_ki, _ = key_proj_img.shape
+        key_proj_img = key_proj_img.reshape(b_ki, s_ki, self.heads, self.dim_head)
+        value_proj_img = value_proj_img.reshape(b_ki, s_ki, self.heads, self.dim_head)
+        
+        query_proj_img = query_proj_img.reshape(b, s, self.heads, self.dim_head)
+
         with self.conditional_named_scope("cross_attn_text_apply"):
           attn_output_text = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
         with self.conditional_named_scope("cross_attn_img_apply"):
-          # Pass encoder_attention_mask_img for image cross-attention to mask padded tokens
           attn_output_img = self.attention_op.apply_attention(
               query_proj_img, key_proj_img, value_proj_img, attention_mask=encoder_attention_mask_img
           )
-
         attn_output = attn_output_text + attn_output_img
       else:
-        # No image embeddings, only text cross-attention
         query_proj_text = checkpoint_name(query_proj_text, "query_proj")
         key_proj_text = checkpoint_name(key_proj_text, "key_proj_text")
         value_proj_text = checkpoint_name(value_proj_text, "value_proj_text")
+        
+        # Reshape to B, S, H, D
+        b, s, _ = query_proj_text.shape
+        query_proj_text = query_proj_text.reshape(b, s, self.heads, self.dim_head)
+        b_k, s_k, _ = key_proj_text.shape
+        key_proj_text = key_proj_text.reshape(b_k, s_k, self.heads, self.dim_head)
+        value_proj_text = value_proj_text.reshape(b_k, s_k, self.heads, self.dim_head)
 
         with self.conditional_named_scope("cross_attn_text_apply"):
           attn_output = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
-
     with jax.named_scope("proj_attn"):
       hidden_states = self.proj_attn(attn_output)
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)

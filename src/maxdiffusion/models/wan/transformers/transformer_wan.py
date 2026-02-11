@@ -85,7 +85,7 @@ class WanRotaryPosEmbed(nnx.Module):
     freqs_w = jnp.broadcast_to(freqs_w, (ppf, pph, ppw, freqs_split[2].shape[-1]))
 
     freqs_concat = jnp.concatenate([freqs_f, freqs_h, freqs_w], axis=-1)
-    freqs_final = jnp.reshape(freqs_concat, (1, 1, ppf * pph * ppw, -1))
+    freqs_final = jnp.reshape(freqs_concat, (1, 1, ppf * pph * ppw, -1)).transpose(0, 2, 1, 3)
     return freqs_final
 
 
