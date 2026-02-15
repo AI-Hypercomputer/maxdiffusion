@@ -28,7 +28,6 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ke
 from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
 from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
 from tokamax._src.ops.experimental.tpu.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
-from tokamax._src.ops.experimental.tpu.splash_attention import base as tokamax_base
 from einops import rearrange
 from .. import common_types, max_logging
 
@@ -280,49 +279,17 @@ def _tpu_flash_attention(
   query = _reshape_data_for_flash(query, heads)
   key = _reshape_data_for_flash(key, heads)
   value = _reshape_data_for_flash(value, heads)
-
-  # Pre-padding and Ring Kernel creation outside shard_map
-  if attention_kernel == "tokamax_ring":
-    block_q = max(block_sizes.block_q, block_sizes.block_q_dkv)
-    block_kv = max(block_sizes.block_kv, block_sizes.block_kv_dkv)
-    
-    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_q, num_shards=num_fsdp_shards)
-    key, _, _ = _pad_data_for_flash(key, heads, block_kv, num_shards=num_fsdp_shards)
-    value, _, _ = _pad_data_for_flash(value, heads, block_kv, num_shards=num_fsdp_shards)
-    
-    mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
-    ring_kernel = tokamax_ring_attention_kernel.make_ring_attention(
-        mask=mask,
-        is_mqa=False,
-        config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
-        save_residuals=True,
-        ring_axis="fsdp",
-        q_seq_shards=num_fsdp_shards,
-        kv_seq_shards=num_fsdp_shards,
-    )
-    kernel_spec = ring_kernel.manual_sharding_spec()
-  else:
-    # Logic for other kernels remains unchanged regarding local padding
-    ring_kernel = None
-    kernel_spec = None
-
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
 
   @functools.partial(
       shard_map.shard_map,
       mesh=mesh,
-      in_specs=(q_axis_names, kv_axis_names, kv_axis_names, kernel_spec),
+      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
       out_specs=q_axis_names,
       check_rep=False,
   )
-  def wrap_flash_attention(query, key, value, ring_kernel):
-
-    if attention_kernel == "tokamax_ring":
-      # For bidirectional attention, segment_ids can be None to hit the performance shortcut
-      segment_ids = None 
-      vmapped_splash = jax.vmap(ring_kernel, in_axes=(0, 0, 0, None))
-      return vmapped_splash(query, key, value, segment_ids)
+  def wrap_flash_attention(query, key, value):
 
     uses_fused_kernel = block_sizes.use_fused_bwd_kernel
     block_q_sizes = (
@@ -357,7 +324,6 @@ def _tpu_flash_attention(
     kv_padded_len = key.shape[2]
     kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
-    
     segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
@@ -369,6 +335,15 @@ def _tpu_flash_attention(
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
           config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
           save_residuals=True if "ring" in attention_kernel else False,
+      )
+    elif attention_kernel == "tokamax_ring":
+      mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
+      splash_kernel = tokamax_ring_attention_kernel.make_ring_attention(
+          mask=mask,
+          is_mqa=False,
+          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          save_residuals=True,
+          ring_axis="fsdp",
       )
     else:
       splash_kernel = splash_attention_kernel.make_splash_mha(
@@ -385,7 +360,7 @@ def _tpu_flash_attention(
 
     if not mask_padding_tokens:
       segment_ids = None
-    if attention_kernel in ["flash", "tokamax_flash"]:
+    if attention_kernel in ["flash", "tokamax_flash", "tokamax_ring"]:
       attention_output = vmapped_splash(query, key, value, segment_ids)
     else:
       if num_fsdp_shards > 1:
@@ -437,11 +412,7 @@ def _tpu_flash_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
     )
-  x = wrap_flash_attention(query, key, value, ring_kernel)
-  
-  if attention_kernel == "tokamax_ring":
-    x = x[:, :, :query_seq_len, :kv_size].astype(query.dtype)
-    
+  x = wrap_flash_attention(query, key, value)
   x = _reshape_heads_to_head_dim(x)
 
   return x
