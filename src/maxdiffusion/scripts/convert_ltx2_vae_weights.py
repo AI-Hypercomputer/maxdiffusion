@@ -43,7 +43,7 @@ def convert_ltx2_vae(hf_repo, output_path):
         spatio_temporal_scaling=(True, True, True, True),
         decoder_spatio_temporal_scaling=(True, True, True, True),
         decoder_inject_noise=(False, False, False, False, False),
-        upsample_factor=2,
+        upsample_factor=(2, 2, 2),
         dtype=jnp.float32,
         rngs=nnx.Rngs(0)
     )
