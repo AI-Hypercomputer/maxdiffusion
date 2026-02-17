@@ -1503,7 +1503,8 @@ class LTX2VideoAutoencoderKL(nnx.Module, ConfigMixin):
     
     causal = self.encoder_causal if causal is None else causal
     
-    keys_slice = None
+
+
     if self.use_slicing and sample.shape[0] > 1:
         if key is not None:
              keys_slice = jax.random.split(key, sample.shape[0])

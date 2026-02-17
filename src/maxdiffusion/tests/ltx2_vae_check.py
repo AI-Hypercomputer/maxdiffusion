@@ -36,7 +36,7 @@ def main():
     
     # Create dummy input: (B, T, H, W, C)
     # LTX2 expects channel last in MaxDiffusion implementation
-    B, T, H, W, C = 1, 8, 128, 128, 3
+    B, T, H, W, C = 1, 9, 128, 128, 3
     print(f"Generating random input with shape {(B, T, H, W, C)}...")
     
     key = jax.random.PRNGKey(42)
