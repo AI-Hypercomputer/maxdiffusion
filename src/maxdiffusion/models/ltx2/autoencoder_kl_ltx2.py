@@ -568,16 +568,15 @@ class LTX2VideoMidBlock3d(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
   ):
-    self.time_embedder = None
     if timestep_conditioning:
-        self.time_embedder = NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
+        self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
             rngs=rngs,
             embedding_dim=in_channels * 4,
             size_emb_dim=0,
             use_additional_conditions=False,
             dtype=dtype,
             weights_dtype=weights_dtype
-        )
+        ))
 
     self.resnets = nnx.List([
         LTX2VideoResnetBlock3d(
@@ -649,20 +648,18 @@ class LTX2VideoUpBlock3d(nnx.Module):
   ):
     out_channels = out_channels or in_channels
     
-    self.time_embedder = None
     if timestep_conditioning:
-        self.time_embedder = NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
+        self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
             rngs=rngs,
             embedding_dim=in_channels * 4,
             size_emb_dim=0,
             use_additional_conditions=False,
             dtype=dtype,
             weights_dtype=weights_dtype
-        )
+        ))
 
-    self.conv_in = None
     if in_channels != out_channels:
-        self.conv_in = LTX2VideoResnetBlock3d(
+        self.conv_in = nnx.data(LTX2VideoResnetBlock3d(
             in_channels=in_channels,
             out_channels=out_channels,
             dropout=dropout,
@@ -676,7 +673,7 @@ class LTX2VideoUpBlock3d(nnx.Module):
             dtype=dtype,
             weights_dtype=weights_dtype,
             precision=precision
-        )
+        ))
 
     self.upsamplers = nnx.List([])
     if spatio_temporal_scale:
@@ -998,19 +995,18 @@ class LTX2VideoDecoder3d(nnx.Module):
     )
 
     # timestep embedding
-    self.time_embedder = None
     self.scale_shift_table = None
     self.timestep_scale_multiplier = None
     if timestep_conditioning:
         self.timestep_scale_multiplier = nnx.Param(jnp.array(1000.0, dtype=jnp.float32))
-        self.time_embedder = NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
+        self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
             rngs=rngs,
             embedding_dim=output_channel * 2,
             size_emb_dim=0,
             use_additional_conditions=False,
             dtype=dtype,
             weights_dtype=weights_dtype
-        )
+        ))
         self.scale_shift_table = nnx.Param(
             jax.random.normal(rngs.params(), (2, output_channel)) / (output_channel ** 0.5)
         )
