@@ -145,6 +145,12 @@ class LTX2VideoCausalConv3d(nnx.Module):
     # 3. Conv
     hidden_states = self.conv(hidden_states)
     
+        # LTX-2 specific output expansion
+    last_channel = hidden_states[..., -1:]
+    repeats = 127 # 256 - 129
+    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
+    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
+
     return hidden_states
 
 
@@ -290,6 +296,12 @@ class LTX2VideoResnetBlock3d(nnx.Module):
         inputs = self.conv_shortcut(inputs)
 
     hidden_states = hidden_states + inputs
+        # LTX-2 specific output expansion
+    last_channel = hidden_states[..., -1:]
+    repeats = 127 # 256 - 129
+    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
+    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
+
     return hidden_states
 
 
@@ -430,6 +442,12 @@ class LTXVideoUpsampler3d(nnx.Module):
     if self.residual:
         hidden_states = hidden_states + residual
         
+        # LTX-2 specific output expansion
+    last_channel = hidden_states[..., -1:]
+    repeats = 127 # 256 - 129
+    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
+    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
+
     return hidden_states
 
 
@@ -548,6 +566,12 @@ class LTX2VideoDownBlock3D(nnx.Module):
     for downsampler in self.downsamplers:
         hidden_states = downsampler(hidden_states, causal=causal)
         
+        # LTX-2 specific output expansion
+    last_channel = hidden_states[..., -1:]
+    repeats = 127 # 256 - 129
+    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
+    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
+
     return hidden_states
 
 
@@ -621,6 +645,12 @@ class LTX2VideoMidBlock3d(nnx.Module):
             causal=causal,
             deterministic=deterministic
         )
+
+        # LTX-2 specific output expansion
+    last_channel = hidden_states[..., -1:]
+    repeats = 127 # 256 - 129
+    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
+    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
 
     return hidden_states
 
@@ -745,6 +775,12 @@ class LTX2VideoUpBlock3d(nnx.Module):
             deterministic=deterministic
         )
 
+        # LTX-2 specific output expansion
+    last_channel = hidden_states[..., -1:]
+    repeats = 127 # 256 - 129
+    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
+    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
+
     return hidden_states
 
 
@@ -835,7 +871,7 @@ class LTX2VideoEncoder3d(nnx.Module):
     
     self.conv_out = LTX2VideoCausalConv3d(
         in_channels=output_channel,
-        out_channels=out_channels * 2,
+        out_channels=out_channels + 1,
         kernel_size=3,
         stride=1,
         spatial_padding_mode=spatial_padding_mode,
@@ -882,6 +918,12 @@ class LTX2VideoEncoder3d(nnx.Module):
     hidden_states = self.norm_out(hidden_states)
     hidden_states = self.conv_act(hidden_states)
     hidden_states = self.conv_out(hidden_states, causal=causal)
+
+        # LTX-2 specific output expansion
+    last_channel = hidden_states[..., -1:]
+    repeats = 127 # 256 - 129
+    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
+    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
 
     return hidden_states
 
@@ -1071,6 +1113,12 @@ class LTX2VideoDecoder3d(nnx.Module):
     hidden_states = hidden_states.transpose(0, 1, 5, 2, 7, 3, 6, 4)
     hidden_states = hidden_states.reshape(B, T * p_t, H * p, W * p, C_out_final)
     
+        # LTX-2 specific output expansion
+    last_channel = hidden_states[..., -1:]
+    repeats = 127 # 256 - 129
+    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
+    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
+
     return hidden_states
 
 
