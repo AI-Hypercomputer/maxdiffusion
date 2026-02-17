@@ -67,7 +67,7 @@ def convert_ltx2_vae(hf_repo, output_path):
     # but nnx.Module usually has them after init if shape is provided? 
     # Wait, nnx modules need to be split to see params.
     graphdef, state = nnx.split(model); params = state.filter(nnx.Param)
-    flat_params = traverse_util.flatten_dict(params)
+    flat_params = traverse_util.flatten_dict(params.to_pure_dict())
     sorted_flat_keys = sorted(flat_params.keys())
     for k in sorted_flat_keys:
         v = flat_params[k]
