@@ -227,6 +227,16 @@ class LTX2VideoResnetBlock3d(nnx.Module):
         self.per_channel_scale2 = None
 
     if timestep_conditioning:
+      self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
+          rngs=rngs,
+          embedding_dim=in_channels * 4,
+          size_emb_dim=0,
+          use_additional_conditions=False,
+          dtype=dtype,
+          weights_dtype=weights_dtype
+      ))
+  else:
+      self.time_embedder = None
         self.scale_shift_table = nnx.Param(
             jax.random.normal(rngs.params(), (4, in_channels)) / (in_channels ** 0.5)
         )
@@ -573,14 +583,16 @@ class LTX2VideoMidBlock3d(nnx.Module):
       precision: jax.lax.Precision = None,
   ):
     if timestep_conditioning:
-        self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
-            rngs=rngs,
-            embedding_dim=in_channels * 4,
-            size_emb_dim=0,
-            use_additional_conditions=False,
-            dtype=dtype,
-            weights_dtype=weights_dtype
-        ))
+      self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
+          rngs=rngs,
+          embedding_dim=in_channels * 4,
+          size_emb_dim=0,
+          use_additional_conditions=False,
+          dtype=dtype,
+          weights_dtype=weights_dtype
+      ))
+    else:
+      self.time_embedder = None
 
     self.resnets = nnx.List([
         LTX2VideoResnetBlock3d(
@@ -654,6 +666,16 @@ class LTX2VideoUpBlock3d(nnx.Module):
     out_channels = out_channels or in_channels
     
     if timestep_conditioning:
+      self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
+          rngs=rngs,
+          embedding_dim=in_channels * 4,
+          size_emb_dim=0,
+          use_additional_conditions=False,
+          dtype=dtype,
+          weights_dtype=weights_dtype
+      ))
+  else:
+      self.time_embedder = None
         self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
             rngs=rngs,
             embedding_dim=in_channels * 4,
@@ -1011,6 +1033,16 @@ class LTX2VideoDecoder3d(nnx.Module):
     self.scale_shift_table = None
     self.timestep_scale_multiplier = None
     if timestep_conditioning:
+      self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
+          rngs=rngs,
+          embedding_dim=in_channels * 4,
+          size_emb_dim=0,
+          use_additional_conditions=False,
+          dtype=dtype,
+          weights_dtype=weights_dtype
+      ))
+  else:
+      self.time_embedder = None
         self.timestep_scale_multiplier = nnx.Param(jnp.array(1000.0, dtype=jnp.float32))
         self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
             rngs=rngs,
