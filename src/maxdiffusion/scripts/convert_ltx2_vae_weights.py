@@ -1,23 +1,27 @@
 import os
 import sys
-# Add local diffusers to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../diffusers/src")))
-
 import torch
 import numpy as np
 import orbax.checkpoint
 from flax.training import orbax_utils
 import jax
 import jax.numpy as jnp
-from diffusers import AutoencoderKLLTXVideo
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from maxdiffusion import pyconfig
+from safetensors.torch import load_file
+from huggingface_hub import hf_hub_download
 
 def convert_ltx2_vae(hf_repo, output_path):
-    # Load Diffusers model
-    print(f"Loading Diffusers model from {hf_repo}...")
-    pt_model = AutoencoderKLLTXVideo.from_pretrained(hf_repo, subfolder="vae")
-    pt_model.eval()
+    # Load weights directly from Safetensors
+    print(f"Downloading/Loading weights from {hf_repo}...")
+    try:
+        ckpt_path = hf_hub_download(repo_id=hf_repo, filename="vae/diffusion_pytorch_model.safetensors")
+    except Exception:
+        # Fallback for if it's in the root or named differently
+        ckpt_path = hf_hub_download(repo_id=hf_repo, filename="diffusion_pytorch_model.safetensors")
+    
+    print(f"Loading weights from {ckpt_path}...")
+    pt_state_dict = load_file(ckpt_path)
 
     # Initialize MaxDiffusion model
     print("Initializing MaxDiffusion model...")
