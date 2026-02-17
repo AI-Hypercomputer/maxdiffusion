@@ -78,6 +78,22 @@ def test_ltx2_vae_parity():
         print("Retrying update with fixed keys...")
         nnx.update(model, fixed_params)
 
+    # Debug: Check Model Weights Shapes
+    print("\n--- Model Weights Debug ---")
+    try:
+        if hasattr(model, 'encoder'):
+            conv_in_kernel = model.encoder.conv_in.conv.kernel.value
+            print(f"Encoder conv_in kernel shape: {conv_in_kernel.shape}")
+            
+            # Check first resnet
+            if len(model.encoder.down_blocks) > 0:
+                resnet0 = model.encoder.down_blocks[0].resnets[0]
+                conv1_kernel = resnet0.conv1.conv.kernel.value
+                print(f"Encoder down_blocks[0].resnets[0].conv1 kernel shape: {conv1_kernel.shape}")
+    except Exception as e:
+        print(f"Could not inspect weights: {e}")
+    print("---------------------------\n")
+
     # 3. Create Inputs
     print("Creating deterministic input...")
     # Shape: (Batch, Frames, Height, Width, Channels) for JAX
