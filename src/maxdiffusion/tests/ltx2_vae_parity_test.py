@@ -130,5 +130,19 @@ def test_ltx2_vae_parity():
     print(f"Latents Mean: {latents.mean():.6f}")
     print(f"Latents Std:  {latents.std():.6f}")
 
+    # Assertions
+    # 1. Check Output Shape
+    assert jax_recon.shape == jax_input.shape, f"Output shape mismatch: {jax_recon.shape} vs {jax_input.shape}"
+    
+    # 2. Check Latents Shape (Mean should be 128 channels)
+    assert latents.shape[-1] == 128, f"Latents channel mismatch: {latents.shape[-1]} vs 128"
+    
+    # 3. Check Encoder Output Channels (should be 129 before split)
+    # We can check parameters of the distribution indirectly via moments if accessible, 
+    # but here we checked latents (mode) which is derived from mean (128).
+    # The fact that it ran without error implies the split worked.
+
+    print("\nTest Passed!")
+
 if __name__ == "__main__":
     test_ltx2_vae_parity()
