@@ -14,6 +14,9 @@ from flax import nnx
 from flax import traverse_util
 
 def convert_ltx2_vae(hf_repo, output_path):
+    # Ensure output path is absolute
+    output_path = os.path.abspath(output_path)
+    
     # Load weights directly from Safetensors
     print(f"Downloading/Loading weights from {hf_repo}...")
     try:
@@ -38,14 +41,15 @@ def convert_ltx2_vae(hf_repo, output_path):
         out_channels=3,
         latent_channels=128,
         block_out_channels=(256, 512, 1024, 2048),
-        decoder_block_out_channels=(2048, 1024, 512, 256),
+        # Corrected Decoder Config based on PyTorch weights
+        decoder_block_out_channels=(256, 512, 1024), # 3 blocks
         layers_per_block=(4, 6, 6, 2, 2),
-        decoder_layers_per_block=(2, 2, 6, 6, 4),
+        decoder_layers_per_block=(5, 5, 5, 5), # Mid + 3 Up, 5 layers each
         spatio_temporal_scaling=(True, True, True, True),
-        decoder_spatio_temporal_scaling=(True, True, True, True),
-        decoder_inject_noise=(False, False, False, False, False),
-        upsample_factor=(2, 2, 2, 2),
-        upsample_residual=(False, False, False, False),
+        decoder_spatio_temporal_scaling=(True, True, True),
+        decoder_inject_noise=(False, False, False, False),
+        upsample_factor=(2, 2, 2),
+        upsample_residual=(False, False, False),
         dtype=jnp.float32,
         rngs=nnx.Rngs(0)
     )
@@ -59,6 +63,7 @@ def convert_ltx2_vae(hf_repo, output_path):
     
     new_params = {}
     
+    mapped_count = 0
     for key_tuple, value in flat_params.items():
         # Skip Rngs if any leak through
         if "rngs" in key_tuple or "count" in key_tuple or "key" in key_tuple:
@@ -82,11 +87,19 @@ def convert_ltx2_vae(hf_repo, output_path):
         
         # Check if key exists in PT dict
         if pt_key not in pt_state_dict:
-            print(f"Warning: {pt_key} not found in PyTorch state dict. Checking alternatives...")
+            # Check for specific mismatches
+            # Example: MaxDiffusion uses 'scale' for RMSNorm, PT uses 'weight'
+            # (Handled above)
+            print(f"Warning: {pt_key} not found in PyTorch state dict.")
             continue
             
         pt_tensor = pt_state_dict[pt_key]
-        np_array = pt_tensor.float().numpy()
+        
+        # Handle BFloat16
+        if pt_tensor.dtype == torch.bfloat16:
+            pt_tensor = pt_tensor.float()
+            
+        np_array = pt_tensor.numpy()
         
         # Handle shape mismatch (Transpose Conv3d weights)
         is_conv_weight = "conv" in pt_key and "weight" in pt_key and len(np_array.shape) == 5
@@ -109,8 +122,9 @@ def convert_ltx2_vae(hf_repo, output_path):
                  continue
 
         new_params[key_tuple] = jnp.array(np_array)
+        mapped_count += 1
 
-    print(f"Mapped {len(new_params)} out of {len(flat_params)} parameters.")
+    print(f"Mapped {mapped_count} out of {len(flat_params)} parameters.")
 
     # Reconstruct nested dictionary
     params_nested = traverse_util.unflatten_dict(new_params)
