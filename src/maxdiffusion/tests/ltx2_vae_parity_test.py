@@ -4,6 +4,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from flax import traverse_util
 from flax.training import orbax_utils
 import orbax.checkpoint
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
@@ -39,16 +40,50 @@ def test_ltx2_vae_parity():
     graphdef, state = nnx.split(model)
     params = state.filter(nnx.Param)
     
-    # Load into structure
+    # Load without 'item' to avoid structure mismatch errors with State vs Dict
     if not os.path.exists(ckpt_path):
         print(f"Error: Checkpoint path {ckpt_path} does not exist.")
         return
 
-    # Load without 'item' to avoid structure mismatch errors with State vs Dict
     loaded_params = checkpointer.restore(ckpt_path)
     
+    # Debug: Print structure of loaded_params
+    print("Loaded params type:", type(loaded_params))
+    if isinstance(loaded_params, dict):
+        print("Loaded keys sample:", list(loaded_params.keys())[:5])
+        # Check encoder down_blocks if present
+        if 'encoder' in loaded_params and 'down_blocks' in loaded_params['encoder']:
+             print("Encoder down_blocks keys:", list(loaded_params['encoder']['down_blocks'].keys()))
+             first_key = next(iter(loaded_params['encoder']['down_blocks']))
+             print(f"Key type: {type(first_key)}")
+
     # Merge back
-    nnx.update(model, loaded_params)
+    try:
+        nnx.update(model, loaded_params)
+    except KeyError as e:
+        print(f"Caught KeyError during update: {e}")
+        print("Attempting to fix integer keys...")
+        # If keys are strings but should be integers (or vice versa), fix them
+        # nnx.List expects integer keys.
+        # If orbax loaded them as strings '0', '1', we need to convert to int 0, 1.
+        
+        def fix_keys(d):
+            new_d = {}
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    v = fix_keys(v)
+                
+                # Check if key is a string digit
+                if isinstance(k, str) and k.isdigit():
+                    new_k = int(k)
+                else:
+                    new_k = k
+                new_d[new_k] = v
+            return new_d
+
+        fixed_params = fix_keys(loaded_params)
+        print("Retrying update with fixed keys...")
+        nnx.update(model, fixed_params)
 
     # 3. Create Inputs
     print("Creating deterministic input...")
@@ -65,9 +100,6 @@ def test_ltx2_vae_parity():
     # 4. Run Flax
     print("Running Flax forward pass...")
     # model(sample, sample_posterior=False) -> should return reconstructed image
-    
-    # We use valid key for potential noise injection (though disabled in config)
-    rngs = nnx.Rngs(0)
     
     # Call the model
     # Note: default deterministic=True, causal=True/False depending on init
