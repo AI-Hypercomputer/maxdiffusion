@@ -1073,6 +1073,7 @@ class LTX2VideoDecoder3d(nnx.Module):
 
 class LTX2VideoAutoencoderKL(nnx.Module, ConfigMixin):
   _supports_gradient_checkpointing = True
+  config_name = "config.json"
 
   @register_to_config
   def __init__(
