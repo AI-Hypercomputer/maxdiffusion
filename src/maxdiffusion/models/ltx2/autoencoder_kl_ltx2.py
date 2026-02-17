@@ -566,11 +566,6 @@ class LTX2VideoDownBlock3D(nnx.Module):
     for downsampler in self.downsamplers:
         hidden_states = downsampler(hidden_states, causal=causal)
         
-        # LTX-2 specific output expansion
-    last_channel = hidden_states[..., -1:]
-    repeats = 127 # 256 - 129
-    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
-    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
 
     return hidden_states
 
