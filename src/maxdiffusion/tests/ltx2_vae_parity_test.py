@@ -36,10 +36,6 @@ def test_ltx2_vae_parity():
     
     checkpointer = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
     
-    # recreate split to get structure
-    graphdef, state = nnx.split(model)
-    params = state.filter(nnx.Param)
-    
     # Load without 'item' to avoid structure mismatch errors with State vs Dict
     if not os.path.exists(ckpt_path):
         print(f"Error: Checkpoint path {ckpt_path} does not exist.")
@@ -63,9 +59,6 @@ def test_ltx2_vae_parity():
     except KeyError as e:
         print(f"Caught KeyError during update: {e}")
         print("Attempting to fix integer keys...")
-        # If keys are strings but should be integers (or vice versa), fix them
-        # nnx.List expects integer keys.
-        # If orbax loaded them as strings '0', '1', we need to convert to int 0, 1.
         
         def fix_keys(d):
             new_d = {}
@@ -99,11 +92,9 @@ def test_ltx2_vae_parity():
 
     # 4. Run Flax
     print("Running Flax forward pass...")
-    # model(sample, sample_posterior=False) -> should return reconstructed image
-    
     # Call the model
     # Note: default deterministic=True, causal=True/False depending on init
-    jax_recon = model(jax_input, sample_posterior=False, deterministic=True)
+    jax_recon = model(jax_input, sample_posterior=False)
     
     # 5. Print Output Stats
     print("\nOutput Stats:")
