@@ -122,7 +122,7 @@ def test_ltx2_vae_parity():
     
     # Also Check Encoder Latents
     print("\nEncoder Latents Stats:")
-    posterior = model.encode(jax_input)
+    posterior = model.encode(jax_input).latent_dist
     # posterior is DiagonalGaussianDistribution
     # Check mode
     latents = posterior.mode()
