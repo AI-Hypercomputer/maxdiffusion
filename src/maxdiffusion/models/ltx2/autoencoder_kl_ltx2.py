@@ -1071,10 +1071,10 @@ class LTX2VideoDecoder3d(nnx.Module):
     return hidden_states
 
 
-@register_to_config
 class LTX2VideoAutoencoderKL(nnx.Module, ConfigMixin):
   _supports_gradient_checkpointing = True
 
+  @register_to_config
   def __init__(
       self,
       in_channels: int = 3,
