@@ -666,6 +666,7 @@ class LTX2VideoUpBlock3d(nnx.Module):
             weights_dtype=weights_dtype
         ))
 
+    self.conv_in = None
     if in_channels != out_channels:
         self.conv_in = nnx.data(LTX2VideoResnetBlock3d(
             in_channels=in_channels,
