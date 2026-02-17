@@ -446,7 +446,7 @@ class LTX2VideoDownBlock3D(nnx.Module):
   ):
     out_channels = out_channels or in_channels
     
-    self.resnets = []
+
     self.resnets = nnx.List([
         LTX2VideoResnetBlock3d(
             in_channels=in_channels,
