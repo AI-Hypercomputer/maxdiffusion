@@ -227,16 +227,6 @@ class LTX2VideoResnetBlock3d(nnx.Module):
         self.per_channel_scale2 = None
 
     if timestep_conditioning:
-      self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
-          rngs=rngs,
-          embedding_dim=in_channels * 4,
-          size_emb_dim=0,
-          use_additional_conditions=False,
-          dtype=dtype,
-          weights_dtype=weights_dtype
-      ))
-  else:
-      self.time_embedder = None
         self.scale_shift_table = nnx.Param(
             jax.random.normal(rngs.params(), (4, in_channels)) / (in_channels ** 0.5)
         )
@@ -665,25 +655,14 @@ class LTX2VideoUpBlock3d(nnx.Module):
   ):
     out_channels = out_channels or in_channels
     
-    if timestep_conditioning:
-      self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
-          rngs=rngs,
-          embedding_dim=in_channels * 4,
-          size_emb_dim=0,
-          use_additional_conditions=False,
-          dtype=dtype,
-          weights_dtype=weights_dtype
-      ))
-  else:
-      self.time_embedder = None
-        self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
-            rngs=rngs,
-            embedding_dim=in_channels * 4,
-            size_emb_dim=0,
-            use_additional_conditions=False,
-            dtype=dtype,
-            weights_dtype=weights_dtype
-        ))
+    self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
+        rngs=rngs,
+        embedding_dim=in_channels * 4,
+        size_emb_dim=0,
+        use_additional_conditions=False,
+        dtype=dtype,
+        weights_dtype=weights_dtype
+    ))
 
     if in_channels != out_channels:
         self.conv_in = nnx.data(LTX2VideoResnetBlock3d(
@@ -911,11 +890,6 @@ class LTX2VideoEncoder3d(nnx.Module):
     hidden_states = self.conv_act(hidden_states)
     hidden_states = self.conv_out(hidden_states, causal=causal)
 
-    # LTX-2 specific output expansion
-    last_channel = hidden_states[..., -1:]
-    repeats = 127 # 256 - 129
-    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
-    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
 
 
     return hidden_states
@@ -1033,6 +1007,7 @@ class LTX2VideoDecoder3d(nnx.Module):
     self.scale_shift_table = None
     self.timestep_scale_multiplier = None
     if timestep_conditioning:
+      self.timestep_scale_multiplier = nnx.Param(jnp.array(1000.0, dtype=jnp.float32))
       self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
           rngs=rngs,
           embedding_dim=in_channels * 4,
@@ -1041,20 +1016,9 @@ class LTX2VideoDecoder3d(nnx.Module):
           dtype=dtype,
           weights_dtype=weights_dtype
       ))
-  else:
+    else:
+      self.timestep_scale_multiplier = None
       self.time_embedder = None
-        self.timestep_scale_multiplier = nnx.Param(jnp.array(1000.0, dtype=jnp.float32))
-        self.time_embedder = nnx.data(NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
-            rngs=rngs,
-            embedding_dim=output_channel * 2,
-            size_emb_dim=0,
-            use_additional_conditions=False,
-            dtype=dtype,
-            weights_dtype=weights_dtype
-        ))
-        self.scale_shift_table = nnx.Param(
-            jax.random.normal(rngs.params(), (2, output_channel)) / (output_channel ** 0.5)
-        )
 
   @nnx.jit(static_argnames=("causal", "deterministic"))
   def __call__(
@@ -1084,31 +1048,9 @@ class LTX2VideoDecoder3d(nnx.Module):
 
     hidden_states = self.norm_out(hidden_states)
     
-    if self.time_embedder is not None:
-        temb = self.time_embedder(timestep=temb.flatten(), hidden_dtype=hidden_states.dtype)
-        
-        B = hidden_states.shape[0]
-        C = hidden_states.shape[-1]
-        
-        temb = temb.reshape(B, 2, C)
-        
-        # Add table
-        params = self.scale_shift_table.value[None, :, :] + temb
-        
-        shift = params[:, 0, :]
-        scale = params[:, 1, :]
-        
-        # Broadcast
-        hidden_states = hidden_states * (1 + scale[:, None, None, None, :]) + shift[:, None, None, None, :]
-
     hidden_states = self.conv_act(hidden_states)
     hidden_states = self.conv_out(hidden_states, causal=causal)
 
-    # LTX-2 specific output expansion
-    last_channel = hidden_states[..., -1:]
-    repeats = 127 # 256 - 129
-    last_channel_repeated = jnp.repeat(last_channel, repeats, axis=-1)
-    hidden_states = jnp.concatenate([hidden_states, last_channel_repeated], axis=-1)
     
     # Unpatchify
     B, T, H, W, C = hidden_states.shape
