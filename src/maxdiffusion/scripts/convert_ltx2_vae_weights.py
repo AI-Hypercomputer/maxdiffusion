@@ -12,6 +12,7 @@ from safetensors.torch import load_file
 from huggingface_hub import hf_hub_download
 from flax import nnx
 from flax import traverse_util
+import shutil
 
 def convert_ltx2_vae(hf_repo, output_path):
     # Ensure output path is absolute
@@ -131,6 +132,11 @@ def convert_ltx2_vae(hf_repo, output_path):
     
     # Save checkpoint
     print(f"Saving converted weights to {output_path}...")
+    
+    if os.path.exists(output_path):
+        print(f"Removing existing checkpoint at {output_path}...")
+        shutil.rmtree(output_path)
+        
     checkpointer = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
     save_args = orbax_utils.save_args_from_target(params_nested)
     checkpointer.save(output_path, params_nested, save_args=save_args)
