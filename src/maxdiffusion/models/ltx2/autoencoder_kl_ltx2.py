@@ -827,7 +827,7 @@ class LTX2VideoEncoder3d(nnx.Module):
 
     # out
     self.norm_out = PerChannelRMSNorm()
-    self.conv_act = nnx.SiLU()
+    self.conv_act = nnx.silu
     
     self.conv_out = LTX2VideoCausalConv3d(
         in_channels=output_channel,
