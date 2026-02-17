@@ -50,7 +50,7 @@ def convert_ltx2_vae(hf_repo, output_path):
     )
 
     # Get PyTorch state dict
-    pt_state_dict = pt_model.state_dict()
+    pt_state_dict = load_file(ckpt_path)
     
     # Define mapping
     # We will need to map PT keys to Flax keys
