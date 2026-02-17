@@ -8,6 +8,9 @@ from diffusers import AutoencoderKLLTXVideo
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from maxdiffusion import pyconfig
 import os
+import sys
+# Add local diffusers to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../diffusers/src")))
 
 def convert_ltx2_vae(hf_repo, output_path):
     # Load Diffusers model
