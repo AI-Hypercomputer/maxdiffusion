@@ -44,7 +44,8 @@ def test_ltx2_vae_parity():
         print(f"Error: Checkpoint path {ckpt_path} does not exist.")
         return
 
-    loaded_params = checkpointer.restore(ckpt_path, item=params)
+    # Load without 'item' to avoid structure mismatch errors with State vs Dict
+    loaded_params = checkpointer.restore(ckpt_path)
     
     # Merge back
     nnx.update(model, loaded_params)
