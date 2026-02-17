@@ -17,7 +17,7 @@ def convert_ltx2_vae(hf_repo, output_path):
 
     # Initialize MaxDiffusion model
     print("Initializing MaxDiffusion model...")
-    config = pyconfig.initialize([None, "src/maxdiffusion/configs/base_2.yml"])
+    config = pyconfig.initialize([None, "src/maxdiffusion/configs/ltx2_video.yml"])
     
     # Create abstract instance to get the structure
     dummy_input = jnp.zeros((1, 9, 128, 128, 3))
@@ -44,8 +44,24 @@ def convert_ltx2_vae(hf_repo, output_path):
     # Define mapping
     # We will need to map PT keys to Flax keys
     # Helper to print PT keys
-    # for k, v in pt_state_dict.items():
-    #    print(k, v.shape)
+    from flax import nnx
+    print("PyTorch Keys:")
+    sorted_pt_keys = sorted(pt_state_dict.keys())
+    for k in sorted_pt_keys:
+        v = pt_state_dict[k]
+        print(f"{k}: {v.shape}")
+    
+    print("\nMaxDiffusion Keys (initialization):")
+    # Get MaxDiffusion keys from initialized model
+    # We need to run a dummy forward or init to get parameters if they are lazy, 
+    # but nnx.Module usually has them after init if shape is provided? 
+    # Wait, nnx modules need to be split to see params.
+    graphdef, params = nnx.split(model, nnx.Param)
+    flat_params = nnx.traverse_util.flatten_dict(params)
+    sorted_flat_keys = sorted(flat_params.keys())
+    for k in sorted_flat_keys:
+        v = flat_params[k]
+        print(f"{k}: {v.shape}")
 
     params = {}
     
