@@ -35,7 +35,8 @@ def convert_ltx2_vae(hf_repo, output_path):
         decoder_spatio_temporal_scaling=(True, True, True, True),
         decoder_inject_noise=(False, False, False, False, False),
         upsample_factor=2,
-        dtype=jnp.float32
+        dtype=jnp.float32,
+        rngs=nnx.Rngs(0)
     )
 
     # Get PyTorch state dict
@@ -75,4 +76,4 @@ def convert_ltx2_vae(hf_repo, output_path):
     print("Done!")
 
 if __name__ == "__main__":
-    convert_ltx2_vae("Lightricks/LTX-Video", "ltx2_vae_checkpoint")
+    convert_ltx2_vae("Lightricks/LTX-2", "ltx2_vae_checkpoint")
