@@ -110,7 +110,7 @@ def test_ltx2_vae_parity():
     print("Running Flax forward pass...")
     # Call the model
     # Note: default deterministic=True, causal=True/False depending on init
-    jax_recon = model(jax_input, sample_posterior=False)
+    jax_recon = model(jax_input, sample_posterior=False).sample
     
     # 5. Print Output Stats
     print("\nOutput Stats:")
