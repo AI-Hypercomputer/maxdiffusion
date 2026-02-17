@@ -54,7 +54,6 @@ def convert_ltx2_vae(hf_repo, output_path):
     # Define mapping
     # We will need to map PT keys to Flax keys
     # Helper to print PT keys
-    from flax import nnx
     print("PyTorch Keys:")
     sorted_pt_keys = sorted(pt_state_dict.keys())
     for k in sorted_pt_keys:
