@@ -12,6 +12,7 @@ from safetensors.torch import load_file
 from huggingface_hub import hf_hub_download
 from flax import nnx
 from flax import traverse_util
+
 def convert_ltx2_vae(hf_repo, output_path):
     # Load weights directly from Safetensors
     print(f"Downloading/Loading weights from {hf_repo}...")
@@ -48,40 +49,77 @@ def convert_ltx2_vae(hf_repo, output_path):
         dtype=jnp.float32,
         rngs=nnx.Rngs(0)
     )
+    
+    print("\nMapping weights...")
+    graphdef, state = nnx.split(model)
+    params = state.filter(nnx.Param)
+    
+    params_dict = params.to_pure_dict()
+    flat_params = traverse_util.flatten_dict(params_dict)
+    
+    new_params = {}
+    
+    for key_tuple, value in flat_params.items():
+        # Skip Rngs if any leak through
+        if "rngs" in key_tuple or "count" in key_tuple or "key" in key_tuple:
+            continue
+            
+        # Construct PyTorch key
+        pt_key_parts = []
+        for p in key_tuple:
+            if isinstance(p, int):
+                pt_key_parts.append(str(p))
+            else:
+                pt_key_parts.append(p)
+        
+        # Adjust property names from MaxDiffusion to Diffusers
+        if pt_key_parts[-1] == "kernel":
+            pt_key_parts[-1] = "weight"
+        elif pt_key_parts[-1] == "scale":
+            pt_key_parts[-1] = "weight"
+            
+        pt_key = ".".join(pt_key_parts)
+        
+        # Check if key exists in PT dict
+        if pt_key not in pt_state_dict:
+            print(f"Warning: {pt_key} not found in PyTorch state dict. Checking alternatives...")
+            continue
+            
+        pt_tensor = pt_state_dict[pt_key]
+        np_array = pt_tensor.numpy()
+        
+        # Handle shape mismatch (Transpose Conv3d weights)
+        is_conv_weight = "conv" in pt_key and "weight" in pt_key and len(np_array.shape) == 5
+        
+        if is_conv_weight:
+             # PyTorch Conv3d: (Out, In, T, H, W)
+             # JAX Conv: (T, H, W, In, Out)
+             # Permutation: 0, 1, 2, 3, 4 -> 2, 3, 4, 1, 0
+             np_array = np_array.transpose(2, 3, 4, 1, 0)
+        
+        # Verify shape
+        if np_array.shape != value.shape:
+            # Handle singleton dimensions if they match in total size or one dim
+            if np_array.shape == (1,) + value.shape:
+                 np_array = np_array.squeeze(0)
+            elif value.shape == (1,) + np_array.shape:
+                 np_array = np_array[None]
+            else:
+                 print(f"Shape mismatch for {pt_key}: PT {np_array.shape} vs Max {value.shape}")
+                 continue
 
-    # Get PyTorch state dict
-    pt_state_dict = load_file(ckpt_path)
-    
-    # Define mapping
-    # We will need to map PT keys to Flax keys
-    # Helper to print PT keys
-    print("PyTorch Keys:")
-    sorted_pt_keys = sorted(pt_state_dict.keys())
-    for k in sorted_pt_keys:
-        v = pt_state_dict[k]
-        print(f"{k}: {v.shape}")
-    
-    print("\nMaxDiffusion Keys (initialization):")
-    # Get MaxDiffusion keys from initialized model
-    # We need to run a dummy forward or init to get parameters if they are lazy, 
-    # but nnx.Module usually has them after init if shape is provided? 
-    # Wait, nnx modules need to be split to see params.
-    graphdef, state = nnx.split(model); params = state.filter(nnx.Param)
-    flat_params = traverse_util.flatten_dict(params.to_pure_dict())
-    sorted_flat_keys = sorted(flat_params.keys())
-    for k in sorted_flat_keys:
-        v = flat_params[k]
-        print(f"{k}: {v.shape}")
+        new_params[key_tuple] = jnp.array(np_array)
 
-    params = {}
+    print(f"Mapped {len(new_params)} out of {len(flat_params)} parameters.")
+
+    # Reconstruct nested dictionary
+    params_nested = traverse_util.unflatten_dict(new_params)
     
-    # TODO: Implement the mapping logic here
-    # This acts as a template for now
-    
+    # Save checkpoint
     print(f"Saving converted weights to {output_path}...")
-    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    save_args = orbax_utils.save_args_from_target(params)
-    checkpointer.save(output_path, params, save_args=save_args)
+    checkpointer = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
+    save_args = orbax_utils.save_args_from_target(params_nested)
+    checkpointer.save(output_path, params_nested, save_args=save_args)
     print("Done!")
 
 if __name__ == "__main__":
