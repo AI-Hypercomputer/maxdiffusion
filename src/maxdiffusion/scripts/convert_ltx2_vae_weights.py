@@ -11,7 +11,7 @@ from maxdiffusion import pyconfig
 from safetensors.torch import load_file
 from huggingface_hub import hf_hub_download
 from flax import nnx
-
+from flax import traverse_util
 def convert_ltx2_vae(hf_repo, output_path):
     # Load weights directly from Safetensors
     print(f"Downloading/Loading weights from {hf_repo}...")
@@ -67,7 +67,7 @@ def convert_ltx2_vae(hf_repo, output_path):
     # but nnx.Module usually has them after init if shape is provided? 
     # Wait, nnx modules need to be split to see params.
     graphdef, state = nnx.split(model); params = state.filter(nnx.Param)
-    flat_params = nnx.traverse_util.flatten_dict(params)
+    flat_params = traverse_util.flatten_dict(params)
     sorted_flat_keys = sorted(flat_params.keys())
     for k in sorted_flat_keys:
         v = flat_params[k]
