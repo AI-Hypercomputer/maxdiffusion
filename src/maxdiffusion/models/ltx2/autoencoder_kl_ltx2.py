@@ -136,6 +136,10 @@ class LTX2VideoCausalConv3d(nnx.Module):
         )
         
         mode = self.spatial_padding_mode
+        if mode == "zeros":
+            mode = "constant"
+        elif mode == "replicate":
+            mode = "edge"
         hidden_states = jnp.pad(hidden_states, padding_config, mode=mode)
     
     # 3. Conv
