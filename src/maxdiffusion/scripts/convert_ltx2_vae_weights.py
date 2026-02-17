@@ -86,7 +86,7 @@ def convert_ltx2_vae(hf_repo, output_path):
             continue
             
         pt_tensor = pt_state_dict[pt_key]
-        np_array = pt_tensor.numpy()
+        np_array = pt_tensor.float().numpy()
         
         # Handle shape mismatch (Transpose Conv3d weights)
         is_conv_weight = "conv" in pt_key and "weight" in pt_key and len(np_array.shape) == 5
