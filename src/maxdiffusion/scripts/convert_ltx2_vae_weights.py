@@ -10,6 +10,7 @@ from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from maxdiffusion import pyconfig
 from safetensors.torch import load_file
 from huggingface_hub import hf_hub_download
+from flax import nnx
 
 def convert_ltx2_vae(hf_repo, output_path):
     # Load weights directly from Safetensors
