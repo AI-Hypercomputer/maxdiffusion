@@ -200,8 +200,6 @@ class LTX2VideoResnetBlock3d(nnx.Module):
         precision=precision
     )
 
-    self.norm3 = None
-    self.conv_shortcut = None
     if in_channels != out_channels:
         self.norm3 = nnx.LayerNorm(in_channels, epsilon=eps, use_scale=True, use_bias=True, rngs=rngs, dtype=dtype, param_dtype=weights_dtype)
         self.conv_shortcut = nnx.Conv(
@@ -216,18 +214,23 @@ class LTX2VideoResnetBlock3d(nnx.Module):
             param_dtype=weights_dtype,
             precision=precision
         )
+    else:
+        self.norm3 = None
+        self.conv_shortcut = None
 
-    self.per_channel_scale1 = None
-    self.per_channel_scale2 = None
     if inject_noise:
         self.per_channel_scale1 = nnx.Param(jnp.zeros((in_channels,), dtype=dtype))
         self.per_channel_scale2 = nnx.Param(jnp.zeros((in_channels,), dtype=dtype))
+    else:
+        self.per_channel_scale1 = None
+        self.per_channel_scale2 = None
 
-    self.scale_shift_table = None
     if timestep_conditioning:
         self.scale_shift_table = nnx.Param(
             jax.random.normal(rngs.params(), (4, in_channels)) / (in_channels ** 0.5)
         )
+    else:
+        self.scale_shift_table = None
 
   def __call__(
       self,
