@@ -420,7 +420,9 @@ class LTXVideoUpsampler3d(nnx.Module):
         
         repeats = (s0 * s1 * s2) // self.upscale_factor
         if repeats > 1:
-            residual = jnp.repeat(residual, repeats, axis=-1)
+            # PyTorch's repeat tiles the tensor. jnp.repeat repeats elements consecutively.
+            # We must use jnp.tile to exactly replicate the sequence of channels.
+            residual = jnp.tile(residual, (1, 1, 1, 1, repeats))
             
         if s0 > 1:
             residual = residual[:, s0-1:, ...]
