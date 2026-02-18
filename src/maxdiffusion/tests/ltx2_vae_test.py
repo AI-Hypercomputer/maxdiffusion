@@ -24,8 +24,6 @@ from jax.sharding import Mesh
 import numpy as np
 import unittest
 from absl.testing import absltest
-
-# Add maxdiffusion/src to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import create_device_mesh
@@ -81,8 +79,6 @@ class LTX2VaeTest(unittest.TestCase):
             
             # Causal forward
             out_causal = conv(dummy_input, causal=True)
-            # The spatial/temporal output should perfectly match input shapes (before stride changes)
-            # because LTX-2 Conv internally pads to maintain dimension size
             self.assertEqual(out_causal.shape, (2, 5, 16, 16, out_channels))
             
             # Non-Causal forward
@@ -136,7 +132,6 @@ class LTX2VaeTest(unittest.TestCase):
                 mesh=self.mesh
             )
             
-            # (B, T, H, W, C) -> T should remain 3 normally, but Diffusers causal padding pushes it to 5 with these parameters
             dummy_input = jnp.ones((1, 3, 8, 8, in_channels))
             out = upsampler(dummy_input, causal=True)
             
@@ -186,32 +181,112 @@ class LTX2VaeTest(unittest.TestCase):
                 mesh=self.mesh
             )
             
-            # We need T=9 to handle multiple downsampling //2 operations without evaporating frames
-            # LTX-2 uses (32, 1, 32, 32) patches by default, but this test uses patch=2, patch_t=1
             B, T, H, W, C = 1, 9, 16, 16, 3
             dummy_video = jnp.ones((B, T, H, W, C))
             
             # Encode
-            # Uses slice optimization based on `use_slicing`
             encoded_dist = vae.encode(dummy_video, return_dict=False)[0]
             latents = encoded_dist.sample(key=key)
             
-            # Validate Downsampling Math:
-            # Spatial halves twice: 16 -> 8 -> 4, then unpatchified by patch_size=2 : 4 -> 2
-            # 16 / (2 downblocks * 2 patch) = 16 / 4 = 4
-            # The temporal downsampling logic is causal and uses kernel size logic
-            # For 9 frames through standard downsampling, it outputs 5 frames with these configs
             self.assertEqual(latents.shape, (B, 5, 4, 4, 8))
             
             # Decode
             decoded = vae.decode(latents, return_dict=False)[0]
-            
-            # Validate output matches original dimensions where applicable
-            # Because of the decoder_layers_per_block length (3) vs layers_per_block (2),
-            # the decoder upsamples one extra time compared to the encoder's downsampling.
-            # Spatial 4 -> 8 -> 16 -> 32
-            # Temporal 5 -> ... -> 17
             self.assertEqual(decoded.shape, (B, 17, 32, 32, C))
+
+    def test_ltx2_tiled_encode_decode(self):
+        """Tests the spatial tiled encode/decode logic for large resolutions."""
+        key = jax.random.PRNGKey(42)
+        rngs = nnx.Rngs(key)
+        
+        with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+            vae = LTX2VideoAutoencoderKL(
+                in_channels=3,
+                out_channels=3,
+                latent_channels=8,
+                block_out_channels=(16, 32),
+                decoder_block_out_channels=(16, 32),
+                layers_per_block=(2, 2),
+                decoder_layers_per_block=(2, 2, 2),
+                patch_size=2,
+                patch_size_t=1,
+                spatio_temporal_scaling=(True, True),
+                decoder_spatio_temporal_scaling=(True, True),
+                downsample_type=("spatial", "spatial"),
+                upsample_factor=(2, 2),
+                upsample_residual=(True, True),
+                rngs=rngs,
+                mesh=self.mesh
+            )
+            # Tiling boundaries natively
+            # Spatial compression = patch_size(2) * 2**2 = 8
+            vae.tile_sample_min_height = 24
+            vae.tile_sample_min_width = 24
+            vae.tile_sample_stride_height = 16
+            vae.tile_sample_stride_width = 16
+            vae.tile_latent_min_height = 3  # 24 / 8 spatial downsample
+            vae.tile_latent_min_width = 3   # 24 / 8 spatial downsample
+            vae.tile_latent_stride_height = 2 # 16 / 8 mathematically drops
+            vae.tile_latent_stride_width = 2
+            vae.enable_tiling()
+            
+            # Test encode with tiling
+            B, T, H, W, C = 1, 9, 32, 32, 3
+            dummy_video = jnp.ones((B, T, H, W, C))
+            
+            encoded_dist = vae.encode(dummy_video, return_dict=False)[0]
+            latents = encoded_dist.sample(key=key)
+            
+            # Spatial downsample factor is 2 * 2**2 = 8.
+            # So 32 -> 4 (overlapping 4x4 effectively)
+            self.assertEqual(latents.shape, (B, 5, 4, 4, 8))
+            
+            # Test decode with tiling
+            decoded = vae.decode(latents, return_dict=False)[0]
+            self.assertEqual(decoded.shape, (B, 17, 32, 32, C))
+
+    def test_ltx2_temporal_tiled_encode_decode(self):
+        """Tests the temporal tiled encode/decode logic (framewise decoding/encoding)."""
+        key = jax.random.PRNGKey(42)
+        rngs = nnx.Rngs(key)
+        
+        with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+            vae = LTX2VideoAutoencoderKL(
+                in_channels=3,
+                out_channels=3,
+                latent_channels=8,
+                block_out_channels=(16, 32),
+                decoder_block_out_channels=(16, 32),
+                layers_per_block=(2, 2),
+                decoder_layers_per_block=(2, 2, 2),
+                patch_size=2,
+                patch_size_t=1,
+                spatio_temporal_scaling=(True, True),
+                decoder_spatio_temporal_scaling=(True, True),
+                downsample_type=("temporal", "temporal"),
+                upsample_factor=(2, 2),
+                upsample_residual=(True, True),
+                rngs=rngs,
+                mesh=self.mesh
+            )
+            # Temporal compression natively = 1 * 2**2 = 4
+            # Temporal boundaries natively
+            # The total temporal stride down is `4` (2 * 2**1 blocks) based on `decoder_spatio_temporal_scaling`.
+            vae.tile_sample_min_num_frames = 16 # Chunk is 16+1 = 17 frames natively perfectly divisible by temporal unflatten limits
+            vae.tile_sample_stride_num_frames = 8
+            vae.use_framewise_decoding = True  
+            
+            # Test 2 chunks: length = stride * chunks + overlap
+            B, T, H, W, C = 1, 25, 16, 16, 3
+            dummy_video = jnp.ones((B, T, H, W, C))
+            
+            encoded_dist = vae.encode(dummy_video, return_dict=False)[0]
+            latents = encoded_dist.sample(key=key)
+            
+            self.assertEqual(latents.shape, (B, 7, 8, 8, 8))
+            
+            decoded = vae.decode(latents, return_dict=False)[0]
+            self.assertEqual(decoded.shape, (B, 25, 64, 64, C))
 
 if __name__ == "__main__":
     absltest.main()

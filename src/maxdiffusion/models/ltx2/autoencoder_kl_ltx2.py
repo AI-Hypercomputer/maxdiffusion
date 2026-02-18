@@ -343,7 +343,6 @@ class LTXVideoDownsampler3d(nnx.Module):
     residual = padded_states.reshape(B, new_T, self.stride[0], new_H, self.stride[1], new_W, self.stride[2], C)
     
     # transpose: (B, new_T, stride_T, new_H, stride_H, new_W, stride_W, C) -> (B, new_T, new_H, new_W, C, stride_T, stride_H, stride_W)
-    # This matches PyTorch channel grouping
     residual = residual.transpose(0, 1, 3, 5, 7, 2, 4, 6)
     
     # Flatten last 4 dims: C*stride_T*stride_H*stride_W
@@ -690,7 +689,7 @@ class LTX2VideoUpBlock3d(nnx.Module):
     if spatio_temporal_scale:
         self.upsamplers.append(
             LTXVideoUpsampler3d(
-                in_channels=out_channels * upscale_factor, # Wait, reference passes `out_channels * upscale_factor`
+                in_channels=out_channels * upscale_factor,
                 stride=(2, 2, 2),
                 residual=upsample_residual,
                 upscale_factor=upscale_factor,
@@ -896,9 +895,6 @@ class LTX2VideoEncoder3d(nnx.Module):
 
     hidden_states = self.conv_out(hidden_states, causal=causal)
 
-    # Replicate the logvar channel (the last channel) to match diffusers behavior
-    # Diffusers: last_channel.repeat(1, hidden_states.size(1) - 2, 1, 1, 1) -> cat
-    # JAX shape: (B, T, H, W, C). We need to copy the last channel C-2 times.
     last_channel = hidden_states[..., -1:]
     num_repeats = hidden_states.shape[-1] - 2
     last_channel = jnp.tile(last_channel, (1, 1, 1, 1, num_repeats))
@@ -1533,7 +1529,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, ConfigMixin):
       latents: jax.Array,
       temb: Optional[jax.Array] = None,
       return_dict: bool = True,
-      generator: Optional[jax.Array] = None, # generator acts as key
+      generator: Optional[jax.Array] = None,
       causal: Optional[bool] = None,
   ) -> Union[FlaxDecoderOutput, Tuple[jax.Array]]:
     
