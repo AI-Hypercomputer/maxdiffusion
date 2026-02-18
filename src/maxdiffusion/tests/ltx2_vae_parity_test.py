@@ -1,3 +1,7 @@
+"""
+This is a test file used for ensuring numerical parity between pytorch and jax implementation of LTX2.
+This is to be ignored and will not be pushed when commiting to main branch.
+"""
 import sys
 import os
 import numpy as np

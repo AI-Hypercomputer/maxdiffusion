@@ -224,9 +224,9 @@ class LTX2VaeTest(unittest.TestCase):
             vae.tile_sample_min_width = 24
             vae.tile_sample_stride_height = 16
             vae.tile_sample_stride_width = 16
-            vae.tile_latent_min_height = 3  # 24 / 8 spatial downsample
-            vae.tile_latent_min_width = 3   # 24 / 8 spatial downsample
-            vae.tile_latent_stride_height = 2 # 16 / 8 mathematically drops
+            vae.tile_latent_min_height = 3
+            vae.tile_latent_min_width = 3
+            vae.tile_latent_stride_height = 2
             vae.tile_latent_stride_width = 2
             vae.enable_tiling()
             
@@ -272,7 +272,7 @@ class LTX2VaeTest(unittest.TestCase):
             # Temporal compression natively = 1 * 2**2 = 4
             # Temporal boundaries natively
             # The total temporal stride down is `4` (2 * 2**1 blocks) based on `decoder_spatio_temporal_scaling`.
-            vae.tile_sample_min_num_frames = 16 # Chunk is 16+1 = 17 frames natively perfectly divisible by temporal unflatten limits
+            vae.tile_sample_min_num_frames = 16
             vae.tile_sample_stride_num_frames = 8
             vae.use_framewise_decoding = True  
             
