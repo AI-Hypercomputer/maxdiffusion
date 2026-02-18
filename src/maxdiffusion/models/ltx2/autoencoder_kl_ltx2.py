@@ -244,6 +244,7 @@ class LTX2VideoResnetBlock3d(nnx.Module):
     inputs = hidden_states
 
     hidden_states = self.norm1(hidden_states)
+    jax.debug.print("[MaxDiff Resnet] After norm1: mean={m:.6f}, std={st:.6f}", m=hidden_states.mean(), st=hidden_states.std())
 
     if self.scale_shift_table is not None:
         B, C = inputs.shape[0], inputs.shape[-1]
@@ -260,6 +261,7 @@ class LTX2VideoResnetBlock3d(nnx.Module):
 
     hidden_states = self.nonlinearity(hidden_states)
     hidden_states = self.conv1(hidden_states, causal=causal)
+    jax.debug.print("[MaxDiff Resnet] After conv1: mean={m:.6f}, std={st:.6f}", m=hidden_states.mean(), st=hidden_states.std())
 
     if self.per_channel_scale1 is not None and key is not None and not deterministic:
         key, subkey = jax.random.split(key)
@@ -269,6 +271,7 @@ class LTX2VideoResnetBlock3d(nnx.Module):
         hidden_states = hidden_states + noise_scaled[None, None, ...]
 
     hidden_states = self.norm2(hidden_states)
+    jax.debug.print("[MaxDiff Resnet] After norm2: mean={m:.6f}, std={st:.6f}", m=hidden_states.mean(), st=hidden_states.std())
 
     if self.scale_shift_table is not None:
          hidden_states = hidden_states * (1 + scale_2[:, None, None, None, :]) + shift_2[:, None, None, None, :]
@@ -276,6 +279,7 @@ class LTX2VideoResnetBlock3d(nnx.Module):
     hidden_states = self.nonlinearity(hidden_states)
     hidden_states = self.dropout(hidden_states, deterministic=deterministic)
     hidden_states = self.conv2(hidden_states, causal=causal)
+    jax.debug.print("[MaxDiff Resnet] After conv2: mean={m:.6f}, std={st:.6f}", m=hidden_states.mean(), st=hidden_states.std())
 
     if self.per_channel_scale2 is not None and key is not None and not deterministic:
         key, subkey = jax.random.split(key)
@@ -291,6 +295,7 @@ class LTX2VideoResnetBlock3d(nnx.Module):
         inputs = self.conv_shortcut(inputs)
 
     hidden_states = hidden_states + inputs
+    jax.debug.print("[MaxDiff Resnet] After final add: mean={m:.6f}, std={st:.6f}", m=hidden_states.mean(), st=hidden_states.std())
 
     return hidden_states
 
