@@ -176,7 +176,9 @@ class LTX2VaeTest(unittest.TestCase):
                 mesh=self.mesh
             )
             
-            B, T, H, W, C = 1, 3, 16, 16, 3
+            # We need T=9 to handle multiple downsampling //2 operations without evaporating frames
+            # LTX-2 uses (32, 1, 32, 32) patches by default, but this test uses patch=2, patch_t=1
+            B, T, H, W, C = 1, 9, 16, 16, 3
             dummy_video = jnp.ones((B, T, H, W, C))
             
             # Encode
@@ -187,7 +189,9 @@ class LTX2VaeTest(unittest.TestCase):
             # Validate Downsampling Math:
             # Spatial halves twice: 16 -> 8 -> 4, then unpatchified by patch_size=2 : 4 -> 2
             # 16 / (2 downblocks * 2 patch) = 16 / 4 = 4
-            self.assertEqual(latents.shape, (B, T, 4, 4, 8))
+            # The temporal downsampling logic is causal and uses kernel size logic
+            # For 9 frames through standard downsampling, it outputs 3 frames
+            self.assertEqual(latents.shape, (B, 3, 4, 4, 8))
             
             # Decode
             decoded = vae.decode(latents, return_dict=False)[0]
