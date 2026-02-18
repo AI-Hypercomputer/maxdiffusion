@@ -177,7 +177,7 @@ def main():
     recon_diff_tiled = np.abs(jax_recon_tiled - pt_recon_tiled_transposed)
     print(f"Max Tiled Reconstruction Absolute Difference: {recon_diff_tiled.max():.8f}")
     
-    model.disable_tiling()
+    model.use_tiling = False
     
     # --- Temporal Tiled Passes ---
     print("\nRunning Temporal Tiled Encoder/Decoder Passes...")
