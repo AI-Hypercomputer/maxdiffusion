@@ -139,7 +139,80 @@ def main():
     recon_diff = np.abs(jax_recon - pt_recon_transposed)
     print(f"Max Reconstruction Absolute Difference: {recon_diff.max():.8f}")
     
+    
+    # --- Tiled Passes ---
+    print("\nRunning Tiled Encoder/Decoder Passes...")
+    # Load the 256x256 input specifically saved for spatial tiling
+    pt_input_spatial = np.load(os.path.join(data_dir, "input_spatial.npy"))
+    jax_input_spatial = jnp.transpose(pt_input_spatial, (0, 2, 3, 4, 1))
+    
+    model.tile_sample_min_height = 192
+    model.tile_sample_min_width = 192
+    model.tile_sample_stride_height = 128
+    model.tile_sample_stride_width = 128
+    model.tile_latent_min_height = 3
+    model.tile_latent_min_width = 3
+    model.tile_latent_stride_height = 2
+    model.tile_latent_stride_width = 2
+    model.enable_tiling()
+    
+    jax_latents_tiled = model.encode(jax_input_spatial).latent_dist.mode()
+    jax_recon_tiled = model.decode(jax_latents_tiled).sample
+    
+    print(f"\n--- Tiled Encoder Latents ---")
+    print(f"JAX Shape: {jax_latents_tiled.shape}")
+    print(f"Mean: {jax_latents_tiled.mean():.6f}, Std: {jax_latents_tiled.std():.6f}")
+    
+    print(f"\n--- Tiled Decoder Output ---")
+    print(f"JAX Shape: {jax_recon_tiled.shape}")
+    print(f"Mean: {jax_recon_tiled.mean():.6f}, Std: {jax_recon_tiled.std():.6f}")
+    
+    pt_latents_tiled = np.load(os.path.join(data_dir, "latents_tiled.npy"))
+    pt_latents_tiled_transposed = np.transpose(pt_latents_tiled, (0, 2, 3, 4, 1))
+    pt_recon_tiled = np.load(os.path.join(data_dir, "reconstruction_tiled.npy"))
+    pt_recon_tiled_transposed = np.transpose(pt_recon_tiled, (0, 2, 3, 4, 1))
+    
+    latent_diff_tiled = np.abs(jax_latents_tiled - pt_latents_tiled_transposed)
+    print(f"Max Tiled Latent Absolute Difference: {latent_diff_tiled.max():.8f}")
+    recon_diff_tiled = np.abs(jax_recon_tiled - pt_recon_tiled_transposed)
+    print(f"Max Tiled Reconstruction Absolute Difference: {recon_diff_tiled.max():.8f}")
+    
+    model.disable_tiling()
+    
+    # --- Temporal Tiled Passes ---
+    print("\nRunning Temporal Tiled Encoder/Decoder Passes...")
+    pt_input_temporal = np.load(os.path.join(data_dir, "input_temporal.npy"))
+    jax_input_temporal = jnp.transpose(pt_input_temporal, (0, 2, 3, 4, 1))
+    
+    model.tile_sample_min_num_frames = 32
+    model.tile_sample_stride_num_frames = 16
+    model.use_framewise_decoding = True
+    
+    # Disable implicit spatial tiling
+    model.tile_sample_min_height = 10000
+    model.tile_sample_min_width = 10000
+    
+    jax_latents_temporal_tiled = model.encode(jax_input_temporal).latent_dist.mode()
+    jax_recon_temporal_tiled = model.decode(jax_latents_temporal_tiled).sample
+    
+    print(f"\n--- Temporal Tiled Encoder Latents ---")
+    print(f"JAX Shape: {jax_latents_temporal_tiled.shape}")
+    print(f"Mean: {jax_latents_temporal_tiled.mean():.6f}, Std: {jax_latents_temporal_tiled.std():.6f}")
+    
+    print(f"\n--- Temporal Tiled Decoder Output ---")
+    print(f"JAX Shape: {jax_recon_temporal_tiled.shape}")
+    print(f"Mean: {jax_recon_temporal_tiled.mean():.6f}, Std: {jax_recon_temporal_tiled.std():.6f}")
+    
+    pt_latents_temporal_tiled = np.load(os.path.join(data_dir, "latents_temporal_tiled.npy"))
+    pt_latents_temporal_tiled_transposed = np.transpose(pt_latents_temporal_tiled, (0, 2, 3, 4, 1))
+    pt_recon_temporal_tiled = np.load(os.path.join(data_dir, "reconstruction_temporal_tiled.npy"))
+    pt_recon_temporal_tiled_transposed = np.transpose(pt_recon_temporal_tiled, (0, 2, 3, 4, 1))
+    
+    latent_diff_temporal = np.abs(jax_latents_temporal_tiled - pt_latents_temporal_tiled_transposed)
+    print(f"Max Temporal Tiled Latent Absolute Difference: {latent_diff_temporal.max():.8f}")
+    recon_diff_temporal = np.abs(jax_recon_temporal_tiled - pt_recon_temporal_tiled_transposed)
+    print(f"Max Temporal Tiled Reconstruction Absolute Difference: {recon_diff_temporal.max():.8f}")
+    
     print("Done!")
-
 if __name__ == "__main__":
     main()
