@@ -18,12 +18,14 @@ def main():
     rngs = nnx.Rngs(0)
     
     model = LTX2VideoAutoencoderKL(
-        rngs=rngs,
         in_channels=3,
-        out_channels=129,  # 128 mean + 1 logvar
+        out_channels=3,
         latent_channels=128,
-        patch_size=32,
-        patch_size_t=1,
+        block_out_channels=(256, 512, 1024, 2048),
+        decoder_block_out_channels=(256, 512, 1024),
+        layers_per_block=(4, 6, 6, 2, 2),
+        decoder_layers_per_block=(5, 5, 5, 5),
+        rngs=rngs,
     )
     
     # 1 batch, 9 frames, 128x128 spatial
