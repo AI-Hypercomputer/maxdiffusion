@@ -859,7 +859,7 @@ class LTX2VideoEncoder3d(nnx.Module):
     )
 
   # Using static_argnames for boolean flags that affect control flow or shapes
-  # @nnx.jit(static_argnames=("causal", "deterministic"))
+  @nnx.jit(static_argnames=("causal", "deterministic"))
   def __call__(
       self,
       sample: jax.Array,
@@ -1025,7 +1025,7 @@ class LTX2VideoDecoder3d(nnx.Module):
       self.timestep_scale_multiplier = None
       self.time_embedder = None
 
-  # @nnx.jit(static_argnames=("causal", "deterministic"))
+  @nnx.jit(static_argnames=("causal", "deterministic"))
   def __call__(
       self,
       sample: jax.Array,
