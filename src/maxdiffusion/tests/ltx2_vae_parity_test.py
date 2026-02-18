@@ -8,7 +8,8 @@ from flax import nnx
 # Add maxdiffusion/src to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
-from maxdiffusion.scripts.convert_ltx2_vae_weights import convert_weights, ParamDict
+from builtins import Exception
+from flax import traverse_util
 
 def load_and_convert_pytorch_weights(pth_path, maxdiffusion_model):
     import torch
@@ -20,16 +21,55 @@ def load_and_convert_pytorch_weights(pth_path, maxdiffusion_model):
     _, state_graph = nnx.split(maxdiffusion_model)
     flax_state_dict = nnx.state.to_state_dict(state_graph)
     
-    # Use the conversion utility
-    mapped_weights, missing_keys, unexpected_keys = convert_weights(pytorch_state_dict, flax_state_dict, ParamDict())
+    # Inline conversion logic
+    flat_params = traverse_util.flatten_dict(flax_state_dict)
     
+    mapped_weights = {}
+    missing_keys = []
+    
+    for key_tuple, value in flat_params.items():
+        if "rngs" in key_tuple or "count" in key_tuple or "key" in key_tuple:
+            continue
+            
+        pt_key_parts = [str(p) if isinstance(p, int) else p for p in key_tuple]
+        
+        # MaxDiff to PT key mapping rules
+        if pt_key_parts[-1] == "kernel":
+            pt_key_parts[-1] = "weight"
+        elif pt_key_parts[-1] == "scale":
+            pt_key_parts[-1] = "weight"
+            
+        pt_key = ".".join(pt_key_parts)
+        
+        if pt_key not in pytorch_state_dict:
+            missing_keys.append(pt_key)
+            continue
+            
+        pt_tensor = pytorch_state_dict[pt_key]
+        if pt_tensor.dtype == torch.bfloat16:
+            pt_tensor = pt_tensor.float()
+            
+        np_array = pt_tensor.numpy()
+        
+        # Transpose conv weights (Out, In, T, H, W) -> (T, H, W, In, Out)
+        if "conv" in pt_key and "weight" in pt_key and len(np_array.shape) == 5:
+             np_array = np_array.transpose(2, 3, 4, 1, 0)
+        
+        # Squeeze/Unsqueeze singleton logic
+        if np_array.shape != value.shape:
+            if np_array.shape == (1,) + value.shape:
+                 np_array = np_array.squeeze(0)
+            elif value.shape == (1,) + np_array.shape:
+                 np_array = np_array[None]
+                 
+        mapped_weights[key_tuple] = jnp.array(np_array)
+
     for k in missing_keys:
         print(f"Warning: {k} not found in PyTorch state dict.")
-    for k in unexpected_keys:
-        print(f"Warning: Unexpected key {k} in PyTorch state dict.")
         
-    print(f"Mapped {len(mapped_weights)} parameters.")
-    return mapped_weights
+    print(f"Mapped {len(mapped_weights)} parameters out of {len(flat_params)}.")
+    params_nested = traverse_util.unflatten_dict(mapped_weights)
+    return params_nested
 
 def main():
     data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "ltx2_parity_data"))
