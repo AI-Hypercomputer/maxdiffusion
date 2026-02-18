@@ -975,7 +975,7 @@ class LTX2VideoDecoder3d(nnx.Module):
             LTX2VideoUpBlock3d(
                 in_channels=input_channel,
                 out_channels=output_channel,
-                num_layers=layers_per_block[i + 1],
+                num_layers=decoder_layers_per_block[i],
                 resnet_eps=resnet_norm_eps,
                 spatio_temporal_scale=spatio_temporal_scaling[i],
                 inject_noise=inject_noise[i + 1],
@@ -1075,11 +1075,10 @@ class LTX2VideoDecoder3d(nnx.Module):
 
 
 class LTX2DiagonalGaussianDistribution(nnx.Module):
-    def __init__(self, parameters: jax.Array, deterministic: bool = False):
+    def __init__(self, parameters: jax.Array, cls_latent_channels: int = 128, deterministic: bool = False):
         self.parameters = parameters
         # Split into mean and logvar
-        # LTX-2 specific: 128 channels for mean, 1 channel for logvar
-        self.mean, self.logvar = jnp.split(parameters, [128], axis=-1)
+        self.mean, self.logvar = jnp.split(parameters, [cls_latent_channels], axis=-1)
         self.logvar = jnp.clip(self.logvar, -30.0, 20.0)
         self.deterministic = deterministic
         self.std = jnp.exp(0.5 * self.logvar)
@@ -1569,8 +1568,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, ConfigMixin):
     else:
         moments = self._encode(sample, key=key, causal=causal)
         
-        
-    posterior = LTX2DiagonalGaussianDistribution(moments)
+    posterior = LTX2DiagonalGaussianDistribution(moments, cls_latent_channels=self.latent_channels)
 
     if not return_dict:
       return (posterior,)
