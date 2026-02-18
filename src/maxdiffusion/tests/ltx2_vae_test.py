@@ -239,7 +239,7 @@ class LTX2VaeTest(unittest.TestCase):
             
             # Spatial downsample factor is 2 * 2**2 = 8.
             # So 32 -> 4 (overlapping 4x4 effectively)
-            self.assertEqual(latents.shape, (B, 9, 3, 3, 8))
+            self.assertEqual(latents.shape, (B, 9, 4, 4, 8))
             
             # Test decode with tiling
             decoded = vae.decode(latents, return_dict=False)[0]
@@ -283,7 +283,7 @@ class LTX2VaeTest(unittest.TestCase):
             encoded_dist = vae.encode(dummy_video, return_dict=False)[0]
             latents = encoded_dist.sample(key=key)
             
-            self.assertEqual(latents.shape, (B, 7, 16, 16, 8))
+            self.assertEqual(latents.shape, (B, 7, 8, 8, 8))
             
             decoded = vae.decode(latents, return_dict=False)[0]
             self.assertEqual(decoded.shape, (B, 25, 64, 64, C))
