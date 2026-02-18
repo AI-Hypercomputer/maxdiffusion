@@ -347,10 +347,11 @@ class LTXVideoDownsampler3d(nnx.Module):
     
     residual = padded_states.reshape(B, new_T, self.stride[0], new_H, self.stride[1], new_W, self.stride[2], C)
     
-    # transpose: (B, new_T, stride[0], new_H, stride[1], new_W, stride[2], C) -> (B, new_T, new_H, new_W, stride[0], stride[1], stride[2], C)
-    residual = residual.transpose(0, 1, 3, 5, 2, 4, 6, 7)
+    # transpose: (B, new_T, stride_T, new_H, stride_H, new_W, stride_W, C) -> (B, new_T, new_H, new_W, C, stride_T, stride_H, stride_W)
+    # This matches PyTorch channel grouping
+    residual = residual.transpose(0, 1, 3, 5, 7, 2, 4, 6)
     
-    # Flatten last 4 dims: stride[0]*stride[1]*stride[2]*C
+    # Flatten last 4 dims: C*stride_T*stride_H*stride_W
     residual = residual.reshape(B, new_T, new_H, new_W, -1)
     
     # Now reshape to (..., out_channels_target, group_size)
@@ -364,7 +365,8 @@ class LTXVideoDownsampler3d(nnx.Module):
     C_conv = conv_out.shape[-1]
     
     conv_out = conv_out.reshape(B, new_T, self.stride[0], new_H, self.stride[1], new_W, self.stride[2], C_conv)
-    conv_out = conv_out.transpose(0, 1, 3, 5, 2, 4, 6, 7)
+    # Transpose identically to match the residual flat feature order
+    conv_out = conv_out.transpose(0, 1, 3, 5, 7, 2, 4, 6)
     conv_out = conv_out.reshape(B, new_T, new_H, new_W, -1)
     
     # 3. Add Residual
