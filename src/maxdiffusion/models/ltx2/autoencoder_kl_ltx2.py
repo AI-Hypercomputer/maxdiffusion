@@ -975,7 +975,7 @@ class LTX2VideoDecoder3d(nnx.Module):
             LTX2VideoUpBlock3d(
                 in_channels=input_channel,
                 out_channels=output_channel,
-                num_layers=decoder_layers_per_block[i],
+                num_layers=layers_per_block[i + 1],
                 resnet_eps=resnet_norm_eps,
                 spatio_temporal_scale=spatio_temporal_scaling[i],
                 inject_noise=inject_noise[i + 1],
@@ -1083,6 +1083,8 @@ class LTX2DiagonalGaussianDistribution(nnx.Module):
         self.deterministic = deterministic
         self.std = jnp.exp(0.5 * self.logvar)
         self.var = jnp.exp(self.logvar)
+        self.std = jnp.broadcast_to(self.std, self.mean.shape)
+        self.var = jnp.broadcast_to(self.var, self.mean.shape)
         if self.deterministic:
             self.var = self.std = jnp.zeros_like(
                 self.mean, dtype=self.parameters.dtype
