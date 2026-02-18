@@ -1,18 +1,40 @@
-
+import sys
 import os
 import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from flax import traverse_util
-from flax.training import orbax_utils
-import orbax.checkpoint
-from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 
-def test_ltx2_vae_parity():
-    # 1. Load Flax Model
-    print("Initializing MaxDiffusion model...")
-    # Initialize with same config as conversion
+# Add maxdiffusion/src to path for imports
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
+from maxdiffusion.scripts.convert_ltx2_vae_weights import convert_weights, ParamDict
+
+def load_and_convert_pytorch_weights(pth_path, maxdiffusion_model):
+    import torch
+    print(f"Loading PyTorch state dict from {pth_path}...")
+    pytorch_state_dict = torch.load(pth_path, map_location="cpu", weights_only=True)
+    
+    print("Converting weights to MaxDiffusion format...")
+    # Get the state graph from the initialized model
+    _, state_graph = nnx.split(maxdiffusion_model)
+    flax_state_dict = nnx.state.to_state_dict(state_graph)
+    
+    # Use the conversion utility
+    mapped_weights, missing_keys, unexpected_keys = convert_weights(pytorch_state_dict, flax_state_dict, ParamDict())
+    
+    for k in missing_keys:
+        print(f"Warning: {k} not found in PyTorch state dict.")
+    for k in unexpected_keys:
+        print(f"Warning: Unexpected key {k} in PyTorch state dict.")
+        
+    print(f"Mapped {len(mapped_weights)} parameters.")
+    return mapped_weights
+
+def main():
+    data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "ltx2_parity_data"))
+    
+    print("Initializing MaxDiffusion LTX-2 VAE...")
     model = LTX2VideoAutoencoderKL(
         in_channels=3,
         out_channels=3,
@@ -21,128 +43,58 @@ def test_ltx2_vae_parity():
         decoder_block_out_channels=(256, 512, 1024),
         layers_per_block=(4, 6, 6, 2, 2),
         decoder_layers_per_block=(5, 5, 5, 5),
-        spatio_temporal_scaling=(True, True, True, True),
-        decoder_spatio_temporal_scaling=(True, True, True),
-        decoder_inject_noise=(False, False, False, False),
-        upsample_factor=(2, 2, 2),
-        upsample_residual=(False, False, False),
-        dtype=jnp.float32,
         rngs=nnx.Rngs(0)
     )
     
-    # Load checkpoint
-    ckpt_path = os.path.abspath("ltx2_vae_checkpoint")
-    print(f"Loading checkpoint from {ckpt_path}...")
-    
-    checkpointer = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
-    
-    # Load without 'item' to avoid structure mismatch errors with State vs Dict
-    if not os.path.exists(ckpt_path):
-        print(f"Error: Checkpoint path {ckpt_path} does not exist.")
-        return
-
-    loaded_params = checkpointer.restore(ckpt_path)
-    
-    # Debug: Print structure of loaded_params
-    print("Loaded params type:", type(loaded_params))
-    if isinstance(loaded_params, dict):
-        print("Loaded keys sample:", list(loaded_params.keys())[:5])
-        # Check encoder down_blocks if present
-        if 'encoder' in loaded_params and 'down_blocks' in loaded_params['encoder']:
-             print("Encoder down_blocks keys:", list(loaded_params['encoder']['down_blocks'].keys()))
-             first_key = next(iter(loaded_params['encoder']['down_blocks']))
-             print(f"Key type: {type(first_key)}")
-
-    # Merge back
-    try:
-        nnx.update(model, loaded_params)
-    except KeyError as e:
-        print(f"Caught KeyError during update: {e}")
-        print("Attempting to fix integer keys...")
+    # Load converted weights
+    pth_path = os.path.join(data_dir, "pytorch_model.bin")
+    if not os.path.exists(pth_path):
+        raise FileNotFoundError(f"PyTorch weights not found at {pth_path}. Run diffusers script first.")
         
-        def fix_keys(d):
-            new_d = {}
-            for k, v in d.items():
-                if isinstance(v, dict):
-                    v = fix_keys(v)
-                
-                # Check if key is a string digit
-                if isinstance(k, str) and k.isdigit():
-                    new_k = int(k)
-                else:
-                    new_k = k
-                new_d[new_k] = v
-            return new_d
+    state_graph = load_and_convert_pytorch_weights(pth_path, model)
+    nnx.update(model, state_graph)
 
-        fixed_params = fix_keys(loaded_params)
-        print("Retrying update with fixed keys...")
-        nnx.update(model, fixed_params)
-
-    # Debug: Check Model Weights Shapes
-    print("\n--- Model Weights Debug ---")
-    try:
-        if hasattr(model, 'encoder'):
-            conv_in_kernel = model.encoder.conv_in.conv.kernel.value
-            print(f"Encoder conv_in kernel shape: {conv_in_kernel.shape}")
-            
-            # Check first resnet
-            if len(model.encoder.down_blocks) > 0:
-                resnet0 = model.encoder.down_blocks[0].resnets[0]
-                conv1_kernel = resnet0.conv1.conv.kernel.value
-                print(f"Encoder down_blocks[0].resnets[0].conv1 kernel shape: {conv1_kernel.shape}")
-    except Exception as e:
-        print(f"Could not inspect weights: {e}")
-    print("---------------------------\n")
-
-    # 3. Create Inputs
-    print("Creating deterministic input...")
-    # Shape: (Batch, Frames, Height, Width, Channels) for JAX
-    # Using fixed seed for reproducibility
-    key = jax.random.PRNGKey(42)
-    B, F, H, W, C = 1, 17, 64, 64, 3
+    # Load inputs
+    print("Loading PyTorch input...")
+    pt_input = np.load(os.path.join(data_dir, "input.npy"))
+    # PT Shape: (B, C, T, H, W) -> JAX Shape: (B, T, H, W, C)
+    jax_input = jnp.transpose(pt_input, (0, 2, 3, 4, 1))
     
-    jax_input = jax.random.normal(key, (B, F, H, W, C), dtype=jnp.float32)
+    print(f"\n--- Input ---")
+    print(f"JAX Shape: {jax_input.shape}")
+    print(f"Mean: {jax_input.mean():.6f}, Std: {jax_input.std():.6f}")
     
-    print(f"Input Shape: {jax_input.shape}")
-    print(f"Input Stats: Mean={jax_input.mean():.6f}, Std={jax_input.std():.6f}, Min={jax_input.min():.6f}, Max={jax_input.max():.6f}")
-
-    # 4. Run Flax
-    print("Running Flax forward pass...")
-    # Call the model
-    # Note: default deterministic=True, causal=True/False depending on init
-    jax_recon = model(jax_input, sample_posterior=False).sample
-    
-    # 5. Print Output Stats
-    print("\nOutput Stats:")
-    print(f"Output Shape: {jax_recon.shape}")
-    print(f"Output Mean: {jax_recon.mean():.6f}")
-    print(f"Output Std:  {jax_recon.std():.6f}")
-    print(f"Output Min:  {jax_recon.min():.6f}")
-    print(f"Output Max:  {jax_recon.max():.6f}")
-    
-    # Also Check Encoder Latents
-    print("\nEncoder Latents Stats:")
+    print("\nRunning Encoder...")
     posterior = model.encode(jax_input).latent_dist
-    # posterior is DiagonalGaussianDistribution
-    # Check mode
-    latents = posterior.mode()
-    print(f"Latents Shape: {latents.shape}")
-    print(f"Latents Mean: {latents.mean():.6f}")
-    print(f"Latents Std:  {latents.std():.6f}")
-
-    # Assertions
-    # 1. Check Output Shape
-    assert jax_recon.shape == jax_input.shape, f"Output shape mismatch: {jax_recon.shape} vs {jax_input.shape}"
+    jax_latents = posterior.mode()
     
-    # 2. Check Latents Shape (Mean should be 128 channels)
-    assert latents.shape[-1] == 128, f"Latents channel mismatch: {latents.shape[-1]} vs 128"
+    print(f"\n--- Encoder Latents ---")
+    print(f"JAX Shape: {jax_latents.shape}")
+    print(f"Mean: {jax_latents.mean():.6f}, Std: {jax_latents.std():.6f}")
     
-    # 3. Check Encoder Output Channels (should be 129 before split)
-    # We can check parameters of the distribution indirectly via moments if accessible, 
-    # but here we checked latents (mode) which is derived from mean (128).
-    # The fact that it ran without error implies the split worked.
+    print("\nRunning Decoder...")
+    # VAE decode output gives FlaxDecoderOutput with .sample
+    jax_recon = model.decode(jax_latents).sample
+    
+    print(f"\n--- Decoder Output ---")
+    print(f"JAX Shape: {jax_recon.shape}")
+    print(f"Mean: {jax_recon.mean():.6f}, Std: {jax_recon.std():.6f}")
 
-    print("\nTest Passed!")
+    # Compare with stored Diffusers outputs
+    print("\n--- Parity Check ---")
+    pt_latents = np.load(os.path.join(data_dir, "latents.npy"))
+    pt_latents_transposed = np.transpose(pt_latents, (0, 2, 3, 4, 1))
+    
+    pt_recon = np.load(os.path.join(data_dir, "reconstruction.npy"))
+    pt_recon_transposed = np.transpose(pt_recon, (0, 2, 3, 4, 1))
+    
+    latent_diff = np.abs(jax_latents - pt_latents_transposed)
+    print(f"Max Latent Absolute Difference: {latent_diff.max():.8f}")
+    
+    recon_diff = np.abs(jax_recon - pt_recon_transposed)
+    print(f"Max Reconstruction Absolute Difference: {recon_diff.max():.8f}")
+    
+    print("Done!")
 
 if __name__ == "__main__":
-    test_ltx2_vae_parity()
+    main()
