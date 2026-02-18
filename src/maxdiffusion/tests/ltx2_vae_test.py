@@ -34,6 +34,7 @@ from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import (
     LTXVideoDownsampler3d,
     LTXVideoUpsampler3d,
     LTX2VideoResnetBlock3d,
+    LTX2VideoUpBlock3d,
     LTX2VideoEncoder3d,
     LTX2VideoDecoder3d,
     LTX2VideoAutoencoderKL,
@@ -109,8 +110,8 @@ class LTX2VaeTest(unittest.TestCase):
             
             self.assertEqual(out.shape, (1, 5, 8, 8, out_channels))
 
-    def test_ltx2_video_upsampler3d(self):
-        """Tests the tile duplication and causal shift of LTXVideoUpsampler3d."""
+    def test_ltx2_video_upblock3d(self):
+        """Tests the tile duplication and causal shift of LTX2VideoUpBlock3d."""
         key = jax.random.PRNGKey(0)
         rngs = nnx.Rngs(key)
         
@@ -118,9 +119,14 @@ class LTX2VaeTest(unittest.TestCase):
         out_channels = 32
         
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-            upsampler = LTXVideoUpsampler3d(
+            upsampler = LTX2VideoUpBlock3d(
                 in_channels=in_channels,
-                stride=(1, 2, 2), # Upscale spatial by 2, keep time identical
+                out_channels=out_channels,
+                num_layers=1,
+                resnet_eps=1e-6,
+                spatio_temporal_scale=True,
+                upsample_residual=False,
+                upscale_factor=1,
                 rngs=rngs,
                 mesh=self.mesh
             )
@@ -129,7 +135,7 @@ class LTX2VaeTest(unittest.TestCase):
             dummy_input = jnp.ones((1, 3, 8, 8, in_channels))
             out = upsampler(dummy_input, causal=True)
             
-            self.assertEqual(out.shape, (1, 3, 16, 16, in_channels))
+            self.assertEqual(out.shape, (1, 3, 16, 16, out_channels))
 
     def test_ltx2_diagonal_gaussian_distribution(self):
         """Tests that the custom 129-channel distribution splits and reconstructs successfully."""
