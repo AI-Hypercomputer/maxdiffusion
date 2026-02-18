@@ -26,10 +26,10 @@ def main():
         patch_size_t=1,
     )
     
-    # 1 batch, 9 frames, 64x64 spatial
+    # 1 batch, 9 frames, 128x128 spatial
     # Random input to prevent any constant folding optimizations
     key = jax.random.PRNGKey(42)
-    fake_input = jax.random.normal(key, (1, 9, 64, 64, 3))
+    fake_input = jax.random.normal(key, (1, 9, 128, 128, 3))
     
     print("\n--- Benchmarking Encoder JIT Compilation ---")
     
