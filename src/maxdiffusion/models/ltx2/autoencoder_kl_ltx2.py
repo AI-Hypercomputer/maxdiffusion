@@ -896,6 +896,13 @@ class LTX2VideoEncoder3d(nnx.Module):
 
     hidden_states = self.conv_out(hidden_states, causal=causal)
 
+    # Replicate the logvar channel (the last channel) to match diffusers behavior
+    # Diffusers: last_channel.repeat(1, hidden_states.size(1) - 2, 1, 1, 1) -> cat
+    # JAX shape: (B, T, H, W, C). We need to copy the last channel C-2 times.
+    last_channel = hidden_states[..., -1:]
+    num_repeats = hidden_states.shape[-1] - 2
+    last_channel = jnp.tile(last_channel, (1, 1, 1, 1, num_repeats))
+    hidden_states = jnp.concatenate([hidden_states, last_channel], axis=-1)
 
     return hidden_states
 
@@ -1071,61 +1078,6 @@ class LTX2VideoDecoder3d(nnx.Module):
     
 
     return hidden_states
-
-
-
-class LTX2DiagonalGaussianDistribution(nnx.Module):
-    def __init__(self, parameters: jax.Array, cls_latent_channels: int = 128, deterministic: bool = False):
-        self.parameters = parameters
-        # Split into mean and logvar
-        self.mean, self.logvar = jnp.split(parameters, [cls_latent_channels], axis=-1)
-        self.logvar = jnp.clip(self.logvar, -30.0, 20.0)
-        self.deterministic = deterministic
-        self.std = jnp.exp(0.5 * self.logvar)
-        self.var = jnp.exp(self.logvar)
-        self.std = jnp.broadcast_to(self.std, self.mean.shape)
-        self.var = jnp.broadcast_to(self.var, self.mean.shape)
-        if self.deterministic:
-            self.var = self.std = jnp.zeros_like(
-                self.mean, dtype=self.parameters.dtype
-            )
-
-    def sample(self, key: jax.Array) -> jax.Array:
-        # make sure sample is on the same device as the parameters and has same dtype
-        sample = jax.random.normal(key, self.mean.shape, dtype=self.parameters.dtype)
-        x = self.mean + self.std * sample
-        return x
-
-    def kl(self, other: "LTX2DiagonalGaussianDistribution" = None) -> jax.Array:
-        if self.deterministic:
-            return jnp.array([0.0])
-        else:
-            if other is None:
-                return 0.5 * jnp.sum(
-                    jnp.power(self.mean, 2) + self.var - 1.0 - self.logvar,
-                    axis=[1, 2, 3],
-                )
-            else:
-                return 0.5 * jnp.sum(
-                    jnp.power(self.mean - other.mean, 2) / other.var
-                    + self.var / other.var
-                    - 1.0
-                    - self.logvar
-                    + other.logvar,
-                    axis=[1, 2, 3],
-                )
-
-    def nll(self, sample: jax.Array, dims: Tuple[int, ...] = (1, 2, 3)) -> jax.Array:
-        if self.deterministic:
-            return jnp.array([0.0])
-        logtwopi = jnp.log(2.0 * jnp.pi)
-        return 0.5 * jnp.sum(
-            logtwopi + self.logvar + jnp.power(sample - self.mean, 2) / self.var,
-            axis=dims,
-        )
-
-    def mode(self) -> jax.Array:
-        return self.mean
 
 
 class LTX2VideoAutoencoderKL(nnx.Module, ConfigMixin):
@@ -1570,7 +1522,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, ConfigMixin):
     else:
         moments = self._encode(sample, key=key, causal=causal)
         
-    posterior = LTX2DiagonalGaussianDistribution(moments, cls_latent_channels=self.latent_channels)
+    posterior = FlaxDiagonalGaussianDistribution(moments)
 
     if not return_dict:
       return (posterior,)

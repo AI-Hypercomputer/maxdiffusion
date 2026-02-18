@@ -38,9 +38,10 @@ from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import (
     LTX2VideoUpBlock3d,
     LTX2VideoEncoder3d,
     LTX2VideoDecoder3d,
-    LTX2VideoAutoencoderKL,
-    LTX2DiagonalGaussianDistribution
+    LTX2VideoAutoencoderKL
 )
+
+from maxdiffusion.models.vae_flax import FlaxDiagonalGaussianDistribution
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -142,23 +143,22 @@ class LTX2VaeTest(unittest.TestCase):
             self.assertEqual(out.shape, (1, 5, 16, 16, out_channels))
 
     def test_ltx2_diagonal_gaussian_distribution(self):
-        """Tests that the custom 129-channel distribution splits and reconstructs successfully."""
+        """Tests that the custom distribution splits and reconstructs successfully."""
         B, T, H, W = 2, 4, 8, 8
-        latent_channels = 128
-        parameters_channels = 129 # 128 mean + 1 logvar
+        parameters_channels = 256 # 128 mean + 128 logvar
         
         # Mock moments tensor
         parameters = jnp.zeros((B, T, H, W, parameters_channels))
         parameters = parameters.at[..., :128].set(0.5) # Set mean to 0.5
         parameters = parameters.at[..., 128:].set(1.0) # Set logvar to 1.0
         
-        dist = LTX2DiagonalGaussianDistribution(parameters, cls_latent_channels=latent_channels)
+        dist = FlaxDiagonalGaussianDistribution(parameters)
         
         # Verify splits
         self.assertEqual(dist.mean.shape, (B, T, H, W, 128))
-        self.assertEqual(dist.logvar.shape, (B, T, H, W, 1))
+        self.assertEqual(dist.logvar.shape, (B, T, H, W, 128))
         
-        # Logvar mathematically broadcasts to variance
+        # Logvar mathematically broadcasts to variance during sampling
         self.assertEqual(dist.var.shape, (B, T, H, W, 128))
         
         # Sampling should return matching shapes
