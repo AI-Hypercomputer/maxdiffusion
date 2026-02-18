@@ -34,8 +34,8 @@ class LTX2VideoGemmaTextEncoder(nnx.Module):
     def __init__(
         self,
         # Feature Extractor Config
-        gemma_dim: int = 3072, # Gemma-2-9b or similar
-        gemma_layers: int = 42,
+        gemma_dim: int = 3840, # Gemma-3-12b
+        gemma_layers: int = 49, # Gemma-3 has 48 layers + 1 embedding layer output = 49 hidden states
         projection_dim: int = 4096, # LTX-2 conditioning dim
         # Connector Config
         connector_heads: int = 32,
@@ -93,8 +93,8 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module):
     def __init__(
         self,
         # Feature Extractor Config (Shared)
-        gemma_dim: int = 3072,
-        gemma_layers: int = 42,
+        gemma_dim: int = 3840, # Gemma-3-12b
+        gemma_layers: int = 49, # Gemma-3 has 48 layers + 1 embedding layer output = 49 hidden states
         projection_dim: int = 4096,
         # Connector Config
         connector_heads: int = 32,
