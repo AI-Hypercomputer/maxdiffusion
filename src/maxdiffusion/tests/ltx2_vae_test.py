@@ -48,7 +48,7 @@ class LTX2VaeTest(unittest.TestCase):
         pyconfig.initialize(
             [
                 None,
-                os.path.join(THIS_DIR, "..", "configs", "base_ltx2_video.yml"),
+                os.path.join(THIS_DIR, "..", "configs", "ltx2_video.yml"),
             ],
             unittest=True,
         )
