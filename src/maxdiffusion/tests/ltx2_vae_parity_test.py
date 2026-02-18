@@ -19,7 +19,8 @@ def load_and_convert_pytorch_weights(pth_path, maxdiffusion_model):
     print("Converting weights to MaxDiffusion format...")
     # Get the state graph from the initialized model
     _, state_graph = nnx.split(maxdiffusion_model)
-    flax_state_dict = nnx.state.to_state_dict(state_graph)
+    params = state_graph.filter(nnx.Param)
+    flax_state_dict = params.to_pure_dict()
     
     # Inline conversion logic
     flat_params = traverse_util.flatten_dict(flax_state_dict)
