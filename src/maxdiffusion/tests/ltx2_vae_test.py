@@ -129,7 +129,7 @@ class LTX2VaeTest(unittest.TestCase):
             dummy_input = jnp.ones((1, 3, 8, 8, in_channels))
             out = upsampler(dummy_input, causal=True)
             
-            self.assertEqual(out.shape, (1, 3, 16, 16, out_channels))
+            self.assertEqual(out.shape, (1, 3, 16, 16, in_channels))
 
     def test_ltx2_diagonal_gaussian_distribution(self):
         """Tests that the custom 129-channel distribution splits and reconstructs successfully."""
@@ -142,7 +142,7 @@ class LTX2VaeTest(unittest.TestCase):
         parameters = parameters.at[..., :128].set(0.5) # Set mean to 0.5
         parameters = parameters.at[..., 128:].set(1.0) # Set logvar to 1.0
         
-        dist = LTX2DiagonalGaussianDistribution(parameters, latent_channels=latent_channels)
+        dist = LTX2DiagonalGaussianDistribution(parameters, cls_latent_channels=latent_channels)
         
         # Verify splits
         self.assertEqual(dist.mean.shape, (B, T, H, W, 128))
@@ -169,7 +169,7 @@ class LTX2VaeTest(unittest.TestCase):
                 block_out_channels=(16, 32),
                 decoder_block_out_channels=(16, 32),
                 layers_per_block=(2, 2),
-                decoder_layers_per_block=(2, 2),
+                decoder_layers_per_block=(2, 2, 2),
                 patch_size=2,
                 patch_size_t=1,
                 rngs=rngs,
