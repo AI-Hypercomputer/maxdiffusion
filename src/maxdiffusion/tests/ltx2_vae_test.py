@@ -72,7 +72,6 @@ class LTX2VaeTest(unittest.TestCase):
                 out_channels=out_channels,
                 kernel_size=3,
                 stride=1,
-                pad_time_causal=2, # Causal padding means padding only left on time dim
                 rngs=rngs,
                 mesh=self.mesh
             )
@@ -99,7 +98,6 @@ class LTX2VaeTest(unittest.TestCase):
             downsampler = LTXVideoDownsampler3d(
                 in_channels=in_channels,
                 out_channels=out_channels,
-                kernel_size=3,
                 stride=(1, 2, 2), # Compress spatial, keep time identical
                 rngs=rngs,
                 mesh=self.mesh
@@ -122,8 +120,6 @@ class LTX2VaeTest(unittest.TestCase):
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
             upsampler = LTXVideoUpsampler3d(
                 in_channels=in_channels,
-                out_channels=out_channels,
-                kernel_size=3,
                 stride=(1, 2, 2), # Upscale spatial by 2, keep time identical
                 rngs=rngs,
                 mesh=self.mesh
@@ -146,7 +142,7 @@ class LTX2VaeTest(unittest.TestCase):
         parameters = parameters.at[..., :128].set(0.5) # Set mean to 0.5
         parameters = parameters.at[..., 128:].set(1.0) # Set logvar to 1.0
         
-        dist = LTX2DiagonalGaussianDistribution(parameters, cls_latent_channels=latent_channels)
+        dist = LTX2DiagonalGaussianDistribution(parameters, latent_channels=latent_channels)
         
         # Verify splits
         self.assertEqual(dist.mean.shape, (B, T, H, W, 128))
@@ -176,7 +172,6 @@ class LTX2VaeTest(unittest.TestCase):
                 decoder_layers_per_block=(2, 2),
                 patch_size=2,
                 patch_size_t=1,
-                time_cond_proj_dim=None,
                 rngs=rngs,
                 mesh=self.mesh
             )
