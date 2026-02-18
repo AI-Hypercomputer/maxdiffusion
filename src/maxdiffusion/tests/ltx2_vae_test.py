@@ -190,8 +190,8 @@ class LTX2VaeTest(unittest.TestCase):
             # Spatial halves twice: 16 -> 8 -> 4, then unpatchified by patch_size=2 : 4 -> 2
             # 16 / (2 downblocks * 2 patch) = 16 / 4 = 4
             # The temporal downsampling logic is causal and uses kernel size logic
-            # For 9 frames through standard downsampling, it outputs 3 frames
-            self.assertEqual(latents.shape, (B, 3, 4, 4, 8))
+            # For 9 frames through standard downsampling, it outputs 5 frames with these configs
+            self.assertEqual(latents.shape, (B, 5, 4, 4, 8))
             
             # Decode
             decoded = vae.decode(latents, return_dict=False)[0]
