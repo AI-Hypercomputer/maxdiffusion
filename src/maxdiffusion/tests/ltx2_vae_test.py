@@ -32,6 +32,7 @@ from maxdiffusion.max_utils import create_device_mesh
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import (
     LTX2VideoCausalConv3d,
     LTXVideoDownsampler3d,
+    LTX2VideoDownBlock3D,
     LTXVideoUpsampler3d,
     LTX2VideoResnetBlock3d,
     LTX2VideoUpBlock3d,
@@ -87,8 +88,8 @@ class LTX2VaeTest(unittest.TestCase):
             out_non_causal = conv(dummy_input, causal=False)
             self.assertEqual(out_non_causal.shape, (2, 5, 16, 16, out_channels))
 
-    def test_ltx2_video_downsampler3d(self):
-        """Tests pooling and reshaping alignment in LTXVideoDownsampler3d."""
+    def test_ltx2_video_downblock3d(self):
+        """Tests pooling and reshaping alignment in LTX2VideoDownBlock3D."""
         key = jax.random.PRNGKey(0)
         rngs = nnx.Rngs(key)
         
@@ -96,10 +97,13 @@ class LTX2VaeTest(unittest.TestCase):
         out_channels = 64
         
         with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-            downsampler = LTXVideoDownsampler3d(
+            downsampler = LTX2VideoDownBlock3D(
                 in_channels=in_channels,
                 out_channels=out_channels,
-                stride=(1, 2, 2), # Compress spatial, keep time identical
+                num_layers=1,
+                resnet_eps=1e-6,
+                spatio_temporal_scale=True,
+                downsample_type="spatial",
                 rngs=rngs,
                 mesh=self.mesh
             )
