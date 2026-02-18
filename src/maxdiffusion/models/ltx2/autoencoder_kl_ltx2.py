@@ -881,18 +881,24 @@ class LTX2VideoEncoder3d(nnx.Module):
         keys = jax.random.split(key, num_blocks)
     
     hidden_states = self.conv_in(hidden_states, causal=causal)
+    # nnx.jit doesn't print during actual execution after trace, but we'll use jax.debug.print
+    jax.debug.print("[MaxDiff Encoder] After conv_in: shape={s}, mean={m:.6f}, std={st:.6f}", s=hidden_states.shape, m=hidden_states.mean(), st=hidden_states.std())
 
     for i, down_block in enumerate(self.down_blocks):
         subkey = keys[i] if keys is not None else None
         hidden_states = down_block(hidden_states, temb=temb, key=subkey, causal=causal, deterministic=deterministic)
+        jax.debug.print("[MaxDiff Encoder] After down_block {i}: shape={s}, mean={m:.6f}, std={st:.6f}", i=i, s=hidden_states.shape, m=hidden_states.mean(), st=hidden_states.std())
 
     subkey = keys[-1] if keys is not None else None
     hidden_states = self.mid_block(hidden_states, temb=temb, key=subkey, causal=causal, deterministic=deterministic)
+    jax.debug.print("[MaxDiff Encoder] After mid_block: shape={s}, mean={m:.6f}, std={st:.6f}", s=hidden_states.shape, m=hidden_states.mean(), st=hidden_states.std())
 
     hidden_states = self.norm_out(hidden_states)
     hidden_states = self.conv_act(hidden_states)
-    hidden_states = self.conv_out(hidden_states, causal=causal)
+    jax.debug.print("[MaxDiff Encoder] After norm+act: shape={s}, mean={m:.6f}, std={st:.6f}", s=hidden_states.shape, m=hidden_states.mean(), st=hidden_states.std())
 
+    hidden_states = self.conv_out(hidden_states, causal=causal)
+    jax.debug.print("[MaxDiff Encoder] After conv_out: shape={s}, mean={m:.6f}, std={st:.6f}", s=hidden_states.shape, m=hidden_states.mean(), st=hidden_states.std())
 
 
     return hidden_states
