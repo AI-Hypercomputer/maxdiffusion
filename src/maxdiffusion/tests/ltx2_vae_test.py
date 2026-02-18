@@ -243,7 +243,7 @@ class LTX2VaeTest(unittest.TestCase):
             
             # Test decode with tiling
             decoded = vae.decode(latents, return_dict=False)[0]
-            self.assertEqual(decoded.shape, (B, 17, 32, 32, C))
+            self.assertEqual(decoded.shape, (B, 33, 32, 32, C))
 
     def test_ltx2_temporal_tiled_encode_decode(self):
         """Tests the temporal tiled encode/decode logic (framewise decoding/encoding)."""
