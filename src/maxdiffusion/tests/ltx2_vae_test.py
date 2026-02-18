@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import sys
 import os
 import jax
 import jax.numpy as jnp
@@ -24,9 +25,11 @@ import numpy as np
 import unittest
 from absl.testing import absltest
 
-from .. import pyconfig
-from ..max_utils import create_device_mesh
-from ..models.ltx2.autoencoder_kl_ltx2 import (
+# Add maxdiffusion/src to path for imports
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from maxdiffusion import pyconfig
+from maxdiffusion.max_utils import create_device_mesh
+from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import (
     LTX2VideoCausalConv3d,
     LTXVideoDownsampler3d,
     LTXVideoUpsampler3d,
