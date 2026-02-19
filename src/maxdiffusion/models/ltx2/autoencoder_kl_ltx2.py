@@ -461,19 +461,20 @@ class LTX2VideoDownBlock3D(nnx.Module):
     @nnx.split_rngs(splits=num_layers)
     @nnx.vmap(in_axes=0, out_axes=0, axis_size=num_layers)
     def create_resnets(rngs):
-        return LTX2VideoResnetBlock3d(
-            in_channels=in_channels,
-            out_channels=in_channels,
-            dropout=dropout,
-            eps=resnet_eps,
-            non_linearity=resnet_act_fn,
-            spatial_padding_mode=spatial_padding_mode,
-            rngs=rngs,
-            mesh=mesh,
-            dtype=dtype,
-            weights_dtype=weights_dtype,
-            precision=precision,
-        )
+      return LTX2VideoResnetBlock3d(
+          in_channels=in_channels,
+          out_channels=in_channels,
+          dropout=dropout,
+          eps=resnet_eps,
+          non_linearity=resnet_act_fn,
+          spatial_padding_mode=spatial_padding_mode,
+          rngs=rngs,
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
+      )
+
     self.resnets = create_resnets(rngs)
 
     self.downsamplers = nnx.List([])
@@ -544,20 +545,19 @@ class LTX2VideoDownBlock3D(nnx.Module):
       causal: bool = True,
       deterministic: bool = True,
   ) -> jax.Array:
-    
     subkeys = None
     if key is not None:
-        subkeys = jax.random.split(key, self.num_layers)
-    
+      subkeys = jax.random.split(key, self.num_layers)
+
     def resnet_scan_fn(hidden_states, args):
-        resnet, subkey = args
-        hidden_states = resnet(hidden_states, temb=temb, key=subkey, causal=causal, deterministic=deterministic)
-        return hidden_states, None
-    
+      resnet, subkey = args
+      hidden_states = resnet(hidden_states, temb=temb, key=subkey, causal=causal, deterministic=deterministic)
+      return hidden_states, None
+
     hidden_states, _ = nnx.scan(
         resnet_scan_fn,
         length=self.num_layers,
-        in_axes=(nnx.Carry, 0), # Scan over 0-th dim of input tuple
+        in_axes=(nnx.Carry, 0),  # Scan over 0-th dim of input tuple
         out_axes=(nnx.Carry, 0),
     )(hidden_states, (self.resnets, subkeys))
 
@@ -604,21 +604,22 @@ class LTX2VideoMidBlock3d(nnx.Module):
     @nnx.split_rngs(splits=num_layers)
     @nnx.vmap(in_axes=0, out_axes=0, axis_size=num_layers)
     def create_resnets(rngs):
-        return LTX2VideoResnetBlock3d(
-            in_channels=in_channels,
-            out_channels=in_channels,
-            dropout=dropout,
-            eps=resnet_eps,
-            non_linearity=resnet_act_fn,
-            inject_noise=inject_noise,
-            timestep_conditioning=timestep_conditioning,
-            spatial_padding_mode=spatial_padding_mode,
-            rngs=rngs,
-            mesh=mesh,
-            dtype=dtype,
-            weights_dtype=weights_dtype,
-            precision=precision,
-        )
+      return LTX2VideoResnetBlock3d(
+          in_channels=in_channels,
+          out_channels=in_channels,
+          dropout=dropout,
+          eps=resnet_eps,
+          non_linearity=resnet_act_fn,
+          inject_noise=inject_noise,
+          timestep_conditioning=timestep_conditioning,
+          spatial_padding_mode=spatial_padding_mode,
+          rngs=rngs,
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
+      )
+
     self.resnets = create_resnets(rngs)
 
   def __call__(
@@ -635,12 +636,12 @@ class LTX2VideoMidBlock3d(nnx.Module):
 
     subkeys = None
     if key is not None:
-        subkeys = jax.random.split(key, self.num_layers)
-    
+      subkeys = jax.random.split(key, self.num_layers)
+
     def resnet_scan_fn(hidden_states, args):
-        resnet, subkey = args
-        hidden_states = resnet(hidden_states, temb=temb, key=subkey, causal=causal, deterministic=deterministic)
-        return hidden_states, None
+      resnet, subkey = args
+      hidden_states = resnet(hidden_states, temb=temb, key=subkey, causal=causal, deterministic=deterministic)
+      return hidden_states, None
 
     hidden_states, _ = nnx.scan(
         resnet_scan_fn,
@@ -730,21 +731,22 @@ class LTX2VideoUpBlock3d(nnx.Module):
     @nnx.split_rngs(splits=num_layers)
     @nnx.vmap(in_axes=0, out_axes=0, axis_size=num_layers)
     def create_resnets(rngs):
-        return LTX2VideoResnetBlock3d(
-            in_channels=out_channels,
-            out_channels=out_channels,
-            dropout=dropout,
-            eps=resnet_eps,
-            non_linearity=resnet_act_fn,
-            inject_noise=inject_noise,
-            timestep_conditioning=timestep_conditioning,
-            spatial_padding_mode=spatial_padding_mode,
-            rngs=rngs,
-            mesh=mesh,
-            dtype=dtype,
-            weights_dtype=weights_dtype,
-            precision=precision,
-        )
+      return LTX2VideoResnetBlock3d(
+          in_channels=out_channels,
+          out_channels=out_channels,
+          dropout=dropout,
+          eps=resnet_eps,
+          non_linearity=resnet_act_fn,
+          inject_noise=inject_noise,
+          timestep_conditioning=timestep_conditioning,
+          spatial_padding_mode=spatial_padding_mode,
+          rngs=rngs,
+          mesh=mesh,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          precision=precision,
+      )
+
     self.resnets = create_resnets(rngs)
 
   def __call__(
@@ -770,12 +772,12 @@ class LTX2VideoUpBlock3d(nnx.Module):
 
     subkeys = None
     if key is not None:
-        subkeys = jax.random.split(key, self.num_layers)
-    
+      subkeys = jax.random.split(key, self.num_layers)
+
     def resnet_scan_fn(hidden_states, args):
-        resnet, subkey = args
-        hidden_states = resnet(hidden_states, temb=temb, key=subkey, causal=causal, deterministic=deterministic)
-        return hidden_states, None
+      resnet, subkey = args
+      hidden_states = resnet(hidden_states, temb=temb, key=subkey, causal=causal, deterministic=deterministic)
+      return hidden_states, None
 
     hidden_states, _ = nnx.scan(
         resnet_scan_fn,

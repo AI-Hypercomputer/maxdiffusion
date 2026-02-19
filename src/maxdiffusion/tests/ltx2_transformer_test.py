@@ -31,6 +31,10 @@ from maxdiffusion.models.ltx2.transformer_ltx2 import (
     LTX2RotaryPosEmbed,
 )
 import flax
+from unittest.mock import Mock, patch, MagicMock
+from maxdiffusion.pipelines.ltx2.ltx2_pipeline import LTX2Pipeline
+from maxdiffusion.pyconfig import HyperParameters
+import qwix
 
 flax.config.update("flax_always_shard_variable", False)
 
@@ -277,6 +281,86 @@ class LTX2TransformerTest(unittest.TestCase):
       self.assertEqual(output["sample"].shape, (batch_size, seq_len, out_channels))
       self.assertEqual(output["audio_sample"].shape, (batch_size, audio_seq_len, audio_in_channels))
 
+  def test_get_qt_provider(self):
+    config = Mock(spec=HyperParameters)
 
-if __name__ == "__main__":
-  absltest.main()
+    # Test disabled
+    config.use_qwix_quantization = False
+    self.assertIsNone(LTX2Pipeline.get_qt_provider(config))
+
+    # Test int8
+    config.use_qwix_quantization = True
+    config.quantization = "int8"
+    config.qwix_module_path = ".*"
+    provider = LTX2Pipeline.get_qt_provider(config)
+    self.assertIsNotNone(provider)
+
+    # Test fp8
+    config.quantization = "fp8"
+    # Mocking calibration method attributes which might be accessed
+    config.weight_quantization_calibration_method = "max"
+    config.act_quantization_calibration_method = "max"
+    config.bwd_quantization_calibration_method = "max"
+    provider = LTX2Pipeline.get_qt_provider(config)
+    self.assertIsNotNone(provider)
+
+    # Test fp8_full
+    config.quantization = "fp8_full"
+    provider = LTX2Pipeline.get_qt_provider(config)
+    self.assertIsNotNone(provider)
+
+  def get_dummy_inputs(self, config):
+    batch_size = config.global_batch_size_to_train_on
+    num_tokens = 256
+    in_channels = 128
+    caption_channels = 4096
+
+    hidden_states = jnp.ones((batch_size, num_tokens, in_channels), dtype=jnp.float32)
+    indices_grid = jnp.ones((batch_size, 3, num_tokens), dtype=jnp.float32)
+    encoder_hidden_states = jnp.ones((batch_size, 128, caption_channels), dtype=jnp.float32)
+    timestep = jnp.ones((batch_size, 256), dtype=jnp.float32)
+    class_labels = None
+    cross_attention_kwargs = None
+    segment_ids = jnp.ones((batch_size, 256), dtype=jnp.int32)
+    encoder_attention_segment_ids = jnp.ones((batch_size, 128), dtype=jnp.int32)
+
+    return (
+        hidden_states,
+        indices_grid,
+        encoder_hidden_states,
+        timestep,
+        class_labels,
+        cross_attention_kwargs,
+        segment_ids,
+        encoder_attention_segment_ids,
+    )
+
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.qwix.quantize_model")
+  def test_quantize_transformer(self, mock_quantize_model):
+    config = Mock(spec=HyperParameters)
+    config.use_qwix_quantization = True
+    config.quantization = "int8"
+    config.qwix_module_path = ".*"
+    config.global_batch_size_to_train_on = 1
+
+    model = Mock()
+    pipeline = Mock()
+    mesh = MagicMock()
+    mesh.__enter__.return_value = None
+    mesh.__exit__.return_value = None
+
+    mock_quantized_model = Mock()
+    mock_quantize_model.return_value = mock_quantized_model
+
+    dummy_inputs = self.get_dummy_inputs(config)
+    result = LTX2Pipeline.quantize_transformer(config, model, pipeline, mesh, dummy_inputs)
+
+    self.assertEqual(result, mock_quantized_model)
+    mock_quantize_model.assert_called_once()
+
+    # Check arguments passed to quantize_model
+    args, _ = mock_quantize_model.call_args
+    self.assertEqual(args[0], model)
+    # args[1] is rules
+    # args[2:] are dummy inputs
+    self.assertTrue(len(args) > 2)
