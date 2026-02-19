@@ -37,7 +37,7 @@ class LTX2QuantizationTest(unittest.TestCase):
     provider = LTX2Pipeline.get_qt_provider(config)
     self.assertIsNotNone(provider)
     
-  @patch("maxdiffusion.pipelines.ltx2_pipeline.qwix.quantize_model")
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.qwix.quantize_model")
   def test_quantize_transformer(self, mock_quantize_model):
     config = Mock(spec=HyperParameters)
     config.use_qwix_quantization = True
