@@ -22,6 +22,7 @@ import qwix
 from ...pyconfig import HyperParameters
 from ... import max_logging
 
+
 class LTX2Pipeline:
   """
   Pipeline for LTX-2.
@@ -85,13 +86,15 @@ class LTX2Pipeline:
     return None
 
   @classmethod
-  def quantize_transformer(cls, config: HyperParameters, model: Any, pipeline: "LTX2Pipeline", mesh: Mesh, model_inputs: Tuple[Any, ...]):
+  def quantize_transformer(
+      cls, config: HyperParameters, model: Any, pipeline: "LTX2Pipeline", mesh: Mesh, model_inputs: Tuple[Any, ...]
+  ):
     """Quantizes the transformer model."""
     q_rules = cls.get_qt_provider(config)
     if not q_rules:
       return model
     max_logging.log("Quantizing transformer with Qwix.")
-    
+
     with mesh:
       quantized_model = qwix.quantize_model(model, q_rules, *model_inputs)
     max_logging.log("Qwix Quantization complete.")
