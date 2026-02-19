@@ -85,51 +85,12 @@ class LTX2Pipeline:
     return None
 
   @classmethod
-  def get_dummy_inputs(cls, config: HyperParameters) -> Tuple[Any, ...]:
-    """
-    Generates dummy inputs for the LTX-2 transformer.
-    Used for quantization tracing.
-    """
-    batch_size = config.global_batch_size_to_train_on
-    # Default shapes observed in LTX-2 code/tests
-    # These might need to be adjusted based on actual config if variable
-    num_tokens = 256 # Typical token count
-    in_channels = 128 # LTX-2 out_channels observed in Transformer3DModel default
-    caption_channels = 4096 # T5 encoder output dim typically or similar
-    
-    # input_shapes mapping from transformer3d.py init_weights:
-    # "hidden_states": (batch_size, num_tokens, in_channels)
-    # "indices_grid": (batch_size, 3, num_tokens)
-    # "encoder_hidden_states": (batch_size, 128, caption_channels)
-    # "timestep": (batch_size, 256)
-    # "segment_ids": (batch_size, 256)
-    # "encoder_attention_segment_ids": (batch_size, 128)
-    
-    # We construct them in the order of __call__
-    # __call__(self, hidden_states, indices_grid, encoder_hidden_states, timestep, class_labels, cross_attention_kwargs, segment_ids, encoder_attention_segment_ids, ...)
-    
-    hidden_states = jnp.ones((batch_size, num_tokens, in_channels), dtype=jnp.float32)
-    indices_grid = jnp.ones((batch_size, 3, num_tokens), dtype=jnp.float32)
-    encoder_hidden_states = jnp.ones((batch_size, 128, caption_channels), dtype=jnp.float32)
-    timestep = jnp.ones((batch_size, 256), dtype=jnp.float32)
-    # class_labels defaults to None
-    class_labels = None
-    # cross_attention_kwargs defaults to None
-    cross_attention_kwargs = None
-    segment_ids = jnp.ones((batch_size, 256), dtype=jnp.int32)
-    encoder_attention_segment_ids = jnp.ones((batch_size, 128), dtype=jnp.int32)
-    
-    return (hidden_states, indices_grid, encoder_hidden_states, timestep, class_labels, cross_attention_kwargs, segment_ids, encoder_attention_segment_ids)
-
-  @classmethod
-  def quantize_transformer(cls, config: HyperParameters, model: Any, pipeline: "LTX2Pipeline", mesh: Mesh):
+  def quantize_transformer(cls, config: HyperParameters, model: Any, pipeline: "LTX2Pipeline", mesh: Mesh, model_inputs: Tuple[Any, ...]):
     """Quantizes the transformer model."""
     q_rules = cls.get_qt_provider(config)
     if not q_rules:
       return model
     max_logging.log("Quantizing transformer with Qwix.")
-    
-    model_inputs = cls.get_dummy_inputs(config)
     
     with mesh:
       quantized_model = qwix.quantize_model(model, q_rules, *model_inputs)

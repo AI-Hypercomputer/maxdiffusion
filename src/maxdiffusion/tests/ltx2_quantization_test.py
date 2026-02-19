@@ -37,6 +37,23 @@ class LTX2QuantizationTest(unittest.TestCase):
     provider = LTX2Pipeline.get_qt_provider(config)
     self.assertIsNotNone(provider)
     
+  def get_dummy_inputs(self, config):
+    batch_size = config.global_batch_size_to_train_on
+    num_tokens = 256
+    in_channels = 128
+    caption_channels = 4096
+    
+    hidden_states = jnp.ones((batch_size, num_tokens, in_channels), dtype=jnp.float32)
+    indices_grid = jnp.ones((batch_size, 3, num_tokens), dtype=jnp.float32)
+    encoder_hidden_states = jnp.ones((batch_size, 128, caption_channels), dtype=jnp.float32)
+    timestep = jnp.ones((batch_size, 256), dtype=jnp.float32)
+    class_labels = None
+    cross_attention_kwargs = None
+    segment_ids = jnp.ones((batch_size, 256), dtype=jnp.int32)
+    encoder_attention_segment_ids = jnp.ones((batch_size, 128), dtype=jnp.int32)
+    
+    return (hidden_states, indices_grid, encoder_hidden_states, timestep, class_labels, cross_attention_kwargs, segment_ids, encoder_attention_segment_ids)
+
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.qwix.quantize_model")
   def test_quantize_transformer(self, mock_quantize_model):
     config = Mock(spec=HyperParameters)
@@ -54,7 +71,8 @@ class LTX2QuantizationTest(unittest.TestCase):
     mock_quantized_model = Mock()
     mock_quantize_model.return_value = mock_quantized_model
     
-    result = LTX2Pipeline.quantize_transformer(config, model, pipeline, mesh)
+    dummy_inputs = self.get_dummy_inputs(config)
+    result = LTX2Pipeline.quantize_transformer(config, model, pipeline, mesh, dummy_inputs)
     
     self.assertEqual(result, mock_quantized_model)
     mock_quantize_model.assert_called_once()
