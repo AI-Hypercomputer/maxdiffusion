@@ -17,65 +17,138 @@ from flax import traverse_util
 
 
 def load_and_convert_pytorch_weights(pth_path, maxdiffusion_model):
-  import torch
-
+  """
+  Loads PyTorch weights and converts them to the Flax/NNX format,
+  handling stacked parameters from nnx.scan/vmap.
+  """
   print(f"Loading PyTorch state dict from {pth_path}...")
   pytorch_state_dict = torch.load(pth_path, map_location="cpu", weights_only=True)
 
-  print("Converting weights to MaxDiffusion format...")
-  # Get the state graph from the initialized model
+  print("Converting weights to MaxDiffusion format for Version 1 (nnx.scan)...")
   _, state_graph = nnx.split(maxdiffusion_model)
   params = state_graph.filter(nnx.Param)
   flax_state_dict = params.to_pure_dict()
 
-  # Inline conversion logic
-  flat_params = traverse_util.flatten_dict(flax_state_dict)
-
+  flat_flax_params = traverse_util.flatten_dict(flax_state_dict, sep='.')
   mapped_weights = {}
   missing_keys = []
+  processed_flax_keys = set()
 
-  for key_tuple, value in flat_params.items():
-    if "rngs" in key_tuple or "count" in key_tuple or "key" in key_tuple:
+  # layer counts for each block from the model instance
+  encoder_layers = maxdiffusion_model.encoder.layers_per_block
+  decoder_layers = maxdiffusion_model.decoder.layers_per_block
+
+  block_layer_counts = {
+      "encoder.down_blocks.0": encoder_layers[0],
+      "encoder.down_blocks.1": encoder_layers[1],
+      "encoder.down_blocks.2": encoder_layers[2],
+      "encoder.down_blocks.3": encoder_layers[3],
+      "encoder.mid_block": encoder_layers[4],
+      "decoder.mid_block": decoder_layers[0],
+      "decoder.up_blocks.0": decoder_layers[1],
+      "decoder.up_blocks.1": decoder_layers[2],
+      "decoder.up_blocks.2": decoder_layers[3],
+  }
+
+  for flax_key_str, flax_tensor in flat_flax_params.items():
+    if "rngs" in flax_key_str or "count" in flax_key_str or "key" in flax_key_str:
       continue
 
-    pt_key_parts = [str(p) if isinstance(p, int) else p for p in key_tuple]
-
-    # MaxDiff to PT key mapping rules
-    if pt_key_parts[-1] == "kernel":
-      pt_key_parts[-1] = "weight"
-    elif pt_key_parts[-1] == "scale":
-      pt_key_parts[-1] = "weight"
-
-    pt_key = ".".join(pt_key_parts)
-
-    if pt_key not in pytorch_state_dict:
-      missing_keys.append(pt_key)
+    if flax_key_str in processed_flax_keys:
       continue
 
-    pt_tensor = pytorch_state_dict[pt_key]
-    if pt_tensor.dtype == torch.bfloat16:
-      pt_tensor = pt_tensor.float()
+    pt_key_template = flax_key_str
+    if pt_key_template.endswith(".kernel"):
+      pt_key_template = pt_key_template.replace(".kernel", ".weight")
+    elif pt_key_template.endswith(".scale"):
+        pt_key_template = pt_key_template.replace(".scale", ".weight")
+    elif pt_key_template.endswith(".embedding"):
+        pt_key_template = pt_key_template.replace(".embedding", ".weight")
 
-    np_array = pt_tensor.numpy()
 
-    # Transpose conv weights (Out, In, T, H, W) -> (T, H, W, In, Out)
-    if "conv" in pt_key and "weight" in pt_key and len(np_array.shape) == 5:
-      np_array = np_array.transpose(2, 3, 4, 1, 0)
+    is_stacked = False
+    num_layers = 1
+    block_prefix = ""
+    sub_path = ""
 
-    # Squeeze/Unsqueeze singleton logic
-    if np_array.shape != value.shape:
-      if np_array.shape == (1,) + value.shape:
-        np_array = np_array.squeeze(0)
-      elif value.shape == (1,) + np_array.shape:
-        np_array = np_array[None]
+    for prefix, count in block_layer_counts.items():
+      if flax_key_str.startswith(prefix + ".resnets."):
+        is_stacked = True
+        num_layers = count
+        block_prefix = prefix
+        sub_path = flax_key_str.split(prefix + ".resnets.")[1]
+        pt_key_template = sub_path
+        if pt_key_template.endswith(".kernel"):
+            pt_key_template = pt_key_template.replace(".kernel", ".weight")
+        elif pt_key_template.endswith(".scale"):
+            pt_key_template = pt_key_template.replace(".scale", ".weight")
+        break
 
-    mapped_weights[key_tuple] = jnp.array(np_array)
+    if is_stacked:
+      stacked_tensors = []
+      valid_stack = True
+      for i in range(num_layers):
+        pt_key = f"{block_prefix}.resnets.{i}.{pt_key_template}"
 
-  for k in missing_keys:
+        if pt_key not in pytorch_state_dict:
+          if pt_key not in missing_keys: missing_keys.append(pt_key)
+          valid_stack = False
+          break
+
+        pt_tensor = pytorch_state_dict[pt_key]
+        if pt_tensor.dtype == torch.bfloat16:
+          pt_tensor = pt_tensor.float()
+        np_array = pt_tensor.numpy()
+
+        if "conv" in pt_key and "weight" in pt_key and len(np_array.shape) == 5:
+          np_array = np_array.transpose(2, 3, 4, 1, 0)
+        if (("norm" in pt_key) or ("per_channel_scale" in pt_key)) and len(np_array.shape) == 1:
+            pass  # No transpose for 1D arrays
+
+        stacked_tensors.append(np_array)
+
+      if valid_stack and stacked_tensors:
+        try:
+          stacked_np_array = np.stack(stacked_tensors, axis=0)
+          flax_key_tuple = tuple(flax_key_str.split('.'))
+          if stacked_np_array.shape == flax_tensor.shape:
+            mapped_weights[flax_key_tuple] = jnp.array(stacked_np_array)
+            processed_flax_keys.add(flax_key_str)
+          else:
+             print(f"Warning: Stacked shape mismatch for {flax_key_str} - Expected {flax_tensor.shape}, Got {stacked_np_array.shape}")
+        except ValueError as e:
+          print(f"Error stacking {flax_key_str}: {e}")
+          for i, t in enumerate(stacked_tensors):
+              print(f"  Layer {i} shape: {t.shape}")
+
+    else:
+      # Handle non-stacked parameters
+      pt_key = pt_key_template
+      if pt_key not in pytorch_state_dict:
+        if pt_key not in missing_keys: missing_keys.append(pt_key)
+        continue
+
+      pt_tensor = pytorch_state_dict[pt_key]
+      if pt_tensor.dtype == torch.bfloat16:
+        pt_tensor = pt_tensor.float()
+      np_array = pt_tensor.numpy()
+
+      if "conv" in pt_key and "weight" in pt_key and len(np_array.shape) == 5:
+          np_array = np_array.transpose(2, 3, 4, 1, 0)
+
+      flax_key_tuple = tuple(flax_key_str.split('.'))
+      if np_array.shape != flax_tensor.shape:
+          print(f"Warning: Shape mismatch for {pt_key} - PT {np_array.shape} != JAX {flax_tensor.shape}")
+          continue
+
+      mapped_weights[flax_key_tuple] = jnp.array(np_array)
+      processed_flax_keys.add(flax_key_str)
+
+  for k in sorted(missing_keys):
     print(f"Warning: {k} not found in PyTorch state dict.")
 
-  print(f"Mapped {len(mapped_weights)} parameters out of {len(flat_params)}.")
-  params_nested = traverse_util.unflatten_dict(mapped_weights)
+  print(f"Mapped {len(mapped_weights)} parameters out of {len(flat_flax_params)} Flax keys.")
+  params_nested = traverse_util.unflatten_dict(mapped_weights, sep='.')
   return params_nested
 
 
