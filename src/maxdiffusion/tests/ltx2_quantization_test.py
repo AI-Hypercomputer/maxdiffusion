@@ -36,6 +36,20 @@ class LTX2QuantizationTest(unittest.TestCase):
     config.qwix_module_path = ".*"
     provider = LTX2Pipeline.get_qt_provider(config)
     self.assertIsNotNone(provider)
+
+    # Test fp8
+    config.quantization = "fp8"
+    # Mocking calibration method attributes which might be accessed
+    config.weight_quantization_calibration_method = "max"
+    config.act_quantization_calibration_method = "max"
+    config.bwd_quantization_calibration_method = "max"
+    provider = LTX2Pipeline.get_qt_provider(config)
+    self.assertIsNotNone(provider)
+
+    # Test fp8_full
+    config.quantization = "fp8_full"
+    provider = LTX2Pipeline.get_qt_provider(config)
+    self.assertIsNotNone(provider)
     
   def get_dummy_inputs(self, config):
     batch_size = config.global_batch_size_to_train_on
