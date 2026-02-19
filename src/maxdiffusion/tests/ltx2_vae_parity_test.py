@@ -21,6 +21,7 @@ def load_and_convert_pytorch_weights(pth_path, maxdiffusion_model):
   Loads PyTorch weights and converts them to the Flax/NNX format,
   handling stacked parameters from nnx.scan/vmap.
   """
+  import torch
   print(f"Loading PyTorch state dict from {pth_path}...")
   pytorch_state_dict = torch.load(pth_path, map_location="cpu", weights_only=True)
 
