@@ -80,7 +80,13 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
         
         new_tensor = new_tensor.at[block_index].set(flax_tensor)
         flax_tensor = new_tensor
-        
+
+  # DEBUG TRACE
+  if "audio_ff" in str(flax_key) and "kernel" in str(flax_key) and block_index == 18:
+       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (Block 18)")
+  if "to_out" in str(flax_key) and "kernel" in str(flax_key) and block_index == 18 and "attn1" in str(flax_key):
+       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (Block 18 attn1)")
+
   return flax_key, flax_tensor
 
 def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device):
@@ -173,6 +179,11 @@ def load_transformer_weights(
         renamed_pt_key = rename_key(pt_key)
         renamed_pt_key = rename_for_ltx2_transformer(renamed_pt_key)
         
+        # DEBUG: Check intermediate rename
+        if "audio_ff.net.0.proj" in pt_key:
+             # This might spam, but good to see once
+             pass
+
         pt_tuple_key = tuple(renamed_pt_key.split("."))
         
         flax_key, flax_tensor = get_key_and_value(
