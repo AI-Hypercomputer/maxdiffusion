@@ -47,6 +47,7 @@ class LTX2TextEncodersTest(unittest.TestCase):
         connector_layers=1,
         num_thinking_tokens=8,
         attention_kernel="dot_product",
+        mesh=None,
         rngs=self.rng,
     )
 
@@ -66,6 +67,7 @@ class LTX2TextEncodersTest(unittest.TestCase):
         connector_layers=1,
         num_thinking_tokens=8,
         attention_kernel="dot_product",
+        mesh=None,
         rngs=self.rng,
     )
 

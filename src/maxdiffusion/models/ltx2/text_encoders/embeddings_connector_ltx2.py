@@ -19,27 +19,11 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from maxdiffusion import common_types
-from ..attention_ltx2 import LTX2Attention
+from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention
+from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
 
 Array = common_types.Array
 DType = common_types.DType
-
-
-class FeedForward(nnx.Module):
-
-  def __init__(self, dim: int, dim_out: Optional[int] = None, mult: int = 4, dropout: float = 0.0, rngs: nnx.Rngs = None):
-    inner_dim = int(dim * mult)
-    dim_out = dim_out if dim_out is not None else dim
-
-    self.proj1 = nnx.Linear(dim, inner_dim, rngs=rngs)
-    self.proj2 = nnx.Linear(inner_dim, dim_out, rngs=rngs)
-
-  def __call__(self, x: Array) -> Array:
-    x = self.proj1(x)
-    x = jax.nn.gelu(x)
-    x = self.proj2(x)
-    return x
-
 
 class _BasicTransformerBlock1D(nnx.Module):
 
@@ -50,6 +34,7 @@ class _BasicTransformerBlock1D(nnx.Module):
       dim_head: int,
       rope_type: str = "interleaved",
       attention_kernel: str = "flash",
+      mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
   ):
     self.attn1 = LTX2Attention(
@@ -60,9 +45,10 @@ class _BasicTransformerBlock1D(nnx.Module):
         bias=True,  # LTX-2 default
         out_bias=True,
         attention_kernel=attention_kernel,
+        mesh=mesh,
         rngs=rngs,
     )
-    self.ff = FeedForward(dim, dim_out=dim, rngs=rngs)
+    self.ff = NNXSimpleFeedForward(rngs=rngs, dim=dim, dim_out=dim)
     self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=True, rngs=rngs)
     self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=True, rngs=rngs)
 
@@ -101,6 +87,7 @@ class Embeddings1DConnector(nnx.Module):
       num_learnable_registers: int = 128,
       rope_type: str = "interleaved",
       attention_kernel: str = "flash",
+      mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
   ):
     self.dim = input_dim
@@ -115,7 +102,13 @@ class Embeddings1DConnector(nnx.Module):
     @nnx.vmap(in_axes=0, out_axes=0, axis_size=layers)
     def create_block(rngs):
       return _BasicTransformerBlock1D(
-          dim=input_dim, heads=heads, dim_head=head_dim, rope_type=rope_type, attention_kernel=attention_kernel, rngs=rngs
+          dim=input_dim,
+          heads=heads,
+          dim_head=head_dim,
+          rope_type=rope_type,
+          attention_kernel=attention_kernel,
+          mesh=mesh,
+          rngs=rngs,
       )
 
     # Call the vmapped constructor

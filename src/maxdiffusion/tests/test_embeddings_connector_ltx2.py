@@ -44,6 +44,7 @@ class Embeddings1DConnectorTest(unittest.TestCase):
         head_dim=self.head_dim,
         layers=1,
         num_learnable_registers=self.num_learnable_registers,
+        mesh=None,
         rngs=self.rng,
     )
 
@@ -96,6 +97,7 @@ class Embeddings1DConnectorTest(unittest.TestCase):
         layers=2,
         num_learnable_registers=self.num_learnable_registers,
         attention_kernel="dot_product",  # Use dot_product for testing on CPU
+        mesh=None,
         rngs=self.rng,
     )
 

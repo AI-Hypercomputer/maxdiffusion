@@ -46,6 +46,7 @@ class LTX2VideoGemmaTextEncoder(nnx.Module):
       num_thinking_tokens: int = 128,
       dtype: DType = jnp.float32,
       attention_kernel: str = "flash",
+      mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
   ):
     input_dim = gemma_dim * gemma_layers
@@ -65,6 +66,7 @@ class LTX2VideoGemmaTextEncoder(nnx.Module):
         num_learnable_registers=num_thinking_tokens,
         rope_type="interleaved",
         attention_kernel=attention_kernel,
+        mesh=mesh,
         rngs=rngs,
     )
 
@@ -106,6 +108,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module):
       num_thinking_tokens: int = 128,
       dtype: DType = jnp.float32,
       attention_kernel: str = "flash",
+      mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
   ):
     input_dim = gemma_dim * gemma_layers
@@ -126,6 +129,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module):
         num_learnable_registers=num_thinking_tokens,
         rope_type="interleaved",
         attention_kernel=attention_kernel,
+        mesh=mesh,
         rngs=rngs,
     )
 
@@ -137,6 +141,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module):
         num_learnable_registers=num_thinking_tokens,
         rope_type="interleaved",
         attention_kernel=attention_kernel,
+        mesh=mesh,
         rngs=rngs,
     )
 
