@@ -35,13 +35,14 @@ if ! python3 -c 'import sys; assert sys.version_info >= (3, 12)' 2>/dev/null; th
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Check if uv is installed first; if not, install uv
         if ! command -v uv &> /dev/null; then
-            echo -e "\n'uv' command not found. Installing it now via the official installer..."
-            curl -LsSf https://astral.sh/uv/install.sh | sh
+            # echo -e "\n'uv' command not found. Installing it now via the official installer..."
+            # curl -LsSf https://astral.sh/uv/install.sh | sh
 
-            echo -e "\n\e[33m'uv' has been installed.\e[0m"
-            echo "The installer likely printed instructions to update your shell's PATH."
-            echo "Please open a NEW terminal session (or 'source ~/.bashrc') and re-run this script."
-            exit 1
+            # echo -e "\n\e[33m'uv' has been installed.\e[0m"
+            # echo "The installer likely printed instructions to update your shell's PATH."
+            # echo "Please open a NEW terminal session (or 'source ~/.bashrc') and re-run this script."
+            # exit 1
+            pip install uv
         fi
         maxdiffusion_dir=$(pwd)
         cd
@@ -53,7 +54,7 @@ if ! python3 -c 'import sys; assert sys.version_info >= (3, 12)' 2>/dev/null; th
             echo "No name provided. Using default name: '$venv_name'"
         fi
         echo "Creating virtual environment '$venv_name' with Python 3.12..."
-        uv venv --python 3.12 "$venv_name" --seed
+        python3 -m uv venv --python 3.12 "$venv_name" --seed
         printf '%s\n' "$(realpath -- "$venv_name")" >> /tmp/venv_created
         echo -e "\n\e[32mVirtual environment '$venv_name' created successfully!\e[0m"
         echo "To activate it, run the following command:"
@@ -81,6 +82,8 @@ apt update -y && apt -y install gcsfuse
 rm -rf /var/lib/apt/lists/*
 EOF
 
+python3 -m pip install -U setuptools wheel uv
+
 # Set environment variables from command line arguments
 for ARGUMENT in "$@"; do
   IFS='=' read -r KEY VALUE <<< "$ARGUMENT"
@@ -104,7 +107,7 @@ if [[ -n $JAX_VERSION && ! ($MODE == "stable" || -z $MODE) ]]; then
 fi
 
 # Install dependencies from requirements.txt first
-pip3 install -U -r requirements.txt || echo "Failed to install dependencies in the requirements" >&2
+python3 -m uv pip install -U -r requirements.txt || echo "Failed to install dependencies in the requirements" >&2
 
 # Install JAX and JAXlib based on the specified mode
 if [[ "$MODE" == "stable" || ! -v MODE ]]; then
@@ -113,23 +116,23 @@ if [[ "$MODE" == "stable" || ! -v MODE ]]; then
     echo "Installing stable jax, jaxlib for tpu"
     if [[ -n "$JAX_VERSION" ]]; then
       echo "Installing stable jax, jaxlib, libtpu version ${JAX_VERSION}"
-      pip3 install "jax[tpu]==${JAX_VERSION}" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+      python3 -m uv pip install "jax[tpu]==${JAX_VERSION}" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
     else
       echo "Installing stable jax, jaxlib, libtpu
   for tpu"
-      pip3 install 'jax[tpu]>0.4' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+      python3 -m uv pip install 'jax[tpu]>0.4' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
     fi
   elif [[ $DEVICE == "gpu" ]]; then
       echo "Installing stable jax, jaxlib for NVIDIA gpu"
     if [[ -n "$JAX_VERSION" ]]; then
         echo "Installing stable jax, jaxlib ${JAX_VERSION}"
-        pip3 install -U "jax[cuda12]==${JAX_VERSION}" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+        python3 -m uv pip install -U "jax[cuda12]==${JAX_VERSION}" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     else
         echo "Installing stable jax, jaxlib, libtpu for NVIDIA gpu"
-        pip3 install "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+        python3 -m uv pip install "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     fi
     export NVTE_FRAMEWORK=jax
-    pip3 install transformer_engine[jax]==2.1.0
+    python3 -m uv pip install transformer_engine[jax]==2.1.0
   fi
 
 elif [[ $MODE == "nightly" ]]; then
@@ -140,22 +143,22 @@ elif [[ $MODE == "nightly" ]]; then
       pip install -U --pre jax jaxlib jax-cuda12-plugin[with_cuda] jax-cuda12-pjrt -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
       # Install Transformer Engine
       export NVTE_FRAMEWORK=jax
-      pip3 install git+https://github.com/NVIDIA/TransformerEngine.git@stable
+      python3 -m uv pip install git+https://github.com/NVIDIA/TransformerEngine.git@stable
   elif [[ $DEVICE == "tpu" ]]; then
     echo "Installing jax-nightly,jaxlib-nightly"
     # Install jax-nightly
-    pip3 install --pre -U jax -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
+    python3 -m uv pip install --pre -U jax -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
     # Install jaxlib-nightly
-    pip3 install --pre -U jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
+    python3 -m uv pip install --pre -U jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
     # Install libtpu-nightly
-    pip3 install --pre -U libtpu-nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+    python3 -m uv pip install --pre -U libtpu-nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
   fi
   echo "Installing nightly tensorboard plugin profile"
-  pip3 install tbp-nightly --upgrade
+  python3 -m uv pip install tbp-nightly --upgrade
 else
   echo -e "\n\nError: You can only set MODE to [stable,nightly].\n\n"
   exit 1
 fi
 
 # Install maxdiffusion
-pip3 install -U . || echo "Failed to install maxdiffusion" >&2
+python3 -m uv pip install -U . || echo "Failed to install maxdiffusion" >&2
