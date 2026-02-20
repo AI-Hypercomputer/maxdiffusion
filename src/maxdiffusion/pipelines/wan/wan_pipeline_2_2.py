@@ -32,7 +32,7 @@ class WanPipeline2_2(WanPipeline):
       config: HyperParameters,
       low_noise_transformer: Optional[WanModel],
       high_noise_transformer: Optional[WanModel],
-      **kwargs
+      **kwargs,
   ):
     super().__init__(config=config, **kwargs)
     self.low_noise_transformer = low_noise_transformer
