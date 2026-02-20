@@ -83,7 +83,7 @@ class LTX2UtilsTest(unittest.TestCase):
         # But wait, validate_flax_state_dict expects a dict of params, usually just the params subtree.
         
         # We can extract params from state
-        state = nnx.state(model)
+        state = nnx.state(self.transformer)
         # Filter for params? 
         # Usually validate_flax_state_dict expects the full PyTree or a specific dict.
         # state is a State object, acts like a Mapping

@@ -238,7 +238,7 @@ def load_vae_weights(
                       pt_list.append("resnets")
                   elif name in ["down_blocks", "up_blocks", "downsamplers", "upsamplers"]:
                       pt_list.append(name)
-                      pt_list.append(idx)
+                      pt_list.append(str(idx))
                   else:
                       pt_list.append(part)
               else:
