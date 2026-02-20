@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from maxdiffusion.models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
-from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import AutoencoderKLLTX2Video
+from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from maxdiffusion.models.ltx2.ltx2_utils import load_transformer_weights, load_vae_weights
 from maxdiffusion.models.modeling_flax_pytorch_utils import validate_flax_state_dict
 from flax.traverse_util import flatten_dict
@@ -84,7 +84,7 @@ class LTX2UtilsTest(unittest.TestCase):
         pretrained_model_name_or_path = "Lightricks/LTX-2"
         
         with jax.default_device(jax.devices("cpu")[0]):
-             model = AutoencoderKLLTX2Video(
+             model = LTX2VideoAutoencoderKL(
                 rngs=self.rngs,
                 # Defaults:
                 in_channels=3,
