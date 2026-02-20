@@ -10,6 +10,24 @@ from maxdiffusion.models.ltx2.ltx2_utils import load_transformer_weights, load_v
 from maxdiffusion.models.modeling_flax_pytorch_utils import validate_flax_state_dict
 from flax.traverse_util import flatten_dict
 
+class LTX2VideoConfig:
+    def __init__(self):
+        self.in_channels = 128
+        self.out_channels = 128
+        self.patch_size = 1
+        self.patch_size_t = 1
+        self.num_attention_heads = 32
+        self.attention_head_dim = 128
+        self.cross_attention_dim = 4096
+        self.audio_in_channels = 128
+        self.audio_out_channels = 128
+        self.audio_patch_size = 1
+        self.audio_patch_size_t = 1
+        self.audio_num_attention_heads = 32
+        self.audio_attention_head_dim = 128 # Default is 64 but we want 128
+        self.audio_cross_attention_dim = 2048
+        self.num_layers = 48
+
 class LTX2UtilsTest(unittest.TestCase):
     def setUp(self):
         self.device = "cpu"

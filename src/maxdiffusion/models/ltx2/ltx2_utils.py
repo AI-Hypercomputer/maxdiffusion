@@ -221,19 +221,39 @@ def load_vae_weights(
             
       for pt_key, tensor in tensors.items():
           renamed_pt_key = rename_key(pt_key)
-          if ".resnets." in renamed_pt_key:
-             # pattern: resnets.0 -> resnets_0
-             # We need to capture the number after resnets
-             import re
-             # Replace resnets.N with resnets_N
-             renamed_pt_key = re.sub(r"resnets\.(\d+)", r"resnets_\1", renamed_pt_key)
-             
+          
           pt_tuple_key = tuple(renamed_pt_key.split("."))
           
+          # Handle resnets.N -> resnets with stacking
+          resnet_index = None
+          if "resnets" in pt_tuple_key:
+              pt_list = list(pt_tuple_key)
+              # Iterate backwards to safely pop
+              for i in range(len(pt_list) - 1, -1, -1):
+                  if pt_list[i] == "resnets" and i + 1 < len(pt_list) and pt_list[i+1].isdigit():
+                      resnet_index = int(pt_list[i+1])
+                      pt_list.pop(i+1)
+                      break
+              pt_tuple_key = tuple(pt_list)
+
           flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
           flax_key = _tuple_str_to_int(flax_key)
-          
-          flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+
+          if resnet_index is not None:
+              if flax_key in flax_state_dict:
+                  current_tensor = flax_state_dict[flax_key]
+              else:
+                  # Initialize with correct shape from random_flax_state_dict
+                  target_shape = random_flax_state_dict[flax_key].shape
+                  current_tensor = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
+              
+              # Place the tensor at the correct index
+              # flax_tensor is (..., C), target is (N_resnets, ..., C)
+              # We need to ensure dims match for assignment
+              current_tensor = current_tensor.at[resnet_index].set(flax_tensor)
+              flax_state_dict[flax_key] = current_tensor
+          else:
+              flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
           
       validate_flax_state_dict(eval_shapes, flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)
