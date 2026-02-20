@@ -20,10 +20,6 @@
 # Each time you update the base image via a "bash docker_maxdiffusion_image_upload.sh", there will be a slow upload process
 # (minutes). However, if you are simply changing local code and not updating dependencies, uploading just takes a few seconds.
 
-# bash docker_build_dependency_image.sh MODE=jax_ai_image BASEIMAGE={{JAX_AI_IMAGE BASEIMAGE FROM ARTIFACT REGISTRY}}
-# Note: The mode stable_stack is marked for deprecation, please use MODE=jax_ai_image instead
-# bash docker_build_dependency_image.sh MODE=stable_stack BASEIMAGE={{JAX_STABLE_STACK_IMAGE BASEIMAGE FROM ARTIFACT REGISTRY}}
-# bash docker_build_dependency_image.sh MODE=nightly
 # bash docker_build_dependency_image.sh MODE=stable JAX_VERSION=0.4.13
 # bash docker_build_dependency_image.sh MODE=stable
 
@@ -70,24 +66,14 @@ if [[ ${DEVICE} == "gpu" ]]; then
     export BASEIMAGE=ghcr.io/nvidia/jax:base
   fi
   docker build --network host --build-arg MODE=${MODE} --build-arg JAX_VERSION=$JAX_VERSION --build-arg DEVICE=$DEVICE --build-arg BASEIMAGE=$BASEIMAGE -f ./maxdiffusion_gpu_dependencies.Dockerfile -t ${LOCAL_IMAGE_NAME} .
-else 
-  if [[ ${MODE} == "stable_stack" || ${MODE} == "jax_ai_image" ]]; then
-    if [[ ! -v BASEIMAGE ]]; then
-      echo "Erroring out because BASEIMAGE is unset, please set it!"
-      exit 1
-    fi
-    docker build --no-cache \
-      --build-arg JAX_AI_IMAGE_BASEIMAGE=${BASEIMAGE} \
-      --build-arg COMMIT_HASH=${COMMIT_HASH} \
-      --network=host \
-      -t ${LOCAL_IMAGE_NAME} \
-      -f maxdiffusion_jax_ai_image_tpu.Dockerfile .
-  else
-    docker build --no-cache \
-      --network=host \
-      --build-arg MODE=${MODE} \
-      --build-arg JAX_VERSION=${JAX_VERSION} \
-      -t ${LOCAL_IMAGE_NAME} \
-      -f maxdiffusion_dependencies.Dockerfile .
-  fi
+else
+  # Default to maxdiffusion_dependencies.Dockerfile for non-GPU builds
+  export BASEIMAGE=${BASEIMAGE:-python:3.12-slim-bullseye}
+  docker build --no-cache \
+    --network=host \
+    --build-arg MODE=${MODE} \
+    --build-arg JAX_VERSION=${JAX_VERSION} \
+    --build-arg BASEIMAGE=${BASEIMAGE} \
+    -t ${LOCAL_IMAGE_NAME} \
+    -f maxdiffusion_dependencies.Dockerfile .
 fi
