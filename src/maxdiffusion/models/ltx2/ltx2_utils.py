@@ -33,8 +33,9 @@ def rename_for_ltx2_transformer(key):
     
     # Handle scale_shift_table
     # PyTorch: adaLN_modulation.1.weight/bias -> scale_shift_table
-    if "adaLN_modulation.1" in key:
-        key = key.replace("adaLN_modulation.1", "scale_shift_table")
+    # rename_key changes adaLN_modulation.1 -> adaLN_modulation_1
+    if "adaLN_modulation_1" in key:
+        key = key.replace("adaLN_modulation_1", "scale_shift_table")
     
     # Handle autoencoder_kl_ltx2 specific renames if any, but this is for transformer usually.
     
@@ -43,8 +44,9 @@ def rename_for_ltx2_transformer(key):
         key = key.replace(".proj", "")
     
     # Handle to_out.0 -> to_out for LTX2Attention
-    if "to_out.0" in key:
-        key = key.replace("to_out.0", "to_out")
+    # rename_key changes to_out.0 -> to_out_0
+    if "to_out_0" in key:
+        key = key.replace("to_out_0", "to_out")
         
     return key
 
@@ -150,6 +152,11 @@ def load_transformer_weights(
     print("DEBUG: Top 20 keys from Checkpoint (tensors):")
     for k in list(tensors.keys())[:20]:
         print(k)
+
+    print("DEBUG: NON-BLOCK keys in Checkpoint:")
+    for k in tensors.keys():
+        if "transformer_blocks" not in k:
+            print(k)
         
         
     print("\nDEBUG: Top 20 keys from Flax Model (eval_shapes):")
