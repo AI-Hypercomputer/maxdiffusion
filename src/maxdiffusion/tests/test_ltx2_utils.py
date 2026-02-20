@@ -67,7 +67,6 @@ class LTX2UtilsTest(unittest.TestCase):
                 audio_cross_attention_dim=self.config.audio_cross_attention_dim,
                 num_layers=self.config.num_layers,
                 scan_layers=True,
-                param_dtype=jnp.bfloat16,
                 rngs=nnx.Rngs(0),
             )
         

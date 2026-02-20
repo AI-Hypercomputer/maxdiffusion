@@ -224,19 +224,30 @@ def load_vae_weights(
           
           pt_tuple_key = tuple(renamed_pt_key.split("."))
           
-          # Handle resnets.N -> resnets with stacking
+          pt_list = []
           resnet_index = None
-          if "resnets" in pt_tuple_key:
-              pt_list = list(pt_tuple_key)
-              # Iterate backwards to safely pop
-              for i in range(len(pt_list) - 1, -1, -1):
-                  if pt_list[i] == "resnets" and i + 1 < len(pt_list) and pt_list[i+1].isdigit():
-                      resnet_index = int(pt_list[i+1])
-                      pt_list.pop(i+1)
-                      break
-              pt_tuple_key = tuple(pt_list)
+          
+          for part in pt_tuple_key:
+              # Check for name_N pattern
+              if "_" in part and part.split("_")[-1].isdigit():
+                  name = "_".join(part.split("_")[:-1])
+                  idx = int(part.split("_")[-1])
+                  
+                  if name == "resnets":
+                      resnet_index = idx
+                      pt_list.append("resnets")
+                  elif name in ["down_blocks", "up_blocks", "downsamplers", "upsamplers"]:
+                      pt_list.append(name)
+                      pt_list.append(idx)
+                  else:
+                      pt_list.append(part)
+              else:
+                  pt_list.append(part)
+          
+          pt_tuple_key = tuple(pt_list)
 
           flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
+          # _tuple_str_to_int might not be needed if we already injected ints, but it's safe
           flax_key = _tuple_str_to_int(flax_key)
 
           if resnet_index is not None:
@@ -244,14 +255,21 @@ def load_vae_weights(
                   current_tensor = flax_state_dict[flax_key]
               else:
                   # Initialize with correct shape from random_flax_state_dict
-                  target_shape = random_flax_state_dict[flax_key].shape
-                  current_tensor = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
+                  if flax_key in random_flax_state_dict:
+                       target_shape = random_flax_state_dict[flax_key].shape
+                       current_tensor = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
+                  else:
+                       # Fallback if key missing (shouldn't happen with correct mapping)
+                       print(f"Warning: Key {flax_key} not found in random_flax_state_dict, cannot stack.")
+                       current_tensor = flax_tensor # Might fail shape check later
               
               # Place the tensor at the correct index
               # flax_tensor is (..., C), target is (N_resnets, ..., C)
-              # We need to ensure dims match for assignment
-              current_tensor = current_tensor.at[resnet_index].set(flax_tensor)
-              flax_state_dict[flax_key] = current_tensor
+              if flax_key in random_flax_state_dict: # Only stack if we have a valid target
+                  current_tensor = current_tensor.at[resnet_index].set(flax_tensor)
+                  flax_state_dict[flax_key] = current_tensor
+              else:
+                   flax_state_dict[flax_key] = flax_tensor
           else:
               flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
           
