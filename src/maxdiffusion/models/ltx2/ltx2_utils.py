@@ -203,8 +203,12 @@ def load_vae_weights(
                 tensors[k] = torch2jax(f.get_tensor(k))
       else:
         loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
-        for k, v in loaded_state_dict.items():
+      for k, v in loaded_state_dict.items():
             tensors[k] = torch2jax(v)
+      
+      print("\nDEBUG: Top 20 keys from VAE Checkpoint (tensors):")
+      for k in list(tensors.keys())[:20]:
+          print(k)
             
       flax_state_dict = {}
       cpu = jax.local_devices(backend="cpu")[0]
@@ -223,7 +227,7 @@ def load_vae_weights(
           pt_list = []
           resnet_index = None
           
-          for part in pt_tuple_key:
+          for i, part in enumerate(pt_tuple_key):
               # Check for name_N pattern
               if "_" in part and part.split("_")[-1].isdigit():
                   name = "_".join(part.split("_")[:-1])
@@ -237,9 +241,14 @@ def load_vae_weights(
                       pt_list.append(str(idx))
                   else:
                       pt_list.append(part)
-              elif part in ["conv1", "conv2", "conv_in", "conv_out", "conv_shortcut", "conv"]:
+              elif part in ["conv1", "conv2", "conv"]:
                   pt_list.append(part)
-                  pt_list.append("conv")
+                  # Only inject 'conv' if it's not already there
+                  # Check if next part is 'conv'
+                  if i + 1 < len(pt_tuple_key) and pt_tuple_key[i+1] == "conv":
+                      pass # already has conv
+                  else:
+                      pt_list.append("conv")
               else:
                   pt_list.append(part)
           
@@ -248,6 +257,9 @@ def load_vae_weights(
           flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
           # _tuple_str_to_int might not be needed if we already injected ints, but it's safe
           flax_key = _tuple_str_to_int(flax_key)
+          
+          if flax_key == ("latents_mean",) or flax_key == ("latents_std",):
+               continue # Skip stats
 
           if resnet_index is not None:
               if flax_key in flax_state_dict:
