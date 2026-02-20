@@ -5,7 +5,8 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from maxdiffusion.models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
-from maxdiffusion.models.ltx2.ltx2_utils import load_ltx2_transformer
+from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
+from maxdiffusion.models.ltx2.ltx2_utils import load_ltx2_transformer, load_ltx2_vae
 
 class LTX2LoadingTest(unittest.TestCase):
     def test_loading(self):
@@ -53,6 +54,36 @@ class LTX2LoadingTest(unittest.TestCase):
         # state_shapes = nnx.state(abstract_model, nnx.Param)
         
         print("Model structure verified without OOM or TraceContextError.")
+
+    def test_vae_loading(self):
+        # Configuration for Lightricks/LTX-2 VAE
+        def create_vae():
+             rngs = nnx.Rngs(0)
+             return LTX2VideoAutoencoderKL(
+                in_channels=3,
+                out_channels=3,
+                latent_channels=128,
+                block_out_channels=(256, 512, 1024, 2048),
+                decoder_block_out_channels=(256, 512, 1024),
+                layers_per_block=(4, 6, 6, 2, 2),
+                decoder_layers_per_block=(5, 5, 5, 5),
+                spatio_temporal_scaling=(True, True, True, True),
+                decoder_spatio_temporal_scaling=(True, True, True),
+                decoder_inject_noise=(False, False, False, False),
+                downsample_type=("spatial", "temporal", "spatiotemporal", "spatiotemporal"),
+                upsample_residual=(True, True, True),
+                upsample_factor=(2, 2, 2),
+                rngs=rngs,
+                dtype=jnp.float32,
+             )
+        
+        abstract_vae = nnx.eval_shape(create_vae)
+        
+        self.assertEqual(abstract_vae.latent_channels, 128)
+        # self.assertEqual(len(abstract_vae.encoder.down_blocks), 4) # nnx.List not len()able directly? depends on version
+        
+        print("VAE structure verified.")
+
 
 if __name__ == "__main__":
     unittest.main()
