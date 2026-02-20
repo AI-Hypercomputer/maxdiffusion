@@ -29,19 +29,29 @@ class LTX2UtilsTest(unittest.TestCase):
         pretrained_model_name_or_path = "Lightricks/LTX-2"
         
         with jax.default_device(jax.devices("cpu")[0]):
-             model = LTX2VideoTransformer3DModel(
-                rngs=self.rngs,
-                # Explicitly setting key params to version 2.0 to be safe
-                in_channels=128,
-                out_channels=128,
-                patch_size=1,
-                patch_size_t=1,
-                num_attention_heads=32,
-                attention_head_dim=128,
-                cross_attention_dim=4096,
-                num_layers=48,
-                scan_layers=True 
-             )
+            self.config = LTX2VideoConfig()
+            self.config.audio_attention_head_dim = 128 # Match Checkpoint
+            
+            self.transformer = LTX2VideoTransformer3DModel(
+                in_channels=self.config.in_channels,
+                out_channels=self.config.out_channels,
+                patch_size=self.config.patch_size,
+                patch_size_t=self.config.patch_size_t,
+                num_attention_heads=self.config.num_attention_heads,
+                attention_head_dim=self.config.attention_head_dim,
+                cross_attention_dim=self.config.cross_attention_dim,
+                audio_in_channels=self.config.audio_in_channels,
+                audio_out_channels=self.config.audio_out_channels,
+                audio_patch_size=self.config.audio_patch_size,
+                audio_patch_size_t=self.config.audio_patch_size_t,
+                audio_num_attention_heads=self.config.audio_num_attention_heads,
+                audio_attention_head_dim=128, # Match Config/Checkpoint
+                audio_cross_attention_dim=self.config.audio_cross_attention_dim,
+                num_layers=self.config.num_layers,
+                scan_layers=True,
+                param_dtype=jnp.bfloat16,
+                rngs=nnx.Rngs(0),
+            )
         
         # Get abstract state (shapes only)
         # We need the PyTree structure of parameters

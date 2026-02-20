@@ -40,6 +40,11 @@ def rename_for_ltx2_transformer(key):
     # This line was redundant, keeping it as a no-op or removing it is fine.
     # The instruction implies it should be `return key` at the end.
     key = key.replace("transformer_blocks", "transformer_blocks")
+    
+    # Handle to_out.0 -> to_out for LTX2Attention
+    if "to_out.0" in key:
+        key = key.replace("to_out.0", "to_out")
+        
     return key
 
 
@@ -145,9 +150,16 @@ def load_transformer_weights(
     for k in list(tensors.keys())[:20]:
         print(k)
         
+        
     print("\nDEBUG: Top 20 keys from Flax Model (eval_shapes):")
     for k in list(random_flax_state_dict.keys())[:20]:
         print(k)
+
+    print("\nDEBUG: Transformer Block keys from Flax Model (eval_shapes):")
+    for k in list(random_flax_state_dict.keys()):
+        if "transformer_blocks" in k and "attn1" in k:
+             print(k)
+             break
         
     for pt_key, tensor in tensors.items():
         renamed_pt_key = rename_key(pt_key)
@@ -211,17 +223,10 @@ def load_vae_weights(
           renamed_pt_key = rename_key(pt_key)
           if ".resnets." in renamed_pt_key:
              # pattern: resnets.0 -> resnets_0
-             parts = renamed_pt_key.split(".")
-             new_parts = []
-             i = 0
-             while i < len(parts):
-                 if parts[i] == "resnets" and i+1 < len(parts) and parts[i+1].isdigit():
-                     new_parts.append(f"resnets_{parts[i+1]}")
-                     i += 2
-                 else:
-                     new_parts.append(parts[i])
-                     i += 1
-             renamed_pt_key = ".".join(new_parts)
+             # We need to capture the number after resnets
+             import re
+             # Replace resnets.N with resnets_N
+             renamed_pt_key = re.sub(r"resnets\.(\d+)", r"resnets_\1", renamed_pt_key)
              
           pt_tuple_key = tuple(renamed_pt_key.split("."))
           

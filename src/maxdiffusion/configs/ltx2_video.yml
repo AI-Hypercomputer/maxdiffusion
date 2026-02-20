@@ -3,6 +3,7 @@ hardware: 'tpu'
 skip_jax_distributed_system: False
 attention: 'flash'
 attention_sharding_uniform: True 
+audio_attention_head_dim: 128
 
 jax_cache_dir: ''
 weights_dtype: 'bfloat16'
