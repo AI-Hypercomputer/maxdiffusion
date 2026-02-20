@@ -30,16 +30,12 @@ def rename_for_ltx2_transformer(key):
     key = key.replace("patchify_proj", "proj_in")
     key = key.replace("audio_patchify_proj", "audio_proj_in")
 
-    if "caption_projection" in key:
-        key = key.replace("caption_projection", "audio_caption_projection")
+    # if "caption_projection" in key:
+    #     key = key.replace("caption_projection", "audio_caption_projection")
 
     # Handle audio_ff.net_0.proj -> audio_ff.net_0
     if "audio_ff" in key and "proj" in key:
         key = key.replace(".proj", "")
-
-    # This line was redundant, keeping it as a no-op or removing it is fine.
-    # The instruction implies it should be `return key` at the end.
-    key = key.replace("transformer_blocks", "transformer_blocks")
     
     # Handle to_out.0 -> to_out for LTX2Attention
     if "to_out.0" in key:
@@ -241,6 +237,9 @@ def load_vae_weights(
                       pt_list.append(str(idx))
                   else:
                       pt_list.append(part)
+              elif part in ["conv1", "conv2", "conv_in", "conv_out", "conv_shortcut", "conv"]:
+                  pt_list.append(part)
+                  pt_list.append("conv")
               else:
                   pt_list.append(part)
           

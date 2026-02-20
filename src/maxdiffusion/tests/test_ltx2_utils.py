@@ -57,13 +57,13 @@ class LTX2UtilsTest(unittest.TestCase):
                 patch_size_t=self.config.patch_size_t,
                 num_attention_heads=self.config.num_attention_heads,
                 attention_head_dim=self.config.attention_head_dim,
-                cross_attention_dim=self.config.cross_attention_dim,
+                cross_attention_dim=4096, # T5-XXL uses 4096
                 audio_in_channels=self.config.audio_in_channels,
                 audio_out_channels=self.config.audio_out_channels,
                 audio_patch_size=self.config.audio_patch_size,
                 audio_patch_size_t=self.config.audio_patch_size_t,
                 audio_num_attention_heads=self.config.audio_num_attention_heads,
-                audio_attention_head_dim=128, # Match Config/Checkpoint
+                audio_attention_head_dim=64, # Match Checkpoint (2048 / 32)
                 audio_cross_attention_dim=self.config.audio_cross_attention_dim,
                 num_layers=self.config.num_layers,
                 scan_layers=True,
