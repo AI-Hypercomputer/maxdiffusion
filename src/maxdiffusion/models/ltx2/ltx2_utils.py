@@ -29,26 +29,47 @@ def rename_for_ltx2_transformer(key):
     """
     key = key.replace("patchify_proj", "proj_in")
     key = key.replace("audio_patchify_proj", "audio_proj_in")
+
+    if "caption_projection" in key:
+        key = key.replace("caption_projection", "audio_caption_projection")
+
+    # Handle audio_ff.net_0.proj -> audio_ff.net_0
+    if "audio_ff" in key and "proj" in key:
+        key = key.replace(".proj", "")
+
+    # This line was redundant, keeping it as a no-op or removing it is fine.
+    # The instruction implies it should be `return key` at the end.
     key = key.replace("transformer_blocks", "transformer_blocks")
     return key
 
 
 def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers=48):
+  block_index = None
+  
+  # Handle transformer_blocks_N produced by rename_key
+  if scan_layers and len(pt_tuple_key) > 0 and "transformer_blocks_" in pt_tuple_key[0]:
+      import re
+      m = re.match(r"transformer_blocks_(\d+)", pt_tuple_key[0])
+      if m:
+          block_index = int(m.group(1))
+          # Map transformer_blocks_N -> transformer_blocks
+          pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[1:]
+
   if scan_layers:
     if "transformer_blocks" in pt_tuple_key:
-      new_key = ("transformer_blocks",) + pt_tuple_key[2:]
-      block_index = int(pt_tuple_key[1])
-      pt_tuple_key = new_key
+       pass # Already handled above or matches standard format
       
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   flax_key = _tuple_str_to_int(flax_key)
 
-  if scan_layers:
+  if scan_layers and block_index is not None:
     if "transformer_blocks" in flax_key:
         if flax_key in flax_state_dict:
             new_tensor = flax_state_dict[flax_key]
         else:
+            # Initialize with correct shape (layers, ...)
             new_tensor = jnp.zeros((num_layers,) + flax_tensor.shape, dtype=flax_tensor.dtype)
+        
         new_tensor = new_tensor.at[block_index].set(flax_tensor)
         flax_tensor = new_tensor
         
