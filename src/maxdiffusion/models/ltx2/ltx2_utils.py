@@ -118,6 +118,15 @@ def load_transformer_weights(
     for key in flattened_dict:
         string_tuple = tuple([str(item) for item in key])
         random_flax_state_dict[string_tuple] = flattened_dict[key]
+    
+    # DEBUG: Print keys to understand mapping
+    print("DEBUG: Top 20 keys from Checkpoint (tensors):")
+    for k in list(tensors.keys())[:20]:
+        print(k)
+        
+    print("\nDEBUG: Top 20 keys from Flax Model (eval_shapes):")
+    for k in list(random_flax_state_dict.keys())[:20]:
+        print(k)
         
     for pt_key, tensor in tensors.items():
         renamed_pt_key = rename_key(pt_key)
