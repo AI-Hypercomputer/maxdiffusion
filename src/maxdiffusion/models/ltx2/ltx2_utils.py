@@ -29,10 +29,15 @@ def rename_for_ltx2_transformer(key):
     """
     key = key.replace("patchify_proj", "proj_in")
     key = key.replace("audio_patchify_proj", "audio_proj_in")
-
-    # if "caption_projection" in key:
-    #     key = key.replace("caption_projection", "audio_caption_projection")
-
+    key = key.replace("norm_final", "norm_out")
+    
+    # Handle scale_shift_table
+    # PyTorch: adaLN_modulation.1.weight/bias -> scale_shift_table
+    if "adaLN_modulation.1" in key:
+        key = key.replace("adaLN_modulation.1", "scale_shift_table")
+    
+    # Handle autoencoder_kl_ltx2 specific renames if any, but this is for transformer usually.
+    
     # Handle audio_ff.net_0.proj -> audio_ff.net_0
     if "audio_ff" in key and "proj" in key:
         key = key.replace(".proj", "")
@@ -203,7 +208,7 @@ def load_vae_weights(
                 tensors[k] = torch2jax(f.get_tensor(k))
       else:
         loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
-      for k, v in loaded_state_dict.items():
+        for k, v in loaded_state_dict.items():
             tensors[k] = torch2jax(v)
       
       print("\nDEBUG: Top 20 keys from VAE Checkpoint (tensors):")
