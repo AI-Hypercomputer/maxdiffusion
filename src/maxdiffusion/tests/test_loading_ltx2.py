@@ -12,14 +12,16 @@ class LTX2LoadingTest(unittest.TestCase):
         # Configuration for Lightricks/LTX-2
         # Based on config.json
         
-        rngs = nnx.Rngs(0)
+        # 1. Why TraceContextError?
+        # nnx.eval_shape creates a new JAX trace level (like jax.vmap or jax.grad).
+        # nnx.Rngs is a stateful object (it tracks counts). Modifying an Rngs object created 
+        # outside the trace (in the test function scope) from inside the trace (inside eval_shape) 
+        # is forbidden because it leaks state across trace boundaries.
+        # Solution: Create nnx.Rngs INSIDE the eval_shape function.
         
-        # 1. Why OOM? The previous version tried to initialize the entire model on a single TPU chip eagerly.
-        # This allocates memory for all parameters (approx 14B + overhead), exceeding HBM limit (~16GB on v5e, but v6e might differ).
-        # We solve this by using nnx.eval_shape to get the model structure and shapes without allocating memory.
-        
-        abstract_model = nnx.eval_shape(
-            lambda: LTX2VideoTransformer3DModel(
+        def create_model():
+            rngs = nnx.Rngs(0) # Created inside the trace context
+            return LTX2VideoTransformer3DModel(
                 rngs=rngs,
                 in_channels=128,
                 out_channels=128,
@@ -40,22 +42,17 @@ class LTX2LoadingTest(unittest.TestCase):
                 weights_dtype=jnp.bfloat16,   
                 dtype=jnp.bfloat16,
             )
-        )
+
+        abstract_model = nnx.eval_shape(create_model)
         
         # Test structure
-        self.assertEqual(abstract_model.rope_type, "split") # Verify config was passed correctly
+        self.assertEqual(abstract_model.rope_type, "split") 
         self.assertEqual(abstract_model.num_layers, 48)
         
-        # We can extract shapes from abstract_model if needed for verification
-        # For loading, load_ltx2_transformer expects `eval_shapes`.
-        # However, abstract_model (GraphNode) isn't directly `eval_shapes` dict.
-        # We need to get the state dict with shapes.
+        # We can verify shapes using nnx.state if needed
+        # state_shapes = nnx.state(abstract_model, nnx.Param)
         
-        state_shapes_params = nnx.state(abstract_model, nnx.Param)
-        # Convert to standard dict of shapes for compatibility with loading utils if needed
-        # Or just verify we succeeded up to here.
-        
-        print("Model structure verified without OOM using nnx.eval_shape.")
+        print("Model structure verified without OOM or TraceContextError.")
 
 if __name__ == "__main__":
     unittest.main()
