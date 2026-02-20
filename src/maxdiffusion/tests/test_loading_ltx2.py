@@ -6,7 +6,8 @@ import jax.numpy as jnp
 from flax import nnx
 from maxdiffusion.models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
-from maxdiffusion.models.ltx2.ltx2_utils import load_ltx2_transformer, load_ltx2_vae
+from maxdiffusion.models.ltx2.vocoder_ltx2 import LTX2Vocoder
+from maxdiffusion.models.ltx2.ltx2_utils import load_ltx2_transformer, load_ltx2_vae, load_ltx2_vocoder
 
 class LTX2LoadingTest(unittest.TestCase):
     def test_loading(self):
@@ -82,7 +83,31 @@ class LTX2LoadingTest(unittest.TestCase):
         self.assertEqual(abstract_vae.latent_channels, 128)
         # self.assertEqual(len(abstract_vae.encoder.down_blocks), 4) # nnx.List not len()able directly? depends on version
         
+        
         print("VAE structure verified.")
+
+    def test_vocoder_loading(self):
+        # Configuration for Lightricks/LTX-2 Vocoder
+        def create_vocoder():
+             rngs = nnx.Rngs(0)
+             return LTX2Vocoder(
+                in_channels=128,
+                hidden_channels=1024,
+                out_channels=2,
+                upsample_kernel_sizes=(16, 15, 8, 4, 4),
+                upsample_factors=(6, 5, 2, 2, 2),
+                resnet_kernel_sizes=(3, 7, 11),
+                resnet_dilations=((1, 3, 5), (1, 3, 5), (1, 3, 5)),
+                leaky_relu_negative_slope=0.1,
+                output_sampling_rate=24000,
+                rngs=rngs,
+                dtype=jnp.float32,
+             )
+        
+        abstract_vocoder = nnx.eval_shape(create_vocoder)
+        self.assertEqual(abstract_vocoder.out_channels, 2)
+        print("Vocoder structure verified.")
+
 
 
 if __name__ == "__main__":

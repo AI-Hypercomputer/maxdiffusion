@@ -406,3 +406,95 @@ def load_ltx2_vae(
   validate_flax_state_dict(eval_shapes, flax_state_dict)
   flax_state_dict = unflatten_dict(flax_state_dict)
   return flax_state_dict
+
+
+def load_ltx2_vocoder(
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    subfolder: str = "vocoder",
+):
+  device = jax.local_devices(backend=device)[0]
+  # Vocoder weights are usually in diffusion_pytorch_model.safetensors inside "vocoder" folder
+  filename = "diffusion_pytorch_model.safetensors"
+  
+  local_files = False
+  if os.path.isdir(pretrained_model_name_or_path):
+    ckpt_path = os.path.join(pretrained_model_name_or_path, subfolder, filename)
+    if os.path.isfile(ckpt_path):
+       local_files = True
+  
+  tensors = {}
+  if hf_download and not local_files:
+      try:
+          ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
+      except Exception as e:
+          raise e
+  elif local_files:
+      # ckpt_path already set
+      pass
+  else:
+      # If not hf_download and not local, we can't load unless path is direct file
+      if os.path.isfile(pretrained_model_name_or_path):
+          ckpt_path = pretrained_model_name_or_path
+      else:
+          # Maybe it's just the repo id and user expects download but hf_download=False?
+          pass
+
+  max_logging.log(f"Load and port {pretrained_model_name_or_path} Vocoder from {ckpt_path}")
+  
+  with safe_open(ckpt_path, framework="pt") as f:
+      for k in f.keys():
+          tensors[k] = torch2jax(f.get_tensor(k))
+
+  flax_state_dict = {}
+  cpu = jax.local_devices(backend="cpu")[0]
+  
+  # Flatten eval_shapes to find valid keys/shapes
+  flattened_eval_shapes = flatten_dict(eval_shapes)
+  random_flax_state_dict = {}
+  for key in flattened_eval_shapes:
+      string_tuple = tuple([str(item) for item in key])
+      random_flax_state_dict[string_tuple] = flattened_eval_shapes[key]
+  del flattened_eval_shapes
+
+  for pt_key, tensor in tensors.items():
+      renamed_pt_key = pt_key
+      
+      # Mapping for LTX2Vocoder
+      # PyTorch (Diffusers likely) -> Flax LTX2Vocoder
+      
+      # conv_in -> conv_in.conv (nnx.Conv doesn't usually nest .conv unless we use our wrapper)
+      # But checking vocoder_ltx2.py, self.conv_in = nnx.Conv(...)
+      # So key is conv_in.kernel or conv_in.weight -> conv_in.kernel
+      
+      # Diffusers usually uses: "conv_in.weight", "conv_in.bias"
+      
+      # If we use nnx.Conv directly:
+      # conv_in.weight -> conv_in.kernel
+      # conv_in.bias -> conv_in.bias
+      
+      # Does modeling_flax_pytorch_utils.rename_key handle .weight -> .kernel? Yes usually.
+      
+      # ups.X.conv.weight (in Diffusers) -> upsamplers.layers.X.kernel (in Flax nnx.ConvTranspose)
+      renamed_pt_key = renamed_pt_key.replace("ups.", "upsamplers.layers.")
+      
+      # resblocks.X.convs1.Y.weight -> resnets.layers.X.convs1.layers.Y.kernel
+      renamed_pt_key = renamed_pt_key.replace("resblocks.", "resnets.layers.")
+      renamed_pt_key = renamed_pt_key.replace("convs1.", "convs1.layers.")
+      renamed_pt_key = renamed_pt_key.replace("convs2.", "convs2.layers.")
+      
+      # conv_out -> conv_out
+      
+      pt_tuple_key = tuple(renamed_pt_key.split("."))
+      
+      flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers=False)
+      flax_key = _tuple_str_to_int(flax_key)
+      
+      flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+
+  validate_flax_state_dict(eval_shapes, flax_state_dict)
+  flax_state_dict = unflatten_dict(flax_state_dict)
+  return flax_state_dict
+
