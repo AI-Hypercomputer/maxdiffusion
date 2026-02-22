@@ -171,9 +171,17 @@ def load_transformer_weights(
 
     print("\nDEBUG: Transformer Block keys from Flax Model (eval_shapes):")
     for k in list(random_flax_state_dict.keys()):
-        if "transformer_blocks" in k and "attn1" in k:
-             print(k)
-             break
+        k_str = str(k)
+        if "transformer_blocks" in k_str and ("attn1" in k_str or "ff" in k_str):
+             print(f"EVAL_SHAPE: {k}")
+        if "proj_out" in k_str or "norm_out" in k_str:
+             print(f"EVAL_SHAPE GLOBAL: {k}")
+
+    # Search for norm in tensors
+    print("\nDEBUG: Search 'norm' in checkpoint keys:")
+    for k in tensors.keys():
+        if "norm" in k and "transformer_blocks" not in k:
+            print(f"CKPT norm: {k}")
         
     for pt_key, tensor in tensors.items():
         renamed_pt_key = rename_key(pt_key)
@@ -181,7 +189,6 @@ def load_transformer_weights(
         
         # DEBUG: Check intermediate rename
         if "audio_ff.net.0.proj" in pt_key:
-             # This might spam, but good to see once
              pass
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
@@ -189,6 +196,13 @@ def load_transformer_weights(
         flax_key, flax_tensor = get_key_and_value(
             pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
         )
+        
+        # DEBUG: Trace proj_out
+        if "proj_out" in str(flax_key) and "bias" in str(flax_key):
+             print(f"DEBUG: Trace proj_out: {pt_key} -> {flax_key}")
+             # Check if added to dict
+             # It acts global so it should be added below
+
         
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
         
