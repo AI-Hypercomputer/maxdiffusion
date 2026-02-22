@@ -36,6 +36,18 @@ def rename_for_ltx2_transformer(key):
     # rename_key changes adaLN_modulation.1 -> adaLN_modulation_1
     if "adaLN_modulation_1" in key:
         key = key.replace("adaLN_modulation_1", "scale_shift_table")
+        
+    # Handle video_a2v_cross_attn_scale_shift_table (caption_modulator?)
+    # Checkpoint: caption_modulator.1.weight
+    if "caption_modulator_1" in key:
+        key = key.replace("caption_modulator_1", "video_a2v_cross_attn_scale_shift_table")
+
+    # Audio caption modulator?
+    # Checkpoint: audio_caption_modulator.1.weight (Guessing name)
+    # Let's inspect checkpoint keys for clues if this guess fails.
+    if "audio_caption_modulator_1" in key:
+        key = key.replace("audio_caption_modulator_1", "audio_a2v_cross_attn_scale_shift_table")
+
     
     # Handle autoencoder_kl_ltx2 specific renames if any, but this is for transformer usually.
     
@@ -68,10 +80,23 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
     if "transformer_blocks" in pt_tuple_key:
        pass # Already handled above or matches standard format
       
+  # Handle scale_shift_table keys - they are Params, not Linear layers, so no 'kernel' suffix needed
+  # We might have renamed them to scale_shift_table already in rename_for_ltx2_transformer
+  if "scale_shift_table" in pt_tuple_key[-1] or "scale_shift_table" in pt_tuple_key:
+       # if we renamed it to ends with scale_shift_table, use it directly
+       # But rename_key_and_reshape might have added kernel?
+       pass
+
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   
   # RESTORE LTX-2 specific keys that rename_key_and_reshape_tensor incorrectly maps to standard Flax names
   flax_key_str = [str(k) for k in flax_key]
+  
+  # Fix scale_shift_table mapping if it got 'kernel' appended
+  if "scale_shift_table" in flax_key_str:
+      # if last is kernel/weight, remove it
+      if flax_key_str[-1] in ["kernel", "weight"]:
+           flax_key_str.pop()
   
   # Helper to replace last occurrence
   def replace_suffix(lst, old, new):

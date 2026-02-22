@@ -158,6 +158,14 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
     )
 
+    # Scale Shift Tables
+    self.scale_shift_table = nnx.Param(jax.random.normal(rngs.params(), (6, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim))
+    self.audio_scale_shift_table = nnx.Param(
+        jax.random.normal(rngs.params(), (6, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
+    )
+    self.video_a2v_cross_attn_scale_shift_table = nnx.Param(jax.random.normal(rngs.params(), (5, self.dim), dtype=weights_dtype))
+    self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(jax.random.normal(rngs.params(), (5, audio_dim), dtype=weights_dtype))
+
     # 2. Prompt Cross-Attention
     self.norm2 = nnx.RMSNorm(
         self.dim,
@@ -807,7 +815,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
     # 6. Output layers
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
     self.norm_out = nnx.LayerNorm(
-        inner_dim, epsilon=1e-6, use_scale=False, rngs=rngs, dtype=jnp.float32, param_dtype=jnp.float32
+        inner_dim, epsilon=1e-6, use_scale=False, use_bias=False, rngs=rngs, dtype=jnp.float32, param_dtype=jnp.float32
     )
     self.proj_out = nnx.Linear(
         inner_dim,
@@ -820,7 +828,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
     )
 
     self.audio_norm_out = nnx.LayerNorm(
-        audio_inner_dim, epsilon=1e-6, use_scale=False, rngs=rngs, dtype=jnp.float32, param_dtype=jnp.float32
+        audio_inner_dim, epsilon=1e-6, use_scale=False, use_bias=False, rngs=rngs, dtype=jnp.float32, param_dtype=jnp.float32
     )
     self.audio_proj_out = nnx.Linear(
         audio_inner_dim,
