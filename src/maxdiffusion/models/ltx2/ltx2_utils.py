@@ -112,15 +112,17 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   
   # Check if we got 'kernel' but expected 'scale' (common for scanned layers where shape check fails)
+  # Also check 'weight' because rename_key might not have converted it to kernel if it wasn't a known Linear
   flax_key_str = [str(k) for k in flax_key]
   
-  if flax_key_str[-1] == "kernel":
+  if flax_key_str[-1] in ["kernel", "weight"]:
        # Try replacing with scale and check if it exists in random_flax_state_dict
        temp_key_str = flax_key_str[:-1] + ["scale"]
        temp_key = tuple(temp_key_str) # Tuple of strings
        
        if temp_key in random_flax_state_dict:
             flax_key_str = temp_key_str
+            pass
 
   # RESTORE LTX-2 specific keys that rename_key_and_reshape_tensor incorrectly maps to standard Flax names
   # Fix scale_shift_table mapping if it got 'kernel' appended
@@ -371,8 +373,15 @@ def load_vae_weights(
           # _tuple_str_to_int might not be needed if we already injected ints, but it's safe
           flax_key = _tuple_str_to_int(flax_key)
           
-          if flax_key == ("latents_mean",) or flax_key == ("latents_std",):
-               continue # Skip stats
+          flax_key = tuple(flax_key_str)
+          flax_key = _tuple_str_to_int(flax_key)
+          
+          # Allow latents_mean/std
+          
+          # DEBUG
+          if "conv" in flax_key_str or "bias" in flax_key_str:
+              # print(f"DEBUG: VAE Key Map: {pt_tuple_key} -> {flax_key}")
+              pass
 
           if resnet_index is not None:
               if flax_key in flax_state_dict:

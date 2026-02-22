@@ -134,7 +134,15 @@ class LTX2UtilsTest(unittest.TestCase):
         )
         
         print("Validating VAE Weights...")
-        validate_flax_state_dict(eval_shapes, loaded_weights)
+        # Filter out dropout/rngs keys from eval_shapes as they are not expected in weights
+        filtered_eval_shapes = {}
+        for k, v in eval_shapes.items():
+            k_str = [str(x) for x in k]
+            if "dropout" in k_str or "rngs" in k_str:
+                continue
+            filtered_eval_shapes[k] = v
+            
+        validate_flax_state_dict(filtered_eval_shapes, loaded_weights)
         print("VAE Weights Validated Successfully!")
 
 if __name__ == "__main__":
