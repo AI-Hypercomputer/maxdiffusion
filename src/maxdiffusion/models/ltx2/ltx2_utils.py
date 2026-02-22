@@ -238,6 +238,11 @@ def load_transformer_weights(
     cpu = jax.local_devices(backend="cpu")[0]
     flattened_dict = flatten_dict(eval_shapes)
     
+    random_flax_state_dict = {}
+    for key in flattened_dict:
+        string_tuple = tuple([str(item) for item in key])
+        random_flax_state_dict[string_tuple] = flattened_dict[key]
+
     # DEBUG: Print keys to understand mapping
     print("DEBUG: Top 20 keys from Checkpoint (tensors):")
     for k in list(tensors.keys())[:20]:
@@ -342,14 +347,16 @@ def load_vae_weights(
                   if name == "resnets":
                       resnet_index = idx
                       pt_list.append("resnets")
-                  elif name in ["down_blocks", "up_blocks", "downsamplers", "upsamplers"]:
+                  elif name == "upsamplers":
+                      pt_list.append("upsampler")
+                      # Skip the index 0 for upsampler as Flax uses singular non-list
+                  elif name in ["down_blocks", "up_blocks", "downsamplers"]:
                       pt_list.append(name)
                       pt_list.append(str(idx))
                   else:
                       pt_list.append(part)
               elif part == "upsampler":
-                  pt_list.append("upsamplers")
-                  pt_list.append("0") 
+                  pt_list.append("upsampler") 
               elif part in ["conv1", "conv2", "conv"]:
                   pt_list.append(part)
                   # Inject 'conv' if it's not already there AND not just added
