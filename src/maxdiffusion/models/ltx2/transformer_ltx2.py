@@ -807,7 +807,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
     # 6. Output layers
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
     self.norm_out = nnx.LayerNorm(
-        inner_dim, epsilon=1e-6, use_scale=False, rngs=rngs, dtype=jnp.float32, param_dtype=jnp.float32
+        inner_dim, epsilon=1e-6, use_scale=False, use_bias=False, rngs=rngs, dtype=jnp.float32, param_dtype=jnp.float32
     )
     self.proj_out = nnx.Linear(
         inner_dim,
@@ -820,7 +820,7 @@ class LTX2VideoTransformer3DModel(nnx.Module):
     )
 
     self.audio_norm_out = nnx.LayerNorm(
-        audio_inner_dim, epsilon=1e-6, use_scale=False, rngs=rngs, dtype=jnp.float32, param_dtype=jnp.float32
+        audio_inner_dim, epsilon=1e-6, use_scale=False, use_bias=False, rngs=rngs, dtype=jnp.float32, param_dtype=jnp.float32
     )
     self.audio_proj_out = nnx.Linear(
         audio_inner_dim,

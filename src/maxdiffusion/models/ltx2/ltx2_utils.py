@@ -115,6 +115,10 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   # Also check 'weight' because rename_key might not have converted it to kernel if it wasn't a known Linear
   flax_key_str = [str(k) for k in flax_key]
   
+  # DEBUG: Check specific keys
+  if "norm_k" in flax_key_str or "audio_caption_projection" in flax_key_str:
+       print(f"DEBUG: get_key_and_value mapping: {pt_tuple_key} -> {flax_key_str}")
+  
   if flax_key_str[-1] in ["kernel", "weight"]:
        # Try replacing with scale and check if it exists in random_flax_state_dict
        temp_key_str = flax_key_str[:-1] + ["scale"]
