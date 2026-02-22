@@ -250,11 +250,32 @@ def load_transformer_weights(
     for k in list(random_flax_state_dict.keys())[:20]:
         print(k)
 
+    print("\nDEBUG: Transformer Block 0 keys from Checkpoint:")
+    found_block_0 = False
+    for k in tensors.keys():
+        if "transformer_blocks.0." in k or "transformer_blocks_0." in k:
+            print(k)
+            found_block_0 = True
+            
+    if not found_block_0:
+         # Try looking for any block
+         for k in tensors.keys():
+             if "transformer_blocks" in k:
+                 print(f"Sample block key: {k}")
+                 break
+
+    print("\nDEBUG: Global Norm/LN candidates in Checkpoint:")
+    for k in tensors.keys():
+        if "norm" in k.lower() or "ln" in k.lower():
+            if "transformer_blocks" not in k:
+                print(k)
+
     print("\nDEBUG: Transformer Block keys from Flax Model (eval_shapes):")
     for k in list(random_flax_state_dict.keys()):
         k_str = str(k)
         if "transformer_blocks" in k_str and ("attn1" in k_str or "ff" in k_str):
-             print(f"EVAL_SHAPE: {k}")
+             # print(f"EVAL_SHAPE: {k}") # Comment out to reduce noise, we know they exist
+             pass
         
     for pt_key, tensor in tensors.items():
         renamed_pt_key = rename_key(pt_key)
