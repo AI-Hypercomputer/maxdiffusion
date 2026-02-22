@@ -160,6 +160,64 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
            flax_key_str[-2] = "to_out"
 
   flax_key = tuple(flax_key_str)
+
+  # Explicit fixes for LTX-2
+  # 1. Linear Projection Weights: weight -> kernel
+  # Keys: audio_caption_projection, caption_projection, audio_proj_in, proj_in, audio_proj_out, proj_out, time_embed, audio_time_embed
+  # Also av_cross_attn lines.
+  if flax_key[-1] == "weight":
+      # Check if we should rename to kernel
+      # Heuristic: if parent has 'linear' or 'proj' or 'time_embed' or matches known list
+      parent = flax_key[-2] if len(flax_key) > 1 else ""
+      grandparent = flax_key[-3] if len(flax_key) > 2 else ""
+      
+      should_be_kernel = False
+      if "linear" in parent or "proj" in parent or "proj" in grandparent:
+          should_be_kernel = True
+      if "time_embed" in flax_key[0] or "cross_attn" in flax_key[0]:
+          if "linear" in parent or "emb" in parent: # time_embed.linear
+              should_be_kernel = True
+      
+      # Exception: norm weights are scale, handled below
+      if "norm" in parent:
+          should_be_kernel = False
+
+      if should_be_kernel:
+          flax_key = flax_key[:-1] + ("kernel",)
+
+  # 2. Norm Weights: weight -> scale
+  # Keys: norm_k, norm_q, norm_out, audio_norm_out
+  if flax_key[-1] == "weight":
+      if "norm" in flax_key[-2] or "norm" in flax_key[0]:
+           flax_key = flax_key[:-1] + ("scale",)
+
+  # 3. Audio/Video Attention specifics
+  # Checkpoint: attn1.to_q.weight -> Flax: attn1.to_q.kernel
+  # rename_key usually handles this if it sees 'Linear', but here it might miss if valid_prefixes check fails or it's just 'to_q'.
+  # Force q/k/v/out projections to kernel
+  if flax_key[-1] == "weight" and flax_key[-2] in ["to_q", "to_k", "to_v", "to_out"]:
+      flax_key = flax_key[:-1] + ("kernel",)
+      
+  # 4. Fix 'to_out.0' -> 'to_out' if it persisted (sometimes rename_key does to_out_0)
+  # Actually my previous fix in rename_for_ltx2_transformer handles string replacement?
+  # Let's double check tuple.
+  # If we have ('to_out', '0', 'weight') -> ('to_out', 'kernel') ? 
+  # Flax expects just 'to_out'? No, Flax nnx.Linear is typically a leaf unless wrapped.
+  # LTX2Attention defines: self.to_out = nnx.Linear(...)
+  # So it expects ('to_out', 'kernel').
+  # Checkpoint has: to_out.0.weight and to_out.0.bias
+  # This implies it was a Sequential or List in PyTorch?
+  # If we see '0' in key, drop it if it's 'to_out'.
+  if len(flax_key) >= 2 and flax_key[-2] == "0" and flax_key[-3] == "to_out":
+      # ('to_out', '0', 'kernel') -> ('to_out', 'kernel')
+      flax_key = flax_key[:-3] + ("to_out", flax_key[-1])
+
+  # 5. Fix norm_k/q becoming scale
+  # Already handled by rule 2?
+  # Checkpoint: attn1.norm_k.weight
+  # Rule 2: parent 'norm_k' has 'norm' -> becomes scale. Correct.
+
+  flax_key_str = [str(k) for k in flax_key] # Update str list for final check
   flax_key = _tuple_str_to_int(flax_key)
 
   if scan_layers and block_index is not None:
