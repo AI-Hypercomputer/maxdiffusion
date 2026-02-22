@@ -144,16 +144,6 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   flax_key = tuple(flax_key_str)
   flax_key = _tuple_str_to_int(flax_key)
 
-  if "scale_shift_table" in str(flax_key):
-       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (scale_shift_table)")
-
-  if "audio_caption_projection" in str(flax_key):
-       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (audio_caption_projection)")
-  if "audio_time_embed" in str(flax_key):
-       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (audio_time_embed)")
-
-  return flax_key, flax_tensor
-
   if scan_layers and block_index is not None:
     if "transformer_blocks" in flax_key:
         if flax_key in flax_state_dict:
@@ -164,23 +154,6 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
         
         new_tensor = new_tensor.at[block_index].set(flax_tensor)
         flax_tensor = new_tensor
-
-  # DEBUG TRACE
-  if "audio_ff" in str(flax_key) and "kernel" in str(flax_key) and block_index == 18:
-       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (Block 18)")
-  if "to_out" in str(flax_key) and "kernel" in str(flax_key) and block_index == 18 and "attn1" in str(flax_key):
-       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (Block 18 attn1)")
-
-  if "proj_in" in str(flax_key):
-       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (proj_in)")
-  
-  if "scale_shift_table" in str(flax_key):
-       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (scale_shift_table)")
-
-  if "audio_caption_projection" in str(flax_key):
-       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (audio_caption_projection)")
-  if "audio_time_embed" in str(flax_key):
-       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (audio_time_embed)")
 
   return flax_key, flax_tensor
 
@@ -248,56 +221,16 @@ def load_transformer_weights(
     for key in flattened_dict:
         string_tuple = tuple([str(item) for item in key])
         random_flax_state_dict[string_tuple] = flattened_dict[key]
-    
-    # DEBUG: Print keys to understand mapping
-    print("DEBUG: Top 20 keys from Checkpoint (tensors):")
-    for k in list(tensors.keys())[:20]:
-        print(k)
-
-    print("DEBUG: NON-BLOCK keys in Checkpoint:")
-    for k in tensors.keys():
-        if "transformer_blocks" not in k:
-            print(k)
-        
-        
-    print("\nDEBUG: Top 20 keys from Flax Model (eval_shapes):")
-    for k in list(random_flax_state_dict.keys())[:20]:
-        print(k)
-
-    print("\nDEBUG: Transformer Block keys from Flax Model (eval_shapes):")
-    for k in list(random_flax_state_dict.keys()):
-        k_str = str(k)
-        if "transformer_blocks" in k_str and ("attn1" in k_str or "ff" in k_str):
-             print(f"EVAL_SHAPE: {k}")
-        if "proj_out" in k_str or "norm_out" in k_str:
-             print(f"EVAL_SHAPE GLOBAL: {k}")
-
-    # Search for norm in tensors
-    print("\nDEBUG: Search 'norm' in checkpoint keys:")
-    for k in tensors.keys():
-        if "norm" in k and "transformer_blocks" not in k:
-            print(f"CKPT norm: {k}")
         
     for pt_key, tensor in tensors.items():
         renamed_pt_key = rename_key(pt_key)
         renamed_pt_key = rename_for_ltx2_transformer(renamed_pt_key)
         
-        # DEBUG: Check intermediate rename
-        if "audio_ff.net.0.proj" in pt_key:
-             pass
-
         pt_tuple_key = tuple(renamed_pt_key.split("."))
         
         flax_key, flax_tensor = get_key_and_value(
             pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
         )
-        
-        # DEBUG: Trace proj_out
-        if "proj_out" in str(flax_key) and "bias" in str(flax_key):
-             print(f"DEBUG: Trace proj_out: {pt_key} -> {flax_key}")
-             # Check if added to dict
-             # It acts global so it should be added below
-
         
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
         
@@ -337,10 +270,6 @@ def load_vae_weights(
         loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
         for k, v in loaded_state_dict.items():
             tensors[k] = torch2jax(v)
-      
-      print("\nDEBUG: Top 20 keys from VAE Checkpoint (tensors):")
-      for k in list(tensors.keys())[:20]:
-          print(k)
             
       flax_state_dict = {}
       cpu = jax.local_devices(backend="cpu")[0]
@@ -375,16 +304,18 @@ def load_vae_weights(
                       pt_list.append(part)
               elif part in ["conv1", "conv2", "conv"]:
                   pt_list.append(part)
-                  # Only inject 'conv' if it's not already there
-                  # Check if next part is 'conv'
+                  # Inject 'conv' if it's not already there AND not just added
                   if i + 1 < len(pt_tuple_key) and pt_tuple_key[i+1] == "conv":
                       pass # already has conv
-                  elif pt_list[-2] == "conv": # Check previous injection
-                      pass # already injected conv in previous step (if part was conv1/conv2/conv)
-                  # Also avoid injecting if part ITSELF is 'conv'
+                  elif pt_list[-1] == "conv": 
+                      pass # already has conv
                   elif part == "conv":
+                      # It IS conv, so we appended it. Do we need another one?
+                      # If part is 'conv', we appended it. 
+                      # The original logic skipped it. We kept it.
                       pass
                   else:
+                      # If part is conv1/conv2, append 'conv'
                       pt_list.append("conv")
               else:
                   pt_list.append(part)
