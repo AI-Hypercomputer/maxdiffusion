@@ -338,8 +338,8 @@ def load_vae_weights(
                   idx = int(part.split("_")[-1])
                   
                   if name == "resnets":
-                      resnet_index = idx
                       pt_list.append("resnets")
+                      pt_list.append(str(idx))
                   elif name == "upsamplers":
                       pt_list.append("upsampler")
                       # Skip the index 0 for upsampler as Flax uses singular non-list
