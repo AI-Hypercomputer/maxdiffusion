@@ -37,8 +37,6 @@ def rename_for_ltx2_transformer(key):
     if "adaLN_modulation_1" in key:
         key = key.replace("adaLN_modulation_1", "scale_shift_table")
         
-    # Handle video_a2v_cross_attn_scale_shift_table (caption_modulator?)
-    # Checkpoint: caption_modulator.1.weight
     if "caption_modulator_1" in key:
         key = key.replace("caption_modulator_1", "video_a2v_cross_attn_scale_shift_table")
 
@@ -47,6 +45,28 @@ def rename_for_ltx2_transformer(key):
     # Let's inspect checkpoint keys for clues if this guess fails.
     if "audio_caption_modulator_1" in key:
         key = key.replace("audio_caption_modulator_1", "audio_a2v_cross_attn_scale_shift_table")
+    
+    # Handle audio_caption_projection
+    # Checkpoint: audio_caption_projection.linear_1.weight
+    # Flax: audio_caption_projection.linear_1.kernel
+    # rename_key_and_reshape_tensor catches 'weight' -> 'kernel', but maybe something else renaming it?
+    # No explicit rename needed if it's already linear_1/linear_2 unless name mismatch.
+    
+    # Handle global norms (norm_out, audio_norm_out)
+    # Checkpoint: norm_final -> norm_out (already handled)
+    # Checkpoint also has audio_norm_final -> audio_norm_out?
+    if "audio_norm_final" in key:
+        key = key.replace("audio_norm_final", "audio_norm_out")
+    
+    # Handle time_embed/audio_time_embed
+    # Checkpoint: time_embed.emb.timestep_embedder.linear_1.weight
+    # Flax: time_embed.emb.timestep_embedder.linear_1.kernel
+    # If checkpoint uses different name structure?
+    # time_embed.emb.timestep_embedder -> time_embed.emb.timestep_embedder (seems OK)
+    
+    # Handle av_cross_attn...
+    # These seem fine in name but verify if they are Linear or Conv? Linear.
+
 
     
     # Handle autoencoder_kl_ltx2 specific renames if any, but this is for transformer usually.
@@ -140,6 +160,12 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
        print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (Block 18)")
   if "to_out" in str(flax_key) and "kernel" in str(flax_key) and block_index == 18 and "attn1" in str(flax_key):
        print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (Block 18 attn1)")
+
+  if "proj_in" in str(flax_key):
+       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (proj_in)")
+  
+  if "scale_shift_table" in str(flax_key):
+       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (scale_shift_table)")
 
   return flax_key, flax_tensor
 
@@ -338,6 +364,11 @@ def load_vae_weights(
                   # Check if next part is 'conv'
                   if i + 1 < len(pt_tuple_key) and pt_tuple_key[i+1] == "conv":
                       pass # already has conv
+                  elif pt_list[-2] == "conv": # Check previous injection
+                      pass # already injected conv in previous step (if part was conv1/conv2/conv)
+                  # Also avoid injecting if part ITSELF is 'conv'
+                  elif part == "conv":
+                      pass
                   else:
                       pt_list.append("conv")
               else:
