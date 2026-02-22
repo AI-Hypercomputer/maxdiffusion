@@ -87,7 +87,7 @@ def rename_for_ltx2_transformer(key):
 def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers=48):
   block_index = None
   
-  # Handle transformer_blocks_N produced by rename_key
+  # Handle transformer_blocks_N (underscore) produced by rename_key
   if scan_layers and len(pt_tuple_key) > 0 and "transformer_blocks_" in pt_tuple_key[0]:
       import re
       m = re.match(r"transformer_blocks_(\d+)", pt_tuple_key[0])
@@ -95,16 +95,18 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
           block_index = int(m.group(1))
           # Map transformer_blocks_N -> transformer_blocks
           pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[1:]
+          
+  # Handle transformer_blocks.N (dot) from original keys if rename_key didn't underscore it
+  if scan_layers and len(pt_tuple_key) > 1 and pt_tuple_key[0] == "transformer_blocks" and pt_tuple_key[1].isdigit():
+       block_index = int(pt_tuple_key[1])
+       pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[2:]
 
   if scan_layers:
     if "transformer_blocks" in pt_tuple_key:
        pass # Already handled above or matches standard format
       
-  # Handle scale_shift_table keys - they are Params, not Linear layers, so no 'kernel' suffix needed
-  # We might have renamed them to scale_shift_table already in rename_for_ltx2_transformer
+  # Handle scale_shift_table keys
   if "scale_shift_table" in pt_tuple_key[-1] or "scale_shift_table" in pt_tuple_key:
-       # if we renamed it to ends with scale_shift_table, use it directly
-       # But rename_key_and_reshape might have added kernel?
        pass
 
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
@@ -117,27 +119,20 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
        temp_key_str = flax_key_str[:-1] + ["scale"]
        temp_key = tuple(temp_key_str) # Tuple of strings
        
-       # random_flax_state_dict keys are tuples of STRINGS
        if temp_key in random_flax_state_dict:
             flax_key_str = temp_key_str
-            # If we are mapping weight -> scale, ensure tensor is 1D?
-            # Linear weights are 2D (transposed). Scale weights are 1D.
-            # If input tensor was 1D, rename_key_and_reshape_tensor converts it to 1D?
-            # No, if it thought it was Linear, it might have transposed (if 2D) or whatever.
-            # But if it was originally 1D 'weight' (like LayerNorm), rename_key_and_reshape_tensor (Linear logic) 
-            # checks `if pt_tuple_key[-1] == "weight"`.
-            # Linear logic: `pt_tensor = pt_tensor.T`.
-            # If 1D, T is same. So harmless for 1D.
-            pass
 
   # RESTORE LTX-2 specific keys that rename_key_and_reshape_tensor incorrectly maps to standard Flax names
-  # flax_key_str = [str(k) for k in flax_key] # Already have it
-  
   # Fix scale_shift_table mapping if it got 'kernel' appended
   if "scale_shift_table" in flax_key_str:
       # if last is kernel/weight, remove it
       if flax_key_str[-1] in ["kernel", "weight"]:
            flax_key_str.pop()
+  
+  # Handle audio_norm_out / norm_out bias mapping
+  # If renamed to ('audio_norm_out', 'bias') matches ('audio_norm_out', 'bias') in random_flax_state_dict?
+  # Yes. But if rename_key mapped it differently?
+  # Ensure norm_out/audio_norm_out are preserved.
   
   # Helper to replace last occurrence
   def replace_suffix(lst, old, new):
@@ -154,10 +149,6 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
       elif flax_key_str[-1] == "value":
           flax_key_str[-1] = "to_v"
       
-      # For to_out, rename_key_and_reshape_tensor might map to_out_0 -> proj_attn
-      # OR if we mapped `to_out_0` -> `to_out` manually, it keeps `to_out` but changes `weight` -> `kernel`
-      # We just want to ensure consistency.
-      # If it became `proj_attn`, revert it.
       if len(flax_key_str) >= 2 and flax_key_str[-2] == "proj_attn":
            # proj_attn, kernel -> to_out, kernel
            flax_key_str[-2] = "to_out"
