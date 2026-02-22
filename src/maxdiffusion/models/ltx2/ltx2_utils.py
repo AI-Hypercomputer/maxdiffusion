@@ -373,12 +373,10 @@ def load_vae_weights(
           # _tuple_str_to_int might not be needed if we already injected ints, but it's safe
           flax_key = _tuple_str_to_int(flax_key)
           
-          flax_key = tuple(flax_key_str)
-          flax_key = _tuple_str_to_int(flax_key)
-          
           # Allow latents_mean/std
           
           # DEBUG
+          flax_key_str = [str(x) for x in flax_key]
           if "conv" in flax_key_str or "bias" in flax_key_str:
               # print(f"DEBUG: VAE Key Map: {pt_tuple_key} -> {flax_key}")
               pass
