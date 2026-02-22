@@ -40,7 +40,8 @@ def rename_for_ltx2_transformer(key):
     # Handle autoencoder_kl_ltx2 specific renames if any, but this is for transformer usually.
     
     # Handle audio_ff.net_0.proj -> audio_ff.net_0
-    if "audio_ff" in key and "proj" in key:
+    # Also handle ff.net_0.proj -> ff.net_0
+    if ("audio_ff" in key or "ff" in key) and "proj" in key:
         key = key.replace(".proj", "")
     
     # Handle to_out.0 -> to_out for LTX2Attention
@@ -68,6 +69,34 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
        pass # Already handled above or matches standard format
       
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
+  
+  # RESTORE LTX-2 specific keys that rename_key_and_reshape_tensor incorrectly maps to standard Flax names
+  flax_key_str = [str(k) for k in flax_key]
+  
+  # Helper to replace last occurrence
+  def replace_suffix(lst, old, new):
+      if lst and lst[-1] == old:
+          lst[-1] = new
+      return lst
+
+  # LTX-2 uses to_q, to_k, to_v, to_out, NOT query, key, value, proj_attn
+  if "transformer_blocks" in flax_key_str:
+      if flax_key_str[-1] == "query":
+          flax_key_str[-1] = "to_q"
+      elif flax_key_str[-1] == "key":
+          flax_key_str[-1] = "to_k"
+      elif flax_key_str[-1] == "value":
+          flax_key_str[-1] = "to_v"
+      
+      # For to_out, rename_key_and_reshape_tensor might map to_out_0 -> proj_attn
+      # OR if we mapped `to_out_0` -> `to_out` manually, it keeps `to_out` but changes `weight` -> `kernel`
+      # We just want to ensure consistency.
+      # If it became `proj_attn`, revert it.
+      if len(flax_key_str) >= 2 and flax_key_str[-2] == "proj_attn":
+           # proj_attn, kernel -> to_out, kernel
+           flax_key_str[-2] = "to_out"
+
+  flax_key = tuple(flax_key_str)
   flax_key = _tuple_str_to_int(flax_key)
 
   if scan_layers and block_index is not None:
