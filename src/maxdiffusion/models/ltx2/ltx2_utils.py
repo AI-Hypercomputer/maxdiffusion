@@ -109,8 +109,29 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
 
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   
-  # RESTORE LTX-2 specific keys that rename_key_and_reshape_tensor incorrectly maps to standard Flax names
+  # Check if we got 'kernel' but expected 'scale' (common for scanned layers where shape check fails)
   flax_key_str = [str(k) for k in flax_key]
+  
+  if flax_key_str[-1] == "kernel":
+       # Try replacing with scale and check if it exists in random_flax_state_dict
+       temp_key_str = flax_key_str[:-1] + ["scale"]
+       temp_key = tuple(temp_key_str) # Tuple of strings
+       
+       # random_flax_state_dict keys are tuples of STRINGS
+       if temp_key in random_flax_state_dict:
+            flax_key_str = temp_key_str
+            # If we are mapping weight -> scale, ensure tensor is 1D?
+            # Linear weights are 2D (transposed). Scale weights are 1D.
+            # If input tensor was 1D, rename_key_and_reshape_tensor converts it to 1D?
+            # No, if it thought it was Linear, it might have transposed (if 2D) or whatever.
+            # But if it was originally 1D 'weight' (like LayerNorm), rename_key_and_reshape_tensor (Linear logic) 
+            # checks `if pt_tuple_key[-1] == "weight"`.
+            # Linear logic: `pt_tensor = pt_tensor.T`.
+            # If 1D, T is same. So harmless for 1D.
+            pass
+
+  # RESTORE LTX-2 specific keys that rename_key_and_reshape_tensor incorrectly maps to standard Flax names
+  # flax_key_str = [str(k) for k in flax_key] # Already have it
   
   # Fix scale_shift_table mapping if it got 'kernel' appended
   if "scale_shift_table" in flax_key_str:
@@ -217,10 +238,25 @@ def load_transformer_weights(
     cpu = jax.local_devices(backend="cpu")[0]
     flattened_dict = flatten_dict(eval_shapes)
     
-    random_flax_state_dict = {}
-    for key in flattened_dict:
-        string_tuple = tuple([str(item) for item in key])
-        random_flax_state_dict[string_tuple] = flattened_dict[key]
+    # DEBUG: Print keys to understand mapping
+    print("DEBUG: Top 20 keys from Checkpoint (tensors):")
+    for k in list(tensors.keys())[:20]:
+        print(k)
+
+    print("DEBUG: NON-BLOCK keys in Checkpoint:")
+    for k in tensors.keys():
+        if "transformer_blocks" not in k:
+            print(k)
+        
+    print("\nDEBUG: Top 20 keys from Flax Model (eval_shapes):")
+    for k in list(random_flax_state_dict.keys())[:20]:
+        print(k)
+
+    print("\nDEBUG: Transformer Block keys from Flax Model (eval_shapes):")
+    for k in list(random_flax_state_dict.keys()):
+        k_str = str(k)
+        if "transformer_blocks" in k_str and ("attn1" in k_str or "ff" in k_str):
+             print(f"EVAL_SHAPE: {k}")
         
     for pt_key, tensor in tensors.items():
         renamed_pt_key = rename_key(pt_key)
@@ -275,6 +311,15 @@ def load_vae_weights(
       cpu = jax.local_devices(backend="cpu")[0]
       flattened_eval = flatten_dict(eval_shapes)
       
+      # DEBUG: Print keys to understand mapping
+      print("DEBUG: Top 20 keys from VAE Checkpoint (tensors):")
+      for k in list(tensors.keys())[:20]:
+          print(k)
+            
+      flax_state_dict = {}
+      cpu = jax.local_devices(backend="cpu")[0]
+      flattened_eval = flatten_dict(eval_shapes)
+      
       random_flax_state_dict = {}
       for key in flattened_eval:
           string_tuple = tuple([str(item) for item in key])
@@ -302,6 +347,9 @@ def load_vae_weights(
                       pt_list.append(str(idx))
                   else:
                       pt_list.append(part)
+              elif part == "upsampler":
+                  pt_list.append("upsamplers")
+                  pt_list.append("0") 
               elif part in ["conv1", "conv2", "conv"]:
                   pt_list.append(part)
                   # Inject 'conv' if it's not already there AND not just added
@@ -309,10 +357,9 @@ def load_vae_weights(
                       pass # already has conv
                   elif pt_list[-1] == "conv": 
                       pass # already has conv
+                  elif len(pt_list) >= 2 and pt_list[-2] == "conv":
+                       pass
                   elif part == "conv":
-                      # It IS conv, so we appended it. Do we need another one?
-                      # If part is 'conv', we appended it. 
-                      # The original logic skipped it. We kept it.
                       pass
                   else:
                       # If part is conv1/conv2, append 'conv'
@@ -342,7 +389,7 @@ def load_vae_weights(
                        current_tensor = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
                   else:
                        # Fallback if key missing (shouldn't happen with correct mapping)
-                       print(f"Warning: Key {str_flax_key} not found in random_flax_state_dict, cannot stack.")
+                       # print(f"Warning: Key {str_flax_key} not found in random_flax_state_dict, cannot stack.")
                        current_tensor = flax_tensor # Might fail shape check later
               
               # Place the tensor at the correct index
