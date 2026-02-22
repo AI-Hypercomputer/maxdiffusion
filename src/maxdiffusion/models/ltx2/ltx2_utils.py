@@ -144,6 +144,16 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   flax_key = tuple(flax_key_str)
   flax_key = _tuple_str_to_int(flax_key)
 
+  if "scale_shift_table" in str(flax_key):
+       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (scale_shift_table)")
+
+  if "audio_caption_projection" in str(flax_key):
+       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (audio_caption_projection)")
+  if "audio_time_embed" in str(flax_key):
+       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (audio_time_embed)")
+
+  return flax_key, flax_tensor
+
   if scan_layers and block_index is not None:
     if "transformer_blocks" in flax_key:
         if flax_key in flax_state_dict:
@@ -166,6 +176,11 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   
   if "scale_shift_table" in str(flax_key):
        print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (scale_shift_table)")
+
+  if "audio_caption_projection" in str(flax_key):
+       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (audio_caption_projection)")
+  if "audio_time_embed" in str(flax_key):
+       print(f"DEBUG: Mapped {pt_tuple_key} -> {flax_key} (audio_time_embed)")
 
   return flax_key, flax_tensor
 
@@ -388,17 +403,22 @@ def load_vae_weights(
                   current_tensor = flax_state_dict[flax_key]
               else:
                   # Initialize with correct shape from random_flax_state_dict
-                  if flax_key in random_flax_state_dict:
-                       target_shape = random_flax_state_dict[flax_key].shape
+                  # We must use STRING tuple for lookup in random_flax_state_dict
+                  str_flax_key = tuple([str(x) for x in flax_key])
+                  
+                  if str_flax_key in random_flax_state_dict:
+                       target_shape = random_flax_state_dict[str_flax_key].shape
                        current_tensor = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
                   else:
                        # Fallback if key missing (shouldn't happen with correct mapping)
-                       print(f"Warning: Key {flax_key} not found in random_flax_state_dict, cannot stack.")
+                       print(f"Warning: Key {str_flax_key} not found in random_flax_state_dict, cannot stack.")
                        current_tensor = flax_tensor # Might fail shape check later
               
               # Place the tensor at the correct index
               # flax_tensor is (..., C), target is (N_resnets, ..., C)
-              if flax_key in random_flax_state_dict: # Only stack if we have a valid target
+              
+              str_flax_key = tuple([str(x) for x in flax_key])
+              if str_flax_key in random_flax_state_dict: # Only stack if we have a valid target
                   current_tensor = current_tensor.at[resnet_index].set(flax_tensor)
                   flax_state_dict[flax_key] = current_tensor
               else:
