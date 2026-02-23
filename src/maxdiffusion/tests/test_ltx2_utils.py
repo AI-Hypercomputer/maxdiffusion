@@ -160,5 +160,29 @@ class LTX2UtilsTest(unittest.TestCase):
         validate_flax_state_dict(eval_shapes, flatten_dict(loaded_weights))
         print("Vocoder Weights Validated Successfully!")
 
+    def test_load_connector_weights(self):
+        from maxdiffusion.models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
+        from maxdiffusion.models.ltx2.ltx2_utils import load_connector_weights
+        
+        pretrained_model_name_or_path = "Lightricks/LTX-2"
+        
+        with jax.default_device(jax.devices("cpu")[0]):
+            model = LTX2AudioVideoGemmaTextEncoder(rngs=self.rngs)
+            
+        state = nnx.state(model)
+        eval_shapes = state.to_pure_dict()
+        
+        print("Loading Connector Weights...")
+        loaded_weights = load_connector_weights(
+            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            eval_shapes=eval_shapes,
+            device=self.device,
+            hf_download=True
+        )
+        
+        print("Validating Connector Weights...")
+        validate_flax_state_dict(eval_shapes, flatten_dict(loaded_weights))
+        print("Connector Weights Validated Successfully!")
+
 if __name__ == "__main__":
     unittest.main()

@@ -398,3 +398,109 @@ def load_vocoder_weights(
   validate_flax_state_dict(eval_shapes, flax_state_dict)
   return unflatten_dict(flax_state_dict)
 
+
+def rename_for_ltx2_connector(key):
+    key = key.replace("video_connector", "video_embeddings_connector")
+    key = key.replace("audio_connector", "audio_embeddings_connector")
+    key = key.replace("text_proj_in", "feature_extractor.linear")
+    
+    # Transformer blocks mapping
+    if "transformer_blocks" in key:
+        key = key.replace("transformer_blocks", "stacked_blocks")
+        # Handle FF
+        key = key.replace("ff.net.0.proj", "ff.proj1")
+        key = key.replace("ff.net.2", "ff.proj2")
+        
+    # Validation/Weight suffix
+    if key.endswith(".weight"):
+        # Check if it's a norm with usage_scale=True (attn norms)
+        if "norm_q" in key or "norm_k" in key:
+            key = key.replace(".weight", ".scale")
+        # Check if it's a norm with usage_scale=False (block norms) -> No, these don't exist in checkpoint!
+        else:
+            key = key.replace(".weight", ".kernel")
+            
+    return key
+
+def load_connector_weights(
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    subfolder: str = "connectors"
+):
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
+    flax_state_dict = {}
+    cpu = jax.local_devices(backend="cpu")[0]
+    
+    # Store stacked weights: grouped_weights[connector][param_name] = {layer_idx: tensor}
+    grouped_weights = {
+        "video_embeddings_connector": {},
+        "audio_embeddings_connector": {}
+    }
+    
+    for pt_key, tensor in tensors.items():
+        key = rename_for_ltx2_connector(pt_key)
+        
+        # Check for transpose (Linear layers)
+        if key.endswith(".kernel"):
+             if tensor.ndim == 2:
+                 tensor = tensor.transpose(1, 0)
+                 
+        if "stacked_blocks" in key:
+            # key format: {connector}.stacked_blocks.{layer_idx}.{rest}
+            parts = key.split(".")
+            # Find stacked_blocks index
+            try:
+                sb_index = parts.index("stacked_blocks")
+                layer_idx = int(parts[sb_index + 1])
+                connector = parts[0]
+                
+                # Reconstruct param name without layer index
+                # e.g. video_embeddings_connector.stacked_blocks.attn1...
+                param_parts = parts[:sb_index+1] + parts[sb_index+2:]
+                param_name = tuple(param_parts)
+                
+                if connector in grouped_weights:
+                    if param_name not in grouped_weights[connector]:
+                        grouped_weights[connector][param_name] = {}
+                    grouped_weights[connector][param_name][layer_idx] = tensor
+                    continue
+            except (ValueError, IndexError):
+                pass
+                
+        # Non-stacked keys
+        key_tuple = tuple(key.split("."))
+        
+        # Handle int conversion for parts
+        final_key_tuple = []
+        for p in key_tuple:
+             if p.isdigit(): final_key_tuple.append(int(p))
+             else: final_key_tuple.append(p)
+        final_key_tuple = tuple(final_key_tuple)
+
+        flax_state_dict[final_key_tuple] = jax.device_put(tensor, device=cpu)
+        
+    # Process grouped weights
+    for connector, params in grouped_weights.items():
+        for param_name, layers in params.items():
+            # Sort by layer index and stack
+            sorted_layers = sorted(layers.keys())
+            # Assuming contiguous layers 0..N-1
+            stacked_tensor = jnp.stack([layers[i] for i in sorted_layers], axis=0)
+            
+            # Param name tuple
+            final_param_name = []
+            for p in param_name:
+                 if isinstance(p, str) and p.isdigit(): final_param_name.append(int(p))
+                 else: final_param_name.append(p)
+            final_param_name = tuple(final_param_name)
+            
+            flax_state_dict[final_param_name] = jax.device_put(stacked_tensor, device=cpu)
+            
+    # Clean up and return
+    del tensors
+    jax.clear_caches()
+    validate_flax_state_dict(eval_shapes, flax_state_dict)
+    return unflatten_dict(flax_state_dict)
+
