@@ -266,16 +266,9 @@ def load_vae_weights(
       flattened_eval = flatten_dict(eval_shapes)
       
       random_flax_state_dict = {}
-      print(f"DEBUG: eval_shapes length (flattened): {len(flattened_eval)}")
-      sample_target_found = False
       for key in flattened_eval:
           string_tuple = tuple([str(item) for item in key])
           random_flax_state_dict[string_tuple] = flattened_eval[key]
-          
-          if not sample_target_found and "decoder" in string_tuple and "up_blocks" in string_tuple and "0" in string_tuple and "resnets" in string_tuple and "2" in string_tuple and "conv2" in string_tuple:
-               print(f"DEBUG: Found target key in eval_shapes: {key}")
-               print(f"DEBUG: Key types: {[type(x) for x in key]}")
-               sample_target_found = True
             
       for pt_key, tensor in tensors.items():
           renamed_pt_key = rename_key(pt_key)
@@ -347,11 +340,21 @@ def load_vae_weights(
           else:
               flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
           
-          if "decoder" in flax_key_str and "up_blocks" in flax_key_str and "0" in flax_key_str and "resnets" in flax_key_str and "2" in flax_key_str and "conv2" in flax_key_str:
-              print(f"DEBUG: Processing target key. Final flax_key: {flax_key}")
+
+
+      # Filter out non-parameter keys for validation
+      filtered_eval_shapes = {}
+      for k, v in flattened_eval.items():
+          # flax key is a tuple of strings/ints
+          k_str = [str(x) for x in k]
+          if "dropout" in k_str or "rngs" in k_str:
+              continue
+          filtered_eval_shapes[k] = v
 
       print(f"Total VAE keys loaded: {len(flax_state_dict)}")
-      validate_flax_state_dict(eval_shapes, flax_state_dict)
+      
+      # Unflatten to pass to validate_flax_state_dict which expects a pytree
+      validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)
       del tensors
       jax.clear_caches()
