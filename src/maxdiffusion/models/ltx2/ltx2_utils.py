@@ -30,54 +30,17 @@ def rename_for_ltx2_transformer(key):
     key = key.replace("patchify_proj", "proj_in")
     key = key.replace("audio_patchify_proj", "audio_proj_in")
     key = key.replace("norm_final", "norm_out")
-    
-    # Handle scale_shift_table
-    # PyTorch: adaLN_modulation.1.weight/bias -> scale_shift_table
-    # rename_key changes adaLN_modulation.1 -> adaLN_modulation_1
     if "adaLN_modulation_1" in key:
         key = key.replace("adaLN_modulation_1", "scale_shift_table")
         
     if "caption_modulator_1" in key:
         key = key.replace("caption_modulator_1", "video_a2v_cross_attn_scale_shift_table")
-
-    # Audio caption modulator?
-    # Checkpoint: audio_caption_modulator.1.weight (Guessing name)
-    # Let's inspect checkpoint keys for clues if this guess fails.
     if "audio_caption_modulator_1" in key:
         key = key.replace("audio_caption_modulator_1", "audio_a2v_cross_attn_scale_shift_table")
-    
-    # Handle audio_caption_projection
-    # Checkpoint: audio_caption_projection.linear_1.weight
-    # Flax: audio_caption_projection.linear_1.kernel
-    # rename_key_and_reshape_tensor catches 'weight' -> 'kernel', but maybe something else renaming it?
-    # No explicit rename needed if it's already linear_1/linear_2 unless name mismatch.
-    
-    # Handle global norms (norm_out, audio_norm_out)
-    # Checkpoint: norm_final -> norm_out (already handled)
-    # Checkpoint also has audio_norm_final -> audio_norm_out?
     if "audio_norm_final" in key:
         key = key.replace("audio_norm_final", "audio_norm_out")
-    
-    # Handle time_embed/audio_time_embed
-    # Checkpoint: time_embed.emb.timestep_embedder.linear_1.weight
-    # Flax: time_embed.emb.timestep_embedder.linear_1.kernel
-    # If checkpoint uses different name structure?
-    # time_embed.emb.timestep_embedder -> time_embed.emb.timestep_embedder (seems OK)
-    
-    # Handle av_cross_attn...
-    # These seem fine in name but verify if they are Linear or Conv? Linear.
-
-
-    
-    # Handle autoencoder_kl_ltx2 specific renames if any, but this is for transformer usually.
-    
-    # Handle audio_ff.net_0.proj -> audio_ff.net_0
-    # Also handle ff.net_0.proj -> ff.net_0
     if ("audio_ff" in key or "ff" in key) and "proj" in key:
         key = key.replace(".proj", "")
-    
-    # Handle to_out.0 -> to_out for LTX2Attention
-    # rename_key changes to_out.0 -> to_out_0
     if "to_out_0" in key:
         key = key.replace("to_out_0", "to_out")
         
@@ -110,39 +73,24 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
        pass
 
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
-  
-  # Check if we got 'kernel' but expected 'scale' (common for scanned layers where shape check fails)
-  # Also check 'weight' because rename_key might not have converted it to kernel if it wasn't a known Linear
   flax_key_str = [str(k) for k in flax_key]
   
   if flax_key_str[-1] in ["kernel", "weight"]:
-       # Try replacing with scale and check if it exists in random_flax_state_dict
        temp_key_str = flax_key_str[:-1] + ["scale"]
        temp_key = tuple(temp_key_str) # Tuple of strings
        
        if temp_key in random_flax_state_dict:
             flax_key_str = temp_key_str
             pass
-
-  # RESTORE LTX-2 specific keys that rename_key_and_reshape_tensor incorrectly maps to standard Flax names
-  # Fix scale_shift_table mapping if it got 'kernel' appended
   if "scale_shift_table" in flax_key_str:
-      # if last is kernel/weight, remove it
       if flax_key_str[-1] in ["kernel", "weight"]:
            flax_key_str.pop()
   
-  # Handle audio_norm_out / norm_out bias mapping
-  # If renamed to ('audio_norm_out', 'bias') matches ('audio_norm_out', 'bias') in random_flax_state_dict?
-  # Yes. But if rename_key mapped it differently?
-  # Ensure norm_out/audio_norm_out are preserved.
-  
-  # Helper to replace last occurrence
   def replace_suffix(lst, old, new):
       if lst and lst[-1] == old:
           lst[-1] = new
       return lst
 
-  # LTX-2 uses to_q, to_k, to_v, to_out, NOT query, key, value, proj_attn
   if "transformer_blocks" in flax_key_str:
       if flax_key_str[-1] == "query":
           flax_key_str[-1] = "to_q"
@@ -157,13 +105,7 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
 
   flax_key = tuple(flax_key_str)
 
-  # Explicit fixes for LTX-2
-  # 1. Linear Projection Weights: weight -> kernel
-  # Keys: audio_caption_projection, caption_projection, audio_proj_in, proj_in, audio_proj_out, proj_out, time_embed, audio_time_embed
-  # Also av_cross_attn lines.
   if flax_key[-1] == "weight":
-      # Check if we should rename to kernel
-      # Heuristic: if parent has 'linear' or 'proj' or 'time_embed' or matches known list
       parent = flax_key[-2] if len(flax_key) > 1 else ""
       grandparent = flax_key[-3] if len(flax_key) > 2 else ""
       
@@ -171,49 +113,26 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
       if "linear" in parent or "proj" in parent or "proj" in grandparent:
           should_be_kernel = True
       if "time_embed" in flax_key[0] or "cross_attn" in flax_key[0]:
-          if "linear" in parent or "emb" in parent: # time_embed.linear
+          if "linear" in parent or "emb" in parent:
               should_be_kernel = True
       
-      # Exception: norm weights are scale, handled below
       if "norm" in parent:
           should_be_kernel = False
 
       if should_be_kernel:
           flax_key = flax_key[:-1] + ("kernel",)
 
-  # 2. Norm Weights: weight -> scale
-  # Keys: norm_k, norm_q, norm_out, audio_norm_out
   if flax_key[-1] == "weight":
       if "norm" in flax_key[-2] or "norm" in flax_key[0]:
            flax_key = flax_key[:-1] + ("scale",)
 
-  # 3. Audio/Video Attention specifics
-  # Checkpoint: attn1.to_q.weight -> Flax: attn1.to_q.kernel
-  # rename_key usually handles this if it sees 'Linear', but here it might miss if valid_prefixes check fails or it's just 'to_q'.
-  # Force q/k/v/out projections to kernel
   if flax_key[-1] == "weight" and flax_key[-2] in ["to_q", "to_k", "to_v", "to_out"]:
       flax_key = flax_key[:-1] + ("kernel",)
       
-  # 4. Fix 'to_out.0' -> 'to_out' if it persisted (sometimes rename_key does to_out_0)
-  # Actually my previous fix in rename_for_ltx2_transformer handles string replacement?
-  # Let's double check tuple.
-  # If we have ('to_out', '0', 'weight') -> ('to_out', 'kernel') ? 
-  # Flax expects just 'to_out'? No, Flax nnx.Linear is typically a leaf unless wrapped.
-  # LTX2Attention defines: self.to_out = nnx.Linear(...)
-  # So it expects ('to_out', 'kernel').
-  # Checkpoint has: to_out.0.weight and to_out.0.bias
-  # This implies it was a Sequential or List in PyTorch?
-  # If we see '0' in key, drop it if it's 'to_out'.
   if len(flax_key) >= 2 and flax_key[-2] == "0" and flax_key[-3] == "to_out":
-      # ('to_out', '0', 'kernel') -> ('to_out', 'kernel')
       flax_key = flax_key[:-3] + ("to_out", flax_key[-1])
 
-  # 5. Fix norm_k/q becoming scale
-  # Already handled by rule 2?
-  # Checkpoint: attn1.norm_k.weight
-  # Rule 2: parent 'norm_k' has 'norm' -> becomes scale. Correct.
-
-  flax_key_str = [str(k) for k in flax_key] # Update str list for final check
+  flax_key_str = [str(k) for k in flax_key]
   flax_key = _tuple_str_to_int(flax_key)
 
   if scan_layers and block_index is not None:
@@ -221,7 +140,6 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
         if flax_key in flax_state_dict:
             new_tensor = flax_state_dict[flax_key]
         else:
-            # Initialize with correct shape (layers, ...)
             new_tensor = jnp.zeros((num_layers,) + flax_tensor.shape, dtype=flax_tensor.dtype)
         
         new_tensor = new_tensor.at[block_index].set(flax_tensor)
@@ -235,8 +153,6 @@ def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device):
     """
     index_file = "diffusion_pytorch_model.safetensors.index.json"
     tensors = {}
-    
-    # Try to download index file
     try:
         index_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=index_file)
         with open(index_path, "r") as f:
@@ -324,8 +240,6 @@ def load_vae_weights(
     subfolder: str = "vae"
 ):
   device = jax.local_devices(backend=device)[0]
-  # VAE for LTX-2 is likely single file, but safe to use the helper if we wanted general robustness.
-  # But `lightricks/LTX-2` VAE is single file.
   
   filename = "diffusion_pytorch_model.safetensors"
   try:
@@ -365,7 +279,6 @@ def load_vae_weights(
           resnet_index = None
           
           for i, part in enumerate(pt_tuple_key):
-              # Check for name_N pattern
               if "_" in part and part.split("_")[-1].isdigit():
                   name = "_".join(part.split("_")[:-1])
                   idx = int(part.split("_")[-1])
@@ -375,7 +288,6 @@ def load_vae_weights(
                       pt_list.append(str(idx))
                   elif name == "upsamplers":
                       pt_list.append("upsampler")
-                      # Skip the index 0 for upsampler as Flax uses singular non-list
                   elif name in ["down_blocks", "up_blocks", "downsamplers"]:
                       pt_list.append(name)
                       pt_list.append(str(idx))
@@ -385,17 +297,15 @@ def load_vae_weights(
                   pt_list.append("upsampler") 
               elif part in ["conv1", "conv2", "conv"]:
                   pt_list.append(part)
-                  # Inject 'conv' if it's not already there AND not just added
                   if i + 1 < len(pt_tuple_key) and pt_tuple_key[i+1] == "conv":
-                      pass # already has conv
+                      pass
                   elif pt_list[-1] == "conv": 
-                      pass # already has conv
+                      pass
                   elif len(pt_list) >= 2 and pt_list[-2] == "conv":
                        pass
                   elif part == "conv":
                       pass
                   else:
-                      # If part is conv1/conv2, append 'conv'
                       pt_list.append("conv")
               else:
                   pt_list.append(part)
@@ -403,38 +313,26 @@ def load_vae_weights(
           pt_tuple_key = tuple(pt_list)
 
           flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
-          # _tuple_str_to_int might not be needed if we already injected ints, but it's safe
           flax_key = _tuple_str_to_int(flax_key)
           
-          # Allow latents_mean/std
-          
-          # DEBUG
           flax_key_str = [str(x) for x in flax_key]
           if "conv" in flax_key_str or "bias" in flax_key_str:
-              # print(f"DEBUG: VAE Key Map: {pt_tuple_key} -> {flax_key}")
               pass
 
           if resnet_index is not None:
               if flax_key in flax_state_dict:
                   current_tensor = flax_state_dict[flax_key]
               else:
-                  # Initialize with correct shape from random_flax_state_dict
-                  # We must use STRING tuple for lookup in random_flax_state_dict
                   str_flax_key = tuple([str(x) for x in flax_key])
                   
                   if str_flax_key in random_flax_state_dict:
                        target_shape = random_flax_state_dict[str_flax_key].shape
                        current_tensor = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
                   else:
-                       # Fallback if key missing (shouldn't happen with correct mapping)
-                       # print(f"Warning: Key {str_flax_key} not found in random_flax_state_dict, cannot stack.")
-                       current_tensor = flax_tensor # Might fail shape check later
-              
-              # Place the tensor at the correct index
-              # flax_tensor is (..., C), target is (N_resnets, ..., C)
+                       current_tensor = flax_tensor
               
               str_flax_key = tuple([str(x) for x in flax_key])
-              if str_flax_key in random_flax_state_dict: # Only stack if we have a valid target
+              if str_flax_key in random_flax_state_dict:
                   current_tensor = current_tensor.at[resnet_index].set(flax_tensor)
                   flax_state_dict[flax_key] = current_tensor
               else:
