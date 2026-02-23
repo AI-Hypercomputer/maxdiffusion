@@ -76,6 +76,26 @@ class LTX2Pipeline:
     self.vae_scale_factor_temporal = 8 # Default for LTX2
     self.vae_scale_factor_spatial = 32 # Default for LTX2
 
+  def _encode_image(self, image, device, dtype, generator):
+    if not isinstance(image, (jnp.ndarray, np.ndarray)):
+      raise ValueError("`image` must be a jnp.ndarray or np.ndarray")
+    
+    # Normalize if needed (-1, 1) usually
+    if image.min() >= 0:
+        image = 2.0 * image - 1.0
+    
+    # Check shape: (B, H, W, C) -> (B, F, H, W, C)
+    if image.ndim == 4:
+        image = jnp.expand_dims(image, axis=1) # Add frame dim
+    
+    # VAE encode
+    posterior = self.vae.encode(image).latent_dist
+    latents = posterior.sample(generator)
+    
+    # Normalize and Scale
+    latents = (latents - self.vae.latents_mean) * self.vae.config.scaling_factor / self.vae.latents_std
+    return latents
+
   def prepare_latents(
       self,
       batch_size: int,
@@ -85,9 +105,13 @@ class LTX2Pipeline:
       num_channels_latents: int,
       dtype: jnp.dtype,
       rng: jax.Array,
+      image=None,
+      timestep=None,
+      noise=None,
   ):
-    num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
     # VAE spatial compression is 32x32, temporal is 8
+    num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
+    
     shape = (
         batch_size,
         num_latent_frames,
@@ -95,8 +119,43 @@ class LTX2Pipeline:
         width // self.vae_scale_factor_spatial,
         num_channels_latents,
     )
-    latents = jax.random.normal(rng, shape=shape, dtype=dtype)
-    return latents
+    
+    # Init latents with noise
+    if noise is None:
+        if rng is None:
+             raise ValueError("RNG must be provided if noise is None")
+        latents = jax.random.normal(rng, shape=shape, dtype=dtype)
+    else:
+        latents = noise
+        
+    conditioning_mask = jnp.zeros((batch_size, num_latent_frames, shape[2], shape[3]), dtype=dtype)
+    image_latents = None
+
+    if image is not None:
+        # Encode image
+        image_latents = self._encode_image(image, None, dtype, rng)
+        
+        # In I2V, we typically condition on the first frame(s).
+        # We need to ensure image_latents matches the target shape in H/W if not already resized.
+        # Assuming input image was pre-resized for now.
+        
+        num_image_frames = image_latents.shape[1]
+        
+        # Create a mask that is 1.0 where we have conditioning image
+        # And 0.0 where we want to generate
+        # For LTX-2 I2V, usually the first frame is conditioned.
+        
+        # We replace the initial noise with the noisy image latents during the loop, 
+        # but here we just return the clean image latents for the scheduler to use.
+        
+        # Just to be safe, we only mark valid frames
+        valid_frames = min(num_image_frames, num_latent_frames)
+        conditioning_mask = conditioning_mask.at[:, :valid_frames, ...].set(1.0)
+        
+        # We don't replace latents here yet; we do it in the loop (Noisy Replacement)
+        # OR we can initialize latents with image_latents if t=T (all noise) -> actually no, t=T is random noise.
+    
+    return latents, conditioning_mask, image_latents
 
   def retrieve_timesteps(
       self,
@@ -106,10 +165,6 @@ class LTX2Pipeline:
       sigmas: Optional[List[float]] = None,
       **kwargs,
   ):
-      """
-      Calls the scheduler's `set_timesteps` method and retrieves timesteps from the scheduler after the call.
-      """
-      # Update the scheduler state with new timesteps
       self.scheduler_state = scheduler.set_timesteps(
         self.scheduler_state,
         num_inference_steps=num_inference_steps,
@@ -121,8 +176,10 @@ class LTX2Pipeline:
       prompt: Union[str, List[str]],
       num_videos_per_prompt: int = 1,
       max_sequence_length: int = 128,
-      device: Any = None, # Unused in JAX
+      device: Any = None,
       dtype: jnp.dtype = jnp.float32,
+      do_classifier_free_guidance: bool = False,
+      negative_prompt: Optional[Union[str, List[str]]] = None,
   ):
     if self.text_encoder is None:
         raise ValueError("Text encoder is not initialized.")
@@ -130,96 +187,95 @@ class LTX2Pipeline:
     if isinstance(prompt, str):
         prompt = [prompt]
 
-    # Tokenization
-    # We assume tokenizer is configured correctly (padding side left for Gemma)
     if self.tokenizer.padding_side != "left":
          self.tokenizer.padding_side = "left"
     
+    # 1. Encode Positive Prompt
     text_inputs = self.tokenizer(
         prompt,
         padding="max_length",
         max_length=max_sequence_length,
         truncation=True,
         add_special_tokens=True,
-        return_tensors="np", # Return numpy for JAX
+        return_tensors="np",
     )
-    
     input_ids = jnp.array(text_inputs.input_ids)
     attention_mask = jnp.array(text_inputs.attention_mask)
     
-    # Gemma3 Forward Pass
-    # We assume text_encoder returns hidden_states when output_hidden_states=True
-    # Or returns an object with hidden_states attribute
-    # Note: MaxText models might have different signatures. 
-    # Validating against generic JAX model pattern.
-    
-    # In MaxDiffusion, we often wrap models. 
-    # Here we assume self.text_encoder is a callable nnx.Module or similar
-    
-    # We need to ensure input_ids are sharded if needed, but for now assuming replicated or handled by caller
-    
-    # Get Hidden States
-    # Expecting: (batch, seq_len, hidden_dim) or per layer
-    # For Gemma3, we might get a list of hidden states
-    # We pass this to text_encoder_connector
-    
-    # Mocking or calling actual model
-    # To make this robust without running actual Gemma3 which is heavy:
-    # We will assume text_encoder is the connector if gemma3 is implied integrated, 
-    # BUT the design separates them.
-    
-    # Use 'output_hidden_states=True' equivalent for MaxText if applicable
     outputs = self.text_encoder(
         input_ids=input_ids,
         attention_mask=attention_mask,
-        output_hidden_states=True # Hypothetical arg for MaxText Gemma
+        output_hidden_states=True
     )
+    hidden_states = outputs.hidden_states if hasattr(outputs, 'hidden_states') else outputs
     
-    # If outputs is a tuple/list, it's likely hidden states
-    # If it's an object, check hidden_states
-    if hasattr(outputs, 'hidden_states'):
-        hidden_states = outputs.hidden_states
-    else:
-        hidden_states = outputs # Assume it returns hidden states directly if configured
-        
-    # Text Encoder Connector (Gemma hidden states -> LTX2 embeddings)
     prompt_embeds = self.text_encoder_connector(
         hidden_states=hidden_states,
         attention_mask=attention_mask
     )
     
-    # prompt_embeds shape: [B, S, D]
-    
-    # Duplicate for num_videos_per_prompt
     bs_embed, seq_len, _ = prompt_embeds.shape
     prompt_embeds = jnp.repeat(prompt_embeds, num_videos_per_prompt, axis=0)
     attention_mask = jnp.repeat(attention_mask, num_videos_per_prompt, axis=0)
     
+    # 2. Encode Negative Prompt if CFG is enabled
+    if do_classifier_free_guidance:
+        if negative_prompt is None:
+            negative_prompt = [""] * len(prompt)
+        elif isinstance(negative_prompt, str):
+            negative_prompt = [negative_prompt] * len(prompt)
+            
+        uncond_inputs = self.tokenizer(
+            negative_prompt,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            return_tensors="np"
+        )
+        uncond_input_ids = jnp.array(uncond_inputs.input_ids)
+        uncond_attention_mask = jnp.array(uncond_inputs.attention_mask)
+        
+        uncond_outputs = self.text_encoder(
+            input_ids=uncond_input_ids,
+            attention_mask=uncond_attention_mask,
+            output_hidden_states=True
+        )
+        uncond_hidden_states = uncond_outputs.hidden_states if hasattr(uncond_outputs, 'hidden_states') else uncond_outputs
+        
+        negative_prompt_embeds = self.text_encoder_connector(
+            hidden_states=uncond_hidden_states,
+            attention_mask=uncond_attention_mask
+        )
+        
+        negative_prompt_embeds = jnp.repeat(negative_prompt_embeds, num_videos_per_prompt, axis=0)
+        uncond_attention_mask = jnp.repeat(uncond_attention_mask, num_videos_per_prompt, axis=0)
+        
+        # Concatenate for CFG
+        prompt_embeds = jnp.concatenate([negative_prompt_embeds, prompt_embeds], axis=0)
+        attention_mask = jnp.concatenate([uncond_attention_mask, attention_mask], axis=0)
+
     return prompt_embeds, attention_mask
 
   def __call__(
       self,
       prompt: Union[str, List[str]] = None,
-      image: PipelineImageInput = None, # Placeholder for VAE encode logic
+      image: PipelineImageInput = None,
       height: int = 480,
       width: int = 704,
       num_frames: int = 121,
       num_inference_steps: int = 50,
       guidance_scale: float = 3.0,
       num_videos_per_prompt: int = 1,
-      generator: Optional[jax.Array] = None, # JAX PRNGKey
+      generator: Optional[jax.Array] = None,
       latents: Optional[jax.Array] = None,
       prompt_embeds: Optional[jax.Array] = None,
       prompt_attention_mask: Optional[jax.Array] = None,
-      negative_prompt_embeds: Optional[jax.Array] = None, # Not used in LTX2 usually?
+      negative_prompt: Optional[Union[str, List[str]]] = None,
       output_type: str = "pil",
       return_dict: bool = True,
       **kwargs,
   ):
-    # 0. Default height/width/frames if not provided handling
-    # (Simplified for now)
-
-    # 1. Check inputs
+    # 1. Inputs
     if prompt is None and prompt_embeds is None:
         raise ValueError("Either `prompt` or `prompt_embeds` must be provided.")
         
@@ -227,14 +283,18 @@ class LTX2Pipeline:
     if prompt_embeds is not None:
         batch_size = prompt_embeds.shape[0] // num_videos_per_prompt
 
+    do_classifier_free_guidance = guidance_scale > 1.0
+
     # 2. Encode Prompt
     if prompt_embeds is None:
         prompt_embeds, prompt_attention_mask = self.encode_prompt(
             prompt=prompt,
             num_videos_per_prompt=num_videos_per_prompt,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+            negative_prompt=negative_prompt
         )
     
-    # 3. Prepare Timesteps
+    # 3. Timesteps
     timesteps = self.retrieve_timesteps(self.scheduler, num_inference_steps)
     
     # 4. Prepare Latents
@@ -242,83 +302,80 @@ class LTX2Pipeline:
     if latents is None:
         if generator is None:
              generator = jax.random.PRNGKey(0)
-        latents = self.prepare_latents(
+        latents, conditioning_mask, image_latents = self.prepare_latents(
             batch_size * num_videos_per_prompt,
             height,
             width,
             num_frames,
             num_channels_latents,
             jnp.float32,
-            generator
+            generator,
+            image=image
         )
-        
+    else:
+        conditioning_mask = jnp.zeros((latents.shape[0], latents.shape[1], latents.shape[2], latents.shape[3]), dtype=latents.dtype)
+        image_latents = None
+
     # 5. Denoising Loop
-    # LTX2 Transformer inputs:
-    # hidden_states (Video),encoder_hidden_states (Text), 
-    # temb (Timestep embed), 
-    # attention_mask (for Text/Video?)
-    
-    # Note: LTX2 Transformer expects 'temb' and other conditioning.
-    # We need to construct 'temb' and specific embeddings.
-    # The transformer handles its own embedding internally? 
-    # No, LTX2VideoTransformer3DModel takes `temb`, `temb_audio` etc.
-    # Wait, the transformer __call__ signature:
-    # hidden_states, audio_hidden_states, encoder_hidden_states, audio_encoder_hidden_states,
-    # temb, temb_audio, temb_ca_scale_shift, ...
-    
-    # We need to compute these 'temb' components. 
-    # They are likely computed from the timestep using some embedding logic OUTSIDE the transformer or INSIDE?
-    # Looking at `LTX2VideoTransformer3DModel.__init__`, it has `self.time_embed` which takes `timestep` and returns embedding?
-    # No, `LTX2AdaLayerNormSingle` takes `timestep` (embedded) and returns modulation.
-    # The `__call__` expects `temb` already embedded? 
-    # "temb: jax.Array" argument.
-    
-    # In Diffusers `LTX2VideoTransformer3DModel`, input is `timestep` (tensor).
-    # In MaxDiffusion `LTX2VideoTransformer3DModel`, input is `temb` (embedding?).
-    # Let's check `transformer_ltx2.py` again.
-    # `self.time_embed = LTX2AdaLayerNormSingle(...)`
-    # `temb` is passed to `self.time_embed(timestep=temb.flatten(), ...)` if it's not already embedded?
-    # `LTX2AdaLayerNormSingle.__call__` takes `timestep`.
-    # And inside `LTX2VideoTransformer3DModel.__call__`:
-    # `temb_reshaped = temb.reshape(...)`
-    # It seems `temb` passed to `__call__` is ALREADY the vector embedding of timestep?
-    # Or is it the raw timestep?
-    
-    # In Diffusers:
-    # transformer(hidden_states, encoder_hidden_states, timestep, ...)
-    # Here:
-    # transformer(hidden_states, ..., temb, ...)
-    
-    # We might need a Timestep Embedder helper in the pipeline or use the one in Scheduler?
-    # Use `scheduler_state.timesteps`?
-    
-    # We will assume for now we pass the timestep value and the transformer helps, 
-    # OR we implement the sinusoidal embedding here.
-    # MaxDiffusion usually follows Diffusers.
-    
-        # Prepare Timestep Embeddings
-        # We need to compute them using the transformer's internal embedders
-        # Note: This pattern assumes strict parity with LTX2 logic where these are needed explicitly
+    for i, t in enumerate(timesteps):
+        # I2V Conditioning: Add noise to image_latents and replace in latents
+        if image_latents is not None:
+            # We need to noise the image_latents to the current timestep t
+            # Assume scheduler has add_noise. If not, we need a manual fallback or update scheduler.
+            # Using FlaxFlowMatchScheduler convention.
+            # noise = jax.random.normal(generator, image_latents.shape) # Re-using generator might be risky if not split?
+            # Ideally we split generator every step or use a deterministic noise for I2V if consistent.
+            # For simplicity, we generate new noise for mixing.
+            
+            generator, noise_rng = jax.random.split(generator)
+            noise_i2v = jax.random.normal(noise_rng, image_latents.shape, dtype=image_latents.dtype)
+            
+            # Broadcast t for valid frames
+            # t is scalar usually
+            # image_latents_noisy = self.scheduler.add_noise(image_latents, noise_i2v, t)
+            
+            # Manual add_noise if scheduler.add_noise expects array t
+            t_array = jnp.broadcast_to(t, (image_latents.shape[0],))
+            image_latents_noisy = self.scheduler.add_noise(
+                self.scheduler_state,
+                image_latents,
+                noise_i2v,
+                t_array
+            )
+            
+            # Replace latents with noisy image latents where mask is 1
+            # conditioning_mask: (B, F, H, W) -> expand to (B, F, H, W, 1) or (B, F, H, W, C)
+            mask = conditioning_mask[..., None]
+            latents = latents * (1 - mask) + image_latents_noisy * mask
+
+        # CFG: Expand latents if needed
+        latent_model_input = jnp.concatenate([latents] * 2) if do_classifier_free_guidance else latents
+        t_batch = jnp.broadcast_to(t, (latent_model_input.shape[0],))
         
-        # 1. Main Timestep Embedding
+        # Flatten Latents: (B, F, H, W, C) -> (B, S, C)
+        B_in, F, H, W, C = latent_model_input.shape
+        latents_flat = latent_model_input.reshape(B_in, F * H * W, C)
+        
+        # Audio Placeholders (Correct dimensionality)
+        # Transformer expects audio_hidden_states: (B, S_a, D_a)
+        audio_hidden_states = jnp.zeros((B_in, 1, 128), dtype=latents.dtype)
+        audio_encoder_hidden_states = jnp.zeros((B_in, 1, 128), dtype=latents.dtype)
+        audio_encoder_attention_mask = jnp.zeros((B_in, 1), dtype=jnp.int32)
+        
+        # Timestep Embeddings
         temb, _ = self.transformer.time_embed(t_batch)
-        
-        # 2. Audio Timestep Embedding (Dummy or Same?)
-        # For now, using same timestep for audio
         temb_audio, _ = self.transformer.audio_time_embed(t_batch)
-        
-        # 3. Cross-Attention Modulations
         temb_ca_scale_shift, _ = self.transformer.av_cross_attn_video_scale_shift(t_batch)
         temb_ca_audio_scale_shift, _ = self.transformer.av_cross_attn_audio_scale_shift(t_batch)
         temb_ca_gate, _ = self.transformer.av_cross_attn_video_a2v_gate(t_batch)
         temb_ca_audio_gate, _ = self.transformer.av_cross_attn_audio_v2a_gate(t_batch)
-        
-        # Predict noise
-        model_output, _ = self.transformer(
-            hidden_states=latents,
-            audio_hidden_states=audio_latents,
+
+        # Transformer Call
+        noise_pred_flat, _ = self.transformer(
+            hidden_states=latents_flat,
+            audio_hidden_states=audio_hidden_states,
             encoder_hidden_states=prompt_embeds,
-            audio_encoder_hidden_states=audio_prompt_embeds,
+            audio_encoder_hidden_states=audio_encoder_hidden_states,
             temb=temb,
             temb_audio=temb_audio,
             temb_ca_scale_shift=temb_ca_scale_shift,
@@ -326,59 +383,33 @@ class LTX2Pipeline:
             temb_ca_gate=temb_ca_gate,
             temb_ca_audio_gate=temb_ca_audio_gate,
             encoder_attention_mask=prompt_attention_mask,
-            # rotary_emb=... (Transformer handles if None?)
-            # Actually, LTX2VideoTransformer3DModel has 'rope' and 'audio_rope' attributes,
-            # but __call__ also accepts rotary_emb.
-            # Usually pipelines compute RoPE and pass it, OR transformer computes it.
-            # MaxDiffusion transformer often computes it if not passed.
-            # LTX2VideoTransformer3DModel checks if video_rotary_emb is None.
+            audio_encoder_attention_mask=audio_encoder_attention_mask,
+            num_frames=num_frames,
+            height=height,
+            width=width,
         )
         
+        # Unflatten Output: (B, S, C) -> (B, F, H, W, C)
+        noise_pred = noise_pred_flat.reshape(B_in, F, H, W, C)
+        
+        # CFG Guidance
+        if do_classifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+        
         # Scheduler Step
-        # Flax scheduler step returns (prev_sample, state) or Output object
         scheduler_output = self.scheduler.step(
             self.scheduler_state,
-            model_output,
-            t, # Timestep
+            noise_pred,
+            t,
             latents,
             return_dict=True
         )
         latents = scheduler_output.prev_sample
         self.scheduler_state = scheduler_output.state
-
-    # 6. Decode Latents
-    # LTX2 VAE Decode
-    # Latents: [B, C, F, H, W] -> [B, F, H, W, C] for VAE?
-    # Checked LTX2VideoAutoencoderKL:
-    # encode input: [B, C, T, H, W] (from Diffusers) OR [B, T, H, W, C] (JAX typical)?
-    # LTX2VideoCausalConv3d does NWC typically?
-    # LTX2VideoAutoencoderKL._decode expects z: [B, T, H, W, C]
-    # LTX2VideoTransformer3DModel expects [B, T, H, W, C]?
-    # Wait, prepare_latents created: (B, C, T, H, W) in my code????
-    # Let's check prepare_latents again.
-    # shape = (batch, num_channels, log_frames, h, w)
     
-    # Correct JAX layout is usually (B, T, H, W, C) for Convolutions if they are standard Flax,
-    # BUT LTX2VideoCausalConv3d implementation I saw earlier uses `nnx.Conv`.
-    # `nnx.Conv` defaults to strict NWC?
-    # `LX2VideoCausalConv3d` kernel_size is 3D.
-    # We need to verify data layout.
-    # Diffusers LTX2 uses (B, C, F, H, W).
-    # MaxDiffusion usually tends to (B, F, H, W, C) for TPU efficiency.
-    # Let's assume (B, F, H, W, C) for internal processing if components support it.
-    
-    # Re-checking prepare_latents in my previous edit:
-    # shape = (batch, num_channels, frame, h, w) - I wrote this to match Diffusers pattern?
-    # I should change it to (B, F, H, W, C) if that's what `transformer` expects.
-    # `LTX2VideoTransformer3DModel` patchify: `self.proj_in = nnx.Linear(..., inner_dim)`.
-    # Linear expects last dim to be C.
-    # So transformer expects (B, ..., C).
-    
-    # So `prepare_latents` MUST return (B, F, H, W, C).
-    # I need to fix `prepare_latents` to put C last.
-    
-    # Fixing latents for decode:
-    video = self.vae.decode(latents, return_dict=True).sample
+    # 6. Un-normalize and Decode
+    latents = (latents / self.vae.config.scaling_factor) * self.vae.latents_std + self.vae.latents_mean
+    video = self.vae.decode(latents).sample
     
     return video
-

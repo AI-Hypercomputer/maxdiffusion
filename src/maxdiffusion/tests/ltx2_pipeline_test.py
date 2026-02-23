@@ -205,5 +205,31 @@ class LTX2PipelineTest(unittest.TestCase):
         self.assertIsNotNone(output)
         print(f"I2V Output shape: {output.shape}")
 
+    def test_pipeline_call_no_cfg(self):
+        pipeline = LTX2Pipeline(
+            tokenizer=self.tokenizer,
+            text_encoder=self.text_encoder,
+            text_encoder_connector=self.text_encoder_connector,
+            transformer=self.transformer,
+            vae=self.vae,
+            scheduler=self.scheduler,
+            scheduler_state=self.scheduler_state,
+            devices_array=self.devices_array,
+            mesh=self.mesh,
+            config=self.config
+        )
+        
+        output = pipeline(
+            prompt="A cat dancing",
+            height=32,
+            width=32,
+            num_frames=9,
+            num_inference_steps=1,
+            guidance_scale=1.0, # Disable CFG
+            num_videos_per_prompt=1
+        )
+        self.assertIsNotNone(output)
+        print(f"No-CFG Output shape: {output.shape}")
+
 if __name__ == '__main__':
     unittest.main()
