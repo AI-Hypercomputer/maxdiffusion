@@ -185,7 +185,7 @@ class LTX2UtilsTest(unittest.TestCase):
             else:
                 pt_shape = shape
                 
-            pt_weights[pt_key] = torch.randn(pt_shape)
+            pt_weights[pt_key] = jnp.array(torch.randn(pt_shape).numpy())
 
         with mock.patch("maxdiffusion.models.ltx2.ltx2_utils.load_sharded_checkpoint", return_value=pt_weights):
             loaded_weights = load_vocoder_weights(
