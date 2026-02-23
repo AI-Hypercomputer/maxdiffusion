@@ -115,10 +115,6 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   # Also check 'weight' because rename_key might not have converted it to kernel if it wasn't a known Linear
   flax_key_str = [str(k) for k in flax_key]
   
-  # DEBUG: Check specific keys
-  if "norm_k" in flax_key_str or "audio_caption_projection" in flax_key_str:
-       print(f"DEBUG: get_key_and_value mapping: {pt_tuple_key} -> {flax_key_str}")
-  
   if flax_key_str[-1] in ["kernel", "weight"]:
        # Try replacing with scale and check if it exists in random_flax_state_dict
        temp_key_str = flax_key_str[:-1] + ["scale"]
@@ -298,47 +294,10 @@ def load_transformer_weights(
         string_tuple = tuple([str(item) for item in key])
         random_flax_state_dict[string_tuple] = flattened_dict[key]
 
-    # DEBUG: Print keys to understand mapping
-    print("DEBUG: Top 20 keys from Checkpoint (tensors):")
-    for k in list(tensors.keys())[:20]:
-        print(k)
+    for key in flattened_dict:
+        string_tuple = tuple([str(item) for item in key])
+        random_flax_state_dict[string_tuple] = flattened_dict[key]
 
-    print("DEBUG: NON-BLOCK keys in Checkpoint:")
-    for k in tensors.keys():
-        if "transformer_blocks" not in k:
-            print(k)
-        
-    print("\nDEBUG: Top 20 keys from Flax Model (eval_shapes):")
-    for k in list(random_flax_state_dict.keys())[:20]:
-        print(k)
-
-    print("\nDEBUG: Transformer Block 0 keys from Checkpoint:")
-    found_block_0 = False
-    for k in tensors.keys():
-        if "transformer_blocks.0." in k or "transformer_blocks_0." in k:
-            print(k)
-            found_block_0 = True
-            
-    if not found_block_0:
-         # Try looking for any block
-         for k in tensors.keys():
-             if "transformer_blocks" in k:
-                 print(f"Sample block key: {k}")
-                 break
-
-    print("\nDEBUG: Global Norm/LN candidates in Checkpoint:")
-    for k in tensors.keys():
-        if "norm" in k.lower() or "ln" in k.lower():
-            if "transformer_blocks" not in k:
-                print(k)
-
-    print("\nDEBUG: Transformer Block keys from Flax Model (eval_shapes):")
-    for k in list(random_flax_state_dict.keys()):
-        k_str = str(k)
-        if "transformer_blocks" in k_str and ("attn1" in k_str or "ff" in k_str):
-             print(f"EVAL_SHAPE: {k}")
-             pass
-        
     for pt_key, tensor in tensors.items():
         renamed_pt_key = rename_key(pt_key)
         renamed_pt_key = rename_for_ltx2_transformer(renamed_pt_key)
@@ -387,15 +346,6 @@ def load_vae_weights(
         loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
         for k, v in loaded_state_dict.items():
             tensors[k] = torch2jax(v)
-            
-      flax_state_dict = {}
-      cpu = jax.local_devices(backend="cpu")[0]
-      flattened_eval = flatten_dict(eval_shapes)
-      
-      # DEBUG: Print keys to understand mapping
-      print("DEBUG: Top 20 keys from VAE Checkpoint (tensors):")
-      for k in list(tensors.keys())[:20]:
-          print(k)
             
       flax_state_dict = {}
       cpu = jax.local_devices(backend="cpu")[0]
