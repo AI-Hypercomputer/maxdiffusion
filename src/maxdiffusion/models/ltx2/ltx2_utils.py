@@ -410,6 +410,8 @@ def rename_for_ltx2_connector(key):
         # Handle FF
         key = key.replace("ff.net.0.proj", "ff.proj1")
         key = key.replace("ff.net.2", "ff.proj2")
+        # Handle to_out
+        key = key.replace("to_out.0", "to_out")
         
     # Validation/Weight suffix
     if key.endswith(".weight"):
