@@ -339,21 +339,15 @@ def load_vae_weights(
                    flax_state_dict[flax_key] = flax_tensor
           else:
               flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
-          
-
-
-      # Filter out non-parameter keys for validation
       filtered_eval_shapes = {}
       for k, v in flattened_eval.items():
-          # flax key is a tuple of strings/ints
           k_str = [str(x) for x in k]
           if "dropout" in k_str or "rngs" in k_str:
               continue
           filtered_eval_shapes[k] = v
 
       print(f"Total VAE keys loaded: {len(flax_state_dict)}")
-      
-      # Unflatten to pass to validate_flax_state_dict which expects a pytree
+
       validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)
       del tensors
