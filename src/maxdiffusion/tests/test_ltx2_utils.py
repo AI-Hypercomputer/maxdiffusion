@@ -89,8 +89,15 @@ class LTX2UtilsTest(unittest.TestCase):
                 in_channels=3,
                 out_channels=3,
                 latent_channels=128,
-                block_out_channels=(128, 256, 512, 512),
-                layers_per_block=(4, 3, 3, 3, 4),
+                block_out_channels=(256, 512, 1024, 2048),
+                decoder_block_out_channels=(256, 512, 1024),
+                layers_per_block=(4, 6, 6, 2, 2),
+                decoder_layers_per_block=(5, 5, 5, 5),
+                spatio_temporal_scaling=(True, True, True, True),
+                decoder_spatio_temporal_scaling=(True, True, True),
+                decoder_inject_noise=(False, False, False, False),
+                downsample_type=("spatial", "temporal", "spatiotemporal", "spatiotemporal"),
+                upsample_residual=(True, True, True),
                 upsample_factor=(2, 2, 2)
              )
              
