@@ -89,8 +89,8 @@ class LTX2UtilsTest(unittest.TestCase):
                 in_channels=3,
                 out_channels=3,
                 latent_channels=128,
-                block_out_channels=(256, 512, 1024, 2048),
-                layers_per_block=(4, 6, 6, 2, 2), # Matches 2.0
+                block_out_channels=(128, 256, 512, 512),
+                layers_per_block=(4, 3, 3, 3, 4),
                 upsample_factor=(2, 2, 2)
              )
              
