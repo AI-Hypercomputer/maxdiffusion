@@ -18,7 +18,8 @@ def inspect_structure():
         decoder_inject_noise=(False, False),
         downsample_type=("spatial", "temporal"),
         upsample_residual=(True, True),
-        upsample_factor=(2, 2)
+        upsample_factor=(2, 2),
+        rngs=nnx.Rngs(0)
     )
     
     state = nnx.state(model)
