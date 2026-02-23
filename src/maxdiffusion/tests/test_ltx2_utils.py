@@ -122,7 +122,8 @@ class LTX2UtilsTest(unittest.TestCase):
                 continue
             filtered_eval_shapes[k] = v
             
-        validate_flax_state_dict(filtered_eval_shapes, flatten_dict(loaded_weights))
+        from flax.traverse_util import unflatten_dict
+        validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flatten_dict(loaded_weights))
         print("VAE Weights Validated Successfully!")
 
 if __name__ == "__main__":
