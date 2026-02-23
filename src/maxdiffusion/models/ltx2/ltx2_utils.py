@@ -336,7 +336,7 @@ def load_transformer_weights(
     for k in list(random_flax_state_dict.keys()):
         k_str = str(k)
         if "transformer_blocks" in k_str and ("attn1" in k_str or "ff" in k_str):
-             # print(f"EVAL_SHAPE: {k}") # Comment out to reduce noise, we know they exist
+             print(f"EVAL_SHAPE: {k}")
              pass
         
     for pt_key, tensor in tensors.items():
