@@ -266,9 +266,16 @@ def load_vae_weights(
       flattened_eval = flatten_dict(eval_shapes)
       
       random_flax_state_dict = {}
+      print(f"DEBUG: eval_shapes length (flattened): {len(flattened_eval)}")
+      sample_target_found = False
       for key in flattened_eval:
           string_tuple = tuple([str(item) for item in key])
           random_flax_state_dict[string_tuple] = flattened_eval[key]
+          
+          if not sample_target_found and "decoder" in string_tuple and "up_blocks" in string_tuple and "0" in string_tuple and "resnets" in string_tuple and "2" in string_tuple and "conv2" in string_tuple:
+               print(f"DEBUG: Found target key in eval_shapes: {key}")
+               print(f"DEBUG: Key types: {[type(x) for x in key]}")
+               sample_target_found = True
             
       for pt_key, tensor in tensors.items():
           renamed_pt_key = rename_key(pt_key)
