@@ -292,7 +292,7 @@ def load_vae_weights(
                   
                   if name == "resnets":
                       pt_list.append("resnets")
-                      pt_list.append(str(idx))
+                      resnet_index = idx
                   elif name == "upsamplers":
                       pt_list.append("upsampler")
                   elif name in ["down_blocks", "up_blocks", "downsamplers"]:
@@ -302,7 +302,7 @@ def load_vae_weights(
                       pt_list.append(part)
               elif part == "upsampler":
                   pt_list.append("upsampler") 
-              elif part in ["conv1", "conv2", "conv"]:
+              elif part in ["conv1", "conv2", "conv", "conv_in", "conv_out"]:
                   pt_list.append(part)
                   if i + 1 < len(pt_tuple_key) and pt_tuple_key[i+1] == "conv":
                       pass
