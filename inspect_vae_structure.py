@@ -15,10 +15,10 @@ def inspect_structure():
         decoder_layers_per_block=(1, 1, 1), 
         spatio_temporal_scaling=(True, True),
         decoder_spatio_temporal_scaling=(True, True),
-        decoder_inject_noise=(False, False),
-        downsample_type=("spatial", "temporal"),
-        upsample_residual=(True, True),
-        upsample_factor=(2, 2),
+        decoder_inject_noise=(False, False, False),
+        downsample_type=("spatial", "temporal", "spatial"),
+        upsample_residual=(True, True, True),
+        upsample_factor=(2, 2, 2),
         rngs=nnx.Rngs(0)
     )
     
