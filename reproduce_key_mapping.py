@@ -48,13 +48,14 @@ for pt_key in checkpoint_keys:
     print(f"Tuple Key: {pt_tuple_key}")
     
     # 3. get_key_and_value
-    # We need dummy tensor
-    dummy_tensor = torch.zeros((10, 10))
+    # We need dummy tensor (JAX array)
+    import jax.numpy as jnp
+    dummy_tensor = jnp.zeros((128, 128), dtype=jnp.float32)
     flax_state_dict = {} # Mock
     
     # Need to simulate scan_layers=True
     scan_layers = True
-    num_layers = 48
+    num_layers = 1 # Use 1 for debug
     
     flax_key, flax_tensor = get_key_and_value(
         pt_tuple_key, dummy_tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
