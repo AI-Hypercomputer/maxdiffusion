@@ -374,6 +374,7 @@ def load_vocoder_weights(
   for pt_key, tensor in tensors.items():
       # Initial renaming
       key = rename_for_ltx2_vocoder(pt_key)
+      print(f"DEBUG: Processing key: {pt_key} -> {key}")
       parts = key.split(".")
       
       flax_key_parts = []
