@@ -346,8 +346,6 @@ def load_vae_weights(
               continue
           filtered_eval_shapes[k] = v
 
-      print(f"Total VAE keys loaded: {len(flax_state_dict)}")
-
       validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)
       del tensors
