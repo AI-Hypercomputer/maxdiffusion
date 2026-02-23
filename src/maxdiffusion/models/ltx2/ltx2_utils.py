@@ -340,6 +340,9 @@ def load_vae_weights(
           else:
               flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
           
+          # print(f"Loaded VAE Key: {flax_key}")
+
+      print(f"Total VAE keys loaded: {len(flax_state_dict)}")
       validate_flax_state_dict(eval_shapes, flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)
       del tensors

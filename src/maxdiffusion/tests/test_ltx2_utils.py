@@ -108,7 +108,8 @@ class LTX2UtilsTest(unittest.TestCase):
         print("Validating VAE Weights...")
         # Filter out dropout/rngs keys from eval_shapes as they are not expected in weights
         filtered_eval_shapes = {}
-        for k, v in eval_shapes.items():
+        flat_eval_shapes = flatten_dict(eval_shapes)
+        for k, v in flat_eval_shapes.items():
             k_str = [str(x) for x in k]
             if "dropout" in k_str or "rngs" in k_str:
                 continue
