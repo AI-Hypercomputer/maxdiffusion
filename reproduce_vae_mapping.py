@@ -78,11 +78,10 @@ def test_vae_key(pt_key):
     print(f"Final Flax Key: {flax_key}")
 
 if __name__ == "__main__":
-    # Test cases from missing keys log
+    # Test cases from inspection (WITH .conv.)
     test_keys = [
-        "decoder.up_blocks.1.resnets.1.conv1.weight",
-        "encoder.down_blocks.0.resnets.0.conv1.weight",
-        "decoder.mid_block.resnets.0.conv1.weight", # Example guessing structure
+        "decoder.up_blocks.0.resnets.2.conv2.conv.weight",
+        "decoder.mid_block.resnets.0.conv1.conv.weight",
     ]
     
     for k in test_keys:
