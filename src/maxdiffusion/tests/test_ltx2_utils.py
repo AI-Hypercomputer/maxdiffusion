@@ -104,7 +104,8 @@ class LTX2UtilsTest(unittest.TestCase):
         )
         
         print("Validating Transformer Weights...")
-        validate_flax_state_dict(eval_shapes, loaded_weights)
+        from flax.traverse_util import flatten_dict
+        validate_flax_state_dict(eval_shapes, flatten_dict(loaded_weights))
         print("Transformer Weights Validated Successfully!")
 
     def test_load_vae_weights(self):
@@ -142,7 +143,7 @@ class LTX2UtilsTest(unittest.TestCase):
                 continue
             filtered_eval_shapes[k] = v
             
-        validate_flax_state_dict(filtered_eval_shapes, loaded_weights)
+        validate_flax_state_dict(filtered_eval_shapes, flatten_dict(loaded_weights))
         print("VAE Weights Validated Successfully!")
 
 if __name__ == "__main__":
