@@ -372,7 +372,6 @@ def load_vocoder_weights(
   cpu = jax.local_devices(backend="cpu")[0]
 
   for pt_key, tensor in tensors.items():
-      # Initial renaming
       key = rename_for_ltx2_vocoder(pt_key)
       parts = key.split(".")
       
@@ -388,13 +387,10 @@ def load_vocoder_weights(
       
       flax_key = tuple(flax_key_parts)
       
-      # Transpose weights
       if flax_key[-1] == "kernel":
            if "upsamplers" in flax_key:
-               # ConvTranspose: (In, Out, K) -> (K, In, Out)
                tensor = tensor.transpose(2, 0, 1)
            else:
-               # Conv: (Out, In, K) -> (K, In, Out)
                tensor = tensor.transpose(2, 1, 0)
                
       flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
