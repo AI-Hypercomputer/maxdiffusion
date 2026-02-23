@@ -22,11 +22,13 @@ import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+from jax import tree_util
 from flax.core.frozen_dict import FrozenDict
 
 from ..configuration_utils import ConfigMixin, flax_register_to_config
 from ..utils import BaseOutput
 from .modeling_flax_utils import FlaxModelMixin
+ 
 
 
 @flax.struct.dataclass
@@ -931,3 +933,29 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
       return (sample,)
 
     return FlaxDecoderOutput(sample=sample)
+
+class WanDiagonalGaussianDistribution(FlaxDiagonalGaussianDistribution):
+  pass
+
+
+def _wan_diag_gauss_dist_flatten(dist):
+  return (dist.mean, dist.logvar, dist.std, dist.var), (dist.deterministic,)
+
+
+def _wan_diag_gauss_dist_unflatten(aux, children):
+  mean, logvar, std, var = children
+  deterministic = aux[0]
+  obj = WanDiagonalGaussianDistribution.__new__(WanDiagonalGaussianDistribution)
+  obj.mean = mean
+  obj.logvar = logvar
+  obj.std = std
+  obj.var = var
+  obj.deterministic = deterministic
+  return obj
+
+
+tree_util.register_pytree_node(
+    WanDiagonalGaussianDistribution,
+    _wan_diag_gauss_dist_flatten,
+    _wan_diag_gauss_dist_unflatten,
+)

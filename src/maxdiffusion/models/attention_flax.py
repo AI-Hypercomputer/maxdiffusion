@@ -334,7 +334,7 @@ def _tpu_flash_attention(
           mask=mask,
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
           config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
-          save_residuals=True if "ring" in attention_kernel else False,
+          save_residuals=False,
       )
     elif attention_kernel == "tokamax_ring":
       mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
@@ -342,7 +342,7 @@ def _tpu_flash_attention(
           mask=mask,
           is_mqa=False,
           config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
-          save_residuals=True,
+          save_residuals=False,
           ring_axis="fsdp",
       )
     else:
