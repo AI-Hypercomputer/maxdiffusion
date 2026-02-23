@@ -52,6 +52,8 @@ MaxDiffusion supports
 * Wan2.1 text2vid (training and inference).
 * Wan2.2 text2vid (inference).
 
+**Note on GPU Support:** GPU support is not actively maintained, but contributions are welcome
+
 
 # Table of Contents
 
