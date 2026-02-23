@@ -353,7 +353,7 @@ def load_vae_weights(
       return flax_state_dict
 
 def rename_for_ltx2_vocoder(key):
-    key = key.replace("ups", "upsamplers")
+    key = key.replace("ups.", "upsamplers.")
     key = key.replace("resblocks", "resnets")
     key = key.replace("conv_post", "conv_out")
     return key
