@@ -11,6 +11,7 @@ def inspect_structure():
         out_channels=3,
         latent_channels=128,
         block_out_channels=(8, 16),
+        decoder_block_out_channels=(8, 16),
         layers_per_block=(1, 1, 1),
         decoder_layers_per_block=(1, 1, 1), 
         spatio_temporal_scaling=(True, True),
