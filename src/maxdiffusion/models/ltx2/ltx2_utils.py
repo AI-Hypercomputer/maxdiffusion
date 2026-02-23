@@ -340,7 +340,8 @@ def load_vae_weights(
           else:
               flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
           
-          # print(f"Loaded VAE Key: {flax_key}")
+          if "decoder" in flax_key_str and "up_blocks" in flax_key_str and "0" in flax_key_str and "resnets" in flax_key_str and "2" in flax_key_str and "conv2" in flax_key_str:
+              print(f"DEBUG: Processing target key. Final flax_key: {flax_key}")
 
       print(f"Total VAE keys loaded: {len(flax_state_dict)}")
       validate_flax_state_dict(eval_shapes, flax_state_dict)
