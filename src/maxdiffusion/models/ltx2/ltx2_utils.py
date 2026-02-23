@@ -354,3 +354,53 @@ def load_vae_weights(
       jax.clear_caches()
       return flax_state_dict
 
+def rename_for_ltx2_vocoder(key):
+    key = key.replace("ups", "upsamplers")
+    key = key.replace("resblocks", "resnets")
+    key = key.replace("conv_post", "conv_out")
+    return key
+
+
+def load_vocoder_weights(
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    subfolder: str = "vocoder"
+):
+  tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
+  
+  flax_state_dict = {}
+  cpu = jax.local_devices(backend="cpu")[0]
+
+  for pt_key, tensor in tensors.items():
+      # Initial renaming
+      key = rename_for_ltx2_vocoder(pt_key)
+      parts = key.split(".")
+      
+      flax_key_parts = []
+      for part in parts:
+          if part.isdigit():
+              flax_key_parts.append(int(part))
+          else:
+              flax_key_parts.append(part)
+              
+      if flax_key_parts[-1] == "weight":
+          flax_key_parts[-1] = "kernel"
+      
+      flax_key = tuple(flax_key_parts)
+      
+      # Transpose weights
+      if flax_key[-1] == "kernel":
+           if "upsamplers" in flax_key:
+               # ConvTranspose: (In, Out, K) -> (K, In, Out)
+               tensor = tensor.transpose(2, 0, 1)
+           else:
+               # Conv: (Out, In, K) -> (K, In, Out)
+               tensor = tensor.transpose(2, 1, 0)
+               
+      flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
+      
+  validate_flax_state_dict(eval_shapes, flax_state_dict)
+  return unflatten_dict(flax_state_dict)
+

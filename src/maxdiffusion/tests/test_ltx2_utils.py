@@ -113,7 +113,6 @@ class LTX2UtilsTest(unittest.TestCase):
         )
         
         print("Validating VAE Weights...")
-        # Filter out dropout/rngs keys from eval_shapes as they are not expected in weights
         filtered_eval_shapes = {}
         flat_eval_shapes = flatten_dict(eval_shapes)
         for k, v in flat_eval_shapes.items():
@@ -125,6 +124,80 @@ class LTX2UtilsTest(unittest.TestCase):
         from flax.traverse_util import unflatten_dict
         validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flatten_dict(loaded_weights))
         print("VAE Weights Validated Successfully!")
+
+    def test_load_vocoder_weights(self):
+        from maxdiffusion.models.ltx2.vocoder_ltx2 import LTX2Vocoder
+        from unittest import mock
+        import torch
+        from maxdiffusion.models.ltx2.ltx2_utils import load_vocoder_weights
+        
+        config = {
+          "hidden_channels": 1024,
+          "in_channels": 128,
+          "leaky_relu_negative_slope": 0.1,
+          "out_channels": 2,
+          "resnet_dilations": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+          "resnet_kernel_sizes": [3, 7, 11],
+          "upsample_factors": [6, 5, 2, 2, 2],
+          "upsample_kernel_sizes": [16, 15, 8, 4, 4],
+          "rngs": nnx.Rngs(0)
+        }
+        with jax.default_device(jax.devices("cpu")[0]):
+            model = LTX2Vocoder(**config)
+        state = nnx.state(model)
+        eval_shapes = state.to_pure_dict()
+        
+        # Create dummy PyTorch weights
+        pt_weights = {}
+        flat_shapes = flatten_dict(eval_shapes)
+        
+        for key, value in flat_shapes.items():
+            # key is tuple of strings/ints, e.g. ('conv_in', 'kernel')
+            # Map to PyTorch key
+            pt_key_parts = []
+            is_upsampler = "upsamplers" in [str(k) for k in key]
+            is_kernel = False
+            
+            for part in key:
+                if str(part) == "upsamplers":
+                    pt_key_parts.append("ups")
+                elif str(part) == "resnets":
+                    pt_key_parts.append("resblocks")
+                elif str(part) == "conv_out":
+                    pt_key_parts.append("conv_post")
+                elif str(part) == "kernel":
+                    pt_key_parts.append("weight")
+                    is_kernel = True
+                else:
+                    pt_key_parts.append(str(part))
+            
+            pt_key = ".".join(pt_key_parts)
+            
+            # Create tensor with PyTorch shape
+            shape = value.shape
+            if is_kernel:
+                if is_upsampler:
+                    # Flax (K, I, O) -> PyTorch (I, O, K)
+                    pt_shape = (shape[1], shape[2], shape[0])
+                else:
+                    # Flax (K, I, O) -> PyTorch (O, I, K)
+                    pt_shape = (shape[2], shape[1], shape[0])
+            else:
+                pt_shape = shape
+                
+            pt_weights[pt_key] = torch.randn(pt_shape)
+
+        with mock.patch("maxdiffusion.models.ltx2.ltx2_utils.load_sharded_checkpoint", return_value=pt_weights):
+            loaded_weights = load_vocoder_weights(
+                pretrained_model_name_or_path="dummy",
+                eval_shapes=eval_shapes,
+                device=self.device,
+                hf_download=False
+            )
+            
+        # Validate
+        validate_flax_state_dict(eval_shapes, flatten_dict(loaded_weights))
+        print("Vocoder Weights Validated Successfully!")
 
 if __name__ == "__main__":
     unittest.main()
