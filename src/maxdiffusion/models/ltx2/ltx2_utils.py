@@ -490,8 +490,10 @@ def rename_for_ltx2_audio_vae(key):
     # Standard VAE renaming (resblocks -> resnets, ups -> upsamplers)
     key = key.replace("resblocks", "resnets")
     key = key.replace("ups", "upsamplers")
-    key = key.replace("conv_shortcut.weight", "conv_shortcut_layer.kernel")
-    key = key.replace("conv_shortcut.bias", "conv_shortcut_layer.bias")
+    
+    # conv_shortcut -> conv_shortcut_layer.conv (Causal)
+    key = key.replace("conv_shortcut.weight", "conv_shortcut_layer.conv.kernel")
+    key = key.replace("conv_shortcut.bias", "conv_shortcut_layer.conv.bias")
     
     # Handle q, k, v, proj_out in AttnBlock
     if "q.weight" in key: key = key.replace("q.weight", "q.kernel")
@@ -503,6 +505,24 @@ def rename_for_ltx2_audio_vae(key):
     if key.endswith(".weight") and "conv" in key:
         key = key.replace(".weight", ".kernel")
         
+    # Inject .conv for CausalConvs
+    # Layers: conv1, conv2, conv_in, conv_out
+    # These become conv1.conv.kernel etc.
+    causal_layers = ["conv1", "conv2", "conv_in", "conv_out"]
+    for layer in causal_layers:
+         if f"{layer}.kernel" in key:
+             key = key.replace(f"{layer}.kernel", f"{layer}.conv.kernel")
+         if f"{layer}.bias" in key:
+             key = key.replace(f"{layer}.bias", f"{layer}.conv.bias")
+
+    # Special handling for upsample.conv (wrapped) vs downsample.conv (not wrapped)
+    # upsamplers.0.conv -> upsample.conv.conv
+    # We do this BEFORE the loop renames upsamplers.0 -> upsample
+    if "upsamplers" in key and ".conv.kernel" in key:
+         key = key.replace(".conv.kernel", ".conv.conv.kernel")
+    if "upsamplers" in key and ".conv.bias" in key:
+         key = key.replace(".conv.bias", ".conv.conv.bias")
+
     return key
 
 
@@ -527,9 +547,6 @@ def load_audio_vae_weights(
         key = rename_for_ltx2_audio_vae(pt_key)
         
         # Determine if we need to transpose (Conv weights: OHWI -> HWIO)
-        # PyTorch Conv2d: (Out, In, H, W) -> Flax: (H, W, In, Out)
-        # However, for 1x1 convs (like q, k, v), it might be (Out, In, 1, 1) -> (1, 1, In, Out)
-        
         should_transpose = False
         if key.endswith(".kernel"):
              if tensor.ndim == 4:
@@ -540,7 +557,6 @@ def load_audio_vae_weights(
             
         # Handle special keys: latents_mean, latents_std
         if "latents_mean" in key:
-            # PyTorch: [C], Flax: [C] (Buffer)
             pass 
         if "latents_std" in key:
             pass
@@ -556,38 +572,20 @@ def load_audio_vae_weights(
         
         flax_key = tuple(flax_key_parts)
         
-        # Handle resnet nesting (down_blocks.0.resnets.0...)
-        # LTX-2 Audio VAE structure in Flax might be slightly different if not using List
-        # But we used nnx.List in the implementation, so it should match mostly.
-        # Let's check against random_flax_state_dict if possible or rely on structure.
-        
-        # Special handling for "mid_block" which in PT might be "mid_block.resnets.0" 
-        # but in our Flax implementation is "mid_block1", "mid_block2"
-        
         if "mid_block" in pt_key:
-            # PT: mid_block.resnets.0 -> Flax: mid_block1
-            # PT: mid_block.attentions.0 -> Flax: mid_attn
-            # PT: mid_block.resnets.1 -> Flax: mid_block2
-            
-            new_flax_key_parts = list(flax_key)
-            if "resnets" in new_flax_key_parts:
-                idx = new_flax_key_parts[new_flax_key_parts.index("resnets") + 1]
-                if idx == 0:
-                     # Replace 'mid_block', 'resnets', 0 with 'mid_block1'
-                     # Warning: This is a bit fragile.
-                     pass
-            
-            # Actually, let's map explicitly based on known structure
             if "mid_block.resnets.0" in pt_key:
-                # mid_block.resnets.0.conv1.weight -> mid_block1.conv1.kernel
-                key = key.replace("mid_block.resnets.0", "mid_block1")
+                flax_key_str = ".".join([str(x) for x in flax_key])
+                flax_key_str = flax_key_str.replace("mid_block.resnets.0", "mid_block1")
             elif "mid_block.resnets.1" in pt_key:
-                key = key.replace("mid_block.resnets.1", "mid_block2")
+                flax_key_str = ".".join([str(x) for x in flax_key])
+                flax_key_str = flax_key_str.replace("mid_block.resnets.1", "mid_block2")
             elif "mid_block.attentions.0" in pt_key:
-                key = key.replace("mid_block.attentions.0", "mid_attn")
+                flax_key_str = ".".join([str(x) for x in flax_key])
+                flax_key_str = flax_key_str.replace("mid_block.attentions.0", "mid_attn")
+            else:
+                flax_key_str = ".".join([str(x) for x in flax_key])
                 
-            # Re-split after mid_block renaming
-            parts = key.split(".")
+            parts = flax_key_str.split(".")
             flax_key_parts = []
             for part in parts:
                 if part.isdigit():
@@ -596,26 +594,19 @@ def load_audio_vae_weights(
                     flax_key_parts.append(part)
             flax_key = tuple(flax_key_parts)
 
-        # Handle down_blocks / up_blocks
-        # PT: down_blocks.0.resnets.0 -> Flax: down_stages.0.blocks.0
-        # PT: down_blocks.0.attentions.0 -> Flax: down_stages.0.attentions.0
-        # PT: down_blocks.0.downsamplers.0 -> Flax: down_stages.0.downsample
-        
         if "down_blocks" in key:
-            # down_blocks.0.resnets.0 -> down_stages.0.blocks.0
-             if "resnets" in key:
-                 key = key.replace("down_blocks", "down_stages")
-                 key = key.replace("resnets", "blocks")
-             elif "attentions" in key:
-                 key = key.replace("down_blocks", "down_stages")
-                 key = key.replace("attentions", "attns")
-             elif "downsamplers" in key:
-                 key = key.replace("down_blocks", "down_stages")
-                 # downsamplers.0 -> downsample (since we have one downsample per stage)
-                 key = key.replace("downsamplers.0", "downsample")
+             key_str = ".".join([str(x) for x in flax_key])
+             if "resnets" in key_str:
+                 key_str = key_str.replace("down_blocks", "down_stages")
+                 key_str = key_str.replace("resnets", "blocks")
+             elif "attentions" in key_str:
+                 key_str = key_str.replace("down_blocks", "down_stages")
+                 key_str = key_str.replace("attentions", "attns")
+             elif "downsamplers" in key_str:
+                 key_str = key_str.replace("down_blocks", "down_stages")
+                 key_str = key_str.replace("downsamplers.0", "downsample")
              
-             # Re-split
-             parts = key.split(".")
+             parts = key_str.split(".")
              flax_key_parts = []
              for part in parts:
                 if part.isdigit():
@@ -625,29 +616,18 @@ def load_audio_vae_weights(
              flax_key = tuple(flax_key_parts)
 
         if "up_blocks" in key:
-             # up_blocks.0.resnets.0 -> up_stages.0.blocks.0
-             # Note: PT up_blocks are usually reversed compared to simple iteration, but 
-             # in Diffusers they correspond to levels.
-             # Flax implementation: `up_stages` list iterates reversed(range(len(ch_mult)))
-             # so up_stages[0] corresponds to the deepest resolution? 
-             # LTX-2 Audio VAE implementation:
-             # for level in reversed(range(len(self.ch_mult))): ... self.up_stages.append(...)
-             # So up_stages[0] is the first upsample stage (lowest res -> higher res).
-             # Diffusers `up_blocks` usually go 0, 1, 2...
-             # So it should be a direct mapping if existing logic holds.
-             
-             if "resnets" in key:
-                 key = key.replace("up_blocks", "up_stages")
-                 key = key.replace("resnets", "blocks")
-             elif "attentions" in key:
-                 key = key.replace("up_blocks", "up_stages")
-                 key = key.replace("attentions", "attns")
-             elif "upsamplers" in key:
-                 key = key.replace("up_blocks", "up_stages")
-                 key = key.replace("upsamplers.0", "upsample")
+             key_str = ".".join([str(x) for x in flax_key])
+             if "resnets" in key_str:
+                 key_str = key_str.replace("up_blocks", "up_stages")
+                 key_str = key_str.replace("resnets", "blocks")
+             elif "attentions" in key_str:
+                 key_str = key_str.replace("up_blocks", "up_stages")
+                 key_str = key_str.replace("attentions", "attns")
+             elif "upsamplers" in key_str:
+                 key_str = key_str.replace("up_blocks", "up_stages")
+                 key_str = key_str.replace("upsamplers.0", "upsample")
                  
-             # Re-split
-             parts = key.split(".")
+             parts = key_str.split(".")
              flax_key_parts = []
              for part in parts:
                 if part.isdigit():
@@ -662,7 +642,12 @@ def load_audio_vae_weights(
     filtered_eval_shapes = {}
     for k, v in flattened_eval.items():
           k_str = [str(x) for x in k]
-          if "dropout" in k_str or "rngs" in k_str:
+          is_stat = False
+          for ks in k_str:
+              if "dropout" in ks or "rngs" in ks:
+                  is_stat = True
+                  break
+          if is_stat:
               continue
           filtered_eval_shapes[k] = v
 
