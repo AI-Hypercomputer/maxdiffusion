@@ -272,6 +272,7 @@ def load_vae_weights(
             
       for pt_key, tensor in tensors.items():
           renamed_pt_key = rename_key(pt_key)
+          renamed_pt_key = renamed_pt_key.replace("nin_shortcut", "conv_shortcut")
           
           pt_tuple_key = tuple(renamed_pt_key.split("."))
           
@@ -295,7 +296,7 @@ def load_vae_weights(
                       pt_list.append(part)
               elif part == "upsampler":
                   pt_list.append("upsampler") 
-              elif part in ["conv1", "conv2", "conv", "conv_in", "conv_out"]:
+              elif part in ["conv1", "conv2", "conv", "conv_in", "conv_out", "conv_shortcut"]:
                   pt_list.append(part)
                   if i + 1 < len(pt_tuple_key) and pt_tuple_key[i+1] == "conv":
                       pass
@@ -316,8 +317,6 @@ def load_vae_weights(
           flax_key = _tuple_str_to_int(flax_key)
           
           flax_key_str = [str(x) for x in flax_key]
-          if "conv" in flax_key_str or "bias" in flax_key_str:
-              pass
 
           if resnet_index is not None:
               if flax_key in flax_state_dict:
