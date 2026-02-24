@@ -107,6 +107,15 @@ class LTX2PipelineTest(unittest.TestCase):
                 normalization_layer_epsilon = 1e-6
                 scan_layers = False
                 param_scan_axis = 1
+                max_prefill_predict_length = 512
+                per_device_batch_size = 1
+                max_target_length = 512
+                rope_min_timescale = 1
+                rope_max_timescale = 10000
+                rope_type = "interleaved"
+                rope_embedding_dims = 16
+                rope_use_scale = False
+                shard_mode = "auto"
                 
             self.text_encoder = MaxTextGemma3FeatureExtractor(
                 config=MockConfig(),
