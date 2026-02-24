@@ -7,7 +7,7 @@ from maxdiffusion.models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DMode
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from maxdiffusion.models.ltx2.ltx2_utils import load_transformer_weights, load_vae_weights
 from maxdiffusion.models.modeling_flax_pytorch_utils import validate_flax_state_dict
-from flax.traverse_util import flatten_dict
+from flax.traverse_util import flatten_dict, unflatten_dict
 
 class LTX2VideoConfig:
     def __init__(self):
