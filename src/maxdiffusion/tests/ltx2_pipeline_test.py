@@ -85,8 +85,33 @@ class LTX2PipelineTest(unittest.TestCase):
             rngs=self.rng
         )
         
-        # Mock Gemma3
-        self.text_encoder = MockGemma3()
+        # MaxText Gemma3 Feature Extractor
+        self.devices_array = np.array(jax.devices())
+        self.mesh = jax.sharding.Mesh(self.devices_array.reshape(1, -1), ('data', 'model'))
+        
+        try:
+            from maxdiffusion.pipelines.ltx2.ltx2_pipeline import MaxTextGemma3FeatureExtractor
+            # Partial mock for config if needed
+            class MockConfig:
+                vocab_size = 32000
+                emb_dim = 16
+                num_layers = 5
+                num_heads = 2
+                head_dim = 8
+                mlp_dim = 32
+                dtype = jnp.float32
+                weights_dtype = jnp.float32
+                use_iota_embed = False
+                
+            self.text_encoder = MaxTextGemma3FeatureExtractor(
+                config=MockConfig(),
+                mesh=self.mesh,
+                quant=None,
+                rngs=self.rng
+            )
+        except ImportError:
+            self.text_encoder = None
+            print("MaxText not found, text_encoder set to None")
         
         # Scheduler
         self.scheduler = FlaxFlowMatchScheduler(num_train_timesteps=10)
@@ -98,10 +123,8 @@ class LTX2PipelineTest(unittest.TestCase):
         # Config (Dummy)
         self.config = HyperParameters()
         
-        # Test Mesh
-        devices = jax.devices()
-        self.mesh = jax.sharding.Mesh(np.array(devices).reshape(1, -1), ('data', 'model'))
-        self.devices_array = np.array(devices)
+        # Test Mesh (Already defined above)
+
 
     def test_pipeline_initialization(self):
         pipeline = LTX2Pipeline(
