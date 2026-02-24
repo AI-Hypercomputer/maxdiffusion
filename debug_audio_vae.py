@@ -63,8 +63,9 @@ def debug_keys():
     tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, "cpu")
     pt_keys = list(tensors.keys())
     
-    print("\nSample PyTorch Keys (Original):")
-    for k in pt_keys[:20]:
+    print("\nDecoder Up Block Keys:")
+    up_keys = [k for k in pt_keys if "decoder.up" in k]
+    for k in up_keys:
         print(k)
         
     print("\nSample Encoder Keys:")
