@@ -565,6 +565,23 @@ def load_audio_vae_weights(
         
         flax_key = tuple(flax_key_parts)
              
+        # Reverse up_stages indices if present
+        if "up_stages" in flax_key:
+             # Find index of 'up_stages'
+             try:
+                 up_stages_idx = flax_key.index("up_stages")
+                 # The integer index follows "up_stages"
+                 if up_stages_idx + 1 < len(flax_key):
+                     stage_idx = flax_key[up_stages_idx + 1]
+                     if isinstance(stage_idx, int):
+                         # Assuming 3 stages (0, 1, 2)
+                         # Map 0 -> 2, 1 -> 1, 2 -> 0
+                         new_stage_idx = 2 - stage_idx
+                         flax_key_parts[up_stages_idx + 1] = new_stage_idx
+                         flax_key = tuple(flax_key_parts)
+             except ValueError:
+                 pass
+
         flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 
     # Filter eval shapes to remove rngs/dropout
