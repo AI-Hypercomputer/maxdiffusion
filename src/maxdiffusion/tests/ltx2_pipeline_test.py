@@ -101,6 +101,7 @@ class LTX2PipelineTest(unittest.TestCase):
                 mlp_dim = 32
                 dtype = jnp.float32
                 weights_dtype = jnp.float32
+                weight_dtype = jnp.float32
                 use_iota_embed = False
                 
             self.text_encoder = MaxTextGemma3FeatureExtractor(
