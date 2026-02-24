@@ -70,7 +70,7 @@ class LTX2PipelineTest(unittest.TestCase):
             out_channels=3,
             latent_channels=4,
             block_out_channels=(8,),
-            layers_per_block=1,
+            layers_per_block=(1,),
             rngs=self.rng
         )
         
