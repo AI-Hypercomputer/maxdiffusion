@@ -602,16 +602,40 @@ def load_audio_vae_weights(
     print(f"DEBUG: Initial eval_shapes count: {len(flattened_eval)}")
     print(f"DEBUG: Filtered eval_shapes count: {len(filtered_eval_shapes)}")
     
-    # Check if any rngs remain
+    # Check if any rngs remain in filtered
     rngs_count = 0
     for k in filtered_eval_shapes:
         k_str = [str(x) for x in k]
         for ks in k_str:
             if "rngs" in ks or "dropout" in ks:
                  rngs_count += 1
-                 print(f"DEBUG: Found unexpected rng/dropout key in filtered: {k}")
                  break
-    print(f"DEBUG: Remaining rngs/dropout keys: {rngs_count}")
+    print(f"DEBUG: Remaining rngs/dropout keys in Expected: {rngs_count}")
+
+    # Check flax_state_dict for rngs (New)
+    rngs_new_count = 0
+    for k in flax_state_dict:
+        k_str = [str(x) for x in k]
+        for ks in k_str:
+            if "rngs" in ks or "dropout" in ks:
+                 rngs_new_count += 1
+                 break
+    print(f"DEBUG: rngs/dropout keys in New (loaded): {rngs_new_count}")
+
+    # Explicit Set Diffs
+    expected_keys = set(filtered_eval_shapes.keys())
+    new_keys = set(flax_state_dict.keys())
+    
+    missing_keys = expected_keys - new_keys
+    extra_keys = new_keys - expected_keys
+    
+    print(f"DEBUG: Truly Missing Keys (in Expected but not New): {len(missing_keys)}")
+    if len(missing_keys) > 0:
+        print(f"DEBUG: Sample Missing: {list(missing_keys)[:5]}")
+        
+    print(f"DEBUG: Truly Extra Keys (in New but not Expected): {len(extra_keys)}")
+    if len(extra_keys) > 0:
+        print(f"DEBUG: Sample Extra: {list(extra_keys)[:5]}")
 
     validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
     return unflatten_dict(flax_state_dict)
