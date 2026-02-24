@@ -133,6 +133,7 @@ class LTX2PipelineTest(unittest.TestCase):
                 quantize_kvcache = False
                 decoder_block = common_types.DecoderBlockType.GEMMA3
                 use_chunked_prefill = False
+                attention_type = "dot_product"
                 
             self.text_encoder = MaxTextGemma3FeatureExtractor(
                 config=MockConfig(),
