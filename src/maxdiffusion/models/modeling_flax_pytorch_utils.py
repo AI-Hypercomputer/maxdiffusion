@@ -36,17 +36,6 @@ def validate_flax_state_dict(expected_pytree: dict, new_pytree: dict):
   new_pytree: dict - a pytree that has been created from pytorch weights.
   """
   expected_pytree = flatten_dict(expected_pytree)
-  
-  # DEBUG PRINTS
-  print(f"DEBUG: validate_flax_state_dict called.")
-  print(f"DEBUG: expected_pytree keys: {len(expected_pytree)}")
-  print(f"DEBUG: new_pytree keys: {len(new_pytree)}")
-  
-  dropout_in_expected = [k for k in expected_pytree.keys() if "dropout" in str(k)]
-  print(f"DEBUG: dropout keys in expected_pytree: {len(dropout_in_expected)}")
-  
-  dropout_in_new = [k for k in new_pytree.keys() if "dropout" in str(k)]
-  print(f"DEBUG: dropout keys in new_pytree: {len(dropout_in_new)}")
 
   if len(expected_pytree.keys()) != len(new_pytree.keys()):
     set1 = set(expected_pytree.keys())
