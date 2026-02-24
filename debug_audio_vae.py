@@ -236,7 +236,7 @@ def debug_keys():
 
     # Also check if validation function itself is behaving as expected
     from flax.traverse_util import unflatten_dict, flatten_dict
-    from maxdiffusion.modeling_flax_pytorch_utils import validate_flax_state_dict
+    from maxdiffusion.models.modeling_flax_pytorch_utils import validate_flax_state_dict
     
     # Construct a dummy flax_state_dict with only the keys we found
     # We need to map our final_keys back to a dict

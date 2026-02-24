@@ -577,6 +577,8 @@ def load_audio_vae_weights(
                          # Assuming 3 stages (0, 1, 2)
                          # Map 0 -> 2, 1 -> 1, 2 -> 0
                          new_stage_idx = 2 - stage_idx
+                         if "upsample" in flax_key:
+                              print(f"DEBUG REVERSAL: {flax_key} -> stage_idx={stage_idx} -> new={new_stage_idx}")
                          flax_key_parts[up_stages_idx + 1] = new_stage_idx
                          flax_key = tuple(flax_key_parts)
              except ValueError:
