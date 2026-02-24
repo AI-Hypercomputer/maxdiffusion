@@ -599,5 +599,19 @@ def load_audio_vae_weights(
               continue
           filtered_eval_shapes[k] = v
 
+    print(f"DEBUG: Initial eval_shapes count: {len(flattened_eval)}")
+    print(f"DEBUG: Filtered eval_shapes count: {len(filtered_eval_shapes)}")
+    
+    # Check if any rngs remain
+    rngs_count = 0
+    for k in filtered_eval_shapes:
+        k_str = [str(x) for x in k]
+        for ks in k_str:
+            if "rngs" in ks or "dropout" in ks:
+                 rngs_count += 1
+                 print(f"DEBUG: Found unexpected rng/dropout key in filtered: {k}")
+                 break
+    print(f"DEBUG: Remaining rngs/dropout keys: {rngs_count}")
+
     validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
     return unflatten_dict(flax_state_dict)
