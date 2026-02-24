@@ -110,7 +110,7 @@ class LTX2PipelineTest(unittest.TestCase):
                 param_scan_axis = 1
                 max_prefill_predict_length = 512
                 per_device_batch_size = 1
-                max_target_length = 512
+                max_target_length = 1024
                 rope_min_timescale = 1
                 rope_max_timescale = 10000
                 rope_type = "interleaved"
