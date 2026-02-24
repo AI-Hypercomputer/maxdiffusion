@@ -103,6 +103,10 @@ class LTX2PipelineTest(unittest.TestCase):
                 weights_dtype = jnp.float32
                 weight_dtype = jnp.float32
                 use_iota_embed = False
+                num_decoder_layers = 5  # Match num_layers
+                normalization_layer_epsilon = 1e-6
+                scan_layers = False
+                param_scan_axis = 1
                 
             self.text_encoder = MaxTextGemma3FeatureExtractor(
                 config=MockConfig(),
