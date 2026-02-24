@@ -188,8 +188,7 @@ class LTX2UtilsTest(unittest.TestCase):
         from maxdiffusion.models.ltx2.ltx2_utils import load_audio_vae_weights
         
         pretrained_model_name_or_path = "Lightricks/LTX-2"
-        
-        # Audio VAE Config from user request
+
         config = {
           "base_channels": 128,
           "ch_mult": (1, 2, 4),
@@ -223,7 +222,6 @@ class LTX2UtilsTest(unittest.TestCase):
         )
         
         print("Validating Audio VAE Weights...")
-        # Filter eval_shapes for validation as load_audio_vae_weights returns filtered weights
         filtered_eval_shapes = {}
         flat_eval = flatten_dict(eval_shapes)
         for k, v in flat_eval.items():

@@ -487,37 +487,25 @@ def load_connector_weights(
     return unflatten_dict(flax_state_dict)
 
 def rename_for_ltx2_audio_vae(key):
-    # LTX-2 Audio VAE specific renaming
-    
-    # 1. Common renames
     if key.endswith(".weight"):
         key = key.replace(".weight", ".kernel")
-        
-    # 2. Structure renames
-    # mid.block_1 -> mid_block1
+
     key = key.replace("mid.block_1", "mid_block1")
     key = key.replace("mid.block_2", "mid_block2")
-    key = key.replace("mid.attn_1", "mid_attn") # Assumption, but safe
+    key = key.replace("mid.attn_1", "mid_attn")
     
-    # up.0 -> up_stages.0
     key = key.replace("up.", "up_stages.")
-    # down.0 -> down_stages.0
     key = key.replace("down.", "down_stages.")
     
-    # block.0 -> blocks.0
     key = key.replace("block.", "blocks.")
     
-    # nin_shortcut -> conv_shortcut_layer
     key = key.replace("nin_shortcut", "conv_shortcut_layer")
     
-    # In case upsample/downsample keys are just 'upsample' / 'downsample'
-    # Check for CausalConv wrapping in upsample
-    # If PT is 'upsample.conv.kernel' but Flax needs 'upsample.conv.conv.kernel'
     if "upsample.conv.kernel" in key:
         key = key.replace("upsample.conv.kernel", "upsample.conv.conv.kernel")
     if "upsample.conv.bias" in key:
         key = key.replace("upsample.conv.bias", "upsample.conv.conv.bias")
-        
+    
     return key
 
 
@@ -541,11 +529,6 @@ def load_audio_vae_weights(
     for pt_key, tensor in tensors.items():
         key = rename_for_ltx2_audio_vae(pt_key)
         
-        # Determine if we need to transpose (Conv weights: OHWI -> HWIO)
-        # Note: 1x1 convs might also be 4D. 
-        # Standard Flax Conv: (H, W, I, O)
-        # Standard PyTorch Conv: (O, I, H, W)
-        
         should_transpose = False
         if key.endswith(".kernel"):
              if tensor.ndim == 4:
@@ -553,8 +536,6 @@ def load_audio_vae_weights(
         
         if should_transpose:
             tensor = tensor.transpose(2, 3, 1, 0)
-            
-        # Convert key to tuple
         parts = key.split(".")
         flax_key_parts = []
         for part in parts:
@@ -565,29 +546,19 @@ def load_audio_vae_weights(
         
         flax_key = tuple(flax_key_parts)
              
-        # Reverse up_stages indices if present
         if "up_stages" in flax_key:
-             # Find index of 'up_stages'
              try:
                  up_stages_idx = flax_key.index("up_stages")
-                 # The integer index follows "up_stages"
                  if up_stages_idx + 1 < len(flax_key):
                      stage_idx = flax_key[up_stages_idx + 1]
                      if isinstance(stage_idx, int):
-                         # Assuming 3 stages (0, 1, 2)
-                         # Map 0 -> 2, 1 -> 1, 2 -> 0
                          new_stage_idx = 2 - stage_idx
-                         if "upsample" in flax_key:
-                              # print(f"DEBUG REVERSAL: {flax_key} -> stage_idx={stage_idx} -> new={new_stage_idx}")
-                              pass
                          flax_key_parts[up_stages_idx + 1] = new_stage_idx
                          flax_key = tuple(flax_key_parts)
              except ValueError:
                  pass
 
         flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
-
-    # Filter eval shapes to remove rngs/dropout
     filtered_eval_shapes = {}
     for k, v in flattened_eval.items():
           k_str = [str(x) for x in k]
