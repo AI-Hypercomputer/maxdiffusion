@@ -487,42 +487,37 @@ def load_connector_weights(
     return unflatten_dict(flax_state_dict)
 
 def rename_for_ltx2_audio_vae(key):
-    # Standard VAE renaming (resblocks -> resnets, ups -> upsamplers)
-    key = key.replace("resblocks", "resnets")
-    key = key.replace("ups", "upsamplers")
+    # LTX-2 Audio VAE specific renaming
     
-    # conv_shortcut -> conv_shortcut_layer.conv (Causal)
-    key = key.replace("conv_shortcut.weight", "conv_shortcut_layer.conv.kernel")
-    key = key.replace("conv_shortcut.bias", "conv_shortcut_layer.conv.bias")
-    
-    # Handle q, k, v, proj_out in AttnBlock
-    if "q.weight" in key: key = key.replace("q.weight", "q.kernel")
-    if "k.weight" in key: key = key.replace("k.weight", "k.kernel")
-    if "v.weight" in key: key = key.replace("v.weight", "v.kernel")
-    if "proj_out.weight" in key: key = key.replace("proj_out.weight", "proj_out.kernel")
-    
-    # Handle conv.weight -> conv.kernel
-    if key.endswith(".weight") and "conv" in key:
+    # 1. Common renames
+    if key.endswith(".weight"):
         key = key.replace(".weight", ".kernel")
         
-    # Inject .conv for CausalConvs
-    # Layers: conv1, conv2, conv_in, conv_out
-    # These become conv1.conv.kernel etc.
-    causal_layers = ["conv1", "conv2", "conv_in", "conv_out"]
-    for layer in causal_layers:
-         if f"{layer}.kernel" in key:
-             key = key.replace(f"{layer}.kernel", f"{layer}.conv.kernel")
-         if f"{layer}.bias" in key:
-             key = key.replace(f"{layer}.bias", f"{layer}.conv.bias")
-
-    # Special handling for upsample.conv (wrapped) vs downsample.conv (not wrapped)
-    # upsamplers.0.conv -> upsample.conv.conv
-    # We do this BEFORE the loop renames upsamplers.0 -> upsample
-    if "upsamplers" in key and ".conv.kernel" in key:
-         key = key.replace(".conv.kernel", ".conv.conv.kernel")
-    if "upsamplers" in key and ".conv.bias" in key:
-         key = key.replace(".conv.bias", ".conv.conv.bias")
-
+    # 2. Structure renames
+    # mid.block_1 -> mid_block1
+    key = key.replace("mid.block_1", "mid_block1")
+    key = key.replace("mid.block_2", "mid_block2")
+    key = key.replace("mid.attn_1", "mid_attn") # Assumption, but safe
+    
+    # up.0 -> up_stages.0
+    key = key.replace("up.", "up_stages.")
+    # down.0 -> down_stages.0
+    key = key.replace("down.", "down_stages.")
+    
+    # block.0 -> blocks.0
+    key = key.replace("block.", "blocks.")
+    
+    # nin_shortcut -> conv_shortcut_layer
+    key = key.replace("nin_shortcut", "conv_shortcut_layer")
+    
+    # In case upsample/downsample keys are just 'upsample' / 'downsample'
+    # Check for CausalConv wrapping in upsample
+    # If PT is 'upsample.conv.kernel' but Flax needs 'upsample.conv.conv.kernel'
+    if "upsample.conv.kernel" in key:
+        key = key.replace("upsample.conv.kernel", "upsample.conv.conv.kernel")
+    if "upsample.conv.bias" in key:
+        key = key.replace("upsample.conv.bias", "upsample.conv.conv.bias")
+        
     return key
 
 
@@ -547,6 +542,10 @@ def load_audio_vae_weights(
         key = rename_for_ltx2_audio_vae(pt_key)
         
         # Determine if we need to transpose (Conv weights: OHWI -> HWIO)
+        # Note: 1x1 convs might also be 4D. 
+        # Standard Flax Conv: (H, W, I, O)
+        # Standard PyTorch Conv: (O, I, H, W)
+        
         should_transpose = False
         if key.endswith(".kernel"):
              if tensor.ndim == 4:
@@ -554,12 +553,6 @@ def load_audio_vae_weights(
         
         if should_transpose:
             tensor = tensor.transpose(2, 3, 1, 0)
-            
-        # Handle special keys: latents_mean, latents_std
-        if "latents_mean" in key:
-            pass 
-        if "latents_std" in key:
-            pass
             
         # Convert key to tuple
         parts = key.split(".")
@@ -571,70 +564,6 @@ def load_audio_vae_weights(
                 flax_key_parts.append(part)
         
         flax_key = tuple(flax_key_parts)
-        
-        if "mid_block" in pt_key:
-            if "mid_block.resnets.0" in pt_key:
-                flax_key_str = ".".join([str(x) for x in flax_key])
-                flax_key_str = flax_key_str.replace("mid_block.resnets.0", "mid_block1")
-            elif "mid_block.resnets.1" in pt_key:
-                flax_key_str = ".".join([str(x) for x in flax_key])
-                flax_key_str = flax_key_str.replace("mid_block.resnets.1", "mid_block2")
-            elif "mid_block.attentions.0" in pt_key:
-                flax_key_str = ".".join([str(x) for x in flax_key])
-                flax_key_str = flax_key_str.replace("mid_block.attentions.0", "mid_attn")
-            else:
-                flax_key_str = ".".join([str(x) for x in flax_key])
-                
-            parts = flax_key_str.split(".")
-            flax_key_parts = []
-            for part in parts:
-                if part.isdigit():
-                    flax_key_parts.append(int(part))
-                else:
-                    flax_key_parts.append(part)
-            flax_key = tuple(flax_key_parts)
-
-        if "down_blocks" in key:
-             key_str = ".".join([str(x) for x in flax_key])
-             if "resnets" in key_str:
-                 key_str = key_str.replace("down_blocks", "down_stages")
-                 key_str = key_str.replace("resnets", "blocks")
-             elif "attentions" in key_str:
-                 key_str = key_str.replace("down_blocks", "down_stages")
-                 key_str = key_str.replace("attentions", "attns")
-             elif "downsamplers" in key_str:
-                 key_str = key_str.replace("down_blocks", "down_stages")
-                 key_str = key_str.replace("downsamplers.0", "downsample")
-             
-             parts = key_str.split(".")
-             flax_key_parts = []
-             for part in parts:
-                if part.isdigit():
-                    flax_key_parts.append(int(part))
-                else:
-                    flax_key_parts.append(part)
-             flax_key = tuple(flax_key_parts)
-
-        if "up_blocks" in key:
-             key_str = ".".join([str(x) for x in flax_key])
-             if "resnets" in key_str:
-                 key_str = key_str.replace("up_blocks", "up_stages")
-                 key_str = key_str.replace("resnets", "blocks")
-             elif "attentions" in key_str:
-                 key_str = key_str.replace("up_blocks", "up_stages")
-                 key_str = key_str.replace("attentions", "attns")
-             elif "upsamplers" in key_str:
-                 key_str = key_str.replace("up_blocks", "up_stages")
-                 key_str = key_str.replace("upsamplers.0", "upsample")
-                 
-             parts = key_str.split(".")
-             flax_key_parts = []
-             for part in parts:
-                if part.isdigit():
-                    flax_key_parts.append(int(part))
-                else:
-                    flax_key_parts.append(part)
-             flax_key = tuple(flax_key_parts)
              
         flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 
