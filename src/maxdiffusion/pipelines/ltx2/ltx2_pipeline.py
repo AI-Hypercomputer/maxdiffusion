@@ -40,7 +40,7 @@ import os
 try:
   import maxtext.models.gemma3 as gemma3
   from maxtext.layers import embeddings, normalizations
-  from maxtext import common_types
+  from MaxText import common_types
 except ImportError as e:
     max_logging.log(f"MaxText not found. Failed maxtext: {e}. Please install MaxText.")
     gemma3 = None
