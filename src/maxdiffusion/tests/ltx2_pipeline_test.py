@@ -120,6 +120,8 @@ class LTX2PipelineTest(unittest.TestCase):
                 rngs=self.rng
             )
         except ImportError:
+            import traceback
+            traceback.print_exc()
             self.text_encoder = None
             print("MaxText not found, text_encoder set to None")
         
