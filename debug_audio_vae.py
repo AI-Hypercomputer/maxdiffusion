@@ -212,20 +212,66 @@ def debug_keys():
     flax_keys_set = set(flax_keys)
     missing = flax_keys_set - final_keys
     
-    # Filter stats
+    # Filter stats logic check
+    print("\nDebugging Filtering Logic...")
     filtered_missing = []
+    skipped_count = 0
     for k in missing:
          k_str = [str(x) for x in k]
-         if "dropout" in k_str or "rngs" in k_str:
+         is_stat = False
+         for ks in k_str:
+             if "dropout" in ks or "rngs" in ks:
+                 is_stat = True
+                 break
+         if is_stat:
+             skipped_count += 1
              continue
          filtered_missing.append(k)
          
-    print(f"Missing Keys (Count: {len(filtered_missing)}):")
-    for k in sorted(filtered_missing)[:20]:
+    print(f"Skipped {skipped_count} keys due to dropout/rngs filtering.")
+    print(f"Remaining Missing Keys (Count: {len(filtered_missing)}):")
+    for k in sorted(filtered_missing):
         print(k)
 
-    print("\nExtra Keys (Count: {len(final_keys - flax_keys_set)}):")
-    for k in sorted(list(final_keys - flax_keys_set))[:20]:
+    # Also check if validation function itself is behaving as expected
+    from flax.traverse_util import unflatten_dict, flatten_dict
+    from maxdiffusion.modeling_flax_pytorch_utils import validate_flax_state_dict
+    
+    # Construct a dummy flax_state_dict with only the keys we found
+    # We need to map our final_keys back to a dict
+    # This is hard because we don't have the values here.
+    # But we can check if the filtering removes the keys from eval_shapes
+    
+    print("\nChecking if eval_shapes still has dropout keys after filtering:")
+    filtered_eval_shapes = {}
+    for k, v in eval_shapes.items(): # eval_shapes is already flattened if from to_pure_dict()?
+        # Wait, to_pure_dict returns a nested dict or flat?
+        # nnx.state(model).to_pure_dict() returns a nested dict structure usually compatible with unflatten_dict?
+        # Let's check type of eval_shapes
+        pass
+        
+    # flatten_dict(eval_shapes)
+    flat_eval = flatten_dict(eval_shapes)
+    filtered_flat = {}
+    for k, v in flat_eval.items():
+          k_str = [str(x) for x in k]
+          is_stat = False
+          for ks in k_str:
+              if "dropout" in ks or "rngs" in ks:
+                  is_stat = True
+                  break
+          if is_stat:
+              continue
+          filtered_flat[k] = v
+          
+    # Now check if the missing keys are in filtered_flat
+    print(f"Filtered Flat Eval Shapes Count: {len(filtered_flat)}")
+    print(f"Original Flat Eval Shapes Count: {len(flat_eval)}")
+    
+    # Check if 'rngs' keys are in filtered_flat
+    rngs_keys = [k for k in filtered_flat.keys() if "rngs" in str(k) or "dropout" in str(k)]
+    print(f"Keys with 'rngs' or 'dropout' remaining in filtered dict: {len(rngs_keys)}")
+    for k in rngs_keys[:10]:
         print(k)
 
 if __name__ == "__main__":
