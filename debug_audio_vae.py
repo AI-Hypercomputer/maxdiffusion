@@ -7,8 +7,7 @@ import os
 sys.path.append(os.path.join(os.getcwd(), "src"))
 
 from maxdiffusion.models.ltx2.audio_vae import FlaxAutoencoderKLLTX2Audio
-from maxdiffusion.models.ltx2.ltx2_utils import load_audio_vae_weights, rename_for_ltx2_audio_vae
-from maxdiffusion.utils import load_sharded_checkpoint
+from maxdiffusion.models.ltx2.ltx2_utils import load_audio_vae_weights, rename_for_ltx2_audio_vae, load_sharded_checkpoint
 from flax import nnx
 
 def debug_keys():
