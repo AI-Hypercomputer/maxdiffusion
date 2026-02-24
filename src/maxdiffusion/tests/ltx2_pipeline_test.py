@@ -115,7 +115,20 @@ class LTX2PipelineTest(unittest.TestCase):
                 rope_type = "interleaved"
                 rope_embedding_dims = 16
                 rope_use_scale = False
-                shard_mode = "auto"
+                model_name = "gemma3-4b" # Use a valid model name
+                base_emb_dim = 16
+                base_num_query_heads = 2
+                head_dim = 8
+                num_query_heads = 2
+                num_kv_heads = 1
+                dropout_rate = 0.0
+                float32_qk_product = False
+                float32_logits = False
+                sliding_window_size = 128
+                attn_logits_soft_cap = 50.0
+                use_post_attn_norm = True
+                attention = "dot_product" # attention_kernel
+                quantization = "" # for configure_kv_quant
                 
             self.text_encoder = MaxTextGemma3FeatureExtractor(
                 config=MockConfig(),
