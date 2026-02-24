@@ -183,5 +183,48 @@ class LTX2UtilsTest(unittest.TestCase):
         validate_flax_state_dict(eval_shapes, flatten_dict(loaded_weights))
         print("Connector Weights Validated Successfully!")
 
+    def test_load_audio_vae_weights(self):
+        from maxdiffusion.models.ltx2.audio_vae import FlaxAutoencoderKLLTX2Audio
+        from maxdiffusion.models.ltx2.ltx2_utils import load_audio_vae_weights
+        
+        pretrained_model_name_or_path = "Lightricks/LTX-2"
+        
+        # Audio VAE Config from user request
+        config = {
+          "base_channels": 128,
+          "ch_mult": (1, 2, 4),
+          "double_z": True,
+          "dropout": 0.0,
+          "in_channels": 2,
+          "latent_channels": 8,
+          "mel_bins": 64,
+          "mel_hop_length": 160,
+          "mid_block_add_attention": False,
+          "norm_type": "pixel",
+          "num_res_blocks": 2,
+          "output_channels": 2,
+          "resolution": 256,
+          "sample_rate": 16000,
+          "rngs": nnx.Rngs(0)
+        }
+        
+        with jax.default_device(jax.devices("cpu")[0]):
+            model = FlaxAutoencoderKLLTX2Audio(**config)
+            
+        state = nnx.state(model)
+        eval_shapes = state.to_pure_dict()
+        
+        print("Loading Audio VAE Weights...")
+        loaded_weights = load_audio_vae_weights(
+            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            eval_shapes=eval_shapes,
+            device=self.device,
+            hf_download=True
+        )
+        
+        print("Validating Audio VAE Weights...")
+        validate_flax_state_dict(eval_shapes, flatten_dict(loaded_weights))
+        print("Audio VAE Weights Validated Successfully!")
+
 if __name__ == "__main__":
     unittest.main()
