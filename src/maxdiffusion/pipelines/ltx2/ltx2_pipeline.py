@@ -32,13 +32,15 @@ from ...schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler, Flo
 from maxdiffusion.image_processor import PipelineImageInput
 from transformers import AutoTokenizer
 
-# Placeholder imports for MaxText Gemma3
-# Assuming MaxText is available in the environment or python path
+import sys
+import os
+
+# Try to import MaxText
 try:
-  from MaxText.models import gemma3
+  import maxtext.models.gemma3 as gemma3
 except ImportError:
-  max_logging.log("MaxText.models.gemma3 not found. Gemma3 Text Encoder will not work without MaxText.")
-  gemma3 = None
+   max_logging.log("maxtext.models.gemma3 not found. Gemma3 Text Encoder will not work without MaxText.")
+   gemma3 = None
 
 class LTX2Pipeline:
   """
