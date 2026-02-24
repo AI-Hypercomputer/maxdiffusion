@@ -38,7 +38,7 @@ class LTX2VideoGemmaTextEncoder(nnx.Module):
       # Feature Extractor Config
       gemma_dim: int = 3840,  # Gemma-3-12b
       gemma_layers: int = 49,  # Gemma-3 has 48 layers + 1 embedding layer output = 49 hidden states
-      projection_dim: int = 4096,  # LTX-2 conditioning dim
+      projection_dim: int = 3840,  # LTX-2 conditioning dim
       # Connector Config
       connector_heads: int = 32,
       connector_head_dim: int = 128,
@@ -100,9 +100,9 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module):
       # Feature Extractor Config (Shared)
       gemma_dim: int = 3840,  # Gemma-3-12b
       gemma_layers: int = 49,  # Gemma-3 has 48 layers + 1 embedding layer output = 49 hidden states
-      projection_dim: int = 4096,
+      projection_dim: int = 3840,
       # Connector Config
-      connector_heads: int = 32,
+      connector_heads: int = 30,
       connector_head_dim: int = 128,
       connector_layers: int = 2,
       num_thinking_tokens: int = 128,
