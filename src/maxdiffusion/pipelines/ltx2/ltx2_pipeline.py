@@ -43,12 +43,19 @@ try:
   from maxtext.layers import embeddings, normalizations
   from maxtext import common_types
 except ImportError:
-   max_logging.log("maxtext not found. Please install MaxText.")
-   gemma3 = None
-   max_models = None
-   embeddings = None
-   normalizations = None
-   common_types = None
+  # Try Capitalized MaxText (if installed from src/MaxText directly or specific env)
+  try:
+      import MaxText.models.gemma3 as gemma3
+      import MaxText.models.models as max_models
+      from MaxText.layers import embeddings, normalizations
+      from MaxText import common_types
+  except ImportError:
+       max_logging.log("maxtext not found. Please install MaxText.")
+       gemma3 = None
+       max_models = None
+       embeddings = None
+       normalizations = None
+       common_types = None
 
 class MaxTextGemma3FeatureExtractor(nnx.Module):
     """

@@ -235,13 +235,18 @@ class LTX2PipelineTest(unittest.TestCase):
         """
         Verifies that we can import MaxText Gemma3.
         """
+        gemma3 = None
         try:
             import maxtext.models.gemma3 as gemma3
             print("Successfully imported maxtext.models.gemma3")
-            self.assertIsNotNone(gemma3)
         except ImportError:
-            print("Could not import maxtext.models.gemma3. Is MaxText installed?")
-            pass
+            try:
+                import MaxText.models.gemma3 as gemma3
+                print("Successfully imported MaxText.models.gemma3")
+            except ImportError:
+                print("Could not import maxtext.models.gemma3 or MaxText.models.gemma3")
+        
+        self.assertIsNotNone(gemma3)
 
     def test_gemma3_feature_extractor(self):
         """
@@ -249,9 +254,12 @@ class LTX2PipelineTest(unittest.TestCase):
         """
         try:
              from maxdiffusion.pipelines.ltx2.ltx2_pipeline import MaxTextGemma3FeatureExtractor
-             from maxtext import common_types
+             try:
+                 from maxtext import common_types
+             except ImportError:
+                 from MaxText import common_types
         except ImportError:
-            print("Skipping test_gemma3_feature_extractor: MaxText not found")
+            print("Skipping test_gemma3_feature_extractor: MaxText not found or pipeline import failed")
             return
 
         class DummyConfig:
@@ -309,7 +317,6 @@ class LTX2PipelineTest(unittest.TestCase):
         
         # Verify
         self.assertIsNotNone(outputs.hidden_states)
-        # 1 (embed) + 2 (layers) + 1 (final) = 4 checks
         self.assertEqual(len(outputs.hidden_states), 4)
         print("MaxTextGemma3FeatureExtractor test passed!")
 
