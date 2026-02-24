@@ -233,22 +233,85 @@ class LTX2PipelineTest(unittest.TestCase):
 
     def test_real_gemma3_import(self):
         """
-        Verifies that we can import MaxText Gemma3 if available.
+        Verifies that we can import MaxText Gemma3.
         """
         try:
             import maxtext.models.gemma3 as gemma3
             print("Successfully imported maxtext.models.gemma3")
             self.assertIsNotNone(gemma3)
-            
-            # We won't instantiate the full model here as it requires complex config/mesh
-            # But we verify the pipeline accepts it if we were to pass it
-            
         except ImportError:
-            print("Could not import maxtext.models.gemma3 - skipping real integration test")
-            # If user expects it to work, this might be a failure, 
-            # but for CI where maxtext might be missing, we skip.
-            # However, user explicitly installed it, so let's fail if we promised to use it?
-            # For now, print warning.
+            print("Could not import maxtext.models.gemma3. Is MaxText installed?")
+            pass
+
+    def test_gemma3_feature_extractor(self):
+        """
+        Verifies MaxTextGemma3FeatureExtractor instantiation and forward pass.
+        """
+        try:
+             from maxdiffusion.pipelines.ltx2.ltx2_pipeline import MaxTextGemma3FeatureExtractor
+             from maxtext import common_types
+        except ImportError:
+            print("Skipping test_gemma3_feature_extractor: MaxText not found")
+            return
+
+        class DummyConfig:
+            # Feature Extractor Config
+            emb_dim = 64 # Small for test
+            num_query_heads = 4
+            num_kv_heads = 4
+            head_dim = 16
+            max_target_length = 128
+            max_prefill_predict_length = 128
+            attention = "dot_product" 
+            dropout_rate = 0.0
+            float32_qk_product = False
+            float32_logits = False
+            prefill_cache_axis_order = "0,1,2,3"
+            ar_cache_axis_order = "0,1,2,3"
+            compute_axis_order = "0,1,2,3"
+            reshape_q = False
+            use_mrope = False
+            mrope_section = None
+            mlp_dim = 128
+            mlp_activations = ["gelu"]
+            record_internal_nn_metrics = False
+            scan_layers = False 
+            vocab_size = 1000
+            dtype = jnp.float32
+            weight_dtype = jnp.float32
+            normalization_layer_epsilon = 1e-6
+            shard_mode = common_types.ShardMode.AUTO
+            debug_sharding = False
+            
+            # Gemma3 specific
+            sliding_window_size = 128
+            attn_logits_soft_cap = 50.0
+            use_post_attn_norm = True
+            use_post_ffw_norm = True
+            num_decoder_layers = 2 # Small for test
+            model_name = "gemma3-12b" # Required for some logic
+            base_emb_dim = 64 # For consistency
+            base_num_query_heads = 4
+            
+            # Quant
+            quantization_local_shard_count = 1
+            
+        config = DummyConfig()
+        mesh = Mesh(np.array(jax.devices()).reshape(1, -1), ('data', 'model'))
+        rngs = nnx.Rngs(0)
+        
+        # Instantiate
+        feature_extractor = MaxTextGemma3FeatureExtractor(config, mesh, rngs=rngs)
+        
+        # Run
+        input_ids = jnp.ones((1, 16), dtype=jnp.int32)
+        outputs = feature_extractor(input_ids, output_hidden_states=True)
+        
+        # Verify
+        self.assertIsNotNone(outputs.hidden_states)
+        # 1 (embed) + 2 (layers) + 1 (final) = 4 checks
+        self.assertEqual(len(outputs.hidden_states), 4)
+        print("MaxTextGemma3FeatureExtractor test passed!")
 
 if __name__ == '__main__':
     unittest.main()

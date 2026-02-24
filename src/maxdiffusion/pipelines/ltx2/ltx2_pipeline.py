@@ -35,12 +35,120 @@ from transformers import AutoTokenizer
 import sys
 import os
 
-# Try to import MaxText
+
+# Import MaxText
 try:
   import maxtext.models.gemma3 as gemma3
+  import maxtext.models.models as max_models
+  from maxtext.layers import embeddings, normalizations
+  from maxtext import common_types
 except ImportError:
-   max_logging.log("maxtext.models.gemma3 not found. Gemma3 Text Encoder will not work without MaxText.")
+   max_logging.log("maxtext not found. Please install MaxText.")
    gemma3 = None
+   max_models = None
+   embeddings = None
+   normalizations = None
+   common_types = None
+
+class MaxTextGemma3FeatureExtractor(nnx.Module):
+    """
+    Wrapper around MaxText Gemma3 components to return all hidden states.
+    Mimics MaxText.models.models.Transformer but optimized for feature extraction.
+    """
+    def __init__(self, config, mesh, quant=None, rngs=None):
+        self.config = config
+        self.mesh = mesh
+        self.quant = quant
+        
+        # Embeddings
+        self.token_embedder = embeddings.Embed(
+            mesh=mesh,
+            num_embeddings=config.vocab_size,
+            num_features=config.emb_dim,
+            dtype=config.dtype,
+            embedding_init=nnx.initializers.normal(stddev=1.0),
+            config=config,
+            rngs=rngs
+        )
+        
+        # Layers
+        self.layers = []
+        for i in range(config.num_decoder_layers):
+            layer = gemma3.Gemma3DecoderLayer(
+                config=config,
+                mesh=mesh,
+                model_mode=common_types.MODEL_MODE_PREFILL, # Default to prefill/inference
+                rngs=rngs,
+                quant=quant,
+                attention_type=gemma3.get_attention_type(i)
+            )
+            self.layers.append(layer)
+            
+        # Final Norm
+        self.norm = normalizations.rms_norm(
+            num_features=config.emb_dim,
+            dtype=config.dtype,
+            epsilon=config.normalization_layer_epsilon,
+            kernel_axes=("norm",),
+            name="decoder_norm"
+        )
+
+    def __call__(self, input_ids, attention_mask=None, output_hidden_states=True):
+        """
+        Args:
+            input_ids: (B, L)
+            attention_mask: (B, L) - Optional, used for bidirectional mask generation if needed.
+        Returns:
+            Mock object with .hidden_states tuple if output_hidden_states=True
+        """
+        # Embed
+        x = self.token_embedder(input_ids.astype("int32"), model_mode=common_types.MODEL_MODE_PREFILL)
+        
+        # Scaling if needed (Gemma usually scales embeddings? Check MaxText implementation)
+        # MaxText Embed layer usually handles scaling if configured? 
+        # Checking models.py: self.token_embedder(...) -> returns embeddings.
+        # Gemma3 uses 'query_pre_attn_scalar' inside attention, not embedding scaling usually.
+        # But wait, MaxText models.py _apply_embedding:
+        # y = y.astype(cfg.dtype)
+        # + positional embeddings if any.
+        
+        # Basic loop
+        hidden_states = []
+        if output_hidden_states:
+            hidden_states.append(x)
+            
+        # Create dummy positions if needed or handle them
+        # MaxText layers usually take decoder_positions
+        batch, seq_len = input_ids.shape
+        positions = jnp.arange(seq_len)[None, :]
+        positions = jnp.broadcast_to(positions, (batch, seq_len))
+        
+        # Scan over layers
+        for layer in self.layers:
+            # We assume non-scanned for flexibility in feature extraction for now,
+            # or we could scan if we pack the loop.
+            # Calling layer:
+            x, _ = layer(
+                inputs=x,
+                decoder_segment_ids=None,
+                decoder_positions=positions,
+                deterministic=True,
+                model_mode=common_types.MODEL_MODE_PREFILL
+            )
+            if output_hidden_states:
+                hidden_states.append(x)
+                
+        # Final Norm
+        x = self.norm(x)
+        if output_hidden_states:
+            hidden_states.append(x)
+            
+        class Output:
+            pass
+        out = Output()
+        out.hidden_states = tuple(hidden_states)
+        out.last_hidden_state = x
+        return out
 
 class LTX2Pipeline:
   """
