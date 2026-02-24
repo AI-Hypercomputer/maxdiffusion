@@ -26,23 +26,6 @@ from maxdiffusion.models.ltx2.text_encoders.text_encoders_ltx2 import LTX2VideoG
 from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler, FlowMatchSchedulerState
 from maxdiffusion.pyconfig import HyperParameters
 
-class MockGemma3(nnx.Module):
-    def __init__(self, key=None):
-        pass
-
-    def __call__(self, input_ids, attention_mask, output_hidden_states=False):
-        # Return mock outputs
-        batch, seq_len = input_ids.shape
-        hidden_dim = 16 # Small dummy dim
-        # Gemma3 output structure likely has 'hidden_states' tuple
-        
-        class MockOutput:
-            def __init__(self):
-                # Tuple of hidden states (one per layer)
-                # We need enough layers to satisfy FeatureExtractor
-                self.hidden_states = tuple([jnp.zeros((batch, seq_len, hidden_dim)) for _ in range(5)])
-        
-        return MockOutput()
 
 class MockTokenizer:
     def __init__(self):
@@ -74,7 +57,6 @@ class LTX2PipelineTest(unittest.TestCase):
             num_attention_heads=2,
             attention_head_dim=4,
             cross_attention_dim=16,
-            audio_dim=4,
             audio_num_attention_heads=2,
             audio_attention_head_dim=2, 
             audio_cross_attention_dim=4,
