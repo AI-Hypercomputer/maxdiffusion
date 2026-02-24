@@ -130,6 +130,7 @@ class LTX2PipelineTest(unittest.TestCase):
                 attention = "dot_product" # attention_kernel
                 quantization = "" # for configure_kv_quant
                 quantize_kvcache = False
+                decoder_block = common_types.DecoderBlockType.GEMMA3
                 
             self.text_encoder = MaxTextGemma3FeatureExtractor(
                 config=MockConfig(),
