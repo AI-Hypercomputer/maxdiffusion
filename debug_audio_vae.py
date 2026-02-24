@@ -67,6 +67,28 @@ def debug_keys():
     for k in pt_keys[:20]:
         print(k)
         
+    print("\nSample Encoder Keys:")
+    enc_keys = [k for k in pt_keys if "encoder" in k]
+    for k in enc_keys[:20]:
+        print(k)
+        
+    # Check specific encoder key shape if possible? 
+    # Can't easily check shape here without loading tensor, but load_sharded_checkpoint loads all.
+    # tensors is already loaded.
+    
+    print("\nChecking Encoder Down Block 0 shape:")
+    if "encoder.down.0.block.0.conv1.conv.weight" in tensors:
+        print("encoder.down.0.block.0.conv1.conv.weight:", tensors["encoder.down.0.block.0.conv1.conv.weight"].shape)
+    if "encoder.down.0.block.1.conv1.conv.weight" in tensors:
+        print("encoder.down.0.block.1.conv1.conv.weight:", tensors["encoder.down.0.block.1.conv1.conv.weight"].shape)
+    if "encoder.down.1.block.0.conv1.conv.weight" in tensors:
+         print("encoder.down.1.block.0.conv1.conv.weight:", tensors["encoder.down.1.block.0.conv1.conv.weight"].shape)
+
+    print("\nChecking Decoder Up Block 0 shape:")
+    if "decoder.up.0.block.0.conv1.conv.weight" in tensors:
+        print("decoder.up.0.block.0.conv1.conv.weight:", tensors["decoder.up.0.block.0.conv1.conv.weight"].shape)
+
+        
     print("\nTesting Renaming Logic...")
     renamed_keys = []
     for k in pt_keys:
