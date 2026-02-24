@@ -91,6 +91,7 @@ class LTX2PipelineTest(unittest.TestCase):
         
         try:
             from maxdiffusion.pipelines.ltx2.ltx2_pipeline import MaxTextGemma3FeatureExtractor
+            from MaxText import common_types
             # Partial mock for config if needed
             class MockConfig:
                 vocab_size = 32000
