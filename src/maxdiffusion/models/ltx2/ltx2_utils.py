@@ -406,8 +406,8 @@ def rename_for_ltx2_connector(key):
     
     if "transformer_blocks" in key:
         key = key.replace("transformer_blocks", "stacked_blocks")
-        key = key.replace("ff.net.0.proj", "ff.proj1")
-        key = key.replace("ff.net.2", "ff.proj2")
+        key = key.replace("ff.net.0.proj", "ff.net_0")
+        key = key.replace("ff.net.2", "ff.net_2")
         key = key.replace("to_out.0", "to_out")
         
     if key.endswith(".weight"):
