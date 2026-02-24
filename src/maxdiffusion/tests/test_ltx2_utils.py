@@ -23,7 +23,7 @@ class LTX2VideoConfig:
         self.audio_patch_size = 1
         self.audio_patch_size_t = 1
         self.audio_num_attention_heads = 32
-        self.audio_attention_head_dim = 128 # Default is 64 but we want 128
+        self.audio_attention_head_dim = 128
         self.audio_cross_attention_dim = 2048
         self.num_layers = 48
 
@@ -184,7 +184,7 @@ class LTX2UtilsTest(unittest.TestCase):
         print("Connector Weights Validated Successfully!")
 
     def test_load_audio_vae_weights(self):
-        from maxdiffusion.models.ltx2.audio_vae import FlaxAutoencoderKLLTX2Audio
+        from maxdiffusion.models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
         from maxdiffusion.models.ltx2.ltx2_utils import load_audio_vae_weights
         
         pretrained_model_name_or_path = "Lightricks/LTX-2"
