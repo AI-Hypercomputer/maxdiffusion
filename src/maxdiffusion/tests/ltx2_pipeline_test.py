@@ -91,52 +91,30 @@ class LTX2PipelineTest(unittest.TestCase):
         
         try:
             from maxdiffusion.pipelines.ltx2.ltx2_pipeline import MaxTextGemma3FeatureExtractor
-            from MaxText import common_types
-            # Partial mock for config if needed
-            class MockConfig:
-                vocab_size = 32000
-                emb_dim = 16
-                num_layers = 5
-                num_heads = 2
-                head_dim = 8
-                mlp_dim = 32
-                dtype = jnp.float32
-                weights_dtype = jnp.float32
-                weight_dtype = jnp.float32
-                use_iota_embed = False
-                num_decoder_layers = 5  # Match num_layers
-                normalization_layer_epsilon = 1e-6
-                scan_layers = False
-                param_scan_axis = 1
-                max_prefill_predict_length = 512
-                per_device_batch_size = 1
-                max_target_length = 1024
-                rope_min_timescale = 1
-                rope_max_timescale = 10000
-                rope_type = "interleaved"
-                rope_embedding_dims = 16
-                rope_use_scale = False
-                model_name = "gemma3-4b" # Use a valid model name
-                base_emb_dim = 16
-                base_num_query_heads = 2
-                head_dim = 8
-                num_query_heads = 2
-                num_kv_heads = 1
-                dropout_rate = 0.0
-                float32_qk_product = False
-                float32_logits = False
-                sliding_window_size = 128
-                attn_logits_soft_cap = 50.0
-                use_post_attn_norm = True
-                attention = "dot_product" # attention_kernel
-                quantization = "" # for configure_kv_quant
-                quantize_kvcache = False
-                decoder_block = common_types.DecoderBlockType.GEMMA3
-                use_chunked_prefill = False
-                attention_type = "dot_product"
+            from MaxText.configs import types
+            from MaxText import pyconfig
+            
+            # Use real MaxText Config to avoid missing attributes
+            raw_config = types.MaxTextConfig(
+                vocab_size=32000,
+                model_name="gemma3-4b",
+                base_emb_dim=16,
+                base_num_query_heads=2,
+                base_num_kv_heads=1,
+                head_dim=8,
+                num_decoder_layers=5,
+                max_prefill_predict_length=512,
+                max_target_length=1024,
+                per_device_batch_size=1,
+                dtype=jnp.float32,
+                weight_dtype=jnp.float32,
+                rope_embedding_dims=16,
+                # Add other overrides as needed for the test to be lightweight
+            )
+            config = pyconfig.HyperParameters(raw_config)
                 
             self.text_encoder = MaxTextGemma3FeatureExtractor(
-                config=MockConfig(),
+                config=config,
                 mesh=self.mesh,
                 quant=None,
                 rngs=self.rng
