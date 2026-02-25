@@ -29,9 +29,9 @@ from maxdiffusion import multihost_dataloading, max_logging
 
 
 def get_wan_dimension(
-    config, 
+    config,
     pipeline,
-    config_key: str, 
+    config_key: str,
     pipeline_path: str = None,
     default_value: Any = None
 ) -> Any:
@@ -41,7 +41,7 @@ def get_wan_dimension(
     2. Pipeline path (exact path specified by caller)
     3. Config default
     4. Hardcoded default
-    
+
     Args:
         config: Configuration object
         pipeline: WAN Pipeline object
@@ -60,7 +60,7 @@ def get_wan_dimension(
                 return value
         except (AttributeError, ValueError):
             pass  # Override not set, continue to pipeline/config
-    
+
     # Check pipeline using exact path if provided
     if pipeline is not None and pipeline_path:
         try:
@@ -68,14 +68,14 @@ def get_wan_dimension(
             value = pipeline
             for attr in pipeline_path.split('.'):
                 value = getattr(value, attr)
-            
+
             if value is not None:
                 if jax.process_index() == 0:
                     max_logging.log(f"[WAN] Using {config_key} from pipeline.{pipeline_path}: {value}")
                 return value
         except AttributeError:
             pass  # Path not available in pipeline
-    
+
     # Check config - use try/except because config raises ValueError instead of AttributeError
     try:
         value = getattr(config, config_key)
@@ -84,7 +84,7 @@ def get_wan_dimension(
         return value
     except (AttributeError, ValueError):
         pass  # Key not in config, use default
-    
+
     # Use default
     if jax.process_index() == 0:
         max_logging.log(f"[WAN] Using default {config_key}: {default_value}")
@@ -92,9 +92,9 @@ def get_wan_dimension(
 
 
 def get_flux_dimension(
-    config, 
+    config,
     pipeline,
-    config_key: str, 
+    config_key: str,
     pipeline_path: str = None,
     default_value: Any = None
 ) -> Any:
@@ -103,9 +103,9 @@ def get_flux_dimension(
     1. Pipeline path (exact path specified by caller)
     2. Config default
     3. Hardcoded default
-    
+
     Note: FLUX does not support override flags
-    
+
     Args:
         config: Configuration object
         pipeline: FLUX Pipeline object
@@ -114,7 +114,7 @@ def get_flux_dimension(
         default_value: Fallback value if not found elsewhere
     """
     # FLUX does not check overrides - load directly from pipeline/config
-    
+
     # Check pipeline using exact path if provided
     if pipeline is not None and pipeline_path:
         try:
@@ -122,14 +122,14 @@ def get_flux_dimension(
             value = pipeline
             for attr in pipeline_path.split('.'):
                 value = getattr(value, attr)
-            
+
             if value is not None:
                 if jax.process_index() == 0:
                     max_logging.log(f"[FLUX] Using {config_key} from pipeline.{pipeline_path}: {value}")
                 return value
         except AttributeError:
             pass  # Path not available in pipeline
-    
+
     # Check config - use try/except because config raises ValueError instead of AttributeError
     try:
         value = getattr(config, config_key)
@@ -138,7 +138,7 @@ def get_flux_dimension(
         return value
     except (AttributeError, ValueError):
         pass  # Key not in config, use default
-    
+
     # Use default
     if jax.process_index() == 0:
         max_logging.log(f"[FLUX] Using default {config_key}: {default_value}")
@@ -168,28 +168,28 @@ def log_synthetic_config(model_name: str, dimensions: Dict[str, Any], per_host_b
 
 class SyntheticDataSource:
     """Wrapper for synthetic data that provides iterator interface."""
-    
+
     def __init__(self, generate_fn, num_samples, seed):
         self.generate_fn = generate_fn
         self.num_samples = num_samples
         self.seed = seed
         self.current_step = 0
         self.rng_key = jax.random.key(seed)
-    
+
     def __iter__(self):
         self.current_step = 0
         self.rng_key = jax.random.key(self.seed)
         return self
-    
+
     def __next__(self):
         if self.num_samples is not None and self.current_step >= self.num_samples:
             raise StopIteration
-        
+
         self.rng_key, step_key = jax.random.split(self.rng_key)
         data = self.generate_fn(step_key)
         self.current_step += 1
         return data
-    
+
     def as_numpy_iterator(self):
         return iter(self)
 
@@ -202,9 +202,9 @@ class SyntheticDataSource:
 def _generate_wan_sample(rng_key: jax.Array, dimensions: Dict[str, Any], is_training: bool) -> Dict[str, np.ndarray]:
     """Generate a single batch of synthetic data for WAN model."""
     keys = jax.random.split(rng_key, 3)
-    
+
     per_host_batch_size = dimensions['per_host_batch_size']
-    
+
     # Generate latents: (batch, channels, frames, height, width)
     latents_shape = (
         per_host_batch_size,
@@ -214,7 +214,7 @@ def _generate_wan_sample(rng_key: jax.Array, dimensions: Dict[str, Any], is_trai
         dimensions['latent_width']
     )
     latents = jax.random.normal(keys[0], shape=latents_shape, dtype=jnp.float32)
-    
+
     # Generate encoder hidden states: (batch, seq_len, embed_dim)
     encoder_hidden_states_shape = (
         per_host_batch_size,
@@ -222,12 +222,12 @@ def _generate_wan_sample(rng_key: jax.Array, dimensions: Dict[str, Any], is_trai
         dimensions['text_embed_dim']
     )
     encoder_hidden_states = jax.random.normal(keys[1], shape=encoder_hidden_states_shape, dtype=jnp.float32)
-    
+
     data = {
         'latents': np.array(latents),
         'encoder_hidden_states': np.array(encoder_hidden_states),
     }
-    
+
     # For evaluation, also generate timesteps
     if not is_training:
         timesteps = jax.random.randint(
@@ -235,68 +235,68 @@ def _generate_wan_sample(rng_key: jax.Array, dimensions: Dict[str, Any], is_trai
             shape=(per_host_batch_size,),
             minval=0,
             maxval=dimensions['num_train_timesteps'],
-            dtype=jnp.int64
+            dtype=jnp.int32
         )
         data['timesteps'] = np.array(timesteps)
-    
+
     return data
 
 
 def _make_wan_synthetic_iterator(config, mesh, global_batch_size, pipeline, is_training, num_samples):
     """Create synthetic data iterator for WAN model."""
     per_host_batch_size = global_batch_size // jax.process_count()
-    
+
     # Initialize dimensions - explicitly specify pipeline paths for WAN model
     height = get_wan_dimension(
-        config, pipeline, 'height', 
+        config, pipeline, 'height',
         pipeline_path=None,  # Not in pipeline, use config/override
         default_value=480
     )
     width = get_wan_dimension(
-        config, pipeline, 'width', 
+        config, pipeline, 'width',
         pipeline_path=None,  # Not in pipeline, use config/override
         default_value=832
     )
     num_frames = get_wan_dimension(
-        config, pipeline, 'num_frames', 
+        config, pipeline, 'num_frames',
         pipeline_path=None,  # Not in pipeline, use config/override
         default_value=81
     )
-    
+
     # WAN-specific dimensions from transformer config
     max_sequence_length = get_wan_dimension(
-        config, pipeline, 'max_sequence_length', 
+        config, pipeline, 'max_sequence_length',
         pipeline_path='transformer.config.rope_max_seq_len',
         default_value=512
     )
     text_embed_dim = get_wan_dimension(
-        config, pipeline, 'text_embed_dim', 
+        config, pipeline, 'text_embed_dim',
         pipeline_path='transformer.config.text_dim',
         default_value=4096
     )
     num_channels_latents = get_wan_dimension(
-        config, pipeline, 'num_channels_latents', 
+        config, pipeline, 'num_channels_latents',
         pipeline_path='transformer.config.in_channels',
         default_value=16
     )
-    
+
     # VAE scale factors from pipeline attributes
     vae_scale_factor_spatial = get_wan_dimension(
-        config, pipeline, 'vae_scale_factor_spatial', 
+        config, pipeline, 'vae_scale_factor_spatial',
         pipeline_path='vae_scale_factor_spatial',
         default_value=8
     )
     vae_scale_factor_temporal = get_wan_dimension(
-        config, pipeline, 'vae_scale_factor_temporal', 
+        config, pipeline, 'vae_scale_factor_temporal',
         pipeline_path='vae_scale_factor_temporal',
         default_value=4
     )
-    
+
     # Calculate latent dimensions
     num_latent_frames = (num_frames - 1) // vae_scale_factor_temporal + 1
     latent_height = height // vae_scale_factor_spatial
     latent_width = width // vae_scale_factor_spatial
-    
+
     # Get num_train_timesteps from scheduler
     num_train_timesteps = get_wan_dimension(
         config, pipeline, 'num_train_timesteps',
@@ -311,7 +311,7 @@ def _make_wan_synthetic_iterator(config, mesh, global_batch_size, pipeline, is_t
                 max_logging.log(f"Using num_train_timesteps from pipeline.scheduler: {num_train_timesteps}")
         except AttributeError:
             pass
-    
+
     dimensions = {
         'per_host_batch_size': per_host_batch_size,
         'height': height,
@@ -327,13 +327,13 @@ def _make_wan_synthetic_iterator(config, mesh, global_batch_size, pipeline, is_t
         'vae_scale_factor_temporal': vae_scale_factor_temporal,
         'num_train_timesteps': num_train_timesteps,
     }
-    
+
     log_synthetic_config('WAN', dimensions, per_host_batch_size, is_training, num_samples)
-    
+
     # Create generate function with dimensions bound
     def generate_fn(rng_key):
         return _generate_wan_sample(rng_key, dimensions, is_training)
-    
+
     data_source = SyntheticDataSource(generate_fn, num_samples, config.seed)
     return multihost_dataloading.MultiHostDataLoadIterator(data_source, mesh)
 
@@ -346,43 +346,43 @@ def _make_wan_synthetic_iterator(config, mesh, global_batch_size, pipeline, is_t
 def _generate_flux_sample(rng_key: jax.Array, dimensions: Dict[str, Any]) -> Dict[str, np.ndarray]:
     """Generate a single batch of synthetic data for FLUX model."""
     keys = jax.random.split(rng_key, 4)
-    
+
     per_host_batch_size = dimensions['per_host_batch_size']
     latent_height = dimensions['latent_height']
     latent_width = dimensions['latent_width']
     latent_seq_len = dimensions['latent_seq_len']
-    
+
     # Generate pixel values (packed latents) - should be float16 to match trainer
     pixel_values_shape = (per_host_batch_size, latent_seq_len, dimensions['packed_latent_dim'])
     pixel_values = jax.random.normal(keys[0], shape=pixel_values_shape, dtype=jnp.float16)
-    
+
     # Generate text embedding IDs (position encodings)
     input_ids_shape = (per_host_batch_size, dimensions['max_sequence_length'], 3)
     input_ids = jax.random.normal(keys[1], shape=input_ids_shape, dtype=jnp.float32)
-    
+
     # Generate text embeddings (T5)
     text_embeds_shape = (per_host_batch_size, dimensions['max_sequence_length'], dimensions['t5_embed_dim'])
     text_embeds = jax.random.normal(keys[2], shape=text_embeds_shape, dtype=jnp.float32)
-    
+
     # Generate pooled prompt embeddings (CLIP)
     prompt_embeds_shape = (per_host_batch_size, dimensions['pooled_embed_dim'])
     prompt_embeds = jax.random.normal(keys[3], shape=prompt_embeds_shape, dtype=jnp.float32)
-    
+
     # Generate image position IDs - matching pipeline.prepare_latent_image_ids
     # Create base img_ids for single sample (without batch dimension)
     img_ids_base = jnp.zeros((latent_height, latent_width, 3), dtype=jnp.float16)
     # Channel 0 stays 0
     # Channel 1 = height indices
     img_ids_base = img_ids_base.at[..., 1].set(jnp.arange(latent_height)[:, None])
-    # Channel 2 = width indices  
+    # Channel 2 = width indices
     img_ids_base = img_ids_base.at[..., 2].set(jnp.arange(latent_width)[None, :])
-    
+
     # Reshape to (latent_seq_len, 3)
     img_ids_base = img_ids_base.reshape(latent_seq_len, 3)
-    
+
     # Tile for batch dimension
     img_ids = jnp.tile(img_ids_base[None, ...], (per_host_batch_size, 1, 1))
-    
+
     return {
         'pixel_values': np.array(pixel_values),
         'input_ids': np.array(input_ids),
@@ -395,7 +395,7 @@ def _generate_flux_sample(rng_key: jax.Array, dimensions: Dict[str, Any]) -> Dic
 def _make_flux_synthetic_iterator(config, mesh, global_batch_size, pipeline, is_training, num_samples):
     """Create synthetic data iterator for FLUX model."""
     per_host_batch_size = global_batch_size // jax.process_count()
-    
+
     # Initialize dimensions - explicitly specify pipeline paths for FLUX model
     resolution = get_flux_dimension(
         config, pipeline, 'resolution',
@@ -422,13 +422,13 @@ def _make_flux_synthetic_iterator(config, mesh, global_batch_size, pipeline, is_
         pipeline_path='vae_scale_factor',  # Direct pipeline attribute
         default_value=8
     )
-    
+
     # Calculate packed latent dimensions
     latent_height = math.ceil(resolution // (vae_scale_factor * 2))
     latent_width = math.ceil(resolution // (vae_scale_factor * 2))
     latent_seq_len = latent_height * latent_width
     packed_latent_dim = 64  # 16 channels * 2 * 2 packing
-    
+
     dimensions = {
         'per_host_batch_size': per_host_batch_size,
         'max_sequence_length': max_sequence_length,
@@ -440,13 +440,13 @@ def _make_flux_synthetic_iterator(config, mesh, global_batch_size, pipeline, is_
         'latent_seq_len': latent_seq_len,
         'packed_latent_dim': packed_latent_dim,
     }
-    
+
     log_synthetic_config('FLUX', dimensions, per_host_batch_size, is_training, num_samples)
-    
+
     # Create generate function with dimensions bound
     def generate_fn(rng_key):
         return _generate_flux_sample(rng_key, dimensions)
-    
+
     data_source = SyntheticDataSource(generate_fn, num_samples, config.seed)
     return multihost_dataloading.MultiHostDataLoadIterator(data_source, mesh)
 
@@ -459,14 +459,14 @@ def _make_flux_synthetic_iterator(config, mesh, global_batch_size, pipeline, is_
 def make_synthetic_iterator(config, mesh, global_batch_size, pipeline=None, is_training=True):
     """
     Create a synthetic data iterator for the specified model.
-    
+
     Args:
         config: Configuration object with model_name
         mesh: JAX mesh for sharding
         global_batch_size: Total batch size across all devices
         pipeline: Optional pipeline object to extract dimensions from
         is_training: Whether this is for training or evaluation
-        
+
     Returns:
         MultiHostDataLoadIterator wrapping the synthetic data source
     """
@@ -484,8 +484,8 @@ def make_synthetic_iterator(config, mesh, global_batch_size, pipeline=None, is_t
             return _make_flux_synthetic_iterator(config, mesh, global_batch_size, pipeline, is_training, num_samples)
     except (AttributeError, ValueError):
         pass
-    
+
     raise ValueError(
-            f"No synthetic iterator implemented for model."
-            f"Supported models: wan2.1, wan2.2, flux, flux-dev, flux-schnell"
+            "No synthetic iterator implemented for model."
+            "Supported models: wan2.1, wan2.2, flux, flux-dev, flux-schnell"
         )

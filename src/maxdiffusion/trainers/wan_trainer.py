@@ -167,12 +167,12 @@ class WanTrainer:
   def load_dataset(self, mesh, pipeline=None, is_training=True):
     """
     Load dataset - supports both real tfrecord and synthetic data.
-    
+
     Args:
         mesh: JAX mesh for sharding
         pipeline: Optional WAN pipeline to extract dimensions from (for synthetic data)
         is_training: Whether this is for training or evaluation
-    
+
     Returns:
         Data iterator
     """
@@ -186,7 +186,7 @@ class WanTrainer:
     # TODO - create a dataset
 
     config = self.config
-    
+
     # If using synthetic data
     if config.dataset_type == "synthetic":
         return make_data_iterator(
