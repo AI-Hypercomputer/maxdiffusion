@@ -28,9 +28,6 @@ from flax import nnx
 from transformers import AutoTokenizer, GemmaTokenizer, GemmaTokenizerFast, Gemma3ForConditionalGeneration
 from tqdm.auto import tqdm
 import qwix
-
-from ...utils import logging
-
 from ...utils import logging
 from ...schedulers import FlaxFlowMatchScheduler
 from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
@@ -45,6 +42,11 @@ from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
 from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
+
+@flax.struct.dataclass
+class LTX2PipelineOutput:
+    frames: jax.Array
+    audio: Optional[jax.Array] = None
 
 logger = logging.get_logger(__name__)
 
