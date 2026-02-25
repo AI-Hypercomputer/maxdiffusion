@@ -40,8 +40,7 @@ def _resample_audio(
 ) -> None:
     cc = audio_stream.codec_context
 
-    # Use the encoder's format/layout/rate as the *target*
-    target_format = cc.format or "fltp"  # AAC → usually fltp
+    target_format = cc.format or "fltp"
     target_layout = cc.layout or "stereo"
     target_rate = cc.sample_rate or frame_in.sample_rate
 
@@ -108,30 +107,14 @@ def encode_video(
     """
     if not import_utils.is_av_available():
         raise ImportError(import_utils.AV_IMPORT_ERROR.format("encode_video"))
-
-    # Check input video shape [F, H, W, C]?
-    # video usually comes as [F, C, H, W] from pipeline or [F, H, W, C].
-    # diffusers pipeline output_type="np" usually gives [F, H, W, C].
-    # diffusers LTX2 encode_video expects [F, H, W, C] implicitly via video_np logic?
-    # Diffusers LTX2 pipeline output is [B, F, C, H, W] or [B, F, H, W, C]?
-    # Wait, Diffusers `LTX2Pipeline` output docs say:
-    # `[batch_size, num_frames, height, width, num_channels]`
-    # And `encode_video` takes `video[0]` so `[num_frames, height, width, num_channels]`.
     
     video_np = video.cpu().numpy()
-
-    # av expects [Height, Width] for stream setup?
-    # video_np.shape: [F, H, W, C]
     if video_np.ndim == 4:
         # [F, H, W, C]
         _, height, width, _ = video_np.shape
     elif video_np.ndim == 5:
-        # [B, F, H, W, C] - if user passed batch
-        # But `encode_video` logic implies single video.
-        # "video[0]" in docstring example implies passing single video.
         raise ValueError("encode_video expects a single video tensor of shape [F, H, W, C]")
     else:
-         # Fallback?
          _, height, width, _ = video_np.shape
 
     container = av.open(output_path, mode="w")
@@ -148,7 +131,6 @@ def encode_video(
 
     for frame_array in video_np:
         # frame_array is [H, W, C]
-        # av.VideoFrame.from_ndarray expects [H, W, C] for rgb24?
         frame = av.VideoFrame.from_ndarray(frame_array, format="rgb24")
         for packet in stream.encode(frame):
             container.mux(packet)
