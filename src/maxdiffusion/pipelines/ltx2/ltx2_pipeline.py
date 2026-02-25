@@ -402,13 +402,7 @@ class LTX2Pipeline:
            text_encoder_hidden_states = jnp.array(text_encoder_hidden_states.cpu().numpy())
            prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().numpy())
       else:
-          # Mock hidden states
-          # Should be removed once we have actual text_encoder ready to port
-          hidden_dim = 1024
-          num_layers = 2
-          text_encoder_hidden_states = jnp.zeros(
-              (batch_size, max_sequence_length, hidden_dim, num_layers), dtype=dtype or jnp.float32
-          )
+          raise ValueError("`text_encoder` is required to encode prompts.")
 
       sequence_lengths = prompt_attention_mask.sum(axis=-1)
 
@@ -604,28 +598,6 @@ class LTX2Pipeline:
 
   @staticmethod
   def _pack_audio_latents(
-      latents: jax.Array, patch_size: Optional[int] = None, patch_size_t: Optional[int] = None
-  ) -> jax.Array:
-      if patch_size is not None and patch_size_t is not None:
-          batch_size, num_channels, latent_length, latent_mel_bins = latents.shape
-          post_patch_latent_length = latent_length // patch_size_t
-          post_patch_mel_bins = latent_mel_bins // patch_size
-          latents = latents.reshape(
-              batch_size, -1, post_patch_latent_length, patch_size_t, post_patch_mel_bins, patch_size
-          )
-          latents = latents.transpose(0, 2, 4, 1, 3, 5).reshape(batch_size, post_patch_latent_length * post_patch_mel_bins, -1)
-      else:
-          latents = latents.transpose(0, 2, 1).reshape(batch_size, latents.shape[2], -1) 
-          # Wait, original was transpose(1,2).flatten(2,3) -> (Batch, Channels, Length) -> (Batch, Length, Channels)?
-          # Diffusers: latents = latents.transpose(1, 2).flatten(2, 3) 
-          # (B, C, L) -> (B, L, C). 
-          # If 4D: (B, C, L, M) -> (B, C, L, P_t, M, P) -> ...
-          pass
-      return latents
-      
-  # Redefining _pack_audio_latents properly for JAX
-  @staticmethod
-  def _pack_audio_latents_jax(
       latents: jax.Array, patch_size: Optional[int] = None, patch_size_t: Optional[int] = None
   ) -> jax.Array:
       if patch_size is not None and patch_size_t is not None:

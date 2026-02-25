@@ -285,18 +285,39 @@ class LTX2PipelineTest(unittest.TestCase):
                  negative_prompt_embeds=jnp.zeros((1, 5, 64)), # Mismatch length
                  negative_prompt_attention_mask=jnp.ones((1, 5))
              )
-        rngs = nnx.Rngs(0)
+    
+    def test_audio_packing_unpacking(self):
+        # (Batch, Channels, Length, Mel)
+        batch_size = 1
+        channels = 128
+        length = 32
+        mel = 64
+        patch_size = 4
+        patch_size_t = 1 # Audio typically has patch_size_t=1 in LTX logic, let's test that
         
-        pipeline = LTX2Pipeline.load_transformer(
-            devices_array=jnp.array(jax.devices()),
-            mesh=self.mesh,
-            rngs=rngs,
-            config=config,
-            subfolder="transformer"
+        latents = jax.random.normal(jax.random.key(0), (batch_size, channels, length, mel))
+        
+        packed = LTX2Pipeline._pack_audio_latents(latents, patch_size=patch_size, patch_size_t=patch_size_t)
+        
+        # Verify packed shape
+        # original logic: (B, T', F', C, p_t, p) -> (B, T' * F', -1)
+        # T' = 32 // 1 = 32
+        # F' = 64 // 4 = 16
+        # shape should be (1, 32 * 16, 128 * 1 * 4) = (1, 512, 512)
+        expected_seq_len = (length // patch_size_t) * (mel // patch_size)
+        expected_dim = channels * patch_size * patch_size_t
+        self.assertEqual(packed.shape, (batch_size, expected_seq_len, expected_dim))
+        
+        unpacked = LTX2Pipeline._unpack_audio_latents(
+            packed, 
+            latent_length=length, 
+            num_mel_bins=mel, 
+            patch_size=patch_size, 
+            patch_size_t=patch_size_t
         )
         
-        mock_create.assert_called_once()
-        self.assertEqual(pipeline, mock_create.return_value)
+        self.assertEqual(unpacked.shape, latents.shape)
+        np.testing.assert_allclose(unpacked, latents, atol=1e-6)
 
 if __name__ == "__main__":
     unittest.main()
