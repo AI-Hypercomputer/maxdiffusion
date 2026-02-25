@@ -31,8 +31,8 @@ import qwix
 
 from ...utils import logging
 from ...schedulers import FlaxFlowMatchScheduler
-from ...models.ltx2.autoencoder_kl_ltx2 import AutoencoderKLLTX2Video
-from ...models.ltx2.autoencoder_kl_ltx2_audio import AutoencoderKLLTX2Audio
+from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
+from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
 from ...models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
 from ...video_processor import VideoProcessor
@@ -242,8 +242,8 @@ class LTX2Pipeline:
     def __init__(
         self,
         scheduler: FlaxFlowMatchScheduler,
-        vae: AutoencoderKLLTX2Video,
-        audio_vae: AutoencoderKLLTX2Audio,
+        vae: LTX2VideoAutoencoderKL,
+        audio_vae: FlaxAutoencoderKLLTX2Audio,
         text_encoder: Any, # Placeholder for Gemma3
         tokenizer: AutoTokenizer,
         connectors: LTX2AudioVideoGemmaTextEncoder,
