@@ -19,7 +19,7 @@ from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchSche
 class LTX2PipelineTest(unittest.TestCase):
     def setUp(self):
         # Initialize pyconfig (needed for some defaults, though we override mostly)
-        pyconfig.initialize([None, "src/maxdiffusion/configs/base.yml"], unittest=True)
+        pyconfig.initialize([None, "src/maxdiffusion/configs/ltx2_video.yml"], unittest=True)
         config = pyconfig.config
         devices_array = create_device_mesh(config)
         self.mesh = Mesh(devices_array, config.mesh_axes)
