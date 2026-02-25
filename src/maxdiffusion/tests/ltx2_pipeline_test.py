@@ -4,14 +4,14 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
-from unittest.mock import Mock, MagicMock
-import torch
+from unittest.mock import Mock, MagicMock, patch
 import numpy as np
+import torch
 
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import create_device_mesh
 from jax.sharding import Mesh
-from maxdiffusion.pipelines.ltx2.ltx2_pipeline import LTX2Pipeline
+from maxdiffusion.pipelines.ltx2.ltx2_pipeline import LTX2Pipeline, LTX2PipelineOutput
 from maxdiffusion.models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
 from maxdiffusion.models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
 from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler
@@ -46,17 +46,33 @@ class LTX2PipelineTest(unittest.TestCase):
         self.text_encoder = Mock()
         # Mock text encoder output
         # (B, L, D) = (1, 10, 64)
+        # It should return an object with hidden_states attribute which is a list of torch tensors
         self.text_encoder.return_value.hidden_states = [torch.zeros((1, 10, 64)) for _ in range(3)]
+        self.text_encoder.device = torch.device("cpu") # Mock device attribute
 
         self.tokenizer = Mock()
         self.tokenizer.model_max_length = 512
         self.tokenizer.padding_side = "left"
         self.tokenizer.pad_token = None
         self.tokenizer.eos_token = "</s>"
-        self.tokenizer.return_value = MagicMock(
-            input_ids=torch.zeros((1, 10), dtype=torch.long),
-            attention_mask=torch.ones((1, 10), dtype=torch.long)
-        )
+        
+        # When tokenizer is called, it returns a dict-like object (BatchEncoding)
+        # We need to simulate return_tensors="pt" behavior
+        def tokenizer_side_effect(*args, **kwargs):
+            if kwargs.get("return_tensors") == "pt":
+                return MagicMock(
+                    input_ids=torch.zeros((1, 10), dtype=torch.long),
+                    attention_mask=torch.ones((1, 10), dtype=torch.long)
+                )
+            else:
+                 return MagicMock(
+                    input_ids=np.zeros((1, 10), dtype=np.int32),
+                    attention_mask=np.ones((1, 10), dtype=np.int32)
+                )
+        self.tokenizer.side_effect = tokenizer_side_effect
+        
+        self.vocoder = Mock()
+        self.vocoder.return_value = jnp.zeros((1, 16000)) # Dummy waveform
 
         # Real small NNX models
         rngs = nnx.Rngs(0)
@@ -75,15 +91,15 @@ class LTX2PipelineTest(unittest.TestCase):
             
             self.transformer = LTX2VideoTransformer3DModel(
                 rngs=rngs,
-                in_channels=16,
-                out_channels=16,
+                in_channels=128,
+                out_channels=128,
                 patch_size=1,
                 patch_size_t=1,
                 num_attention_heads=1,
                 attention_head_dim=16,
                 cross_attention_dim=32,
-                audio_in_channels=16,
-                audio_out_channels=16,
+                audio_in_channels=128,
+                audio_out_channels=128,
                 audio_num_attention_heads=1,
                 audio_attention_head_dim=16,
                 audio_cross_attention_dim=32,
@@ -120,25 +136,8 @@ class LTX2PipelineTest(unittest.TestCase):
             output_type="latent" # Return latents directly to verify shape
         )
         
-        # Expected Output Shape
-        # Latents: (B, C, F, H, W) -> packed in pipeline
-        # height=32, width=32 -> latents (32//8)=4, (32//8)=4
-        # num_frames=8 -> latents (8-1)//4 + 1 = 1? No.
-        # prepare_latents logic:
-        # num_frames = (num_frames - 1) // vae_temporal_compression_ratio + 1
-        # 8 frames -> (7)//4 + 1 = 2 frames.
-        # shapes: (1, 128, 2, 4, 4)?
-        # But transformer out channels is 16.
-        # Wait, prepare_latents uses `num_channels_latents=128` default.
-        # I should output latents that match transformer in_channels?
-        # transformer `in_channels`=16.
-        # pipeline `prepare_latents` uses `128` default.
-        # I probably need to mock VAE config or pass `num_channels_latents` if pipeline allows.
-        # Pipeline `prepare_latents` takes `num_channels_latents` arg, but `__call__` does NOT expose it.
-        # `__call__` calls `self.prepare_latents` without `num_channels_latents`?
-        # Let's check `ltx2_pipeline.py`.
-        
-        self.assertIsInstance(output, jnp.ndarray)
+        self.assertIsInstance(output, LTX2PipelineOutput)
+        self.assertIsInstance(output.frames, jnp.ndarray)
         # Verify shape roughly (packed shape)
 
     def test_pipeline_call_with_guidance(self):
@@ -149,7 +148,8 @@ class LTX2PipelineTest(unittest.TestCase):
             text_encoder=self.text_encoder,
             tokenizer=self.tokenizer,
             connectors=self.connectors,
-            transformer=self.transformer
+            transformer=self.transformer,
+            vocoder=self.vocoder
         )
          # Override params to match small models
         pipeline.vae_spatial_compression_ratio = 8
@@ -166,7 +166,137 @@ class LTX2PipelineTest(unittest.TestCase):
             guidance_scale=7.5,
             output_type="latent"
         )
-        self.assertIsInstance(output, jnp.ndarray)
+        self.assertIsInstance(output, LTX2PipelineOutput)
+        self.assertIsInstance(output.frames, jnp.ndarray)
+    @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.load_transformer_weights")
+    @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2VideoTransformer3DModel.load_config")
+    def test_load_transformer(self, mock_load_config, mock_load_weights):
+        # Use real LTX2VideoTransformer3DModel with tiny config
+        tiny_config = {
+            "in_channels": 4, 
+            "out_channels": 4,
+            "patch_size": 1,
+            "patch_size_t": 1,
+            "num_attention_heads": 1,
+            "attention_head_dim": 4,
+            "cross_attention_dim": 4,
+            "audio_in_channels": 4,
+            "audio_out_channels": 4,
+            "audio_num_attention_heads": 1,
+            "audio_attention_head_dim": 4,
+            "audio_cross_attention_dim": 4,
+            "num_layers": 1,
+            "caption_channels": 4
+        }
+        mock_load_config.return_value = tiny_config
+        
+        # Instantiate real model effectively to generate valid weights structure
+        rngs = nnx.Rngs(0)
+        with self.mesh:
+            real_model = LTX2VideoTransformer3DModel(**tiny_config, rngs=rngs)
+        
+        graphdef, state = nnx.split(real_model)
+        flat_state = state.to_flat_dict()
+        
+        # Create mock weights that match real model structure
+        # keys in flat_state are tuples like ('layer', 'kernel')
+        # We need to return a dict with same keys but maybe dummy values (or just use the real ones for testing load)
+        # load_transformer_weights returns a flat dict of arrays
+        
+        mock_weights = {}
+        for k, v in flat_state.items():
+             mock_weights[k] = np.zeros(v.shape, dtype=v.dtype)
+             
+        mock_load_weights.return_value = mock_weights
+
+        config = pyconfig.config
+        
+        # Run load_transformer
+        pipeline = LTX2Pipeline.load_transformer(
+            devices_array=jnp.array(jax.devices()),
+            mesh=self.mesh,
+            rngs=rngs,
+            config=config,
+            subfolder="transformer"
+        )
+        
+        # Verify calls
+        mock_load_config.assert_called_once()
+        mock_load_weights.assert_called_once()
+        
+        # Verify returned object is LTX2VideoTransformer3DModel
+        self.assertIsInstance(pipeline, LTX2VideoTransformer3DModel)
+
+    @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.create_sharded_logical_transformer")
+    def test_load_transformer_calls_create(self, mock_create):
+        config = pyconfig.config
+        rngs = nnx.Rngs(0)
+        
+        pipeline = LTX2Pipeline.load_transformer(
+            devices_array=jnp.array(jax.devices()),
+            mesh=self.mesh,
+            rngs=rngs,
+            config=config,
+            subfolder="transformer"
+        )
+        
+        mock_create.assert_called_once()
+        self.assertEqual(pipeline, mock_create.return_value)
+
+    def test_check_inputs(self):
+        pipeline = LTX2Pipeline(
+            scheduler=self.scheduler,
+            vae=self.vae,
+            audio_vae=self.audio_vae,
+            text_encoder=self.text_encoder,
+            tokenizer=self.tokenizer,
+            connectors=self.connectors,
+            transformer=self.transformer
+        )
+        
+        # Test height/width divisibility
+        with self.assertRaisesRegex(ValueError, "divisible by 32"):
+            pipeline.check_inputs("prompt", 100, 100)
+            
+        # Test prompt vs prompt_embeds
+        with self.assertRaisesRegex(ValueError, "Cannot forward both"):
+            pipeline.check_inputs("prompt", 128, 128, prompt_embeds=jnp.zeros((1, 10, 64)))
+            
+        with self.assertRaisesRegex(ValueError, "Provide either"):
+            pipeline.check_inputs(None, 128, 128, prompt_embeds=None)
+            
+        # Test prompt type
+        with self.assertRaisesRegex(ValueError, "prompt` has to be of type"):
+            pipeline.check_inputs(123, 128, 128)
+            
+        # Test mask requirements
+        with self.assertRaisesRegex(ValueError, "Must provide `prompt_attention_mask`"):
+            pipeline.check_inputs(None, 128, 128, prompt_embeds=jnp.zeros((1, 10, 64)))
+            
+        with self.assertRaisesRegex(ValueError, "Must provide `negative_prompt_attention_mask`"):
+             pipeline.check_inputs(None, 128, 128, prompt_embeds=jnp.zeros((1, 10, 64)), prompt_attention_mask=jnp.ones((1, 10)), negative_prompt_embeds=jnp.zeros((1, 10, 64)))
+
+        # Test shape mismatch
+        with self.assertRaisesRegex(ValueError, "must have the same shape"):
+             pipeline.check_inputs(
+                 None, 128, 128, 
+                 prompt_embeds=jnp.zeros((1, 10, 64)), 
+                 prompt_attention_mask=jnp.ones((1, 10)),
+                 negative_prompt_embeds=jnp.zeros((1, 5, 64)), # Mismatch length
+                 negative_prompt_attention_mask=jnp.ones((1, 5))
+             )
+        rngs = nnx.Rngs(0)
+        
+        pipeline = LTX2Pipeline.load_transformer(
+            devices_array=jnp.array(jax.devices()),
+            mesh=self.mesh,
+            rngs=rngs,
+            config=config,
+            subfolder="transformer"
+        )
+        
+        mock_create.assert_called_once()
+        self.assertEqual(pipeline, mock_create.return_value)
 
 if __name__ == "__main__":
     unittest.main()

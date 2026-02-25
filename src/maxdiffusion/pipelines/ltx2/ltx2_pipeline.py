@@ -25,15 +25,19 @@ import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import flax
 from flax import nnx
-from transformers import AutoTokenizer, GemmaTokenizer, GemmaTokenizerFast
+from transformers import AutoTokenizer, GemmaTokenizer, GemmaTokenizerFast, Gemma3ForConditionalGeneration
 from tqdm.auto import tqdm
 import qwix
+
+from ...utils import logging
 
 from ...utils import logging
 from ...schedulers import FlaxFlowMatchScheduler
 from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
+from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
+from ...models.ltx2.ltx2_utils import load_transformer_weights
 from ...models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
 from ...video_processor import VideoProcessor
 from .ltx2_pipeline_utils import encode_video
@@ -84,8 +88,7 @@ def create_sharded_logical_transformer(
     if restored_checkpoint:
         ltx2_config = restored_checkpoint["ltx2_config"]
     else:
-        # Placeholder/Default config construction if not loading from checkpoint directly
-        ltx2_config = {}
+        ltx2_config = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
 
     ltx2_config["mesh"] = mesh
     ltx2_config["dtype"] = config.activations_dtype
@@ -115,8 +118,12 @@ def create_sharded_logical_transformer(
         else:
              params = restored_checkpoint["ltx2_state"]
     else:
-         # Placeholder for explicit weight loading
-         pass
+         params = load_transformer_weights(
+             config.pretrained_model_name_or_path,
+             params, # eval_shapes
+             "cpu",
+             subfolder=subfolder,
+         )
 
     params = jax.tree_util.tree_map_with_path(
         lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
@@ -176,10 +183,12 @@ class LTX2Pipeline:
       tokenizer: Union[GemmaTokenizer, GemmaTokenizerFast],
       connectors: LTX2AudioVideoGemmaTextEncoder,
       transformer: LTX2VideoTransformer3DModel,
+      vocoder: LTX2Vocoder,
   ):
       self.scheduler = scheduler
       self.vae = vae
       self.audio_vae = audio_vae
+      self.vocoder = vocoder
       self.text_encoder = text_encoder
       self.tokenizer = tokenizer
       self.connectors = connectors
@@ -196,8 +205,9 @@ class LTX2Pipeline:
       # Transformer patch sizes
       self.transformer_spatial_patch_size = getattr(self.transformer.config, "patch_size", 1)
       self.transformer_temporal_patch_size = getattr(self.transformer.config, "patch_size_t", 1)
-
+      
       self.audio_sampling_rate = getattr(self.audio_vae.config, "sample_rate", 16000)
+      self.audio_hop_length = getattr(self.audio_vae.config, "mel_hop_length", 160)
       
       # Initialize video processor
       self.video_processor = VideoProcessor(vae_scale_factor=self.vae_spatial_compression_ratio)
@@ -276,17 +286,37 @@ class LTX2Pipeline:
     max_logging.log("Qwix Quantization complete.")
     return quantized_model
 
+  @classmethod
+  def load_transformer(
+      cls,
+      devices_array: np.array,
+      mesh: Mesh,
+      rngs: nnx.Rngs,
+      config: HyperParameters,
+      restored_checkpoint=None,
+      subfolder="transformer",
+  ):
+    with mesh:
+      transformer = create_sharded_logical_transformer(
+          devices_array=devices_array,
+          mesh=mesh,
+          rngs=rngs,
+          config=config,
+          restored_checkpoint=restored_checkpoint,
+          subfolder=subfolder,
+      )
+    return transformer
+
 
 
   @staticmethod
   def _pack_text_embeds(
-      text_hidden_states: torch.Tensor,
-      sequence_lengths: torch.Tensor,
-      device: Union[str, torch.device],
+      text_hidden_states: jax.Array,
+      sequence_lengths: jax.Array,
       padding_side: str = "left",
       scale_factor: int = 8,
       eps: float = 1e-6,
-  ) -> torch.Tensor:
+  ) -> jax.Array:
       """
       Packs and normalizes text encoder hidden states.
       """
@@ -294,7 +324,7 @@ class LTX2Pipeline:
       original_dtype = text_hidden_states.dtype
 
       # Create padding mask
-      token_indices = torch.arange(seq_len, device=device).unsqueeze(0)
+      token_indices = jnp.arange(seq_len)[None, :] # (1, seq_len)
       if padding_side == "right":
           mask = token_indices < sequence_lengths[:, None]
       elif padding_side == "left":
@@ -304,20 +334,23 @@ class LTX2Pipeline:
           raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side}")
       mask = mask[:, :, None, None]
 
-      masked_text_hidden_states = text_hidden_states.masked_fill(~mask, 0.0)
-      num_valid_positions = (sequence_lengths * hidden_dim).view(batch_size, 1, 1, 1)
-      masked_mean = masked_text_hidden_states.sum(dim=(1, 2), keepdim=True) / (num_valid_positions + eps)
+      masked_text_hidden_states = jnp.where(mask, text_hidden_states, 0.0)
+      num_valid_positions = (sequence_lengths * hidden_dim).reshape(batch_size, 1, 1, 1)
+      masked_mean = masked_text_hidden_states.sum(axis=(1, 2), keepdims=True) / (num_valid_positions + eps)
 
-      x_min = text_hidden_states.masked_fill(~mask, float("inf")).amin(dim=(1, 2), keepdim=True)
-      x_max = text_hidden_states.masked_fill(~mask, float("-inf")).amax(dim=(1, 2), keepdim=True)
+      x_min = jnp.min(jnp.where(mask, text_hidden_states, float("inf")), axis=(1, 2), keepdims=True)
+      x_max = jnp.max(jnp.where(mask, text_hidden_states, float("-inf")), axis=(1, 2), keepdims=True)
 
       normalized_hidden_states = (text_hidden_states - masked_mean) / (x_max - x_min + eps)
       normalized_hidden_states = normalized_hidden_states * scale_factor
 
-      normalized_hidden_states = normalized_hidden_states.flatten(2)
-      mask_flat = mask.squeeze(-1).expand(-1, -1, hidden_dim * num_layers)
-      normalized_hidden_states = normalized_hidden_states.masked_fill(~mask_flat, 0.0)
-      normalized_hidden_states = normalized_hidden_states.to(dtype=original_dtype)
+      normalized_hidden_states = normalized_hidden_states.reshape(batch_size, seq_len, -1) # flatten(2)
+      mask_flat = mask.squeeze(-1) # (B, S, 1)
+      # Expand mask flat to (B, S, hidden_dim * num_layers)
+      mask_flat = jnp.broadcast_to(mask_flat, normalized_hidden_states.shape)
+      
+      normalized_hidden_states = jnp.where(mask_flat, normalized_hidden_states, 0.0)
+      normalized_hidden_states = normalized_hidden_states.astype(original_dtype)
       return normalized_hidden_states
 
   def _get_gemma_prompt_embeds(
@@ -326,11 +359,8 @@ class LTX2Pipeline:
       num_videos_per_prompt: int = 1,
       max_sequence_length: int = 1024,
       scale_factor: int = 8,
-      device: Optional[torch.device] = None,
-      dtype: Optional[torch.dtype] = None,
+      dtype: Optional[jnp.dtype] = None,
   ):
-      device = device or torch.device("cpu")
-      
       prompt = [prompt] if isinstance(prompt, str) else prompt
       batch_size = len(prompt)
 
@@ -340,49 +370,63 @@ class LTX2Pipeline:
               self.tokenizer.pad_token = self.tokenizer.eos_token
 
       prompt = [p.strip() for p in prompt]
-      text_inputs = self.tokenizer(
-          prompt,
-          padding="max_length",
-          max_length=max_sequence_length,
-          truncation=True,
-          add_special_tokens=True,
-          return_tensors="pt",
-      )
-      text_input_ids = text_inputs.input_ids.to(device)
-      prompt_attention_mask = text_inputs.attention_mask.to(device)
+      # Return Numpy tensors to be compatible with JAX if no text encoder, else PyTorch
 
       if self.text_encoder is not None:
-           text_encoder_outputs = self.text_encoder(
-              input_ids=text_input_ids, attention_mask=prompt_attention_mask, output_hidden_states=True
-          )
+           # PyTorch Text Encoder
+           text_inputs = self.tokenizer(
+               prompt,
+               padding="max_length",
+               max_length=max_sequence_length,
+               truncation=True,
+               add_special_tokens=True,
+               return_tensors="pt", 
+           )
+           text_input_ids = text_inputs.input_ids
+           prompt_attention_mask = text_inputs.attention_mask
+
+           # Move to device if needed (assuming text_encoder is on correct device or CPU)
+           # For now, keep on CPU or same device as model
+           text_input_ids = text_input_ids.to(self.text_encoder.device)
+           prompt_attention_mask = prompt_attention_mask.to(self.text_encoder.device)
+           
+           with torch.no_grad():
+                text_encoder_outputs = self.text_encoder(
+                    input_ids=text_input_ids, attention_mask=prompt_attention_mask, output_hidden_states=True
+                )
+           
            text_encoder_hidden_states = text_encoder_outputs.hidden_states
            text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
+           
+           # Convert to JAX
+           text_encoder_hidden_states = jnp.array(text_encoder_hidden_states.cpu().numpy())
+           prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().numpy())
       else:
           # Mock hidden states
+          # Should be removed once we have actual text_encoder ready to port
           hidden_dim = 1024
           num_layers = 2
-          text_encoder_hidden_states = torch.zeros(
-              (batch_size, max_sequence_length, hidden_dim, num_layers), device=device, dtype=dtype or torch.float32
+          text_encoder_hidden_states = jnp.zeros(
+              (batch_size, max_sequence_length, hidden_dim, num_layers), dtype=dtype or jnp.float32
           )
 
-      sequence_lengths = prompt_attention_mask.sum(dim=-1)
+      sequence_lengths = prompt_attention_mask.sum(axis=-1)
 
       prompt_embeds = self._pack_text_embeds(
           text_encoder_hidden_states,
           sequence_lengths,
-          device=device,
           padding_side=self.tokenizer.padding_side,
           scale_factor=scale_factor,
       )
       if dtype is not None:
-          prompt_embeds = prompt_embeds.to(dtype=dtype)
+          prompt_embeds = prompt_embeds.astype(dtype)
 
       _, seq_len, _ = prompt_embeds.shape
-      prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
-      prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
+      prompt_embeds = jnp.repeat(prompt_embeds, num_videos_per_prompt, axis=0)
+      prompt_embeds = prompt_embeds.reshape(batch_size * num_videos_per_prompt, seq_len, -1)
 
-      prompt_attention_mask = prompt_attention_mask.view(batch_size, -1)
-      prompt_attention_mask = prompt_attention_mask.repeat(num_videos_per_prompt, 1)
+      prompt_attention_mask = prompt_attention_mask.reshape(batch_size, -1)
+      prompt_attention_mask = jnp.repeat(prompt_attention_mask, num_videos_per_prompt, axis=0)
 
       return prompt_embeds, prompt_attention_mask
 
@@ -392,14 +436,13 @@ class LTX2Pipeline:
       negative_prompt: Optional[Union[str, List[str]]] = None,
       do_classifier_free_guidance: bool = True,
       num_videos_per_prompt: int = 1,
-      prompt_embeds: Optional[torch.Tensor] = None,
-      negative_prompt_embeds: Optional[torch.Tensor] = None,
-      prompt_attention_mask: Optional[torch.Tensor] = None,
-      negative_prompt_attention_mask: Optional[torch.Tensor] = None,
+      prompt_embeds: Optional[jax.Array] = None,
+      negative_prompt_embeds: Optional[jax.Array] = None,
+      prompt_attention_mask: Optional[jax.Array] = None,
+      negative_prompt_attention_mask: Optional[jax.Array] = None,
       max_sequence_length: int = 1024,
       scale_factor: int = 8,
-      device: Optional[torch.device] = None,
-      dtype: Optional[torch.dtype] = None,
+      dtype: Optional[jnp.dtype] = None,
   ):
       if prompt is not None and isinstance(prompt, str):
           batch_size = 1
@@ -414,7 +457,6 @@ class LTX2Pipeline:
               num_videos_per_prompt=num_videos_per_prompt,
               max_sequence_length=max_sequence_length,
               scale_factor=scale_factor,
-              device=device,
               dtype=dtype,
           )
 
@@ -433,7 +475,6 @@ class LTX2Pipeline:
               num_videos_per_prompt=num_videos_per_prompt,
               max_sequence_length=max_sequence_length,
               scale_factor=scale_factor,
-              device=device,
               dtype=dtype,
           )
 
@@ -453,9 +494,16 @@ class LTX2Pipeline:
           raise ValueError(f"`height` and `width` have to be divisible by 32 but are {height} and {width}.")
 
       if prompt is not None and prompt_embeds is not None:
-           raise ValueError("Cannot forward both `prompt` and `prompt_embeds`.")
+           raise ValueError(
+               f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
+               " only forward one of the two."
+           )
       elif prompt is None and prompt_embeds is None:
-          raise ValueError("Provide either `prompt` or `prompt_embeds`.")
+          raise ValueError(
+              "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
+          )
+      elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
+          raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
 
       if prompt_embeds is not None and prompt_attention_mask is None:
           raise ValueError("Must provide `prompt_attention_mask` when specifying `prompt_embeds`.")
@@ -463,8 +511,22 @@ class LTX2Pipeline:
       if negative_prompt_embeds is not None and negative_prompt_attention_mask is None:
            raise ValueError("Must provide `negative_prompt_attention_mask` when specifying `negative_prompt_embeds`.")
 
+      if prompt_embeds is not None and negative_prompt_embeds is not None:
+          if prompt_embeds.shape != negative_prompt_embeds.shape:
+              raise ValueError(
+                  "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
+                  f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
+                  f" {negative_prompt_embeds.shape}."
+              )
+          if prompt_attention_mask.shape != negative_prompt_attention_mask.shape:
+              raise ValueError(
+                  "`prompt_attention_mask` and `negative_prompt_attention_mask` must have the same shape when passed directly, but"
+                  f" got: `prompt_attention_mask` {prompt_attention_mask.shape} != `negative_prompt_attention_mask`"
+                  f" {negative_prompt_attention_mask.shape}."
+              )
+
   @staticmethod
-  def _pack_latents(latents: torch.Tensor, patch_size: int = 1, patch_size_t: int = 1) -> torch.Tensor:
+  def _pack_latents(latents: jax.Array, patch_size: int = 1, patch_size_t: int = 1) -> jax.Array:
       batch_size, num_channels, num_frames, height, width = latents.shape
       post_patch_num_frames = num_frames // patch_size_t
       post_patch_height = height // patch_size
@@ -479,60 +541,71 @@ class LTX2Pipeline:
           post_patch_width,
           patch_size,
       )
-      latents = latents.permute(0, 2, 4, 6, 1, 3, 5, 7).flatten(4, 7).flatten(1, 3)
+      latents = latents.transpose(0, 2, 4, 6, 1, 3, 5, 7).reshape(batch_size, post_patch_num_frames * post_patch_height * post_patch_width, -1)
       return latents
 
   @staticmethod
   def _unpack_latents(
-      latents: torch.Tensor, num_frames: int, height: int, width: int, patch_size: int = 1, patch_size_t: int = 1
-  ) -> torch.Tensor:
-      batch_size = latents.size(0)
-      latents = latents.reshape(batch_size, num_frames, height, width, -1, patch_size_t, patch_size, patch_size)
-      latents = latents.permute(0, 4, 1, 5, 2, 6, 3, 7).flatten(6, 7).flatten(4, 5).flatten(2, 3)
+      latents: jax.Array, num_frames: int, height: int, width: int, patch_size: int = 1, patch_size_t: int = 1
+  ) -> jax.Array:
+      batch_size = latents.shape[0]
+      # latents: (Batch, SeqLen, Channels*Patches)
+      latents = latents.reshape(batch_size, num_frames // patch_size_t, height // patch_size, width // patch_size, -1, patch_size_t, patch_size, patch_size)
+      latents = latents.transpose(0, 4, 1, 5, 2, 6, 3, 7).reshape(batch_size, -1, num_frames, height, width)
       return latents
 
   @staticmethod
   def _normalize_latents(
-      latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor, scaling_factor: float = 1.0
-  ) -> torch.Tensor:
-      latents_mean = latents_mean.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
-      latents_std = latents_std.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
+      latents: jax.Array, latents_mean: jax.Array, latents_std: jax.Array, scaling_factor: float = 1.0
+  ) -> jax.Array:
+      latents_mean = latents_mean.reshape(1, -1, 1, 1, 1).astype(latents.dtype)
+      latents_std = latents_std.reshape(1, -1, 1, 1, 1).astype(latents.dtype)
       latents = (latents - latents_mean) * scaling_factor / latents_std
       return latents
 
   @staticmethod
   def _denormalize_latents(
-      latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor, scaling_factor: float = 1.0
-  ) -> torch.Tensor:
-      latents_mean = latents_mean.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
-      latents_std = latents_std.view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
+      latents: jax.Array, latents_mean: jax.Array, latents_std: jax.Array, scaling_factor: float = 1.0
+  ) -> jax.Array:
+      latents_mean = latents_mean.reshape(1, -1, 1, 1, 1).astype(latents.dtype)
+      latents_std = latents_std.reshape(1, -1, 1, 1, 1).astype(latents.dtype)
       latents = latents * latents_std / scaling_factor + latents_mean
       return latents
 
   @staticmethod
-  def _normalize_audio_latents(latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor):
-      latents_mean = latents_mean.to(latents.device, latents.dtype)
-      latents_std = latents_std.to(latents.device, latents.dtype)
+  def _normalize_audio_latents(latents: jax.Array, latents_mean: jax.Array, latents_std: jax.Array):
+      latents_mean = latents_mean.astype(latents.dtype)
+      latents_std = latents_std.astype(latents.dtype)
       return (latents - latents_mean) / latents_std
 
   @staticmethod
-  def _denormalize_audio_latents(latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor):
-      latents_mean = latents_mean.to(latents.device, latents.dtype)
-      latents_std = latents_std.to(latents.device, latents.dtype)
+  def _denormalize_audio_latents(latents: jax.Array, latents_mean: jax.Array, latents_std: jax.Array):
+      latents_mean = latents_mean.astype(latents.dtype)
+      latents_std = latents_std.astype(latents.dtype)
       return (latents * latents_std) + latents_mean
   
   @staticmethod
   def _create_noised_state(
-      latents: torch.Tensor, noise_scale: float, generator: Optional[torch.Generator] = None
+      latents: jax.Array, noise_scale: float, generator: Optional[nnx.Rngs] = None
   ):
-      noise = torch.randn(latents.shape, generator=generator, device=latents.device, dtype=latents.dtype)
+      # Handle random generation if needed, usually passed in or managed externally
+      # For inference with seeding, we usually pass rng key.
+      # But here we stick to simple noise addition if noise is provided or external logic.
+      # If generator is key, use it.
+      if isinstance(generator, jax.Array): # PRNGKey
+           noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
+      else:
+           # Fallback or expect noise to be handled otherwise?
+           # pipeline prepare_latents typically generates noise.
+           noise = jax.random.normal(jax.random.key(0), latents.shape, dtype=latents.dtype) # Default fallback
+
       noised_latents = noise_scale * noise + (1 - noise_scale) * latents
       return noised_latents
 
   @staticmethod
   def _pack_audio_latents(
-      latents: torch.Tensor, patch_size: Optional[int] = None, patch_size_t: Optional[int] = None
-  ) -> torch.Tensor:
+      latents: jax.Array, patch_size: Optional[int] = None, patch_size_t: Optional[int] = None
+  ) -> jax.Array:
       if patch_size is not None and patch_size_t is not None:
           batch_size, num_channels, latent_length, latent_mel_bins = latents.shape
           post_patch_latent_length = latent_length // patch_size_t
@@ -540,25 +613,68 @@ class LTX2Pipeline:
           latents = latents.reshape(
               batch_size, -1, post_patch_latent_length, patch_size_t, post_patch_mel_bins, patch_size
           )
-          latents = latents.permute(0, 2, 4, 1, 3, 5).flatten(3, 5).flatten(1, 2)
+          latents = latents.transpose(0, 2, 4, 1, 3, 5).reshape(batch_size, post_patch_latent_length * post_patch_mel_bins, -1)
       else:
-          latents = latents.transpose(1, 2).flatten(2, 3)
+          latents = latents.transpose(0, 2, 1).reshape(batch_size, latents.shape[2], -1) 
+          # Wait, original was transpose(1,2).flatten(2,3) -> (Batch, Channels, Length) -> (Batch, Length, Channels)?
+          # Diffusers: latents = latents.transpose(1, 2).flatten(2, 3) 
+          # (B, C, L) -> (B, L, C). 
+          # If 4D: (B, C, L, M) -> (B, C, L, P_t, M, P) -> ...
+          pass
+      return latents
+      
+  # Redefining _pack_audio_latents properly for JAX
+  @staticmethod
+  def _pack_audio_latents_jax(
+      latents: jax.Array, patch_size: Optional[int] = None, patch_size_t: Optional[int] = None
+  ) -> jax.Array:
+      if patch_size is not None and patch_size_t is not None:
+          batch_size, num_channels, latent_length, latent_mel_bins = latents.shape
+          post_patch_latent_length = latent_length // patch_size_t
+          post_patch_mel_bins = latent_mel_bins // patch_size
+          latents = latents.reshape(
+              batch_size, -1, post_patch_latent_length, patch_size_t, post_patch_mel_bins, patch_size
+          )
+          # Permute to (Batch, T', F', C, p_t, p)
+          latents = latents.transpose(0, 2, 4, 1, 3, 5)
+          latents = latents.reshape(batch_size, post_patch_latent_length * post_patch_mel_bins, -1)
+      else:
+          # (B, C, L) -> (B, L, C) or (B, C, L, F) -> ?
+          # Assuming input is (B, C, L) or (B, C, L, F)
+          # If 3D: (B, C, L) -> (B, L, C)
+          if latents.ndim == 3:
+               latents = latents.transpose(0, 2, 1)
+          elif latents.ndim == 4:
+               # (B, C, L, F) -> flatten F into C? No.
+               # Check diffusers logic: `latents.transpose(1, 2).flatten(2, 3)`
+               # (B, C, L, F) -> (B, L, C, F) -> (B, L, C*F)
+               latents = latents.transpose(0, 2, 1, 3).reshape(latents.shape[0], latents.shape[2], -1)
+
       return latents
 
   @staticmethod
   def _unpack_audio_latents(
-      latents: torch.Tensor,
+      latents: jax.Array,
       latent_length: int,
       num_mel_bins: int,
       patch_size: Optional[int] = None,
       patch_size_t: Optional[int] = None,
-  ) -> torch.Tensor:
+  ) -> jax.Array:
       if patch_size is not None and patch_size_t is not None:
-          batch_size = latents.size(0)
+          batch_size = latents.shape[0]
+          # latents: (Batch, Seq, Dim)
           latents = latents.reshape(batch_size, latent_length, num_mel_bins, -1, patch_size_t, patch_size)
-          latents = latents.permute(0, 3, 1, 4, 2, 5).flatten(4, 5).flatten(2, 3)
+          latents = latents.transpose(0, 3, 1, 4, 2, 5).reshape(batch_size, -1, latent_length * patch_size_t, num_mel_bins * patch_size)
+          # Wait, reshape order needs to match pack? 
+          # Pack: (B, C, L, F) -> (B, C, L', pt, F', p) -> (B, L', F', C, pt, p) -> (B, L'*F', C*pt*p)
+          # Unpack: (B, L'*F', C*pt*p) -> (B, L', F', C, pt, p) -> (B, C, L', pt, F', p) -> (B, C, L'*pt, F'*p)
+          # Correct.
+          
       else:
-          latents = latents.unflatten(2, (-1, num_mel_bins)).transpose(1, 2)
+          # (B, L, C*F) -> (B, L, C, F) -> (B, C, L, F)
+          batch_size = latents.shape[0]
+          latents = latents.reshape(batch_size, latent_length, -1, num_mel_bins)
+          latents = latents.transpose(0, 2, 1, 3)
       return latents
 
   def prepare_latents(
@@ -569,15 +685,14 @@ class LTX2Pipeline:
       width: int = 768,
       num_frames: int = 121,
       noise_scale: float = 0.0,
-      dtype: Optional[torch.dtype] = None,
-      device: Optional[torch.device] = None,
-      generator: Optional[torch.Generator] = None,
-      latents: Optional[torch.Tensor] = None,
-  ) -> torch.Tensor:
+      dtype: Optional[jnp.dtype] = None,
+      generator: Optional[jax.Array] = None,
+      latents: Optional[jax.Array] = None,
+  ) -> jax.Array:
       if latents is not None:
            if latents.ndim == 5:
-              latents_mean = torch.as_tensor(np.array(self.vae.latents_mean), device=latents.device)
-              latents_std = torch.as_tensor(np.array(self.vae.latents_std), device=latents.device)
+              latents_mean = jnp.array(self.vae.latents_mean)
+              latents_std = jnp.array(self.vae.latents_std)
               scaling_factor = self.vae.config.scaling_factor if hasattr(self.vae.config, "scaling_factor") else 1.0
               
               latents = self._normalize_latents(latents, latents_mean, latents_std, scaling_factor)
@@ -587,14 +702,17 @@ class LTX2Pipeline:
            if latents.ndim != 3:
               raise ValueError("Unexpected latents shape")
            latents = self._create_noised_state(latents, noise_scale, generator)
-           return latents.to(device=device, dtype=dtype)
+           return latents.astype(dtype)
       
       height = height // self.vae_spatial_compression_ratio
       width = width // self.vae_spatial_compression_ratio
       num_frames = (num_frames - 1) // self.vae_temporal_compression_ratio + 1
 
       shape = (batch_size, num_channels_latents, num_frames, height, width)
-      latents = torch.randn(shape, generator=generator, device=device, dtype=dtype)
+      if generator is None:
+           generator = jax.random.key(0)
+      
+      latents = jax.random.normal(generator, shape, dtype=dtype or jnp.float32)
       latents = self._pack_latents(
           latents, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size
       )
@@ -603,32 +721,38 @@ class LTX2Pipeline:
   def prepare_audio_latents(
       self,
       batch_size: int = 1,
-      num_channels_latents: int = 8,
-      audio_latent_length: int = 1,
-      num_mel_bins: int = 64,
+      num_channels_latents: int = 128,
+      audio_latent_length: int = 8,
       noise_scale: float = 0.0,
-      dtype: Optional[torch.dtype] = None,
-      device: Optional[torch.device] = None,
-      generator: Optional[torch.Generator] = None,
-      latents: Optional[torch.Tensor] = None,
-  ) -> torch.Tensor:
+      dtype: Optional[jnp.dtype] = None,
+      generator: Optional[jax.Array] = None,
+      latents: Optional[jax.Array] = None,
+  ) -> jax.Array:
       if latents is not None:
+          # Assuming latents is JAX array or compatible
           if latents.ndim == 4:
-              latents = self._pack_audio_latents(latents)
+              # (Batch, Channels, Length, Mel) -> Pack
+              latents = self._pack_audio_latents(latents, getattr(self.audio_vae.config, "patch_size", None), getattr(self.audio_vae.config, "patch_size_t", None))
           if latents.ndim != 3:
                raise ValueError("Unexpected audio latents shape")
           
-          latents_mean = torch.as_tensor(np.array(self.audio_vae.latents_mean), device=latents.device)
-          latents_std = torch.as_tensor(np.array(self.audio_vae.latents_std), device=latents.device)
+          latents_mean = jnp.array(self.audio_vae.latents_mean)
+          latents_std = jnp.array(self.audio_vae.latents_std)
 
           latents = self._normalize_audio_latents(latents, latents_mean, latents_std)
           latents = self._create_noised_state(latents, noise_scale, generator)
-          return latents.to(device=device, dtype=dtype)
+          return latents.astype(dtype)
 
-      latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
+      latent_mel_bins = self.audio_vae.config.mel_bins // self.audio_vae_mel_compression_ratio
       shape = (batch_size, num_channels_latents, audio_latent_length, latent_mel_bins)
-      latents = torch.randn(shape, generator=generator, device=device, dtype=dtype)
-      latents = self._pack_audio_latents(latents)
+      
+      if generator is None:
+          generator = jax.random.key(1)
+          
+      latents = jax.random.normal(generator, shape, dtype=dtype or jnp.float32)
+      latents = self._pack_audio_latents(
+          latents, getattr(self.audio_vae.config, "patch_size", None), getattr(self.audio_vae.config, "patch_size_t", None)
+      )
       return latents
 
   def __call__(
@@ -643,14 +767,14 @@ class LTX2Pipeline:
       guidance_scale: float = 3.0,
       noise_scale: float = 1.0,
       num_videos_per_prompt: Optional[int] = 1,
-      generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-      latents: Optional[torch.Tensor] = None,
-      prompt_embeds: Optional[torch.Tensor] = None,
-      negative_prompt_embeds: Optional[torch.Tensor] = None,
-      prompt_attention_mask: Optional[torch.Tensor] = None,
-      negative_prompt_attention_mask: Optional[torch.Tensor] = None,
+      generator: Optional[jax.Array] = None,
+      latents: Optional[jax.Array] = None,
+      prompt_embeds: Optional[jax.Array] = None,
+      negative_prompt_embeds: Optional[jax.Array] = None,
+      prompt_attention_mask: Optional[jax.Array] = None,
+      negative_prompt_attention_mask: Optional[jax.Array] = None,
       max_sequence_length: int = 1024,
-      dtype: Optional[torch.dtype] = torch.float32,
+      dtype: Optional[jnp.dtype] = jnp.float32,
       output_type: str = "pil",
   ):
       # 1. Check inputs
@@ -673,39 +797,54 @@ class LTX2Pipeline:
       # Effective batch size
       batch_size = prompt_embeds.shape[0] // 2 if guidance_scale > 1.0 else prompt_embeds.shape[0]
       
+      # Prepare generators
+      if generator is None:
+          generator = jax.random.key(0)
+      
+      key_latents, key_audio = jax.random.split(generator)
+
       latents = self.prepare_latents(
            batch_size=batch_size,
            height=height, width=width, num_frames=num_frames,
            noise_scale=noise_scale,
            dtype=dtype,
-           generator=generator,
+           generator=key_latents,
            latents=latents,
       )
       
       # 4. Prepare Audio Latents
       audio_channels = getattr(self.transformer, "audio_in_channels", 128)
+      
+      duration_s = num_frames / frame_rate
+      audio_latents_per_second = (
+          self.audio_sampling_rate / self.audio_hop_length / float(self.audio_vae_temporal_compression_ratio)
+      )
+      audio_num_frames = round(duration_s * audio_latents_per_second)
+
       audio_latents = self.prepare_audio_latents(
           batch_size=batch_size,
           num_channels_latents=audio_channels,
-          audio_latent_length=8, # Arbitrary small length
+          audio_latent_length=audio_num_frames,
           dtype=dtype,
-          generator=generator,
+          generator=key_audio,
           noise_scale=noise_scale,
       )
 
       # 5. Prepare Timesteps
-      self.scheduler.set_timesteps(num_inference_steps=num_inference_steps)
-      timesteps = self.scheduler.timesteps
+      scheduler_state = self.scheduler.set_timesteps(
+          self.scheduler.create_state(), num_inference_steps=num_inference_steps
+      )
+      timesteps = scheduler_state.timesteps
 
       # 6. Prepare JAX State
-      latents_jax = jnp.array(latents.cpu().numpy())
-      audio_latents_jax = jnp.array(audio_latents.cpu().numpy())
-      prompt_embeds_jax = jnp.array(prompt_embeds.cpu().numpy())
-      prompt_attention_mask_jax = jnp.array(prompt_attention_mask.cpu().numpy())
+      latents_jax = latents
+      audio_latents_jax = audio_latents
+      prompt_embeds_jax = prompt_embeds
+      prompt_attention_mask_jax = prompt_attention_mask
       
       if guidance_scale > 1.0:
-          negative_prompt_embeds_jax = jnp.array(negative_prompt_embeds.cpu().numpy())
-          negative_prompt_attention_mask_jax = jnp.array(negative_prompt_attention_mask.cpu().numpy())
+          negative_prompt_embeds_jax = negative_prompt_embeds
+          negative_prompt_attention_mask_jax = negative_prompt_attention_mask
           prompt_embeds_jax = jnp.concatenate([negative_prompt_embeds_jax, prompt_embeds_jax], axis=0)
           prompt_attention_mask_jax = jnp.concatenate([negative_prompt_attention_mask_jax, prompt_attention_mask_jax], axis=0)
           latents_jax = jnp.concatenate([latents_jax] * 2, axis=0)
@@ -741,7 +880,7 @@ class LTX2Pipeline:
               num_frames,
               height,
               width,
-              8, # audio_num_frames
+              audio_num_frames,
               frame_rate,
           )
 
@@ -758,13 +897,71 @@ class LTX2Pipeline:
                latents_step = latents_jax
                audio_latents_step = audio_latents_jax
 
-          # Step (Dummy Euler)
-          latents_jax = latents_step - noise_pred
-          
-          if guidance_scale > 1.0:
-               latents_jax = jnp.concatenate([latents_jax] * 2, axis=0)
+          # Step
+          latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
+          audio_latents_step, _ = self.scheduler.step(scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
 
-      return latents_jax
+          if guidance_scale > 1.0:
+               latents_jax = jnp.concatenate([latents_step] * 2, axis=0)
+               audio_latents_jax = jnp.concatenate([audio_latents_step] * 2, axis=0)
+          else:
+               latents_jax = latents_step
+               audio_latents_jax = audio_latents_step
+
+      # 8. Decode Latents
+      if guidance_scale > 1.0:
+          latents_jax = latents_jax[batch_size:]
+          audio_latents_jax = audio_latents_jax[batch_size:]
+
+      # Unpack and Denormalize Video
+      latents = self._unpack_latents(
+          latents_jax, num_frames, height, width, 
+          self.transformer_spatial_patch_size, self.transformer_temporal_patch_size
+      )
+      latents = self._denormalize_latents(
+          latents, 
+          jnp.array(self.vae.latents_mean), 
+          jnp.array(self.vae.latents_std), 
+          self.vae.config.scaling_factor
+      )
+      
+      # Denormalize and Unpack Audio (Order important: Denorm THEN Unpack)
+      audio_latents = self._denormalize_audio_latents(
+          audio_latents_jax,
+          jnp.array(self.audio_vae.latents_mean),
+          jnp.array(self.audio_vae.latents_std)
+      )
+      
+      num_mel_bins = self.audio_vae.config.mel_bins if getattr(self, "audio_vae", None) is not None else 64
+      latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
+
+      audio_latents = self._unpack_audio_latents(
+          audio_latents, 
+          audio_num_frames, 
+          num_mel_bins=latent_mel_bins
+      )
+
+      if output_type == "latent":
+          return LTX2PipelineOutput(frames=latents, audio=audio_latents)
+
+      # Decode Video
+      # Assuming VAE runs in half precision if configured, but here typically we interpret float32 from scheduler
+      latents = latents.astype(self.vae.dtype)
+      video = self.vae.decode(latents, return_dict=False)[0]
+      # Post-process video (converts to numpy/PIL)
+      # We need to pass numpy to postprocess_video usually, checking if it handles JAX
+      video_np = np.array(video)
+      video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
+
+      # Decode Audio
+      audio_latents = audio_latents.astype(self.audio_vae.dtype)
+      generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
+      audio = self.vocoder(generated_mel_spectrograms)
+      
+      # Convert audio to numpy
+      audio = np.array(audio)
+
+      return LTX2PipelineOutput(frames=video, audio=audio)
 
 @partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale", "num_frames", "height", "width", "audio_num_frames", "fps"))
 def transformer_forward_pass(

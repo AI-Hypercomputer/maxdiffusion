@@ -24,6 +24,8 @@ from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
 from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSizeEmbeddings, NNXPixArtAlphaTextProjection
 from maxdiffusion.models.gradient_checkpoint import GradientCheckpointType
 from maxdiffusion.common_types import BlockSizes
+from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
+from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
 
 
 class LTX2AdaLayerNormSingle(nnx.Module):
@@ -483,8 +485,9 @@ class LTX2VideoTransformerBlock(nnx.Module):
     return hidden_states, audio_hidden_states
 
 
-class LTX2VideoTransformer3DModel(nnx.Module):
+class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
+  @register_to_config
   def __init__(
       self,
       rngs: nnx.Rngs,
