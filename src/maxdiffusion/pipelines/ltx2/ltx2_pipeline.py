@@ -162,36 +162,6 @@ def create_sharded_logical_transformer(
     return transformer
 
 
-def get_dummy_ltx2_inputs(config, pipeline, batch_size):
-    # 1. Latents
-    latents = pipeline.prepare_latents(
-        batch_size=batch_size,
-        height=config.resolution,
-        width=config.resolution,
-        num_frames=getattr(config, "num_frames", 121),
-    )
-    
-    # 2. Audio Latents
-    audio_latents = pipeline.prepare_audio_latents(
-        batch_size=batch_size,
-        audio_latent_length=8,
-    )
-    
-    # 3. Embeddings
-    text_encoder_dim = getattr(pipeline.transformer, "cross_attention_dim", 4096)
-    encoder_hidden_states = jax.random.normal(jax.random.key(0), (batch_size, 128, text_encoder_dim))
-    
-    audio_context_dim = getattr(pipeline.transformer, "audio_cross_attention_dim", 2048)
-    audio_encoder_hidden_states = jax.random.normal(jax.random.key(0), (batch_size, 128, audio_context_dim))
-
-    timesteps = jnp.array([0] * batch_size, dtype=jnp.int32)
-    
-    encoder_attention_mask = jnp.ones((batch_size, 128))
-    audio_encoder_attention_mask = jnp.ones((batch_size, 128))
-    
-    return (latents, audio_latents, timesteps, encoder_hidden_states, audio_encoder_hidden_states, encoder_attention_mask, audio_encoder_attention_mask)
-
-
 
 # Copied from diffusers.pipelines.flux.pipeline_flux.calculate_shift
 def calculate_shift(
