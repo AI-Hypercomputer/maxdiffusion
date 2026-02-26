@@ -178,7 +178,7 @@ After installation completes, run the training script.
 
   ```bash
   BUCKET_NAME=my-bucket
-  gsutil -m cp -r $TFRECORDS_DATASET_DIR gs://$BUCKET_NAME/${TFRECORDS_DATASET_DIR##*/}
+  gcloud storage cp --recursive $TFRECORDS_DATASET_DIR gs://$BUCKET_NAME/${TFRECORDS_DATASET_DIR##*/}
   ```
 
   Now run the training command:
@@ -704,5 +704,4 @@ This script will automatically format your code with `pyink` and help you identi
 
 
 The full suite of -end-to end tests is in `tests` and `src/maxdiffusion/tests`. We run them with a nightly cadance.
-
 
