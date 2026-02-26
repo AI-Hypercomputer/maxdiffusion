@@ -109,6 +109,8 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
       denoising_strength: float = 1.0,
       training: bool = False,
       shift: Optional[float] = None,
+      timesteps: Optional[jnp.ndarray] = None,
+      sigmas: Optional[jnp.ndarray] = None,
   ) -> FlowMatchSchedulerState:
     """
     Sets the discrete timesteps used for the diffusion chain.
@@ -126,27 +128,42 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
             Whether the scheduler is being used for training.
         shift (`Optional[float]`):
             An optional shift value to override the one in the config.
+        timesteps (`Optional[jnp.ndarray]`):
+            Custom timesteps to use for the denoising process.
+        sigmas (`Optional[jnp.ndarray]`):
+            Custom sigmas to use for the denoising process.
 
     Returns:
         `FlowMatchSchedulerState`: The updated scheduler state.
     """
     current_shift = shift if shift is not None else self.config.shift
-    sigma_start = self.config.sigma_min + (self.config.sigma_max - self.config.sigma_min) * denoising_strength
 
-    if self.config.extra_one_step:
-      sigmas = jnp.linspace(sigma_start, self.config.sigma_min, num_inference_steps + 1, dtype=self.dtype)[:-1]
+    if timesteps is not None and sigmas is not None:
+      pass
+    elif timesteps is not None:
+      sigmas = timesteps / self.config.num_train_timesteps
+    elif sigmas is not None:
+      timesteps = sigmas * self.config.num_train_timesteps
     else:
-      sigmas = jnp.linspace(sigma_start, self.config.sigma_min, num_inference_steps, dtype=self.dtype)
+      sigma_start = self.config.sigma_min + (self.config.sigma_max - self.config.sigma_min) * denoising_strength
 
-    if self.config.inverse_timesteps:
-      sigmas = jnp.flip(sigmas, dims=[0])
+      if self.config.extra_one_step:
+        sigmas = jnp.linspace(sigma_start, self.config.sigma_min, num_inference_steps + 1, dtype=self.dtype)[:-1]
+      else:
+        sigmas = jnp.linspace(sigma_start, self.config.sigma_min, num_inference_steps, dtype=self.dtype)
 
-    sigmas = current_shift * sigmas / (1 + (current_shift - 1) * sigmas)
+      if self.config.inverse_timesteps:
+        sigmas = jnp.flip(sigmas, dims=[0])
 
-    if self.config.reverse_sigmas:
-      sigmas = 1 - sigmas
+      sigmas = current_shift * sigmas / (1 + (current_shift - 1) * sigmas)
 
-    timesteps = sigmas * self.config.num_train_timesteps
+      if self.config.reverse_sigmas:
+        sigmas = 1 - sigmas
+
+      timesteps = sigmas * self.config.num_train_timesteps
+
+    if timesteps is not None:
+      num_inference_steps = len(timesteps)
 
     linear_timesteps_weights = None
     if training:

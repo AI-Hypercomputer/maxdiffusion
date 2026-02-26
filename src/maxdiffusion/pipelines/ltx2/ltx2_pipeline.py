@@ -186,25 +186,17 @@ def retrieve_timesteps(
 ):
     if timesteps is not None and sigmas is not None:
         raise ValueError("Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values")
-    
-    if timesteps is not None:
-        # TODO: Support custom timesteps in FlaxFlowMatchScheduler
-        raise NotImplementedError("Custom timesteps not yet supported in FlaxFlowMatchScheduler wrapper.")
-    elif sigmas is not None:
-        # Manually create state with custom sigmas
-        # Replicates logic from diffusers but for Flax state
-        sigmas = jnp.array(sigmas, dtype=scheduler.dtype)
-        # Assuming scheduler.config.num_train_timesteps exists
-        timesteps = sigmas * scheduler.config.num_train_timesteps
         
-        # We need to update the state with these new values
-        scheduler_state = scheduler_state.replace(
-            sigmas=sigmas,
-            timesteps=timesteps,
-            num_inference_steps=len(sigmas)
-        )
-    else:
-        scheduler_state = scheduler.set_timesteps(scheduler_state, num_inference_steps, **kwargs)
+    timesteps = jnp.array(timesteps, dtype=scheduler.dtype) if timesteps is not None else None
+    sigmas = jnp.array(sigmas, dtype=scheduler.dtype) if sigmas is not None else None
+    
+    scheduler_state = scheduler.set_timesteps(
+        scheduler_state,
+        num_inference_steps=num_inference_steps,
+        timesteps=timesteps,
+        sigmas=sigmas,
+        **kwargs,
+    )
         
     return scheduler_state
 
