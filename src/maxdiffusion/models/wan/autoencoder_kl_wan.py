@@ -1131,9 +1131,15 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     out_0, enc_feat_map, _ = self.encoder(x[:, :1, :, :, :], feat_cache=enc_feat_map, feat_idx=0)
     out = out_0
 
-    # 2. Process remaining frames in chunks of 4 using jax.lax.scan
+    # 2. Evaluate the second chunk (4 frames) manually to stabilize WanCausalConv3d caches to T=2.
+    # WanCausalConv3d uses cache_x = x[:, -2:]. After 1 frame, cache is T=1. After 4 frames, it stabilizes to T=2.
     if t > 1:
-      x_rest = x[:, 1:, :, :, :]
+      out_1, enc_feat_map, _ = self.encoder(x[:, 1:5, :, :, :], feat_cache=enc_feat_map, feat_idx=0)
+      out = jnp.concatenate([out_0, out_1], axis=1)
+
+    # 3. Process remaining frames in chunks of 4 using jax.lax.scan
+    if t > 5:
+      x_rest = x[:, 5:, :, :, :]
       B, T_rest, H, W, C = x_rest.shape
       num_chunks = T_rest // 4
 
@@ -1157,7 +1163,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       B_out, _, _, H_out, W_out, C_out = scanned_out_chunks.shape
       scanned_out_chunks = jnp.reshape(scanned_out_chunks, (B_out, num_chunks, H_out, W_out, C_out))
       
-      out = jnp.concatenate([out_0, scanned_out_chunks], axis=1)
+      out = jnp.concatenate([out, scanned_out_chunks], axis=1)
 
     # 3. Update back to the wrapper object if needed
     feat_cache._enc_feat_map = enc_feat_map
