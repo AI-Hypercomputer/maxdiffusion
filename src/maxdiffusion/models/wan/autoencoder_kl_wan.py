@@ -119,6 +119,28 @@ class WanCausalConv3d(nnx.Module):
     )
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None, idx=-1) -> jax.Array:
+    # OPTIMIZATION: Spatial Partitioning during execution
+    if self.mesh is not None and "context" in self.mesh.axis_names:
+      height = x.shape[2]
+      width = x.shape[3]
+      num_context_devices = self.mesh.shape["context"]
+
+      shard_axis = "context" if (height % num_context_devices == 0) else None
+      shard_width_axis = None
+      if shard_axis is None and width % num_context_devices == 0:
+        shard_width_axis = "context"
+
+      x = jax.lax.with_sharding_constraint(
+          x, jax.sharding.PartitionSpec("data", None, shard_axis, shard_width_axis, None)
+      )
+      
+      # Debug logging
+      if shard_axis or shard_width_axis:
+        jax.debug.print(
+            "Spatial sharding applied: height_axis={}, width_axis={} for shape {}", 
+            shard_axis, shard_width_axis, x.shape
+        )
+
     current_padding = list(self._causal_padding)  # Mutable copy
     padding_needed = self._depth_padding_before
 
