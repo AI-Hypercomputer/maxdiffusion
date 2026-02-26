@@ -184,6 +184,52 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
     return (latents, audio_latents, timesteps, encoder_hidden_states, audio_encoder_hidden_states, encoder_attention_mask, audio_encoder_attention_mask)
 
 
+
+# Copied from diffusers.pipelines.flux.pipeline_flux.calculate_shift
+def calculate_shift(
+    image_seq_len,
+    base_seq_len: int = 256,
+    max_seq_len: int = 4096,
+    base_shift: float = 0.5,
+    max_shift: float = 1.15,
+):
+    m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+    b = base_shift - m * base_seq_len
+    mu = image_seq_len * m + b
+    return mu
+
+def retrieve_timesteps(
+    scheduler,
+    scheduler_state,
+    num_inference_steps: Optional[int] = None,
+    timesteps: Optional[List[int]] = None,
+    sigmas: Optional[List[float]] = None,
+    **kwargs,
+):
+    if timesteps is not None and sigmas is not None:
+        raise ValueError("Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values")
+    
+    if timesteps is not None:
+        # TODO: Support custom timesteps in FlaxFlowMatchScheduler
+        raise NotImplementedError("Custom timesteps not yet supported in FlaxFlowMatchScheduler wrapper.")
+    elif sigmas is not None:
+        # Manually create state with custom sigmas
+        # Replicates logic from diffusers but for Flax state
+        sigmas = jnp.array(sigmas, dtype=scheduler.dtype)
+        # Assuming scheduler.config.num_train_timesteps exists
+        timesteps = sigmas * scheduler.config.num_train_timesteps
+        
+        # We need to update the state with these new values
+        scheduler_state = scheduler_state.replace(
+            sigmas=sigmas,
+            timesteps=timesteps,
+            num_inference_steps=len(sigmas)
+        )
+    else:
+        scheduler_state = scheduler.set_timesteps(scheduler_state, num_inference_steps, **kwargs)
+        
+    return scheduler_state
+
 class LTX2Pipeline:
   """
   Pipeline for LTX-2.
@@ -194,7 +240,7 @@ class LTX2Pipeline:
       scheduler: FlaxFlowMatchScheduler,
       vae: LTX2VideoAutoencoderKL,
       audio_vae: FlaxAutoencoderKLLTX2Audio,
-      text_encoder: Any, # Placeholder for Gemma3
+      text_encoder: Gemma3ForConditionalGeneration, # Using PyTorch Gemma3 encoder directly per user request
       tokenizer: Union[GemmaTokenizer, GemmaTokenizerFast],
       connectors: LTX2AudioVideoGemmaTextEncoder,
       transformer: LTX2VideoTransformer3DModel,
@@ -717,6 +763,7 @@ class LTX2Pipeline:
       dtype: Optional[jnp.dtype] = None,
       generator: Optional[jax.Array] = None,
       latents: Optional[jax.Array] = None,
+      num_mel_bins: Optional[int] = None,
   ) -> jax.Array:
       if latents is not None:
           # Assuming latents is JAX array or compatible
@@ -822,14 +869,32 @@ class LTX2Pipeline:
           batch_size=batch_size,
           num_channels_latents=audio_channels,
           audio_latent_length=audio_num_frames,
+          noise_scale=noise_scale,
           dtype=dtype,
           generator=key_audio,
-          noise_scale=noise_scale,
+          latents=audio_latents,
       )
 
       # 5. Prepare Timesteps
-      scheduler_state = self.scheduler.set_timesteps(
-          self.scheduler.create_state(), num_inference_steps=num_inference_steps
+      sigmas = jnp.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
+      
+      video_sequence_length = (num_frames - 1) // self.vae_temporal_compression_ratio + 1
+      video_sequence_length *= (height // self.vae_spatial_compression_ratio) * (width // self.vae_spatial_compression_ratio)
+      
+      mu = calculate_shift(
+          video_sequence_length,
+          self.scheduler.config.get("base_image_seq_len", 1024),
+          self.scheduler.config.get("max_image_seq_len", 4096),
+          self.scheduler.config.get("base_shift", 0.95),
+          self.scheduler.config.get("max_shift", 2.05),
+      )
+      
+      scheduler_state = retrieve_timesteps(
+          self.scheduler, 
+          self.scheduler.create_state(), 
+          num_inference_steps=num_inference_steps,
+          sigmas=sigmas,
+          shift=mu,
       )
       timesteps = scheduler_state.timesteps
 
@@ -941,10 +1006,26 @@ class LTX2Pipeline:
       if output_type == "latent":
           return LTX2PipelineOutput(frames=latents, audio=audio_latents)
 
-      # Decode Video
-      # Assuming VAE runs in half precision if configured, but here typically we interpret float32 from scheduler
-      latents = latents.astype(self.vae.dtype)
-      video = self.vae.decode(latents, return_dict=False)[0]
+      if getattr(self.vae.config, "timestep_conditioning", False):
+          noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
+          
+          if not isinstance(decode_timestep, list):
+              decode_timestep = [decode_timestep] * batch_size
+          if decode_noise_scale is None:
+              decode_noise_scale = decode_timestep
+          elif not isinstance(decode_noise_scale, list):
+              decode_noise_scale = [decode_noise_scale] * batch_size
+
+          timestep = jnp.array(decode_timestep, dtype=latents.dtype)
+          decode_noise_scale = jnp.array(decode_noise_scale, dtype=latents.dtype)[:, None, None, None, None]
+          
+          latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
+          
+          latents = latents.astype(self.vae.dtype)
+          video = self.vae.decode(latents, timestep=timestep, return_dict=False)[0]
+      else:
+          latents = latents.astype(self.vae.dtype)
+          video = self.vae.decode(latents, return_dict=False)[0]
       # Post-process video (converts to numpy/PIL)
       # We need to pass numpy to postprocess_video usually, checking if it handles JAX
       video_np = np.array(video)
@@ -981,37 +1062,23 @@ def transformer_forward_pass(
 ):
     transformer = nnx.merge(graphdef, state)
     
-    # 1. Compute Embeddings
-    temb = transformer.time_embed(timestep)
-    temb_audio = transformer.audio_time_embed(timestep)
-    
-    temb_ca_scale_shift = transformer.av_cross_attn_video_scale_shift(timestep)
-    temb_ca_audio_scale_shift = transformer.av_cross_attn_audio_scale_shift(timestep)
-    temb_ca_gate = transformer.av_cross_attn_video_a2v_gate(timestep)
-    temb_ca_audio_gate = transformer.av_cross_attn_audio_v2a_gate(timestep)
-    
+    # Expand timestep to batch size
+    timestep = jnp.expand_dims(timestep, 0).repeat(latents.shape[0])
+
     noise_pred, noise_pred_audio = transformer(
         hidden_states=latents,
-        audio_hidden_states=audio_latents,
         encoder_hidden_states=encoder_hidden_states,
-        audio_encoder_hidden_states=audio_encoder_hidden_states,
-        temb=temb,
-        temb_audio=temb_audio,
-        temb_ca_scale_shift=temb_ca_scale_shift,
-        temb_ca_audio_scale_shift=temb_ca_audio_scale_shift,
-        temb_ca_gate=temb_ca_gate,
-        temb_ca_audio_gate=temb_ca_audio_gate,
-        video_rotary_emb=None, # Internally computed via height/width/num_frames
-        audio_rotary_emb=None,
-        ca_video_rotary_emb=None,
-        ca_audio_rotary_emb=None,
+        timestep=timestep,
         encoder_attention_mask=encoder_attention_mask,
-        audio_encoder_attention_mask=audio_encoder_attention_mask,
         num_frames=num_frames,
         height=height,
         width=width,
+        audio_hidden_states=audio_latents,
+        audio_encoder_hidden_states=audio_encoder_hidden_states,
+        audio_encoder_attention_mask=audio_encoder_attention_mask,
         fps=fps,
         audio_num_frames=audio_num_frames,
+        return_dict=False,
     )
     
     return noise_pred, noise_pred_audio
