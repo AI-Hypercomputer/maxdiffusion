@@ -85,97 +85,18 @@ class LTX2Checkpointer:
     max_logging.log(f"optimizer found in checkpoint {'opt_state' in restored_checkpoint.ltx2_state.keys()}")
     return restored_checkpoint, step
 
-  def load_diffusers_checkpoint(self):
-    config = self.config
-    max_logging.log("Loading LTX2 components from Hugging Face base models.")
-    
-    # 1. Tokenizer
-    max_logging.log("Loading Gemma Tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.pretrained_model_name_or_path,
-        subfolder="tokenizer",
-    )
-    # 3. Connectors
-    max_logging.log("Loading Connectors...")
-    connectors = LTX2AudioVideoGemmaTextEncoder.from_pretrained(
-        config.pretrained_model_name_or_path,
-        subfolder="connectors",
-    )
-    
-    # 4. Video VAE
-    max_logging.log("Loading Video VAE...")
-    vae = LTX2VideoAutoencoderKL.from_pretrained(
-        config.pretrained_model_name_or_path,
-        subfolder="vae",
-    )
-
-    # 5. Audio VAE
-    max_logging.log("Loading Audio VAE...")
-    audio_vae = FlaxAutoencoderKLLTX2Audio.from_pretrained(
-        config.pretrained_model_name_or_path,
-        subfolder="audio_vae",
-    )
-
-    # 6. Transformer
-    max_logging.log("Loading Transformer...")
-    # NOTE: Transformer weights are usually sharded and loaded separately in generation scripts
-    # This just instantiates the architecture wrapper or loads full weights.
-    # In MaxDiffusion we typically let the pipeline or generation script handle sharded loading
-    # but we load the raw config/eval shape here.
-    transformer = LTX2VideoTransformer3DModel.from_pretrained(
-         config.pretrained_model_name_or_path,
-         subfolder="transformer",
-    )
-
-    # 7. Vocoder
-    max_logging.log("Loading Vocoder...")
-    vocoder = LTX2Vocoder.from_pretrained(
-         config.pretrained_model_name_or_path,
-         subfolder="vocoder",
-    )
-
-    # 8. Scheduler
-    max_logging.log("Loading Scheduler...")
-    scheduler = FlaxFlowMatchScheduler.from_pretrained(
-         config.pretrained_model_name_or_path,
-         subfolder="scheduler",
-    )
-    # 2. Text Encoder (PyTorch)
-    max_logging.log("Loading Gemma3 Text Encoder...")
-    text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
-        config.pretrained_model_name_or_path,
-        subfolder="text_encoder",
-        torch_dtype=torch.bfloat16,
-    )
-    text_encoder.eval()
-    
-    
-
-    pipeline = LTX2Pipeline(
-        scheduler=scheduler,
-        vae=vae,
-        audio_vae=audio_vae,
-        text_encoder=text_encoder,
-        tokenizer=tokenizer,
-        connectors=connectors,
-        transformer=transformer,
-        vocoder=vocoder,
-    )
-    
-    return pipeline
-
-  def load_checkpoint(self, step=None) -> Tuple[LTX2Pipeline, Optional[dict], Optional[int]]:
+  def load_checkpoint(self, step=None, vae_only=False, load_transformer=True) -> Tuple[LTX2Pipeline, Optional[dict], Optional[int]]:
     restored_checkpoint, step = self.load_ltx2_configs_from_orbax(step)
     opt_state = None
+
     if restored_checkpoint:
-      max_logging.log("Loading LTX2 pipeline from checkpoint (TODO: implement fully if needed)")
-      # pipeline = LTX2Pipeline.from_checkpoint(self.config, restored_checkpoint)
-      # if "opt_state" in restored_checkpoint.ltx2_state.keys():
-      #   opt_state = restored_checkpoint.ltx2_state["opt_state"]
-      pipeline = self.load_diffusers_checkpoint() # Fallback for now 
+      max_logging.log("Loading LTX2 pipeline from checkpoint")
+      pipeline = LTX2Pipeline.from_checkpoint(self.config, restored_checkpoint, vae_only, load_transformer)
+      if "opt_state" in restored_checkpoint.ltx2_state.keys():
+        opt_state = restored_checkpoint.ltx2_state["opt_state"]
     else:
-      max_logging.log("No checkpoint found, loading default pipeline.")
-      pipeline = self.load_diffusers_checkpoint()
+      max_logging.log("No checkpoint found, loading pipeline from pretrained hub")
+      pipeline = LTX2Pipeline.from_pretrained(self.config, vae_only, load_transformer)
 
     return pipeline, opt_state, step
 

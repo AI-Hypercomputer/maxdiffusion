@@ -11,6 +11,7 @@ import flax
 from ...configuration_utils import ConfigMixin, register_to_config
 from ...utils import BaseOutput
 from ..vae_flax import FlaxDiagonalGaussianDistribution
+from ..modeling_flax_utils import FlaxModelMixin
 
 
 LATENT_DOWNSAMPLE_FACTOR = 4
@@ -624,7 +625,7 @@ class FlaxLTX2AudioDecoder(nnx.Module):
         return h
 
 
-class FlaxAutoencoderKLLTX2Audio(nnx.Module, ConfigMixin):
+class FlaxAutoencoderKLLTX2Audio(nnx.Module, FlaxModelMixin, ConfigMixin):
     """
     LTX2 audio VAE wrapper handling normalization, patchification, and latent sampling.
     Operates in NHWC format (Batch, Time, Freq, Channels).

@@ -24,6 +24,8 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import flax
+import flax.linen as nn
+import flax.traverse_util
 from flax import nnx
 from transformers import AutoTokenizer, GemmaTokenizer, GemmaTokenizerFast, Gemma3ForConditionalGeneration
 from tqdm.auto import tqdm
@@ -34,7 +36,13 @@ from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
-from ...models.ltx2.ltx2_utils import load_transformer_weights
+from ...models.ltx2.ltx2_utils import (
+    load_transformer_weights,
+    load_connector_weights,
+    load_vae_weights,
+    load_audio_vae_weights,
+    load_vocoder_weights,
+)
 from ...models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
 from ...video_processor import VideoProcessor
 from .ltx2_pipeline_utils import encode_video
@@ -274,6 +282,291 @@ class LTX2Pipeline:
       self.video_processor = VideoProcessor(vae_scale_factor=self.vae_spatial_compression_ratio)
       
       self.tokenizer_max_length = getattr(self.tokenizer, "model_max_length", 1024)
+
+  @classmethod
+  def load_tokenizer(cls, config: HyperParameters):
+      max_logging.log("Loading Gemma Tokenizer...")
+      tokenizer = AutoTokenizer.from_pretrained(
+          config.pretrained_model_name_or_path,
+          subfolder="tokenizer",
+      )
+      return tokenizer
+
+  @classmethod
+  def load_text_encoder(cls, config: HyperParameters):
+      max_logging.log("Loading Gemma3 Text Encoder...")
+      text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
+          config.pretrained_model_name_or_path,
+          subfolder="text_encoder",
+          torch_dtype=torch.bfloat16,
+      )
+      text_encoder.eval()
+      return text_encoder
+
+  @classmethod
+  def load_connectors(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+      max_logging.log("Loading Connectors...")
+      def create_model(rngs: nnx.Rngs, config: HyperParameters):
+          connectors = LTX2AudioVideoGemmaTextEncoder.from_config(
+              config.pretrained_model_name_or_path,
+              subfolder="connectors",
+              rngs=rngs,
+              mesh=mesh,
+              dtype=jnp.float32,
+              weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          )
+          return connectors
+
+      p_model_factory = partial(create_model, config=config)
+      connectors = nnx.eval_shape(p_model_factory, rngs=rngs)
+      graphdef, state = nnx.split(connectors, nnx.Param)
+
+      logical_state_spec = nnx.get_partition_spec(state)
+      logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
+      logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
+      params = state.to_pure_dict()
+      state = dict(nnx.to_flat_state(state))
+
+      params = load_connector_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="connectors")
+      if hasattr(config, "weights_dtype"):
+          params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+
+      for path, val in flax.traverse_util.flatten_dict(params).items():
+          sharding = logical_state_sharding.get(path)
+          if sharding is not None:
+             sharding = sharding.value
+             state[path].value = device_put_replicated(val, sharding)
+          else:
+             state[path].value = jax.device_put(val)
+          
+      state = nnx.from_flat_state(state)
+      connectors = nnx.merge(graphdef, state)
+      return connectors
+
+  @classmethod
+  def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+      max_logging.log("Loading Video VAE...")
+      def create_model(rngs: nnx.Rngs, config: HyperParameters):
+          vae = LTX2VideoAutoencoderKL.from_config(
+              config.pretrained_model_name_or_path,
+              subfolder="vae",
+              rngs=rngs,
+              mesh=mesh,
+              dtype=jnp.float32,
+              weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          )
+          return vae
+      
+      p_model_factory = partial(create_model, config=config)
+      vae = nnx.eval_shape(p_model_factory, rngs=rngs)
+      graphdef, state = nnx.split(vae, nnx.Param)
+
+      logical_state_spec = nnx.get_partition_spec(state)
+      logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
+      logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
+      params = state.to_pure_dict()
+      state = dict(nnx.to_flat_state(state))
+
+      params = load_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="vae")
+      if hasattr(config, "weights_dtype"):
+          params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+
+      for path, val in flax.traverse_util.flatten_dict(params).items():
+          sharding = logical_state_sharding.get(path)
+          if sharding is not None:
+             sharding = sharding.value
+             if getattr(config, "replicate_vae", False):
+                 sharding = NamedSharding(mesh, P())
+             state[path].value = device_put_replicated(val, sharding)
+          else:
+             state[path].value = jax.device_put(val)
+          
+      state = nnx.from_flat_state(state)
+      vae = nnx.merge(graphdef, state)
+      return vae
+
+  @classmethod
+  def load_audio_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+      max_logging.log("Loading Audio VAE...")
+      def create_model(rngs: nnx.Rngs, config: HyperParameters):
+          audio_vae = FlaxAutoencoderKLLTX2Audio.from_config(
+              config.pretrained_model_name_or_path,
+              subfolder="audio_vae",
+              rngs=rngs,
+              mesh=mesh,
+              dtype=jnp.float32,
+              weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          )
+          return audio_vae
+
+      p_model_factory = partial(create_model, config=config)
+      audio_vae = nnx.eval_shape(p_model_factory, rngs=rngs)
+      graphdef, state = nnx.split(audio_vae, nnx.Param)
+
+      logical_state_spec = nnx.get_partition_spec(state)
+      logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
+      logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
+      params = state.to_pure_dict()
+      state = dict(nnx.to_flat_state(state))
+
+      params = load_audio_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="audio_vae")
+      if hasattr(config, "weights_dtype"):
+          params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+
+      for path, val in flax.traverse_util.flatten_dict(params).items():
+          sharding = logical_state_sharding.get(path)
+          if sharding is not None:
+             sharding = sharding.value
+             if getattr(config, "replicate_vae", False):
+                 sharding = NamedSharding(mesh, P())
+             state[path].value = device_put_replicated(val, sharding)
+          else:
+             state[path].value = jax.device_put(val)
+          
+      state = nnx.from_flat_state(state)
+      audio_vae = nnx.merge(graphdef, state)
+      return audio_vae
+      
+  @classmethod
+  def load_transformer(
+      cls,
+      devices_array: np.array,
+      mesh: Mesh,
+      rngs: nnx.Rngs,
+      config: HyperParameters,
+      restored_checkpoint=None,
+      subfolder="transformer",
+  ):
+      with mesh:
+        transformer = create_sharded_logical_transformer(
+            devices_array=devices_array,
+            mesh=mesh,
+            rngs=rngs,
+            config=config,
+            restored_checkpoint=restored_checkpoint,
+            subfolder=subfolder,
+        )
+      return transformer
+
+  @classmethod
+  def load_vocoder(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+      max_logging.log("Loading Vocoder...")
+      def create_model(rngs: nnx.Rngs, config: HyperParameters):
+          vocoder = LTX2Vocoder.from_config(
+              config.pretrained_model_name_or_path,
+              subfolder="vocoder",
+              rngs=rngs,
+              mesh=mesh,
+              dtype=jnp.float32,
+              weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          )
+          return vocoder
+
+      p_model_factory = partial(create_model, config=config)
+      vocoder = nnx.eval_shape(p_model_factory, rngs=rngs)
+      graphdef, state = nnx.split(vocoder, nnx.Param)
+
+      logical_state_spec = nnx.get_partition_spec(state)
+      logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
+      logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
+      params = state.to_pure_dict()
+      state = dict(nnx.to_flat_state(state))
+
+      params = load_vocoder_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="vocoder")
+      if hasattr(config, "weights_dtype"):
+          params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+
+      for path, val in flax.traverse_util.flatten_dict(params).items():
+          sharding = logical_state_sharding.get(path)
+          if sharding is not None:
+             sharding = sharding.value
+             state[path].value = device_put_replicated(val, sharding)
+          else:
+             state[path].value = jax.device_put(val)
+          
+      state = nnx.from_flat_state(state)
+      vocoder = nnx.merge(graphdef, state)
+      return vocoder
+
+  @classmethod
+  def load_scheduler(cls, config: HyperParameters):
+      max_logging.log("Loading Scheduler...")
+      scheduler = FlaxFlowMatchScheduler.from_pretrained(
+          config.pretrained_model_name_or_path,
+          subfolder="scheduler",
+      )
+      return scheduler
+
+  @classmethod
+  def _create_common_components(cls, config: HyperParameters, vae_only=False):
+      devices_array = max_utils.create_device_mesh(config)
+      mesh = Mesh(devices_array, config.mesh_axes)
+      rng = jax.random.key(config.seed)
+      rngs = nnx.Rngs(rng)
+
+      vae = cls.load_vae(devices_array, mesh, rngs, config)
+      
+      components = {
+          "vae": vae,
+          "audio_vae": None,
+          "vocoder": None,
+          "devices_array": devices_array,
+          "rngs": rngs,
+          "mesh": mesh,
+          "tokenizer": None,
+          "text_encoder": None,
+          "connectors": None,
+          "scheduler": None,
+      }
+
+      if vae_only:
+          return components
+
+      components["tokenizer"] = cls.load_tokenizer(config)
+      components["text_encoder"] = cls.load_text_encoder(config)
+      components["connectors"] = cls.load_connectors(devices_array, mesh, rngs, config)
+      components["audio_vae"] = cls.load_audio_vae(devices_array, mesh, rngs, config)
+      components["vocoder"] = cls.load_vocoder(devices_array, mesh, rngs, config)
+      components["scheduler"] = cls.load_scheduler(config)
+      return components
+
+  @classmethod
+  def _load_and_init(cls, config: HyperParameters, restored_checkpoint, vae_only=False, load_transformer=True):
+      components = cls._create_common_components(config, vae_only)
+      
+      transformer = None
+      if load_transformer:
+          max_logging.log("Loading Transformer...")
+          transformer = cls.load_transformer(
+              devices_array=components["devices_array"],
+              mesh=components["mesh"],
+              rngs=components["rngs"],
+              config=config,
+              restored_checkpoint=restored_checkpoint,
+          )
+
+      pipeline = cls(
+          scheduler=components["scheduler"],
+          vae=components["vae"],
+          audio_vae=components["audio_vae"],
+          text_encoder=components["text_encoder"],
+          tokenizer=components["tokenizer"],
+          connectors=components["connectors"],
+          transformer=transformer,
+          vocoder=components["vocoder"]
+      )
+      pipeline.mesh = components["mesh"]
+      return pipeline, transformer
+
+  @classmethod
+  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
+      pipeline, _ = cls._load_and_init(config, None, vae_only, load_transformer)
+      return pipeline
+
+  @classmethod
+  def from_checkpoint(cls, config: HyperParameters, restored_checkpoint, vae_only=False, load_transformer=True):
+      pipeline, _ = cls._load_and_init(config, restored_checkpoint, vae_only, load_transformer)
+      return pipeline
 
   @classmethod
   def get_basic_config(cls, dtype, config: HyperParameters):

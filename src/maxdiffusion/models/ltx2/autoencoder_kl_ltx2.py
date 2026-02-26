@@ -1111,7 +1111,7 @@ class LTX2VideoDecoder3d(nnx.Module):
     return hidden_states
 
 
-class LTX2VideoAutoencoderKL(nnx.Module, ConfigMixin):
+class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
   _supports_gradient_checkpointing = True
   config_name = "config.json"
 

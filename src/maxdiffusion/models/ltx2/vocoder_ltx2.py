@@ -21,6 +21,8 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from ... import common_types
+from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
+from maxdiffusion.models.modeling_flax_utils import FlaxModelMixin
 
 Array = common_types.Array
 DType = common_types.DType
@@ -87,11 +89,12 @@ class ResBlock(nnx.Module):
     return x
 
 
-class LTX2Vocoder(nnx.Module):
+class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
   """
   LTX 2.0 vocoder for converting generated mel spectrograms back to audio waveforms.
   """
 
+  @register_to_config
   def __init__(
       self,
       in_channels: int = 128,
