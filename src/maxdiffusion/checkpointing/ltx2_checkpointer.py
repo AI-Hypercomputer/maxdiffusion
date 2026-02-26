@@ -95,16 +95,6 @@ class LTX2Checkpointer:
         config.pretrained_model_name_or_path,
         subfolder="tokenizer",
     )
-    
-    # 2. Text Encoder (PyTorch)
-    max_logging.log("Loading Gemma3 Text Encoder...")
-    text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
-        config.pretrained_model_name_or_path,
-        subfolder="text_encoder",
-        torch_dtype=torch.bfloat16,
-    )
-    text_encoder.eval()
-    
     # 3. Connectors
     max_logging.log("Loading Connectors...")
     connectors = LTX2AudioVideoGemmaTextEncoder.from_pretrained(
@@ -150,6 +140,16 @@ class LTX2Checkpointer:
          config.pretrained_model_name_or_path,
          subfolder="scheduler",
     )
+    # 2. Text Encoder (PyTorch)
+    max_logging.log("Loading Gemma3 Text Encoder...")
+    text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
+        config.pretrained_model_name_or_path,
+        subfolder="text_encoder",
+        torch_dtype=torch.bfloat16,
+    )
+    text_encoder.eval()
+    
+    
 
     pipeline = LTX2Pipeline(
         scheduler=scheduler,
