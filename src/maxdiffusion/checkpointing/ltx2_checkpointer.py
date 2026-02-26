@@ -42,7 +42,7 @@ class LTX2Checkpointer:
     self.opt_state = None
 
     self.checkpoint_manager: ocp.CheckpointManager = create_orbax_checkpoint_manager(
-        self.config.checkpoint_dir,
+        getattr(self.config, "checkpoint_dir", ""),
         enable_checkpointing=True,
         save_interval_steps=1,
         checkpoint_type=checkpoint_type,
@@ -50,6 +50,10 @@ class LTX2Checkpointer:
     )
 
   def load_ltx2_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
+    if self.checkpoint_manager is None:
+      max_logging.log("No checkpoint manager configured, skipping Orbax load.")
+      return None, None
+      
     if step is None:
       step = self.checkpoint_manager.latest_step()
       max_logging.log(f"Latest LTX2 checkpoint step: {step}")
