@@ -151,7 +151,7 @@ class WanCausalConv3d(nnx.Module):
       # Shape is (Batch, Time, Height, Width, Channels)
       # We only shard if the dimension is divisible by the mesh size to avoid XLA errors
       if x_padded.shape[2] % self.mesh.shape["context"] == 0:
-        sharding = NamedSharding(self.mesh, P(None, None, "context", None, None))
+        sharding = NamedSharding(self.mesh, P("data", None, "context", None, None))
         x_padded = jax.lax.with_sharding_constraint(x_padded, sharding)
 
     out = self.conv(x_padded)
