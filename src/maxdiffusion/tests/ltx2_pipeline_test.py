@@ -196,7 +196,7 @@ class LTX2PipelineTest(unittest.TestCase):
             real_model = LTX2VideoTransformer3DModel(**tiny_config, rngs=rngs)
         
         graphdef, state = nnx.split(real_model)
-        flat_state = state.to_flat_dict()
+        flat_state = nnx.to_flat_state(state)
         
         # Create mock weights that match real model structure
         # keys in flat_state are tuples like ('layer', 'kernel')

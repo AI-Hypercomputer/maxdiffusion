@@ -637,8 +637,11 @@ class LTX2Pipeline:
       if patch_size is not None and patch_size_t is not None:
           batch_size = latents.shape[0]
           # latents: (Batch, Seq, Dim)
-          latents = latents.reshape(batch_size, latent_length, num_mel_bins, -1, patch_size_t, patch_size)
-          latents = latents.transpose(0, 3, 1, 4, 2, 5).reshape(batch_size, -1, latent_length * patch_size_t, num_mel_bins * patch_size)
+          # Pack: (B, C, L, F) -> (B, C, L', pt, F', p) -> (B, C, L', pt, F', p) -> (B, L', F', C, pt, p) -> (B, L', F', C*pt*p)
+          # Unpack: (B, L'*F', C*pt*p) -> (B, L', F', C, pt, p) -> (B, C, L', pt, F', p) -> (B, C, L'*pt, F'*p)
+          latents = latents.reshape(batch_size, -1, num_mel_bins // patch_size, num_channels * patch_size_t * patch_size)
+          latents = latents.reshape(batch_size, latent_length // patch_size_t, num_mel_bins // patch_size, num_channels, patch_size_t, patch_size)
+          latents = latents.transpose(0, 3, 1, 4, 2, 5).reshape(batch_size, num_channels, latent_length, num_mel_bins)
           # Wait, reshape order needs to match pack? 
           # Pack: (B, C, L, F) -> (B, C, L', pt, F', p) -> (B, L', F', C, pt, p) -> (B, L'*F', C*pt*p)
           # Unpack: (B, L'*F', C*pt*p) -> (B, L', F', C, pt, p) -> (B, C, L', pt, F', p) -> (B, C, L'*pt, F'*p)
