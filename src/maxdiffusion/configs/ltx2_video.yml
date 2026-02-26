@@ -97,7 +97,7 @@ allow_split_physical_axes: False
 learning_rate_schedule_steps: -1
 max_train_steps: 500
 pretrained_model_name_or_path: 'Lightricks/LTX-Video'
-model_name: "ltx_video"
+model_name: "ltx2_video"
 model_type: "T2V"
 unet_checkpoint: ''
 dataset_name: 'diffusers/pokemon-gpt4-captions'
