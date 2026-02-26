@@ -23,6 +23,10 @@ max_sequence_length: 512
 sampler: "from_checkpoint"
 
 # Generation parameters
+global_batch_size_to_train_on: 1
+num_inference_steps: 40
+guidance_scale: 3.0
+fps: 24
 pipeline_type: multi-scale
 prompt: "A man in a dimly lit room talks on a vintage telephone, hangs up, and looks down with a sad expression. He holds the black rotary phone to his right ear with his right hand, his left hand holding a rocks glass with amber liquid. He wears a brown suit jacket over a white shirt, and a gold ring on his left ring finger. His short hair is neatly combed, and he has light skin with visible wrinkles around his eyes. The camera remains stationary, focused on his face and upper body. The room is dark, lit only by a warm light source off-screen to the left, casting shadows on the wall behind him. The scene appears to be from a movie."
 #negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
@@ -92,11 +96,13 @@ ici_tensor_parallelism: 1
 allow_split_physical_axes: False
 learning_rate_schedule_steps: -1
 max_train_steps: 500
-pretrained_model_name_or_path: ''
+pretrained_model_name_or_path: 'Lightricks/LTX-Video'
+model_name: "ltx_video"
+model_type: "T2V"
 unet_checkpoint: ''
 dataset_name: 'diffusers/pokemon-gpt4-captions'
 train_split: 'train'
-dataset_type: 'tf'
+dataset_type: 'tfrecord'
 cache_latents_text_encoder_outputs: True
 per_device_batch_size: 1
 compile_topology_num_slices: -1 
