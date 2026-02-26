@@ -17,7 +17,6 @@ limitations under the License.
 import unittest
 import torch
 import numpy as np
-import jax
 import jax.numpy as jnp
 from flax import nnx
 
