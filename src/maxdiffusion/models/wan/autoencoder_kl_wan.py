@@ -156,7 +156,7 @@ class WanCausalConv3d(nnx.Module):
         shard_width_axis = "context"
 
       x_padded = jax.lax.with_sharding_constraint(
-          x_padded, jax.sharding.PartitionSpec("data", None, shard_axis, shard_width_axis, None)
+          x_padded, jax.sharding.PartitionSpec(None, None, shard_axis, shard_width_axis, None)
       )
 
     out = self.conv(x_padded)
