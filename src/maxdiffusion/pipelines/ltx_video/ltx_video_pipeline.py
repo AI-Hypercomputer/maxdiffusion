@@ -1078,8 +1078,8 @@ def adain_filter_latent(latents: jnp.ndarray, reference_latents: jnp.ndarray, fa
       jax.Array: The transformed latent tensor.
   """
   with default_env():
-    latents = jax.device_put(latents, jax.devices("tpu")[0])
-    reference_latents = jax.device_put(reference_latents, jax.devices("tpu")[0])
+    latents = jax.device_put(jax.numpy.array(latents), jax.devices("tpu")[0])
+    reference_latents = jax.device_put(jax.numpy.array(reference_latents), jax.devices("tpu")[0])
 
     # Define the core AdaIN operation for a single (F, H, W) slice.
     # This function will be vmapped over batch (B) and channel (C) dimensions.
