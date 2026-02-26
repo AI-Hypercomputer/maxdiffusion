@@ -774,7 +774,6 @@ class WanEncoder3d(nnx.Module):
         precision=precision,
     )
 
-  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -923,7 +922,6 @@ class WanDecoder3d(nnx.Module):
         precision=precision,
     )
 
-  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
