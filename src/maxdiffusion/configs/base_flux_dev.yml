@@ -179,7 +179,20 @@ allow_split_physical_axes: False
 # Replace with dataset path or train_data_dir. One has to be set.
 dataset_name: 'diffusers/pokemon-gpt4-captions'
 train_split: 'train'
-dataset_type: 'tf'
+dataset_type: 'tfrecord'  # Options: 'tfrecord', 'hf', 'tf', 'grain', 'synthetic'
+# ==============================================================================
+# Synthetic Data Configuration (only used when dataset_type='synthetic')
+# ==============================================================================
+# To use synthetic data for testing/debugging without real datasets:
+# 1. Set dataset_type: 'synthetic' above
+# 2. Optionally set synthetic_num_samples (null=infinite, or a number like 10000)
+# 3. Optionally override dimensions
+#
+# synthetic_num_samples: null  # null for infinite, or set a number
+#
+# Optional dimension overrides:
+# resolution: 512
+# ==============================================================================
 cache_latents_text_encoder_outputs: True
 # cache_latents_text_encoder_outputs only apply to dataset_type="tf",
 # only apply to small dataset that fits in memory

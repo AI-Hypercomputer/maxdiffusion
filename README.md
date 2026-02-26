@@ -262,6 +262,17 @@ After installation completes, run the training script.
   - For use on GPU it is recommended to enable the cudnn_te_flash attention kernel for optimal performance.
     - Best performance is achieved with the use of batch parallelism, which can be enabled by using the ici_fsdp_batch_parallelism axis. Note that this parallelism strategy does not support fractional batch sizes.
     - ici_fsdp_batch_parallelism and ici_fsdp_parallelism can be combined to allow for fractional batch sizes. However, padding is not currently supported for the cudnn_te_flash attention kernel and it is therefore required that the sequence length is divisible by the number of devices in the ici_fsdp_parallelism axis.
+  - For benchmarking training performance on multiple data dimension input without downloading/re-processing the dataset, the synthetic data iterator is supported.
+    - Set dataset_type='synthetic' and synthetic_num_samples=null to enable the synthetic data iterator.
+    - The following overrides on data dimensions are supported:
+      - synthetic_override_height: 720
+      - synthetic_override_width: 1280
+      - synthetic_override_num_frames: 85
+      - synthetic_override_max_sequence_length: 512
+      - synthetic_override_text_embed_dim: 4096
+      - synthetic_override_num_channels_latents: 16
+      - synthetic_override_vae_scale_factor_spatial: 8
+      - synthetic_override_vae_scale_factor_temporal: 4
 
   You should eventually see a training run as:
 
