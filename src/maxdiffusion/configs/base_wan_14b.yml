@@ -43,6 +43,7 @@ activations_dtype: 'bfloat16'
 
 # Replicates vae across devices instead of using the model's sharding annotations for sharding.
 replicate_vae: False
+vae_spatial: -1 # default to total_device * 2 // (dp)
 
 # matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
 # Options are "DEFAULT", "HIGH", "HIGHEST"

@@ -166,6 +166,7 @@ def run(config, pipeline=None, filename_prefix=""):
   max_logging.log(f"hardware: {jax.devices()[0].platform}")
   max_logging.log(f"number of devices: {jax.device_count()}")
   max_logging.log(f"per_device_batch_size: {config.per_device_batch_size}")
+  max_logging.log(f"vae_spatial: {config.vae_spatial}")
   max_logging.log("============================================================")
 
   compile_time = time.perf_counter() - s0

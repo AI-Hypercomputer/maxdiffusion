@@ -99,10 +99,10 @@ class WanCausalConv3d(nnx.Module):
         self.mesh = mesh
 
         # Weight sharding (Kernel is sharded along output channels)
-        num_fsdp_devices = mesh.shape["fsdp"]
+        num_fsdp_devices = mesh.shape["vae_spatial"]
         kernel_sharding = (None, None, None, None, None)
         if out_channels % num_fsdp_devices == 0:
-            kernel_sharding = (None, None, None, None, "fsdp")
+            kernel_sharding = (None, None, None, None, "vae_spatial")
 
         self.conv = nnx.Conv(
             in_features=in_channels,
@@ -121,7 +121,7 @@ class WanCausalConv3d(nnx.Module):
     def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None, idx=-1) -> jax.Array:
         # Sharding Width (index 3)
         # Spec: (Batch, Time, Height, Width, Channels)
-        spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "fsdp", None))
+        spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
         x = jax.lax.with_sharding_constraint(x, spatial_sharding)
 
         current_padding = list(self._causal_padding)
@@ -1098,7 +1098,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     iter_ = 1 + (t - 1) // 4
     enc_feat_map = feat_cache._enc_feat_map
 
-    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "fsdp", None))
+    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
 
     # First iteration (i=0): size 1
     chunk_0 = x[:, :1, ...]
@@ -1180,7 +1180,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     dec_feat_map = feat_cache._feat_map
     # NamedSharding for the Width axis (axis 3)
-    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "fsdp", None))
+    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
 
     # First chunk (i=0)
     chunk_in_0 = jax.lax.with_sharding_constraint(x[:, 0:1, ...], spatial_sharding)

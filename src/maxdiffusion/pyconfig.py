@@ -248,6 +248,13 @@ class _HyperParameters:
         _HyperParameters.calculate_global_batch_sizes(raw_keys["per_device_batch_size"])
     )
 
+    if getattr(raw_keys, "vae_spatial", -1) == -1 or "vae_spatial" in raw_keys and raw_keys["vae_spatial"] == -1:
+      total_device = len(jax.devices())
+      dp = raw_keys.get("ici_data_parallelism", 1) * raw_keys.get("dcn_data_parallelism", 1)
+      if dp == -1 or dp == 0:
+        dp = 1
+      raw_keys["vae_spatial"] = (total_device * 2) // dp
+
 
 def get_num_slices(raw_keys):
   if int(raw_keys["compile_topology_num_slices"]) > 0:
