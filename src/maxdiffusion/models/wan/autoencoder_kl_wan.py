@@ -1126,44 +1126,51 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     t = x.shape[1]
     enc_feat_map = feat_cache._enc_feat_map
 
-    # 1. Evaluate the first frame manually to establish the initial cache with JAX Arrays.
-    # This prevents jax.lax.scan from crashing on type mismatch between None and ShapedArray.
-    out_0, enc_feat_map, _ = self.encoder(x[:, :1, :, :, :], feat_cache=enc_feat_map, feat_idx=0)
-    out = out_0
+    @nnx.jit
+    def encode_sequence(encoder, x_seq, current_enc_feat_map):
+      t_seq = x_seq.shape[1]
+      # 1. Evaluate the first frame manually to establish the initial cache with JAX Arrays.
+      # This prevents jax.lax.scan from crashing on type mismatch between None and ShapedArray.
+      out_0, current_enc_feat_map, _ = encoder(x_seq[:, :1, :, :, :], feat_cache=current_enc_feat_map, feat_idx=0)
+      out_seq = out_0
 
-    # 2. Evaluate the second chunk (4 frames) manually to stabilize WanCausalConv3d caches to T=2.
-    # WanCausalConv3d uses cache_x = x[:, -2:]. After 1 frame, cache is T=1. After 4 frames, it stabilizes to T=2.
-    if t > 1:
-      out_1, enc_feat_map, _ = self.encoder(x[:, 1:5, :, :, :], feat_cache=enc_feat_map, feat_idx=0)
-      out = jnp.concatenate([out_0, out_1], axis=1)
+      # 2. Evaluate the second chunk (4 frames) manually to stabilize WanCausalConv3d caches to T=2.
+      # WanCausalConv3d uses cache_x = x[:, -2:]. After 1 frame, cache is T=1. After 4 frames, it stabilizes to T=2.
+      if t_seq > 1:
+        out_1, current_enc_feat_map, _ = encoder(x_seq[:, 1:5, :, :, :], feat_cache=current_enc_feat_map, feat_idx=0)
+        out_seq = jnp.concatenate([out_0, out_1], axis=1)
 
-    # 3. Process remaining frames in chunks of 4 using jax.lax.scan
-    if t > 5:
-      x_rest = x[:, 5:, :, :, :]
-      B, T_rest, H, W, C = x_rest.shape
-      num_chunks = T_rest // 4
+      # 3. Process remaining frames in chunks of 4 using jax.lax.scan
+      if t_seq > 5:
+        x_rest = x_seq[:, 5:, :, :, :]
+        B, T_rest, H, W, C = x_rest.shape
+        num_chunks = T_rest // 4
 
-      # Reshape to (B, num_chunks, 4, H, W, C)
-      x_chunks = jnp.reshape(x_rest, (B, num_chunks, 4, H, W, C))
-      
-      # Swap axes for scan traversal: (num_chunks, B, 4, H, W, C)
-      x_scan = jnp.swapaxes(x_chunks, 0, 1)
-      
-      def scan_fn(carry_cache, input_chunk):
-        # input_chunk shape: (B, 4, H, W, C)
-        out_chunk, new_cache, _ = self.encoder(input_chunk, feat_cache=carry_cache, feat_idx=0)
-        # out_chunk shape: (B, 1, H', W', C')
-        return new_cache, out_chunk
+        # Reshape to (B, num_chunks, 4, H, W, C)
+        x_chunks = jnp.reshape(x_rest, (B, num_chunks, 4, H, W, C))
         
-      enc_feat_map, scanned_out_chunks = jax.lax.scan(scan_fn, enc_feat_map, x_scan)
+        # Swap axes for scan traversal: (num_chunks, B, 4, H, W, C)
+        x_scan = jnp.swapaxes(x_chunks, 0, 1)
+        
+        def scan_fn(carry_cache, input_chunk):
+          # input_chunk shape: (B, 4, H, W, C)
+          out_chunk, new_cache, _ = encoder(input_chunk, feat_cache=carry_cache, feat_idx=0)
+          # out_chunk shape: (B, 1, H', W', C')
+          return new_cache, out_chunk
+          
+        current_enc_feat_map, scanned_out_chunks = jax.lax.scan(scan_fn, current_enc_feat_map, x_scan)
+        
+        # scanned_out_chunks shape: (num_chunks, B, 1, H', W', C')
+        scanned_out_chunks = jnp.swapaxes(scanned_out_chunks, 0, 1)
+        
+        B_out, _, _, H_out, W_out, C_out = scanned_out_chunks.shape
+        scanned_out_chunks = jnp.reshape(scanned_out_chunks, (B_out, num_chunks, H_out, W_out, C_out))
+        
+        out_seq = jnp.concatenate([out_seq, scanned_out_chunks], axis=1)
       
-      # scanned_out_chunks shape: (num_chunks, B, 1, H', W', C')
-      scanned_out_chunks = jnp.swapaxes(scanned_out_chunks, 0, 1)
-      
-      B_out, _, _, H_out, W_out, C_out = scanned_out_chunks.shape
-      scanned_out_chunks = jnp.reshape(scanned_out_chunks, (B_out, num_chunks, H_out, W_out, C_out))
-      
-      out = jnp.concatenate([out, scanned_out_chunks], axis=1)
+      return out_seq, current_enc_feat_map
+
+    out, enc_feat_map = encode_sequence(self.encoder, x, enc_feat_map)
 
     # 3. Update back to the wrapper object if needed
     feat_cache._enc_feat_map = enc_feat_map
@@ -1193,57 +1200,64 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     dec_feat_map = feat_cache._feat_map
 
-    # 1. Evaluate the first frame manually (Cache: None -> RepSentinel/ShapedArray)
-    # The decoder returns 1 frame on the first step.
-    out_0, dec_feat_map, _ = self.decoder(x[:, 0:1, :, :, :], feat_cache=dec_feat_map, feat_idx=0)
-    out = out_0
-
-    # 2. Evaluate the second frame manually (Cache: RepSentinel -> ShapedArray)
-    # This ensures that ALL cache components are ShapredArrays before entering jax.lax.scan,
-    # preventing TraceContext errors due to type mismatches.
-    if iter_ > 1:
-      out_1, dec_feat_map, _ = self.decoder(x[:, 1:2, :, :, :], feat_cache=dec_feat_map, feat_idx=0)
+    @nnx.jit
+    def decode_sequence(decoder, x_seq, current_dec_feat_map):
+      iter_s = x_seq.shape[1]
       
-      # Bypass an issue where frame[1] should be frame[2] and vice versa.
-      fm1 = out_1[:, 0:1, ...]
-      fm2 = out_1[:, 1:2, ...]
-      fm3 = out_1[:, 2:3, ...]
-      fm4 = out_1[:, 3:4, ...]
-      out_1_fixed = jnp.concatenate([fm1, fm3, fm2, fm4], axis=1)
-      out = jnp.concatenate([out_0, out_1_fixed], axis=1)
+      # 1. Evaluate the first frame manually (Cache: None -> RepSentinel/ShapedArray)
+      # The decoder returns 1 frame on the first step.
+      out_0, current_dec_feat_map, _ = decoder(x_seq[:, 0:1, :, :, :], feat_cache=current_dec_feat_map, feat_idx=0)
+      out_seq = out_0
 
-    # 3. Process remaining frames using jax.lax.scan (requires homogenous output and carry shapes)
-    if iter_ > 2:
-      x_rest = x[:, 2:, :, :, :]
-      x_scan = jnp.swapaxes(x_rest, 0, 1) # (T-2, B, H, W, C)
-
-      def scan_fn(carry_cache, input_frame):
-        input_frame = jnp.expand_dims(input_frame, 1) # (B, 1, H, W, C)
-        out_frames, new_cache, _ = self.decoder(input_frame, feat_cache=carry_cache, feat_idx=0)
-
-        # Bypass an issue where frame[1] should be frame[2] and vice versa.
-        fm1 = out_frames[:, 0:1, ...]
-        fm2 = out_frames[:, 1:2, ...]
-        fm3 = out_frames[:, 2:3, ...]
-        fm4 = out_frames[:, 3:4, ...]
+      # 2. Evaluate the second frame manually (Cache: RepSentinel -> ShapedArray)
+      # This ensures that ALL cache components are ShapredArrays before entering jax.lax.scan,
+      # preventing TraceContext errors due to type mismatches.
+      if iter_s > 1:
+        out_1, current_dec_feat_map, _ = decoder(x_seq[:, 1:2, :, :, :], feat_cache=current_dec_feat_map, feat_idx=0)
         
-        fixed_out_frames = jnp.concatenate([fm1, fm3, fm2, fm4], axis=1)
-        return new_cache, fixed_out_frames
+        # Bypass an issue where frame[1] should be frame[2] and vice versa.
+        fm1 = out_1[:, 0:1, ...]
+        fm2 = out_1[:, 1:2, ...]
+        fm3 = out_1[:, 2:3, ...]
+        fm4 = out_1[:, 3:4, ...]
+        out_1_fixed = jnp.concatenate([fm1, fm3, fm2, fm4], axis=1)
+        out_seq = jnp.concatenate([out_0, out_1_fixed], axis=1)
 
-      dec_feat_map, scanned_out_frames = jax.lax.scan(scan_fn, dec_feat_map, x_scan)
+      # 3. Process remaining frames using jax.lax.scan (requires homogenous output and carry shapes)
+      if iter_s > 2:
+        x_rest = x_seq[:, 2:, :, :, :]
+        x_scan = jnp.swapaxes(x_rest, 0, 1) # (T-2, B, H, W, C)
 
-      # scanned_out_frames is (T-2, B, 4, H, W, C)
-      B = scanned_out_frames.shape[1]
-      T_minus_2 = scanned_out_frames.shape[0]
-      H, W, C = scanned_out_frames.shape[3], scanned_out_frames.shape[4], scanned_out_frames.shape[5]
+        def scan_fn(carry_cache, input_frame):
+          input_frame = jnp.expand_dims(input_frame, 1) # (B, 1, H, W, C)
+          out_frames, new_cache, _ = decoder(input_frame, feat_cache=carry_cache, feat_idx=0)
 
-      # Swap back to (B, T-2, 4, H, W, C)
-      scanned_out_frames = jnp.swapaxes(scanned_out_frames, 0, 1)
-      # Flatten the temporal axes to (B, (T-2)*4, H, W, C)
-      scanned_out_frames = jnp.reshape(scanned_out_frames, (B, T_minus_2 * 4, H, W, C))
+          # Bypass an issue where frame[1] should be frame[2] and vice versa.
+          fm1 = out_frames[:, 0:1, ...]
+          fm2 = out_frames[:, 1:2, ...]
+          fm3 = out_frames[:, 2:3, ...]
+          fm4 = out_frames[:, 3:4, ...]
+          
+          fixed_out_frames = jnp.concatenate([fm1, fm3, fm2, fm4], axis=1)
+          return new_cache, fixed_out_frames
 
-      out = jnp.concatenate([out, scanned_out_frames], axis=1)
+        current_dec_feat_map, scanned_out_frames = jax.lax.scan(scan_fn, current_dec_feat_map, x_scan)
 
+        # scanned_out_frames is (T-2, B, 4, H, W, C)
+        B = scanned_out_frames.shape[1]
+        T_minus_2 = scanned_out_frames.shape[0]
+        H, W, C = scanned_out_frames.shape[3], scanned_out_frames.shape[4], scanned_out_frames.shape[5]
+
+        # Swap back to (B, T-2, 4, H, W, C)
+        scanned_out_frames = jnp.swapaxes(scanned_out_frames, 0, 1)
+        # Flatten the temporal axes to (B, (T-2)*4, H, W, C)
+        scanned_out_frames = jnp.reshape(scanned_out_frames, (B, T_minus_2 * 4, H, W, C))
+
+        out_seq = jnp.concatenate([out_seq, scanned_out_frames], axis=1)
+      
+      return out_seq, current_dec_feat_map
+      
+    out, dec_feat_map = decode_sequence(self.decoder, x, dec_feat_map)
     feat_cache._feat_map = dec_feat_map
 
     out = jnp.clip(out, min=-1.0, max=1.0)
