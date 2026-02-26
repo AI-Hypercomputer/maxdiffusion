@@ -100,6 +100,7 @@ pretrained_model_name_or_path: 'Lightricks/LTX-Video'
 model_name: "ltx2_video"
 model_type: "T2V"
 unet_checkpoint: ''
+checkpoint_dir: ""
 dataset_name: 'diffusers/pokemon-gpt4-captions'
 train_split: 'train'
 dataset_type: 'tfrecord'
