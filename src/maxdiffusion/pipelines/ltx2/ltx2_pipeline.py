@@ -1040,7 +1040,7 @@ class LTX2Pipeline:
   def prepare_audio_latents(
       self,
       batch_size: int = 1,
-      num_channels_latents: int = 128,
+      num_channels_latents: int = 8,
       audio_latent_length: int = 8,
       noise_scale: float = 0.0,
       dtype: Optional[jnp.dtype] = None,
@@ -1140,7 +1140,11 @@ class LTX2Pipeline:
       )
       
       # 4. Prepare Audio Latents
-      audio_channels = getattr(self.transformer, "audio_in_channels", 128)
+      audio_channels = (
+          self.audio_vae.config.latent_channels
+          if hasattr(self.audio_vae, "config") and hasattr(self.audio_vae.config, "latent_channels")
+          else 8
+      )
       
       duration_s = num_frames / frame_rate
       audio_latents_per_second = (

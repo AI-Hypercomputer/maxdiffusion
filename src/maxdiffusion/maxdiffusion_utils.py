@@ -310,7 +310,7 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
   
   audio_hidden_states = pipeline.prepare_audio_latents(
       batch_size,
-      pipeline.transformer.audio_in_channels,
+      getattr(pipeline.audio_vae.config, "latent_channels", 8) if hasattr(pipeline, "audio_vae") and pipeline.audio_vae is not None else 8,
       audio_num_frames,
       dtype=jnp.float32,
       generator=jax.random.PRNGKey(0)
