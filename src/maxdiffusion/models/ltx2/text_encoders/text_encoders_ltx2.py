@@ -101,36 +101,47 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def __init__(
       self,
-      # Feature Extractor Config (Shared)
-      gemma_dim: int = 3840,  # Gemma-3-12b
-      gemma_layers: int = 49,  # Gemma-3 has 48 layers + 1 embedding layer output = 49 hidden states
-      projection_dim: int = 3840,
-      # Connector Config
-      connector_heads: int = 30,
-      connector_head_dim: int = 128,
-      connector_layers: int = 2,
-      num_thinking_tokens: int = 128,
+      caption_channels: int = 3840,
+      text_proj_in_factor: int = 49,
+      
+      video_connector_attention_head_dim: int = 128,
+      video_connector_num_attention_heads: int = 30,
+      video_connector_num_layers: int = 2,
+      video_connector_num_learnable_registers: int = 128,
+      
+      audio_connector_attention_head_dim: int = 128,
+      audio_connector_num_attention_heads: int = 30,
+      audio_connector_num_layers: int = 2,
+      audio_connector_num_learnable_registers: int = 128,
+      
+      connector_rope_base_seq_len: int = 4096,
+      rope_double_precision: bool = True,
+      rope_theta: float = 10000.0,
+      rope_type: str = "split",
+      causal_temporal_positioning: bool = False,
+      
       dtype: DType = jnp.float32,
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
+      **kwargs
   ):
-    input_dim = gemma_dim * gemma_layers
+    input_dim = caption_channels * text_proj_in_factor
 
     self.feature_extractor = LTX2GemmaFeatureExtractor(
         input_dim=input_dim,
-        output_dim=projection_dim,
+        output_dim=caption_channels,
         dtype=dtype,
         rngs=rngs,
     )
 
     # Two independent connectors
     self.video_embeddings_connector = Embeddings1DConnector(
-        input_dim=projection_dim,
-        heads=connector_heads,
-        head_dim=connector_head_dim,
-        layers=connector_layers,
-        num_learnable_registers=num_thinking_tokens,
+        input_dim=caption_channels,
+        heads=video_connector_num_attention_heads,
+        head_dim=video_connector_attention_head_dim,
+        layers=video_connector_num_layers,
+        num_learnable_registers=video_connector_num_learnable_registers,
         rope_type="interleaved",
         attention_kernel=attention_kernel,
         mesh=mesh,
@@ -138,11 +149,11 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
     self.audio_embeddings_connector = Embeddings1DConnector(
-        input_dim=projection_dim,
-        heads=connector_heads,
-        head_dim=connector_head_dim,
-        layers=connector_layers,
-        num_learnable_registers=num_thinking_tokens,
+        input_dim=caption_channels,
+        heads=audio_connector_num_attention_heads,
+        head_dim=audio_connector_attention_head_dim,
+        layers=audio_connector_num_layers,
+        num_learnable_registers=audio_connector_num_learnable_registers,
         rope_type="interleaved",
         attention_kernel=attention_kernel,
         mesh=mesh,
