@@ -734,34 +734,33 @@ class LTX2Pipeline:
            text_encoder_hidden_states = text_encoder_outputs.hidden_states
            del text_encoder_outputs # Free memory
            
-           text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
-           text_encoder_hidden_states = text_encoder_hidden_states.cpu().to(torch.float16)
-           
-           sequence_lengths = prompt_attention_mask.sum(dim=-1).to(torch.int32)
+           prompt_embeds_list = []
+           for state in text_encoder_hidden_states:
+               state_np = state.cpu().to(torch.float32).numpy()
+               prompt_embeds_list.append(jnp.array(state_np, dtype=jnp.bfloat16))
 
-           prompt_embeds_pt = self._pack_text_embeds(
-               text_encoder_hidden_states,
-               sequence_lengths,
-               padding_side=self.tokenizer.padding_side,
-               scale_factor=scale_factor,
-           )
+           prompt_embeds = prompt_embeds_list
            del text_encoder_hidden_states # Free PyTorch tensor memory
-           
-           # Convert to JAX via float32, then cast to bfloat16 to match user expectations and minimize memory footprint
-           prompt_embeds = jnp.array(prompt_embeds_pt.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
-           del prompt_embeds_pt
-           
-           max_logging.log(f"DEBUG: JAX array device: {prompt_embeds.device()}")
            
            prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
       else:
           raise ValueError("`text_encoder` is required to encode prompts.")
       if dtype is not None:
-          prompt_embeds = prompt_embeds.astype(dtype)
+          if isinstance(prompt_embeds, list):
+              prompt_embeds = [state.astype(dtype) for state in prompt_embeds]
+          else:
+              prompt_embeds = prompt_embeds.astype(dtype)
 
-      _, seq_len, _ = prompt_embeds.shape
-      prompt_embeds = jnp.repeat(prompt_embeds, num_videos_per_prompt, axis=0)
-      prompt_embeds = prompt_embeds.reshape(batch_size * num_videos_per_prompt, seq_len, -1)
+      if isinstance(prompt_embeds, list):
+          _, seq_len, _ = prompt_embeds[0].shape
+          prompt_embeds = [
+              jnp.repeat(state, num_videos_per_prompt, axis=0).reshape(batch_size * num_videos_per_prompt, seq_len, -1)
+              for state in prompt_embeds
+          ]
+      else:
+          _, seq_len, _ = prompt_embeds.shape
+          prompt_embeds = jnp.repeat(prompt_embeds, num_videos_per_prompt, axis=0)
+          prompt_embeds = prompt_embeds.reshape(batch_size * num_videos_per_prompt, seq_len, -1)
 
       prompt_attention_mask = prompt_attention_mask.reshape(batch_size, -1)
       prompt_attention_mask = jnp.repeat(prompt_attention_mask, num_videos_per_prompt, axis=0)
@@ -1194,7 +1193,14 @@ class LTX2Pipeline:
       if guidance_scale > 1.0:
           negative_prompt_embeds_jax = negative_prompt_embeds
           negative_prompt_attention_mask_jax = negative_prompt_attention_mask
-          prompt_embeds_jax = jnp.concatenate([negative_prompt_embeds_jax, prompt_embeds_jax], axis=0)
+          if isinstance(prompt_embeds_jax, list):
+              prompt_embeds_jax = [
+                  jnp.concatenate([n, p], axis=0)
+                  for n, p in zip(negative_prompt_embeds_jax, prompt_embeds_jax)
+              ]
+          else:
+              prompt_embeds_jax = jnp.concatenate([negative_prompt_embeds_jax, prompt_embeds_jax], axis=0)
+          
           prompt_attention_mask_jax = jnp.concatenate([negative_prompt_attention_mask_jax, prompt_attention_mask_jax], axis=0)
           latents_jax = jnp.concatenate([latents_jax] * 2, axis=0)
           audio_latents_jax = jnp.concatenate([audio_latents_jax] * 2, axis=0)
