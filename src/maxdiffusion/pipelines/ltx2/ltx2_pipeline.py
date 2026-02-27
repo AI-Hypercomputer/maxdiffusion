@@ -50,6 +50,7 @@ from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
 from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
+from maxdiffusion.maxdiffusion_utils import get_dummy_ltx2_inputs
 
 @flax.struct.dataclass
 class LTX2PipelineOutput:
@@ -529,7 +530,9 @@ class LTX2Pipeline:
           vocoder=components["vocoder"]
       )
       pipeline.mesh = components["mesh"]
-      return pipeline, transformer
+      if load_transformer:
+          pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, pipeline.mesh)
+      return pipeline, pipeline.transformer
 
   @classmethod
   def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
@@ -600,13 +603,16 @@ class LTX2Pipeline:
 
   @classmethod
   def quantize_transformer(
-      cls, config: HyperParameters, model: Any, pipeline: "LTX2Pipeline", mesh: Mesh, model_inputs: Tuple[Any, ...]
+      cls, config: HyperParameters, model: Any, pipeline: "LTX2Pipeline", mesh: Mesh
   ):
     """Quantizes the transformer model."""
     q_rules = cls.get_qt_provider(config)
     if not q_rules:
       return model
     max_logging.log("Quantizing transformer with Qwix.")
+
+    batch_size = config.global_batch_size_to_train_on
+    model_inputs = get_dummy_ltx2_inputs(config, pipeline, batch_size)
 
     with mesh:
       quantized_model = qwix.quantize_model(model, q_rules, *model_inputs)

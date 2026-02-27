@@ -286,6 +286,59 @@ def get_dummy_flux_inputs(config, pipeline, batch_size):
   return (latents, timesteps, latents_ids, guidance_vec, t5_hidden_states, t5_ids, clip_hidden_states)
 
 
+def get_dummy_ltx2_inputs(config, pipeline, batch_size):
+  height = config.height
+  width = config.width
+  num_frames = config.num_frames
+  fps = getattr(config, "fps", 24.0)
+  audio_num_frames = getattr(config, "audio_num_frames", num_frames)
+
+  hidden_states, _, _ = pipeline.prepare_latents(
+      batch_size,
+      pipeline.transformer.in_channels,
+      height,
+      width,
+      num_frames,
+      dtype=jnp.float32,
+      rng=jax.random.PRNGKey(0)
+  )
+  
+  audio_hidden_states, _ = pipeline.prepare_audio_latents(
+      batch_size,
+      pipeline.transformer.audio_in_channels,
+      num_frames,
+      audio_num_frames,
+      fps,
+      dtype=jnp.float32,
+      rng=jax.random.PRNGKey(0)
+  )
+  
+  cross_attention_dim = pipeline.transformer.cross_attention_dim
+  audio_cross_attention_dim = pipeline.transformer.audio_cross_attention_dim
+  
+  seq_len_text = getattr(config, "max_sequence_length", 128)
+  
+  encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, cross_attention_dim), dtype=jnp.float32)
+  audio_encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, audio_cross_attention_dim), dtype=jnp.float32)
+  timestep = jnp.ones((batch_size,), dtype=jnp.float32)
+
+  return (
+      hidden_states,
+      audio_hidden_states,
+      encoder_hidden_states,
+      audio_encoder_hidden_states,
+      timestep,
+      None, # audio_timestep
+      jnp.ones((batch_size, seq_len_text), dtype=jnp.float32), # encoder_attention_mask
+      jnp.ones((batch_size, seq_len_text), dtype=jnp.float32), # audio_encoder_attention_mask
+      num_frames,
+      height,
+      width,
+      fps,
+      audio_num_frames,
+  )
+
+
 def get_dummy_wan_inputs(config, pipeline, batch_size):
   latents = pipeline.prepare_latents(
       batch_size,
