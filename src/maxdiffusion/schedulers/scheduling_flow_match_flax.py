@@ -93,6 +93,19 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
       extra_one_step: bool = False,
       reverse_sigmas: bool = False,
       dtype: jnp.dtype = jnp.float32,
+      base_image_seq_len: int = 1024,
+      base_shift: float = 0.95,
+      invert_sigmas: bool = False,
+      max_image_seq_len: int = 4096,
+      max_shift: float = 2.05,
+      shift_terminal: float = 0.1,
+      stochastic_sampling: bool = False,
+      time_shift_type: str = "exponential",
+      use_beta_sigmas: bool = False,
+      use_dynamic_shifting: bool = True,
+      use_exponential_sigmas: bool = False,
+      use_karras_sigmas: bool = False,
+      **kwargs,
   ):
     self.dtype = dtype
 
