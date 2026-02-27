@@ -716,6 +716,9 @@ class LTX2Pipeline:
            text_input_ids = text_input_ids.to(self.text_encoder.device)
            prompt_attention_mask = prompt_attention_mask.to(self.text_encoder.device)
            
+           max_logging.log(f"DEBUG: text_encoder is on {self.text_encoder.device}")
+           max_logging.log(f"DEBUG: text_input_ids is on {text_input_ids.device}")
+
            with torch.no_grad():
                 text_encoder_outputs = self.text_encoder(
                     input_ids=text_input_ids, attention_mask=prompt_attention_mask, output_hidden_states=True
@@ -729,6 +732,8 @@ class LTX2Pipeline:
            # Convert to JAX via float32, then cast to bfloat16 to match user expectations and minimize memory footprint
            text_encoder_hidden_states_jax = jnp.array(text_encoder_hidden_states.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
            del text_encoder_hidden_states # Free PyTorch tensor memory
+           
+           max_logging.log(f"DEBUG: JAX array device: {text_encoder_hidden_states_jax.device()}")
            
            prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
       else:
