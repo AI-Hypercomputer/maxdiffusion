@@ -271,6 +271,9 @@ def load_vae_weights(
           random_flax_state_dict[string_tuple] = flattened_eval[key]
             
       for pt_key, tensor in tensors.items():
+          # Diffusers saves static tensors for these, but they are defined as static tuples in Flax.
+          if pt_key in ["latents_mean", "latents_std"]:
+              continue
           renamed_pt_key = rename_key(pt_key)
           renamed_pt_key = renamed_pt_key.replace("nin_shortcut", "conv_shortcut")
           
@@ -526,6 +529,8 @@ def load_audio_vae_weights(
           random_flax_state_dict[string_tuple] = flattened_eval[key]
 
     for pt_key, tensor in tensors.items():
+        if pt_key in ["latents_mean", "latents_std"]:
+            continue
         key = rename_for_ltx2_audio_vae(pt_key)
         
         should_transpose = False
