@@ -638,20 +638,20 @@ class LTX2Pipeline:
 
   @staticmethod
   def _pack_text_embeds(
-      text_hidden_states: jax.Array,
-      sequence_lengths: jax.Array,
+      text_hidden_states: torch.Tensor,
+      sequence_lengths: torch.Tensor,
       padding_side: str = "left",
       scale_factor: int = 8,
       eps: float = 1e-6,
-  ) -> jax.Array:
+  ) -> torch.Tensor:
       """
-      Packs and normalizes text encoder hidden states using JAX natively to minimize PyTorch/HBM transfers.
+      Packs and normalizes text encoder hidden states using PyTorch to save device HBM.
       """
       batch_size, seq_len, hidden_dim, num_layers = text_hidden_states.shape
       original_dtype = text_hidden_states.dtype
 
       # Create padding mask
-      token_indices = jnp.arange(seq_len)[None, :]
+      token_indices = torch.arange(seq_len, device=text_hidden_states.device).unsqueeze(0)
       if padding_side == "right":
           mask = token_indices < sequence_lengths[:, None]
       elif padding_side == "left":
@@ -661,22 +661,20 @@ class LTX2Pipeline:
           raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side}")
       mask = mask[:, :, None, None]
 
-      masked_text_hidden_states = jnp.where(mask, text_hidden_states, 0.0)
-      num_valid_positions = (sequence_lengths * hidden_dim).reshape(batch_size, 1, 1, 1)
-      masked_mean = masked_text_hidden_states.sum(axis=(1, 2), keepdims=True) / (num_valid_positions + eps)
+      masked_text_hidden_states = text_hidden_states.masked_fill(~mask, 0.0)
+      num_valid_positions = (sequence_lengths * hidden_dim).view(batch_size, 1, 1, 1)
+      masked_mean = masked_text_hidden_states.sum(dim=(1, 2), keepdim=True) / (num_valid_positions + eps)
 
-      x_min = jnp.min(jnp.where(mask, text_hidden_states, float("inf")), axis=(1, 2), keepdims=True)
-      x_max = jnp.max(jnp.where(mask, text_hidden_states, float("-inf")), axis=(1, 2), keepdims=True)
+      x_min = text_hidden_states.masked_fill(~mask, float("inf")).amin(dim=(1, 2), keepdim=True)
+      x_max = text_hidden_states.masked_fill(~mask, float("-inf")).amax(dim=(1, 2), keepdim=True)
 
       normalized_hidden_states = (text_hidden_states - masked_mean) / (x_max - x_min + eps)
       normalized_hidden_states = normalized_hidden_states * scale_factor
 
-      normalized_hidden_states = normalized_hidden_states.reshape(batch_size, seq_len, -1)
-      mask_flat = mask.squeeze(-1)
-      mask_flat = jnp.broadcast_to(mask_flat, normalized_hidden_states.shape)
-      
-      normalized_hidden_states = jnp.where(mask_flat, normalized_hidden_states, 0.0)
-      normalized_hidden_states = normalized_hidden_states.astype(original_dtype)
+      normalized_hidden_states = normalized_hidden_states.flatten(2)
+      mask_flat = mask.squeeze(-1).expand(-1, -1, hidden_dim * num_layers)
+      normalized_hidden_states = normalized_hidden_states.masked_fill(~mask_flat, 0.0)
+      normalized_hidden_states = normalized_hidden_states.to(dtype=original_dtype)
       return normalized_hidden_states
 
   def _get_gemma_prompt_embeds(
@@ -728,26 +726,27 @@ class LTX2Pipeline:
            del text_encoder_outputs # Free memory
            
            text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
+           text_encoder_hidden_states = text_encoder_hidden_states.cpu().to(torch.float16)
            
-           # Convert to JAX via float32, then cast to bfloat16 to match user expectations and minimize memory footprint
-           text_encoder_hidden_states_jax = jnp.array(text_encoder_hidden_states.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
+           sequence_lengths = prompt_attention_mask.sum(dim=-1).to(torch.int32)
+
+           prompt_embeds_pt = self._pack_text_embeds(
+               text_encoder_hidden_states,
+               sequence_lengths,
+               padding_side=self.tokenizer.padding_side,
+               scale_factor=scale_factor,
+           )
            del text_encoder_hidden_states # Free PyTorch tensor memory
            
-           max_logging.log(f"DEBUG: JAX array device: {text_encoder_hidden_states_jax.device()}")
+           # Convert to JAX via float32, then cast to bfloat16 to match user expectations and minimize memory footprint
+           prompt_embeds = jnp.array(prompt_embeds_pt.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
+           del prompt_embeds_pt
+           
+           max_logging.log(f"DEBUG: JAX array device: {prompt_embeds.device()}")
            
            prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
       else:
           raise ValueError("`text_encoder` is required to encode prompts.")
-
-      sequence_lengths = prompt_attention_mask.sum(axis=-1)
-
-      prompt_embeds = self._pack_text_embeds(
-          text_encoder_hidden_states_jax,
-          sequence_lengths,
-          padding_side=self.tokenizer.padding_side,
-          scale_factor=scale_factor,
-      )
-      del text_encoder_hidden_states_jax
       if dtype is not None:
           prompt_embeds = prompt_embeds.astype(dtype)
 
