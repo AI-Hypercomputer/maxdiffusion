@@ -536,6 +536,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       names_which_can_be_offloaded: list = [],
       scan_layers: bool = True,
       attention_kernel: str = "flash",
+      qk_norm: str = "rms_norm_across_heads",
+      **kwargs,
   ):
     self.in_channels = in_channels
     self.out_channels = out_channels
