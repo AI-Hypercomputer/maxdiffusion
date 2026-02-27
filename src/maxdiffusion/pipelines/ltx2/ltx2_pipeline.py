@@ -337,7 +337,11 @@ class LTX2Pipeline:
           sharding = logical_state_sharding.get(path)
           if sharding is not None:
              sharding = sharding.value
-             if getattr(config, "replicate_vae", False):
+             try:
+                 replicate_vae = config.replicate_vae
+             except ValueError:
+                 replicate_vae = False
+             if replicate_vae:
                  sharding = NamedSharding(mesh, P())
              state[path].value = device_put_replicated(val, sharding)
           else:
@@ -379,7 +383,11 @@ class LTX2Pipeline:
           sharding = logical_state_sharding.get(path)
           if sharding is not None:
              sharding = sharding.value
-             if getattr(config, "replicate_vae", False):
+             try:
+                 replicate_vae = config.replicate_vae
+             except ValueError:
+                 replicate_vae = False
+             if replicate_vae:
                  sharding = NamedSharding(mesh, P())
              state[path].value = device_put_replicated(val, sharding)
           else:

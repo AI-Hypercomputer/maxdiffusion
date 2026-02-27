@@ -93,6 +93,8 @@ ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_context_parallelism: 1
 ici_tensor_parallelism: 1
 
+replicate_vae: False
+
 allow_split_physical_axes: False
 learning_rate_schedule_steps: -1
 max_train_steps: 500

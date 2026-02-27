@@ -338,6 +338,13 @@ def load_vae_weights(
                    flax_state_dict[flax_key] = flax_tensor
           else:
               flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+      if ("latents_mean",) in flattened_eval and ("latents_mean",) not in flax_state_dict:
+          shape_dtype = flattened_eval[("latents_mean",)]
+          flax_state_dict[("latents_mean",)] = jax.device_put(jnp.zeros(shape_dtype.shape, dtype=shape_dtype.dtype), device=cpu)
+      if ("latents_std",) in flattened_eval and ("latents_std",) not in flax_state_dict:
+          shape_dtype = flattened_eval[("latents_std",)]
+          flax_state_dict[("latents_std",)] = jax.device_put(jnp.ones(shape_dtype.shape, dtype=shape_dtype.dtype), device=cpu)
+
       filtered_eval_shapes = {}
       for k, v in flattened_eval.items():
           k_str = [str(x) for x in k]
