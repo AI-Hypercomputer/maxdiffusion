@@ -388,6 +388,8 @@ class LTX2Attention(nnx.Module):
         heads=heads,
         dim_head=dim_head,
         dtype=dtype,
+        axis_names_q=("batch", "heads", "length", "kv"),
+        axis_names_kv=("batch", "heads", "length", "kv"),
     )
 
   def __call__(
