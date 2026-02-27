@@ -43,6 +43,8 @@ prompt_enhancement_words_threshold: 120
 stg_mode: "attention_values"
 decode_timestep: 0.05
 decode_noise_scale: 0.025
+use_qwix_quantization: True
+quantization: "int8"
 seed: 10
 conditioning_media_paths: None #["IMAGE_PATH"]
 conditioning_start_frames: [0]
