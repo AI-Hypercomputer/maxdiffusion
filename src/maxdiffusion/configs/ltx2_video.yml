@@ -4,6 +4,7 @@ skip_jax_distributed_system: False
 attention: 'flash'
 attention_sharding_uniform: True 
 precision: 'bf16'
+data_sharding: ['data', 'fsdp', 'context', 'tensor']
 remat_policy: "NONE"
 names_which_can_be_saved: []
 names_which_can_be_offloaded: []
