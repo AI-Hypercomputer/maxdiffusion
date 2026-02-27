@@ -113,6 +113,9 @@ def create_sharded_logical_transformer(
     else:
         ltx2_config = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
 
+    if ltx2_config.get("activation_fn") == "gelu-approximate":
+        ltx2_config["activation_fn"] = "gelu"
+
     ltx2_config["mesh"] = mesh
     ltx2_config["dtype"] = config.activations_dtype
     ltx2_config["weights_dtype"] = config.weights_dtype
