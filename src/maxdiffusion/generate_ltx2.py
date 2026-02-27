@@ -82,8 +82,8 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
   generator = jax.random.key(config.seed) if hasattr(config, "seed") else jax.random.key(0)
   
   negative_prompt = negative_prompt if hasattr(config, "negative_prompt") else None
-  do_classifier_free_guidance = getattr(config, "do_classifier_free_guidance", True)
-  guidance_scale = getattr(config, "guidance_scale", 3.0) if do_classifier_free_guidance else 1.0
+  guidance_scale = config.guidance_scale if hasattr(config, "guidance_scale") else 3.0
+  do_classifier_free_guidance = guidance_scale > 1.0
 
   out = pipeline(
       prompt=prompt,
