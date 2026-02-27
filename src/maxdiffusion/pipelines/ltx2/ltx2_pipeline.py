@@ -465,7 +465,7 @@ class LTX2Pipeline:
   @classmethod
   def load_scheduler(cls, config: HyperParameters):
       max_logging.log("Loading Scheduler...")
-      scheduler = FlaxFlowMatchScheduler.from_pretrained(
+      scheduler, _ = FlaxFlowMatchScheduler.from_pretrained(
           config.pretrained_model_name_or_path,
           subfolder="scheduler",
       )
