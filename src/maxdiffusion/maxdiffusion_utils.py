@@ -325,10 +325,6 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
   audio_encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, audio_cross_attention_dim), dtype=jnp.float32)
   timestep = jnp.ones((batch_size,), dtype=jnp.float32)
 
-  latent_height = height // pipeline.vae_spatial_compression_ratio
-  latent_width = width // pipeline.vae_spatial_compression_ratio
-  latent_num_frames = (num_frames - 1) // pipeline.vae_temporal_compression_ratio + 1
-
   return (
       hidden_states,
       audio_hidden_states,
@@ -338,9 +334,9 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
       None, # audio_timestep
       jnp.ones((batch_size, seq_len_text), dtype=jnp.float32), # encoder_attention_mask
       jnp.ones((batch_size, seq_len_text), dtype=jnp.float32), # audio_encoder_attention_mask
-      latent_num_frames,
-      latent_height,
-      latent_width,
+      num_frames,
+      height,
+      width,
       fps,
       audio_num_frames,
   )
