@@ -518,32 +518,6 @@ class LTX2Pipeline:
               restored_checkpoint=restored_checkpoint,
           )
 
-      def log_device(obj, name):
-          if obj is None: return
-          try:
-              if hasattr(obj, "device"):
-                  max_logging.log(f"DEBUG: {name} is on PyTorch device: {obj.device}")
-              else:
-                  _, state, _ = nnx.split(obj, nnx.Param)
-                  leaves = jax.tree.leaves(state)
-                  if leaves:
-                      val = leaves[0].value
-                      if hasattr(val, "devices"):
-                          max_logging.log(f"DEBUG: {name} is on JAX devices: {val.devices()}")
-                      elif hasattr(val, "device"):
-                          max_logging.log(f"DEBUG: {name} is on JAX device: {val.device()}")
-          except Exception as e:
-              max_logging.log(f"DEBUG: Could not determine device for {name}: {e}")
-
-      max_logging.log("DEBUG: --- Component Device Placement ---")
-      log_device(components.get("text_encoder"), "Text Encoder")
-      log_device(components.get("vae"), "VAE")
-      log_device(components.get("audio_vae"), "Audio VAE")
-      log_device(components.get("connectors"), "Connectors")
-      log_device(components.get("vocoder"), "Vocoder")
-      log_device(transformer, "Transformer")
-      max_logging.log("DEBUG: ----------------------------------")
-
       pipeline = cls(
           scheduler=components["scheduler"],
           vae=components["vae"],
