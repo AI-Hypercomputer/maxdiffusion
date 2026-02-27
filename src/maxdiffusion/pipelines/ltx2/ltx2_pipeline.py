@@ -722,10 +722,14 @@ class LTX2Pipeline:
                 )
            
            text_encoder_hidden_states = text_encoder_outputs.hidden_states
+           del text_encoder_outputs # Free memory
+           
            text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
            
            # Convert to JAX via float32, then cast to bfloat16 to match user expectations and minimize memory footprint
-           text_encoder_hidden_states = jnp.array(text_encoder_hidden_states.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
+           text_encoder_hidden_states_jax = jnp.array(text_encoder_hidden_states.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
+           del text_encoder_hidden_states # Free PyTorch tensor memory
+           
            prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bfloat16)
       else:
           raise ValueError("`text_encoder` is required to encode prompts.")
@@ -733,11 +737,12 @@ class LTX2Pipeline:
       sequence_lengths = prompt_attention_mask.sum(axis=-1)
 
       prompt_embeds = self._pack_text_embeds(
-          text_encoder_hidden_states,
+          text_encoder_hidden_states_jax,
           sequence_lengths,
           padding_side=self.tokenizer.padding_side,
           scale_factor=scale_factor,
       )
+      del text_encoder_hidden_states_jax
       if dtype is not None:
           prompt_embeds = prompt_embeds.astype(dtype)
 
