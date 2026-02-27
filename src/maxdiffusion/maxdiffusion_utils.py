@@ -316,13 +316,12 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
       generator=jax.random.PRNGKey(0)
   )
   
-  cross_attention_dim = pipeline.transformer.cross_attention_dim
-  audio_cross_attention_dim = pipeline.transformer.audio_cross_attention_dim
+  caption_channels = getattr(pipeline.transformer, "caption_channels", getattr(pipeline.transformer.config, "caption_channels", 3840))
   
   seq_len_text = raw_keys.get("max_sequence_length", 128) if raw_keys.get("max_sequence_length") else 128
   
-  encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, cross_attention_dim), dtype=jnp.float32)
-  audio_encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, audio_cross_attention_dim), dtype=jnp.float32)
+  encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, caption_channels), dtype=jnp.float32)
+  audio_encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, caption_channels), dtype=jnp.float32)
   timestep = jnp.ones((batch_size,), dtype=jnp.float32)
 
   return (
