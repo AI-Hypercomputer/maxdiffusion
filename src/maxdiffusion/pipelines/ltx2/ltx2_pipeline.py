@@ -1121,8 +1121,8 @@ class LTX2Pipeline:
       )
 
       # 3. Prepare latents
-      # Effective batch size
-      batch_size = prompt_embeds.shape[0] // 2 if guidance_scale > 1.0 else prompt_embeds.shape[0]
+      _bs = prompt_embeds[0].shape[0] if isinstance(prompt_embeds, list) else prompt_embeds.shape[0]
+      batch_size = _bs // 2 if guidance_scale > 1.0 else _bs
       
       # Prepare generators
       if generator is None:
