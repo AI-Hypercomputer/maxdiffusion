@@ -608,6 +608,7 @@ class LTX2Pipeline:
     """Quantizes the transformer model."""
     q_rules = cls.get_qt_provider(config)
     if not q_rules:
+      max_logging.log("DEBUG: Transformer is NOT being quantized. (q_rules is None)")
       return model
     max_logging.log("Quantizing transformer with Qwix.")
 
@@ -616,6 +617,7 @@ class LTX2Pipeline:
 
     with mesh:
       quantized_model = qwix.quantize_model(model, q_rules, *model_inputs)
+    max_logging.log("DEBUG: Transformer WAS successfully quantized.")
     max_logging.log("Qwix Quantization complete.")
     return quantized_model
 
