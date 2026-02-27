@@ -287,9 +287,9 @@ def get_dummy_flux_inputs(config, pipeline, batch_size):
 
 
 def get_dummy_ltx2_inputs(config, pipeline, batch_size):
-  height = config.height
-  width = config.width
-  num_frames = config.num_frames
+  height = 32
+  width = 32
+  num_frames = 1
   raw_keys = config.get_keys() if hasattr(config, "get_keys") else {}
   fps = raw_keys.get("fps", 24.0) if raw_keys.get("fps") else 24.0
   duration_s = num_frames / fps
