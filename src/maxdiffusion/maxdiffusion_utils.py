@@ -292,32 +292,28 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
   num_frames = config.num_frames
   raw_keys = config.get_keys() if hasattr(config, "get_keys") else {}
   fps = raw_keys.get("fps", 24.0) if raw_keys.get("fps") else 24.0
-  audio_num_frames = raw_keys.get("audio_num_frames")
-  if audio_num_frames is None:
-      duration_s = num_frames / fps
-      audio_latents_per_second = (
-          pipeline.audio_sampling_rate / pipeline.audio_hop_length / float(pipeline.audio_vae_temporal_compression_ratio)
-      )
-      audio_num_frames = round(duration_s * audio_latents_per_second)
+  duration_s = num_frames / fps
+  audio_latents_per_second = (
+      pipeline.audio_sampling_rate / pipeline.audio_hop_length / float(pipeline.audio_vae_temporal_compression_ratio)
+  )
+  audio_num_frames = round(duration_s * audio_latents_per_second)
 
-  hidden_states, _, _ = pipeline.prepare_latents(
+  hidden_states = pipeline.prepare_latents(
       batch_size,
       pipeline.transformer.in_channels,
       height,
       width,
       num_frames,
       dtype=jnp.float32,
-      rng=jax.random.PRNGKey(0)
+      generator=jax.random.PRNGKey(0)
   )
   
-  audio_hidden_states, _ = pipeline.prepare_audio_latents(
+  audio_hidden_states = pipeline.prepare_audio_latents(
       batch_size,
       pipeline.transformer.audio_in_channels,
-      num_frames,
       audio_num_frames,
-      fps,
       dtype=jnp.float32,
-      rng=jax.random.PRNGKey(0)
+      generator=jax.random.PRNGKey(0)
   )
   
   cross_attention_dim = pipeline.transformer.cross_attention_dim
