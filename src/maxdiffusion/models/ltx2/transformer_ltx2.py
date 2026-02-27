@@ -941,7 +941,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     # 5. Run transformer blocks
     def scan_fn(carry, block):
       hidden_states, audio_hidden_states, rngs_carry = carry
-      hidden_states, audio_hidden_states = block(
+      hidden_states_out, audio_hidden_states_out = block(
           hidden_states=hidden_states,
           audio_hidden_states=audio_hidden_states,
           encoder_hidden_states=encoder_hidden_states,
@@ -959,7 +959,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           encoder_attention_mask=encoder_attention_mask,
           audio_encoder_attention_mask=audio_encoder_attention_mask,
       )
-      return (hidden_states, audio_hidden_states, rngs_carry), None
+      return (hidden_states_out.astype(hidden_states.dtype), audio_hidden_states_out.astype(audio_hidden_states.dtype), rngs_carry), None
 
     if self.scan_layers:
       rematted_scan_fn = self.gradient_checkpoint.apply(
