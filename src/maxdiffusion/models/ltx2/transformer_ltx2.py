@@ -57,7 +57,7 @@ class LTX2AdaLayerNormSingle(nnx.Module):
         use_bias=True,
         dtype=dtype,
         param_dtype=weights_dtype,
-        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed", "embed")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
