@@ -1099,7 +1099,7 @@ class LTX2Pipeline:
       decode_timestep: Union[float, List[float]] = 0.0,
       decode_noise_scale: Optional[Union[float, List[float]]] = None,
       max_sequence_length: int = 1024,
-      dtype: Optional[jnp.dtype] = jnp.float32,
+      dtype: Optional[jnp.dtype] = None,
       output_type: str = "pil",
       return_dict: bool = True,
   ):

@@ -97,6 +97,8 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
       frame_rate=getattr(config, "fps", 24.0),
       decode_timestep=getattr(config, "decode_timestep", 0.0),
       decode_noise_scale=getattr(config, "decode_noise_scale", None),
+      max_sequence_length=getattr(config, "max_sequence_length", 1024),
+      dtype=jnp.bfloat16 if getattr(config, "activations_dtype", "bfloat16") == "bfloat16" else jnp.float32,
   )
   return out
 
