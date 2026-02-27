@@ -333,9 +333,9 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
       None, # audio_timestep
       jnp.ones((batch_size, seq_len_text), dtype=jnp.float32), # encoder_attention_mask
       jnp.ones((batch_size, seq_len_text), dtype=jnp.float32), # audio_encoder_attention_mask
-      num_frames,
-      height,
-      width,
+      (num_frames - 1) // 8 + 1 if hasattr(pipeline, "vae_temporal_compression_ratio") else 1, # latent num_frames
+      height // 32 if hasattr(pipeline, "vae_spatial_compression_ratio") else 1, # latent height
+      width // 32 if hasattr(pipeline, "vae_spatial_compression_ratio") else 1, # latent width
       fps,
       audio_num_frames,
   )
