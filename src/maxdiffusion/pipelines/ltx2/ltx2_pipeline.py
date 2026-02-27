@@ -725,9 +725,9 @@ class LTX2Pipeline:
            text_encoder_hidden_states = text_encoder_outputs.hidden_states
            text_encoder_hidden_states = torch.stack(text_encoder_hidden_states, dim=-1)
            
-           # Convert to JAX
-           text_encoder_hidden_states = jnp.array(text_encoder_hidden_states.cpu().numpy())
-           prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().numpy())
+           # Convert to JAX via float32 as numpy doesn't support bfloat16
+           text_encoder_hidden_states = jnp.array(text_encoder_hidden_states.cpu().to(torch.float32).numpy(), dtype=jnp.float32)
+           prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.float32)
       else:
           raise ValueError("`text_encoder` is required to encode prompts.")
 
