@@ -590,6 +590,7 @@ class LTX2Pipeline:
   @classmethod
   def get_qt_provider(cls, config: HyperParameters) -> Optional[qwix.QtProvider]:
     """Get quantization rules based on the config."""
+    max_logging.log(f"DEBUG: use_qwix_quantization={getattr(config, 'use_qwix_quantization', None)}, quantization={getattr(config, 'quantization', None)}")
     if not getattr(config, "use_qwix_quantization", False):
       return None
 
