@@ -99,7 +99,7 @@ class Embeddings1DConnector(nnx.Module):
     # This creates a single module where parameters have an extra leading dimension [layers, ...]
     # We need to ensure rngs are split for each layer
     @nnx.split_rngs(splits=layers)
-    @nnx.vmap(in_axes=0, out_axes=0, axis_size=layers)
+    @nnx.vmap(in_axes=0, out_axes=0, axis_size=layers, transform_metadata={nnx.PARTITION_NAME: "layers"})
     def create_block(rngs):
       return _BasicTransformerBlock1D(
           dim=input_dim,
