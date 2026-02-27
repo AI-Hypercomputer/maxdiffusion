@@ -85,6 +85,8 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
   guidance_scale = config.guidance_scale if hasattr(config, "guidance_scale") else 3.0
   do_classifier_free_guidance = guidance_scale > 1.0
 
+  max_sequence_length = getattr(config, "max_sequence_length", 512)
+
   out = pipeline(
       prompt=prompt,
       negative_prompt=negative_prompt,
@@ -97,6 +99,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
       frame_rate=getattr(config, "fps", 24.0),
       decode_timestep=getattr(config, "decode_timestep", 0.0),
       decode_noise_scale=getattr(config, "decode_noise_scale", None),
+      max_sequence_length=max_sequence_length,
   )
   return out
 
