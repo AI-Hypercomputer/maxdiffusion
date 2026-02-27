@@ -27,6 +27,7 @@ import flax
 import flax.linen as nn
 import flax.traverse_util
 from flax import nnx
+from flax.linen import partitioning as nn_partitioning
 from transformers import AutoTokenizer, GemmaTokenizer, GemmaTokenizerFast, Gemma3ForConditionalGeneration
 from tqdm.auto import tqdm
 import qwix
@@ -1222,59 +1223,69 @@ class LTX2Pipeline:
       graphdef, state = nnx.split(self.transformer)
       
       # 7. Denoising Loop
-      connectors_graphdef, connectors_state = nnx.split(self.connectors)
-      
-      @jax.jit
-      def run_connectors(graphdef, state, hidden_states, attention_mask):
-           model = nnx.merge(graphdef, state)
-           return model(hidden_states, attention_mask)
-
-      video_embeds, audio_embeds = run_connectors(
-           connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
+      import contextlib
+      context_manager = (
+          self.mesh if hasattr(self, "mesh") and self.mesh is not None else contextlib.nullcontext()
+      )
+      axis_rules_context = (
+          nn_partitioning.axis_rules(self.config.logical_axis_rules) 
+          if hasattr(self, "config") and hasattr(self.config, "logical_axis_rules") else contextlib.nullcontext()
       )
       
-      for i, t in enumerate(timesteps):
-          noise_pred, noise_pred_audio = transformer_forward_pass(
-              graphdef, state,
-              latents_jax,
-              audio_latents_jax,
-              t,
-              video_embeds,
-              audio_embeds,
-              prompt_attention_mask_jax,
-              prompt_attention_mask_jax,
-              guidance_scale > 1.0,
-              guidance_scale,
-              num_frames,
-              height,
-              width,
-              audio_num_frames,
-              frame_rate,
+      with context_manager, axis_rules_context:
+          connectors_graphdef, connectors_state = nnx.split(self.connectors)
+          
+          @jax.jit
+          def run_connectors(graphdef, state, hidden_states, attention_mask):
+               model = nnx.merge(graphdef, state)
+               return model(hidden_states, attention_mask)
+    
+          video_embeds, audio_embeds = run_connectors(
+               connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
           )
-
-          if guidance_scale > 1.0:
-               noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
-               noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-               # Audio guidance
-               noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
-               noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
-               
-               latents_step = latents_jax[batch_size:]
-               audio_latents_step = audio_latents_jax[batch_size:]
-          else:
-               latents_step = latents_jax
-               audio_latents_step = audio_latents_jax
-
-          # Step
-          latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
-          audio_latents_step, _ = self.scheduler.step(scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
-
-          if guidance_scale > 1.0:
-               latents_jax = jnp.concatenate([latents_step] * 2, axis=0)
-               audio_latents_jax = jnp.concatenate([audio_latents_step] * 2, axis=0)
-          else:
-               latents_jax = latents_step
-               audio_latents_jax = audio_latents_step
+          
+          for i, t in enumerate(timesteps):
+              noise_pred, noise_pred_audio = transformer_forward_pass(
+                  graphdef, state,
+                  latents_jax,
+                  audio_latents_jax,
+                  t,
+                  video_embeds,
+                  audio_embeds,
+                  prompt_attention_mask_jax,
+                  prompt_attention_mask_jax,
+                  guidance_scale > 1.0,
+                  guidance_scale,
+                  num_frames,
+                  height,
+                  width,
+                  audio_num_frames,
+                  frame_rate,
+              )
+    
+              if guidance_scale > 1.0:
+                   noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
+                   noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                   # Audio guidance
+                   noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
+                   noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
+                   
+                   latents_step = latents_jax[batch_size:]
+                   audio_latents_step = audio_latents_jax[batch_size:]
+              else:
+                   latents_step = latents_jax
+                   audio_latents_step = audio_latents_jax
+    
+              # Step
+              latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
+              audio_latents_step, _ = self.scheduler.step(scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
+    
+              if guidance_scale > 1.0:
+                   latents_jax = jnp.concatenate([latents_step] * 2, axis=0)
+                   audio_latents_jax = jnp.concatenate([audio_latents_step] * 2, axis=0)
+              else:
+                   latents_jax = latents_step
+                   audio_latents_jax = audio_latents_step
 
       # 8. Decode Latents
       if guidance_scale > 1.0:
