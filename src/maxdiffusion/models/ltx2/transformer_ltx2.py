@@ -486,7 +486,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
 
 class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
-  config_name = "config"
+  config_name = "config.json"
 
   @register_to_config
   def __init__(
