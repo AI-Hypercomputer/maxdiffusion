@@ -1140,6 +1140,10 @@ class LTX2Pipeline:
            latents=latents,
       )
       
+      latent_height = height // self.vae_spatial_compression_ratio
+      latent_width = width // self.vae_spatial_compression_ratio
+      latent_num_frames = (num_frames - 1) // self.vae_temporal_compression_ratio + 1
+      
       # 4. Prepare Audio Latents
       audio_channels = (
           self.audio_vae.config.latent_channels
@@ -1256,9 +1260,9 @@ class LTX2Pipeline:
                   prompt_attention_mask_jax,
                   guidance_scale > 1.0,
                   guidance_scale,
-                  num_frames,
-                  height,
-                  width,
+                  latent_num_frames,
+                  latent_height,
+                  latent_width,
                   audio_num_frames,
                   frame_rate,
               )
@@ -1358,7 +1362,7 @@ class LTX2Pipeline:
 
       return LTX2PipelineOutput(frames=video, audio=audio)
 
-@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale", "num_frames", "height", "width", "audio_num_frames", "fps"))
+@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale", "latent_num_frames", "latent_height", "latent_width", "audio_num_frames", "fps"))
 def transformer_forward_pass(
     graphdef,
     state,
@@ -1371,9 +1375,9 @@ def transformer_forward_pass(
     audio_encoder_attention_mask,
     do_classifier_free_guidance,
     guidance_scale,
-    num_frames,
-    height,
-    width,
+    latent_num_frames,
+    latent_height,
+    latent_width,
     audio_num_frames,
     fps,
 ):
@@ -1387,9 +1391,9 @@ def transformer_forward_pass(
         encoder_hidden_states=encoder_hidden_states,
         timestep=timestep,
         encoder_attention_mask=encoder_attention_mask,
-        num_frames=num_frames,
-        height=height,
-        width=width,
+        num_frames=latent_num_frames,
+        height=latent_height,
+        width=latent_width,
         audio_hidden_states=audio_latents,
         audio_encoder_hidden_states=audio_encoder_hidden_states,
         audio_encoder_attention_mask=audio_encoder_attention_mask,
