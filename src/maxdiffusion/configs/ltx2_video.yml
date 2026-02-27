@@ -3,11 +3,14 @@ hardware: 'tpu'
 skip_jax_distributed_system: False
 attention: 'flash'
 attention_sharding_uniform: True 
+precision: 'bf16'
+remat_policy: 'nothing_saveable'
+names_which_can_be_saved: []
+names_which_can_be_offloaded: []
 
 jax_cache_dir: ''
 weights_dtype: 'bfloat16'
 activations_dtype: 'bfloat16'
-
 
 run_name: ''
 output_dir: ''
