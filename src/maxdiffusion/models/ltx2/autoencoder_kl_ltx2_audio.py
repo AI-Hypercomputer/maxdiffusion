@@ -707,17 +707,8 @@ class FlaxAutoencoderKLLTX2Audio(nnx.Module, FlaxModelMixin, ConfigMixin):
             is_causal=is_causal
         )
         
-        # Base channels and dtype for properties
-        self.base_channels = base_channels
-        self.dtype = dtype
-
-    @property
-    def latents_mean(self):
-        return jnp.zeros((self.base_channels,), dtype=self.dtype)
-
-    @property
-    def latents_std(self):
-        return jnp.ones((self.base_channels,), dtype=self.dtype)
+        self.latents_mean = tuple([0.0] * base_channels)
+        self.latents_std = tuple([1.0] * base_channels)
 
     def _normalize_latents(self, h: jnp.ndarray) -> jnp.ndarray:
         if self.double_z:
@@ -730,7 +721,7 @@ class FlaxAutoencoderKLLTX2Audio(nnx.Module, FlaxModelMixin, ConfigMixin):
         
         # Normalize means ONLY
         means_patched = self.patchifier.patchify(means) 
-        means_normalized = (means_patched - self.latents_mean) / self.latents_std
+        means_normalized = (means_patched - jnp.array(self.latents_mean, dtype=means_patched.dtype)) / jnp.array(self.latents_std, dtype=means_patched.dtype)
         means_normalized = self.patchifier.unpatchify(means_normalized, channels, freq)
 
         if logvars is not None:
@@ -743,7 +734,7 @@ class FlaxAutoencoderKLLTX2Audio(nnx.Module, FlaxModelMixin, ConfigMixin):
         
         # Denormalize latents (which are just means)
         patched_z = self.patchifier.patchify(z)
-        denorm_patched_z = (patched_z * self.latents_std[...]) + self.latents_mean[...]
+        denorm_patched_z = (patched_z * jnp.array(self.latents_std, dtype=patched_z.dtype)) + jnp.array(self.latents_mean, dtype=patched_z.dtype)
         z = self.patchifier.unpatchify(denorm_patched_z, channels, freq)
 
         target_frames = time * LATENT_DOWNSAMPLE_FACTOR

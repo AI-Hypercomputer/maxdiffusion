@@ -1197,8 +1197,8 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
     self.scaling_factor = scaling_factor
-    self.latent_channels = latent_channels
-    self.dtype = dtype
+    self.latents_mean = tuple([0.0] * latent_channels)
+    self.latents_std = tuple([1.0] * latent_channels)
     self.encoder_causal = encoder_causal
     self.decoder_causal = decoder_causal
 
@@ -1589,14 +1589,6 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
     if not return_dict:
       return (dec,)
     return FlaxDecoderOutput(sample=dec)
-
-  @property
-  def latents_mean(self) -> jax.Array:
-      return jnp.zeros((self.latent_channels,), dtype=self.dtype)
-
-  @property
-  def latents_std(self) -> jax.Array:
-      return jnp.ones((self.latent_channels,), dtype=self.dtype)
 
   def __call__(
       self,
