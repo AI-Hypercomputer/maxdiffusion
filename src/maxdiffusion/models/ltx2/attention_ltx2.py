@@ -342,12 +342,24 @@ class LTX2Attention(nnx.Module):
     self.dropout_rate = dropout
 
     # 1. Projections
-    self.to_q = nnx.Linear(query_dim, self.inner_dim, use_bias=bias, rngs=rngs, dtype=dtype)
+    self.to_q = nnx.Linear(
+        query_dim, self.inner_dim, use_bias=bias, rngs=rngs, dtype=dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "heads")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
+    )
 
     # Handle Self vs Cross Attention input dims
     kv_dim = context_dim if context_dim is not None else query_dim
-    self.to_k = nnx.Linear(kv_dim, self.inner_dim, use_bias=bias, rngs=rngs, dtype=dtype)
-    self.to_v = nnx.Linear(kv_dim, self.inner_dim, use_bias=bias, rngs=rngs, dtype=dtype)
+    self.to_k = nnx.Linear(
+        kv_dim, self.inner_dim, use_bias=bias, rngs=rngs, dtype=dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "heads")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
+    )
+    self.to_v = nnx.Linear(
+        kv_dim, self.inner_dim, use_bias=bias, rngs=rngs, dtype=dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "heads")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
+    )
 
     # 2. Normalization (Applied to full inner_dim, NOT per-head)
     self.norm_q = nnx.RMSNorm(
@@ -358,7 +370,11 @@ class LTX2Attention(nnx.Module):
     )
 
     # 3. Output
-    self.to_out = nnx.Linear(self.inner_dim, query_dim, use_bias=out_bias, rngs=rngs, dtype=dtype)
+    self.to_out = nnx.Linear(
+        self.inner_dim, query_dim, use_bias=out_bias, rngs=rngs, dtype=dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("heads", "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+    )
 
     if self.dropout_rate > 0:
       self.dropout_layer = nnx.Dropout(self.dropout_rate, rngs=rngs)

@@ -57,8 +57,8 @@ class LTX2AdaLayerNormSingle(nnx.Module):
         use_bias=True,
         dtype=dtype,
         param_dtype=weights_dtype,
-        kernel_init=nnx.initializers.zeros,
-        bias_init=nnx.initializers.zeros,
+        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed", "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
   def __call__(
@@ -291,12 +291,22 @@ class LTX2VideoTransformerBlock(nnx.Module):
     key = rngs.params()
     k1, k2, k3, k4 = jax.random.split(key, 4)
 
-    self.scale_shift_table = nnx.Param(jax.random.normal(k1, (6, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim))
-    self.audio_scale_shift_table = nnx.Param(
-        jax.random.normal(k2, (6, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
+    self.scale_shift_table = nnx.Param(
+        jax.random.normal(k1, (6, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
+        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
-    self.video_a2v_cross_attn_scale_shift_table = nnx.Param(jax.random.normal(k3, (5, self.dim), dtype=weights_dtype))
-    self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype))
+    self.audio_scale_shift_table = nnx.Param(
+        jax.random.normal(k2, (6, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
+        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+    )
+    self.video_a2v_cross_attn_scale_shift_table = nnx.Param(
+        jax.random.normal(k3, (5, self.dim), dtype=weights_dtype),
+        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+    )
+    self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(
+        jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype),
+        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+    )
 
   def __call__(
       self,
