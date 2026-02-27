@@ -43,7 +43,6 @@ prompt_enhancement_words_threshold: 120
 stg_mode: "attention_values"
 decode_timestep: 0.05
 decode_noise_scale: 0.025
-use_qwix_quantization: True
 quantization: "int8"
 seed: 10
 conditioning_media_paths: None #["IMAGE_PATH"]
@@ -93,6 +92,6 @@ cache_latents_text_encoder_outputs: True
 per_device_batch_size: 1
 compile_topology_num_slices: -1 
 quantization_local_shard_count: -1
-use_qwix_quantization: False 
+use_qwix_quantization: True 
 jit_initializers: True 
 enable_single_replica_ckpt_restoring: False
