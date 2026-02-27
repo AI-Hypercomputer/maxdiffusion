@@ -1207,14 +1207,16 @@ class LTX2Pipeline:
           audio_latents_jax = jnp.concatenate([audio_latents_jax] * 2, axis=0)
           
       if hasattr(self, "mesh") and self.mesh is not None:
-          data_sharding = NamedSharding(self.mesh, P())
+          data_sharding_3d = NamedSharding(self.mesh, P())
+          data_sharding_2d = NamedSharding(self.mesh, P())
           if hasattr(self, "config") and hasattr(self.config, "data_sharding"):
-              data_sharding = NamedSharding(self.mesh, P(*self.config.data_sharding))
+              data_sharding_3d = NamedSharding(self.mesh, P(*self.config.data_sharding[:3]))
+              data_sharding_2d = NamedSharding(self.mesh, P(*self.config.data_sharding[:2]))
           if isinstance(prompt_embeds_jax, list):
-              prompt_embeds_jax = [jax.device_put(x, data_sharding) for x in prompt_embeds_jax]
+              prompt_embeds_jax = [jax.device_put(x, data_sharding_3d) for x in prompt_embeds_jax]
           else:
-              prompt_embeds_jax = jax.device_put(prompt_embeds_jax, data_sharding)
-          prompt_attention_mask_jax = jax.device_put(prompt_attention_mask_jax, data_sharding)
+              prompt_embeds_jax = jax.device_put(prompt_embeds_jax, data_sharding_3d)
+          prompt_attention_mask_jax = jax.device_put(prompt_attention_mask_jax, data_sharding_2d)
       
       # GraphDef and State
       graphdef, state = nnx.split(self.transformer)
