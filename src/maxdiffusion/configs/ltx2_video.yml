@@ -93,5 +93,9 @@ per_device_batch_size: 1
 compile_topology_num_slices: -1 
 quantization_local_shard_count: -1
 use_qwix_quantization: True 
+weight_quantization_calibration_method: "absmax"
+act_quantization_calibration_method: "absmax"
+bwd_quantization_calibration_method: "absmax"
+qwix_module_path: ".*"
 jit_initializers: True 
 enable_single_replica_ckpt_restoring: False
