@@ -22,6 +22,8 @@ from maxdiffusion import common_types
 
 from .feature_extractor_ltx2 import LTX2GemmaFeatureExtractor
 from .embeddings_connector_ltx2 import Embeddings1DConnector
+from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
+from maxdiffusion.models.modeling_flax_utils import FlaxModelMixin
 
 Array = common_types.Array
 DType = common_types.DType
@@ -89,11 +91,13 @@ class LTX2VideoGemmaTextEncoder(nnx.Module):
     return video_embeds
 
 
-class LTX2AudioVideoGemmaTextEncoder(nnx.Module):
+class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
   """
   Encoder for Audio-Video tasks.
   Pipeline: Gemma Hidden States -> Feature Extractor -> [Video Connector, Audio Connector]
   """
+
+  @register_to_config
 
   def __init__(
       self,
