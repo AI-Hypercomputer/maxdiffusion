@@ -719,7 +719,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
     cross_attn_pos_embed_max_pos = max(self.pos_embed_max_pos, self.audio_pos_embed_max_pos)
     self.cross_attn_rope = LTX2RotaryPosEmbed(
-        dim=inner_dim,
+        dim=audio_cross_attention_dim,
         patch_size=self.patch_size,
         patch_size_t=self.patch_size_t,
         base_num_frames=cross_attn_pos_embed_max_pos,
@@ -733,7 +733,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         num_attention_heads=self.num_attention_heads,
     )
     self.cross_attn_audio_rope = LTX2RotaryPosEmbed(
-        dim=audio_inner_dim,
+        dim=audio_cross_attention_dim,
         patch_size=self.audio_patch_size,
         patch_size_t=self.audio_patch_size_t,
         base_num_frames=cross_attn_pos_embed_max_pos,
