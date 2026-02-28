@@ -1016,6 +1016,11 @@ class LTX2Pipeline:
               scaling_factor = self.vae.config.scaling_factor if hasattr(self.vae.config, "scaling_factor") else 1.0
               
               latents = self._normalize_latents(latents, latents_mean, latents_std, scaling_factor)
+              
+              # If latents came from VAE directly, they are (B, T, H, W, C).
+              # The packing and unpacking mechanisms expect (B, C, T, H, W).
+              latents = latents.transpose(0, 4, 1, 2, 3)
+
               latents = self._pack_latents(
                   latents, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size
               )
@@ -1308,6 +1313,9 @@ class LTX2Pipeline:
           self.vae.config.scaling_factor
       )
       
+      # VAE expects channels last (B, T, H, W, C) but unpack returns (B, C, T, H, W)
+      latents = latents.transpose(0, 2, 3, 4, 1)
+      
       # Denormalize and Unpack Audio (Order important: Denorm THEN Unpack)
       audio_latents = self._denormalize_audio_latents(
           audio_latents_jax,
@@ -1323,6 +1331,10 @@ class LTX2Pipeline:
           audio_num_frames, 
           num_mel_bins=latent_mel_bins
       )
+
+      # Audio VAE expects channels last (B, T, F, C) but unpack returns (B, C, T, F)
+      if audio_latents.ndim == 4:
+          audio_latents = audio_latents.transpose(0, 2, 3, 1)
 
       if output_type == "latent":
           return LTX2PipelineOutput(frames=latents, audio=audio_latents)
