@@ -1388,8 +1388,8 @@ class LTX2Pipeline:
           latents = latents.astype(self.vae.dtype)
           video = self.vae.decode(latents, return_dict=False)[0]
       # Post-process video (converts to numpy/PIL)
-      # We need to pass numpy to postprocess_video usually, checking if it handles JAX
-      video_np = np.array(video)
+      # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
+      video_np = np.array(video).transpose(0, 4, 1, 2, 3)
       video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
 
       # Decode Audio
