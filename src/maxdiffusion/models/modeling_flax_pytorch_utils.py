@@ -36,6 +36,7 @@ def validate_flax_state_dict(expected_pytree: dict, new_pytree: dict):
   new_pytree: dict - a pytree that has been created from pytorch weights.
   """
   expected_pytree = flatten_dict(expected_pytree)
+
   if len(expected_pytree.keys()) != len(new_pytree.keys()):
     set1 = set(expected_pytree.keys())
     set2 = set(new_pytree.keys())
