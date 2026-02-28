@@ -235,8 +235,10 @@ def _tpu_flash_attention(
   q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
   # This is the case for cross-attn.
   if key.shape[1] != query.shape[1]:
-    assert key.shape[1] % 128 == 0
-    kv_max_block_size = key.shape[1]
+    if key.shape[1] % 128 != 0:
+      kv_max_block_size = ((key.shape[1] + 127) // 128) * 128
+    else:
+      kv_max_block_size = key.shape[1]
   else:
     kv_max_block_size = q_max_block_size
   # ensure that for cross attention we override the block sizes.
