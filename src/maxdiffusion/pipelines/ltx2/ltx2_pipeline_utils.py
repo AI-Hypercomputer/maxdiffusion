@@ -69,6 +69,12 @@ def _write_audio(
     samples: torch.Tensor,
     audio_sample_rate: int,
 ) -> None:
+    import numpy as np
+    
+    # If it is a torch tensor, we convert to numpy first
+    if hasattr(samples, "cpu"):
+        samples = samples.contiguous().cpu().numpy()
+        
     if samples.ndim == 1:
         samples = samples[:, None]
 
@@ -79,15 +85,11 @@ def _write_audio(
         raise ValueError(f"Expected samples with 2 channels; got shape {samples.shape}.")
 
     # Convert to int16 packed for ingestion; resampler converts to encoder fmt.
-    if samples.dtype != torch.int16:
-        samples = torch.clip(samples, -1.0, 1.0)
-        samples = (samples * 32767.0).to(torch.int16)
+    if samples.dtype != np.int16:
+        samples = np.clip(samples, -1.0, 1.0)
+        samples = (samples * 32767.0).astype(np.int16)
 
-    if hasattr(samples, "cpu"):
-        samples_np = samples.contiguous().reshape(1, -1).cpu().numpy()
-    else:
-        import numpy as np
-        samples_np = np.reshape(np.ascontiguousarray(samples), (1, -1))
+    samples_np = np.reshape(np.ascontiguousarray(samples), (1, -1))
         
     frame_in = av.AudioFrame.from_ndarray(
         samples_np,
