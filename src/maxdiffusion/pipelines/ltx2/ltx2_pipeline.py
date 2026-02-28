@@ -247,8 +247,18 @@ class LTX2Pipeline:
       
       # Initialize video processor
       self.video_processor = VideoProcessor(vae_scale_factor=self.vae_spatial_compression_ratio)
-      
       self.tokenizer_max_length = getattr(self.tokenizer, "model_max_length", 1024)
+
+  @staticmethod
+  def _init_dummy_shape(node):
+      if isinstance(node, jax.ShapeDtypeStruct):
+          if jax.dtypes.issubdtype(node.dtype, jax.dtypes.prng_key):
+              dummy_key = jax.random.key(0)
+              if node.shape == ():
+                  return dummy_key
+              return jax.random.split(dummy_key, node.shape[0])
+          return jnp.zeros(node.shape, dtype=node.dtype)
+      return node
 
   @classmethod
   def load_tokenizer(cls, config: HyperParameters):
@@ -286,7 +296,8 @@ class LTX2Pipeline:
 
       p_model_factory = partial(create_model, config=config)
       connectors = nnx.eval_shape(p_model_factory, rngs=rngs)
-      graphdef, state = nnx.split(connectors, nnx.Param)
+      graphdef, state, rest_of_state = nnx.split(connectors, nnx.Param, ...)
+      rest_of_state = jax.tree_util.tree_map(cls._init_dummy_shape, rest_of_state)
 
       logical_state_spec = nnx.get_partition_spec(state)
       logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
@@ -307,7 +318,7 @@ class LTX2Pipeline:
              state[path].value = jax.device_put(val)
           
       state = nnx.from_flat_state(state)
-      connectors = nnx.merge(graphdef, state)
+      connectors = nnx.merge(graphdef, state, rest_of_state)
       return connectors
 
   @classmethod
@@ -326,7 +337,8 @@ class LTX2Pipeline:
       
       p_model_factory = partial(create_model, config=config)
       vae = nnx.eval_shape(p_model_factory, rngs=rngs)
-      graphdef, state = nnx.split(vae, nnx.Param)
+      graphdef, state, rest_of_state = nnx.split(vae, nnx.Param, ...)
+      rest_of_state = jax.tree_util.tree_map(cls._init_dummy_shape, rest_of_state)
 
       logical_state_spec = nnx.get_partition_spec(state)
       logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
@@ -353,7 +365,7 @@ class LTX2Pipeline:
              state[path].value = jax.device_put(val)
           
       state = nnx.from_flat_state(state)
-      vae = nnx.merge(graphdef, state)
+      vae = nnx.merge(graphdef, state, rest_of_state)
       return vae
 
   @classmethod
@@ -372,7 +384,8 @@ class LTX2Pipeline:
 
       p_model_factory = partial(create_model, config=config)
       audio_vae = nnx.eval_shape(p_model_factory, rngs=rngs)
-      graphdef, state = nnx.split(audio_vae, nnx.Param)
+      graphdef, state, rest_of_state = nnx.split(audio_vae, nnx.Param, ...)
+      rest_of_state = jax.tree_util.tree_map(cls._init_dummy_shape, rest_of_state)
 
       logical_state_spec = nnx.get_partition_spec(state)
       logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
@@ -399,7 +412,7 @@ class LTX2Pipeline:
              state[path].value = jax.device_put(val)
           
       state = nnx.from_flat_state(state)
-      audio_vae = nnx.merge(graphdef, state)
+      audio_vae = nnx.merge(graphdef, state, rest_of_state)
       return audio_vae
       
   @classmethod
@@ -439,7 +452,8 @@ class LTX2Pipeline:
 
       p_model_factory = partial(create_model, config=config)
       vocoder = nnx.eval_shape(p_model_factory, rngs=rngs)
-      graphdef, state = nnx.split(vocoder, nnx.Param)
+      graphdef, state, rest_of_state = nnx.split(vocoder, nnx.Param, ...)
+      rest_of_state = jax.tree_util.tree_map(cls._init_dummy_shape, rest_of_state)
 
       logical_state_spec = nnx.get_partition_spec(state)
       logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
@@ -460,7 +474,7 @@ class LTX2Pipeline:
              state[path].value = jax.device_put(val)
           
       state = nnx.from_flat_state(state)
-      vocoder = nnx.merge(graphdef, state)
+      vocoder = nnx.merge(graphdef, state, rest_of_state)
       return vocoder
 
   @classmethod
