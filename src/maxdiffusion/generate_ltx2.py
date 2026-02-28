@@ -119,6 +119,9 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     checkpoint_loader = LTX2Checkpointer(config=config)
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
 
+  pipeline.enable_vae_slicing()
+  pipeline.enable_vae_tiling()
+
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on to map prompts

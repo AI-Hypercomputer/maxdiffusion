@@ -260,6 +260,20 @@ class LTX2Pipeline:
           return jnp.zeros(node.shape, dtype=node.dtype)
       return node
 
+  def enable_vae_slicing(self):
+      self.vae.use_slicing = True
+
+  def disable_vae_slicing(self):
+      self.vae.use_slicing = False
+
+  def enable_vae_tiling(self):
+      if hasattr(self.vae, "enable_tiling"):
+          self.vae.enable_tiling()
+      self.vae.use_tiling = True
+
+  def disable_vae_tiling(self):
+      self.vae.use_tiling = False
+
   @classmethod
   def load_tokenizer(cls, config: HyperParameters):
       max_logging.log("Loading Gemma Tokenizer...")
