@@ -286,7 +286,7 @@ class LTX2Pipeline:
 
       p_model_factory = partial(create_model, config=config)
       connectors = nnx.eval_shape(p_model_factory, rngs=rngs)
-      graphdef, state, rest_of_state = nnx.split(connectors, nnx.Param, ...)
+      graphdef, state = nnx.split(connectors, nnx.Param)
 
       logical_state_spec = nnx.get_partition_spec(state)
       logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
@@ -307,7 +307,7 @@ class LTX2Pipeline:
              state[path].value = jax.device_put(val)
           
       state = nnx.from_flat_state(state)
-      connectors = nnx.merge(graphdef, state, rest_of_state)
+      connectors = nnx.merge(graphdef, state)
       return connectors
 
   @classmethod
@@ -326,7 +326,7 @@ class LTX2Pipeline:
       
       p_model_factory = partial(create_model, config=config)
       vae = nnx.eval_shape(p_model_factory, rngs=rngs)
-      graphdef, state, rest_of_state = nnx.split(vae, nnx.Param, ...)
+      graphdef, state = nnx.split(vae, nnx.Param)
 
       logical_state_spec = nnx.get_partition_spec(state)
       logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
@@ -353,7 +353,7 @@ class LTX2Pipeline:
              state[path].value = jax.device_put(val)
           
       state = nnx.from_flat_state(state)
-      vae = nnx.merge(graphdef, state, rest_of_state)
+      vae = nnx.merge(graphdef, state)
       return vae
 
   @classmethod
@@ -372,7 +372,7 @@ class LTX2Pipeline:
 
       p_model_factory = partial(create_model, config=config)
       audio_vae = nnx.eval_shape(p_model_factory, rngs=rngs)
-      graphdef, state, rest_of_state = nnx.split(audio_vae, nnx.Param, ...)
+      graphdef, state = nnx.split(audio_vae, nnx.Param)
 
       logical_state_spec = nnx.get_partition_spec(state)
       logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
@@ -399,7 +399,7 @@ class LTX2Pipeline:
              state[path].value = jax.device_put(val)
           
       state = nnx.from_flat_state(state)
-      audio_vae = nnx.merge(graphdef, state, rest_of_state)
+      audio_vae = nnx.merge(graphdef, state)
       return audio_vae
       
   @classmethod
@@ -439,7 +439,7 @@ class LTX2Pipeline:
 
       p_model_factory = partial(create_model, config=config)
       vocoder = nnx.eval_shape(p_model_factory, rngs=rngs)
-      graphdef, state, rest_of_state = nnx.split(vocoder, nnx.Param, ...)
+      graphdef, state = nnx.split(vocoder, nnx.Param)
 
       logical_state_spec = nnx.get_partition_spec(state)
       logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
@@ -460,7 +460,7 @@ class LTX2Pipeline:
              state[path].value = jax.device_put(val)
           
       state = nnx.from_flat_state(state)
-      vocoder = nnx.merge(graphdef, state, rest_of_state)
+      vocoder = nnx.merge(graphdef, state)
       return vocoder
 
   @classmethod
