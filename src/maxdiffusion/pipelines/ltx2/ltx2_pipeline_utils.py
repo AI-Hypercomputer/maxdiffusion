@@ -83,8 +83,14 @@ def _write_audio(
         samples = torch.clip(samples, -1.0, 1.0)
         samples = (samples * 32767.0).to(torch.int16)
 
+    if hasattr(samples, "cpu"):
+        samples_np = samples.contiguous().reshape(1, -1).cpu().numpy()
+    else:
+        import numpy as np
+        samples_np = np.reshape(np.ascontiguousarray(samples), (1, -1))
+        
     frame_in = av.AudioFrame.from_ndarray(
-        samples.contiguous().reshape(1, -1).cpu().numpy(),
+        samples_np,
         format="s16",
         layout="stereo",
     )
@@ -108,14 +114,20 @@ def encode_video(
     if not import_utils.is_av_available():
         raise ImportError(import_utils.AV_IMPORT_ERROR.format("encode_video"))
     
-    video_np = video.cpu().numpy()
+    if hasattr(video, "cpu"):
+        video_np = video.cpu().numpy()
+    else:
+        video_np = np.array(video)
+
     if video_np.ndim == 4:
         # [F, H, W, C]
         _, height, width, _ = video_np.shape
     elif video_np.ndim == 5:
-        raise ValueError("encode_video expects a single video tensor of shape [F, H, W, C]")
+        # [B, F, H, W, C] -> take the first video in the batch
+        video_np = video_np[0]
+        _, height, width, _ = video_np.shape
     else:
-         _, height, width, _ = video_np.shape
+         raise ValueError(f"encode_video expects a 4D or 5D video tensor, got {video_np.ndim}D")
 
     container = av.open(output_path, mode="w")
     stream = container.add_stream("libx264", rate=int(fps))
