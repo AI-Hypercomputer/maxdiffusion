@@ -1,5 +1,5 @@
 """
-Copyright 2025 Google LLC
+Copyright 2026 Google LLC
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -237,14 +237,21 @@ class LTX2RotaryPosEmbed(nnx.Module):
     return None
 
   def __call__(self, coords: Array) -> Tuple[Array, Array]:
-    # coords: [B, num_pos_dims, num_patches, 2]
-    num_pos_dims = coords.shape[1]
-
-    # 1. Midpoint
+    # Handle both [B, num_pos_dims, num_patches, 2] (from prepare_coords)
+    # and [B, num_patches, num_pos_dims] (raw grid coordinates)
     if coords.ndim == 4:
+      num_pos_dims = coords.shape[1]
+      # 1. Midpoint
       coords_start = coords[..., 0]
       coords_end = coords[..., 1]
       coords = (coords_start + coords_end) / 2.0  # [B, num_pos_dims, num_patches]
+      # Transpose to standardize layout: [B, num_patches, num_pos_dims]
+      grid = coords.transpose(0, 2, 1)
+    elif coords.ndim == 3:
+      num_pos_dims = coords.shape[-1]
+      grid = coords  # Already [B, num_patches, num_pos_dims]
+    else:
+      raise ValueError(f"coords must be 3D or 4D, got {coords.ndim}D")
 
     # 2. Fractions
     if self.modality == "video":
@@ -253,10 +260,11 @@ class LTX2RotaryPosEmbed(nnx.Module):
       max_positions = jnp.array((self.base_num_frames,), dtype=coords.dtype)
 
     max_positions = max_positions[:num_pos_dims]
-    max_positions = max_positions.reshape(1, num_pos_dims, 1)
-    grid = coords / max_positions
-
-    grid = grid.transpose(0, 2, 1)
+    # Reshape to broadcast with [B, num_patches, num_pos_dims]
+    max_positions = max_positions.reshape(1, 1, num_pos_dims)
+    
+    # Scale to [0, 1]
+    grid = grid / max_positions
 
     num_rope_elems = num_pos_dims * 2
 
@@ -265,12 +273,19 @@ class LTX2RotaryPosEmbed(nnx.Module):
     # linspace 0..1
     steps = self.dim // num_rope_elems
     pow_indices = jnp.power(self.theta, jnp.linspace(0.0, 1.0, steps, dtype=freqs_dtype))
-    freqs = (pow_indices * jnp.pi / 2.0).astype(jnp.float32)  # [D//2K]
+    base_freqs = (pow_indices * jnp.pi / 2.0).astype(jnp.float32)  # [steps]
 
     # 4. Outer product
-    freqs = (jnp.expand_dims(grid, -1) * 2 - 1) * freqs
-
-    # Flatten last two dims: K, S -> K*S = dim//2
+    # Map grid [0, 1] -> [-1, 1]
+    scaled_grid = grid * 2.0 - 1.0  # [B, num_patches, num_pos_dims]
+    
+    # [B, num_patches, num_pos_dims, 1] * [steps] -> [B, num_patches, num_pos_dims, steps]
+    freqs = jnp.expand_dims(scaled_grid, -1) * base_freqs
+    
+    # CRITICAL: Transpose the last two dimensions to exactly match Diffusers flattening order!
+    freqs = jnp.swapaxes(freqs, -1, -2)  # [B, num_patches, steps, num_pos_dims]
+    
+    # Flatten last two dims -> [B, num_patches, dim // 2]
     freqs = freqs.reshape(*freqs.shape[:2], -1)
 
     # 5. Cos/Sin
@@ -294,25 +309,22 @@ class LTX2RotaryPosEmbed(nnx.Module):
 
     elif self.rope_type == "split":
       # Cos/Sin
-      cos_freq = jnp.cos(freqs)
-      sin_freq = jnp.sin(freqs)
-
-      curr_dim = cos_freq.shape[-1]
+      curr_dim = cos_freqs.shape[-1]
       expected_dim = self.dim // 2
       pad_size = expected_dim - curr_dim
 
       if pad_size > 0:
-        cos_padding = jnp.ones((*cos_freq.shape[:-1], pad_size), dtype=cos_freq.dtype)
-        sin_padding = jnp.zeros((*sin_freq.shape[:-1], pad_size), dtype=sin_freq.dtype)
-        cos_freq = jnp.concatenate([cos_padding, cos_freq], axis=-1)
-        sin_freq = jnp.concatenate([sin_padding, sin_freq], axis=-1)
+        cos_padding = jnp.ones((*cos_freqs.shape[:-1], pad_size), dtype=cos_freqs.dtype)
+        sin_padding = jnp.zeros((*sin_freqs.shape[:-1], pad_size), dtype=sin_freqs.dtype)
+        cos_freqs = jnp.concatenate([cos_padding, cos_freqs], axis=-1)
+        sin_freqs = jnp.concatenate([sin_padding, sin_freqs], axis=-1)
 
-      b = cos_freq.shape[0]
-      s = cos_freq.shape[1]
+      b = cos_freqs.shape[0]
+      s = cos_freqs.shape[1]
       h = self.num_attention_heads
 
-      cos_freqs = cos_freq.reshape(b, s, h, -1).transpose(0, 2, 1, 3)
-      sin_freqs = sin_freq.reshape(b, s, h, -1).transpose(0, 2, 1, 3)
+      cos_freqs = cos_freqs.reshape(b, s, h, -1).transpose(0, 2, 1, 3)
+      sin_freqs = sin_freqs.reshape(b, s, h, -1).transpose(0, 2, 1, 3)
 
     return cos_freqs, sin_freqs
 
@@ -341,24 +353,39 @@ class LTX2Attention(nnx.Module):
     self.inner_dim = dim_head * heads
     self.dropout_rate = dropout
 
-    # 1. Projections
-    self.to_q = nnx.Linear(query_dim, self.inner_dim, use_bias=bias, rngs=rngs, dtype=dtype)
+
+    # 1. Define Partitioned Initializers (Logical Axes)
+    # Q, K, V kernels: [in_features (embed), out_features (heads)]
+    qkv_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads"))
+    # Q, K, V biases: [out_features (heads)]
+    qkv_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("heads",))
+
+    # Out kernel: [in_features (heads), out_features (embed)]
+    out_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed"))
+    # Out bias: [out_features (embed)]
+    out_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("embed",))
+
+    # Norm scales
+    norm_scale_init = nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",))
+
+    # 2. Projections
+    self.to_q = nnx.Linear(query_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype)
 
     # Handle Self vs Cross Attention input dims
     kv_dim = context_dim if context_dim is not None else query_dim
-    self.to_k = nnx.Linear(kv_dim, self.inner_dim, use_bias=bias, rngs=rngs, dtype=dtype)
-    self.to_v = nnx.Linear(kv_dim, self.inner_dim, use_bias=bias, rngs=rngs, dtype=dtype)
+    self.to_k = nnx.Linear(kv_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype)
+    self.to_v = nnx.Linear(kv_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype)
 
-    # 2. Normalization (Applied to full inner_dim, NOT per-head)
+    # 3. Normalization (Applied to full inner_dim, NOT per-head)
     self.norm_q = nnx.RMSNorm(
-        self.inner_dim, epsilon=eps, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=True, rngs=rngs
+        self.inner_dim, epsilon=eps, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=True, scale_init=norm_scale_init, rngs=rngs
     )
     self.norm_k = nnx.RMSNorm(
-        self.inner_dim, epsilon=eps, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=True, rngs=rngs
+        self.inner_dim, epsilon=eps, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=True, scale_init=norm_scale_init, rngs=rngs
     )
 
-    # 3. Output
-    self.to_out = nnx.Linear(self.inner_dim, query_dim, use_bias=out_bias, rngs=rngs, dtype=dtype)
+    # 4. Output
+    self.to_out = nnx.Linear(self.inner_dim, query_dim, use_bias=out_bias, kernel_init=out_kernel_init, bias_init=out_bias_init, rngs=rngs, dtype=dtype)
 
     if self.dropout_rate > 0:
       self.dropout_layer = nnx.Dropout(self.dropout_rate, rngs=rngs)

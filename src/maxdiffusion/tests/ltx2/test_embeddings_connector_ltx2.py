@@ -1,5 +1,5 @@
 """
-Copyright 2025 Google LLC
+Copyright 2026 Google LLC
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
-from ..models.ltx2.text_encoders.embeddings_connector_ltx2 import Embeddings1DConnector
+from ...models.ltx2.text_encoders.embeddings_connector_ltx2 import Embeddings1DConnector
 
 
 class Embeddings1DConnectorTest(unittest.TestCase):

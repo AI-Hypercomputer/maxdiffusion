@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from absl.testing import absltest
 from flax import nnx
 
-from maxdiffusion.models.ltx2.audio_vae import FlaxAutoencoderKLLTX2Audio
+from maxdiffusion.models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 
 
 class FlaxLTX2AudioVAETest(absltest.TestCase):

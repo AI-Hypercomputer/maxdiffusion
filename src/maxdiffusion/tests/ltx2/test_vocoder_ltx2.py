@@ -138,7 +138,7 @@ class PytorchLTX2Vocoder(nn.Module):
 # ==========================================
 # 2. JAX Implementation Import
 # ==========================================
-from ..models.ltx2.vocoder_ltx2 import LTX2Vocoder, ResBlock
+from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder, ResBlock
 
 
 class LTX2VocoderTest(unittest.TestCase):

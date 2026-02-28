@@ -1,5 +1,5 @@
 """
-Copyright 2025 Google LLC
+Copyright 2026 Google LLC
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ class LTX2TransformerTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "ltx2_video.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "ltx2_video.yml"),
         ],
         unittest=True,
     )
@@ -101,7 +101,7 @@ class LTX2TransformerTest(unittest.TestCase):
         base_width=base_width,
         modality="video",
     )
-    ids = jnp.ones((1, 3, 10))  # (B, Axes, S) for 3D coords
+    ids = jnp.ones((1, 10, 3))  # (B, S, Axes) for 3D coords
     cos, sin = rope(ids)
 
     # Check output shape
@@ -128,7 +128,7 @@ class LTX2TransformerTest(unittest.TestCase):
         modality="video",
         rope_type="split",
     )
-    ids = jnp.ones((1, 3, 10))  # (B, Axes, S)
+    ids = jnp.ones((1, 10, 3))  # (B, S, Axes)
     cos, sin = rope(ids)
 
     # Check output shape
@@ -364,3 +364,6 @@ class LTX2TransformerTest(unittest.TestCase):
     # args[1] is rules
     # args[2:] are dummy inputs
     self.assertTrue(len(args) > 2)
+
+if __name__ == "__main__":
+  absltest.main()
