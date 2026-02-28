@@ -1298,7 +1298,7 @@ class LTX2Pipeline:
 
       # Unpack and Denormalize Video
       latents = self._unpack_latents(
-          latents_jax, num_frames, height, width, 
+          latents_jax, latent_num_frames, latent_height, latent_width, 
           self.transformer_spatial_patch_size, self.transformer_temporal_patch_size
       )
       latents = self._denormalize_latents(
