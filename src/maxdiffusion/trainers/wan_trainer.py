@@ -415,7 +415,7 @@ class WanTrainer:
         max_logging.log(f"Saving final checkpoint for step {step}")
         self.checkpointer.save_checkpoint(self.config.max_train_steps - 1, pipeline, state.params)
         self.checkpointer.checkpoint_manager.wait_until_finished()
-      # load new state for trained tranformer
+      # load new state for trained transformer
       pipeline.transformer = nnx.merge(state.graphdef, state.params, state.rest_of_state)
       return pipeline
 
