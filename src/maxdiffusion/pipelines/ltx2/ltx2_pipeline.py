@@ -242,8 +242,8 @@ class LTX2Pipeline:
       self.transformer_spatial_patch_size = getattr(self.transformer.config, "patch_size", 1)
       self.transformer_temporal_patch_size = getattr(self.transformer.config, "patch_size_t", 1)
       
-      self.audio_sampling_rate = getattr(self.audio_vae.config, "sample_rate", 16000)
-      self.audio_hop_length = getattr(self.audio_vae.config, "mel_hop_length", 160)
+      self.audio_sampling_rate = getattr(self.audio_vae.config, "sample_rate", 16000) if getattr(self, "audio_vae", None) is not None else 16000
+      self.audio_hop_length = getattr(self.audio_vae.config, "mel_hop_length", 160) if getattr(self, "audio_vae", None) is not None else 160
       
       # Initialize video processor
       self.video_processor = VideoProcessor(vae_scale_factor=self.vae_spatial_compression_ratio)
