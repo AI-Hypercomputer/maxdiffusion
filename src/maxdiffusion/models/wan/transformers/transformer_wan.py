@@ -36,6 +36,7 @@ from ...embeddings_flax import (
 from ...normalization_flax import FP32LayerNorm
 from ...attention_flax import FlaxWanAttention
 from ...gradient_checkpoint import GradientCheckpointType
+from maxdiffusion.kernels.splash_attention.splash_attention_mask import Mask
 
 BlockSizes = common_types.BlockSizes
 

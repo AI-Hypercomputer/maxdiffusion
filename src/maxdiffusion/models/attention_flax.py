@@ -25,9 +25,9 @@ import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
-from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
-from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
-from tokamax._src.ops.experimental.tpu.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
+from maxdiffusion.kernels.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
+from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
+from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from einops import rearrange
 from .. import common_types, max_logging
 
@@ -344,6 +344,7 @@ def _tpu_flash_attention(
           config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
           save_residuals=False,
           ring_axis="fsdp",
+          rotate_segment_ids=False,  # We don't rotate segment ids in tokamax ring attention because our segment ids is for padding each kv shard has same segment ids 
       )
     else:
       splash_kernel = splash_attention_kernel.make_splash_mha(
