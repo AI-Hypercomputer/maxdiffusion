@@ -1101,11 +1101,13 @@ class LTX2VideoDecoder3d(nnx.Module):
     p = self.patch_size
     p_t = self.patch_size_t
 
-    # (B, T, H, W, C) -> (B, T*p_t, H*p, W*p, C/(p_t*p*p))
+    # (B, T, H, W, C) -> C contains (C_out_final, p_t, p_w, p_h) due to PyTorch flattening order
     C_out_final = C // (p_t * p * p)
 
-    hidden_states = hidden_states.reshape(B, T, H, W, p_t, p, p, C_out_final)
-    hidden_states = hidden_states.transpose(0, 1, 4, 2, 5, 3, 6, 7)
+    hidden_states = hidden_states.reshape(B, T, H, W, C_out_final, p_t, p, p)
+    
+    # Pair H (2) with p_h (7) and W (3) with p_w (6)
+    hidden_states = hidden_states.transpose(0, 1, 5, 2, 7, 3, 6, 4)
     hidden_states = hidden_states.reshape(B, T * p_t, H * p, W * p, C_out_final)
 
     return hidden_states
