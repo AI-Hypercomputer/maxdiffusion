@@ -146,13 +146,19 @@ class WanCausalConv3d(nnx.Module):
     else:
       x_padded = x
 
-    if self.mesh is not None:
-      # Shard height dimension (index 2) along 'context' axis
-      # Shape is (Batch, Time, Height, Width, Channels)
-      # We only shard if the dimension is divisible by the mesh size to avoid XLA errors
-      if x_padded.shape[2] % self.mesh.shape["context"] == 0:
-        sharding = NamedSharding(self.mesh, P(None, None, "context", None, None))
-        x_padded = jax.lax.with_sharding_constraint(x_padded, sharding)
+    if self.mesh is not None and "context" in self.mesh.axis_names:
+      height = x_padded.shape[2]
+      width = x_padded.shape[3]
+      num_context_devices = self.mesh.shape["context"]
+
+      shard_axis = "context" if (height % num_context_devices == 0) else None
+      shard_width_axis = None
+      if shard_axis is None and width % num_context_devices == 0:
+        shard_width_axis = "context"
+
+      x_padded = jax.lax.with_sharding_constraint(
+          x_padded, jax.sharding.PartitionSpec("data", None, shard_axis, shard_width_axis, None)
+      )
 
     out = self.conv(x_padded)
     return out
@@ -769,7 +775,6 @@ class WanEncoder3d(nnx.Module):
         precision=precision,
     )
 
-  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -918,7 +923,6 @@ class WanDecoder3d(nnx.Module):
         precision=precision,
     )
 
-  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -1113,8 +1117,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
+  @nnx.jit
   def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
-    feat_cache.init_cache()
     if x.shape[-1] != 3:
       # reshape channel last for JAX
       x = jnp.transpose(x, (0, 2, 3, 4, 1))
@@ -1136,29 +1140,27 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         )
         out = jnp.concatenate([out, out_], axis=1)
 
-    # Update back to the wrapper object if needed, but for result we use local vars
-    feat_cache._enc_feat_map = enc_feat_map
-
     enc = self.quant_conv(out)
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
     enc = jnp.concatenate([mu, logvar], axis=-1)
-    feat_cache.init_cache()
     return enc
 
   def encode(
       self, x: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """Encode video into latent distribution."""
+    feat_cache.init_cache()
     h = self._encode(x, feat_cache)
+    feat_cache.init_cache()
     posterior = WanDiagonalGaussianDistribution(h)
     if not return_dict:
       return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
+  @nnx.jit
   def _decode(
-      self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
-  ) -> Union[FlaxDecoderOutput, jax.Array]:
-    feat_cache.init_cache()
+      self, z: jax.Array, feat_cache: AutoencoderKLWanCache
+  ) -> jax.Array:
     iter_ = z.shape[1]
     x = self.post_quant_conv(z)
 
@@ -1188,14 +1190,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
           fm4 = jnp.expand_dims(fm4, axis=axis)
         out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
 
-    feat_cache._feat_map = dec_feat_map
-
     out = jnp.clip(out, min=-1.0, max=1.0)
-    feat_cache.init_cache()
-    if not return_dict:
-      return (out,)
-
-    return FlaxDecoderOutput(sample=out)
+    return out
 
   def decode(
       self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
@@ -1204,7 +1200,9 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       # reshape channel last for JAX
       z = jnp.transpose(z, (0, 2, 3, 4, 1))
       assert z.shape[-1] == self.z_dim, f"Expected input shape (N, D, H, W, {self.z_dim}, got {z.shape}"
-    decoded = self._decode(z, feat_cache).sample
+    feat_cache.init_cache()
+    decoded = self._decode(z, feat_cache)
+    feat_cache.init_cache()
     if not return_dict:
       return (decoded,)
     return FlaxDecoderOutput(sample=decoded)
