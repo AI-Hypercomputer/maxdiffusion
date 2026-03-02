@@ -1128,17 +1128,36 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     iter_ = 1 + (t - 1) // 4
     enc_feat_map = feat_cache._enc_feat_map
 
-    for i in range(iter_):
-      enc_conv_idx = 0
-      if i == 0:
-        out, enc_feat_map, enc_conv_idx = self.encoder(x[:, :1, :, :, :], feat_cache=enc_feat_map, feat_idx=enc_conv_idx)
-      else:
-        out_, enc_feat_map, enc_conv_idx = self.encoder(
-            x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :],
-            feat_cache=enc_feat_map,
-            feat_idx=enc_conv_idx,
-        )
-        out = jnp.concatenate([out, out_], axis=1)
+    # Process first chunk explicitly
+    out_first, enc_feat_map, _ = self.encoder(x[:, :1, :, :, :], feat_cache=enc_feat_map, feat_idx=0)
+
+    # Prepare remaining chunks for scan
+    def scan_body_encode(carry, x_chunk):
+      feat_map = carry
+      out_chunk, updated_feat_map, _ = self.encoder(x_chunk, feat_cache=feat_map, feat_idx=0)
+      return updated_feat_map, out_chunk
+
+    if iter_ > 1:
+      # We have remaining chunks to process. Let's reshape/stack them.
+      # x is (B, T, H, W, C) where T = 1 + 4 * (iter_ - 1)
+      # We want to scan over the iter_-1 blocks of size 4.
+      x_rest = x[:, 1:, :, :, :]
+      b, t_rest, h, w, c = x_rest.shape
+      x_rest_blocks = x_rest.reshape(b, iter_ - 1, 4, h, w, c)
+      # scan over the blocks dimension (axis=1) -> swap axis 0 and 1
+      x_scan_input = jnp.swapaxes(x_rest_blocks, 0, 1) # shape: (iter_ - 1, B, 4, H, W, C)
+
+      enc_feat_map, out_rest_stacked = jax.lax.scan(scan_body_encode, enc_feat_map, x_scan_input)
+      # out_rest_stacked shape: (iter_ - 1, B, T_out_chunk, H_out, W_out, C_out)
+      
+      # Transpose back and flatten the iteration and time dimensions
+      out_rest_stacked = jnp.swapaxes(out_rest_stacked, 0, 1)
+      b_out, iters_out, t_out_chunk, h_out, w_out, c_out = out_rest_stacked.shape
+      out_rest = out_rest_stacked.reshape(b_out, iters_out * t_out_chunk, h_out, w_out, c_out)
+      
+      out = jnp.concatenate([out_first, out_rest], axis=1)
+    else:
+      out = out_first
 
     enc = self.quant_conv(out)
     mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
@@ -1166,29 +1185,45 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     dec_feat_map = feat_cache._feat_map
 
-    for i in range(iter_):
-      conv_idx = 0
-      if i == 0:
-        out, dec_feat_map, conv_idx = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=dec_feat_map, feat_idx=conv_idx)
-      else:
-        out_, dec_feat_map, conv_idx = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=dec_feat_map, feat_idx=conv_idx)
+    def process_out_frame(out_):
+      # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
+      # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
+      # Most likely due to an incorrect reshaping in the decoder.
+      fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
+      axis = 0
+      if fm1.shape[0] > 1:
+        axis = 1
 
-        # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
-        # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
-        # Most likely due to an incorrect reshaping in the decoder.
-        fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
-        # When batch_size is 0, expand batch dim for concatenation
-        # else, expand frame dim for concatenation so that batch dim stays intact.
-        axis = 0
-        if fm1.shape[0] > 1:
-          axis = 1
+      if len(fm1.shape) == 4:
+        fm1 = jnp.expand_dims(fm1, axis=axis)
+        fm2 = jnp.expand_dims(fm2, axis=axis)
+        fm3 = jnp.expand_dims(fm3, axis=axis)
+        fm4 = jnp.expand_dims(fm4, axis=axis)
+      return jnp.concatenate([fm1, fm3, fm2, fm4], axis=1)
 
-        if len(fm1.shape) == 4:
-          fm1 = jnp.expand_dims(fm1, axis=axis)
-          fm2 = jnp.expand_dims(fm2, axis=axis)
-          fm3 = jnp.expand_dims(fm3, axis=axis)
-          fm4 = jnp.expand_dims(fm4, axis=axis)
-        out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
+    # Process first chunk explicitly
+    out_first, dec_feat_map, _ = self.decoder(x[:, :1, :, :, :], feat_cache=dec_feat_map, feat_idx=0)
+    
+    def scan_body_decode(carry, x_chunk):
+        feat_map = carry
+        out_chunk, updated_feat_map, _ = self.decoder(x_chunk, feat_cache=feat_map, feat_idx=0)
+        out_processed = process_out_frame(out_chunk)
+        return updated_feat_map, out_processed
+    
+    if iter_ > 1:
+      x_rest = x[:, 1:, :, :, :]
+      # Scan over the time dimension directly
+      x_scan_input = jnp.swapaxes(jnp.expand_dims(x_rest, axis=2), 0, 1) # shape: (iter_ - 1, B, 1, H, W, C)
+      
+      dec_feat_map, out_rest_stacked = jax.lax.scan(scan_body_decode, dec_feat_map, x_scan_input)
+      
+      out_rest_stacked = jnp.swapaxes(out_rest_stacked, 0, 1)
+      b_out, iters_out, t_out_frames, h_out, w_out, c_out = out_rest_stacked.shape
+      out_rest = out_rest_stacked.reshape(b_out, iters_out * t_out_frames, h_out, w_out, c_out)
+      
+      out = jnp.concatenate([out_first, out_rest], axis=1)
+    else:
+      out = out_first
 
     out = jnp.clip(out, min=-1.0, max=1.0)
     return out
