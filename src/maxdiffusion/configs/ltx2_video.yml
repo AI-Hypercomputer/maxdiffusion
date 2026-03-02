@@ -65,6 +65,7 @@ ici_data_parallelism: 1
 ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_context_parallelism: 1
 ici_tensor_parallelism: 1
+enable_profiler: False
 
 replicate_vae: False
 
