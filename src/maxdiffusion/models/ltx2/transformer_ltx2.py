@@ -121,6 +121,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
     )
     self.attn1 = LTX2Attention(
         rngs=rngs,
@@ -144,6 +145,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
     )
     self.audio_attn1 = LTX2Attention(
         rngs=rngs,
@@ -168,6 +170,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
     )
     self.attn2 = LTX2Attention(
         rngs=rngs,
@@ -192,6 +195,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
     )
     self.audio_attn2 = LTX2Attention(
         rngs=rngs,
@@ -217,6 +221,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
     )
     self.audio_to_video_attn = LTX2Attention(
         rngs=rngs,
@@ -241,6 +246,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
     )
     self.video_to_audio_attn = LTX2Attention(
         rngs=rngs,
@@ -266,6 +272,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
     )
     self.ff = NNXSimpleFeedForward(
         rngs=rngs,
@@ -283,6 +290,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
     )
     self.audio_ff = NNXSimpleFeedForward(
         rngs=rngs, dim=audio_dim, dim_out=audio_dim, activation_fn=activation_fn, dtype=dtype, weights_dtype=weights_dtype
