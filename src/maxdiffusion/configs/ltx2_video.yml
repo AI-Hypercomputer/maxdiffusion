@@ -36,7 +36,7 @@ prompt: "A man in a dimly lit room talks on a vintage telephone, hangs up, and l
 negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 height: 512
 width: 768
-num_frames: 11
+num_frames: 21
 decode_timestep: 0.05
 decode_noise_scale: 0.025
 quantization: "int8"

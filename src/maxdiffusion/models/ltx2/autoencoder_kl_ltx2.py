@@ -1104,8 +1104,8 @@ class LTX2VideoDecoder3d(nnx.Module):
     # (B, T, H, W, C) -> (B, T*p_t, H*p, W*p, C/(p_t*p*p))
     C_out_final = C // (p_t * p * p)
 
-    hidden_states = hidden_states.reshape(B, T, H, W, C_out_final, p_t, p, p)
-    hidden_states = hidden_states.transpose(0, 1, 5, 2, 6, 3, 7, 4)
+    hidden_states = hidden_states.reshape(B, T, H, W, p_t, p, p, C_out_final)
+    hidden_states = hidden_states.transpose(0, 1, 4, 2, 5, 3, 6, 7)
     hidden_states = hidden_states.reshape(B, T * p_t, H * p, W * p, C_out_final)
 
     return hidden_states
