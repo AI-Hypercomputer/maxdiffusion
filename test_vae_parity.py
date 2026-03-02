@@ -27,7 +27,7 @@ def prepare_maxdiffusion_vae():
         patch_size=4, patch_size_t=1,
         dtype=jnp.float32,
         encoder_causal=True, decoder_causal=False,
-        rngs=jax.random.PRNGKey(0)
+        rngs=nnx.Rngs(params=0)
     )
 
     print("Loading weights from PyTorch into MaxDiffusion...")
