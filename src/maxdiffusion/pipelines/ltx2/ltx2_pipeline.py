@@ -675,47 +675,6 @@ class LTX2Pipeline:
 
 
 
-  @staticmethod
-  def _pack_text_embeds(
-      text_hidden_states: jax.Array,
-      sequence_lengths: jax.Array,
-      padding_side: str = "left",
-      scale_factor: int = 8,
-      eps: float = 1e-6,
-  ) -> jax.Array:
-      """
-      Packs and normalizes text encoder hidden states using JAX natively.
-      """
-      batch_size, seq_len, hidden_dim, num_layers = text_hidden_states.shape
-      original_dtype = text_hidden_states.dtype
-
-      # Create padding mask
-      token_indices = jnp.arange(seq_len)[None, :]
-      if padding_side == "right":
-          mask = token_indices < sequence_lengths[:, None]
-      elif padding_side == "left":
-          start_indices = seq_len - sequence_lengths[:, None]
-          mask = token_indices >= start_indices
-      else:
-          raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side}")
-      mask = mask[:, :, None, None]
-
-      masked_text_hidden_states = jnp.where(mask, text_hidden_states, 0.0)
-      num_valid_positions = (sequence_lengths * hidden_dim).reshape(batch_size, 1, 1, 1)
-      masked_mean = jnp.sum(masked_text_hidden_states, axis=(1, 2), keepdims=True) / (num_valid_positions + eps)
-
-      x_min = jnp.min(jnp.where(mask, text_hidden_states, jnp.inf), axis=(1, 2), keepdims=True)
-      x_max = jnp.max(jnp.where(mask, text_hidden_states, -jnp.inf), axis=(1, 2), keepdims=True)
-
-      normalized_hidden_states = (text_hidden_states - masked_mean) / (x_max - x_min + eps)
-      normalized_hidden_states = normalized_hidden_states * scale_factor
-
-      normalized_hidden_states = normalized_hidden_states.reshape(batch_size, seq_len, -1)
-      mask_flat = jnp.broadcast_to(mask.squeeze(-1), (batch_size, seq_len, hidden_dim * num_layers))
-      normalized_hidden_states = jnp.where(mask_flat, normalized_hidden_states, 0.0)
-      normalized_hidden_states = normalized_hidden_states.astype(original_dtype)
-      return normalized_hidden_states
-
   def _get_gemma_prompt_embeds(
       self,
       prompt: Union[str, List[str]],
@@ -755,33 +714,38 @@ class LTX2Pipeline:
                     input_ids=text_input_ids, attention_mask=prompt_attention_mask, output_hidden_states=True
                 )
            
-           text_encoder_hidden_states = torch.stack(text_encoder_outputs.hidden_states, dim=-1)
-           sequence_lengths = prompt_attention_mask.sum(dim=-1)
-           
-           # Convert to JAX arrays to do native JAX math
-           hidden_states_jax = jnp.array(text_encoder_hidden_states.cpu().to(torch.float32).numpy())
-           sequence_lengths_jax = jnp.array(sequence_lengths.cpu().numpy())
-           prompt_attention_mask_jax = jnp.array(prompt_attention_mask.cpu().numpy())
-           
+           text_encoder_hidden_states = text_encoder_outputs.hidden_states
            del text_encoder_outputs # Free memory
+           
+           prompt_embeds_list = []
+           # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
+           for state in text_encoder_hidden_states:
+               state_np = state.cpu().to(torch.float32).numpy()
+               prompt_embeds_list.append(jnp.array(state_np, dtype=jnp.bfloat16))
+
+           prompt_embeds = prompt_embeds_list
            del text_encoder_hidden_states # Free PyTorch tensor memory
            
-           prompt_embeds = self._pack_text_embeds(
-               hidden_states_jax,
-               sequence_lengths_jax,
-               padding_side=self.tokenizer.padding_side,
-               scale_factor=scale_factor,
-           )
-           prompt_attention_mask = prompt_attention_mask_jax
+           prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bool_)
       else:
           raise ValueError("`text_encoder` is required to encode prompts.")
       
       if dtype is not None:
-          prompt_embeds = prompt_embeds.astype(dtype)
+          if isinstance(prompt_embeds, list):
+              prompt_embeds = [state.astype(dtype) for state in prompt_embeds]
+          else:
+              prompt_embeds = prompt_embeds.astype(dtype)
 
-      _, seq_len, _ = prompt_embeds.shape
-      prompt_embeds = jnp.repeat(prompt_embeds, num_videos_per_prompt, axis=0)
-      prompt_embeds = prompt_embeds.reshape(batch_size * num_videos_per_prompt, seq_len, -1)
+      if isinstance(prompt_embeds, list):
+          _, seq_len, _ = prompt_embeds[0].shape
+          prompt_embeds = [
+              jnp.repeat(state, num_videos_per_prompt, axis=0).reshape(batch_size * num_videos_per_prompt, seq_len, -1)
+              for state in prompt_embeds
+          ]
+      else:
+          _, seq_len, _ = prompt_embeds.shape
+          prompt_embeds = jnp.repeat(prompt_embeds, num_videos_per_prompt, axis=0)
+          prompt_embeds = prompt_embeds.reshape(batch_size * num_videos_per_prompt, seq_len, -1)
 
       prompt_attention_mask = prompt_attention_mask.reshape(batch_size, -1)
       prompt_attention_mask = jnp.repeat(prompt_attention_mask, num_videos_per_prompt, axis=0)
