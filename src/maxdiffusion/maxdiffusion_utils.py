@@ -297,6 +297,7 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
       pipeline.audio_sampling_rate / pipeline.audio_hop_length / float(pipeline.audio_vae_temporal_compression_ratio)
   )
   audio_num_frames = round(duration_s * audio_latents_per_second)
+  audio_num_frames = ((audio_num_frames + 127) // 128) * 128
 
   hidden_states = pipeline.prepare_latents(
       batch_size,

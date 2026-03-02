@@ -1145,6 +1145,9 @@ class LTX2Pipeline:
       )
       audio_num_frames = round(duration_s * audio_latents_per_second)
 
+      # Pad audio sequence length to cleanly divide block sizes for Pallas flash attention on TPUs
+      audio_num_frames = ((audio_num_frames + 127) // 128) * 128
+
       audio_latents = self.prepare_audio_latents(
           batch_size=batch_size,
           num_channels_latents=audio_channels,
