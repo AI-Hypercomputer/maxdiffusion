@@ -994,8 +994,8 @@ class LTX2Pipeline:
   ) -> jax.Array:
       if latents is not None:
            if latents.ndim == 5:
-              latents_mean = jnp.array(self.vae.latents_mean)
-              latents_std = jnp.array(self.vae.latents_std)
+              latents_mean = self.vae.latents_mean.value
+              latents_std = self.vae.latents_std.value
               scaling_factor = self.vae.config.scaling_factor if hasattr(self.vae.config, "scaling_factor") else 1.0
               
               latents = self._normalize_latents(latents, latents_mean, latents_std, scaling_factor)
@@ -1045,8 +1045,8 @@ class LTX2Pipeline:
           if latents.ndim != 3:
                raise ValueError("Unexpected audio latents shape")
           
-          latents_mean = jnp.array(self.audio_vae.latents_mean)
-          latents_std = jnp.array(self.audio_vae.latents_std)
+          latents_mean = self.audio_vae.latents_mean.value
+          latents_std = self.audio_vae.latents_std.value
 
           latents = self._normalize_audio_latents(latents, latents_mean, latents_std)
           latents = self._create_noised_state(latents, noise_scale, generator)
@@ -1294,8 +1294,8 @@ class LTX2Pipeline:
       )
       latents = self._denormalize_latents(
           latents, 
-          jnp.array(self.vae.latents_mean), 
-          jnp.array(self.vae.latents_std), 
+          self.vae.latents_mean.value, 
+          self.vae.latents_std.value, 
           self.vae.config.scaling_factor
       )
       
@@ -1305,8 +1305,8 @@ class LTX2Pipeline:
       # Denormalize and Unpack Audio (Order important: Denorm THEN Unpack)
       audio_latents = self._denormalize_audio_latents(
           audio_latents_jax,
-          jnp.array(self.audio_vae.latents_mean),
-          jnp.array(self.audio_vae.latents_std)
+          self.audio_vae.latents_mean.value,
+          self.audio_vae.latents_std.value
       )
       
       num_mel_bins = self.audio_vae.config.mel_bins if getattr(self, "audio_vae", None) is not None else 64
