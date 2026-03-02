@@ -61,9 +61,9 @@ dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: -1
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
-ici_data_parallelism: 1
-ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
-ici_context_parallelism: 1
+ici_data_parallelism: 2
+ici_fsdp_parallelism: 1  # recommended ICI axis to be auto-sharded
+ici_context_parallelism: 4
 ici_tensor_parallelism: 1
 enable_profiler: False
 
@@ -81,7 +81,7 @@ dataset_name: 'diffusers/pokemon-gpt4-captions'
 train_split: 'train'
 dataset_type: 'tfrecord'
 cache_latents_text_encoder_outputs: True
-per_device_batch_size: 1
+per_device_batch_size: 0.25
 compile_topology_num_slices: -1 
 quantization_local_shard_count: -1
 use_qwix_quantization: False
