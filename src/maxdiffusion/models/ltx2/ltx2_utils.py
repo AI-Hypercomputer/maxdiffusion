@@ -315,10 +315,6 @@ def load_vae_weights(
           pt_tuple_key = tuple(pt_list)
 
           flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
-          
-          if flax_key in [("latents_mean",), ("latents_std",)]:
-              flax_key = flax_key + ("value",)
-              
           flax_key = _tuple_str_to_int(flax_key)
           
           flax_key_str = [str(x) for x in flax_key]
@@ -549,9 +545,6 @@ def load_audio_vae_weights(
                 flax_key_parts.append(part)
         
         flax_key = tuple(flax_key_parts)
-        
-        if flax_key in [("latents_mean",), ("latents_std",)]:
-            flax_key = flax_key + ("value",)
              
         if "up_stages" in flax_key:
              try:
