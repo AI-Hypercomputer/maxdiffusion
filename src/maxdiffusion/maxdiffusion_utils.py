@@ -287,10 +287,10 @@ def get_dummy_flux_inputs(config, pipeline, batch_size):
 
 
 def get_dummy_ltx2_inputs(config, pipeline, batch_size):
-  height = 32
-  width = 32
-  num_frames = 1
   raw_keys = config.get_keys() if hasattr(config, "get_keys") else {}
+  height = raw_keys.get("height", 512) if raw_keys.get("height") else 512
+  width = raw_keys.get("width", 768) if raw_keys.get("width") else 768
+  num_frames = raw_keys.get("num_frames", 121) if raw_keys.get("num_frames") else 121
   fps = raw_keys.get("fps", 24.0) if raw_keys.get("fps") else 24.0
   duration_s = num_frames / fps
   audio_latents_per_second = (

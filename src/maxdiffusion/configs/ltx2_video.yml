@@ -37,19 +37,10 @@ negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles,
 height: 512
 width: 768
 num_frames: 121
-flow_shift: 5.0
-downscale_factor: 0.6666666
-spatial_upscaler_model_path: "ltxv-spatial-upscaler-0.9.7.safetensors"
-prompt_enhancement_words_threshold: 120
-stg_mode: "attention_values"
 decode_timestep: 0.05
 decode_noise_scale: 0.025
 quantization: "int8"
 seed: 10
-conditioning_media_paths: None #["IMAGE_PATH"]
-conditioning_start_frames: [0]
-
-
 #parallelism
 mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 logical_axis_rules: [
