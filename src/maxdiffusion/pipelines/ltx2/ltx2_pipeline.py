@@ -1232,7 +1232,7 @@ class LTX2Pipeline:
                model = nnx.merge(graphdef, state)
                return model(hidden_states, attention_mask)
     
-          video_embeds, audio_embeds = run_connectors(
+          video_embeds, audio_embeds, new_attention_mask = run_connectors(
                connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
           )
           
@@ -1244,8 +1244,8 @@ class LTX2Pipeline:
                   t,
                   video_embeds,
                   audio_embeds,
-                  prompt_attention_mask_jax,
-                  prompt_attention_mask_jax,
+                  new_attention_mask,
+                  new_attention_mask,
                   guidance_scale > 1.0,
                   guidance_scale,
                   latent_num_frames,

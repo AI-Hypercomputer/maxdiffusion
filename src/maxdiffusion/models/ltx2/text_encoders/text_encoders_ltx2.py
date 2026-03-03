@@ -173,7 +173,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     features = self.feature_extractor(hidden_states, attention_mask)
 
     # 2. Parallel Connection
-    video_embeds = self.video_embeddings_connector(features, attention_mask)
-    audio_embeds = self.audio_embeddings_connector(features, attention_mask)
+    video_embeds, new_attention_mask = self.video_embeddings_connector(features, attention_mask)
+    audio_embeds, _ = self.audio_embeddings_connector(features, attention_mask)
 
-    return video_embeds, audio_embeds
+    return video_embeds, audio_embeds, new_attention_mask
