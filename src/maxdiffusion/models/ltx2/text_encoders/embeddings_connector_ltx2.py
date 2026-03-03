@@ -180,7 +180,7 @@ class Embeddings1DConnector(nnx.Module):
       self,
       hidden_states: Array,
       attention_mask: Optional[Array] = None,
-  ) -> Array:
+  ) -> Tuple[Array, Array]:
     # 1. Thinking Tokens
     if self.num_learnable_registers > 0 and attention_mask is not None:
       hidden_states, attention_mask = self._replace_padded_with_learnable_registers(hidden_states, attention_mask)
@@ -209,4 +209,4 @@ class Embeddings1DConnector(nnx.Module):
     # 4. Final Norm
     hidden_states = self.final_norm(hidden_states)
 
-    return hidden_states
+    return hidden_states, attention_mask
