@@ -237,7 +237,7 @@ class WanFeedForward(nnx.Module):
     else:
       raise NotImplementedError(f"{activation_fn} is not implemented.")
 
-    self.drop_out = nnx.Dropout(dropout)
+    self.drop_out = nnx.Dropout(dropout, deterministic=False)
     self.proj_out = nnx.Linear(
         rngs=rngs,
         in_features=inner_dim,

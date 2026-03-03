@@ -1011,7 +1011,7 @@ class FlaxWanAttention(nnx.Module):
         ),
     )
 
-    self.drop_out = nnx.Dropout(dropout)
+    self.drop_out = nnx.Dropout(dropout, deterministic=False)
 
     self.norm_q = nnx.data(None)
     self.norm_k = nnx.data(None)
