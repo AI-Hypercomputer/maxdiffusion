@@ -957,6 +957,7 @@ class LTX2Pipeline:
       latents: jax.Array,
       latent_length: int,
       num_mel_bins: int,
+      num_channels: int,
       patch_size: Optional[int] = None,
       patch_size_t: Optional[int] = None,
   ) -> jax.Array:
@@ -1311,7 +1312,8 @@ class LTX2Pipeline:
       audio_latents = self._unpack_audio_latents(
           audio_latents, 
           audio_num_frames, 
-          num_mel_bins=latent_mel_bins
+          num_mel_bins=latent_mel_bins,
+          num_channels=audio_channels
       )
 
       # Audio VAE expects channels last (B, T, F, C) but unpack returns (B, C, T, F)
