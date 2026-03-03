@@ -29,6 +29,7 @@ from flax.linen import partitioning as nn_partitioning
 
 from maxdiffusion import pyconfig, max_utils
 from maxdiffusion.image_processor import VaeImageProcessor
+from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.maxdiffusion_utils import (
     get_add_time_ids,
     rescale_noise_cfg,
@@ -322,4 +323,5 @@ def main(argv: Sequence[str]) -> None:
 
 
 if __name__ == "__main__":
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)
