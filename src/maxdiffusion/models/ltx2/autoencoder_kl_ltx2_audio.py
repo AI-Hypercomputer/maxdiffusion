@@ -710,43 +710,8 @@ class FlaxAutoencoderKLLTX2Audio(nnx.Module, FlaxModelMixin, ConfigMixin):
         self.latents_mean = nnx.Param(jnp.zeros((base_channels,), dtype=dtype))
         self.latents_std = nnx.Param(jnp.ones((base_channels,), dtype=dtype))
 
-    def _normalize_latents(self, h: jnp.ndarray) -> jnp.ndarray:
-        if self.double_z:
-            means, logvars = jnp.split(h, 2, axis=-1)
-        else:
-            means = h
-            logvars = None
-
-        batch, time, freq, channels = means.shape
-        
-        # Normalize means ONLY
-        means_patched = self.patchifier.patchify(means) 
-        means_normalized = (means_patched - self.latents_mean.value.astype(means_patched.dtype)) / self.latents_std.value.astype(means_patched.dtype)
-        means_normalized = self.patchifier.unpatchify(means_normalized, channels, freq)
-
-        if logvars is not None:
-            # Leave logvars unmodified as per PyTorch implementation
-            return jnp.concatenate([means_normalized, logvars], axis=-1)
-        return means_normalized
-
-    def _denormalize_latents(self, z: jnp.ndarray) -> Tuple[jnp.ndarray, Tuple[int, int, int, int]]:
-        batch, time, freq, channels = z.shape
-        
-        # Denormalize latents (which are just means)
-        patched_z = self.patchifier.patchify(z)
-        denorm_patched_z = (patched_z * self.latents_std.value.astype(patched_z.dtype)) + self.latents_mean.value.astype(patched_z.dtype)
-        z = self.patchifier.unpatchify(denorm_patched_z, channels, freq)
-
-        target_frames = time * LATENT_DOWNSAMPLE_FACTOR
-        if self.causality_axis is not None and self.causality_axis != "none":
-            target_frames = max(target_frames - (LATENT_DOWNSAMPLE_FACTOR - 1), 1)
-
-        target_shape = (batch, target_frames, self.mel_bins, self.out_ch)
-        return z, target_shape
-
     def encode(self, x: jnp.ndarray, return_dict: bool = True, train: bool = False):
         h = self.encoder(x, train=train)
-        h = self._normalize_latents(h)  # Apply normalization here
         posterior = FlaxDiagonalGaussianDistribution(h)
         
         if not return_dict:
@@ -754,8 +719,11 @@ class FlaxAutoencoderKLLTX2Audio(nnx.Module, FlaxModelMixin, ConfigMixin):
         return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
     def decode(self, z: jnp.ndarray, return_dict: bool = True, train: bool = False):
-        z, target_shape = self._denormalize_latents(z)
-        target_frames, target_mel_bins = target_shape[1], target_shape[2]
+        batch, time, freq, channels = z.shape
+        target_frames = time * LATENT_DOWNSAMPLE_FACTOR
+        if self.causality_axis is not None and self.causality_axis != "none":
+            target_frames = max(target_frames - (LATENT_DOWNSAMPLE_FACTOR - 1), 1)
+        target_mel_bins = self.mel_bins
         
         decoded = self.decoder(z, target_frames=target_frames, target_mel_bins=target_mel_bins, train=train)
 
