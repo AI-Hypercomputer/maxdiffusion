@@ -101,7 +101,7 @@ class LTX2TransformerTest(unittest.TestCase):
         base_width=base_width,
         modality="video",
     )
-    ids = jnp.ones((1, 3, 10))  # (B, Axes, S) for 3D coords
+    ids = jnp.ones((1, 10, 3))  # (B, S, Axes) for 3D coords
     cos, sin = rope(ids)
 
     # Check output shape
@@ -128,7 +128,7 @@ class LTX2TransformerTest(unittest.TestCase):
         modality="video",
         rope_type="split",
     )
-    ids = jnp.ones((1, 3, 10))  # (B, Axes, S)
+    ids = jnp.ones((1, 10, 3))  # (B, S, Axes)
     cos, sin = rope(ids)
 
     # Check output shape
@@ -335,8 +335,9 @@ class LTX2TransformerTest(unittest.TestCase):
         encoder_attention_segment_ids,
     )
 
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.get_dummy_ltx2_inputs")
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.qwix.quantize_model")
-  def test_quantize_transformer(self, mock_quantize_model):
+  def test_quantize_transformer(self, mock_quantize_model, mock_get_dummy_inputs):
     config = Mock(spec=HyperParameters)
     config.use_qwix_quantization = True
     config.quantization = "int8"
@@ -353,10 +354,13 @@ class LTX2TransformerTest(unittest.TestCase):
     mock_quantize_model.return_value = mock_quantized_model
 
     dummy_inputs = self.get_dummy_inputs(config)
-    result = LTX2Pipeline.quantize_transformer(config, model, pipeline, mesh, dummy_inputs)
+    mock_get_dummy_inputs.return_value = dummy_inputs
+
+    result = LTX2Pipeline.quantize_transformer(config, model, pipeline, mesh)
 
     self.assertEqual(result, mock_quantized_model)
     mock_quantize_model.assert_called_once()
+    mock_get_dummy_inputs.assert_called_once_with(config, pipeline, 1)
 
     # Check arguments passed to quantize_model
     args, _ = mock_quantize_model.call_args
