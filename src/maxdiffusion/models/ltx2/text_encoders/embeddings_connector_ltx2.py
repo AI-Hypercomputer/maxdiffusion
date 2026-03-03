@@ -135,11 +135,34 @@ class Embeddings1DConnector(nnx.Module):
     registers = jnp.expand_dims(registers, 0)
 
     if attention_mask.ndim == 2:
-      mask = attention_mask[:, :, None]
-    else:
       mask = attention_mask
+    else:
+      mask = attention_mask.squeeze(-1) # [B, T]
 
-    output = jnp.where(mask > 0.5, hidden_states, registers)
+    # Mask valid tokens as 1 (or True)
+    curr_mask = (mask > 0.5).astype(jnp.int32)
+    
+    # 1. Shift valid tokens to the left
+    num_valid = jnp.sum(curr_mask, axis=1, keepdims=True)
+    valid_positions = jnp.cumsum(curr_mask, axis=1) - 1
+    invalid_positions = jnp.cumsum(1 - curr_mask, axis=1) - 1 + num_valid
+    target_indices = jnp.where(curr_mask == 1, valid_positions, invalid_positions)
+    
+    b_idx = jnp.arange(b)[:, None]
+    
+    # Shift hidden states
+    shifted_hidden_states = jnp.zeros_like(hidden_states)
+    shifted_hidden_states = shifted_hidden_states.at[b_idx, target_indices, :].set(hidden_states)
+    
+    # Shift mask
+    shifted_mask = jnp.zeros_like(curr_mask)
+    shifted_mask = shifted_mask.at[b_idx, target_indices].set(curr_mask)
+
+    # 2. Add Learnable Registers
+    # Where shifted_mask is 1, keep valid tokens. Where 0, insert registers.
+    output = jnp.where(shifted_mask[..., None] == 1, shifted_hidden_states, registers)
+
+    # Overwrite attention_mask with all-ones since padding is now filled with registers.
     new_mask = jnp.ones_like(attention_mask)
     return output, new_mask
 

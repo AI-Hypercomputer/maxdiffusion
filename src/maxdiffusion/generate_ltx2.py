@@ -81,8 +81,6 @@ jax.config.update("jax_use_shardy_partitioner", True)
 def call_pipeline(config, pipeline, prompt, negative_prompt):
   # Set default generation arguments
   generator = jax.random.key(config.seed) if hasattr(config, "seed") else jax.random.key(0)
-  
-  negative_prompt = negative_prompt if hasattr(config, "negative_prompt") else None
   guidance_scale = config.guidance_scale if hasattr(config, "guidance_scale") else 3.0
   do_classifier_free_guidance = guidance_scale > 1.0
 
