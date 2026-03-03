@@ -21,6 +21,7 @@ from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXVideoPipeline
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXMultiScalePipeline, ConditioningItem
 import maxdiffusion.pipelines.ltx_video.crf_compressor as crf_compressor
 from maxdiffusion import pyconfig, max_logging
+from maxdiffusion.train_utils import transformer_engine_context
 import torchvision.transforms.functional as TVF
 import imageio
 from datetime import datetime
@@ -267,4 +268,5 @@ def main(argv: Sequence[str]) -> None:
 
 
 if __name__ == "__main__":
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)

@@ -26,6 +26,7 @@ import jax.numpy as jnp
 from absl import app
 from maxdiffusion import (pyconfig, FlaxDDIMScheduler, max_utils)
 
+from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.maxdiffusion_utils import rescale_noise_cfg
 from flax.linen import partitioning as nn_partitioning
 from maxdiffusion.image_processor import VaeImageProcessor
@@ -261,4 +262,5 @@ def main(argv: Sequence[str]) -> None:
 
 
 if __name__ == "__main__":
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)

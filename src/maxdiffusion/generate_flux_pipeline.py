@@ -26,6 +26,7 @@ import jax
 from maxdiffusion import pyconfig, max_logging, max_utils
 
 from maxdiffusion.checkpointing.checkpointing_utils import load_params_from_path
+from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.max_utils import setup_initial_state
 
 
@@ -123,4 +124,5 @@ def main(argv: Sequence[str]) -> None:
 
 
 if __name__ == "__main__":
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)

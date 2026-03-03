@@ -33,6 +33,7 @@ from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, Flax
 
 from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.max_utils import (
     device_put_replicated,
     get_memory_allocations,
@@ -492,4 +493,5 @@ def main(argv: Sequence[str]) -> None:
 
 
 if __name__ == "__main__":
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)

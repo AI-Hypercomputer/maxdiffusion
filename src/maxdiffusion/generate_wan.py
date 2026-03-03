@@ -23,6 +23,7 @@ from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
+from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.utils import export_to_video
 from maxdiffusion.utils.loading_utils import load_image
 from google.cloud import storage
@@ -296,4 +297,5 @@ def main(argv: Sequence[str]) -> None:
 
 
 if __name__ == "__main__":
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)

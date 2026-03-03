@@ -22,6 +22,7 @@ from maxdiffusion import (
     max_logging,
     pyconfig,
 )
+from maxdiffusion.train_utils import transformer_engine_context
 
 from maxdiffusion.train_utils import (
     validate_train_config,
@@ -43,4 +44,5 @@ def main(argv: Sequence[str]) -> None:
 
 
 if __name__ == "__main__":
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)
