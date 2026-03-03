@@ -26,8 +26,7 @@ DType = common_types.DType
 
 def _norm_and_concat_padded_batch(
     encoded_text: Array,
-    sequence_lengths: Array,
-    padding_side: str = "right",
+    attention_mask: Array,
 ) -> Array:
   """Normalize and flatten multi-layer hidden states, respecting padding.
   Performs per-batch, per-layer normalization using masked mean and range,
@@ -35,8 +34,7 @@ def _norm_and_concat_padded_batch(
 
   Args:
       encoded_text: Hidden states of shape [batch, seq_len, hidden_dim, num_layers].
-      sequence_lengths: Number of valid (non-padded) tokens per batch item.
-      padding_side: Whether padding is on "left" or "right".
+      attention_mask: Attention mask of shape [batch, seq_len].
 
   Returns:
       Normalized tensor of shape [batch, seq_len, hidden_dim * num_layers],
@@ -45,18 +43,9 @@ def _norm_and_concat_padded_batch(
   b, t, d, l = encoded_text.shape
 
   # Build mask: [B, T] -> [B, T, 1, 1]
-  # token_indices: [1, T]
-  token_indices = jnp.arange(t)[None, :]
-
-  if padding_side == "right":
-    # Valid: indices < lengths
-    mask = token_indices < sequence_lengths[:, None]
-  elif padding_side == "left":
-    # Valid: indices >= (T - lengths)
-    start_indices = t - sequence_lengths[:, None]
-    mask = token_indices >= start_indices
-  else:
-    raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side}")
+  mask = attention_mask[:, :, None, None]
+  
+  sequence_lengths = jnp.sum(attention_mask, axis=-1)
 
   # [B, T, 1, 1]
   mask = mask[:, :, None, None]
@@ -122,14 +111,13 @@ class LTX2GemmaFeatureExtractor(nnx.Module):
     self.linear = nnx.Linear(input_dim, output_dim, use_bias=False, dtype=dtype, rngs=rngs)
 
   def __call__(
-      self, hidden_states: Union[Tuple[Array, ...], Array], attention_mask: Array, padding_side: str = "right"
+      self, hidden_states: Union[Tuple[Array, ...], Array], attention_mask: Array
   ) -> Array:
     """
     Args:
         hidden_states: Tuple of arrays from Gemma, each [B, T, D].
                        Or pre-stacked array [B, T, D, L].
         attention_mask: Mask [B, T] (1 for valid, 0 for padding).
-        padding_side: "right" or "left".
 
     Returns:
         Projected features [B, T, OutputDim].
@@ -142,11 +130,8 @@ class LTX2GemmaFeatureExtractor(nnx.Module):
     else:
       x = hidden_states
 
-    # 2. Calculate Sequence Lengths
-    sequence_lengths = jnp.sum(attention_mask, axis=-1)
-
-    # 3. Norm and Concat
-    x_norm = _norm_and_concat_padded_batch(x, sequence_lengths, padding_side=padding_side)
+    # 2. Norm and Concat
+    x_norm = _norm_and_concat_padded_batch(x, attention_mask)
 
     # 4. Projection
     return self.linear(x_norm)
