@@ -42,13 +42,10 @@ def _norm_and_concat_padded_batch(
   """
   b, t, d, l = encoded_text.shape
 
-  # Build mask: [B, T] -> [B, T, 1, 1]
+  # [B, T, 1, 1]
   mask = attention_mask[:, :, None, None]
   
   sequence_lengths = jnp.sum(attention_mask, axis=-1)
-
-  # [B, T, 1, 1]
-  mask = mask[:, :, None, None]
 
   eps = 1e-6
 
