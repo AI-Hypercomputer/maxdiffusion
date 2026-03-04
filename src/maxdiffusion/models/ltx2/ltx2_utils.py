@@ -389,7 +389,7 @@ def load_vocoder_weights(
       
       if flax_key[-1] == "kernel":
            if "upsamplers" in flax_key:
-               tensor = tensor.transpose(2, 0, 1)
+               tensor = tensor.transpose(2, 0, 1)[::-1, :, :]
            else:
                tensor = tensor.transpose(2, 1, 0)
                
