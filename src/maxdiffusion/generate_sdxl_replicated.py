@@ -1,18 +1,18 @@
 """
- Copyright 2024 Google LLC
+Copyright 2024 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 import time
 
@@ -32,7 +32,7 @@ cc.set_cache_dir("~/jax_cache")
 NUM_DEVICES = jax.device_count()
 
 # 1. Let's start by downloading the model and loading it into our pipeline class
-# Adhering to JAX's functional approach, the model's parameters are returned seperatetely and
+# Adhering to JAX's functional approach, the model's parameters are returned separately and
 # will have to be passed to the pipeline during inference
 pipeline, params = FlaxStableDiffusionXLPipeline.from_pretrained(
     "stabilityai/stable-diffusion-xl-base-1.0", revision="refs/pr/95", split_head_dim=True
@@ -83,7 +83,7 @@ def replicate_all(prompt_ids, neg_prompt_ids, seed):
 # to the function and tell JAX which are static arguments, that is, arguments that
 # are known at compile time and won't change. In our case, it is num_inference_steps,
 # height, width and return_latents.
-# Once the function is compiled, these parameters are ommited from future calls and
+# Once the function is compiled, these parameters are omitted from future calls and
 # cannot be changed without modifying the code and recompiling.
 def aot_compile(
     prompt=default_prompt,

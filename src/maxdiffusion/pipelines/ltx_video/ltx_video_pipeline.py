@@ -901,7 +901,6 @@ def transformer_forward_pass(
     skip_layer_mask,
     skip_layer_strategy,
 ):
-
   noise_pred = transformer.apply(
       {"params": state.params},
       hidden_states=latents,

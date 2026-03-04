@@ -20,7 +20,6 @@ import flax.linen as nn
 from flax import nnx
 import jax
 from jax.ad_checkpoint import checkpoint_name
-from jax.sharding import PartitionSpec
 import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
@@ -112,8 +111,8 @@ def _reshape_batch_dim_to_heads(tensor, heads):
   head_size = heads
   tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
-  reshaped_tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
-  return jax.lax.with_sharding_constraint(reshaped_tensor, PartitionSpec("data", "fsdp", "tensor"))
+  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
+  return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
 
 
 def _reshape_heads_to_batch_dim(tensor, heads):
@@ -126,8 +125,8 @@ def _reshape_heads_to_batch_dim(tensor, heads):
   else:
     batch_size, head_size, seq_len, head_dim = tensor.shape
     reshaped_tensor = tensor.reshape(batch_size * head_size, seq_len, head_dim)
-
-  return jax.lax.with_sharding_constraint(reshaped_tensor, PartitionSpec("data", "fsdp", "tensor"))
+  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
+  return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
 
 
 def _reshape_heads_to_head_dim(tensor):
@@ -135,8 +134,8 @@ def _reshape_heads_to_head_dim(tensor):
   # This is used to transform the output of flash attention back into the format of other attention outputs
   b, h, s, d = tensor.shape
   tensor = jnp.transpose(tensor, axes=[0, 2, 1, 3])
-  reshaped_tensor = jnp.reshape(tensor, (b, -1, h * d))
-  return jax.lax.with_sharding_constraint(reshaped_tensor, PartitionSpec("data", "fsdp", "tensor"))
+  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
+  return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
 
 
 def _unflatten_heads(tensor, heads):
@@ -275,7 +274,7 @@ def _tpu_flash_attention(
         block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
         use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
     )
-  num_fsdp_shards = mesh.shape["fsdp"]
+  num_context_shards = mesh.shape["context"]
   query = _reshape_data_for_flash(query, heads)
   key = _reshape_data_for_flash(key, heads)
   value = _reshape_data_for_flash(value, heads)
@@ -343,8 +342,8 @@ def _tpu_flash_attention(
           is_mqa=False,
           config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
           save_residuals=False,
-          ring_axis="fsdp",
-          rotate_segment_ids=False,  # We don't rotate segment ids in tokamax ring attention because our segment ids is for padding each kv shard has same segment ids 
+          ring_axis="context",
+          rotate_segment_ids=False,  # We don't rotate segment ids in tokamax ring attention because our segment ids is for padding each kv shard has same segment ids
       )
     else:
       splash_kernel = splash_attention_kernel.make_splash_mha(
@@ -364,21 +363,21 @@ def _tpu_flash_attention(
     if attention_kernel in ["flash", "tokamax_flash", "tokamax_ring"]:
       attention_output = vmapped_splash(query, key, value, segment_ids)
     else:
-      if num_fsdp_shards > 1:
+      if num_context_shards > 1:
         out, (lse,) = vmapped_splash(query, key, value, segment_ids)
         m = lse.astype(jnp.float32)
         l = jnp.exp(lse - m)
         o = out.astype(jnp.float32) * l[..., None]
 
-        perm = [(j, (j + 1) % num_fsdp_shards) for j in range(num_fsdp_shards)]
+        perm = [(j, (j + 1) % num_context_shards) for j in range(num_context_shards)]
 
-        k1 = jax.lax.ppermute(key, axis_name="fsdp", perm=perm)
-        v1 = jax.lax.ppermute(value, axis_name="fsdp", perm=perm)
+        k1 = jax.lax.ppermute(key, axis_name="context", perm=perm)
+        v1 = jax.lax.ppermute(value, axis_name="context", perm=perm)
 
         def ring_scan_body(carry, _):
           m, l, o, k_current, v_current = carry
-          k_next = jax.lax.ppermute(k_current, axis_name="fsdp", perm=perm)
-          v_next = jax.lax.ppermute(v_current, axis_name="fsdp", perm=perm)
+          k_next = jax.lax.ppermute(k_current, axis_name="context", perm=perm)
+          v_next = jax.lax.ppermute(v_current, axis_name="context", perm=perm)
 
           out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
 
@@ -397,21 +396,21 @@ def _tpu_flash_attention(
           return (m, l, o, k_next, v_next), None
 
         initial_carry = (m, l, o, k1, v1)
-        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_fsdp_shards - 1)
+        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_context_shards - 1)
 
         attention_output = o_final / l_final[..., None]
       else:
-        raise ValueError("ring attention requires fsdp > 1")
+        raise ValueError("ring attention requires context > 1")
 
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
-  devices_in_data_fsdp = mesh.shape["data"] * mesh.shape["fsdp"]
+  devices_in_data_context = mesh.shape["data"] * mesh.shape["context"]
   # This warning might show up when doing model eval for example, when calculating model flops
   # and that is expected.
-  if not (query.shape[0] / devices_in_data_fsdp).is_integer():
+  if not (query.shape[0] / devices_in_data_context).is_integer():
     max_logging.log(
-        "Warning, batch dimension should be shardable among the devices in data and fsdp"
-        f" axis, batch dimension: {query.shape[0]}, devices_in_data_fsdp: {devices_in_data_fsdp}"
+        "Warning, batch dimension should be shardable among the devices in data and context"
+        f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
     )
   x = wrap_flash_attention(query, key, value)
   x = _reshape_heads_to_head_dim(x)
@@ -1011,8 +1010,9 @@ class FlaxWanAttention(nnx.Module):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> jax.Array:
-    hidden_states = jax.lax.with_sharding_constraint(hidden_states, PartitionSpec("data", "fsdp", "tensor"))
-    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, PartitionSpec("data", "fsdp", "tensor"))
+    axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
+    hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
+    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
     dtype = hidden_states.dtype
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states

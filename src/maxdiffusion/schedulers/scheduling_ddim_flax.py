@@ -37,7 +37,7 @@ class DDIMSchedulerState:
   common: CommonSchedulerState
   final_alpha_cumprod: jnp.ndarray
 
-  # setable values
+  # settable values
   init_noise_sigma: jnp.ndarray
   timesteps: jnp.ndarray
   num_inference_steps: Optional[int] = None

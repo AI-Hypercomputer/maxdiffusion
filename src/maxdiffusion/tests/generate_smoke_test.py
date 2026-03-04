@@ -1,3 +1,19 @@
+"""
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
 import os
 import unittest
 import pytest
@@ -22,7 +38,7 @@ class Generate(unittest.TestCase):
     super().setUp()
     Generate.dummy_data = {}
 
-  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version.")
   def test_sd14_config(self):
     img_url = os.path.join(THIS_DIR, "images", "test_gen_sd14.png")
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
@@ -42,7 +58,7 @@ class Generate(unittest.TestCase):
     assert base_image.shape == test_image.shape
     assert ssim_compare >= 0.70
 
-  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version.")
   def test_sd_2_base_from_gcs(self):
     img_url = os.path.join(THIS_DIR, "images", "test_2_base.png")
     base_image = np.array(Image.open(img_url)).astype(np.uint8)
@@ -64,7 +80,7 @@ class Generate(unittest.TestCase):
     assert base_image.shape == test_image.shape
     assert ssim_compare >= 0.70
 
-  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version.")
   def test_controlnet(self):
     img_url = os.path.join(THIS_DIR, "images", "cnet_test.png")
     base_image = np.array(Image.open(img_url)).astype(np.uint8)

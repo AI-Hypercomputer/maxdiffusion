@@ -13,8 +13,9 @@
 # limitations under the License.
 
 from abc import abstractmethod
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Tuple
 from functools import partial
+from maxdiffusion.image_processor import PipelineImageInput
 import numpy as np
 import math
 import jax
@@ -40,6 +41,9 @@ import html
 import re
 import torch
 import qwix
+from transformers import CLIPImageProcessor
+from transformers.models.clip.modeling_flax_clip import FlaxCLIPVisionModel
+import PIL
 
 
 def cast_with_exclusion(path, x, dtype_to_cast):
@@ -91,9 +95,13 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
 
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(
-    devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None, subfolder: str = ""
+    devices_array: np.array,
+    mesh: Mesh,
+    rngs: nnx.Rngs,
+    config: HyperParameters,
+    restored_checkpoint=None,
+    subfolder: str = "",
 ):
-
   def create_model(rngs: nnx.Rngs, wan_config: dict):
     wan_transformer = WanModel(**wan_config, rngs=rngs)
     return wan_transformer
@@ -103,6 +111,13 @@ def create_sharded_logical_transformer(
     wan_config = restored_checkpoint["wan_config"]
   else:
     wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
+  if config.model_type == "I2V":
+    # WAN 2.1 I2V uses image embeddings via CLIP encoder (image_dim and added_kv_proj_dim are set)
+    # WAN 2.2 I2V uses VAE-encoded latent conditioning (image_dim and added_kv_proj_dim are None in the transformer config)
+    if config.model_name == "wan2.1":
+      if wan_config.get("image_seq_len") is None:
+        wan_config["image_seq_len"] = 257
+
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
   wan_config["weights_dtype"] = config.weights_dtype
@@ -191,6 +206,7 @@ class WanPipeline:
   vae ([`AutoencoderKLWan`]):
       Variational Auto-Encoder (VAE) Model to encode and decode videos to and from latent representations.
   """
+
   def __init__(
       self,
       tokenizer: AutoTokenizer,
@@ -202,6 +218,8 @@ class WanPipeline:
       devices_array: np.array,
       mesh: Mesh,
       config: HyperParameters,
+      image_processor: Optional[CLIPImageProcessor] = None,
+      image_encoder: Optional[FlaxCLIPVisionModel] = None,
       **kwargs,
   ):
     self.tokenizer = tokenizer
@@ -214,6 +232,8 @@ class WanPipeline:
     self.mesh = mesh
     self.config = config
     self.model_name = config.model_name
+    self.image_processor = image_processor
+    self.image_encoder = image_encoder
 
     self.vae_mesh = kwargs.get("vae_mesh", mesh)
     self.vae_logical_axis_rules = kwargs.get("vae_logical_axis_rules", config.logical_axis_rules)
@@ -241,8 +261,19 @@ class WanPipeline:
     return tokenizer
 
   @classmethod
-  def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, vae_logical_axis_rules: tuple = None):
+  def load_image_encoder(cls, config: HyperParameters):
+    image_processor = CLIPImageProcessor.from_pretrained(config.pretrained_model_name_or_path, subfolder="image_processor")
+    try:
+      image_encoder = FlaxCLIPVisionModel.from_pretrained(
+          config.pretrained_model_name_or_path, subfolder="image_encoder", dtype=jnp.float32
+      )
+    except Exception as e:
+      max_logging.error(f"Failed to load FlaxCLIPVisionModel: {e}")
+      raise
+    return image_processor, image_encoder
 
+  @classmethod
+  def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, vae_logical_axis_rules: tuple = None):
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
       wan_vae = AutoencoderKLWan.from_config(
           config.pretrained_model_name_or_path,
@@ -351,7 +382,7 @@ class WanPipeline:
       return model
     max_logging.log("Quantizing transformer with Qwix.")
 
-    batch_size = jnp.ceil(config.per_device_batch_size * jax.local_device_count()).astype(jnp.int32)
+    batch_size = config.global_batch_size_to_train_on
     latents, prompt_embeds, timesteps = get_dummy_wan_inputs(config, pipeline, batch_size)
     model_inputs = (latents, timesteps, prompt_embeds)
     with mesh:
@@ -361,10 +392,22 @@ class WanPipeline:
 
   @classmethod
   def load_transformer(
-      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, restored_checkpoint=None, subfolder="transformer"):
+      cls,
+      devices_array: np.array,
+      mesh: Mesh,
+      rngs: nnx.Rngs,
+      config: HyperParameters,
+      restored_checkpoint=None,
+      subfolder="transformer",
+  ):
     with mesh:
       wan_transformer = create_sharded_logical_transformer(
-          devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, restored_checkpoint=restored_checkpoint, subfolder=subfolder
+          devices_array=devices_array,
+          mesh=mesh,
+          rngs=rngs,
+          config=config,
+          restored_checkpoint=restored_checkpoint,
+          subfolder=subfolder,
       )
     return wan_transformer
 
@@ -377,6 +420,17 @@ class WanPipeline:
     )
     return scheduler, scheduler_state
 
+  def encode_image(self, image: PipelineImageInput, num_videos_per_prompt: int = 1):
+    if not isinstance(image, list):
+      image = [image]
+    image_inputs = self.image_processor(images=image, return_tensors="np")
+    pixel_values = jnp.array(image_inputs.pixel_values)
+
+    image_encoder_output = self.image_encoder(pixel_values, output_hidden_states=True)
+    image_embeds = image_encoder_output.hidden_states[-2]
+
+    image_embeds = jnp.repeat(image_embeds, num_videos_per_prompt, axis=0)
+    return image_embeds
 
   def _get_t5_prompt_embeds(
       self,
@@ -466,100 +520,214 @@ class WanPipeline:
 
     return latents
 
-  def _denormalize_latents(self, latents: jax.Array) -> jax.Array:
-      """Denormalizes latents using VAE statistics."""
-      latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
-      latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
-      latents = latents / latents_std + latents_mean
-      latents = latents.astype(jnp.float32)
-      return latents
+  def prepare_latents_i2v_base(
+      self,
+      image: jax.Array,
+      num_frames: int,
+      dtype: jnp.dtype,
+      last_image: Optional[jax.Array] = None,
+  ) -> Tuple[jax.Array, jax.Array]:
+    """
+    Encodes the initial image(s) into latents to be used as conditioning.
+    Returns:
+        latent_condition: The VAE encoded latents of the image(s).
+        video_condition: The input to the VAE.
+    """
+    height, width = image.shape[-2:]
+    image = image[:, :, jnp.newaxis, :, :]  # [B, C, 1, H, W]
 
-  def _decode_latents_to_video(self, latents: jax.Array) -> np.ndarray:
-      """Decodes latents to video frames and postprocesses."""
-      with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
-          video = self.vae.decode(latents, self.vae_cache)[0]
-
-      video = jnp.transpose(video, (0, 4, 1, 2, 3))
-      video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
-      video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
-      return self.video_processor.postprocess_video(video, output_type="np")
-
-  @classmethod
-  def _create_common_components(cls, config, vae_only=False):
-      devices_array = max_utils.create_device_mesh(config)
-      mesh = Mesh(devices_array, config.mesh_axes)
-
-      vae_spatial = getattr(config, "vae_spatial", -1)
-      total_devices = math.prod(devices_array.shape)
-
-      if vae_spatial <= 0:
-        dp_size = mesh.shape.get("data", 1)
-        if dp_size == -1 or dp_size == 0:
-            dp_size = 1
-        vae_spatial = (2 * total_devices) // dp_size
-
-      assert total_devices % vae_spatial == 0, f"total devices ({total_devices}) must be a multiple of vae_spatial ({vae_spatial})"
-
-      flat_devices = devices_array.flatten()
-      vae_devices_array = flat_devices.reshape(total_devices // vae_spatial, vae_spatial)
-
-      vae_mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
-      vae_mesh.vae_spatial_axis_name = "vae_spatial"
-      max_logging.log(f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') to support spatial sharding of {vae_spatial}.")
-
-      # logical axis rules for VAE encoding/decoding
-      vae_logical_axis_rules = (
-          ("activation_batch", "redundant"),
-          ("activation_length", "vae_spatial"),
-          ("activation_heads", None),
-          ("activation_kv_length", None),
-          ("embed", None),
-          ("heads", None),
-          ("norm", None),
-          ("conv_batch", "redundant"),
-          ("out_channels", "vae_spatial"),
-          ("conv_out", "vae_spatial")
+    if last_image is None:
+      video_condition = jnp.concatenate(
+          [image, jnp.zeros((image.shape[0], image.shape[1], num_frames - 1, height, width), dtype=image.dtype)], axis=2
+      )
+    else:
+      last_image = last_image[:, :, jnp.newaxis, :, :]
+      video_condition = jnp.concatenate(
+          [image, jnp.zeros((image.shape[0], image.shape[1], num_frames - 2, height, width), dtype=image.dtype), last_image],
+          axis=2,
       )
 
-      rng = jax.random.key(config.seed)
-      rngs = nnx.Rngs(rng)
+    vae_dtype = getattr(self.vae, "dtype", jnp.float32)
+    video_condition = video_condition.astype(vae_dtype)
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      data_mesh_size = self.mesh.shape[self.config.mesh_axes[0]]
+      if video_condition.shape[0] % data_mesh_size == 0:
+        sharding_spec = P(self.config.mesh_axes[0], None, None, None, None)
+        video_condition = jax.lax.with_sharding_constraint(video_condition, sharding_spec)
+      encoded_output = self.vae.encode(video_condition, self.vae_cache)[0].mode()
 
-      with vae_mesh:
-          wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=vae_mesh, rngs=rngs, config=config, vae_logical_axis_rules=vae_logical_axis_rules)
+    # Normalize latents
+    latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
+    latents_std = jnp.array(self.vae.latents_std).reshape(1, 1, 1, 1, self.vae.z_dim)
+    latent_condition = encoded_output
+    latent_condition = latent_condition.astype(dtype)
+    latent_condition = (latent_condition - latents_mean) / latents_std
 
-      components = {
-          "vae": wan_vae, "vae_cache": vae_cache,
-          "devices_array": devices_array, "rngs": rngs, "mesh": mesh, "vae_mesh": vae_mesh,
-          "vae_logical_axis_rules": vae_logical_axis_rules,
-          "tokenizer": None, "text_encoder": None, "scheduler": None, "scheduler_state": None
-      }
+    return latent_condition, video_condition
 
-      if not vae_only:
-          components["tokenizer"] = cls.load_tokenizer(config=config)
-          components["text_encoder"] = cls.load_text_encoder(config=config)
-          components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
-      return components
+  def _denormalize_latents(self, latents: jax.Array) -> jax.Array:
+    """Denormalizes latents using VAE statistics."""
+    latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
+    latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
+    latents = latents / latents_std + latents_mean
+    latents = latents.astype(jnp.float32)
+    return latents
+
+  def _decode_latents_to_video(self, latents: jax.Array) -> np.ndarray:
+    """Decodes latents to video frames and postprocesses."""
+    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
+      video = self.vae.decode(latents, self.vae_cache)[0]
+
+    video = jnp.transpose(video, (0, 4, 1, 2, 3))
+    video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
+    video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
+    return self.video_processor.postprocess_video(video, output_type="np")
+
+  @classmethod
+  def _create_common_components(cls, config, vae_only=False, i2v=False):
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+
+    vae_spatial = getattr(config, "vae_spatial", -1)
+    total_devices = math.prod(devices_array.shape)
+
+    if vae_spatial <= 0:
+      dp_size = mesh.shape.get("data", 1)
+      if dp_size == -1 or dp_size == 0:
+          dp_size = 1
+      vae_spatial = (2 * total_devices) // dp_size
+
+    assert total_devices % vae_spatial == 0, f"total devices ({total_devices}) must be a multiple of vae_spatial ({vae_spatial})"
+
+    flat_devices = devices_array.flatten()
+    vae_devices_array = flat_devices.reshape(total_devices // vae_spatial, vae_spatial)
+
+    vae_mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
+    vae_mesh.vae_spatial_axis_name = "vae_spatial"
+    max_logging.log(f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') to support spatial sharding of {vae_spatial}.")
+
+    # logical axis rules for VAE encoding/decoding
+    vae_logical_axis_rules = (
+        ("activation_batch", "redundant"),
+        ("activation_length", "vae_spatial"),
+        ("activation_heads", None),
+        ("activation_kv_length", None),
+        ("embed", None),
+        ("heads", None),
+        ("norm", None),
+        ("conv_batch", "redundant"),
+        ("out_channels", "vae_spatial"),
+        ("conv_out", "vae_spatial")
+    )
+
+    rng = jax.random.key(config.seed)
+    rngs = nnx.Rngs(rng)
+
+    with vae_mesh:
+        wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=vae_mesh, rngs=rngs, config=config, vae_logical_axis_rules=vae_logical_axis_rules)
+
+    components = {
+        "vae": wan_vae, "vae_cache": vae_cache,
+        "devices_array": devices_array, "rngs": rngs, "mesh": mesh, "vae_mesh": vae_mesh,
+        "vae_logical_axis_rules": vae_logical_axis_rules,
+        "tokenizer": None, "text_encoder": None, "scheduler": None, "scheduler_state": None,
+        "image_processor": None,
+        "image_encoder": None,
+    }
+
+    if not vae_only:
+      components["tokenizer"] = cls.load_tokenizer(config=config)
+      components["text_encoder"] = cls.load_text_encoder(config=config)
+      components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
+      if i2v and config.model_name == "wan2.1":
+        components["image_processor"], components["image_encoder"] = cls.load_image_encoder(config)
+    return components
 
   @abstractmethod
   def _get_num_channel_latents(self) -> int:
     """Returns the number of input channels for the transformer."""
     pass
 
+  def _prepare_model_inputs_i2v(
+      self,
+      prompt: Union[str, List[str]],
+      image: Union[PIL.Image.Image, List[PIL.Image.Image]],
+      negative_prompt: Optional[Union[str, List[str]]] = None,
+      num_videos_per_prompt: int = 1,
+      max_sequence_length: int = 512,
+      prompt_embeds: Optional[jax.Array] = None,
+      negative_prompt_embeds: Optional[jax.Array] = None,
+      image_embeds: Optional[jax.Array] = None,
+      last_image: Optional[PIL.Image.Image] = None,
+  ):
+    if prompt is not None and isinstance(prompt, str):
+      prompt = [prompt]
+    batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
+    effective_batch_size = batch_size * num_videos_per_prompt
+
+    # 1. Encode Prompts
+    prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        num_videos_per_prompt=num_videos_per_prompt,
+        max_sequence_length=max_sequence_length,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
+    )
+
+    # 2. Encode Image (only for WAN 2.1 I2V which uses CLIP image embeddings)
+    # WAN 2.2 I2V does not use CLIP image embeddings, it uses VAE latent conditioning instead
+    transformer_dtype = self.config.activations_dtype
+
+    if self.config.model_name == "wan2.1":
+      # WAN 2.1 I2V: Use CLIP image encoder
+      if image_embeds is None:
+        images_to_encode = [image]
+        if last_image is None:
+          images_to_encode = [image]
+        else:
+          images_to_encode = [image, last_image]
+        image_embeds = self.encode_image(images_to_encode, num_videos_per_prompt=num_videos_per_prompt)
+        self.image_seq_len = image_embeds.shape[1]
+
+      if batch_size > 1:
+        image_embeds = jnp.tile(image_embeds, (batch_size, 1, 1))
+
+      image_embeds = image_embeds.astype(transformer_dtype)
+    else:
+      # WAN 2.2 I2V: No CLIP image embeddings, set to None or empty tensor
+      # The actual image conditioning happens via VAE latents in prepare_latents
+      image_embeds = None
+    prompt_embeds = prompt_embeds.astype(transformer_dtype)
+    if negative_prompt_embeds is not None:
+      negative_prompt_embeds = negative_prompt_embeds.astype(transformer_dtype)
+
+    # Use same sharding logic as T2V pipeline for consistent behavior
+    data_sharding = NamedSharding(self.mesh, P())
+    if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
+      data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
+
+    prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
+    negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
+    image_embeds = jax.device_put(image_embeds, data_sharding)
+
+    return prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size
+
   def _prepare_model_inputs(
-        self,
-        prompt: Union[str, List[str]] = None,
-        negative_prompt: Union[str, List[str]] = None,
-        height: int = 480,
-        width: int = 832,
-        num_frames: int = 81,
-        num_inference_steps: int = 50,
-        num_videos_per_prompt: Optional[int] = 1,
-        max_sequence_length: int = 512,
-        latents: jax.Array = None,
-        prompt_embeds: jax.Array = None,
-        negative_prompt_embeds: jax.Array = None,
-        vae_only: bool = False,
-    ):
+      self,
+      prompt: Union[str, List[str]] = None,
+      negative_prompt: Union[str, List[str]] = None,
+      height: int = 480,
+      width: int = 832,
+      num_frames: int = 81,
+      num_inference_steps: int = 50,
+      num_videos_per_prompt: Optional[int] = 1,
+      max_sequence_length: int = 512,
+      latents: jax.Array = None,
+      prompt_embeds: jax.Array = None,
+      negative_prompt_embeds: jax.Array = None,
+      vae_only: bool = False,
+  ):
     if not vae_only:
       if num_frames % self.vae_scale_factor_temporal != 1:
         max_logging.log(
@@ -612,8 +780,9 @@ class WanPipeline:
 
   @abstractmethod
   def __call__(self, **kwargs):
-        """Runs the inference pipeline."""
-        pass
+    """Runs the inference pipeline."""
+    pass
+
 
 @partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
 def transformer_forward_pass(
@@ -625,14 +794,21 @@ def transformer_forward_pass(
     prompt_embeds,
     do_classifier_free_guidance,
     guidance_scale,
+    encoder_hidden_states_image=None,
 ):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  noise_pred = wan_transformer(hidden_states=latents, timestep=timestep, encoder_hidden_states=prompt_embeds)
+  noise_pred = wan_transformer(
+      hidden_states=latents,
+      timestep=timestep,
+      encoder_hidden_states=prompt_embeds,
+      encoder_hidden_states_image=encoder_hidden_states_image,
+  )
   if do_classifier_free_guidance:
     bsz = latents.shape[0] // 2
-    noise_uncond = noise_pred[bsz:]
-    noise_pred = noise_pred[:bsz]
-    noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+    noise_cond = noise_pred[:bsz]  # First half = conditional
+    noise_uncond = noise_pred[bsz:]  # Second half = unconditional
+    noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+
     latents = latents[:bsz]
 
   return noise_pred, latents

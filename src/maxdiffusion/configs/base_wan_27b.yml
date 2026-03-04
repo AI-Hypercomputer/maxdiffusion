@@ -29,6 +29,7 @@ log_period: 100
 
 pretrained_model_name_or_path: 'Wan-AI/Wan2.2-T2V-A14B-Diffusers'
 model_name: wan2.2
+model_type: 'T2V'
 
 # Overrides the transformer from pretrained_model_name_or_path
 wan_transformer_pretrained_model_name_or_path: ''
@@ -74,14 +75,15 @@ attention_sharding_uniform: True
 dropout: 0.1
 
 flash_block_sizes: {
-  "block_q" : 1024,
-  "block_kv_compute" : 256,
-  "block_kv" : 1024,
-  "block_q_dkv" : 1024,
-  "block_kv_dkv" : 1024,
-  "block_kv_dkv_compute" : 256,
-  "block_q_dq" : 1024,
-  "block_kv_dq" : 1024
+  "block_q" : 512,
+  "block_kv_compute" : 512,
+  "block_kv" : 512,
+  "block_q_dkv" : 512,
+  "block_kv_dkv" : 512,
+  "block_kv_dkv_compute" : 512,
+  "block_q_dq" : 512,
+  "block_kv_dq" : 512,
+  "use_fused_bwd_kernel": False,
 }
 # Use on v6e
 # flash_block_sizes: {
@@ -138,7 +140,7 @@ hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
 skip_jax_distributed_system: False
 
 # Parallelism
-mesh_axes: ['data', 'fsdp', 'tensor']
+mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 
 # batch : batch dimension of data and activations
 # hidden :
@@ -153,30 +155,33 @@ mesh_axes: ['data', 'fsdp', 'tensor']
 # conv_in : conv.shape[2] weight
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
-                      ['batch', 'data'],
-                      ['activation_batch', 'data'],
-                      ['activation_length', 'fsdp'],
-                      
+                      ['batch', ['data', 'fsdp']],
+                      ['activation_batch', ['data', 'fsdp']],
+                      ['activation_self_attn_heads', ['context', 'tensor']], 
+                      ['activation_cross_attn_q_length', ['context', 'tensor']],
+                      ['activation_length', 'context'],
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
-                      ['embed','fsdp'],
+                      ['embed', ['context', 'fsdp']],
                       ['heads', 'tensor'],
                       ['norm', 'tensor'],
-                      ['conv_batch', ['data','fsdp']],
+                      ['conv_batch', ['data', 'context', 'fsdp']],
                       ['out_channels', 'tensor'],
-                      ['conv_out', 'fsdp'],
+                      ['conv_out', 'context'],
                     ]
-data_sharding: [['data', 'fsdp', 'tensor']]
+data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 
 # One axis for each parallelism type may hold a placeholder (-1)
 # value to auto-shard based on available slices and devices.
 # By default, product of the DCN axes should equal number of slices
 # and product of the ICI axes should equal number of devices per slice.
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
-dcn_fsdp_parallelism: -1
+dcn_fsdp_parallelism: 1
+dcn_context_parallelism: -1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_fsdp_parallelism: 1
+ici_context_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
 allow_split_physical_axes: False
@@ -296,7 +301,7 @@ guidance_scale_high: 4.0
 # The timestep threshold. If `t` is at or above this value,
 # the `high_noise_model` is considered as the required model.
 # timestep to switch between low noise and high noise transformer
-boundary_timestep: 875
+boundary_ratio: 0.875
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
@@ -312,12 +317,15 @@ lightning_repo: ""
 lightning_ckpt: ""
 
 # LoRA parameters
+enable_lora: False
 # Values are lists to support multiple LoRA loading during inference in the future.
 lora_config: {
-  lora_model_name_or_path: [],
-  weight_name: [],
-  adapter_name: [],
-  scale: [],
+  rank: [64],
+  lora_model_name_or_path: ["lightx2v/Wan2.2-Distill-Loras"],
+  high_noise_weight_name: ["wan2.2_t2v_A14b_high_noise_lora_rank64_lightx2v_4step_1217.safetensors"],
+  low_noise_weight_name: ["wan2.2_t2v_A14b_low_noise_lora_rank64_lightx2v_4step_1217.safetensors"],
+  adapter_name: ["wan22-distill-lora"],
+  scale: [1.0],
   from_pt: []
 }
 # Ex with values:

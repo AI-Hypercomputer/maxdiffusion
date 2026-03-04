@@ -36,6 +36,7 @@ AxisNames = tuple[str, ...]
 # Physical axis names for device meshes.
 DATA = "data"
 FSDP = "fsdp"
+CONTEXT = "context"
 TENSOR = "tensor"
 # Logical axis names for model parameters and activations.
 BATCH = "activation_batch"
@@ -66,19 +67,19 @@ WAN_MODEL = "Wan2.1"
 
 ### Common axis rules for ring attention ###
 RING_ATTENTION_AXIS_RULES = [
-        [SELF_ATTN_HEAD, None],
-        [SELF_ATTN_Q_LENGTH, FSDP],
-        [SELF_ATTN_KV_LENGTH, FSDP],
-        [CROSS_ATTN_HEAD, None],
-        [CROSS_ATTN_Q_LENGTH, FSDP],
-        [CROSS_ATTN_KV_LENGTH, FSDP],
+    [SELF_ATTN_HEAD, None],
+    [SELF_ATTN_Q_LENGTH, CONTEXT],
+    [SELF_ATTN_KV_LENGTH, CONTEXT],
+    [CROSS_ATTN_HEAD, None],
+    [CROSS_ATTN_Q_LENGTH, CONTEXT],
+    [CROSS_ATTN_KV_LENGTH, CONTEXT],
 ]
 
 SEQUENCE_PARALLEL_AXIS_RULES = [
-        [SELF_ATTN_HEAD, None],
-        [SELF_ATTN_Q_LENGTH, FSDP],
-        [SELF_ATTN_KV_LENGTH, None],
-        [CROSS_ATTN_HEAD, None],
-        [CROSS_ATTN_Q_LENGTH, FSDP],
-        [CROSS_ATTN_KV_LENGTH, None],
+    [SELF_ATTN_HEAD, None],
+    [SELF_ATTN_Q_LENGTH, CONTEXT],
+    [SELF_ATTN_KV_LENGTH, None],
+    [CROSS_ATTN_HEAD, None],
+    [CROSS_ATTN_Q_LENGTH, CONTEXT],
+    [CROSS_ATTN_KV_LENGTH, None],
 ]

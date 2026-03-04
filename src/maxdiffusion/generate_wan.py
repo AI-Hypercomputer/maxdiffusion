@@ -19,12 +19,17 @@ import os
 import subprocess
 from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
+from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
+from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
 from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
+from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.utils import export_to_video
+from maxdiffusion.utils.loading_utils import load_image
 from google.cloud import storage
 import flax
 from maxdiffusion.common_types import WAN2_1, WAN2_2
+from maxdiffusion.loaders.wan_lora_nnx_loader import Wan2_1NNXLoraLoader, Wan2_2NNXLoraLoader
 
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
@@ -63,10 +68,11 @@ def delete_file(file_path: str):
   else:
     max_logging.log(f"The file '{file_path}' does not exist.")
 
+
 def get_git_commit_hash():
   """Tries to get the current Git commit hash."""
   try:
-    commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
+    commit_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).strip().decode("utf-8")
     return commit_hash
   except subprocess.CalledProcessError:
     max_logging.log("Warning: 'git rev-parse HEAD' failed. Not running in a git repo?")
@@ -75,34 +81,64 @@ def get_git_commit_hash():
     max_logging.log("Warning: 'git' command not found.")
     return None
 
+
 jax.config.update("jax_use_shardy_partitioner", True)
+
 
 def call_pipeline(config, pipeline, prompt, negative_prompt):
   model_key = config.model_name
-  if model_key == WAN2_1:
-    return pipeline(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        height=config.height,
-        width=config.width,
-        num_frames=config.num_frames,
-        num_inference_steps=config.num_inference_steps,
-        guidance_scale=config.guidance_scale,
-    )
-  elif model_key == WAN2_2:
-    return pipeline(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        height=config.height,
-        width=config.width,
-        num_frames=config.num_frames,
-        num_inference_steps=config.num_inference_steps,
-        guidance_scale_low=config.guidance_scale_low,
-        guidance_scale_high=config.guidance_scale_high,
-        boundary=config.boundary_timestep,
-    )
-  else:
-    raise ValueError(f"Unsupported model_name in config: {model_key}")
+  model_type = config.model_type
+  if model_type == "I2V":
+    image = load_image(config.image_url)
+    if model_key == WAN2_1:
+      return pipeline(
+          prompt=prompt,
+          image=image,
+          negative_prompt=negative_prompt,
+          height=config.height,
+          width=config.width,
+          num_frames=config.num_frames,
+          num_inference_steps=config.num_inference_steps,
+          guidance_scale=config.guidance_scale,
+      )
+    elif model_key == WAN2_2:
+      return pipeline(
+          prompt=prompt,
+          image=image,
+          negative_prompt=negative_prompt,
+          height=config.height,
+          width=config.width,
+          num_frames=config.num_frames,
+          num_inference_steps=config.num_inference_steps,
+          guidance_scale_low=config.guidance_scale_low,
+          guidance_scale_high=config.guidance_scale_high,
+      )
+    else:
+      raise ValueError(f"Unsupported model_name for I2V in config: {model_key}")
+  elif model_type == "T2V":
+    if model_key == WAN2_1:
+      return pipeline(
+          prompt=prompt,
+          negative_prompt=negative_prompt,
+          height=config.height,
+          width=config.width,
+          num_frames=config.num_frames,
+          num_inference_steps=config.num_inference_steps,
+          guidance_scale=config.guidance_scale,
+      )
+    elif model_key == WAN2_2:
+      return pipeline(
+          prompt=prompt,
+          negative_prompt=negative_prompt,
+          height=config.height,
+          width=config.width,
+          num_frames=config.num_frames,
+          num_inference_steps=config.num_inference_steps,
+          guidance_scale_low=config.guidance_scale_low,
+          guidance_scale_high=config.guidance_scale_high,
+      )
+    else:
+      raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")
 
 
 def inference_generate_video(config, pipeline, filename_prefix=""):
@@ -127,13 +163,12 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
   return
 
 
-def run(config, pipeline=None, filename_prefix=""):
+def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   model_key = config.model_name
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
-    commit_hash = get_git_commit_hash()
     if commit_hash:
       writer.add_text("inference/git_commit_hash", commit_hash, global_step=0)
       max_logging.log(f"Git Commit Hash: {commit_hash}")
@@ -141,13 +176,57 @@ def run(config, pipeline=None, filename_prefix=""):
       max_logging.log("Could not retrieve Git commit hash.")
 
   if pipeline is None:
+    model_type = config.model_type
     if model_key == WAN2_1:
-      checkpoint_loader = WanCheckpointer2_1(config=config)
+      if model_type == "I2V":
+        checkpoint_loader = WanCheckpointerI2V_2_1(config=config)
+      else:
+        checkpoint_loader = WanCheckpointer2_1(config=config)
     elif model_key == WAN2_2:
-      checkpoint_loader = WanCheckpointer2_2(config=config)
+      if model_type == "I2V":
+        checkpoint_loader = WanCheckpointerI2V_2_2(config=config)
+      else:
+        checkpoint_loader = WanCheckpointer2_2(config=config)
     else:
       raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
+
+  # If LoRA is specified, inject layers and load weights.
+  if (
+      config.enable_lora
+      and hasattr(config, "lora_config")
+      and config.lora_config
+      and config.lora_config["lora_model_name_or_path"]
+  ):
+    if model_key == WAN2_1:
+      lora_loader = Wan2_1NNXLoraLoader()
+      lora_config = config.lora_config
+      for i in range(len(lora_config["lora_model_name_or_path"])):
+        pipeline = lora_loader.load_lora_weights(
+            pipeline,
+            lora_config["lora_model_name_or_path"][i],
+            transformer_weight_name=lora_config["weight_name"][i],
+            rank=lora_config["rank"][i],
+            scale=lora_config["scale"][i],
+            scan_layers=config.scan_layers,
+            dtype=config.weights_dtype,
+        )
+
+    if model_key == WAN2_2:
+      lora_loader = Wan2_2NNXLoraLoader()
+      lora_config = config.lora_config
+      for i in range(len(lora_config["lora_model_name_or_path"])):
+        pipeline = lora_loader.load_lora_weights(
+            pipeline,
+            lora_config["lora_model_name_or_path"][i],
+            high_noise_weight_name=lora_config["high_noise_weight_name"][i],
+            low_noise_weight_name=lora_config["low_noise_weight_name"][i],
+            rank=lora_config["rank"][i],
+            scale=lora_config["scale"][i],
+            scan_layers=config.scan_layers,
+            dtype=config.weights_dtype,
+        )
+
   s0 = time.perf_counter()
 
   # Using global_batch_size_to_train_on so not to create more config variables
@@ -162,7 +241,7 @@ def run(config, pipeline=None, filename_prefix=""):
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")
   max_logging.log(f"model path: {config.pretrained_model_name_or_path}")
-  max_logging.log("model type: t2v")
+  max_logging.log(f"model type: {config.model_type}")
   max_logging.log(f"hardware: {jax.devices()[0].platform}")
   max_logging.log(f"number of devices: {jax.device_count()}")
   max_logging.log(f"per_device_batch_size: {config.per_device_batch_size}")
@@ -209,10 +288,15 @@ def run(config, pipeline=None, filename_prefix=""):
 
 
 def main(argv: Sequence[str]) -> None:
+  commit_hash = get_git_commit_hash()
   pyconfig.initialize(argv)
-  flax.config.update("flax_always_shard_variable", False)
-  run(pyconfig.config)
+  try:
+    flax.config.update("flax_always_shard_variable", False)
+  except LookupError:
+    pass
+  run(pyconfig.config, commit_hash=commit_hash)
 
 
 if __name__ == "__main__":
-  app.run(main)
+  with transformer_engine_context():
+    app.run(main)

@@ -14,3 +14,4 @@
 
 from .lora_pipeline import StableDiffusionLoraLoaderMixin
 from .flux_lora_pipeline import FluxLoraLoaderMixin
+from .wan_lora_nnx_loader import Wan2_1NNXLoraLoader, Wan2_2NNXLoraLoader

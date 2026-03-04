@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" ConfigMixin base class and utilities."""
+"""ConfigMixin base class and utilities."""
 import dataclasses
 import functools
 import importlib
@@ -145,7 +145,7 @@ class ConfigMixin:
     """The only reason we overwrite `getattr` here is to gracefully deprecate accessing
     config attributes directly. See https://github.com/huggingface/diffusers/pull/3129
 
-    Tihs funtion is mostly copied from PyTorch's __getattr__ overwrite:
+    Tihs function is mostly copied from PyTorch's __getattr__ overwrite:
     https://pytorch.org/docs/stable/_modules/torch/nn/modules/module.html#Module
     """
 
@@ -376,11 +376,11 @@ class ConfigMixin:
     if os.path.isfile(pretrained_model_name_or_path):
       config_file = pretrained_model_name_or_path
     elif os.path.isdir(pretrained_model_name_or_path):
-      if os.path.isfile(os.path.join(pretrained_model_name_or_path, cls.config_name)):
+      if subfolder is not None and os.path.isfile(os.path.join(pretrained_model_name_or_path, subfolder, cls.config_name)):
+        config_file = os.path.join(pretrained_model_name_or_path, subfolder, cls.config_name)
+      elif os.path.isfile(os.path.join(pretrained_model_name_or_path, cls.config_name)):
         # Load from a PyTorch checkpoint
         config_file = os.path.join(pretrained_model_name_or_path, cls.config_name)
-      elif subfolder is not None and os.path.isfile(os.path.join(pretrained_model_name_or_path, subfolder, cls.config_name)):
-        config_file = os.path.join(pretrained_model_name_or_path, subfolder, cls.config_name)
       else:
         raise EnvironmentError(f"Error no file named {cls.config_name} found in directory {pretrained_model_name_or_path}.")
     else:
@@ -540,7 +540,7 @@ class ConfigMixin:
           f"{cls.config_name} configuration file."
       )
 
-    # 5. Give nice info if config attributes are initiliazed to default because they have not been passed
+    # 5. Give nice info if config attributes are initialized to default because they have not been passed
     passed_keys = set(init_dict.keys())
     if len(expected_keys - passed_keys) > 0:
       logger.info(f"{expected_keys - passed_keys} was not found in config. Values will be initialized to default values.")
@@ -611,7 +611,6 @@ class ConfigMixin:
         config_dict.pop(key)
 
     try:
-
       json_str = json.dumps(config_dict, indent=2, sort_keys=True, cls=CustomEncoder)
     except Exception as e:
       max_logging.log(f"Error serializing config to JSON: {e}")

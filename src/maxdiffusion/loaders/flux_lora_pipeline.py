@@ -22,7 +22,6 @@ from huggingface_hub.utils import validate_hf_hub_args
 
 
 class FluxLoraLoaderMixin(LoRABaseMixin):
-
   _lora_lodable_modules = ["transformer", "text_encoder"]
 
   def load_lora_weights(
@@ -98,7 +97,6 @@ class FluxLoraLoaderMixin(LoRABaseMixin):
   @classmethod
   @validate_hf_hub_args
   def lora_state_dict(cls, pretrained_model_name_or_path: str, **kwargs):
-
     cache_dir = kwargs.pop("cache_dir", None)
     force_download = kwargs.pop("force_download", False)
     proxies = kwargs.pop("proxies", None)

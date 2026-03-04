@@ -1,18 +1,18 @@
 """
- Copyright 2025 Google LLC
+Copyright 2025 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 import os
 import datetime
@@ -105,7 +105,6 @@ class WanTrainer:
 
   @staticmethod
   def calculate_tflops(pipeline):
-
     maxdiffusion_config = pipeline.config
     # Model configuration
     height = pipeline.config.height
@@ -164,7 +163,18 @@ class WanTrainer:
     data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding, "timesteps": data_sharding}
     return data_sharding
 
-  def load_dataset(self, mesh, is_training=True):
+  def load_dataset(self, mesh, pipeline=None, is_training=True):
+    """
+    Load dataset - supports both real tfrecord and synthetic data.
+
+    Args:
+        mesh: JAX mesh for sharding
+        pipeline: Optional WAN pipeline to extract dimensions from (for synthetic data)
+        is_training: Whether this is for training or evaluation
+
+    Returns:
+        Data iterator
+    """
     # Stages of training as described in the Wan 2.1 paper - https://arxiv.org/pdf/2503.20314
     # Image pre-training - txt2img 256px
     # Image-video joint training - stage 1. 256 px images and 192px 5 sec videos at fps=16
@@ -173,6 +183,21 @@ class WanTrainer:
     # prompt embeds shape: (1, 512, 4096)
     # For now, we will pass the same latents over and over
     # TODO - create a dataset
+
+    config = self.config
+
+    # If using synthetic data
+    if config.dataset_type == "synthetic":
+      return make_data_iterator(
+          config,
+          jax.process_index(),
+          jax.process_count(),
+          mesh,
+          config.global_batch_size_to_load,
+          pipeline=pipeline,  # Pass pipeline to extract dimensions
+          is_training=is_training,
+      )
+
     config = self.config
     if config.dataset_type != "tfrecord" and not config.cache_latents_text_encoder_outputs:
       raise ValueError(
@@ -210,8 +235,8 @@ class WanTrainer:
     return data_iterator
 
   def start_training(self):
-
-    pipeline, opt_state, step = self.checkpointer.load_checkpoint()
+    with nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      pipeline, opt_state, step = self.checkpointer.load_checkpoint()
     restore_args = {}
     if opt_state and step:
       restore_args = {"opt_state": opt_state, "step": step}
@@ -226,7 +251,7 @@ class WanTrainer:
       del pipeline.vae_cache
 
     mesh = pipeline.mesh
-    train_data_iterator = self.load_dataset(mesh, is_training=True)
+    train_data_iterator = self.load_dataset(mesh, pipeline=pipeline, is_training=True)
 
     # Load FlowMatch scheduler
     scheduler, scheduler_state = self.create_scheduler()
@@ -309,7 +334,8 @@ class WanTrainer:
         pretty_string = pprint.pformat(state_spec.opt_state, indent=4, width=60)
         max_logging.log(pretty_string)
         max_logging.log("------------------------------------------------")
-    max_utils.delete_pytree(params)
+    if self.config.hardware != "gpu":
+      max_utils.delete_pytree(params)
     data_shardings = self.get_data_shardings(mesh)
     eval_data_shardings = self.get_eval_data_shardings(mesh)
 
@@ -364,6 +390,7 @@ class WanTrainer:
         if self.config.enable_profiler and step == first_profiling_step:
           max_utils.activate_profiler(self.config)
         start_step_time = datetime.datetime.now()
+
         next_batch_future = executor.submit(load_next_batch, train_data_iterator, example_batch, self.config)
         with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(
             self.config.logical_axis_rules
@@ -405,7 +432,7 @@ class WanTrainer:
         max_logging.log(f"Saving final checkpoint for step {step}")
         self.checkpointer.save_checkpoint(self.config.max_train_steps - 1, pipeline, state.params)
         self.checkpointer.checkpoint_manager.wait_until_finished()
-      # load new state for trained tranformer
+      # load new state for trained transformer
       pipeline.transformer = nnx.merge(state.graphdef, state.params, state.rest_of_state)
       return pipeline
 
@@ -434,19 +461,21 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
     noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
 
-    model_pred = model(
-        hidden_states=noisy_latents,
-        timestep=timesteps,
-        encoder_hidden_states=encoder_hidden_states,
-        deterministic=False,
-        rngs=nnx.Rngs(dropout_rng),
-    )
+    with jax.named_scope("forward_pass"):
+      model_pred = model(
+          hidden_states=noisy_latents,
+          timestep=timesteps,
+          encoder_hidden_states=encoder_hidden_states,
+          deterministic=False,
+          rngs=nnx.Rngs(dropout_rng),
+      )
 
-    training_target = scheduler.training_target(latents, noise, timesteps)
-    training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
-    loss = (training_target - model_pred) ** 2
-    loss = loss * training_weight
-    loss = jnp.mean(loss)
+    with jax.named_scope("loss"):
+      training_target = scheduler.training_target(latents, noise, timesteps)
+      training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
+      loss = (training_target - model_pred) ** 2
+      loss = loss * training_weight
+      loss = jnp.mean(loss)
 
     return loss
 

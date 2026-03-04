@@ -227,7 +227,6 @@ class Transformer3DModel(nn.Module):
       encoder_hidden_states = self.caption_projection(encoder_hidden_states)
 
     if self.num_layers > 0:
-
       hidden_states = self.transformer_blocks(
           hidden_states,
           freqs_cis,

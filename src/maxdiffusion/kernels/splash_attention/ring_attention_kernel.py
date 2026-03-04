@@ -138,7 +138,7 @@ def _ring_attention_forward(
       kv_segment_ids_next = shift(segment_ids_current.kv)
       segment_ids_next = SegmentIds(segment_ids.q, kv_segment_ids_next)
     else:
-      segment_ids_next = segment_ids_current  
+      segment_ids_next = segment_ids_current
 
     out_curr, stats = splash_fwd_partial(
         local_fwd_mask_info,

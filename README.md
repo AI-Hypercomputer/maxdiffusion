@@ -14,21 +14,23 @@
  limitations under the License.
  -->
 
-[![Unit Tests](https://github.com/google/maxtext/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml)
+[![Unit Tests](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2026/01/29`**: Wan LoRA for inference is now supported
+- **`2026/01/15`**: Wan2.1 and Wan2.2 Img2vid generation is now supported
 - **`2025/11/11`**: Wan2.2 txt2vid generation is now supported
 - **`2025/10/10`**: Wan2.1 txt2vid training and generation is now supported.
 - **`2025/10/14`**: NVIDIA DGX Spark Flux support.
-- **`2025/8/14`**: LTX-Video img2vid generation is now supported.
-- **`2025/7/29`**: LTX-Video text2vid generation is now supported.
+- **`2025/08/14`**: LTX-Video img2vid generation is now supported.
+- **`2025/07/29`**: LTX-Video text2vid generation is now supported.
 - **`2025/04/17`**: Flux Finetuning.
 - **`2025/02/12`**: Flux LoRA for inference.
 - **`2025/02/08`**: Flux schnell & dev inference.
 - **`2024/12/12`**: Load multiple LoRAs for inference.
 - **`2024/10/22`**: LoRA support for Hyper SDXL.
-- **`2024/8/1`**: Orbax is the new default checkpointer. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
-- **`2024/7/20`**: Dreambooth training for Stable Diffusion 1.x,2.x is now supported.
+- **`2024/08/01`**: Orbax is the new default checkpointer. You can still use `pipeline.save_pretrained` after training to save in diffusers format.
+- **`2024/07/20`**: Dreambooth training for Stable Diffusion 1.x,2.x is now supported.
 
 # Overview
 
@@ -50,6 +52,8 @@ MaxDiffusion supports
 * Wan2.1 text2vid (training and inference).
 * Wan2.2 text2vid (inference).
 
+**Note on GPU Support:** GPU support is not actively maintained, but contributions are welcome
+
 
 # Table of Contents
 
@@ -67,14 +71,15 @@ MaxDiffusion supports
     - [SD 1.4](#stable-diffusion-14-training)
     - [Dreambooth](#dreambooth)
   - [Inference](#inference)
-    - [Wan2.1](#wan21)
-    - [Wan2.2](#wan22)
+    - [Wan](#wan-models)
     - [LTX-Video](#ltx-video)
     - [Flux](#flux)
       - [Fused Attention for GPU](#fused-attention-for-gpu)
     - [SDXL](#stable-diffusion-xl)
     - [SD 2 base](#stable-diffusion-2-base)
     - [SD 2.1](#stable-diffusion-21)
+    - [Wan LoRA](#wan-lora)
+    - [Flux LoRA](#flux-lora)
     - [Hyper SDXL LoRA](#hyper-sdxl-lora)
     - [Load Multiple LoRA](#load-multiple-lora)
     - [SDXL Lightning](#sdxl-lightning)
@@ -173,7 +178,7 @@ After installation completes, run the training script.
 
   ```bash
   BUCKET_NAME=my-bucket
-  gsutil -m cp -r $TFRECORDS_DATASET_DIR gs://$BUCKET_NAME/${TFRECORDS_DATASET_DIR##*/}
+  gcloud storage cp --recursive $TFRECORDS_DATASET_DIR gs://$BUCKET_NAME/${TFRECORDS_DATASET_DIR##*/}
   ```
 
   Now run the training command:
@@ -254,6 +259,20 @@ After installation completes, run the training script.
   - In Wan2.1, the ici_fsdp_parallelism axis is used for sequence parallelism, the ici_tensor_parallelism axis is used for head parallelism. 
     - You can enable both, keeping in mind that Wan2.1 has 40 heads and 40 must be evenly divisible by ici_tensor_parallelism.
     - For Sequence parallelism, the code pads the sequence length to evenly divide the sequence. Try out different ici_fsdp_parallelism numbers, but we find 2 and 4 to be the best right now.
+  - For use on GPU it is recommended to enable the cudnn_te_flash attention kernel for optimal performance.
+    - Best performance is achieved with the use of batch parallelism, which can be enabled by using the ici_fsdp_batch_parallelism axis. Note that this parallelism strategy does not support fractional batch sizes.
+    - ici_fsdp_batch_parallelism and ici_fsdp_parallelism can be combined to allow for fractional batch sizes. However, padding is not currently supported for the cudnn_te_flash attention kernel and it is therefore required that the sequence length is divisible by the number of devices in the ici_fsdp_parallelism axis.
+  - For benchmarking training performance on multiple data dimension input without downloading/re-processing the dataset, the synthetic data iterator is supported.
+    - Set dataset_type='synthetic' and synthetic_num_samples=null to enable the synthetic data iterator.
+    - The following overrides on data dimensions are supported:
+      - synthetic_override_height: 720
+      - synthetic_override_width: 1280
+      - synthetic_override_num_frames: 85
+      - synthetic_override_max_sequence_length: 512
+      - synthetic_override_text_embed_dim: 4096
+      - synthetic_override_num_channels_latents: 16
+      - synthetic_override_vae_scale_factor_spatial: 8
+      - synthetic_override_vae_scale_factor_temporal: 4
 
   You should eventually see a training run as:
 
@@ -279,7 +298,7 @@ After installation completes, run the training script.
 
   ### Deploying with XPK
 
-  This assummes the user has already created an xpk cluster, installed all dependencies and the also created the dataset from the step above. For getting started with MaxDiffusion and xpk see [this guide](docs/getting_started/run_maxdiffusion_via_xpk.md).
+  This assumes the user has already created an xpk cluster, installed all dependencies and the also created the dataset from the step above. For getting started with MaxDiffusion and xpk see [this guide](docs/getting_started/run_maxdiffusion_via_xpk.md).
   
   Using v5p-256 Then the command to run on xpk is as follows:
 
@@ -478,22 +497,48 @@ To generate images, run the following command:
   
   Add conditioning image path as conditioning_media_paths in the form of ["IMAGE_PATH"] along with other generation parameters in the ltx_video.yml file. Then follow same instruction as above.
 
-  ## Wan2.1
+  ## Wan Models
 
   Although not required, attaching an external disk is recommended as weights take up a lot of disk space. [Follow these instructions if you would like to attach an external disk](https://cloud.google.com/tpu/docs/attach-durable-block-storage).
 
-  ```bash
-  HF_HUB_CACHE=/mnt/disks/external_disk/maxdiffusion_hf_cache/
-  LIBTPU_INIT_ARGS="--xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_fuse_all_reduce=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_reduce=true" HF_HUB_ENABLE_HF_TRANSFER=1 python src/maxdiffusion/generate_wan.py   src/maxdiffusion/configs/base_wan_14b.yml   attention="flash"   num_inference_steps=50   num_frames=81   width=1280   height=720   jax_cache_dir=gs://jfacevedo-maxdiffusion/jax_cache/   per_device_batch_size=.125   ici_data_parallelism=2   ici_fsdp_parallelism=2   flow_shift=5.0   enable_profiler=True   run_name=wan-inference-testing-720p   output_dir=gs:/jfacevedo-maxdiffusion   fps=16   flash_min_seq_length=0   flash_block_sizes='{"block_q" : 3024, "block_kv_compute" : 1024, "block_kv" : 2048, "block_q_dkv": 3024, "block_kv_dkv" : 2048, "block_kv_dkv_compute" : 2048, "block_q_dq" : 3024, "block_kv_dq" : 2048 }' seed=118445
-  ```
-  ## Wan2.2
+  Supports both Text2Vid and Img2Vid pipelines.
 
-  Although not required, attaching an external disk is recommended as weights take up a lot of disk space. [Follow these instructions if you would like to attach an external disk](https://cloud.google.com/tpu/docs/attach-durable-block-storage).
+  The following command will run Wan2.1 T2V:
 
   ```bash
-  HF_HUB_CACHE=/mnt/disks/external_disk/maxdiffusion_hf_cache/
-  LIBTPU_INIT_ARGS="--xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_fuse_all_reduce=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_reduce=true" HF_HUB_ENABLE_HF_TRANSFER=1 python src/maxdiffusion/generate_wan.py   src/maxdiffusion/configs/base_wan_27b.yml   attention="flash"   num_inference_steps=50   num_frames=81   width=1280   height=720   jax_cache_dir=gs://jfacevedo-maxdiffusion/jax_cache/   per_device_batch_size=.125   ici_data_parallelism=2   ici_fsdp_parallelism=2   flow_shift=5.0   enable_profiler=True   run_name=wan-inference-testing-720p   output_dir=gs:/jfacevedo-maxdiffusion   fps=16   flash_min_seq_length=0   flash_block_sizes='{"block_q" : 3024, "block_kv_compute" : 1024, "block_kv" : 2048, "block_q_dkv": 3024, "block_kv_dkv" : 2048, "block_kv_dkv_compute" : 2048, "block_q_dq" : 3024, "block_kv_dq" : 2048 }' seed=118445
+  HF_HUB_CACHE=/mnt/disks/external_disk/maxdiffusion_hf_cache/ \
+  LIBTPU_INIT_ARGS="--xla_tpu_enable_async_collective_fusion=true \
+  --xla_tpu_enable_async_collective_fusion_fuse_all_reduce=true \
+  --xla_tpu_enable_async_collective_fusion_multiple_steps=true \
+  --xla_tpu_overlap_compute_collective_tc=true \
+  --xla_enable_async_all_reduce=true" \
+  HF_HUB_ENABLE_HF_TRANSFER=1 \
+  python src/maxdiffusion/generate_wan.py \
+  src/maxdiffusion/configs/base_wan_14b.yml \
+  attention="flash" \
+  num_inference_steps=50 \
+  num_frames=81 \
+  width=1280 \
+  height=720 \
+  jax_cache_dir=gs://jfacevedo-maxdiffusion/jax_cache/ \
+  per_device_batch_size=.125 \
+  ici_data_parallelism=2 \
+  ici_context_parallelism=2 \
+  flow_shift=5.0 \
+  enable_profiler=True \
+  run_name=wan-inference-testing-720p \
+  output_dir=gs:/jfacevedo-maxdiffusion \
+  fps=16 \
+  flash_min_seq_length=0 \
+  flash_block_sizes='{"block_q" : 3024, "block_kv_compute" : 1024, "block_kv" : 2048, "block_q_dkv": 3024, "block_kv_dkv" : 2048, "block_kv_dkv_compute" : 2048, "block_q_dq" : 3024, "block_kv_dq" : 2048 }' \
+  seed=118445
   ```
+
+  To run other Wan model inference pipelines, change the config file in the command above:
+
+  * For Wan2.1 I2V, use `base_wan_i2v_14b.yml`.
+  * For Wan2.2 T2V, use `base_wan_27b.yml`.
+  * For Wan2.2 I2V, use `base_wan_i2v_27b.yml`.
 
   ## Flux
 
@@ -545,6 +590,33 @@ To generate images, run the following command:
   ```bash
   NVTE_FUSED_ATTN=1 HF_HUB_ENABLE_HF_TRANSFER=1 python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt='A cute corgi lives in a house made out of sushi, anime' num_inference_steps=28 split_head_dim=True per_device_batch_size=1 attention="cudnn_flash_te" hardware=gpu
   ```
+  ## Wan LoRA
+
+  Disclaimer: not all LoRA formats have been tested. Currently supports ComfyUI and AI Toolkit formats. If there is a specific LoRA that doesn't load, please let us know.
+
+  First create a copy of the relevant config file eg: `src/maxdiffusion/configs/base_wan_{*}.yml`. Update the prompt and LoRA details in the config. Make sure to set `enable_lora: True`. Then run the following command:
+
+  ```bash
+  HF_HUB_CACHE=/mnt/disks/external_disk/maxdiffusion_hf_cache/ \
+  LIBTPU_INIT_ARGS="--xla_tpu_enable_async_collective_fusion=true \
+  --xla_tpu_enable_async_collective_fusion_fuse_all_reduce=true \
+  --xla_tpu_enable_async_collective_fusion_multiple_steps=true \
+  --xla_tpu_overlap_compute_collective_tc=true \
+  --xla_enable_async_all_reduce=true" \
+  HF_HUB_ENABLE_HF_TRANSFER=1 \
+  python src/maxdiffusion/generate_wan.py \
+  src/maxdiffusion/configs/base_wan_i2v_14b.yml \   # --> Change to your copy
+  jax_cache_dir=gs://jfacevedo-maxdiffusion/jax_cache/ \
+  per_device_batch_size=.125 \
+  ici_data_parallelism=2 \
+  ici_context_parallelism=2 \
+  run_name=wan-lora-inference-testing-720p \
+  output_dir=gs:/jfacevedo-maxdiffusion \
+  seed=118445 \
+  enable_lora=True \
+  ```
+
+  Loading multiple LoRAs is supported as well.
 
   ## Flux LoRA
 
@@ -643,5 +715,4 @@ This script will automatically format your code with `pyink` and help you identi
 
 
 The full suite of -end-to end tests is in `tests` and `src/maxdiffusion/tests`. We run them with a nightly cadance.
-
 

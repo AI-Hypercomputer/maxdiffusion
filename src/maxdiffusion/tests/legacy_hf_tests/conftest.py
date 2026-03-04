@@ -31,14 +31,14 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 def pytest_addoption(parser):
-    from maxdiffusion.utils.testing_utils import pytest_addoption_shared
+  from maxdiffusion.utils.testing_utils import pytest_addoption_shared
 
-    pytest_addoption_shared(parser)
+  pytest_addoption_shared(parser)
 
 
 def pytest_terminal_summary(terminalreporter):
-    from maxdiffusion.utils.testing_utils import pytest_terminal_summary_main
+  from maxdiffusion.utils.testing_utils import pytest_terminal_summary_main
 
-    make_reports = terminalreporter.config.getoption("--make-reports")
-    if make_reports:
-        pytest_terminal_summary_main(terminalreporter, id=make_reports)
+  make_reports = terminalreporter.config.getoption("--make-reports")
+  if make_reports:
+    pytest_terminal_summary_main(terminalreporter, id=make_reports)

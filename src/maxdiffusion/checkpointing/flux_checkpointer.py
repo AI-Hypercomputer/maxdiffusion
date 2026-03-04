@@ -1,18 +1,18 @@
 """
- Copyright 2024 Google LLC
+Copyright 2024 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 from abc import ABC
 from contextlib import nullcontext
@@ -67,7 +67,6 @@ class FluxCheckpointer(ABC):
     )
 
   def _create_optimizer(self, config, learning_rate):
-
     learning_rate_scheduler = max_utils.create_learning_rate_schedule(
         learning_rate, config.learning_rate_schedule_steps, config.warmup_steps_fraction, config.max_train_steps
     )
@@ -109,7 +108,6 @@ class FluxCheckpointer(ABC):
     return flux_state, state_mesh_shardings, learning_rate_scheduler
 
   def create_vae_state(self, pipeline, params, checkpoint_item_name, is_training=False):
-
     # Currently VAE training is not supported.
     weights_init_fn = functools.partial(pipeline.vae.init_weights, rng=self.rng)
     return max_utils.setup_initial_state(
@@ -163,7 +161,6 @@ class FluxCheckpointer(ABC):
     self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
 
   def load_params(self, step=None):
-
     self.checkpoint_format = _CHECKPOINT_FORMAT_ORBAX
 
   def load_flux_configs_from_orbax(self, step):
@@ -243,7 +240,6 @@ class FluxCheckpointer(ABC):
     return pipeline, params
 
   def load_checkpoint(self, step=None, scheduler_class=None):
-
     model_configs = self.load_flux_configs_from_orbax(step)
 
     pipeline, params = None, {}

@@ -1,17 +1,17 @@
 """
- Copyright 2025 Google LLC
+Copyright 2025 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 """
 
 import json
@@ -23,6 +23,7 @@ from .. import max_logging
 import orbax.checkpoint as ocp
 from etils import epath
 from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
+
 
 class WanCheckpointer2_2(WanCheckpointer):
 
@@ -38,7 +39,9 @@ class WanCheckpointer2_2(WanCheckpointer):
 
     # Handle low_noise_transformer
     low_noise_transformer_metadata = metadatas.low_noise_transformer_state
-    abstract_tree_structure_low_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, low_noise_transformer_metadata)
+    abstract_tree_structure_low_params = jax.tree_util.tree_map(
+        ocp.utils.to_shape_dtype_struct, low_noise_transformer_metadata
+    )
     low_params_restore = ocp.args.PyTreeRestore(
         restore_args=jax.tree.map(
             lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
@@ -48,7 +51,9 @@ class WanCheckpointer2_2(WanCheckpointer):
 
     # Handle high_noise_transformer
     high_noise_transformer_metadata = metadatas.high_noise_transformer_state
-    abstract_tree_structure_high_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, high_noise_transformer_metadata)
+    abstract_tree_structure_high_params = jax.tree_util.tree_map(
+        ocp.utils.to_shape_dtype_struct, high_noise_transformer_metadata
+    )
     high_params_restore = ocp.args.PyTreeRestore(
         restore_args=jax.tree.map(
             lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
@@ -67,10 +72,18 @@ class WanCheckpointer2_2(WanCheckpointer):
         ),
     )
     max_logging.log(f"restored checkpoint {restored_checkpoint.keys()}")
-    max_logging.log(f"restored checkpoint low_noise_transformer_state {restored_checkpoint.low_noise_transformer_state.keys()}")
-    max_logging.log(f"restored checkpoint high_noise_transformer_state {restored_checkpoint.high_noise_transformer_state.keys()}")
-    max_logging.log(f"optimizer found in low_noise checkpoint {'opt_state' in restored_checkpoint.low_noise_transformer_state.keys()}")
-    max_logging.log(f"optimizer found in high_noise checkpoint {'opt_state' in restored_checkpoint.high_noise_transformer_state.keys()}")
+    max_logging.log(
+        f"restored checkpoint low_noise_transformer_state {restored_checkpoint.low_noise_transformer_state.keys()}"
+    )
+    max_logging.log(
+        f"restored checkpoint high_noise_transformer_state {restored_checkpoint.high_noise_transformer_state.keys()}"
+    )
+    max_logging.log(
+        f"optimizer found in low_noise checkpoint {'opt_state' in restored_checkpoint.low_noise_transformer_state.keys()}"
+    )
+    max_logging.log(
+        f"optimizer found in high_noise checkpoint {'opt_state' in restored_checkpoint.high_noise_transformer_state.keys()}"
+    )
     max_logging.log(f"optimizer state saved in attribute self.opt_state {self.opt_state}")
     return restored_checkpoint, step
 

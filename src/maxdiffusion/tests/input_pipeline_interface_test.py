@@ -1,25 +1,28 @@
 """
- Copyright 2024 Google LLC
+Copyright 2024 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 """
 
 import os
+import math
 from functools import partial
+from types import SimpleNamespace
 import pathlib
 import shutil
 import subprocess
 import unittest
+import pytest
 from absl.testing import absltest
 import numpy as np
 import tensorflow as tf
@@ -34,6 +37,7 @@ from maxdiffusion.input_pipeline.input_pipeline_interface import (
     make_data_iterator,
     make_dreambooth_train_iterator,
 )
+from maxdiffusion.input_pipeline.synthetic_data_iterator import make_synthetic_iterator
 
 
 from skimage.metrics import structural_similarity as ssim
@@ -69,7 +73,6 @@ class InputPipelineInterface(unittest.TestCase):
     InputPipelineInterface.dummy_data = {}
 
   def test_make_dreambooth_train_iterator(self):
-
     instance_class_gcs_dir = "gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/instance_class"
     class_class_gcs_dir = "gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/class_class"
     local_dir = "/tmp/"
@@ -134,6 +137,9 @@ class InputPipelineInterface(unittest.TestCase):
     cleanup(instance_class_local_dir)
     cleanup(class_class_local_dir)
 
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_pokemon_hf_iterator(self):
     pyconfig.initialize(
         [
@@ -237,6 +243,9 @@ class InputPipelineInterface(unittest.TestCase):
     assert data["input_ids"].shape == (device_count, 2, 77)
     assert data["pixel_values"].shape == (device_count, 3, config.resolution, config.resolution)
 
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_pokemon_tf_iterator_cache(self):
     pyconfig.initialize(
         [
@@ -299,6 +308,9 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
     )
 
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_pokemon_iterator_no_cache(self):
     pyconfig.initialize(
         [
@@ -431,6 +443,114 @@ class InputPipelineInterface(unittest.TestCase):
         config.resolution // vae_scale_factor,
     )
 
+  def test_make_synthetic_iterator_wan(self):
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            "per_device_batch_size=1",
+        ],
+        unittest=True,
+    )
+    pyconfig._config.keys["synthetic_override_height"] = 720
+    pyconfig._config.keys["synthetic_override_width"] = 1280
+    pyconfig._config.keys["synthetic_override_num_frames"] = 121
+    pyconfig._config.keys["synthetic_num_samples"] = None
+    config = pyconfig.config
+
+    cleanup(config.dataset_save_location)
+
+    global_batch_size = config.per_device_batch_size * jax.device_count()
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+
+    # Create a dummy pipeline with necessary attributes
+    dummy_pipeline = SimpleNamespace()
+    dummy_pipeline.transformer = SimpleNamespace()
+    dummy_pipeline.transformer.config = SimpleNamespace()
+    dummy_pipeline.transformer.config.rope_max_seq_len = 512
+    dummy_pipeline.transformer.config.text_dim = 4096
+    dummy_pipeline.transformer.config.in_channels = 16
+    dummy_pipeline.vae_scale_factor_spatial = 8
+    dummy_pipeline.vae_scale_factor_temporal = 4
+
+    synthetic_iterator = make_synthetic_iterator(
+        config, mesh, int(global_batch_size), pipeline=dummy_pipeline, is_training=False
+    )
+    data = next(synthetic_iterator)
+    device_count = jax.device_count()
+
+    num_latent_frames = (121 - 1) // dummy_pipeline.vae_scale_factor_temporal + 1
+    latent_height = config.synthetic_override_height // dummy_pipeline.vae_scale_factor_spatial
+    latent_width = config.synthetic_override_width // dummy_pipeline.vae_scale_factor_spatial
+
+    assert data["latents"].shape == (
+        device_count,
+        dummy_pipeline.transformer.config.in_channels,
+        num_latent_frames,
+        latent_height,
+        latent_width,
+    )
+    assert data["encoder_hidden_states"].shape == (
+        device_count,
+        dummy_pipeline.transformer.config.rope_max_seq_len,
+        dummy_pipeline.transformer.config.text_dim,
+    )
+    assert data["timesteps"].shape == (device_count,)
+
+  def test_make_synthetic_iterator_flux(self):
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_flux_dev.yml"),
+            "per_device_batch_size=1",
+            "resolution=512",
+            "max_sequence_length=512",
+        ],
+        unittest=True,
+    )
+    pyconfig._config.keys["synthetic_num_samples"] = None
+    config = pyconfig.config
+
+    cleanup(config.dataset_save_location)
+
+    global_batch_size = config.per_device_batch_size * jax.device_count()
+    devices_array = max_utils.create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+
+    # Create a dummy pipeline with necessary attributes
+    dummy_pipeline = SimpleNamespace()
+    dummy_pipeline.text_encoder = SimpleNamespace()
+    dummy_pipeline.text_encoder.config = SimpleNamespace()
+    dummy_pipeline.text_encoder_2 = SimpleNamespace()
+    dummy_pipeline.text_encoder_2.config = SimpleNamespace()
+    dummy_pipeline.text_encoder.config.projection_dim = 768
+    dummy_pipeline.text_encoder_2.config.d_model = 4096
+    dummy_pipeline.vae_scale_factor = 8
+
+    synthetic_iterator = make_synthetic_iterator(
+        config, mesh, int(global_batch_size), pipeline=dummy_pipeline, is_training=False
+    )
+    data = next(synthetic_iterator)
+    device_count = jax.device_count()
+
+    latent_resolution = math.ceil(config.resolution // (dummy_pipeline.vae_scale_factor * 2))
+    latent_seq_len = latent_resolution**2
+    packed_latent_dim = 64
+
+    assert data["pixel_values"].shape == (device_count, latent_seq_len, packed_latent_dim)
+    assert data["input_ids"].shape == (device_count, config.max_sequence_length, 3)
+    assert data["text_embeds"].shape == (
+        device_count,
+        config.max_sequence_length,
+        dummy_pipeline.text_encoder_2.config.d_model,
+    )
+    assert data["prompt_embeds"].shape == (device_count, dummy_pipeline.text_encoder.config.projection_dim)
+    assert data["img_ids"].shape == (device_count, latent_seq_len, 3)
+
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_laion_grain_iterator(self):
     try:
       subprocess.check_output(
@@ -487,6 +607,9 @@ class InputPipelineInterface(unittest.TestCase):
         8,
     )
 
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_make_laion_tfrecord_iterator(self):
     pyconfig.initialize(
         [
@@ -547,6 +670,9 @@ class InputPipelineInterface(unittest.TestCase):
         8,
     )
 
+  @pytest.mark.skip(
+      "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
+  )
   def test_tfrecord(self):
     """Validate latents match a deterministic output image"""
 

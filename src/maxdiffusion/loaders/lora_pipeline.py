@@ -134,7 +134,6 @@ class StableDiffusionLoraLoaderMixin(LoRABaseMixin):
 
   @classmethod
   def make_lora_interceptor(cls, params, rank, network_alphas, adapter_name):
-
     network_alphas_for_interceptor = {}
 
     unet_lora_keys = flax.traverse_util.flatten_dict(params["unet"]).keys()

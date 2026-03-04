@@ -950,7 +950,8 @@ class AutoencoderKLWanCache:
         def _count_conv3d(m):
             count = 0
             for _, value in nnx.graph.iter_graph([m]):
-                if isinstance(value, WanCausalConv3d): count += 1
+                if isinstance(value, WanCausalConv3d):
+                  count += 1
             return count
         self._conv_num = _count_conv3d(self.module.decoder)
         self._enc_conv_num = _count_conv3d(self.module.encoder)

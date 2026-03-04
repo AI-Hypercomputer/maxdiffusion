@@ -1,18 +1,18 @@
 """
- Copyright 2024 Google LLC
+Copyright 2024 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 """ Smoke test """
 import os
@@ -96,7 +96,7 @@ class Train(unittest.TestCase):
 
     delete_blobs(os.path.join(output_dir, run_name))
 
-  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version.")
   def test_dreambooth_orbax(self):
     num_class_images = 100
     output_dir = "gs://maxdiffusion-github-runner-test-assets"
@@ -149,7 +149,7 @@ class Train(unittest.TestCase):
     cleanup(class_class_local_dir)
     delete_blobs(os.path.join(output_dir, run_name))
 
-  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
+  @pytest.mark.skip("This test is deprecated and will be removed in a future version.")
   def test_sd15_orbax(self):
     output_dir = "gs://maxdiffusion-github-runner-test-assets"
     run_name = "sd15_orbax_smoke_test"

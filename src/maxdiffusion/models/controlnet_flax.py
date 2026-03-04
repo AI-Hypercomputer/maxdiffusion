@@ -427,7 +427,7 @@ class FlaxControlNetModel(nn.Module, FlaxModelMixin, ConfigMixin):
     # 4. mid
     sample = self.mid_block(sample, t_emb, encoder_hidden_states, deterministic=not train)
 
-    # 5. contronet blocks
+    # 5. ControlNet blocks
     controlnet_down_block_res_samples = ()
     for down_block_res_sample, controlnet_block in zip(down_block_res_samples, self.controlnet_down_blocks):
       down_block_res_sample = controlnet_block(down_block_res_sample)

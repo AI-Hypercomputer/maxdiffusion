@@ -1,18 +1,18 @@
 """
- Copyright 2025 Google LLC
+Copyright 2025 Google LLC
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-      https://www.apache.org/licenses/LICENSE-2.0
+     https://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- """
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 import os
 import functools
@@ -211,7 +211,6 @@ class WanVaeTest(unittest.TestCase):
     assert np.allclose(output_np, torch_output_np) is True
 
   def test_zero_padded_conv(self):
-
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)
 
@@ -267,7 +266,7 @@ class WanVaeTest(unittest.TestCase):
       # channels is always last here
       input_shape = (batch, t, h, w, dim)
       dummy_input = jnp.ones(input_shape)
-      output = wan_resample(dummy_input)
+      output, _, _ = wan_resample(dummy_input)
       assert output.shape == (batch, t, h // 2, w // 2, dim)
 
   def test_3d_conv(self):
@@ -348,7 +347,7 @@ class WanVaeTest(unittest.TestCase):
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
       wan_residual_block = WanResidualBlock(in_dim=in_dim, out_dim=out_dim, rngs=rngs, mesh=mesh)
       dummy_input = jnp.ones(input_shape)
-      dummy_output = wan_residual_block(dummy_input)
+      dummy_output, _, _ = wan_residual_block(dummy_input)
       assert dummy_output.shape == expected_output_shape
       # --- Test Case 1: different in/out dim ---
       in_dim = 96
@@ -357,7 +356,7 @@ class WanVaeTest(unittest.TestCase):
 
       wan_residual_block = WanResidualBlock(in_dim=in_dim, out_dim=out_dim, rngs=rngs, mesh=mesh)
       dummy_input = jnp.ones(input_shape)
-      dummy_output = wan_residual_block(dummy_input)
+      dummy_output, _, _ = wan_residual_block(dummy_input)
       assert dummy_output.shape == expected_output_shape
 
   def test_wan_attention(self):
@@ -372,7 +371,7 @@ class WanVaeTest(unittest.TestCase):
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       wan_attention = WanAttentionBlock(dim=dim, rngs=rngs)
       dummy_input = jnp.ones(input_shape)
-      output = wan_attention(dummy_input)
+      output, _, _ = wan_attention(dummy_input)
       assert output.shape == input_shape
 
   def test_wan_midblock(self):
@@ -397,7 +396,7 @@ class WanVaeTest(unittest.TestCase):
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
       wan_midblock = WanMidBlock(dim=dim, rngs=rngs, mesh=mesh)
       dummy_input = jnp.ones(input_shape)
-      output = wan_midblock(dummy_input)
+      output, _, _ = wan_midblock(dummy_input)
       assert output.shape == input_shape
 
   def test_wan_decode(self):
@@ -523,11 +522,11 @@ class WanVaeTest(unittest.TestCase):
     params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), params)
     wan_vae = nnx.merge(graphdef, params)
 
-    p_vae_encode = jax.jit(functools.partial(vae_encode, wan_vae=wan_vae, vae_cache=vae_cache, key=key))
+    p_vae_encode = functools.partial(vae_encode, wan_vae=wan_vae, vae_cache=vae_cache, key=key)
     original_video_shape = original_video.shape
     latent = p_vae_encode(original_video)
 
-    jitted_decode = jax.jit(functools.partial(wan_vae.decode, feat_cache=vae_cache, return_dict=False))
+    jitted_decode = functools.partial(wan_vae.decode, feat_cache=vae_cache, return_dict=False)
     video = jitted_decode(latent)[0]
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
     assert video.shape == original_video_shape

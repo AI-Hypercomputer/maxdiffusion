@@ -23,8 +23,10 @@ import jax
 import jax.numpy as jnp
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 
+
 class WanPipeline2_1(WanPipeline):
   """Pipeline for WAN 2.1 with a single transformer."""
+
   def __init__(self, config: HyperParameters, transformer: Optional[WanModel], **kwargs):
     super().__init__(config=config, **kwargs)
     self.transformer = transformer
@@ -41,7 +43,7 @@ class WanPipeline2_1(WanPipeline):
             rngs=common_components["rngs"],
             config=config,
             restored_checkpoint=restored_checkpoint,
-            subfolder="transformer"
+            subfolder="transformer",
         )
 
         pipeline = cls(
@@ -62,7 +64,7 @@ class WanPipeline2_1(WanPipeline):
 
   @classmethod
   def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
-    pipeline , transformer = cls._load_and_init(config, None, vae_only, load_transformer)
+    pipeline, transformer = cls._load_and_init(config, None, vae_only, load_transformer)
     pipeline.transformer = cls.quantize_transformer(config, transformer, pipeline, pipeline.mesh)
     return pipeline
 
@@ -75,20 +77,20 @@ class WanPipeline2_1(WanPipeline):
     return self.transformer.config.in_channels
 
   def __call__(
-    self,
-    prompt: Union[str, List[str]] = None,
-    negative_prompt: Union[str, List[str]] = None,
-    height: int = 480,
-    width: int = 832,
-    num_frames: int = 81,
-    num_inference_steps: int = 50,
-    guidance_scale: float = 5.0,
-    num_videos_per_prompt: Optional[int] = 1,
-    max_sequence_length: int = 512,
-    latents: Optional[jax.Array] = None,
-    prompt_embeds: Optional[jax.Array] = None,
-    negative_prompt_embeds: Optional[jax.Array] = None,
-    vae_only: bool = False,
+      self,
+      prompt: Union[str, List[str]] = None,
+      negative_prompt: Union[str, List[str]] = None,
+      height: int = 480,
+      width: int = 832,
+      num_frames: int = 81,
+      num_inference_steps: int = 50,
+      guidance_scale: float = 5.0,
+      num_videos_per_prompt: Optional[int] = 1,
+      max_sequence_length: int = 512,
+      latents: Optional[jax.Array] = None,
+      prompt_embeds: Optional[jax.Array] = None,
+      negative_prompt_embeds: Optional[jax.Array] = None,
+      vae_only: bool = False,
   ):
     latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
         prompt,
@@ -126,6 +128,7 @@ class WanPipeline2_1(WanPipeline):
       )
       latents = self._denormalize_latents(latents)
     return self._decode_latents_to_video(latents)
+
 
 def run_inference_2_1(
     graphdef,

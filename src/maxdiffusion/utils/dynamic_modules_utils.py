@@ -21,15 +21,13 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Union
 from urllib import request
 
-from huggingface_hub import HfFolder, hf_hub_download, model_info
-import huggingface_hub
+from huggingface_hub import get_token, hf_hub_download, model_info
 from packaging import version
-
-cached_download = None
 
 from .. import __version__
 from . import DIFFUSERS_DYNAMIC_MODULE_NAME, HF_MODULES_CACHE, logging
@@ -41,24 +39,6 @@ COMMUNITY_PIPELINES_URL = (
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
-
-# https://github.com/huggingface/huggingface_hub/releases/tag/v0.26.0
-# `cached_download(), url_to_filename(), filename_to_url() methods are now completely removed.
-# From now on, you will have to use hf_hub_download() to benefit from the new cache layout.`
-if hasattr(huggingface_hub, "__version__"):
-  current_version = version.parse(huggingface_hub.__version__)
-  target_version = version.parse("0.26.0")
-
-  if current_version < target_version:
-    try:
-      from huggingface_hub import cached_download
-
-    except ImportError:
-      logger.error(
-          f"huggingface_hub version {current_version} is below 0.26.0, but 'cached_download' could not be imported. It might have been removed or deprecated in this version as well."
-      )
-else:
-  logger.error("Could not determine huggingface_hub version. Unable to conditionally import 'cached_download'.")
 
 
 def get_diffusers_versions():
@@ -303,15 +283,17 @@ def get_cached_module_file(
     # community pipeline on GitHub
     github_url = COMMUNITY_PIPELINES_URL.format(revision=revision, pipeline=pretrained_model_name_or_path)
     try:
-      resolved_module_file = cached_download(
-          github_url,
-          cache_dir=cache_dir,
-          force_download=force_download,
-          proxies=proxies,
-          resume_download=resume_download,
-          local_files_only=local_files_only,
-          use_auth_token=False,
-      )
+      # Given that cached download has been removed, try using just urlopen
+      fd, resolved_module_file = tempfile.mkstemp(dir=cache_dir)
+      try:
+        response = request.urlopen(github_url)
+        with os.fdopen(fd, "wb") as f:
+          f.write(response.read())
+      except Exception:
+        os.remove(resolved_module_file)
+        raise EnvironmentError(
+            f"Failed to download community pipeline from {github_url}. Please check if the url is correct."
+        )
       submodule = "git"
       module_file = pretrained_model_name_or_path + ".py"
     except EnvironmentError:
@@ -328,7 +310,7 @@ def get_cached_module_file(
           proxies=proxies,
           resume_download=resume_download,
           local_files_only=local_files_only,
-          use_auth_token=use_auth_token,
+          token=use_auth_token,
       )
       submodule = os.path.join("local", "--".join(pretrained_model_name_or_path.split("/")))
     except EnvironmentError:
@@ -356,7 +338,7 @@ def get_cached_module_file(
     if isinstance(use_auth_token, str):
       token = use_auth_token
     elif use_auth_token is True:
-      token = HfFolder.get_token()
+      token = get_token()
     else:
       token = None
 

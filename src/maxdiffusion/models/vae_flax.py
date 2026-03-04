@@ -21,8 +21,8 @@ from typing import Tuple
 import flax
 import flax.linen as nn
 import jax
-import jax.numpy as jnp
 from jax import tree_util
+import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
 
 from ..configuration_utils import ConfigMixin, flax_register_to_config
@@ -76,7 +76,6 @@ class FlaxUpsample2D(nn.Module):
   weights_dtype: jnp.dtype = jnp.float32
 
   def setup(self):
-
     self.conv = nn.Conv(
         self.in_channels,
         kernel_size=(3, 3),
@@ -933,6 +932,9 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
       return (sample,)
 
     return FlaxDecoderOutput(sample=sample)
+
+
+
 
 class WanDiagonalGaussianDistribution(FlaxDiagonalGaussianDistribution):
   pass
