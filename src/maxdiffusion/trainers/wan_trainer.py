@@ -188,15 +188,15 @@ class WanTrainer:
 
     # If using synthetic data
     if config.dataset_type == "synthetic":
-        return make_data_iterator(
-            config,
-            jax.process_index(),
-            jax.process_count(),
-            mesh,
-            config.global_batch_size_to_load,
-            pipeline=pipeline,  # Pass pipeline to extract dimensions
-            is_training=is_training,
-        )
+      return make_data_iterator(
+          config,
+          jax.process_index(),
+          jax.process_count(),
+          mesh,
+          config.global_batch_size_to_load,
+          pipeline=pipeline,  # Pass pipeline to extract dimensions
+          is_training=is_training,
+      )
 
     config = self.config
     if config.dataset_type != "tfrecord" and not config.cache_latents_text_encoder_outputs:
@@ -392,9 +392,9 @@ class WanTrainer:
         start_step_time = datetime.datetime.now()
 
         next_batch_future = executor.submit(load_next_batch, train_data_iterator, example_batch, self.config)
-        with jax.profiler.StepTraceAnnotation(
-            "train", step_num=step
-        ), pipeline.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+        with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(
+            self.config.logical_axis_rules
+        ):
           state, scheduler_state, train_metric, rng = p_train_step(state, example_batch, rng, scheduler_state)
           train_metric["scalar"]["learning/loss"].block_until_ready()
         last_step_completion = datetime.datetime.now()
