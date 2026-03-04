@@ -530,12 +530,16 @@ def load_audio_vae_weights(
         key = rename_for_ltx2_audio_vae(pt_key)
         
         should_transpose = False
-        if key.endswith(".kernel"):
+        if "latents_mean" in key or "latents_std" in key:
+            # latents_mean and latents_std are loaded fully, no transposing
+            pass
+        elif key.endswith(".kernel"):
              if tensor.ndim == 4:
                  should_transpose = True
         
         if should_transpose:
             tensor = tensor.transpose(2, 3, 1, 0)
+
         parts = key.split(".")
         flax_key_parts = []
         for part in parts:
