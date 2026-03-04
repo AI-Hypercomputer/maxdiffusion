@@ -153,7 +153,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     writer.add_scalar("inference/compile_time", compile_time, global_step=0)
   
   saved_video_path = []
-  audio_sample_rate = getattr(pipeline.audio_vae.config, "sample_rate", 16000) if hasattr(pipeline, "audio_vae") else 16000
+  audio_sample_rate = getattr(pipeline.vocoder.config, "output_sampling_rate", 24000) if hasattr(pipeline, "vocoder") else 24000
   fps = getattr(config, "fps", 24)
 
   # Export videos
