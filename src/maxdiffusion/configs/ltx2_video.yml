@@ -32,7 +32,7 @@ num_inference_steps: 40
 guidance_scale: 3.0
 fps: 24
 pipeline_type: multi-scale
-prompt: "An astronaut reaches out to touch the viewport, her fingertips gliding across the cold glass as she gazes at the swirling blue planet outside. The camera slowly dollies forward, shifting the focus from her immediate reflection to the vast, shimmering expanse of the cosmos."
+prompt: "An archeologist kneels in a desert excavation pit under the harsh midday sun, meticulously cleaning an artifact. The camera starts in a medium close-up at knee height, then slowly dollies forward to focus on his hands. His right hand grips a brush while his left gently steadies the edge of a pottery shard. As a distant shout from a teammate echoes, his fingers tighten slightly, and the brush pauses mid-air. The camera remains steady with a shallow depth of field, capturing the focus in his wrists against the blurred, silent silhouette of a pyramid peak in the background. Ambient Audio: The howl of wind-blown sand and distant camel bells create an ancient, solemn atmosphere."
 negative_prompt: "shaky, glitchy, low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly, transition, static."
 height: 512
 width: 768
