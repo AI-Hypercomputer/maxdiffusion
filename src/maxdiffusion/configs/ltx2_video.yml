@@ -32,11 +32,11 @@ num_inference_steps: 40
 guidance_scale: 3.0
 fps: 24
 pipeline_type: multi-scale
-prompt: "A cinematic, slow-motion shot inside a futuristic, neon-lit laboratory where a sleek, metallic robot with glowing blue eyes steps forward out of the shadows. In its metallic hands, it holds up a glowing holographic signboard that reads 'LTX-2' as sparks gently fall in the background. The camera slowly zooms in on the glowing text. The audio features a deep, booming cinematic bass drop, followed by a mechanical, robotic voice announcing, 'Welcome to the first video by LTX-2,' accompanied by the low, ambient hum of futuristic servers."
+prompt: "A chef enters a busy kitchen, weaving between prep stations as steam rises from pots. The camera follows in a smooth tracking shot as he reaches his station, ties his apron, and begins chopping vegetables with practiced precision. Other chefs work in the background, creating a layered scene of culinary activity."
 negative_prompt: "shaky, glitchy, low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly, transition, static."
 height: 512
 width: 768
-num_frames: 161
+num_frames: 121
 decode_timestep: 0.05
 decode_noise_scale: 0.025
 quantization: "int8"
