@@ -548,9 +548,6 @@ def load_audio_vae_weights(
             else:
                 flax_key_parts.append(part)
         
-        if "latents_mean" in key or "latents_std" in key:
-            flax_key_parts.append("value")
-        
         flax_key = tuple(flax_key_parts)
              
         if "up_stages" in flax_key:
