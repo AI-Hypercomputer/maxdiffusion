@@ -194,6 +194,70 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
         num_inference_steps=num_inference_steps,
     )
 
+  def set_timesteps_ltx2(
+      self,
+      state: FlowMatchSchedulerState,
+      num_inference_steps: int = 100,
+      shape: Tuple = None,
+      denoising_strength: float = 1.0,
+      training: bool = False,
+      shift: Optional[float] = None,
+      timesteps: Optional[jnp.ndarray] = None,
+      sigmas: Optional[jnp.ndarray] = None,
+  ) -> FlowMatchSchedulerState:
+    """
+    LTX-2 specific logic for set_timesteps that correctly applies exponential dynamic shifting.
+    """
+    current_shift = shift if shift is not None else getattr(self.config, "shift", 1.0)
+
+    is_timesteps_provided = timesteps is not None
+
+    if sigmas is None:
+      if timesteps is None:
+        sigma_start = self.config.sigma_min + (self.config.sigma_max - self.config.sigma_min) * denoising_strength
+        if getattr(self.config, "extra_one_step", False):
+          sigmas = jnp.linspace(sigma_start, self.config.sigma_min, num_inference_steps + 1, dtype=self.dtype)[:-1]
+        else:
+          sigmas = jnp.linspace(sigma_start, self.config.sigma_min, num_inference_steps, dtype=self.dtype)
+      else:
+        sigmas = timesteps / self.config.num_train_timesteps
+
+    if getattr(self.config, "inverse_timesteps", False):
+      sigmas = jnp.flip(sigmas, dims=[0])
+
+    if getattr(self.config, "use_dynamic_shifting", False):
+      if getattr(self.config, "time_shift_type", "exponential") == "exponential":
+        sigmas = jnp.exp(current_shift) / (jnp.exp(current_shift) + (1 / jnp.clip(sigmas, 1e-7, 1.0) - 1)**1.0)
+      else:
+        sigmas = current_shift * sigmas / (1 + (current_shift - 1) * sigmas)
+    else:
+      sigmas = current_shift * sigmas / (1 + (current_shift - 1) * sigmas)
+
+    if getattr(self.config, "reverse_sigmas", False):
+      sigmas = 1 - sigmas
+
+    if not is_timesteps_provided:
+      timesteps = sigmas * self.config.num_train_timesteps
+
+    if timesteps is not None:
+      num_inference_steps = len(timesteps)
+
+    linear_timesteps_weights = None
+    if training:
+      x = timesteps
+      y = jnp.exp(-2 * ((x - num_inference_steps / 2) / num_inference_steps) ** 2)
+      y_shifted = y - jnp.min(y)
+      bsmntw_weighing = y_shifted * (num_inference_steps / jnp.sum(y_shifted))
+      linear_timesteps_weights = bsmntw_weighing
+
+    return state.replace(
+        sigmas=sigmas,
+        timesteps=timesteps,
+        linear_timesteps_weights=linear_timesteps_weights,
+        training=training,
+        num_inference_steps=num_inference_steps,
+    )
+
   def _find_timestep_id(self, state: FlowMatchSchedulerState, timestep: jnp.ndarray) -> jnp.ndarray:
     """Finds the index of the closest timestep in the scheduler's `timesteps` array."""
     timestep = jnp.asarray(timestep, dtype=state.timesteps.dtype)

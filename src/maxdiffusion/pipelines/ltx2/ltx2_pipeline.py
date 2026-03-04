@@ -195,7 +195,7 @@ def retrieve_timesteps(
     timesteps = jnp.array(timesteps, dtype=scheduler.dtype) if timesteps is not None else None
     sigmas = jnp.array(sigmas, dtype=scheduler.dtype) if sigmas is not None else None
     
-    scheduler_state = scheduler.set_timesteps(
+    scheduler_state = scheduler.set_timesteps_ltx2(
         scheduler_state,
         num_inference_steps=num_inference_steps,
         timesteps=timesteps,
