@@ -1,6 +1,7 @@
 import torch
 import jax.numpy as jnp
 from diffusers import FlowMatchEulerDiscreteScheduler
+import numpy as np
 
 def pytorch_shifting():
     scheduler = FlowMatchEulerDiscreteScheduler(
@@ -10,7 +11,6 @@ def pytorch_shifting():
     )
     # LTX2 passes these
     num_inference_steps = 40
-    import numpy as np
     sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps).tolist()
     
     mu = 1.25 # hypothetical calculated shift
@@ -24,15 +24,13 @@ def pytorch_shifting():
 
 def flax_shifting():
     num_inference_steps = 40
-    import numpy as np
     sigmas = jnp.array(np.linspace(1.0, 1 / num_inference_steps, num_inference_steps))
     
     current_shift = 1.25
     
     # Flax dynamic shifting logic candidate
-    shifted_sigmas = jnp.exp(current_shift) / (jnp.exp(current_shift) + (1 / sigmas - 1))
+    shifted_sigmas = np.exp(current_shift) / (np.exp(current_shift) + (1 / sigmas - 1)**1.0)
     
-    # terminal handling in Flax? Diffusers concatenates 0.
     # Diffusers terminal handling:
     # sigmas = torch.cat([sigmas, torch.zeros(1, device=sigmas.device)])
     
