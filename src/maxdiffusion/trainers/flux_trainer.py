@@ -248,15 +248,15 @@ class FluxTrainer(FluxCheckpointer):
 
     # If using synthetic data
     if config.dataset_type == "synthetic":
-        return make_data_iterator(
-            config,
-            jax.process_index(),
-            jax.process_count(),
-            mesh,
-            total_train_batch_size,
-            pipeline=pipeline,  # Pass pipeline to extract dimensions
-            is_training=True,
-        )
+      return make_data_iterator(
+          config,
+          jax.process_index(),
+          jax.process_count(),
+          mesh,
+          total_train_batch_size,
+          pipeline=pipeline,  # Pass pipeline to extract dimensions
+          is_training=True,
+      )
 
     encode_fn = partial(
         pipeline.encode_prompt,

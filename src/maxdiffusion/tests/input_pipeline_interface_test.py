@@ -474,8 +474,9 @@ class InputPipelineInterface(unittest.TestCase):
     dummy_pipeline.vae_scale_factor_spatial = 8
     dummy_pipeline.vae_scale_factor_temporal = 4
 
-
-    synthetic_iterator = make_synthetic_iterator(config, mesh, int(global_batch_size), pipeline=dummy_pipeline, is_training=False)
+    synthetic_iterator = make_synthetic_iterator(
+        config, mesh, int(global_batch_size), pipeline=dummy_pipeline, is_training=False
+    )
     data = next(synthetic_iterator)
     device_count = jax.device_count()
 
@@ -488,16 +489,14 @@ class InputPipelineInterface(unittest.TestCase):
         dummy_pipeline.transformer.config.in_channels,
         num_latent_frames,
         latent_height,
-        latent_width
+        latent_width,
     )
     assert data["encoder_hidden_states"].shape == (
         device_count,
         dummy_pipeline.transformer.config.rope_max_seq_len,
-        dummy_pipeline.transformer.config.text_dim
+        dummy_pipeline.transformer.config.text_dim,
     )
-    assert data["timesteps"].shape == (
-        device_count,
-    )
+    assert data["timesteps"].shape == (device_count,)
 
   def test_make_synthetic_iterator_flux(self):
     pyconfig.initialize(
@@ -529,38 +528,25 @@ class InputPipelineInterface(unittest.TestCase):
     dummy_pipeline.text_encoder_2.config.d_model = 4096
     dummy_pipeline.vae_scale_factor = 8
 
-    synthetic_iterator = make_synthetic_iterator(config, mesh, int(global_batch_size), pipeline=dummy_pipeline, is_training=False)
+    synthetic_iterator = make_synthetic_iterator(
+        config, mesh, int(global_batch_size), pipeline=dummy_pipeline, is_training=False
+    )
     data = next(synthetic_iterator)
     device_count = jax.device_count()
 
     latent_resolution = math.ceil(config.resolution // (dummy_pipeline.vae_scale_factor * 2))
-    latent_seq_len = latent_resolution ** 2
+    latent_seq_len = latent_resolution**2
     packed_latent_dim = 64
 
-    assert data["pixel_values"].shape == (
-        device_count,
-        latent_seq_len,
-        packed_latent_dim
-    )
-    assert data["input_ids"].shape == (
-        device_count,
-        config.max_sequence_length,
-        3
-    )
+    assert data["pixel_values"].shape == (device_count, latent_seq_len, packed_latent_dim)
+    assert data["input_ids"].shape == (device_count, config.max_sequence_length, 3)
     assert data["text_embeds"].shape == (
         device_count,
         config.max_sequence_length,
         dummy_pipeline.text_encoder_2.config.d_model,
     )
-    assert data["prompt_embeds"].shape == (
-        device_count,
-        dummy_pipeline.text_encoder.config.projection_dim
-    )
-    assert data["img_ids"].shape == (
-        device_count,
-        latent_seq_len,
-        3
-    )
+    assert data["prompt_embeds"].shape == (device_count, dummy_pipeline.text_encoder.config.projection_dim)
+    assert data["img_ids"].shape == (device_count, latent_seq_len, 3)
 
   @pytest.mark.skip(
       "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
