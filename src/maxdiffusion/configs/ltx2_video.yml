@@ -32,7 +32,7 @@ num_inference_steps: 40
 guidance_scale: 3.0
 fps: 24
 pipeline_type: multi-scale
-prompt: "A dramatic close-up of a standard office desk where a mug of black coffee is trembling, creating intense, rhythmic ripples in the liquid to the sound of heavy, rhythmic thumping of massive footsteps getting closer. The camera slowly pans up from the mug to a glowing computer monitor in a well lit room as bold, glowing green hacker-style text rapidly types out: 'LTX-2: FIRST VIDEO' A loud, suspenseful cinematic riser builds up in the audio, suddenly cutting to a cheerful, casual human voice saying, 'Hey team, the new model is alive.'"
+prompt: "An astronaut reaches out to touch the viewport, her fingertips gliding across the cold glass as she gazes at the swirling blue planet outside. The camera slowly dollies forward, shifting the focus from her immediate reflection to the vast, shimmering expanse of the cosmos."
 negative_prompt: "shaky, glitchy, low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly, transition, static."
 height: 512
 width: 768
