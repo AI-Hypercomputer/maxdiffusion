@@ -29,7 +29,7 @@ def test_schedulers():
     pt_sigmas = pt_scheduler.sigmas.numpy()
 
     state = fx_scheduler.create_state()
-    state = fx_scheduler.set_timesteps(
+    state = fx_scheduler.set_timesteps_ltx2(
         state,
         num_inference_steps=num_steps,
         sigmas=jnp.array(sigmas),
