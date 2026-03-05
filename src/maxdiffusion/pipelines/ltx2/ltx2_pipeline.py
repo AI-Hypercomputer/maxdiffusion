@@ -1339,10 +1339,10 @@ class LTX2Pipeline:
           latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
           
           latents = latents.astype(self.vae.dtype)
-          video = self.vae.decode(latents, timestep=timestep, return_dict=False)[0]
+          video = self.vae.tiled_decode(latents, temb=timestep, return_dict=False)[0]
       else:
           latents = latents.astype(self.vae.dtype)
-          video = self.vae.decode(latents, return_dict=False)[0]
+          video = self.vae.tiled_decode(latents, return_dict=False)[0]
       # Post-process video (converts to numpy/PIL)
       # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
       video_np = np.array(video).transpose(0, 4, 1, 2, 3)
