@@ -31,6 +31,7 @@ from einops import rearrange
 from .. import common_types, max_logging
 
 from . import quantizations
+from .modeling_flax_utils import get_activation
 
 
 Array = common_types.Array
@@ -134,6 +135,7 @@ def _reshape_heads_to_head_dim(tensor):
   # This is used to transform the output of flash attention back into the format of other attention outputs
   b, h, s, d = tensor.shape
   tensor = jnp.transpose(tensor, axes=[0, 2, 1, 3])
+  reshaped_tensor = jnp.reshape(tensor, (b, -1, h * d))
   axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
   return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
 
@@ -693,6 +695,52 @@ def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
   return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
 
 
+class NNXSimpleFeedForward(nnx.Module):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      dim: int,
+      dim_out: Optional[int] = None,
+      mult: int = 4,
+      activation_fn: str = "gelu",
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+      precision: Optional[jax.lax.Precision] = None,
+  ):
+    inner_dim = int(dim * mult)
+    dim_out = dim_out if dim_out is not None else dim
+    self.net_0 = nnx.Linear(
+        dim,
+        inner_dim,
+        rngs=rngs,
+        use_bias=True,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        precision=precision,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", None)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+    )
+    self.act = get_activation(activation_fn)
+    self.net_2 = nnx.Linear(
+        inner_dim,
+        dim_out,
+        rngs=rngs,
+        use_bias=True,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        precision=precision,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+    )
+
+  def __call__(self, hidden_states: Array) -> Array:
+    hidden_states = self.net_0(hidden_states)
+    hidden_states = self.act(hidden_states)
+    hidden_states = self.net_2(hidden_states)
+    return hidden_states
+
+
 class NNXAttentionOp(nnx.Module):
 
   def __init__(
@@ -849,6 +897,8 @@ class FlaxWanAttention(nnx.Module):
       mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
       enable_jax_named_scopes: bool = False,
+      added_kv_proj_dim: Optional[int] = None,
+      image_seq_len: Optional[int] = None,
   ):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
@@ -1007,6 +1057,7 @@ class FlaxWanAttention(nnx.Module):
       hidden_states: jax.Array,
       encoder_hidden_states: jax.Array = None,
       rotary_emb: Optional[jax.Array] = None,
+      encoder_attention_mask: Optional[jax.Array] = None,
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> jax.Array:
