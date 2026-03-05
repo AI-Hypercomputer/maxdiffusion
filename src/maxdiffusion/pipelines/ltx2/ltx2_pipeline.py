@@ -235,8 +235,15 @@ class LTX2Pipeline:
       self.vae_temporal_compression_ratio = getattr(self.vae, "temporal_compression_ratio", 8)
       
       # Audio VAE compression ratios
-      self.audio_vae_mel_compression_ratio = getattr(self.audio_vae, "mel_compression_ratio", 4)
-      self.audio_vae_temporal_compression_ratio = getattr(self.audio_vae, "temporal_compression_ratio", 4)
+      if hasattr(self.audio_vae, "config") and hasattr(self.audio_vae.config, "patch_size"):
+          self.audio_vae_mel_compression_ratio = self.audio_vae.config.patch_size
+      else:
+          self.audio_vae_mel_compression_ratio = getattr(self.audio_vae, "mel_compression_ratio", 1)
+
+      if hasattr(self.audio_vae, "config") and hasattr(self.audio_vae.config, "patch_size_t"):
+          self.audio_vae_temporal_compression_ratio = self.audio_vae.config.patch_size_t
+      else:
+          self.audio_vae_temporal_compression_ratio = getattr(self.audio_vae, "temporal_compression_ratio", 1)
 
       # Transformer patch sizes
       self.transformer_spatial_patch_size = getattr(self.transformer.config, "patch_size", 1) if getattr(self, "transformer", None) is not None else 1
