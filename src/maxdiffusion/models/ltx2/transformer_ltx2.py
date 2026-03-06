@@ -665,14 +665,16 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.caption_projection = NNXPixArtAlphaTextProjection(
         rngs=rngs,
         in_features=self.caption_channels,
-        hidden_size=inner_dim,
+        hidden_size=self.caption_channels,
+        out_features=inner_dim,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
     )
     self.audio_caption_projection = NNXPixArtAlphaTextProjection(
         rngs=rngs,
         in_features=self.caption_channels,
-        hidden_size=audio_inner_dim,
+        hidden_size=self.caption_channels,
+        out_features=audio_inner_dim,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
     )
