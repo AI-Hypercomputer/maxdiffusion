@@ -49,11 +49,17 @@ import transformers
 # Patch pipeline module's random normal if needed
 pipe_module.jax.random.normal = custom_normal
 
-def print_stat(name, t):
+def _print_stat_impl(name, t):
     if hasattr(t, "cpu"):
         t = t.detach().cpu().float().numpy()
     t_np = np.array(t, dtype=np.float32)
     print(f"[{name}] min: {t_np.min():.5f}, max: {t_np.max():.5f}, mean: {t_np.mean():.5f}, std: {t_np.std():.5f}")
+
+def print_stat(name, t):
+    if isinstance(t, jax.core.Tracer):
+        jax.debug.callback(_print_stat_impl, name, t)
+    else:
+        _print_stat_impl(name, t)
 
 # Patch transformer forward pass
 orig_transformer_forward_pass = pipe_module.transformer_forward_pass
