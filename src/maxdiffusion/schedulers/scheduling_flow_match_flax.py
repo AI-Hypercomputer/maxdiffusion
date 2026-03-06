@@ -235,6 +235,12 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
 
     if getattr(self.config, "reverse_sigmas", False):
       sigmas = 1 - sigmas
+    
+    shift_terminal = getattr(self.config, "shift_terminal", None)
+    if shift_terminal is not None:
+      one_minus_z = 1 - sigmas
+      scale_factor = one_minus_z[-1] / (1 - shift_terminal)
+      sigmas = 1 - (one_minus_z / scale_factor)
 
     if not is_timesteps_provided:
       timesteps = sigmas * self.config.num_train_timesteps
