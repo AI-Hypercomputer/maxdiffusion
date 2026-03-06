@@ -130,13 +130,17 @@ def main():
     pipe = LTX2Pipeline.from_pretrained(config)
 
     prompt = getattr(config, "prompt", "A man in a brightly lit room...")
-    if isinstance(prompt, (list, tuple)):
-        prompt = ", ".join(str(p) for p in prompt)
-    
+    # config can sometimes parse things as lists rather than strings if they contain commas
+    if isinstance(prompt, list):
+         prompt = " ".join([str(p) for p in prompt])
+    elif isinstance(prompt, tuple):
+         prompt = " ".join([str(p) for p in prompt])
+
     negative_prompt = getattr(config, "negative_prompt", "shaky, glitchy, low quality...")
-    if isinstance(negative_prompt, (list, tuple)):
-        negative_prompt = ", ".join(str(p) for p in negative_prompt)
-        
+    if isinstance(negative_prompt, list):
+         negative_prompt = " ".join([str(p) for p in negative_prompt])
+    elif isinstance(negative_prompt, tuple):
+         negative_prompt = " ".join([str(p) for p in negative_prompt])
     height = getattr(config, "height", 512)
     width = getattr(config, "width", 768)
     num_frames = getattr(config, "num_frames", 121)
