@@ -135,6 +135,7 @@ def main():
               prompt = ", ".join(str(p) for p in prompt)
          else:
               prompt = str(prompt)
+    prompt = [prompt] # Pass as list to avoid pipeline encode_prompt type validation bug
 
     negative_prompt = getattr(config, "negative_prompt", "shaky, glitchy, low quality...")
     if not isinstance(negative_prompt, str):
@@ -143,6 +144,7 @@ def main():
               negative_prompt = ", ".join(str(p) for p in negative_prompt)
          else:
               negative_prompt = str(negative_prompt)
+    negative_prompt = [negative_prompt] # Pass as list to avoid pipeline encode_prompt type validation bug
     height = getattr(config, "height", 512)
     width = getattr(config, "width", 768)
     num_frames = getattr(config, "num_frames", 121)
