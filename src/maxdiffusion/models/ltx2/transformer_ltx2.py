@@ -18,6 +18,22 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import flax.linen as nn
+import numpy as np
+
+printed_count = 0
+def print_shape(name, tensor):
+    global printed_count
+    if printed_count > 1000:
+        return
+    if tensor is not None:
+        def _print_fn(n, t):
+            t_np = np.array(t, dtype=np.float32)
+            print(f"[{n}] min: {t_np.min():.5f}, max: {t_np.max():.5f}, mean: {t_np.mean():.5f}, std: {t_np.std():.5f}")
+        if isinstance(tensor, jax.core.Tracer):
+            jax.debug.callback(_print_fn, name, tensor)
+        else:
+            _print_fn(name, tensor)
+        printed_count += 1
 
 from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
@@ -342,6 +358,17 @@ class LTX2VideoTransformerBlock(nnx.Module):
   ) -> Tuple[jax.Array, jax.Array]:
     batch_size = hidden_states.shape[0]
 
+    print_shape("Block Input hidden_states", hidden_states)
+    print_shape("Block Input audio_hidden_states", audio_hidden_states)
+    print_shape("Block Input encoder_hidden_states", encoder_hidden_states)
+    print_shape("Block Input audio_encoder_hidden_states", audio_encoder_hidden_states)
+    print_shape("Block Input temb", temb)
+    print_shape("Block Input temb_audio", temb_audio)
+    print_shape("Block Input temb_ca_scale_shift", temb_ca_scale_shift)
+    print_shape("Block Input temb_ca_audio_scale_shift", temb_ca_audio_scale_shift)
+    print_shape("Block Input temb_ca_gate", temb_ca_gate)
+    print_shape("Block Input temb_ca_audio_gate", temb_ca_audio_gate)
+
     axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
     audio_hidden_states = jax.lax.with_sharding_constraint(audio_hidden_states, axis_names)
@@ -369,6 +396,13 @@ class LTX2VideoTransformerBlock(nnx.Module):
     shift_mlp = ada_values[:, :, 3, :]
     scale_mlp = ada_values[:, :, 4, :]
     gate_mlp = ada_values[:, :, 5, :]
+
+    print_shape("shift_msa", shift_msa)
+    print_shape("scale_msa", scale_msa)
+    print_shape("gate_msa", gate_msa)
+    print_shape("shift_mlp", shift_mlp)
+    print_shape("scale_mlp", scale_mlp)
+    print_shape("gate_mlp", gate_mlp)
 
     norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
 
@@ -889,6 +923,11 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         audio_encoder_attention_mask = jnp.expand_dims(audio_encoder_attention_mask, axis=1)
 
     batch_size = hidden_states.shape[0]
+    print_shape("Model Input hidden_states", hidden_states)
+    print_shape("Model Input audio_hidden_states", audio_hidden_states)
+    print_shape("Model Input encoder_hidden_states", encoder_hidden_states)
+    print_shape("Model Input audio_encoder_hidden_states", audio_encoder_hidden_states)
+    print_shape("Model Input timestep", timestep)
 
     # 1. Prepare RoPE positional embeddings
     if video_coords is None:
