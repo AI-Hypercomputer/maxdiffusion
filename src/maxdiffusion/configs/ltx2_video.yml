@@ -1,0 +1,87 @@
+#hardware
+hardware: 'tpu'
+skip_jax_distributed_system: False
+attention: 'flash'
+attention_sharding_uniform: True 
+precision: 'bf16'
+data_sharding: ['data', 'fsdp', 'context', 'tensor']
+remat_policy: "NONE"
+names_which_can_be_saved: []
+names_which_can_be_offloaded: []
+
+jax_cache_dir: ''
+weights_dtype: 'bfloat16'
+activations_dtype: 'bfloat16'
+
+run_name: ''
+output_dir: ''
+config_path: ''
+save_config_to_gcs: False
+
+frame_rate: 30
+max_sequence_length: 1024
+sampler: "from_checkpoint"
+
+# Generation parameters
+dataset_name: ''
+dataset_save_location: ''
+global_batch_size_to_train_on: 1
+num_inference_steps: 40
+guidance_scale: 3.0
+fps: 24
+prompt: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
+negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
+height: 512
+width: 768
+num_frames: 121
+decode_timestep: 0.05
+decode_noise_scale: 0.025
+quantization: "int8"
+seed: 10
+#parallelism
+mesh_axes: ['data', 'fsdp', 'context', 'tensor']
+logical_axis_rules: [
+                      ['batch', 'data'],
+                      ['activation_heads', 'fsdp'],
+                      ['activation_batch', 'data'],
+                      ['activation_kv', 'tensor'],
+                      ['mlp','tensor'],
+                      ['embed','fsdp'],
+                      ['heads', 'tensor'],
+                      ['norm', 'fsdp'],
+                      ['conv_batch', ['data','fsdp']],
+                      ['out_channels', 'tensor'],
+                      ['conv_out', 'fsdp'],
+                      ['conv_in', 'fsdp']
+                    ]
+dcn_data_parallelism: 1
+dcn_fsdp_parallelism: -1
+dcn_context_parallelism: 1
+dcn_tensor_parallelism: 1
+ici_data_parallelism: 1
+ici_fsdp_parallelism: -1
+ici_context_parallelism: 1
+ici_tensor_parallelism: 1
+enable_profiler: False
+
+replicate_vae: False
+
+allow_split_physical_axes: False
+learning_rate_schedule_steps: -1
+max_train_steps: 500
+pretrained_model_name_or_path: 'Lightricks/LTX-2'
+model_name: "ltx2_video"
+model_type: "T2V"
+unet_checkpoint: ''
+checkpoint_dir: ""
+cache_latents_text_encoder_outputs: True
+per_device_batch_size: 1
+compile_topology_num_slices: -1 
+quantization_local_shard_count: -1
+use_qwix_quantization: False
+weight_quantization_calibration_method: "absmax"
+act_quantization_calibration_method: "absmax"
+bwd_quantization_calibration_method: "absmax"
+qwix_module_path: ".*"
+jit_initializers: True 
+enable_single_replica_ckpt_restoring: False
