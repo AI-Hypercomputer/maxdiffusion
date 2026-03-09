@@ -168,8 +168,9 @@ class Embeddings1DConnector(nnx.Module):
     # Where shifted_mask is 1, keep valid tokens. Where 0, insert registers.
     output = jnp.where(shifted_mask[..., None] == 1, shifted_hidden_states, registers)
 
-    # Overwrite attention_mask with all-ones since padding is now filled with registers.
-    new_mask = jnp.ones_like(attention_mask)
+    # Padding has been filled with valid register tokens. The entire sequence
+    # must now be attended to, so we clear the mask.
+    new_mask = None
     return output, new_mask
 
   def _compute_1d_rope(self, batch_size: int, seq_len: int, dtype: DType) -> Tuple[Array, Array]:
