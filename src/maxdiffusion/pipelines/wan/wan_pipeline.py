@@ -778,3 +778,108 @@ def transformer_forward_pass(
     latents = latents[:bsz]
 
   return noise_pred, latents
+
+
+@partial(jax.jit, static_argnames=("guidance_scale",))
+def transformer_forward_pass_full_cfg(
+    graphdef,
+    sharded_state,
+    rest_of_state,
+    latents_doubled: jnp.array,
+    timestep: jnp.array,
+    prompt_embeds_combined: jnp.array,
+    guidance_scale: float,
+    encoder_hidden_states_image=None,
+):
+  """Full CFG forward pass.
+
+  Accepts pre-doubled latents and pre-concatenated [cond, uncond] prompt embeds.
+  Returns the merged noise_pred plus raw noise_cond and noise_uncond for
+  CFG cache storage.  Keeping cond/uncond separate avoids a second forward
+  pass on cache steps.
+  """
+  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+  bsz = latents_doubled.shape[0] // 2
+  noise_pred = wan_transformer(
+      hidden_states=latents_doubled,
+      timestep=timestep,
+      encoder_hidden_states=prompt_embeds_combined,
+      encoder_hidden_states_image=encoder_hidden_states_image,
+  )
+  noise_cond = noise_pred[:bsz]
+  noise_uncond = noise_pred[bsz:]
+  noise_pred_merged = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+  return noise_pred_merged, noise_cond, noise_uncond
+
+
+@partial(jax.jit, static_argnames=("guidance_scale",))
+def transformer_forward_pass_cfg_cache(
+    graphdef,
+    sharded_state,
+    rest_of_state,
+    latents_cond: jnp.array,
+    timestep_cond: jnp.array,
+    prompt_cond_embeds: jnp.array,
+    cached_noise_cond: jnp.array,
+    cached_noise_uncond: jnp.array,
+    guidance_scale: float,
+    w1: float = 1.0,
+    w2: float = 1.0,
+    encoder_hidden_states_image=None,
+):
+  """CFG-Cache forward pass with FFT frequency-domain compensation.
+
+  FasterCache (Lv et al., ICLR 2025) CFG-Cache:
+    1. Compute frequency-domain bias:  ΔF = FFT(uncond) - FFT(cond)
+    2. Split into low-freq (ΔLF) and high-freq (ΔHF) via spectral mask
+    3. Apply phase-dependent weights:
+         F_low  = FFT(new_cond)_low  + w1 * ΔLF
+         F_high = FFT(new_cond)_high + w2 * ΔHF
+    4. Reconstruct:  uncond_approx = IFFT(F_low + F_high)
+
+  w1/w2 encode the denoising phase:
+    Early (high noise): w1=1+α, w2=1   → boost low-freq correction
+    Late  (low noise):  w1=1,   w2=1+α → boost high-freq correction
+  where α=0.2 (FasterCache default).
+
+  On TPU this compiles to a single static XLA graph with half the batch size
+  of a full CFG pass.
+  """
+  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+  noise_cond = wan_transformer(
+      hidden_states=latents_cond,
+      timestep=timestep_cond,
+      encoder_hidden_states=prompt_cond_embeds,
+      encoder_hidden_states_image=encoder_hidden_states_image,
+  )
+
+  # FFT over spatial dims (H, W) — last 2 dims of [B, C, F, H, W]
+  fft_cond_cached = jnp.fft.rfft2(cached_noise_cond.astype(jnp.float32))
+  fft_uncond_cached = jnp.fft.rfft2(cached_noise_uncond.astype(jnp.float32))
+  fft_bias = fft_uncond_cached - fft_cond_cached
+
+  # Build low/high frequency mask (25% cutoff)
+  h = fft_bias.shape[-2]
+  w_rfft = fft_bias.shape[-1]
+  ch = jnp.maximum(1, h // 4)
+  cw = jnp.maximum(1, w_rfft // 4)
+  freq_h = jnp.arange(h)
+  freq_w = jnp.arange(w_rfft)
+  # Low-freq: indices near DC (0) in both dims; account for wrap-around in dim H
+  low_h = (freq_h < ch) | (freq_h >= h - ch + 1)
+  low_w = freq_w < cw
+  low_mask = (low_h[:, None] & low_w[None, :]).astype(jnp.float32)
+  high_mask = 1.0 - low_mask
+
+  # Apply phase-dependent weights to frequency bias
+  fft_bias_weighted = fft_bias * (low_mask * w1 + high_mask * w2)
+
+  # Reconstruct unconditional output
+  fft_cond_new = jnp.fft.rfft2(noise_cond.astype(jnp.float32))
+  fft_uncond_approx = fft_cond_new + fft_bias_weighted
+  noise_uncond_approx = jnp.fft.irfft2(
+      fft_uncond_approx, s=noise_cond.shape[-2:]
+  ).astype(noise_cond.dtype)
+
+  noise_pred_merged = noise_uncond_approx + guidance_scale * (noise_cond - noise_uncond_approx)
+  return noise_pred_merged, noise_cond
