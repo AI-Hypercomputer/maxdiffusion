@@ -97,6 +97,16 @@ def patched_replace(self, hidden_states, attention_mask):
     
 Embeddings1DConnector._replace_padded_with_learnable_registers = patched_replace
 
+from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import _BasicTransformerBlock1D
+
+orig_block_call = _BasicTransformerBlock1D.__call__
+def patched_block_call(self, hidden_states, attention_mask=None, rotary_emb=None):
+    jax.debug.print("[MAXDIFFUSION] Block Input std: {std}, min: {min}, max: {max}", 
+                    std=jnp.std(hidden_states), min=jnp.min(hidden_states), max=jnp.max(hidden_states))
+    return orig_block_call(self, hidden_states, attention_mask=attention_mask, rotary_emb=rotary_emb)
+
+_BasicTransformerBlock1D.__call__ = patched_block_call
+
 # Patch Transformer forward pass to intercept inputs and EXIT EARLY
 orig_transformer_forward_pass = pipe_module.transformer_forward_pass
 def patched_transformer_forward_pass(*args, **kwargs):
