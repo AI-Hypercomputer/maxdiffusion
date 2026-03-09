@@ -323,6 +323,11 @@ num_frames: 81
 guidance_scale: 5.0
 flow_shift: 3.0
 
+# Diffusion CFG cache (FasterCache-style, WAN 2.1 T2V only)
+# Skips the unconditional forward pass on ~35% of steps via residual compensation.
+# See: FasterCache (Lv et al. 2024), WAN 2.1 paper §4.4.2
+use_cfg_cache: False
+
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 30
