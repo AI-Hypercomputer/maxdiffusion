@@ -76,7 +76,7 @@ from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import Emb
 orig_replace = Embeddings1DConnector._replace_padded_with_learnable_registers
 def patched_replace(self, hidden_states, attention_mask):
     regs = self.learnable_registers.value
-    jax.debug.print("[MAXDIFFUSION] Connector Registers std: {std:.5f}, mean: {mean:.5f}, min: {min:.5f}", 
+    jax.debug.print("[MAXDIFFUSION] Connector Registers std: {std}, mean: {mean}, min: {min}", 
                     std=jnp.std(regs), mean=jnp.mean(regs), min=jnp.min(regs))
     
     return orig_replace(self, hidden_states, attention_mask)
