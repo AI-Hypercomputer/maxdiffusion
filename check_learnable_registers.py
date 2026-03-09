@@ -9,7 +9,10 @@ def main():
     rngs = nnx.Rngs(0)
     encoder = LTX2AudioVideoGemmaTextEncoder(rngs=rngs)
     _, state = nnx.split(encoder)
-    flat_state = flatten_dict(state)
+    
+    # Convert nnx State to dict
+    flat_state = flatten_dict(state.to_pure_dict())
+    
     for k in flat_state.keys():
         if "learnable_registers" in k:
             print(k)
