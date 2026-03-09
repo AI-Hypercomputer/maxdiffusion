@@ -133,9 +133,7 @@ class Embeddings1DConnector(nnx.Module):
     num_duplications = t // self.num_learnable_registers
     registers = jnp.tile(self.learnable_registers[...], (num_duplications, 1))
     
-    if attention_mask.ndim == 4:
-         mask = attention_mask.squeeze(1).squeeze(1)
-    elif attention_mask.ndim == 2:
+    if attention_mask.ndim == 2:
       mask = attention_mask
     else:
       mask = attention_mask.squeeze(-1) # [B, T]
@@ -155,15 +153,16 @@ class Embeddings1DConnector(nnx.Module):
     shifted_hidden_states = jnp.zeros_like(hidden_states)
     shifted_hidden_states = shifted_hidden_states.at[b_idx, target_indices, :].set(hidden_states)
     
-    # 2. Add Learnable Registers
-    # Where flipped_mask is 1, keep valid tokens. Where 0, insert registers.
-    flipped_mask = jnp.flip(curr_mask, axis=[1])
-    flipped_mask_expanded = flipped_mask[..., None]
-    
-    output = jnp.where(flipped_mask_expanded == 1, shifted_hidden_states, registers)
+    # Shift mask
+    shifted_mask = jnp.zeros_like(curr_mask)
+    shifted_mask = shifted_mask.at[b_idx, target_indices].set(curr_mask)
 
-    # Overwrite attention_mask with all-zeros since padding is now filled with registers.
-    new_mask = jnp.zeros_like(attention_mask)
+    # 2. Add Learnable Registers
+    # Where shifted_mask is 1, keep valid tokens. Where 0, insert registers.
+    output = jnp.where(shifted_mask[..., None] == 1, shifted_hidden_states, registers)
+
+    # Overwrite attention_mask with all-ones since padding is now filled with registers.
+    new_mask = jnp.ones_like(attention_mask)
     return output, new_mask
 
   def _compute_1d_rope(self, seq_len: int, dtype: DType) -> Tuple[Array, Array]:
@@ -181,9 +180,20 @@ class Embeddings1DConnector(nnx.Module):
       hidden_states: Array,
       attention_mask: Optional[Array] = None,
   ) -> Tuple[Array, Array]:
+    
+    # Debug print 1: Start
+    print(f"\\nDEBUG: Embeddings1DConnector Start. hidden_states shape: {hidden_states.shape}")
+    _t_np = jax.device_get(hidden_states)
+    print(f"   min: {_t_np.min():.5f}, max: {_t_np.max():.5f}, mean: {_t_np.mean():.5f}, std: {_t_np.std():.5f}")
+
     # 1. Thinking Tokens
     if self.num_learnable_registers > 0 and attention_mask is not None:
       hidden_states, attention_mask = self._replace_padded_with_learnable_registers(hidden_states, attention_mask)
+      
+      # Debug print 2: After Padding Replacement
+      print(f"DEBUG: After replacing padded with registers. hidden_states shape: {hidden_states.shape}")
+      _t_np = jax.device_get(hidden_states)
+      print(f"   min: {_t_np.min():.5f}, max: {_t_np.max():.5f}, mean: {_t_np.mean():.5f}, std: {_t_np.std():.5f}")
 
     # 2. RoPE
     seq_len = hidden_states.shape[1]
@@ -205,8 +215,18 @@ class Embeddings1DConnector(nnx.Module):
         in_axes=(nnx.Carry, 0),  # Scan over the layers dimension (0) of block_module
         out_axes=(nnx.Carry, 0),
     )(hidden_states, self.stacked_blocks)
+    
+    # Debug print 3: After scan
+    print(f"DEBUG: After transformer blocks scan. hidden_states shape: {hidden_states.shape}")
+    _t_np = jax.device_get(hidden_states)
+    print(f"   min: {_t_np.min():.5f}, max: {_t_np.max():.5f}, mean: {_t_np.mean():.5f}, std: {_t_np.std():.5f}")
 
     # 4. Final Norm
     hidden_states = self.final_norm(hidden_states)
+
+    # Debug print 4: Final Norm
+    print(f"DEBUG: After final norm. hidden_states shape: {hidden_states.shape}")
+    _t_np = jax.device_get(hidden_states)
+    print(f"   min: {_t_np.min():.5f}, max: {_t_np.max():.5f}, mean: {_t_np.mean():.5f}, std: {_t_np.std():.5f}")
 
     return hidden_states, attention_mask
