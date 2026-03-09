@@ -54,15 +54,22 @@ def print_stat(name, t):
     else:
         _print_stat_impl(name, t)
 
-# Patch Connectors
-orig_connector_call = LTX2AudioVideoGemmaTextEncoder.__call__
-def patched_connector_call(self, hidden_states, attention_mask):
-    out = orig_connector_call(self, hidden_states, attention_mask)
-    print("\n=== CONNECTORS OUTPUTS ===")
-    print_stat("connectors_video", out[0])
-    print_stat("connectors_audio", out[1])
+from maxdiffusion.models.ltx2.text_encoders.feature_extractor_ltx2 import LTX2GemmaFeatureExtractor, _norm_and_concat_padded_batch
+
+# Patch Feature Extractor
+orig_fe_call = LTX2GemmaFeatureExtractor.__call__
+def patched_fe_call(self, hidden_states, attention_mask):
+    if isinstance(hidden_states, (tuple, list)):
+        x = jnp.stack(hidden_states, axis=-1)
+    else:
+        x = hidden_states
+    x_norm = _norm_and_concat_padded_batch(x, attention_mask)
+    print("\n=== FEATURE EXTRACTOR / TEXT PROJ OUTPUTS ===")
+    print_stat("packed_text_embeds", x_norm)
+    out = self.linear(x_norm)
+    print_stat("text_proj_out", out)
     return out
-LTX2AudioVideoGemmaTextEncoder.__call__ = patched_connector_call
+LTX2GemmaFeatureExtractor.__call__ = patched_fe_call
 
 # Patch Transformer forward pass to intercept inputs and EXIT EARLY
 orig_transformer_forward_pass = pipe_module.transformer_forward_pass
