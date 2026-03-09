@@ -182,18 +182,20 @@ class Embeddings1DConnector(nnx.Module):
   ) -> Tuple[Array, Array]:
     
     # Debug print 1: Start
-    print(f"\\nDEBUG: Embeddings1DConnector Start. hidden_states shape: {hidden_states.shape}")
-    _t_np = jax.device_get(hidden_states)
-    print(f"   min: {_t_np.min():.5f}, max: {_t_np.max():.5f}, mean: {_t_np.mean():.5f}, std: {_t_np.std():.5f}")
+    jax.debug.print("\\nDEBUG: Embeddings1DConnector Start. hidden_states shape: {}", hidden_states.shape)
+    jax.debug.print("   min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
+                    min=jnp.min(hidden_states), max=jnp.max(hidden_states), 
+                    mean=jnp.mean(hidden_states), std=jnp.std(hidden_states))
 
     # 1. Thinking Tokens
     if self.num_learnable_registers > 0 and attention_mask is not None:
       hidden_states, attention_mask = self._replace_padded_with_learnable_registers(hidden_states, attention_mask)
       
       # Debug print 2: After Padding Replacement
-      print(f"DEBUG: After replacing padded with registers. hidden_states shape: {hidden_states.shape}")
-      _t_np = jax.device_get(hidden_states)
-      print(f"   min: {_t_np.min():.5f}, max: {_t_np.max():.5f}, mean: {_t_np.mean():.5f}, std: {_t_np.std():.5f}")
+      jax.debug.print("DEBUG: After replacing padded with registers.")
+      jax.debug.print("   min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
+                      min=jnp.min(hidden_states), max=jnp.max(hidden_states), 
+                      mean=jnp.mean(hidden_states), std=jnp.std(hidden_states))
 
     # 2. RoPE
     seq_len = hidden_states.shape[1]
@@ -217,16 +219,18 @@ class Embeddings1DConnector(nnx.Module):
     )(hidden_states, self.stacked_blocks)
     
     # Debug print 3: After scan
-    print(f"DEBUG: After transformer blocks scan. hidden_states shape: {hidden_states.shape}")
-    _t_np = jax.device_get(hidden_states)
-    print(f"   min: {_t_np.min():.5f}, max: {_t_np.max():.5f}, mean: {_t_np.mean():.5f}, std: {_t_np.std():.5f}")
+    jax.debug.print("DEBUG: After transformer blocks scan.")
+    jax.debug.print("   min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
+                    min=jnp.min(hidden_states), max=jnp.max(hidden_states), 
+                    mean=jnp.mean(hidden_states), std=jnp.std(hidden_states))
 
     # 4. Final Norm
     hidden_states = self.final_norm(hidden_states)
 
     # Debug print 4: Final Norm
-    print(f"DEBUG: After final norm. hidden_states shape: {hidden_states.shape}")
-    _t_np = jax.device_get(hidden_states)
-    print(f"   min: {_t_np.min():.5f}, max: {_t_np.max():.5f}, mean: {_t_np.mean():.5f}, std: {_t_np.std():.5f}")
+    jax.debug.print("DEBUG: After final norm.")
+    jax.debug.print("   min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
+                    min=jnp.min(hidden_states), max=jnp.max(hidden_states), 
+                    mean=jnp.mean(hidden_states), std=jnp.std(hidden_states))
 
     return hidden_states, attention_mask
