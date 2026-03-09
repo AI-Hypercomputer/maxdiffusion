@@ -86,14 +86,21 @@ class Embeddings1DConnector(nnx.Module):
       theta: float = 10000.0,
       num_learnable_registers: int = 128,
       rope_type: str = "interleaved",
+      base_seq_len: int = 4096,
+      double_precision: bool = True,
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
   ):
     self.dim = input_dim
+    self.heads = heads
+    self.head_dim = head_dim
     self.theta = theta
     self.num_learnable_registers = num_learnable_registers
     self.num_layers = layers
+    self.rope_type = rope_type
+    self.base_seq_len = base_seq_len
+    self.double_precision = double_precision
 
     # 1. Initialize Stacked Layers using vmap
     # This creates a single module where parameters have an extra leading dimension [layers, ...]
@@ -165,15 +172,54 @@ class Embeddings1DConnector(nnx.Module):
     new_mask = jnp.ones_like(attention_mask)
     return output, new_mask
 
-  def _compute_1d_rope(self, seq_len: int, dtype: DType) -> Tuple[Array, Array]:
-    t = jnp.arange(seq_len, dtype=jnp.float32)
-    freqs = 1.0 / (self.theta ** (jnp.arange(0, self.dim, 2, dtype=jnp.float32) / self.dim))
-    emb = jnp.outer(t, freqs)
-    cos = jnp.cos(emb)
-    sin = jnp.sin(emb)
-    cos = jnp.repeat(cos, 2, axis=-1)
-    sin = jnp.repeat(sin, 2, axis=-1)
-    return cos[None, ...], sin[None, ...]
+  def _compute_1d_rope(self, batch_size: int, seq_len: int, dtype: DType) -> Tuple[Array, Array]:
+    grid_1d = jnp.arange(seq_len, dtype=jnp.float32)
+    grid_1d = grid_1d / self.base_seq_len
+    grid = jnp.expand_dims(grid_1d, 0)
+    grid = jnp.tile(grid, (batch_size, 1))
+
+    num_rope_elems = 2
+    freqs_dtype = jnp.float64 if self.double_precision else jnp.float32
+    steps = self.dim // num_rope_elems
+    pow_indices = jnp.power(self.theta, jnp.linspace(0.0, 1.0, steps, dtype=freqs_dtype))
+    base_freqs = (pow_indices * jnp.pi / 2.0).astype(jnp.float32)
+
+    freqs = (jnp.expand_dims(grid, -1) * 2.0 - 1.0) * base_freqs
+
+    cos_freqs = jnp.cos(freqs)
+    sin_freqs = jnp.sin(freqs)
+
+    if self.rope_type == "interleaved":
+      cos_freqs = jnp.repeat(cos_freqs, 2, axis=-1)
+      sin_freqs = jnp.repeat(sin_freqs, 2, axis=-1)
+
+      if self.dim % num_rope_elems != 0:
+        curr_dim = cos_freqs.shape[-1]
+        pad_amt = self.dim - curr_dim
+        if pad_amt > 0:
+          cos_padding = jnp.ones((*cos_freqs.shape[:-1], pad_amt), dtype=cos_freqs.dtype)
+          sin_padding = jnp.zeros((*sin_freqs.shape[:-1], pad_amt), dtype=sin_freqs.dtype)
+          cos_freqs = jnp.concatenate([cos_padding, cos_freqs], axis=-1)
+          sin_freqs = jnp.concatenate([sin_padding, sin_freqs], axis=-1)
+
+    elif self.rope_type == "split":
+      expected_freqs = self.dim // 2
+      current_freqs = freqs.shape[-1]
+      pad_size = expected_freqs - current_freqs
+
+      if pad_size > 0:
+        cos_padding = jnp.ones((*cos_freqs.shape[:-1], pad_size), dtype=cos_freqs.dtype)
+        sin_padding = jnp.zeros((*sin_freqs.shape[:-1], pad_size), dtype=sin_freqs.dtype)
+        cos_freqs = jnp.concatenate([cos_padding, cos_freqs], axis=-1)
+        sin_freqs = jnp.concatenate([sin_padding, sin_freqs], axis=-1)
+
+      b = cos_freqs.shape[0]
+      t = cos_freqs.shape[1]
+      h = self.heads
+      cos_freqs = cos_freqs.reshape(b, t, h, -1).transpose(0, 2, 1, 3)
+      sin_freqs = sin_freqs.reshape(b, t, h, -1).transpose(0, 2, 1, 3)
+
+    return cos_freqs, sin_freqs
 
   def __call__(
       self,
@@ -198,8 +244,9 @@ class Embeddings1DConnector(nnx.Module):
                       mean=jnp.mean(hidden_states), std=jnp.std(hidden_states))
 
     # 2. RoPE
+    batch_size = hidden_states.shape[0]
     seq_len = hidden_states.shape[1]
-    rotary_emb = self._compute_1d_rope(seq_len, hidden_states.dtype)
+    rotary_emb = self._compute_1d_rope(batch_size, seq_len, hidden_states.dtype)
 
     # 3. Transformer Blocks (Scan)
 
