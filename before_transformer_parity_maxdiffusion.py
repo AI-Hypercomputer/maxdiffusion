@@ -75,8 +75,22 @@ from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import Emb
 
 orig_replace = Embeddings1DConnector._replace_padded_with_learnable_registers
 def patched_replace(self, hidden_states, attention_mask):
+    if attention_mask.ndim == 2:
+        mask = attention_mask
+    else:
+        mask = attention_mask.squeeze(-1) # [B, T]
+    curr_mask = (mask > 0.5).astype(jnp.int32)
+    
+    jax.debug.print("\n[MAXDIFFUSION] Mask Debug:")
+    jax.debug.print("  Input Attn Mask min/max: {} / {}", jnp.min(attention_mask), jnp.max(attention_mask))
+    jax.debug.print("  Curr Mask sum: {} (valid tokens)", jnp.sum(curr_mask))
+    jax.debug.print("  Curr Mask start 20 elements: {}", curr_mask[0, :20])
+    
+    flipped = jnp.flip(curr_mask, axis=[1])
+    jax.debug.print("  Flipped Mask Fwd logic sum: {} (first 20 elements: {})", jnp.sum(flipped), flipped[0, :20])
+
     regs = self.learnable_registers.value
-    jax.debug.print("[MAXDIFFUSION] Connector Registers std: {std}, mean: {mean}, min: {min}", 
+    jax.debug.print("  [MAXDIFFUSION] Connector Registers std: {std}, mean: {mean}, min: {min}", 
                     std=jnp.std(regs), mean=jnp.mean(regs), min=jnp.min(regs))
     
     return orig_replace(self, hidden_states, attention_mask)
