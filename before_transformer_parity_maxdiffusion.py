@@ -71,6 +71,18 @@ def patched_fe_call(self, hidden_states, attention_mask):
     return out
 LTX2GemmaFeatureExtractor.__call__ = patched_fe_call
 
+from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import Embeddings1DConnector
+
+orig_replace = Embeddings1DConnector._replace_padded_with_learnable_registers
+def patched_replace(self, hidden_states, attention_mask):
+    regs = self.learnable_registers.value
+    jax.debug.print("[MAXDIFFUSION] Connector Registers std: {std:.5f}, mean: {mean:.5f}, min: {min:.5f}", 
+                    std=jnp.std(regs), mean=jnp.mean(regs), min=jnp.min(regs))
+    
+    return orig_replace(self, hidden_states, attention_mask)
+    
+Embeddings1DConnector._replace_padded_with_learnable_registers = patched_replace
+
 # Patch Transformer forward pass to intercept inputs and EXIT EARLY
 orig_transformer_forward_pass = pipe_module.transformer_forward_pass
 def patched_transformer_forward_pass(*args, **kwargs):
