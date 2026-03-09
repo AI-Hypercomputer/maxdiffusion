@@ -103,7 +103,30 @@ orig_block_call = _BasicTransformerBlock1D.__call__
 def patched_block_call(self, hidden_states, attention_mask=None, rotary_emb=None):
     jax.debug.print("[MAXDIFFUSION] Block Input std: {std}, min: {min}, max: {max}", 
                     std=jnp.std(hidden_states), min=jnp.min(hidden_states), max=jnp.max(hidden_states))
-    return orig_block_call(self, hidden_states, attention_mask=attention_mask, rotary_emb=rotary_emb)
+    
+    # 1. Norm -> Attention
+    normed1 = self.norm1(hidden_states)
+    jax.debug.print("  [MAXDIFFUSION] norm1 std: {std}, min: {min}, max: {max}", 
+                    std=jnp.std(normed1), min=jnp.min(normed1), max=jnp.max(normed1))
+    
+    attn_output = self.attn1(normed1, attention_mask=attention_mask, rotary_emb=rotary_emb)
+    jax.debug.print("  [MAXDIFFUSION] attn1 std: {std}, min: {min}, max: {max}", 
+                    std=jnp.std(attn_output), min=jnp.min(attn_output), max=jnp.max(attn_output))
+                    
+    hidden_states = hidden_states + attn_output
+
+    # 2. Norm -> FeedForward
+    normed2 = self.norm2(hidden_states)
+    jax.debug.print("  [MAXDIFFUSION] norm2 std: {std}, min: {min}, max: {max}", 
+                    std=jnp.std(normed2), min=jnp.min(normed2), max=jnp.max(normed2))
+                    
+    ff_output = self.ff(normed2)
+    jax.debug.print("  [MAXDIFFUSION] ff std: {std}, min: {min}, max: {max}", 
+                    std=jnp.std(ff_output), min=jnp.min(ff_output), max=jnp.max(ff_output))
+                    
+    hidden_states = hidden_states + ff_output
+
+    return hidden_states
 
 _BasicTransformerBlock1D.__call__ = patched_block_call
 
