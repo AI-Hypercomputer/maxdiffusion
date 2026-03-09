@@ -81,18 +81,13 @@ def patched_replace(self, hidden_states, attention_mask):
         mask = attention_mask.squeeze(-1) # [B, T]
     curr_mask = (mask > 0.5).astype(jnp.int32)
     
-    jax.debug.print("\n[MAXDIFFUSION] Mask Debug:")
-    jax.debug.print("  Input Attn Mask min/max: {} / {}", jnp.min(attention_mask), jnp.max(attention_mask))
-    jax.debug.print("  Curr Mask sum: {} (valid tokens)", jnp.sum(curr_mask))
-    jax.debug.print("  Curr Mask start 20 elements: {}", curr_mask[0, :20])
+    jax.debug.print("\n[MAXDIFFUSION MASK DEBUG]")
+    jax.debug.print("  Input Attn Mask sum: {}", jnp.sum(attention_mask))
+    jax.debug.print("  Curr Mask sum: {} (start elements: {})", jnp.sum(curr_mask), curr_mask[0, :10])
     
     flipped = jnp.flip(curr_mask, axis=[1])
-    jax.debug.print("  Flipped Mask Fwd logic sum: {} (first 20 elements: {})", jnp.sum(flipped), flipped[0, :20])
+    jax.debug.print("  Flipped Mask (Diffusers Logic) sum: {} (start elements: {})", jnp.sum(flipped), flipped[0, :10])
 
-    regs = self.learnable_registers.value
-    jax.debug.print("  [MAXDIFFUSION] Connector Registers std: {std}, mean: {mean}, min: {min}", 
-                    std=jnp.std(regs), mean=jnp.mean(regs), min=jnp.min(regs))
-    
     return orig_replace(self, hidden_states, attention_mask)
     
 Embeddings1DConnector._replace_padded_with_learnable_registers = patched_replace
@@ -101,32 +96,20 @@ from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import _Ba
 
 orig_block_call = _BasicTransformerBlock1D.__call__
 def patched_block_call(self, hidden_states, attention_mask=None, rotary_emb=None):
-    jax.debug.print("[MAXDIFFUSION] Block Input std: {std}, min: {min}, max: {max}", 
-                    std=jnp.std(hidden_states), min=jnp.min(hidden_states), max=jnp.max(hidden_states))
+    jax.debug.print("\n[MAXDIFFUSION W] to_q std: {k}, to_q bias: {b}", 
+                    k=jnp.std(self.attn1.to_q.kernel), b=jnp.std(self.attn1.to_q.bias))
+    jax.debug.print("[MAXDIFFUSION W] to_k std: {k}, to_k bias: {b}", 
+                    k=jnp.std(self.attn1.to_k.kernel), b=jnp.std(self.attn1.to_k.bias))
+    jax.debug.print("[MAXDIFFUSION W] to_v std: {k}, to_v bias: {b}", 
+                    k=jnp.std(self.attn1.to_v.kernel), b=jnp.std(self.attn1.to_v.bias))
+    jax.debug.print("[MAXDIFFUSION W] to_out std: {k}, to_out bias: {b}", 
+                    k=jnp.std(self.attn1.to_out.kernel), b=jnp.std(self.attn1.to_out.bias))
+    jax.debug.print("[MAXDIFFUSION W] norm_q std: {k}", k=jnp.std(self.attn1.norm_q.scale))
     
-    # 1. Norm -> Attention
-    normed1 = self.norm1(hidden_states)
-    jax.debug.print("  [MAXDIFFUSION] norm1 std: {std}, min: {min}, max: {max}", 
-                    std=jnp.std(normed1), min=jnp.min(normed1), max=jnp.max(normed1))
+    if attention_mask is not None:
+        jax.debug.print("[MAXDIFFUSION MASK] supplied to attention kernel sum: {}", jnp.sum(attention_mask))
     
-    attn_output = self.attn1(normed1, attention_mask=attention_mask, rotary_emb=rotary_emb)
-    jax.debug.print("  [MAXDIFFUSION] attn1 std: {std}, min: {min}, max: {max}", 
-                    std=jnp.std(attn_output), min=jnp.min(attn_output), max=jnp.max(attn_output))
-                    
-    hidden_states = hidden_states + attn_output
-
-    # 2. Norm -> FeedForward
-    normed2 = self.norm2(hidden_states)
-    jax.debug.print("  [MAXDIFFUSION] norm2 std: {std}, min: {min}, max: {max}", 
-                    std=jnp.std(normed2), min=jnp.min(normed2), max=jnp.max(normed2))
-                    
-    ff_output = self.ff(normed2)
-    jax.debug.print("  [MAXDIFFUSION] ff std: {std}, min: {min}, max: {max}", 
-                    std=jnp.std(ff_output), min=jnp.min(ff_output), max=jnp.max(ff_output))
-                    
-    hidden_states = hidden_states + ff_output
-
-    return hidden_states
+    return orig_block_call(self, hidden_states, attention_mask=attention_mask, rotary_emb=rotary_emb)
 
 _BasicTransformerBlock1D.__call__ = patched_block_call
 
