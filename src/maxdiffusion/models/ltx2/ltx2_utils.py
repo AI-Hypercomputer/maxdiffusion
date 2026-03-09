@@ -91,7 +91,7 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
           lst[-1] = new
       return lst
 
-  if "transformer_blocks" in flax_key_str:
+  if "transformer_blocks" in flax_key_str or ("attn1" in flax_key_str and len(flax_key_str) >= 2 and "attn1" in flax_key_str[-2]):
       if flax_key_str[-1] == "query":
           flax_key_str[-1] = "to_q"
       elif flax_key_str[-1] == "key":
