@@ -96,19 +96,16 @@ from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import _Ba
 
 orig_block_call = _BasicTransformerBlock1D.__call__
 def patched_block_call(self, hidden_states, attention_mask=None, rotary_emb=None):
-    jax.debug.print("\n[MAXDIFFUSION W] to_q std: {k}, to_q bias: {b}", 
-                    k=jnp.std(self.attn1.to_q.kernel), b=jnp.std(self.attn1.to_q.bias))
-    jax.debug.print("[MAXDIFFUSION W] to_k std: {k}, to_k bias: {b}", 
-                    k=jnp.std(self.attn1.to_k.kernel), b=jnp.std(self.attn1.to_k.bias))
-    jax.debug.print("[MAXDIFFUSION W] to_v std: {k}, to_v bias: {b}", 
-                    k=jnp.std(self.attn1.to_v.kernel), b=jnp.std(self.attn1.to_v.bias))
-    jax.debug.print("[MAXDIFFUSION W] to_out std: {k}, to_out bias: {b}", 
-                    k=jnp.std(self.attn1.to_out.kernel), b=jnp.std(self.attn1.to_out.bias))
-    jax.debug.print("[MAXDIFFUSION W] norm_q std: {k}", k=jnp.std(self.attn1.norm_q.scale))
-    
-    if attention_mask is not None:
-        jax.debug.print("[MAXDIFFUSION MASK] supplied to attention kernel sum: {}", jnp.sum(attention_mask))
-    
+    normed1 = self.norm1(hidden_states)
+    jax.debug.print("DEBUG: maxdiffusion block norm1. min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
+                    min=jnp.min(normed1), max=jnp.max(normed1), 
+                    mean=jnp.mean(normed1), std=jnp.std(normed1))
+
+    attn_output = self.attn1(normed1, attention_mask=attention_mask, rotary_emb=rotary_emb)
+    jax.debug.print("DEBUG: maxdiffusion block attn1. min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
+                    min=jnp.min(attn_output), max=jnp.max(attn_output), 
+                    mean=jnp.mean(attn_output), std=jnp.std(attn_output))
+
     return orig_block_call(self, hidden_states, attention_mask=attention_mask, rotary_emb=rotary_emb)
 
 _BasicTransformerBlock1D.__call__ = patched_block_call
