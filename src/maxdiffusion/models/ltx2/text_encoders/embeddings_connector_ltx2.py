@@ -132,9 +132,10 @@ class Embeddings1DConnector(nnx.Module):
 
     num_duplications = t // self.num_learnable_registers
     registers = jnp.tile(self.learnable_registers[...], (num_duplications, 1))
-    registers = jnp.expand_dims(registers, 0)
-
-    if attention_mask.ndim == 2:
+    
+    if attention_mask.ndim == 4:
+         mask = attention_mask.squeeze(1).squeeze(1)
+    elif attention_mask.ndim == 2:
       mask = attention_mask
     else:
       mask = attention_mask.squeeze(-1) # [B, T]
@@ -154,16 +155,15 @@ class Embeddings1DConnector(nnx.Module):
     shifted_hidden_states = jnp.zeros_like(hidden_states)
     shifted_hidden_states = shifted_hidden_states.at[b_idx, target_indices, :].set(hidden_states)
     
-    # Shift mask
-    shifted_mask = jnp.zeros_like(curr_mask)
-    shifted_mask = shifted_mask.at[b_idx, target_indices].set(curr_mask)
-
     # 2. Add Learnable Registers
-    # Where shifted_mask is 1, keep valid tokens. Where 0, insert registers.
-    output = jnp.where(shifted_mask[..., None] == 1, shifted_hidden_states, registers)
+    # Where flipped_mask is 1, keep valid tokens. Where 0, insert registers.
+    flipped_mask = jnp.flip(curr_mask, axis=[1])
+    flipped_mask_expanded = flipped_mask[..., None]
+    
+    output = jnp.where(flipped_mask_expanded == 1, shifted_hidden_states, registers)
 
-    # Overwrite attention_mask with all-ones since padding is now filled with registers.
-    new_mask = jnp.ones_like(attention_mask)
+    # Overwrite attention_mask with all-zeros since padding is now filled with registers.
+    new_mask = jnp.zeros_like(attention_mask)
     return output, new_mask
 
   def _compute_1d_rope(self, seq_len: int, dtype: DType) -> Tuple[Array, Array]:

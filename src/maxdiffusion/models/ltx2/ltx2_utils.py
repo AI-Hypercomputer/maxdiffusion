@@ -415,9 +415,6 @@ def rename_for_ltx2_connector(key):
             key = key.replace(".weight", ".scale")
         else:
             key = key.replace(".weight", ".kernel")
-            
-    if "learnable_registers" in key and not key.endswith(".value"):
-        key = key + ".value"
         
     return key
 
