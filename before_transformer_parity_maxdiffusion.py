@@ -79,18 +79,18 @@ def patched_transformer_forward_pass(*args, **kwargs):
     # In Maxdiffusion, args are usually (hidden_states, encoder_hidden_states, timestep, ...)
     if "hidden_states" in kwargs:
          print_stat("transformer_input_video_latents", kwargs["hidden_states"])
-    elif len(args) > 0 and args[0] is not None:
-         print_stat("transformer_input_video_latents", args[0])
+    elif len(args) > 2 and args[2] is not None:
+         print_stat("transformer_input_video_latents", args[2])
          
     if "encoder_hidden_states" in kwargs:
          print_stat("transformers_encoder_hidden_states", kwargs["encoder_hidden_states"])
-    elif len(args) > 1 and args[1] is not None:
-         print_stat("transformers_encoder_hidden_states", args[1])
+    elif len(args) > 5 and args[5] is not None:
+         print_stat("transformers_encoder_hidden_states", args[5])
          
     if "timestep" in kwargs:
          print_stat("transformer_timestep", kwargs["timestep"])
-    elif len(args) > 2 and args[2] is not None:
-         print_stat("transformer_timestep", args[2])
+    elif len(args) > 4 and args[4] is not None:
+         print_stat("transformer_timestep", args[4])
          
     if "audio_hidden_states" in kwargs:
          print_stat("transformer_input_audio_latents", kwargs["audio_hidden_states"])
@@ -99,8 +99,8 @@ def patched_transformer_forward_pass(*args, **kwargs):
          
     if "audio_encoder_hidden_states" in kwargs:
          print_stat("transformers_audio_encoder_hidden_states", kwargs["audio_encoder_hidden_states"])
-    elif len(args) > 4 and args[4] is not None:
-         print_stat("transformers_audio_encoder_hidden_states", args[4])
+    elif len(args) > 6 and args[6] is not None:
+         print_stat("transformers_audio_encoder_hidden_states", args[6])
 
     print("\n[SUCCESS] Captured all inputs up to Transformer logic. Exiting early to save compute.\n")
     import os
