@@ -4,7 +4,6 @@ skip_jax_distributed_system: False
 attention: 'flash'
 attention_sharding_uniform: True 
 precision: 'bf16'
-data_sharding: ['data', 'fsdp', 'context', 'tensor']
 remat_policy: "NONE"
 names_which_can_be_saved: []
 names_which_can_be_offloaded: []
@@ -44,19 +43,22 @@ seed: 10
 #parallelism
 mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 logical_axis_rules: [
-                      ['batch', 'data'],
-                      ['activation_heads', 'fsdp'],
-                      ['activation_batch', 'data'],
-                      ['activation_kv', 'tensor'],
+                      ['batch', ['data', 'fsdp']],
+                      ['activation_batch', ['data', 'fsdp']],
+                      ['activation_self_attn_heads', ['context', 'tensor']],
+                      ['activation_cross_attn_q_length', ['context', 'tensor']],
+                      ['activation_length', 'context'],
+                      ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
-                      ['embed','fsdp'],
+                      ['embed', ['context', 'fsdp']],
                       ['heads', 'tensor'],
-                      ['norm', 'fsdp'],
-                      ['conv_batch', ['data','fsdp']],
+                      ['norm', 'tensor'],
+                      ['conv_batch', ['data', 'context', 'fsdp']],
                       ['out_channels', 'tensor'],
-                      ['conv_out', 'fsdp'],
-                      ['conv_in', 'fsdp']
+                      ['conv_out', 'context'],
                     ]
+data_sharding: [['data', 'fsdp', 'context', 'tensor']]
+
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: -1
 dcn_context_parallelism: 1
