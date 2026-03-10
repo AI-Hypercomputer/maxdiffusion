@@ -592,5 +592,5 @@ def load_audio_vae_weights(
       continue
     filtered_eval_shapes[k] = v
 
-  validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
+  validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), unflatten_dict(flax_state_dict))
   return unflatten_dict(flax_state_dict)
