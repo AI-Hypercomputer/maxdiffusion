@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Optional, Tuple, Union, List
+from typing import Tuple, Union, List
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -98,28 +98,23 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
   """
 
   @register_to_config
-
   def __init__(
       self,
       caption_channels: int = 3840,
       text_proj_in_factor: int = 49,
-      
       video_connector_attention_head_dim: int = 128,
       video_connector_num_attention_heads: int = 30,
       video_connector_num_layers: int = 2,
       video_connector_num_learnable_registers: int = 128,
-      
       audio_connector_attention_head_dim: int = 128,
       audio_connector_num_attention_heads: int = 30,
       audio_connector_num_layers: int = 2,
       audio_connector_num_learnable_registers: int = 128,
-      
       connector_rope_base_seq_len: int = 4096,
       rope_double_precision: bool = True,
       rope_theta: float = 10000.0,
       rope_type: str = "split",
       causal_temporal_positioning: bool = False,
-      
       dtype: DType = jnp.float32,
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,

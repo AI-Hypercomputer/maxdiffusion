@@ -25,6 +25,7 @@ from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
 Array = common_types.Array
 DType = common_types.DType
 
+
 class _BasicTransformerBlock1D(nnx.Module):
 
   def __init__(
@@ -128,9 +129,7 @@ class Embeddings1DConnector(nnx.Module):
           jax.random.uniform(key, (num_learnable_registers, self.dim), dtype=jnp.bfloat16) * 2.0 - 1.0
       )
 
-    self.final_norm = nnx.RMSNorm(
-        self.dim, epsilon=1e-6, dtype=jnp.float32, use_scale=False, rngs=rngs
-    )
+    self.final_norm = nnx.RMSNorm(self.dim, epsilon=1e-6, dtype=jnp.float32, use_scale=False, rngs=rngs)
 
   def _replace_padded_with_learnable_registers(self, hidden_states: Array, attention_mask: Array) -> Tuple[Array, Array]:
     b, t, d = hidden_states.shape
@@ -139,27 +138,27 @@ class Embeddings1DConnector(nnx.Module):
 
     num_duplications = t // self.num_learnable_registers
     registers = jnp.tile(self.learnable_registers[...], (num_duplications, 1))
-    
+
     if attention_mask.ndim == 2:
       mask = attention_mask
     else:
-      mask = attention_mask.squeeze(-1) # [B, T]
+      mask = attention_mask.squeeze(-1)  # [B, T]
 
     # Mask valid tokens as 1 (or True)
     curr_mask = (mask > 0.5).astype(jnp.int32)
-    
+
     # 1. Shift valid tokens to the left
     num_valid = jnp.sum(curr_mask, axis=1, keepdims=True)
     valid_positions = jnp.cumsum(curr_mask, axis=1) - 1
     invalid_positions = jnp.cumsum(1 - curr_mask, axis=1) - 1 + num_valid
     target_indices = jnp.where(curr_mask == 1, valid_positions, invalid_positions)
-    
+
     b_idx = jnp.arange(b)[:, None]
-    
+
     # Shift hidden states
     shifted_hidden_states = jnp.zeros_like(hidden_states)
     shifted_hidden_states = shifted_hidden_states.at[b_idx, target_indices, :].set(hidden_states)
-    
+
     # Shift mask
     shifted_mask = jnp.zeros_like(curr_mask)
     shifted_mask = shifted_mask.at[b_idx, target_indices].set(curr_mask)
@@ -227,8 +226,6 @@ class Embeddings1DConnector(nnx.Module):
       hidden_states: Array,
       attention_mask: Optional[Array] = None,
   ) -> Tuple[Array, Array]:
-    
-
     # 1. Thinking Tokens
     if self.num_learnable_registers > 0 and attention_mask is not None:
       hidden_states, attention_mask = self._replace_padded_with_learnable_registers(hidden_states, attention_mask)

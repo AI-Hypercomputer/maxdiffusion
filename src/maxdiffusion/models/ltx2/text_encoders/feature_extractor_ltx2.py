@@ -14,8 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Tuple, Optional, Union
-import jax
+from typing import Tuple, Union
 import jax.numpy as jnp
 from flax import nnx
 from maxdiffusion import common_types
@@ -48,7 +47,7 @@ def _norm_and_concat_padded_batch(
   token_indices = jnp.arange(t)[None, :]
   start_indices = t - sequence_lengths[:, None]
   mask = token_indices >= start_indices
-  
+
   # Broadcast to [B, T, 1, 1]
   mask = mask[:, :, None, None]
 
@@ -112,9 +111,7 @@ class LTX2GemmaFeatureExtractor(nnx.Module):
     # LTX-2 uses bias=False for the projection
     self.linear = nnx.Linear(input_dim, output_dim, use_bias=False, dtype=dtype, rngs=rngs)
 
-  def __call__(
-      self, hidden_states: Union[Tuple[Array, ...], Array], attention_mask: Array
-  ) -> Array:
+  def __call__(self, hidden_states: Union[Tuple[Array, ...], Array], attention_mask: Array) -> Array:
     """
     Args:
         hidden_states: Tuple of arrays from Gemma, each [B, T, D].

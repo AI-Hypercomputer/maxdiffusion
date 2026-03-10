@@ -19,20 +19,13 @@ import jax
 import numpy as np
 from typing import Optional, Tuple
 from maxdiffusion.pipelines.ltx2.ltx2_pipeline import LTX2Pipeline
-from maxdiffusion.models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
-from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
-from maxdiffusion.models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
-from maxdiffusion.models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
-from maxdiffusion.models.ltx2.vocoder_ltx2 import LTX2Vocoder
-from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler
-from transformers import AutoTokenizer, Gemma3ForConditionalGeneration
-from maxdiffusion import max_logging, max_utils
+from maxdiffusion import max_logging
 from maxdiffusion.checkpointing.checkpointing_utils import create_orbax_checkpoint_manager
 import orbax.checkpoint as ocp
 from etils import epath
-import torch
 
 LTX2_CHECKPOINT = "LTX2_CHECKPOINT"
+
 
 class LTX2Checkpointer:
 
@@ -53,7 +46,7 @@ class LTX2Checkpointer:
     if self.checkpoint_manager is None:
       max_logging.log("No checkpoint manager configured, skipping Orbax load.")
       return None, None
-      
+
     if step is None:
       step = self.checkpoint_manager.latest_step()
       max_logging.log(f"Latest LTX2 checkpoint step: {step}")
@@ -85,7 +78,9 @@ class LTX2Checkpointer:
     max_logging.log(f"optimizer found in checkpoint {'opt_state' in restored_checkpoint.ltx2_state.keys()}")
     return restored_checkpoint, step
 
-  def load_checkpoint(self, step=None, vae_only=False, load_transformer=True) -> Tuple[LTX2Pipeline, Optional[dict], Optional[int]]:
+  def load_checkpoint(
+      self, step=None, vae_only=False, load_transformer=True
+  ) -> Tuple[LTX2Pipeline, Optional[dict], Optional[int]]:
     restored_checkpoint, step = self.load_ltx2_configs_from_orbax(step)
     opt_state = None
 
@@ -116,4 +111,3 @@ class LTX2Checkpointer:
     # Save the checkpoint
     self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
     max_logging.log(f"Checkpoint for step {train_step} saved.")
-

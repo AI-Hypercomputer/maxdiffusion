@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from fractions import Fraction
-from typing import Optional, List, Union
+from typing import Optional
 
 import numpy as np
 import torch
@@ -21,46 +21,44 @@ import torch
 from ...utils import import_utils
 
 if import_utils.is_av_available():
-    import av
+  import av
 
 
 def _prepare_audio_stream(container, audio_sample_rate: int):
-    """
-    Prepare the audio stream for writing.
-    """
-    audio_stream = container.add_stream("aac", rate=audio_sample_rate)
-    audio_stream.codec_context.sample_rate = audio_sample_rate
-    audio_stream.codec_context.layout = "stereo"
-    audio_stream.codec_context.time_base = Fraction(1, audio_sample_rate)
-    return audio_stream
+  """
+  Prepare the audio stream for writing.
+  """
+  audio_stream = container.add_stream("aac", rate=audio_sample_rate)
+  audio_stream.codec_context.sample_rate = audio_sample_rate
+  audio_stream.codec_context.layout = "stereo"
+  audio_stream.codec_context.time_base = Fraction(1, audio_sample_rate)
+  return audio_stream
 
 
-def _resample_audio(
-    container, audio_stream, frame_in
-) -> None:
-    cc = audio_stream.codec_context
+def _resample_audio(container, audio_stream, frame_in) -> None:
+  cc = audio_stream.codec_context
 
-    target_format = cc.format or "fltp"
-    target_layout = cc.layout or "stereo"
-    target_rate = cc.sample_rate or frame_in.sample_rate
+  target_format = cc.format or "fltp"
+  target_layout = cc.layout or "stereo"
+  target_rate = cc.sample_rate or frame_in.sample_rate
 
-    audio_resampler = av.audio.resampler.AudioResampler(
-        format=target_format,
-        layout=target_layout,
-        rate=target_rate,
-    )
+  audio_resampler = av.audio.resampler.AudioResampler(
+      format=target_format,
+      layout=target_layout,
+      rate=target_rate,
+  )
 
-    audio_next_pts = 0
-    for rframe in audio_resampler.resample(frame_in):
-        if rframe.pts is None:
-            rframe.pts = audio_next_pts
-        audio_next_pts += rframe.samples
-        rframe.sample_rate = frame_in.sample_rate
-        container.mux(audio_stream.encode(rframe))
+  audio_next_pts = 0
+  for rframe in audio_resampler.resample(frame_in):
+    if rframe.pts is None:
+      rframe.pts = audio_next_pts
+    audio_next_pts += rframe.samples
+    rframe.sample_rate = frame_in.sample_rate
+    container.mux(audio_stream.encode(rframe))
 
-    # flush audio encoder
-    for packet in audio_stream.encode():
-        container.mux(packet)
+  # flush audio encoder
+  for packet in audio_stream.encode():
+    container.mux(packet)
 
 
 def _write_audio(
@@ -69,98 +67,98 @@ def _write_audio(
     samples: torch.Tensor,
     audio_sample_rate: int,
 ) -> None:
-    import numpy as np
-    
-    # If it is a torch tensor, we convert to numpy first
-    if hasattr(samples, "cpu"):
-        samples = samples.contiguous().cpu().numpy()
-        
-    if samples.ndim == 1:
-        samples = samples[:, None]
+  import numpy as np
 
-    # The Vocoder naturally outputs (Channels=2, Time)
-    if samples.shape[0] == 2 and samples.shape[1] != 2:
-        samples = samples.T  # Now (Time, 2)
+  # If it is a torch tensor, we convert to numpy first
+  if hasattr(samples, "cpu"):
+    samples = samples.contiguous().cpu().numpy()
 
-    if samples.shape[1] != 2:
-        raise ValueError(f"Expected samples with 2 channels; got shape {samples.shape}.")
+  if samples.ndim == 1:
+    samples = samples[:, None]
 
-    # Convert to int16 packed for ingestion; resampler converts to encoder fmt.
-    if samples.dtype != np.int16:
-        # Prevent clipping distortion by normalizing volume if extremely loud,
-        # but LTX-2 vocoder outputs naturally fall in [-1, 1].
-        samples = np.clip(samples, -1.0, 1.0)
-        samples = (samples * 32767.0).astype(np.int16)
+  # The Vocoder naturally outputs (Channels=2, Time)
+  if samples.shape[0] == 2 and samples.shape[1] != 2:
+    samples = samples.T  # Now (Time, 2)
 
-    # For PyAV with format="s16" and layout="stereo", we need interleaved data.
-    # A (Time, 2) numpy array inherently interleaves Memory if C-contiguous.
-    # PyAV from_ndarray expects shape (1, Time * 2) or (2, Time) depending on the planar flag.
-    # "s16" is interleaved, so it expects (1, Samples * Channels) where Samples*Channels are C-contiguous interleaved.
-    samples_np = np.ascontiguousarray(samples).reshape(1, -1)
-        
-    frame_in = av.AudioFrame.from_ndarray(
-        samples_np,
-        format="s16",
-        layout="stereo",
-    )
-    frame_in.sample_rate = audio_sample_rate
+  if samples.shape[1] != 2:
+    raise ValueError(f"Expected samples with 2 channels; got shape {samples.shape}.")
 
-    _resample_audio(container, audio_stream, frame_in)
+  # Convert to int16 packed for ingestion; resampler converts to encoder fmt.
+  if samples.dtype != np.int16:
+    # Prevent clipping distortion by normalizing volume if extremely loud,
+    # but LTX-2 vocoder outputs naturally fall in [-1, 1].
+    samples = np.clip(samples, -1.0, 1.0)
+    samples = (samples * 32767.0).astype(np.int16)
+
+  # For PyAV with format="s16" and layout="stereo", we need interleaved data.
+  # A (Time, 2) numpy array inherently interleaves Memory if C-contiguous.
+  # PyAV from_ndarray expects shape (1, Time * 2) or (2, Time) depending on the planar flag.
+  # "s16" is interleaved, so it expects (1, Samples * Channels) where Samples*Channels are C-contiguous interleaved.
+  samples_np = np.ascontiguousarray(samples).reshape(1, -1)
+
+  frame_in = av.AudioFrame.from_ndarray(
+      samples_np,
+      format="s16",
+      layout="stereo",
+  )
+  frame_in.sample_rate = audio_sample_rate
+
+  _resample_audio(container, audio_stream, frame_in)
 
 
 def encode_video(
     video: torch.Tensor, fps: int, audio: Optional[torch.Tensor], audio_sample_rate: Optional[int], output_path: str
 ) -> None:
-    """
-    Encodes video (and optionally audio) to a file using PyAV.
-    Args:
-        video: Video tensor [F, H, W, C] (frames, height, width, channels)
-        fps: Frames per second
-        audio: Audio tensor [C, L] or [L, C]
-        audio_sample_rate: Audio sample rate
-        output_path: Output file path
-    """
-    if not import_utils.is_av_available():
-        raise ImportError(import_utils.AV_IMPORT_ERROR.format("encode_video"))
-    
-    if hasattr(video, "cpu"):
-        video_np = video.cpu().numpy()
-    else:
-        video_np = np.array(video)
+  """
+  Encodes video (and optionally audio) to a file using PyAV.
+  Args:
+      video: Video tensor [F, H, W, C] (frames, height, width, channels)
+      fps: Frames per second
+      audio: Audio tensor [C, L] or [L, C]
+      audio_sample_rate: Audio sample rate
+      output_path: Output file path
+  """
+  if not import_utils.is_av_available():
+    raise ImportError(import_utils.AV_IMPORT_ERROR.format("encode_video"))
 
-    if video_np.ndim == 4:
-        # [F, H, W, C]
-        _, height, width, _ = video_np.shape
-    elif video_np.ndim == 5:
-        # [B, F, H, W, C] -> take the first video in the batch
-        video_np = video_np[0]
-        _, height, width, _ = video_np.shape
-    else:
-         raise ValueError(f"encode_video expects a 4D or 5D video tensor, got {video_np.ndim}D")
+  if hasattr(video, "cpu"):
+    video_np = video.cpu().numpy()
+  else:
+    video_np = np.array(video)
 
-    container = av.open(output_path, mode="w")
-    stream = container.add_stream("libx264", rate=int(fps))
-    stream.width = width
-    stream.height = height
-    stream.pix_fmt = "yuv420p"
+  if video_np.ndim == 4:
+    # [F, H, W, C]
+    _, height, width, _ = video_np.shape
+  elif video_np.ndim == 5:
+    # [B, F, H, W, C] -> take the first video in the batch
+    video_np = video_np[0]
+    _, height, width, _ = video_np.shape
+  else:
+    raise ValueError(f"encode_video expects a 4D or 5D video tensor, got {video_np.ndim}D")
 
-    if audio is not None:
-        if audio_sample_rate is None:
-            raise ValueError("audio_sample_rate is required when audio is provided")
+  container = av.open(output_path, mode="w")
+  stream = container.add_stream("libx264", rate=int(fps))
+  stream.width = width
+  stream.height = height
+  stream.pix_fmt = "yuv420p"
 
-        audio_stream = _prepare_audio_stream(container, audio_sample_rate)
+  if audio is not None:
+    if audio_sample_rate is None:
+      raise ValueError("audio_sample_rate is required when audio is provided")
 
-    for frame_array in video_np:
-        # frame_array is [H, W, C]
-        frame = av.VideoFrame.from_ndarray(frame_array, format="rgb24")
-        for packet in stream.encode(frame):
-            container.mux(packet)
+    audio_stream = _prepare_audio_stream(container, audio_sample_rate)
 
-    # Flush encoder
-    for packet in stream.encode():
-        container.mux(packet)
+  for frame_array in video_np:
+    # frame_array is [H, W, C]
+    frame = av.VideoFrame.from_ndarray(frame_array, format="rgb24")
+    for packet in stream.encode(frame):
+      container.mux(packet)
 
-    if audio is not None:
-        _write_audio(container, audio_stream, audio, audio_sample_rate)
+  # Flush encoder
+  for packet in stream.encode():
+    container.mux(packet)
 
-    container.close()
+  if audio is not None:
+    _write_audio(container, audio_stream, audio, audio_sample_rate)
+
+  container.close()

@@ -14,9 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Optional, Tuple
 from flax import nnx
-import jax
 import jax.numpy as jnp
 from ... import common_types
 from ..attention_flax import NNXAttentionOp
@@ -262,7 +261,7 @@ class LTX2RotaryPosEmbed(nnx.Module):
     max_positions = max_positions[:num_pos_dims]
     # Reshape to broadcast with [B, num_patches, num_pos_dims]
     max_positions = max_positions.reshape(1, 1, num_pos_dims)
-    
+
     # Scale to [0, 1]
     grid = grid / max_positions
 
@@ -278,13 +277,13 @@ class LTX2RotaryPosEmbed(nnx.Module):
     # 4. Outer product
     # Map grid [0, 1] -> [-1, 1]
     scaled_grid = grid * 2.0 - 1.0  # [B, num_patches, num_pos_dims]
-    
+
     # [B, num_patches, num_pos_dims, 1] * [steps] -> [B, num_patches, num_pos_dims, steps]
     freqs = jnp.expand_dims(scaled_grid, -1) * base_freqs
-    
+
     # CRITICAL: Transpose the last two dimensions to exactly match Diffusers flattening order!
     freqs = jnp.swapaxes(freqs, -1, -2)  # [B, num_patches, steps, num_pos_dims]
-    
+
     # Flatten last two dims -> [B, num_patches, dim // 2]
     freqs = freqs.reshape(*freqs.shape[:2], -1)
 
@@ -353,7 +352,6 @@ class LTX2Attention(nnx.Module):
     self.inner_dim = dim_head * heads
     self.dropout_rate = dropout
 
-
     # 1. Define Partitioned Initializers (Logical Axes)
     # Q, K, V kernels: [in_features (embed), out_features (heads)]
     qkv_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads"))
@@ -369,23 +367,55 @@ class LTX2Attention(nnx.Module):
     norm_scale_init = nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",))
 
     # 2. Projections
-    self.to_q = nnx.Linear(query_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype)
+    self.to_q = nnx.Linear(
+        query_dim,
+        self.inner_dim,
+        use_bias=bias,
+        kernel_init=qkv_kernel_init,
+        bias_init=qkv_bias_init,
+        rngs=rngs,
+        dtype=dtype,
+    )
 
     # Handle Self vs Cross Attention input dims
     kv_dim = context_dim if context_dim is not None else query_dim
-    self.to_k = nnx.Linear(kv_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype)
-    self.to_v = nnx.Linear(kv_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype)
+    self.to_k = nnx.Linear(
+        kv_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype
+    )
+    self.to_v = nnx.Linear(
+        kv_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype
+    )
 
     # 3. Normalization (Applied to full inner_dim, NOT per-head)
     self.norm_q = nnx.RMSNorm(
-        self.inner_dim, epsilon=eps, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=True, scale_init=norm_scale_init, rngs=rngs
+        self.inner_dim,
+        epsilon=eps,
+        dtype=jnp.float32,
+        param_dtype=jnp.float32,
+        use_scale=True,
+        scale_init=norm_scale_init,
+        rngs=rngs,
     )
     self.norm_k = nnx.RMSNorm(
-        self.inner_dim, epsilon=eps, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=True, scale_init=norm_scale_init, rngs=rngs
+        self.inner_dim,
+        epsilon=eps,
+        dtype=jnp.float32,
+        param_dtype=jnp.float32,
+        use_scale=True,
+        scale_init=norm_scale_init,
+        rngs=rngs,
     )
 
     # 4. Output
-    self.to_out = nnx.Linear(self.inner_dim, query_dim, use_bias=out_bias, kernel_init=out_kernel_init, bias_init=out_bias_init, rngs=rngs, dtype=dtype)
+    self.to_out = nnx.Linear(
+        self.inner_dim,
+        query_dim,
+        use_bias=out_bias,
+        kernel_init=out_kernel_init,
+        bias_init=out_bias_init,
+        rngs=rngs,
+        dtype=dtype,
+    )
 
     if self.dropout_rate > 0:
       self.dropout_layer = nnx.Dropout(self.dropout_rate, rngs=rngs)

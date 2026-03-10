@@ -25,6 +25,7 @@ from google.cloud import storage
 import flax
 from maxdiffusion.pipelines.ltx2.ltx2_pipeline_utils import encode_video
 
+
 def upload_video_to_gcs(output_dir: str, video_path: str):
   """
   Uploads a local video file to a specified Google Cloud Storage bucket.
@@ -125,14 +126,14 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   # Using global_batch_size_to_train_on to map prompts
   prompt = getattr(config, "prompt", "A cat playing piano")
   prompt = [prompt] * getattr(config, "global_batch_size_to_train_on", 1)
-  
+
   negative_prompt = getattr(config, "negative_prompt", "")
   negative_prompt = [negative_prompt] * getattr(config, "global_batch_size_to_train_on", 1)
 
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
   )
-  
+
   out = call_pipeline(config, pipeline, prompt, negative_prompt)
   # out should have .frames and .audio
   videos = out.frames if hasattr(out, "frames") else out[0]
@@ -151,24 +152,20 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log(f"compile_time: {compile_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/compile_time", compile_time, global_step=0)
-  
+
   saved_video_path = []
-  audio_sample_rate = getattr(pipeline.vocoder.config, "output_sampling_rate", 24000) if hasattr(pipeline, "vocoder") else 24000
+  audio_sample_rate = (
+      getattr(pipeline.vocoder.config, "output_sampling_rate", 24000) if hasattr(pipeline, "vocoder") else 24000
+  )
   fps = getattr(config, "fps", 24)
 
   # Export videos
   for i in range(len(videos)):
     video_path = f"{filename_prefix}ltx2_output_{getattr(config, 'seed', 0)}_{i}.mp4"
     audio_i = audios[i] if audios is not None else None
-    
-    encode_video(
-        video=videos[i], 
-        fps=fps, 
-        audio=audio_i, 
-        audio_sample_rate=audio_sample_rate, 
-        output_path=video_path
-    )
-    
+
+    encode_video(video=videos[i], fps=fps, audio=audio_i, audio_sample_rate=audio_sample_rate, output_path=video_path)
+
     saved_video_path.append(video_path)
     if config.output_dir.startswith("gs://"):
       upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
@@ -187,7 +184,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
-  
+
   s0 = time.perf_counter()
   if getattr(config, "enable_profiler", False):
     max_utils.activate_profiler(config)

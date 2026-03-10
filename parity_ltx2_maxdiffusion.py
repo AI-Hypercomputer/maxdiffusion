@@ -8,7 +8,6 @@ sys.path.insert(0, os.path.abspath("src"))
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
 
 orig_normal = jax.random.normal
 video_noise = None
@@ -22,7 +21,7 @@ def load_noises():
         video_noise = np.load(video_noise_path)
     else:
         print(f"Warning: {video_noise_path} not found")
-        
+
     if os.path.exists(audio_noise_path):
         audio_noise = np.load(audio_noise_path)
     else:
@@ -40,7 +39,6 @@ jax.random.normal = custom_normal
 from maxdiffusion import pyconfig
 from maxdiffusion.pipelines.ltx2.ltx2_pipeline import LTX2Pipeline
 import maxdiffusion.pipelines.ltx2.ltx2_pipeline as pipe_module
-from maxdiffusion.models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 from maxdiffusion.models.ltx2.vocoder_ltx2 import LTX2Vocoder
@@ -130,15 +128,15 @@ LTX2Vocoder.__call__ = patched_vocoder_call
 
 def main():
     load_noises()
-    
+
     # Init pyconfig, this assumes the user runs: python parity_ltx2_maxdiffusion.py src/maxdiffusion/configs/ltx2_video.yml
     if len(sys.argv) < 2:
         print("Please provide the path to ltx2_video.yml")
         sys.exit(1)
-        
+
     pyconfig.initialize(sys.argv)
     config = pyconfig.config
-    
+
     # Create the pipeline
     pipe = LTX2Pipeline.from_pretrained(config)
 
@@ -153,7 +151,7 @@ def main():
     negative_prompt = getattr(config, "negative_prompt", "shaky, glitchy, low quality...")
     if not isinstance(negative_prompt, str):
          if isinstance(negative_prompt, (list, tuple)):
-              # Re-assemble commas if it was parsed as a list by commas 
+              # Re-assemble commas if it was parsed as a list by commas
               negative_prompt = ", ".join(str(p) for p in negative_prompt)
          else:
               negative_prompt = str(negative_prompt)

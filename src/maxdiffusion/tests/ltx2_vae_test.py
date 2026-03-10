@@ -21,7 +21,6 @@ import jax.numpy as jnp
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from jax.sharding import Mesh
-import numpy as np
 import unittest
 from absl.testing import absltest
 
@@ -30,13 +29,8 @@ from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import create_device_mesh
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import (
     LTX2VideoCausalConv3d,
-    LTXVideoDownsampler3d,
     LTX2VideoDownBlock3D,
-    LTXVideoUpsampler3d,
-    LTX2VideoResnetBlock3d,
     LTX2VideoUpBlock3d,
-    LTX2VideoEncoder3d,
-    LTX2VideoDecoder3d,
     LTX2VideoAutoencoderKL,
 )
 

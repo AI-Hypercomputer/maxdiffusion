@@ -306,21 +306,25 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
       width,
       num_frames,
       dtype=jnp.float32,
-      generator=jax.random.PRNGKey(0)
+      generator=jax.random.PRNGKey(0),
   )
-  
+
   audio_hidden_states = pipeline.prepare_audio_latents(
       batch_size,
-      getattr(pipeline.audio_vae.config, "latent_channels", 8) if hasattr(pipeline, "audio_vae") and pipeline.audio_vae is not None else 8,
+      getattr(pipeline.audio_vae.config, "latent_channels", 8)
+      if hasattr(pipeline, "audio_vae") and pipeline.audio_vae is not None
+      else 8,
       audio_num_frames,
       dtype=jnp.float32,
-      generator=jax.random.PRNGKey(0)
+      generator=jax.random.PRNGKey(0),
   )
-  
-  caption_channels = getattr(pipeline.transformer, "caption_channels", getattr(pipeline.transformer.config, "caption_channels", 3840))
-  
+
+  caption_channels = getattr(
+      pipeline.transformer, "caption_channels", getattr(pipeline.transformer.config, "caption_channels", 3840)
+  )
+
   seq_len_text = raw_keys.get("max_sequence_length", 128) if raw_keys.get("max_sequence_length") else 128
-  
+
   encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, caption_channels), dtype=jnp.float32)
   audio_encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, caption_channels), dtype=jnp.float32)
   timestep = jnp.ones((batch_size,), dtype=jnp.float32)
@@ -331,12 +335,12 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
       encoder_hidden_states,
       audio_encoder_hidden_states,
       timestep,
-      None, # audio_timestep
-      jnp.ones((batch_size, seq_len_text), dtype=jnp.float32), # encoder_attention_mask
-      jnp.ones((batch_size, seq_len_text), dtype=jnp.float32), # audio_encoder_attention_mask
-      (num_frames - 1) // 8 + 1 if hasattr(pipeline, "vae_temporal_compression_ratio") else 1, # latent num_frames
-      height // 32 if hasattr(pipeline, "vae_spatial_compression_ratio") else 1, # latent height
-      width // 32 if hasattr(pipeline, "vae_spatial_compression_ratio") else 1, # latent width
+      None,  # audio_timestep
+      jnp.ones((batch_size, seq_len_text), dtype=jnp.float32),  # encoder_attention_mask
+      jnp.ones((batch_size, seq_len_text), dtype=jnp.float32),  # audio_encoder_attention_mask
+      (num_frames - 1) // 8 + 1 if hasattr(pipeline, "vae_temporal_compression_ratio") else 1,  # latent num_frames
+      height // 32 if hasattr(pipeline, "vae_spatial_compression_ratio") else 1,  # latent height
+      width // 32 if hasattr(pipeline, "vae_spatial_compression_ratio") else 1,  # latent width
       fps,
       audio_num_frames,
   )

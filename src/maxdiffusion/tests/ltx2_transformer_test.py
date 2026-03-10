@@ -18,7 +18,6 @@ import os
 import jax
 import jax.numpy as jnp
 import unittest
-from absl.testing import absltest
 from flax import nnx
 from jax.sharding import Mesh
 from flax.linen import partitioning as nn_partitioning
@@ -34,7 +33,6 @@ import flax
 from unittest.mock import Mock, patch, MagicMock
 from maxdiffusion.pipelines.ltx2.ltx2_pipeline import LTX2Pipeline
 from maxdiffusion.pyconfig import HyperParameters
-import qwix
 
 flax.config.update("flax_always_shard_variable", False)
 

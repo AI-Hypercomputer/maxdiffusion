@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
-from typing import Optional, Tuple, Any, Dict, Union
+from typing import Optional, Tuple, Any, Dict
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -21,26 +21,29 @@ import flax.linen as nn
 import numpy as np
 
 printed_count = 0
+
+
 def print_shape(name, tensor):
-    global printed_count
-    if printed_count > 1000:
-        return
-    if tensor is not None:
-        def _print_fn(n, t):
-            t_np = np.array(t, dtype=np.float32)
-            print(f"[{n}] min: {t_np.min():.5f}, max: {t_np.max():.5f}, mean: {t_np.mean():.5f}, std: {t_np.std():.5f}")
-        if isinstance(tensor, jax.core.Tracer):
-            jax.debug.callback(_print_fn, name, tensor)
-        else:
-            _print_fn(name, tensor)
-        printed_count += 1
+  global printed_count
+  if printed_count > 1000:
+    return
+  if tensor is not None:
+
+    def _print_fn(n, t):
+      t_np = np.array(t, dtype=np.float32)
+      print(f"[{n}] min: {t_np.min():.5f}, max: {t_np.max():.5f}, mean: {t_np.mean():.5f}, std: {t_np.std():.5f}")
+
+    if isinstance(tensor, jax.core.Tracer):
+      jax.debug.callback(_print_fn, name, tensor)
+    else:
+      _print_fn(name, tensor)
+    printed_count += 1
+
 
 from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
 from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSizeEmbeddings, NNXPixArtAlphaTextProjection
 from maxdiffusion.models.gradient_checkpoint import GradientCheckpointType
-from maxdiffusion.common_types import BlockSizes
-from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
 from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
 
 
@@ -358,7 +361,6 @@ class LTX2VideoTransformerBlock(nnx.Module):
   ) -> Tuple[jax.Array, jax.Array]:
     batch_size = hidden_states.shape[0]
 
-
     axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
     audio_hidden_states = jax.lax.with_sharding_constraint(audio_hidden_states, axis_names)
@@ -386,7 +388,6 @@ class LTX2VideoTransformerBlock(nnx.Module):
     shift_mlp = ada_values[:, :, 3, :]
     scale_mlp = ada_values[:, :, 4, :]
     gate_mlp = ada_values[:, :, 5, :]
-
 
     norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
 
@@ -1000,7 +1001,11 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           encoder_attention_mask=encoder_attention_mask,
           audio_encoder_attention_mask=audio_encoder_attention_mask,
       )
-      return (hidden_states_out.astype(hidden_states.dtype), audio_hidden_states_out.astype(audio_hidden_states.dtype), rngs_carry), None
+      return (
+          hidden_states_out.astype(hidden_states.dtype),
+          audio_hidden_states_out.astype(audio_hidden_states.dtype),
+          rngs_carry,
+      ), None
 
     if self.scan_layers:
       rematted_scan_fn = self.gradient_checkpoint.apply(

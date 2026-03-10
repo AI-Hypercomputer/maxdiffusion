@@ -227,7 +227,7 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
 
     if getattr(self.config, "use_dynamic_shifting", False):
       if getattr(self.config, "time_shift_type", "exponential") == "exponential":
-        sigmas = jnp.exp(current_shift) / (jnp.exp(current_shift) + (1 / jnp.clip(sigmas, 1e-7, 1.0) - 1)**1.0)
+        sigmas = jnp.exp(current_shift) / (jnp.exp(current_shift) + (1 / jnp.clip(sigmas, 1e-7, 1.0) - 1) ** 1.0)
       else:
         sigmas = current_shift * sigmas / (1 + (current_shift - 1) * sigmas)
     else:
@@ -235,7 +235,7 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
 
     if getattr(self.config, "reverse_sigmas", False):
       sigmas = 1 - sigmas
-    
+
     shift_terminal = getattr(self.config, "shift_terminal", None)
     if shift_terminal is not None:
       one_minus_z = 1 - sigmas
