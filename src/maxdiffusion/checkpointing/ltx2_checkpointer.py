@@ -25,6 +25,7 @@ from maxdiffusion.models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKL
 from maxdiffusion.models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
 from maxdiffusion.models.ltx2.vocoder_ltx2 import LTX2Vocoder
 from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler
+from maxdiffusion.models.ltx2.ltx2_utils import load_upsampler_weights
 from transformers import AutoTokenizer, Gemma3ForConditionalGeneration
 from maxdiffusion import max_logging, max_utils
 from maxdiffusion.checkpointing.checkpointing_utils import create_orbax_checkpoint_manager
@@ -99,6 +100,23 @@ class LTX2Checkpointer:
       pipeline = LTX2Pipeline.from_pretrained(self.config, vae_only, load_transformer)
 
     return pipeline, opt_state, step
+
+  def load_upsampler(self, upsampler_model_path: str, eval_shapes: dict = None) -> dict:
+    """
+    Uses the central utils file to load the upsampler weights.
+    """
+    # Assuming standard Hugging Face format (e.g., path/to/latent_upsampler/model.safetensors)
+    max_logging.log("Loading Latent Upsampler from checkpoint...")
+    
+    flax_params = load_upsampler_weights(
+        pretrained_model_name_or_path=upsampler_model_path,
+        eval_shapes=eval_shapes,
+        device=jax.devices()[0].platform,
+        subfolder="latent_upsampler"
+    )
+    
+    return flax_params
+
 
   def save_checkpoint(self, train_step, pipeline: LTX2Pipeline, train_states: dict):
     """Saves the training state and model configurations."""

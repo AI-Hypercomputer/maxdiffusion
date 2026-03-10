@@ -578,3 +578,75 @@ def load_audio_vae_weights(
 
     validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
     return unflatten_dict(flax_state_dict)
+
+def rename_for_ltx2_upsampler(key):
+    """
+    Renames PyTorch Latent Upsampler keys to match Flax LTX2LatentUpsamplerModel.
+    """
+    key = key.replace(".weight", ".kernel")
+    
+    if "norm" in key:
+        key = key.replace(".kernel", ".scale")
+        
+    key = key.replace("res_blocks.", "ResBlock_")
+    key = key.replace("post_upsample_res_blocks.", "post_upsample_ResBlock_")
+    
+    if "upsampler.conv." in key:
+        key = key.replace("upsampler.conv.", "SpatialRationalResampler_0.Conv_0.")
+    elif "upsampler.0." in key:
+        key = key.replace("upsampler.0.", "Conv_0.")
+        
+    return key
+
+def load_upsampler_weights(
+pretrained_model_name_or_path: str,
+eval_shapes: dict,
+device: str,
+hf_download: bool = True,
+subfolder: str = "latent_upsampler",
+dims: int = 3
+):
+    """
+    Loads and ports PyTorch upsampler weights to Flax.
+    """
+    device_obj = jax.local_devices(backend=device)[0]
+    max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device_obj}")
+
+    with jax.default_device(device_obj):
+        # This native util automatically handles HF hub downloads and caching!
+        tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device_obj)
+        
+        flax_state_dict = {}
+        cpu = jax.local_devices(backend="cpu")[0]
+        
+        for pt_key, tensor in tensors.items():
+            key = rename_for_ltx2_upsampler(pt_key)
+            
+            # Transpose kernels for Flax
+            if key.endswith(".kernel") and tensor.ndim > 1:
+                if tensor.ndim == 5:
+                    # 3D Conv: (Out, In, D, H, W) -> (D, H, W, In, Out)
+                    tensor = tensor.transpose(2, 3, 4, 1, 0)
+                elif tensor.ndim == 4:
+                    # 2D Conv: (Out, In, H, W) -> (H, W, In, Out)
+                    tensor = tensor.transpose(2, 3, 1, 0)
+                elif tensor.ndim == 2:
+                    # Linear: (Out, In) -> (In, Out)
+                    tensor = tensor.transpose(1, 0)
+            
+            # Convert string key to tuple for unflattening
+            parts = key.split(".")
+            flax_key = tuple(int(p) if p.isdigit() else p for p in parts)
+            
+            flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
+            
+        # Optional validation against model shapes
+        if eval_shapes:
+                try:
+                    validate_flax_state_dict(flatten_dict(eval_shapes), flax_state_dict)
+                except Exception as e:
+                    max_logging.log(f"Warning during upsampler validation: {e}")
+                    
+        del tensors
+        jax.clear_caches()
+        return unflatten_dict(flax_state_dict)

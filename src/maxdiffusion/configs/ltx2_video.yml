@@ -9,7 +9,7 @@ remat_policy: "NONE"
 names_which_can_be_saved: []
 names_which_can_be_offloaded: []
 
-jax_cache_dir: ''
+jax_cache_dir: '/mnt/disks/mehdy-disk1/maxdiffusion_hf_cache'
 weights_dtype: 'bfloat16'
 activations_dtype: 'bfloat16'
 
@@ -91,3 +91,12 @@ bwd_quantization_calibration_method: "absmax"
 qwix_module_path: ".*"
 jit_initializers: True 
 enable_single_replica_ckpt_restoring: False
+
+# LTX-2 Latent Upsampler
+run_latent_upsampler: False
+upsampler_model_path: "Lightricks/LTX-2"
+upsampler_spatial_patch_size: 1
+upsampler_temporal_patch_size: 1
+upsampler_adain_factor: 0.0
+upsampler_tone_map_compression_ratio: 0.0
+upsampler_rational_spatial_scale: 2.0

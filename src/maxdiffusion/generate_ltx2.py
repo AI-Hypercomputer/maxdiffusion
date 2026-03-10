@@ -25,6 +25,10 @@ from google.cloud import storage
 import flax
 from maxdiffusion.pipelines.ltx2.ltx2_pipeline_utils import encode_video
 
+from maxdiffusion.models.ltx2.latent_upsampler_ltx2 import LTX2LatentUpsamplerModel
+from maxdiffusion.pipelines.ltx2.pipeline_ltx2_latent_upsample import FlaxLTX2LatentUpsamplePipeline
+
+
 def upload_video_to_gcs(output_dir: str, video_path: str):
   """
   Uploads a local video file to a specified Google Cloud Storage bucket.
@@ -78,27 +82,102 @@ def get_git_commit_hash():
 jax.config.update("jax_use_shardy_partitioner", True)
 
 
-def call_pipeline(config, pipeline, prompt, negative_prompt):
-  # Set default generation arguments
+def call_pipeline(config, pipeline, prompt, negative_prompt, upsample_pipe=None, upsample_params=None):
   generator = jax.random.key(config.seed) if hasattr(config, "seed") else jax.random.key(0)
   guidance_scale = config.guidance_scale if hasattr(config, "guidance_scale") else 3.0
-  do_classifier_free_guidance = guidance_scale > 1.0
+  output_type = "latent" if upsample_pipe is not None else "pil"
+  debug_file = "debug_base_latents.npy"
+  import numpy as np
 
-  out = pipeline(
-      prompt=prompt,
-      negative_prompt=negative_prompt,
-      height=config.height,
-      width=config.width,
-      num_frames=config.num_frames,
-      num_inference_steps=config.num_inference_steps,
-      guidance_scale=guidance_scale,
-      generator=generator,
-      frame_rate=getattr(config, "fps", 24.0),
-      decode_timestep=getattr(config, "decode_timestep", 0.0),
-      decode_noise_scale=getattr(config, "decode_noise_scale", None),
-      max_sequence_length=getattr(config, "max_sequence_length", 1024),
-      dtype=jnp.bfloat16 if getattr(config, "activations_dtype", "bfloat16") == "bfloat16" else jnp.float32,
-  )
+  # =========================================================================
+  # DEBUG CACHE
+  # =========================================================================
+  if upsample_pipe is not None and os.path.exists(debug_file):
+      max_logging.log(f"⚡ DEBUG: Found {debug_file}! Skipping base model generation...")
+      latents = jnp.array(np.load(debug_file))
+      class DummyOut: pass
+      out = DummyOut()
+      out.frames = latents
+      out.audio = None
+  else:
+      max_logging.log("⏳ DEBUG: Running base model generation...")
+      out = pipeline(
+          prompt=prompt,
+          negative_prompt=negative_prompt,
+          height=config.height,
+          width=config.width,
+          num_frames=config.num_frames,
+          num_inference_steps=config.num_inference_steps,
+          guidance_scale=guidance_scale,
+          generator=generator,
+          frame_rate=getattr(config, "fps", 24.0),
+          decode_timestep=getattr(config, "decode_timestep", 0.0),
+          decode_noise_scale=getattr(config, "decode_noise_scale", None),
+          max_sequence_length=getattr(config, "max_sequence_length", 1024),
+          dtype=jnp.bfloat16 if getattr(config, "activations_dtype", "bfloat16") == "bfloat16" else jnp.float32,
+          output_type=output_type,
+      )
+      latents = out.frames if hasattr(out, "frames") else out[0]
+      if upsample_pipe is not None:
+          np.save(debug_file, np.array(latents))
+          max_logging.log(f"💾 DEBUG: Saved base latents to {debug_file}")
+
+  # =========================================================================
+  # RUN UPSAMPLER
+  # =========================================================================
+  if upsample_pipe is not None:
+    max_logging.log("🚀 Running Latent Upsampler pass...")
+    
+    # -------------------------------------------------------------------------
+    # THE FIX: REPLICATE DATA USING THE EXACT TPU MESH FROM THE VAE
+    # -------------------------------------------------------------------------
+    from jax.sharding import NamedSharding, PartitionSpec
+    from flax import nnx
+    
+    # 1. Temporarily split the VAE to access its internal weights (state)
+    _, vae_state = nnx.split(pipeline.vae)
+    
+    # 2. Grab the first weight tensor and steal its exact Mesh topology
+    vae_leaf = jax.tree_util.tree_leaves(vae_state)[0]
+    target_mesh = vae_leaf.sharding.mesh
+    
+    # 3. Create a replication sharding using the VAE's native mesh
+    replicated = NamedSharding(target_mesh, PartitionSpec())
+    
+    latents = jax.device_put(latents, replicated)
+    generator = jax.device_put(generator, replicated)
+    
+    upsample_params = jax.tree_util.tree_map(
+        lambda x: jax.device_put(x, replicated), 
+        upsample_params
+    )
+    # -------------------------------------------------------------------------
+    
+    upsampled_out = upsample_pipe(
+        params=upsample_params,
+        prng_seed=generator,
+        latents=latents,
+        latents_normalized=True, 
+        adain_factor=getattr(config, "upsampler_adain_factor", 0.0),
+        tone_map_compression_ratio=getattr(config, "upsampler_tone_map_compression_ratio", 0.0),
+        output_type="pil",
+        return_dict=True
+    )
+
+    import dataclasses
+    
+    if dataclasses.is_dataclass(out):
+        # Explicitly set audio to None so the video saver doesn't choke on latent audio
+        out = dataclasses.replace(out, frames=upsampled_out["frames"], audio=None)
+    elif hasattr(out, "frames"):
+        class UpsampledOutput:
+            def __init__(self, frames, audio=None):
+                self.frames = frames
+                self.audio = audio
+        out = UpsampledOutput(upsampled_out["frames"], audio=None)
+    else:
+        out = (upsampled_out["frames"], None)
+
   return out
 
 
@@ -113,12 +192,49 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     else:
       max_logging.log("Could not retrieve Git commit hash.")
 
+  checkpoint_loader = LTX2Checkpointer(config=config)
   if pipeline is None:
-    checkpoint_loader = LTX2Checkpointer(config=config)
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
 
   pipeline.enable_vae_slicing()
   pipeline.enable_vae_tiling()
+
+  # --- Initialize Upsampler if enabled ---
+  upsample_pipe = None
+  upsample_params = None
+  
+  if getattr(config, "run_latent_upsampler", False):
+    max_logging.log("Initializing LTX-2 Latent Upsampler...")
+    latent_upsampler = LTX2LatentUpsamplerModel(
+        in_channels=128,
+        mid_channels=1024,
+        num_blocks_per_stage=4,
+        dims=3,
+        spatial_upsample=True,
+        temporal_upsample=False,
+        rational_spatial_scale=getattr(config, "upsampler_rational_spatial_scale", 2.0)
+    )
+    
+    upsampler_weights = checkpoint_loader.load_upsampler(config.upsampler_model_path)
+    # =========================================================================
+    # ADD THIS LINE: Move the CPU-loaded weights to the default device (TPU)
+    # =========================================================================
+    upsampler_weights = jax.tree_util.tree_map(lambda x: jax.device_put(x), upsampler_weights)
+
+    upsample_pipe = FlaxLTX2LatentUpsamplePipeline(
+        vae=pipeline.vae,
+        latent_upsampler=latent_upsampler
+    )
+    
+    # Safely extract VAE params to pass to the upsampler
+    # (Checking standard locations MaxDiffusion pipelines usually store Flax params)
+    vae_params = getattr(pipeline, "vae_params", getattr(pipeline, "params", {}).get("vae", None))
+    
+    upsample_params = {
+        'vae': vae_params,
+        'latent_upsampler': upsampler_weights
+    }
+  # ----------------------------------------
 
   s0 = time.perf_counter()
 
@@ -133,7 +249,16 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
   )
   
-  out = call_pipeline(config, pipeline, prompt, negative_prompt)
+  # Inject the upsampler logic into call_pipeline
+  out = call_pipeline(
+      config, 
+      pipeline, 
+      prompt, 
+      negative_prompt, 
+      upsample_pipe=upsample_pipe, 
+      upsample_params=upsample_params
+  )
+  
   # out should have .frames and .audio
   videos = out.frames if hasattr(out, "frames") else out[0]
   audios = out.audio if hasattr(out, "audio") else None
@@ -142,6 +267,8 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log(f"model name: {getattr(config, 'model_name', 'ltx-video')}")
   max_logging.log(f"model path: {config.pretrained_model_name_or_path}")
   max_logging.log(f"model type: {getattr(config, 'model_type', 'T2V')}")
+  if getattr(config, "run_latent_upsampler", False):
+      max_logging.log(f"upsampler model path: {config.upsampler_model_path}")
   max_logging.log(f"hardware: {jax.devices()[0].platform}")
   max_logging.log(f"number of devices: {jax.device_count()}")
   max_logging.log(f"per_device_batch_size: {config.per_device_batch_size}")
@@ -174,7 +301,14 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
 
   s0 = time.perf_counter()
-  call_pipeline(config, pipeline, prompt, negative_prompt)
+  call_pipeline(
+      config, 
+      pipeline, 
+      prompt, 
+      negative_prompt,
+      upsample_pipe=upsample_pipe,
+      upsample_params=upsample_params
+  )
   generation_time = time.perf_counter() - s0
   max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
@@ -191,7 +325,14 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   s0 = time.perf_counter()
   if getattr(config, "enable_profiler", False):
     max_utils.activate_profiler(config)
-    call_pipeline(config, pipeline, prompt, negative_prompt)
+    call_pipeline(
+        config, 
+        pipeline, 
+        prompt, 
+        negative_prompt,
+        upsample_pipe=upsample_pipe,
+        upsample_params=upsample_params
+    )
     max_utils.deactivate_profiler(config)
     generation_time_with_profiler = time.perf_counter() - s0
     max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
