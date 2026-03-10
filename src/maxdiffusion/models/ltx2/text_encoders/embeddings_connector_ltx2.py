@@ -228,21 +228,10 @@ class Embeddings1DConnector(nnx.Module):
       attention_mask: Optional[Array] = None,
   ) -> Tuple[Array, Array]:
     
-    # Debug print 1: Start
-    jax.debug.print("\\nDEBUG: Embeddings1DConnector Start. hidden_states shape: {}", hidden_states.shape)
-    jax.debug.print("   min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
-                    min=jnp.min(hidden_states), max=jnp.max(hidden_states), 
-                    mean=jnp.mean(hidden_states), std=jnp.std(hidden_states))
 
     # 1. Thinking Tokens
     if self.num_learnable_registers > 0 and attention_mask is not None:
       hidden_states, attention_mask = self._replace_padded_with_learnable_registers(hidden_states, attention_mask)
-      
-      # Debug print 2: After Padding Replacement
-      jax.debug.print("DEBUG: After replacing padded with registers.")
-      jax.debug.print("   min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
-                      min=jnp.min(hidden_states), max=jnp.max(hidden_states), 
-                      mean=jnp.mean(hidden_states), std=jnp.std(hidden_states))
 
     # 2. RoPE
     batch_size = hidden_states.shape[0]
