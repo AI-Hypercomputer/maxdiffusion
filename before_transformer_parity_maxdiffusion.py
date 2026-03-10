@@ -91,12 +91,7 @@ def patched_replace(self, hidden_states, attention_mask):
         mask = attention_mask.squeeze(-1) # [B, T]
     curr_mask = (mask > 0.5).astype(jnp.int32)
     
-    jax.debug.print("\n[MAXDIFFUSION MASK DEBUG]")
-    jax.debug.print("  Input Attn Mask sum: {}", jnp.sum(attention_mask))
-    jax.debug.print("  Curr Mask sum: {} (start elements: {})", jnp.sum(curr_mask), curr_mask[0, :10])
     
-    flipped = jnp.flip(curr_mask, axis=[1])
-    jax.debug.print("  Flipped Mask (Diffusers Logic) sum: {} (start elements: {})", jnp.sum(flipped), flipped[0, :10])
 
     return orig_replace(self, hidden_states, attention_mask)
     
@@ -106,15 +101,6 @@ from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import _Ba
 
 orig_block_call = _BasicTransformerBlock1D.__call__
 def patched_block_call(self, hidden_states, attention_mask=None, rotary_emb=None):
-    jax.debug.print("\n[MAXDIFFUSION W] to_q std: {s}, min: {m}, max: {mx}", 
-                    s=jnp.std(self.attn1.to_q.kernel), m=jnp.min(self.attn1.to_q.kernel), mx=jnp.max(self.attn1.to_q.kernel))
-    jax.debug.print("[MAXDIFFUSION W] to_k std: {s}, min: {m}, max: {mx}", 
-                    s=jnp.std(self.attn1.to_k.kernel), m=jnp.min(self.attn1.to_k.kernel), mx=jnp.max(self.attn1.to_k.kernel))
-    jax.debug.print("[MAXDIFFUSION W] to_v std: {s}, min: {m}, max: {mx}", 
-                    s=jnp.std(self.attn1.to_v.kernel), m=jnp.min(self.attn1.to_v.kernel), mx=jnp.max(self.attn1.to_v.kernel))
-    jax.debug.print("[MAXDIFFUSION W] to_out std: {s}, min: {m}, max: {mx}", 
-                    s=jnp.std(self.attn1.to_out.kernel), m=jnp.min(self.attn1.to_out.kernel), mx=jnp.max(self.attn1.to_out.kernel))
-
     normed1 = self.norm1(hidden_states)
     jax.debug.print("DEBUG: maxdiffusion block norm1. min: {min}, max: {max}, mean: {mean}, std: {std}", 
                     min=jnp.min(normed1), max=jnp.max(normed1), 
