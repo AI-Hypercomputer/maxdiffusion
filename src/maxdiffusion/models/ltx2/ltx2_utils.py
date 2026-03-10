@@ -229,31 +229,20 @@ def load_vae_weights(
       flax_key = _tuple_str_to_int(flax_key)
 
       if resnet_index is not None:
-        if flax_key in flax_state_dict:
-          current_tensor = flax_state_dict[flax_key]
-        else:
-          str_flax_key = tuple([str(x) for x in flax_key])
-
-          if str_flax_key in random_flax_state_dict:
-            target_shape = random_flax_state_dict[str_flax_key].shape
-            current_tensor = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
-          else:
-            current_tensor = flax_tensor
-
         str_flax_key = tuple([str(x) for x in flax_key])
         if str_flax_key in random_flax_state_dict:
-          current_tensor = current_tensor.at[resnet_index].set(flax_tensor)
-          flax_state_dict[flax_key] = current_tensor
+          if flax_key not in flax_state_dict:
+            target_shape = random_flax_state_dict[str_flax_key].shape
+            flax_state_dict[flax_key] = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
+          flax_state_dict[flax_key] = flax_state_dict[flax_key].at[resnet_index].set(flax_tensor)
         else:
           flax_state_dict[flax_key] = flax_tensor
       else:
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
     filtered_eval_shapes = {}
     for k, v in flattened_eval.items():
-      k_str = [str(x) for x in k]
-      if "dropout" in k_str or "rngs" in k_str:
-        continue
-      filtered_eval_shapes[k] = v
+      if not any("dropout" in str(x) or "rngs" in str(x) for x in k):
+        filtered_eval_shapes[k] = v
 
     validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
@@ -411,10 +400,6 @@ def load_audio_vae_weights(
   cpu = jax.local_devices(backend="cpu")[0]
 
   flattened_eval = flatten_dict(eval_shapes)
-  random_flax_state_dict = {}
-  for key in flattened_eval:
-    string_tuple = tuple([str(item) for item in key])
-    random_flax_state_dict[string_tuple] = flattened_eval[key]
 
   for pt_key, tensor in tensors.items():
     key = rename_for_ltx2_audio_vae(pt_key)
@@ -448,15 +433,8 @@ def load_audio_vae_weights(
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
   filtered_eval_shapes = {}
   for k, v in flattened_eval.items():
-    k_str = [str(x) for x in k]
-    is_stat = False
-    for ks in k_str:
-      if "dropout" in ks or "rngs" in ks:
-        is_stat = True
-        break
-    if is_stat:
-      continue
-    filtered_eval_shapes[k] = v
+    if not any("dropout" in str(x) or "rngs" in str(x) for x in k):
+      filtered_eval_shapes[k] = v
 
   validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
   return unflatten_dict(flax_state_dict)
