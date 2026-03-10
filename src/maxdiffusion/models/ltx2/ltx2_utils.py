@@ -64,58 +64,11 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   flax_key_str = [str(k) for k in flax_key]
 
-  if flax_key_str[-1] in ["kernel", "weight"]:
-    temp_key_str = flax_key_str[:-1] + ["scale"]
-    temp_key = tuple(temp_key_str)  # Tuple of strings
-
-    if temp_key in random_flax_state_dict:
-      flax_key_str = temp_key_str
   if "scale_shift_table" in flax_key_str:
     if flax_key_str[-1] in ["kernel", "weight"]:
       flax_key_str.pop()
-
-  if "transformer_blocks" in flax_key_str:
-    if flax_key_str[-1] == "query":
-      flax_key_str[-1] = "to_q"
-    elif flax_key_str[-1] == "key":
-      flax_key_str[-1] = "to_k"
-    elif flax_key_str[-1] == "value":
-      flax_key_str[-1] = "to_v"
-
-    if len(flax_key_str) >= 2 and flax_key_str[-2] == "proj_attn":
-      # proj_attn, kernel -> to_out, kernel
-      flax_key_str[-2] = "to_out"
-
+      
   flax_key = tuple(flax_key_str)
-
-  if flax_key[-1] == "weight":
-    parent = flax_key[-2] if len(flax_key) > 1 else ""
-    grandparent = flax_key[-3] if len(flax_key) > 2 else ""
-
-    should_be_kernel = False
-    if "linear" in parent or "proj" in parent or "proj" in grandparent:
-      should_be_kernel = True
-    if "time_embed" in flax_key[0] or "cross_attn" in flax_key[0]:
-      if "linear" in parent or "emb" in parent:
-        should_be_kernel = True
-
-    if "norm" in parent:
-      should_be_kernel = False
-
-    if should_be_kernel:
-      flax_key = flax_key[:-1] + ("kernel",)
-
-  if flax_key[-1] == "weight":
-    if "norm" in flax_key[-2] or "norm" in flax_key[0]:
-      flax_key = flax_key[:-1] + ("scale",)
-
-  if flax_key[-1] == "weight" and flax_key[-2] in ["to_q", "to_k", "to_v", "to_out"]:
-    flax_key = flax_key[:-1] + ("kernel",)
-
-  if len(flax_key) >= 2 and flax_key[-2] == "0" and flax_key[-3] == "to_out":
-    flax_key = flax_key[:-3] + ("to_out", flax_key[-1])
-
-  flax_key_str = [str(k) for k in flax_key]
   flax_key = _tuple_str_to_int(flax_key)
 
   if scan_layers and block_index is not None:
