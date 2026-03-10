@@ -172,8 +172,13 @@ class WanRMS_norm(nnx.Module):
       self.bias = 0
 
   def __call__(self, x: jax.Array) -> jax.Array:
-    normalized = jnp.linalg.norm(x, ord=2, axis=(1 if self.channel_first else -1), keepdims=True)
-    normalized = x / jnp.maximum(normalized, self.eps)
+    # Prevent fp16/bf16 underflow by forcing norm math to float32
+    x_fp32 = x.astype(jnp.float32)
+    normalized = jnp.linalg.norm(x_fp32, ord=2, axis=(1 if self.channel_first else -1), keepdims=True)
+    normalized = x_fp32 / jnp.maximum(normalized, self.eps)
+    
+    # Cast back to original dtype before applying gamma
+    normalized = normalized.astype(x.dtype)
     normalized = normalized * self.scale * self.gamma
     if self.bias:
       return normalized + self.bias.value
