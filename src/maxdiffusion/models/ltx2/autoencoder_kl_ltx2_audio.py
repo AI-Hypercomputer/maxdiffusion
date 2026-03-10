@@ -506,7 +506,7 @@ class FlaxLTX2AudioEncoder(nnx.Module):
         )
         curr_res = curr_res // 2
 
-      self.down_stages.append({"blocks": stage_blocks, "attns": stage_attns, "downsample": downsample})
+      self.down_stages.append(nnx.Dict({"blocks": stage_blocks, "attns": stage_attns, "downsample": downsample}))
 
     self.mid_block1 = FlaxLTX2AudioResnetBlock(
         block_in,
@@ -671,7 +671,7 @@ class FlaxLTX2AudioDecoder(nnx.Module):
         )
         curr_res *= 2
 
-      self.up_stages.append({"blocks": stage_blocks, "attns": stage_attns, "upsample": upsample})
+      self.up_stages.append(nnx.Dict({"blocks": stage_blocks, "attns": stage_attns, "upsample": upsample}))
 
     if self.norm_type == "group":
       self.norm_out = nnx.GroupNorm(num_groups=32, num_channels=block_in, epsilon=1e-6, dtype=dtype, rngs=rngs)
