@@ -106,17 +106,17 @@ from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import _Ba
 
 orig_block_call = _BasicTransformerBlock1D.__call__
 def patched_block_call(self, hidden_states, attention_mask=None, rotary_emb=None):
-    jax.debug.print("\n[MAXDIFFUSION W] to_q std: {s:.5f}, min: {m:.5f}, max: {mx:.5f}", 
+    jax.debug.print("\n[MAXDIFFUSION W] to_q std: {s}, min: {m}, max: {mx}", 
                     s=jnp.std(self.attn1.to_q.kernel), m=jnp.min(self.attn1.to_q.kernel), mx=jnp.max(self.attn1.to_q.kernel))
-    jax.debug.print("[MAXDIFFUSION W] to_k std: {s:.5f}, min: {m:.5f}, max: {mx:.5f}", 
+    jax.debug.print("[MAXDIFFUSION W] to_k std: {s}, min: {m}, max: {mx}", 
                     s=jnp.std(self.attn1.to_k.kernel), m=jnp.min(self.attn1.to_k.kernel), mx=jnp.max(self.attn1.to_k.kernel))
-    jax.debug.print("[MAXDIFFUSION W] to_v std: {s:.5f}, min: {m:.5f}, max: {mx:.5f}", 
+    jax.debug.print("[MAXDIFFUSION W] to_v std: {s}, min: {m}, max: {mx}", 
                     s=jnp.std(self.attn1.to_v.kernel), m=jnp.min(self.attn1.to_v.kernel), mx=jnp.max(self.attn1.to_v.kernel))
-    jax.debug.print("[MAXDIFFUSION W] to_out std: {s:.5f}, min: {m:.5f}, max: {mx:.5f}", 
+    jax.debug.print("[MAXDIFFUSION W] to_out std: {s}, min: {m}, max: {mx}", 
                     s=jnp.std(self.attn1.to_out.kernel), m=jnp.min(self.attn1.to_out.kernel), mx=jnp.max(self.attn1.to_out.kernel))
 
     normed1 = self.norm1(hidden_states)
-    jax.debug.print("DEBUG: maxdiffusion block norm1. min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
+    jax.debug.print("DEBUG: maxdiffusion block norm1. min: {min}, max: {max}, mean: {mean}, std: {std}", 
                     min=jnp.min(normed1), max=jnp.max(normed1), 
                     mean=jnp.mean(normed1), std=jnp.std(normed1))
 
