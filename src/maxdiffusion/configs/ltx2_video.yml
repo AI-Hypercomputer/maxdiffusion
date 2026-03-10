@@ -57,7 +57,7 @@ logical_axis_rules: [
                       ['out_channels', 'tensor'],
                       ['conv_out', 'context'],
                     ]
-data_sharding: [['data', 'fsdp', 'context', 'tensor']]
+data_sharding: ['data', 'fsdp', 'context', 'tensor']
 
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: -1
