@@ -56,11 +56,6 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
       # Map transformer_blocks_N -> transformer_blocks
       pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[1:]
 
-  # Handle transformer_blocks.N (dot) from original keys if rename_key didn't underscore it
-  if scan_layers and len(pt_tuple_key) > 1 and pt_tuple_key[0] == "transformer_blocks" and pt_tuple_key[1].isdigit():
-    block_index = int(pt_tuple_key[1])
-    pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[2:]
-
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   flax_key_str = [str(k) for k in flax_key]
 
@@ -172,25 +167,10 @@ def load_vae_weights(
 ):
   device = jax.local_devices(backend=device)[0]
 
-  filename = "diffusion_pytorch_model.safetensors"
-  try:
-    ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
-  except Exception:
-    filename = "diffusion_pytorch_model.bin"
-    ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
-
   max_logging.log(f"Load and port {pretrained_model_name_or_path} VAE on {device}")
 
   with jax.default_device(device):
-    tensors = {}
-    if filename.endswith(".safetensors"):
-      with safe_open(ckpt_path, framework="pt") as f:
-        for k in f.keys():
-          tensors[k] = torch2jax(f.get_tensor(k))
-    else:
-      loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
-      for k, v in loaded_state_dict.items():
-        tensors[k] = torch2jax(v)
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
 
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
@@ -301,17 +281,10 @@ def load_vocoder_weights(
     key = rename_for_ltx2_vocoder(pt_key)
     parts = key.split(".")
 
-    flax_key_parts = []
-    for part in parts:
-      if part.isdigit():
-        flax_key_parts.append(int(part))
-      else:
-        flax_key_parts.append(part)
+    if parts[-1] == "weight":
+      parts[-1] = "kernel"
 
-    if flax_key_parts[-1] == "weight":
-      flax_key_parts[-1] = "kernel"
-
-    flax_key = tuple(flax_key_parts)
+    flax_key = _tuple_str_to_int(parts)
 
     if flax_key[-1] == "kernel":
       if "upsamplers" in flax_key:
@@ -384,14 +357,7 @@ def load_connector_weights(
         pass
 
     key_tuple = tuple(key.split("."))
-
-    final_key_tuple = []
-    for p in key_tuple:
-      if p.isdigit():
-        final_key_tuple.append(int(p))
-      else:
-        final_key_tuple.append(p)
-    final_key_tuple = tuple(final_key_tuple)
+    final_key_tuple = _tuple_str_to_int(key_tuple)
 
     flax_state_dict[final_key_tuple] = jax.device_put(tensor, device=cpu)
 
@@ -400,13 +366,7 @@ def load_connector_weights(
       sorted_layers = sorted(layers.keys())
       stacked_tensor = jnp.stack([layers[i] for i in sorted_layers], axis=0)
 
-      final_param_name = []
-      for p in param_name:
-        if isinstance(p, str) and p.isdigit():
-          final_param_name.append(int(p))
-        else:
-          final_param_name.append(p)
-      final_param_name = tuple(final_param_name)
+      final_param_name = _tuple_str_to_int(param_name)
 
       flax_state_dict[final_param_name] = jax.device_put(stacked_tensor, device=cpu)
 
@@ -470,15 +430,7 @@ def load_audio_vae_weights(
     if should_transpose:
       tensor = tensor.transpose(2, 3, 1, 0)
 
-    parts = key.split(".")
-    flax_key_parts = []
-    for part in parts:
-      if part.isdigit():
-        flax_key_parts.append(int(part))
-      else:
-        flax_key_parts.append(part)
-
-    flax_key = tuple(flax_key_parts)
+    flax_key = _tuple_str_to_int(key.split("."))
 
     if "up_stages" in flax_key:
       try:
@@ -487,8 +439,9 @@ def load_audio_vae_weights(
           stage_idx = flax_key[up_stages_idx + 1]
           if isinstance(stage_idx, int):
             new_stage_idx = 2 - stage_idx
-            flax_key_parts[up_stages_idx + 1] = new_stage_idx
-            flax_key = tuple(flax_key_parts)
+            flax_key_list = list(flax_key)
+            flax_key_list[up_stages_idx + 1] = new_stage_idx
+            flax_key = tuple(flax_key_list)
       except ValueError:
         pass
 
