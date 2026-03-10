@@ -61,14 +61,6 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
     block_index = int(pt_tuple_key[1])
     pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[2:]
 
-  if scan_layers:
-    if "transformer_blocks" in pt_tuple_key:
-      pass  # Already handled above or matches standard format
-
-  # Handle scale_shift_table keys
-  if "scale_shift_table" in pt_tuple_key[-1] or "scale_shift_table" in pt_tuple_key:
-    pass
-
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   flax_key_str = [str(k) for k in flax_key]
 
@@ -78,15 +70,9 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
 
     if temp_key in random_flax_state_dict:
       flax_key_str = temp_key_str
-      pass
   if "scale_shift_table" in flax_key_str:
     if flax_key_str[-1] in ["kernel", "weight"]:
       flax_key_str.pop()
-
-  def replace_suffix(lst, old, new):
-    if lst and lst[-1] == old:
-      lst[-1] = new
-    return lst
 
   if "transformer_blocks" in flax_key_str:
     if flax_key_str[-1] == "query":
@@ -205,10 +191,6 @@ def load_transformer_weights(
     flattened_dict = flatten_dict(eval_shapes)
 
     random_flax_state_dict = {}
-    for key in flattened_dict:
-      string_tuple = tuple([str(item) for item in key])
-      random_flax_state_dict[string_tuple] = flattened_dict[key]
-
     for key in flattened_dict:
       string_tuple = tuple([str(item) for item in key])
       random_flax_state_dict[string_tuple] = flattened_dict[key]
