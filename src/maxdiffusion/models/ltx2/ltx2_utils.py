@@ -231,10 +231,9 @@ def load_vae_weights(
           flax_state_dict[flax_key] = flax_tensor
       else:
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
-    filtered_eval_shapes = {}
-    for k, v in flattened_eval.items():
-      if not any("dropout" in str(x) or "rngs" in str(x) for x in k):
-        filtered_eval_shapes[k] = v
+    filtered_eval_shapes = {
+        k: v for k, v in flattened_eval.items() if not any("dropout" in str(x) or "rngs" in str(x) for x in k)
+    }
 
     validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
@@ -402,23 +401,16 @@ def load_audio_vae_weights(
     flax_key = _tuple_str_to_int(key.split("."))
 
     if "up_stages" in flax_key:
-      try:
-        up_stages_idx = flax_key.index("up_stages")
-        if up_stages_idx + 1 < len(flax_key):
-          stage_idx = flax_key[up_stages_idx + 1]
-          if isinstance(stage_idx, int):
-            new_stage_idx = 2 - stage_idx
-            flax_key_list = list(flax_key)
-            flax_key_list[up_stages_idx + 1] = new_stage_idx
-            flax_key = tuple(flax_key_list)
-      except ValueError:
-        pass
+      up_stages_idx = flax_key.index("up_stages")
+      if up_stages_idx + 1 < len(flax_key) and isinstance(flax_key[up_stages_idx + 1], int):
+        flax_key_list = list(flax_key)
+        flax_key_list[up_stages_idx + 1] = 2 - flax_key[up_stages_idx + 1]
+        flax_key = tuple(flax_key_list)
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
-  filtered_eval_shapes = {}
-  for k, v in flattened_eval.items():
-    if not any("dropout" in str(x) or "rngs" in str(x) for x in k):
-      filtered_eval_shapes[k] = v
+  filtered_eval_shapes = {
+      k: v for k, v in flattened_eval.items() if not any("dropout" in str(x) or "rngs" in str(x) for x in k)
+  }
 
   validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
   return unflatten_dict(flax_state_dict)
