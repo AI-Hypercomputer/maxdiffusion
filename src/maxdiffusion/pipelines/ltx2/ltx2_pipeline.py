@@ -633,9 +633,6 @@ class LTX2Pipeline:
   @classmethod
   def get_qt_provider(cls, config: HyperParameters) -> Optional[qwix.QtProvider]:
     """Get quantization rules based on the config."""
-    max_logging.log(
-        f"DEBUG: use_qwix_quantization={getattr(config, 'use_qwix_quantization', None)}, quantization={getattr(config, 'quantization', None)}"
-    )
     if not getattr(config, "use_qwix_quantization", False):
       return None
 
@@ -652,17 +649,13 @@ class LTX2Pipeline:
     """Quantizes the transformer model."""
     q_rules = cls.get_qt_provider(config)
     if not q_rules:
-      max_logging.log("DEBUG: Transformer is NOT being quantized. (q_rules is None)")
       return model
-    max_logging.log("Quantizing transformer with Qwix.")
 
     batch_size = config.global_batch_size_to_train_on
     model_inputs = get_dummy_ltx2_inputs(config, pipeline, batch_size)
 
     with mesh:
       quantized_model = qwix.quantize_model(model, q_rules, *model_inputs)
-    max_logging.log("DEBUG: Transformer WAS successfully quantized.")
-    max_logging.log("Qwix Quantization complete.")
     return quantized_model
 
   def _get_gemma_prompt_embeds(

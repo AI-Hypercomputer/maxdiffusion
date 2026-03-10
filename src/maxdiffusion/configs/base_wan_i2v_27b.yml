@@ -300,7 +300,7 @@ boundary_ratio: 0.875
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
-num_inference_steps: 50
+num_inference_steps: 40
 fps: 16
 save_final_checkpoint: False
 
