@@ -42,7 +42,7 @@ class _BasicTransformerBlock1D(nnx.Module):
         heads=heads,
         dim_head=dim_head,
         rope_type=rope_type,
-        bias=True,  # LTX-2 default
+        bias=True,
         out_bias=True,
         attention_kernel=attention_kernel,
         mesh=mesh,
@@ -59,12 +59,12 @@ class _BasicTransformerBlock1D(nnx.Module):
       rotary_emb: Optional[Tuple[Array, Array]] = None,
   ) -> Array:
     # 1. Norm -> Attention
-    normed = self.norm1(hidden_states)
+    normed = self.norm1(hidden_states).astype(hidden_states.dtype)
     attn_output = self.attn1(normed, attention_mask=attention_mask, rotary_emb=rotary_emb)
     hidden_states = hidden_states + attn_output
 
     # 2. Norm -> FeedForward
-    normed = self.norm2(hidden_states)
+    normed = self.norm2(hidden_states).astype(hidden_states.dtype)
     ff_output = self.ff(normed)
     hidden_states = hidden_states + ff_output
 
@@ -254,20 +254,8 @@ class Embeddings1DConnector(nnx.Module):
         in_axes=(nnx.Carry, 0),  # Scan over the layers dimension (0) of block_module
         out_axes=(nnx.Carry, 0),
     )(hidden_states, self.stacked_blocks)
-    
-    # Debug print 3: After scan
-    jax.debug.print("DEBUG: After transformer blocks scan.")
-    jax.debug.print("   min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
-                    min=jnp.min(hidden_states), max=jnp.max(hidden_states), 
-                    mean=jnp.mean(hidden_states), std=jnp.std(hidden_states))
 
     # 4. Final Norm
     hidden_states = self.final_norm(hidden_states)
-
-    # Debug print 4: Final Norm
-    jax.debug.print("DEBUG: After final norm.")
-    jax.debug.print("   min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
-                    min=jnp.min(hidden_states), max=jnp.max(hidden_states), 
-                    mean=jnp.mean(hidden_states), std=jnp.std(hidden_states))
 
     return hidden_states, attention_mask
