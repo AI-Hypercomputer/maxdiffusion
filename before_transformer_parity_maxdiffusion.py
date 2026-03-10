@@ -75,23 +75,9 @@ from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import Emb
 
 orig_replace = Embeddings1DConnector._replace_padded_with_learnable_registers
 def patched_replace(self, hidden_states, attention_mask):
-    if os.path.exists("../diffusers/connector_hidden_states_in_pt.npy"):
-        hidden_states = jnp.array(np.load("../diffusers/connector_hidden_states_in_pt.npy"), dtype=hidden_states.dtype)
-        print("Loaded exact hidden_states from PyTorch!")
-    if os.path.exists("../diffusers/connector_attention_mask_in_pt.npy"):
-        attention_mask = jnp.array(np.load("../diffusers/connector_attention_mask_in_pt.npy"), dtype=attention_mask.dtype)
-        print("Loaded exact attention_mask from PyTorch!")
     if os.path.exists("../diffusers/connector_registers_pt.npy"):
         self.learnable_registers.value = jnp.array(np.load("../diffusers/connector_registers_pt.npy"), dtype=self.learnable_registers.value.dtype)
-        print("Loaded exact learnable_registers from PyTorch (Found bug!!)")
-
-    if attention_mask.ndim == 2:
-        mask = attention_mask
-    else:
-        mask = attention_mask.squeeze(-1) # [B, T]
-    curr_mask = (mask > 0.5).astype(jnp.int32)
-    
-    
+        print("Loaded exact learnable_registers from PyTorch!")
 
     return orig_replace(self, hidden_states, attention_mask)
     

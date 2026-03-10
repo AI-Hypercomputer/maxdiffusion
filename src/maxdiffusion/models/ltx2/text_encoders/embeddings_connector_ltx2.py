@@ -49,8 +49,8 @@ class _BasicTransformerBlock1D(nnx.Module):
         rngs=rngs,
     )
     self.ff = NNXSimpleFeedForward(rngs=rngs, dim=dim, dim_out=dim)
-    self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, dtype=jnp.float32, use_scale=False, rngs=rngs)
-    self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, dtype=jnp.float32, use_scale=False, rngs=rngs)
+    self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=False, rngs=rngs)
+    self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=False, rngs=rngs)
 
   def __call__(
       self,
