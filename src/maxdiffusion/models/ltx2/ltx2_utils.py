@@ -210,15 +210,7 @@ def load_vae_weights(
           pt_list.append("upsampler")
         elif part in ["conv1", "conv2", "conv", "conv_in", "conv_out", "conv_shortcut"]:
           pt_list.append(part)
-          if i + 1 < len(pt_tuple_key) and pt_tuple_key[i + 1] == "conv":
-            pass
-          elif pt_list[-1] == "conv":
-            pass
-          elif len(pt_list) >= 2 and pt_list[-2] == "conv":
-            pass
-          elif part == "conv":
-            pass
-          else:
+          if part != "conv" and (i + 1 == len(pt_tuple_key) or pt_tuple_key[i + 1] != "conv") and (len(pt_list) < 2 or pt_list[-2] != "conv"):
             pt_list.append("conv")
         else:
           pt_list.append(part)
@@ -404,15 +396,7 @@ def load_audio_vae_weights(
   for pt_key, tensor in tensors.items():
     key = rename_for_ltx2_audio_vae(pt_key)
 
-    should_transpose = False
-    if "latents_mean" in key or "latents_std" in key:
-      # latents_mean and latents_std are loaded fully, no transposing
-      pass
-    elif key.endswith(".kernel"):
-      if tensor.ndim == 4:
-        should_transpose = True
-
-    if should_transpose:
+    if key.endswith(".kernel") and tensor.ndim == 4:
       tensor = tensor.transpose(2, 3, 1, 0)
 
     flax_key = _tuple_str_to_int(key.split("."))
