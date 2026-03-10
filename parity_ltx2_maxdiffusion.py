@@ -81,7 +81,7 @@ def patched_gemma_call(self, *args, **kwargs):
     return out
 transformers.Gemma3ForConditionalGeneration.forward = patched_gemma_call
 
-from maxdiffusion.models.ltx2.text_encoders.text_encoders_ltx2 import LTX2GemmaFeatureExtractor, _norm_and_concat_padded_batch
+from maxdiffusion.models.ltx2.text_encoders.feature_extractor_ltx2 import LTX2GemmaFeatureExtractor, _norm_and_concat_padded_batch
 
 # Patch Feature Extractor
 orig_fe_call = LTX2GemmaFeatureExtractor.__call__
