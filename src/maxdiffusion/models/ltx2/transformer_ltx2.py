@@ -358,16 +358,6 @@ class LTX2VideoTransformerBlock(nnx.Module):
   ) -> Tuple[jax.Array, jax.Array]:
     batch_size = hidden_states.shape[0]
 
-    print_shape("Block Input hidden_states", hidden_states)
-    print_shape("Block Input audio_hidden_states", audio_hidden_states)
-    print_shape("Block Input encoder_hidden_states", encoder_hidden_states)
-    print_shape("Block Input audio_encoder_hidden_states", audio_encoder_hidden_states)
-    print_shape("Block Input temb", temb)
-    print_shape("Block Input temb_audio", temb_audio)
-    print_shape("Block Input temb_ca_scale_shift", temb_ca_scale_shift)
-    print_shape("Block Input temb_ca_audio_scale_shift", temb_ca_audio_scale_shift)
-    print_shape("Block Input temb_ca_gate", temb_ca_gate)
-    print_shape("Block Input temb_ca_audio_gate", temb_ca_audio_gate)
 
     axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
@@ -397,12 +387,6 @@ class LTX2VideoTransformerBlock(nnx.Module):
     scale_mlp = ada_values[:, :, 4, :]
     gate_mlp = ada_values[:, :, 5, :]
 
-    print_shape("shift_msa", shift_msa)
-    print_shape("scale_msa", scale_msa)
-    print_shape("gate_msa", gate_msa)
-    print_shape("shift_mlp", shift_mlp)
-    print_shape("scale_mlp", scale_mlp)
-    print_shape("gate_mlp", gate_mlp)
 
     norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
 
@@ -923,11 +907,11 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         audio_encoder_attention_mask = jnp.expand_dims(audio_encoder_attention_mask, axis=1)
 
     batch_size = hidden_states.shape[0]
-    print_shape("Model Input hidden_states", hidden_states)
-    print_shape("Model Input audio_hidden_states", audio_hidden_states)
-    print_shape("Model Input encoder_hidden_states", encoder_hidden_states)
-    print_shape("Model Input audio_encoder_hidden_states", audio_encoder_hidden_states)
-    print_shape("Model Input timestep", timestep)
+    # print_shape("Model Input hidden_states", hidden_states)
+    # print_shape("Model Input audio_hidden_states", audio_hidden_states)
+    # print_shape("Model Input encoder_hidden_states", encoder_hidden_states)
+    # print_shape("Model Input audio_encoder_hidden_states", audio_encoder_hidden_states)
+    # print_shape("Model Input timestep", timestep)
 
     # 1. Prepare RoPE positional embeddings
     if video_coords is None:

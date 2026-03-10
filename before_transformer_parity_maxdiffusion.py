@@ -75,6 +75,16 @@ from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import Emb
 
 orig_replace = Embeddings1DConnector._replace_padded_with_learnable_registers
 def patched_replace(self, hidden_states, attention_mask):
+    if os.path.exists("../diffusers/connector_hidden_states_in_pt.npy"):
+        hidden_states = jnp.array(np.load("../diffusers/connector_hidden_states_in_pt.npy"), dtype=hidden_states.dtype)
+        print("Loaded exact hidden_states from PyTorch!")
+    if os.path.exists("../diffusers/connector_attention_mask_in_pt.npy"):
+        attention_mask = jnp.array(np.load("../diffusers/connector_attention_mask_in_pt.npy"), dtype=attention_mask.dtype)
+        print("Loaded exact attention_mask from PyTorch!")
+    if os.path.exists("../diffusers/connector_registers_pt.npy"):
+        self.learnable_registers.value = jnp.array(np.load("../diffusers/connector_registers_pt.npy"), dtype=self.learnable_registers.value.dtype)
+        print("Loaded exact learnable_registers from PyTorch (Found bug!!)")
+
     if attention_mask.ndim == 2:
         mask = attention_mask
     else:
@@ -96,6 +106,15 @@ from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import _Ba
 
 orig_block_call = _BasicTransformerBlock1D.__call__
 def patched_block_call(self, hidden_states, attention_mask=None, rotary_emb=None):
+    jax.debug.print("\n[MAXDIFFUSION W] to_q std: {s:.5f}, min: {m:.5f}, max: {mx:.5f}", 
+                    s=jnp.std(self.attn1.to_q.kernel), m=jnp.min(self.attn1.to_q.kernel), mx=jnp.max(self.attn1.to_q.kernel))
+    jax.debug.print("[MAXDIFFUSION W] to_k std: {s:.5f}, min: {m:.5f}, max: {mx:.5f}", 
+                    s=jnp.std(self.attn1.to_k.kernel), m=jnp.min(self.attn1.to_k.kernel), mx=jnp.max(self.attn1.to_k.kernel))
+    jax.debug.print("[MAXDIFFUSION W] to_v std: {s:.5f}, min: {m:.5f}, max: {mx:.5f}", 
+                    s=jnp.std(self.attn1.to_v.kernel), m=jnp.min(self.attn1.to_v.kernel), mx=jnp.max(self.attn1.to_v.kernel))
+    jax.debug.print("[MAXDIFFUSION W] to_out std: {s:.5f}, min: {m:.5f}, max: {mx:.5f}", 
+                    s=jnp.std(self.attn1.to_out.kernel), m=jnp.min(self.attn1.to_out.kernel), mx=jnp.max(self.attn1.to_out.kernel))
+
     normed1 = self.norm1(hidden_states)
     jax.debug.print("DEBUG: maxdiffusion block norm1. min: {min:.5f}, max: {max:.5f}, mean: {mean:.5f}, std: {std:.5f}", 
                     min=jnp.min(normed1), max=jnp.max(normed1), 

@@ -81,7 +81,7 @@ def apply_split_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
   last_dim = x.shape[-1]
   r = last_dim // 2
 
-  split_x = x.reshape(*x.shape[:-1], 2, r)
+  split_x = x.reshape(*x.shape[:-1], 2, r).astype(jnp.float32)
 
   first_x = split_x[..., 0, :]
   second_x = split_x[..., 1, :]
