@@ -9,6 +9,28 @@ from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
 
 
+RENAME_HITS = {}
+
+def print_rename_hits():
+  print("\n\n" + "="*50)
+  print("RENAME HITS REPORT:")
+  print(json.dumps(RENAME_HITS, indent=2))
+  print("="*50 + "\n\n")
+
+import atexit
+atexit.register(print_rename_hits)
+
+def tracked_replace(key, old, new, category):
+  global RENAME_HITS
+  hit_key = f"{category}::{old} -> {new}"
+  if hit_key not in RENAME_HITS:
+    RENAME_HITS[hit_key] = 0
+  if old in key:
+    RENAME_HITS[hit_key] += 1
+    return key.replace(old, new)
+  return key
+
+
 def _tuple_str_to_int(in_tuple):
   out_list = []
   for item in in_tuple:
@@ -23,22 +45,22 @@ def rename_for_ltx2_transformer(key):
   """
   Renames Diffusers LTX-2 keys to MaxDiffusion Flax LTX-2 keys.
   """
-  key = key.replace("patchify_proj", "proj_in")
-  key = key.replace("audio_patchify_proj", "audio_proj_in")
-  key = key.replace("norm_final", "norm_out")
+  key = tracked_replace(key, "patchify_proj", "proj_in", "transformer")
+  key = tracked_replace(key, "audio_patchify_proj", "audio_proj_in", "transformer")
+  key = tracked_replace(key, "norm_final", "norm_out", "transformer")
   if "adaLN_modulation_1" in key:
-    key = key.replace("adaLN_modulation_1", "scale_shift_table")
+    key = tracked_replace(key, "adaLN_modulation_1", "scale_shift_table", "transformer")
 
   if "caption_modulator_1" in key:
-    key = key.replace("caption_modulator_1", "video_a2v_cross_attn_scale_shift_table")
+    key = tracked_replace(key, "caption_modulator_1", "video_a2v_cross_attn_scale_shift_table", "transformer")
   if "audio_caption_modulator_1" in key:
-    key = key.replace("audio_caption_modulator_1", "audio_a2v_cross_attn_scale_shift_table")
+    key = tracked_replace(key, "audio_caption_modulator_1", "audio_a2v_cross_attn_scale_shift_table", "transformer")
   if "audio_norm_final" in key:
-    key = key.replace("audio_norm_final", "audio_norm_out")
+    key = tracked_replace(key, "audio_norm_final", "audio_norm_out", "transformer")
   if ("audio_ff" in key or "ff" in key) and "proj" in key:
-    key = key.replace(".proj", "")
+    key = tracked_replace(key, ".proj", "", "transformer")
   if "to_out_0" in key:
-    key = key.replace("to_out_0", "to_out")
+    key = tracked_replace(key, "to_out_0", "to_out", "transformer")
 
   return key
 
@@ -348,9 +370,9 @@ def load_vae_weights(
 
 
 def rename_for_ltx2_vocoder(key):
-  key = key.replace("ups.", "upsamplers.")
-  key = key.replace("resblocks", "resnets")
-  key = key.replace("conv_post", "conv_out")
+  key = tracked_replace(key, "ups.", "upsamplers.", "vocoder")
+  key = tracked_replace(key, "resblocks", "resnets", "vocoder")
+  key = tracked_replace(key, "conv_post", "conv_out", "vocoder")
   return key
 
 
@@ -391,21 +413,21 @@ def load_vocoder_weights(
 
 
 def rename_for_ltx2_connector(key):
-  key = key.replace("video_connector", "video_embeddings_connector")
-  key = key.replace("audio_connector", "audio_embeddings_connector")
-  key = key.replace("text_proj_in", "feature_extractor.linear")
+  key = tracked_replace(key, "video_connector", "video_embeddings_connector", "connector")
+  key = tracked_replace(key, "audio_connector", "audio_embeddings_connector", "connector")
+  key = tracked_replace(key, "text_proj_in", "feature_extractor.linear", "connector")
 
   if "transformer_blocks" in key:
-    key = key.replace("transformer_blocks", "stacked_blocks")
-    key = key.replace("ff.net.0.proj", "ff.net_0")
-    key = key.replace("ff.net.2", "ff.net_2")
-    key = key.replace("to_out.0", "to_out")
+    key = tracked_replace(key, "transformer_blocks", "stacked_blocks", "connector")
+    key = tracked_replace(key, "ff.net.0.proj", "ff.net_0", "connector")
+    key = tracked_replace(key, "ff.net.2", "ff.net_2", "connector")
+    key = tracked_replace(key, "to_out.0", "to_out", "connector")
 
   if key.endswith(".weight"):
     if "norm_q" in key or "norm_k" in key:
-      key = key.replace(".weight", ".scale")
+      key = tracked_replace(key, ".weight", ".scale", "connector")
     else:
-      key = key.replace(".weight", ".kernel")
+      key = tracked_replace(key, ".weight", ".kernel", "connector")
 
   return key
 
@@ -483,23 +505,23 @@ def load_connector_weights(
 
 def rename_for_ltx2_audio_vae(key):
   if key.endswith(".weight"):
-    key = key.replace(".weight", ".kernel")
+    key = tracked_replace(key, ".weight", ".kernel", "audio_vae")
 
-  key = key.replace("mid.block_1", "mid_block1")
-  key = key.replace("mid.block_2", "mid_block2")
-  key = key.replace("mid.attn_1", "mid_attn")
+  key = tracked_replace(key, "mid.block_1", "mid_block1", "audio_vae")
+  key = tracked_replace(key, "mid.block_2", "mid_block2", "audio_vae")
+  key = tracked_replace(key, "mid.attn_1", "mid_attn", "audio_vae")
 
-  key = key.replace("up.", "up_stages.")
-  key = key.replace("down.", "down_stages.")
+  key = tracked_replace(key, "up.", "up_stages.", "audio_vae")
+  key = tracked_replace(key, "down.", "down_stages.", "audio_vae")
 
-  key = key.replace("block.", "blocks.")
+  key = tracked_replace(key, "block.", "blocks.", "audio_vae")
 
-  key = key.replace("nin_shortcut", "conv_shortcut_layer")
+  key = tracked_replace(key, "nin_shortcut", "conv_shortcut_layer", "audio_vae")
 
   if "upsample.conv.kernel" in key:
-    key = key.replace("upsample.conv.kernel", "upsample.conv.conv.kernel")
+    key = tracked_replace(key, "upsample.conv.kernel", "upsample.conv.conv.kernel", "audio_vae")
   if "upsample.conv.bias" in key:
-    key = key.replace("upsample.conv.bias", "upsample.conv.conv.bias")
+    key = tracked_replace(key, "upsample.conv.bias", "upsample.conv.conv.bias", "audio_vae")
 
   return key
 
