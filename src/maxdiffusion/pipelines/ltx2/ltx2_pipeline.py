@@ -665,26 +665,6 @@ class LTX2Pipeline:
     max_logging.log("Qwix Quantization complete.")
     return quantized_model
 
-  @classmethod
-  def load_transformer(
-      cls,
-      devices_array: np.array,
-      mesh: Mesh,
-      rngs: nnx.Rngs,
-      config: HyperParameters,
-      restored_checkpoint=None,
-      subfolder="transformer",
-  ):
-    with mesh:
-      transformer = create_sharded_logical_transformer(
-          devices_array=devices_array,
-          mesh=mesh,
-          rngs=rngs,
-          config=config,
-          restored_checkpoint=restored_checkpoint,
-          subfolder=subfolder,
-      )
-    return transformer
 
   def _get_gemma_prompt_embeds(
       self,
