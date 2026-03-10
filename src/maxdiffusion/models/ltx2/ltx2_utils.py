@@ -140,8 +140,7 @@ def load_transformer_weights(
 
     random_flax_state_dict = {}
     for key in flattened_dict:
-      string_tuple = tuple([str(item) for item in key])
-      random_flax_state_dict[string_tuple] = flattened_dict[key]
+      random_flax_state_dict[tuple(str(item) for item in key)] = flattened_dict[key]
 
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
@@ -178,8 +177,7 @@ def load_vae_weights(
 
     random_flax_state_dict = {}
     for key in flattened_eval:
-      string_tuple = tuple([str(item) for item in key])
-      random_flax_state_dict[string_tuple] = flattened_eval[key]
+      random_flax_state_dict[tuple(str(item) for item in key)] = flattened_eval[key]
 
     for pt_key, tensor in tensors.items():
       # latents_mean and latents_std are nnx.Params and will be loaded correctly.
@@ -320,21 +318,20 @@ def load_connector_weights(
 
     if "stacked_blocks" in key:
       parts = key.split(".")
-      try:
+      if "stacked_blocks" in parts:
         sb_index = parts.index("stacked_blocks")
-        layer_idx = int(parts[sb_index + 1])
-        connector = parts[0]
-
-        param_parts = parts[: sb_index + 1] + parts[sb_index + 2 :]
-        param_name = tuple(param_parts)
-
-        if connector in grouped_weights:
-          if param_name not in grouped_weights[connector]:
-            grouped_weights[connector][param_name] = {}
-          grouped_weights[connector][param_name][layer_idx] = tensor
-          continue
-      except (ValueError, IndexError):
-        pass
+        if sb_index + 1 < len(parts):
+          layer_idx = int(parts[sb_index + 1])
+          connector = parts[0]
+  
+          param_parts = parts[: sb_index + 1] + parts[sb_index + 2 :]
+          param_name = tuple(param_parts)
+  
+          if connector in grouped_weights:
+            if param_name not in grouped_weights[connector]:
+              grouped_weights[connector][param_name] = {}
+            grouped_weights[connector][param_name][layer_idx] = tensor
+            continue
 
     key_tuple = tuple(key.split("."))
     final_key_tuple = _tuple_str_to_int(key_tuple)
@@ -346,9 +343,7 @@ def load_connector_weights(
       sorted_layers = sorted(layers.keys())
       stacked_tensor = jnp.stack([layers[i] for i in sorted_layers], axis=0)
 
-      final_param_name = _tuple_str_to_int(param_name)
-
-      flax_state_dict[final_param_name] = jax.device_put(stacked_tensor, device=cpu)
+      flax_state_dict[_tuple_str_to_int(param_name)] = jax.device_put(stacked_tensor, device=cpu)
 
   del tensors
   jax.clear_caches()
