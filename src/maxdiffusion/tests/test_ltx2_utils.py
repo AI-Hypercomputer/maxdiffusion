@@ -237,7 +237,7 @@ class LTX2UtilsTest(unittest.TestCase):
       if not is_stat:
         filtered_eval_shapes[k] = v
 
-    validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flatten_dict(loaded_weights))
+    validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), loaded_weights)
     print("Audio VAE Weights Validated Successfully!")
 
 
