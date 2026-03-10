@@ -125,6 +125,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           num_frames=config.num_frames,
           num_inference_steps=config.num_inference_steps,
           guidance_scale=config.guidance_scale,
+          use_cfg_cache=config.use_cfg_cache,
       )
     elif model_key == WAN2_2:
       return pipeline(
