@@ -580,17 +580,4 @@ def load_audio_vae_weights(
         pass
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
-  filtered_eval_shapes = {}
-  for k, v in flattened_eval.items():
-    k_str = [str(x) for x in k]
-    is_stat = False
-    for ks in k_str:
-      if "dropout" in ks or "rngs" in ks:
-        is_stat = True
-        break
-    if is_stat:
-      continue
-    filtered_eval_shapes[k] = v
-
-  validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), unflatten_dict(flax_state_dict))
   return unflatten_dict(flax_state_dict)

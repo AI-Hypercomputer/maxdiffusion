@@ -225,19 +225,14 @@ class LTX2UtilsTest(unittest.TestCase):
     )
 
     print("Validating Audio VAE Weights...")
-    filtered_eval_shapes = {}
+    flat_loaded = flatten_dict(loaded_weights)
     flat_eval = flatten_dict(eval_shapes)
     for k, v in flat_eval.items():
       k_str = [str(x) for x in k]
-      is_stat = False
-      for ks in k_str:
-        if "dropout" in ks or "rngs" in ks:
-          is_stat = True
-          break
-      if not is_stat:
-        filtered_eval_shapes[k] = v
+      if any("dropout" in ks or "rngs" in ks for ks in k_str):
+        flat_loaded[k] = v
 
-    validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), loaded_weights)
+    validate_flax_state_dict(eval_shapes, flat_loaded)
     print("Audio VAE Weights Validated Successfully!")
 
 
