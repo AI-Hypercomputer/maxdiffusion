@@ -1083,9 +1083,18 @@ class FlaxWanAttention(nnx.Module):
 
     if rotary_emb is not None:
       with self.conditional_named_scope("attn_rope"):
+        axis_names_rope = nn.logical_to_mesh_axes((None, None, LENGTH, None))
+        rotary_emb = jax.lax.with_sharding_constraint(rotary_emb, axis_names_rope)
         query_proj = _unflatten_heads(query_proj, self.heads)
         key_proj = _unflatten_heads(key_proj, self.heads)
         value_proj = _unflatten_heads(value_proj, self.heads)
+        
+        # Enforce sequence parallelism on the new axis 2 (LENGTH) before doing the ROPE math
+        axis_names_qkv = nn.logical_to_mesh_axes((BATCH, HEAD, LENGTH, D_KV))
+        query_proj = jax.lax.with_sharding_constraint(query_proj, axis_names_qkv)
+        key_proj = jax.lax.with_sharding_constraint(key_proj, axis_names_qkv)
+        value_proj = jax.lax.with_sharding_constraint(value_proj, axis_names_qkv)
+        
         # output of _unflatten_heads Batch, heads, seq_len, head_dim
         query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
