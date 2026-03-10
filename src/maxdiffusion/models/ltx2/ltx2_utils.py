@@ -313,7 +313,6 @@ def load_vae_weights(
       flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
       flax_key = _tuple_str_to_int(flax_key)
 
-
       if resnet_index is not None:
         if flax_key in flax_state_dict:
           current_tensor = flax_state_dict[flax_key]

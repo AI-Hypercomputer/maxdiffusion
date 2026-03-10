@@ -665,7 +665,6 @@ class LTX2Pipeline:
     max_logging.log("Qwix Quantization complete.")
     return quantized_model
 
-
   def _get_gemma_prompt_embeds(
       self,
       prompt: Union[str, List[str]],
