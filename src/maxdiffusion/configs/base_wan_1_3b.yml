@@ -238,6 +238,7 @@ output_dir: 'sdxl-model-finetuned'
 per_device_batch_size: 1.0
 # If global_batch_size % jax.device_count is not 0, use FSDP sharding.
 global_batch_size: 0
+disable_training_weights: False # if True, disables the use of mid-point loss weighting
 
 # For creating tfrecords from dataset
 tfrecords_dir: ''

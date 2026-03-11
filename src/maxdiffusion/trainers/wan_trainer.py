@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 import tensorflow as tf
 import jax.numpy as jnp
 import jax
+import jaxopt
 from jax.sharding import PartitionSpec as P
 from flax import nnx
 from maxdiffusion.schedulers import FlaxFlowMatchScheduler
@@ -453,38 +454,53 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
     model = nnx.merge(state.graphdef, params, state.rest_of_state)
     latents = data["latents"].astype(config.weights_dtype)
     encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
-    bsz = latents.shape[0]
-    timesteps = jax.random.randint(
-        timestep_rng,
-        (bsz,),
-        0,
-        scheduler.config.num_train_timesteps,
-    )
-    noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
-    noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
 
+    bsz = latents.shape[0]
+    timesteps = scheduler.sample_timesteps(timestep_rng, bsz)
+    noise = jax.random.normal(
+        key=new_rng, shape=latents.shape, dtype=latents.dtype
+    )
+    noisy_latents, training_target, training_weight = (
+        scheduler.apply_flow_match(noise, latents, timesteps)
+    )
     with jax.named_scope("forward_pass"):
       model_pred = model(
           hidden_states=noisy_latents,
           timestep=timesteps,
           encoder_hidden_states=encoder_hidden_states,
           deterministic=False,
-          rngs=nnx.Rngs(dropout_rng),
+          rngs=nnx.Rngs(dropout=dropout_rng),
       )
 
     with jax.named_scope("loss"):
-      training_target = scheduler.training_target(latents, noise, timesteps)
-      training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
       loss = (training_target - model_pred) ** 2
-      loss = loss * training_weight
+      if not config.disable_training_weights:
+        training_weight = jnp.expand_dims(training_weight, axis=(1, 2, 3, 4))
+        loss = loss * training_weight
       loss = jnp.mean(loss)
 
     return loss
 
   grad_fn = nnx.value_and_grad(loss_fn)
   loss, grads = grad_fn(state.params)
+  max_grad_norm = jaxopt.tree_util.tree_l2_norm(grads)
+
+  max_abs_grad = jax.tree_util.tree_reduce(
+      lambda max_val, arr: jnp.maximum(max_val, jnp.max(jnp.abs(arr))),
+      grads,
+      initializer=-1.0,
+  )
+
+  metrics = {
+      "scalar": {
+          "learning/loss": loss,
+          "learning/max_grad_norm": max_grad_norm,
+          "learning/max_abs_grad": max_abs_grad,
+      },
+      "scalars": {},
+  }
+
   new_state = state.apply_gradients(grads=grads)
-  metrics = {"scalar": {"learning/loss": loss}, "scalars": {}}
   return new_state, scheduler_state, metrics, new_rng
 
 
@@ -495,14 +511,14 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
 
   # The loss function logic is identical to training. We are evaluating the model's
   # ability to perform its core training objective (e.g., denoising).
-  @jax.jit
   def loss_fn(params, latents, encoder_hidden_states, timesteps, rng):
     # Reconstruct the model from its definition and parameters
     model = nnx.merge(state.graphdef, params, state.rest_of_state)
 
     noise = jax.random.normal(key=rng, shape=latents.shape, dtype=latents.dtype)
-    noisy_latents = scheduler.add_noise(scheduler_state, latents, noise, timesteps)
-
+    noisy_latents, training_target, training_weight = (
+        scheduler.apply_flow_match(noise, latents, timesteps)
+    )
     # Get the model's prediction
     model_pred = model(
         hidden_states=noisy_latents,
@@ -512,10 +528,11 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
     )
 
     # Calculate the loss against the target
-    training_target = scheduler.training_target(latents, noise, timesteps)
-    training_weight = jnp.expand_dims(scheduler.training_weight(scheduler_state, timesteps), axis=(1, 2, 3, 4))
     loss = (training_target - model_pred) ** 2
-    loss = loss * training_weight
+    if not config.disable_training_weights:
+      training_weight = jnp.expand_dims(training_weight, axis=(1, 2, 3, 4))
+      loss = loss * training_weight
+
     # Calculate the mean loss per sample across all non-batch dimensions.
     loss = loss.reshape(loss.shape[0], -1).mean(axis=1)
 
