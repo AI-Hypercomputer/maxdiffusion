@@ -129,6 +129,7 @@ diffusion_scheduler_config: {
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
 base_output_directory: ""
+tensorboard_dir: ""
 
 # Hardware
 hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
@@ -263,7 +264,7 @@ save_optimizer: False
 adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradients.
 adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradients.
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
-adam_weight_decay: 0 # AdamW Weight decay
+adam_weight_decay: 0.0 # AdamW Weight decay
 max_grad_norm: 1.0
 
 enable_profiler: False
