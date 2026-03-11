@@ -18,27 +18,6 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import flax.linen as nn
-import numpy as np
-
-printed_count = 0
-
-
-def print_shape(name, tensor):
-  global printed_count
-  if printed_count > 1000:
-    return
-  if tensor is not None:
-
-    def _print_fn(n, t):
-      t_np = np.array(t, dtype=np.float32)
-      print(f"[{n}] min: {t_np.min():.5f}, max: {t_np.max():.5f}, mean: {t_np.mean():.5f}, std: {t_np.std():.5f}")
-
-    if isinstance(tensor, jax.core.Tracer):
-      jax.debug.callback(_print_fn, name, tensor)
-    else:
-      _print_fn(name, tensor)
-    printed_count += 1
-
 
 from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
@@ -908,11 +887,6 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         audio_encoder_attention_mask = jnp.expand_dims(audio_encoder_attention_mask, axis=1)
 
     batch_size = hidden_states.shape[0]
-    # print_shape("Model Input hidden_states", hidden_states)
-    # print_shape("Model Input audio_hidden_states", audio_hidden_states)
-    # print_shape("Model Input encoder_hidden_states", encoder_hidden_states)
-    # print_shape("Model Input audio_encoder_hidden_states", audio_encoder_hidden_states)
-    # print_shape("Model Input timestep", timestep)
 
     # 1. Prepare RoPE positional embeddings
     if video_coords is None:
