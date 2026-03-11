@@ -193,11 +193,11 @@ class ApproximateGELU(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "mlp",
                 "embed",
+                "mlp",
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -249,8 +249,8 @@ class WanFeedForward(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "embed",
                 "mlp",
+                "embed",
             ),
         ),
     )
@@ -260,15 +260,15 @@ class WanFeedForward(nnx.Module):
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
 
   def __call__(self, hidden_states: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None) -> jax.Array:
-    print(f"[SHAPE TRACE] FFN Input | Shape: {hidden_states.shape}")
+    print(f"[SHAPE TRACE] FFN Input | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'embed')")
     hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
-    print(f"[SHAPE TRACE] FFN Expanded (mlp axis) | Shape: {hidden_states.shape} | Maps to logical axis: 'mlp'")
+    print(f"[SHAPE TRACE] FFN Expanded (mlp axis) | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'mlp')")
     hidden_states = checkpoint_name(hidden_states, "ffn_activation")
     if self.drop_out:
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     with jax.named_scope("proj_out"):
       out = self.proj_out(hidden_states)
-      print(f"[SHAPE TRACE] FFN Output (embed axis) | Shape: {out.shape} | Maps to logical axis: 'embed'")
+      print(f"[SHAPE TRACE] FFN Output (embed axis) | Shape: {out.shape} | Logical: ('activation_batch', 'activation_length', 'embed')")
       return out  # output is (4, 75600, 5120)
 
 

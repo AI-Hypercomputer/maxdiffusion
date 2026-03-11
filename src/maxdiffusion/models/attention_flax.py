@@ -186,7 +186,7 @@ def convert_to_tokamax_splash_config(
     residual_checkpoint_name: str | None = None,
     attn_logits_soft_cap: float | None = None,
     fuse_reciprocal: bool = True,
-    use_base2_exp: bool = False,
+    use_base2_exp: bool = True,
     max_logit_const: float | None = None,
     interpret: bool = False,
     dq_reduction_steps: int | None = None,
@@ -209,6 +209,7 @@ def convert_to_tokamax_splash_config(
       attn_logits_soft_cap=attn_logits_soft_cap,
       fuse_reciprocal=fuse_reciprocal,
       use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=True,
       max_logit_const=max_logit_const,
       interpret=interpret,
       dq_reduction_steps=dq_reduction_steps,
@@ -720,9 +721,12 @@ class NNXSimpleFeedForward(nnx.Module):
     )
 
   def __call__(self, hidden_states: Array) -> Array:
+    print(f"[SHAPE TRACE] FFN Input | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'embed')")
     hidden_states = self.net_0(hidden_states)
+    print(f"[SHAPE TRACE] FFN Expanded | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'mlp')")
     hidden_states = self.act(hidden_states)
     hidden_states = self.net_2(hidden_states)
+    print(f"[SHAPE TRACE] FFN Output | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'embed')")
     return hidden_states
 
 
@@ -921,8 +925,9 @@ class FlaxWanAttention(nnx.Module):
     self.value_axis_names = value_axis_names
     self.out_axis_names = out_axis_names
     self.enable_jax_named_scopes = enable_jax_named_scopes
+    self.is_self_attention = is_self_attention
 
-    if is_self_attention:
+    if self.is_self_attention:
       axis_names_q = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_Q_LENGTH, D_KV)
       axis_names_kv = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_KV_LENGTH, D_KV)
     else:
@@ -1109,15 +1114,15 @@ class FlaxWanAttention(nnx.Module):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> jax.Array:
+    print(f"[SHAPE TRACE] FlaxWanAttention Input | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'embed')")
     axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
     dtype = hidden_states.dtype
-    is_self_attention = encoder_hidden_states is None
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
 
-    is_i2v_cross_attention = self.added_kv_proj_dim is not None and not is_self_attention
+    is_i2v_cross_attention = self.added_kv_proj_dim is not None and not (encoder_hidden_states is None)
 
     if not is_i2v_cross_attention:
       with jax.named_scope("query_proj"):
@@ -1145,6 +1150,12 @@ class FlaxWanAttention(nnx.Module):
       key_proj = checkpoint_name(key_proj, "key_proj")
       value_proj = checkpoint_name(value_proj, "value_proj")
 
+      if self.is_self_attention:
+        print(f"[SHAPE TRACE] Self-Attention Q | Shape: {query_proj.shape} | Logical: ('activation_batch', 'activation_self_attn_heads', 'activation_self_attn_q_length', 'activation_kv')")
+        print(f"[SHAPE TRACE] Self-Attention K | Shape: {key_proj.shape} | Logical: ('activation_batch', 'activation_self_attn_heads', 'activation_self_attn_kv_length', 'activation_kv')")
+      else:
+        print(f"[SHAPE TRACE] Cross-Attention Q | Shape: {query_proj.shape} | Logical: ('activation_batch', 'activation_cross_attn_q_length', 'embed')")
+        print(f"[SHAPE TRACE] Cross-Attention K | Shape: {key_proj.shape} | Logical: ('activation_batch', 'activation_cross_attn_kv_length', 'embed')")
       with jax.named_scope("apply_attention"):
         attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
@@ -1215,6 +1226,8 @@ class FlaxWanAttention(nnx.Module):
         value_proj_img = checkpoint_name(value_proj_img, "value_proj_img")
         query_proj_img = checkpoint_name(query_proj_img, "query_proj_img")
 
+        print(f"[SHAPE TRACE] Cross-Attention Q | Shape: {query_proj_text.shape} | Logical: ('activation_batch', 'activation_cross_attn_heads', 'activation_cross_attn_q_length', 'activation_kv')")
+        print(f"[SHAPE TRACE] Cross-Attention K | Shape: {key_proj_text.shape} | Logical: ('activation_batch', 'activation_cross_attn_heads', 'activation_cross_attn_kv_length', 'activation_kv')")
         # Attention - tensors are (B, S, D)
         with self.conditional_named_scope("cross_attn_text_apply"):
           attn_output_text = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
@@ -1230,15 +1243,17 @@ class FlaxWanAttention(nnx.Module):
         query_proj_text = checkpoint_name(query_proj_text, "query_proj")
         key_proj_text = checkpoint_name(key_proj_text, "key_proj_text")
         value_proj_text = checkpoint_name(value_proj_text, "value_proj_text")
-
+        print(f"[SHAPE TRACE] Cross-Attention Q | Shape: {query_proj_text.shape} | Logical: ('activation_batch', 'activation_cross_attn_heads', 'activation_cross_attn_q_length', 'activation_kv')")
+        print(f"[SHAPE TRACE] Cross-Attention K | Shape: {key_proj_text.shape} | Logical: ('activation_batch', 'activation_cross_attn_heads', 'activation_cross_attn_kv_length', 'activation_kv')")
         with self.conditional_named_scope("cross_attn_text_apply"):
           attn_output = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
-
+    print(f"[SHAPE TRACE] Post-Attention Matrix | Shape: {attn_output.shape} | Logical: ('activation_batch', 'activation_length', 'embed')")
     with jax.named_scope("proj_attn"):
       hidden_states = self.proj_attn(attn_output)
+      print(f"[SHAPE TRACE] Final Proj_Attn Output | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'embed')")
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     return hidden_states
 
