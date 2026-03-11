@@ -31,6 +31,9 @@ from maxdiffusion.models.ltx2.transformer_ltx2 import (
     LTX2RotaryPosEmbed,
 )
 import flax
+from unittest.mock import Mock, patch, MagicMock
+from maxdiffusion.pipelines.ltx2.ltx2_pipeline import LTX2Pipeline
+from maxdiffusion.pyconfig import HyperParameters
 
 
 flax.config.update("flax_always_shard_variable", False)
