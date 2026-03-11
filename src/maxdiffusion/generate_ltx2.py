@@ -103,7 +103,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
 
 
 def run(config, pipeline=None, filename_prefix="", commit_hash=None):
-  writer = max_utils.initialize_summary_writer(config) if config.run_name else None
+  writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
