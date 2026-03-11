@@ -262,7 +262,10 @@ class WanFeedForward(nnx.Module):
   def __call__(self, hidden_states: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None) -> jax.Array:
     hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
     hidden_states = checkpoint_name(hidden_states, "ffn_activation")
-    hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
+    if self.drop_out.rate > 0:
+      hidden_states = self.drop_out(
+          hidden_states, deterministic=deterministic, rngs=rngs
+      )
     with jax.named_scope("proj_out"):
       return self.proj_out(hidden_states)  # output is (4, 75600, 5120)
 
