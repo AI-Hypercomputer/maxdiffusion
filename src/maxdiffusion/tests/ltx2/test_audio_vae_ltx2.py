@@ -1,5 +1,3 @@
-"""Tests for the LTX-2 Audio VAE."""
-
 import jax
 import jax.numpy as jnp
 from absl.testing import absltest
