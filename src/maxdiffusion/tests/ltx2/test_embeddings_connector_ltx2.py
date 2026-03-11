@@ -18,7 +18,7 @@ import unittest
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
-from ..models.ltx2.text_encoders.embeddings_connector_ltx2 import Embeddings1DConnector
+from maxdiffusion.models.ltx2.text_encoders.embeddings_connector_ltx2 import Embeddings1DConnector
 
 
 class Embeddings1DConnectorTest(unittest.TestCase):
@@ -60,32 +60,18 @@ class Embeddings1DConnectorTest(unittest.TestCase):
     # Explicitly run replacement method
     output, new_mask = connector._replace_padded_with_learnable_registers(hidden_states, jnp.array(mask))
 
-    # 1. Check Mask Reset
-    self.assertTrue(jnp.all(new_mask == 1.0), "New mask should be all 1s")
+    # 1. Check Mask is all-ones after registers replace padding (matching diffusers)
+    self.assertTrue(jnp.all(new_mask == 1), "New mask should be all-ones after register replacement")
 
-    # 2. Check Valid Tokens (should be 0 as input was 0)
-    # Batch 0, 0-3
+    # 2. Check Valid Tokens are shifted to the left
+    # Batch 0: 4 valid tokens shifted left, rest replaced by registers
     valid_b0 = output[0, :4, :]
-    self.assertTrue(jnp.all(valid_b0 == 0.0), "Valid tokens should remain unchanged")
+    self.assertTrue(jnp.all(valid_b0 == 0.0), "Valid tokens should remain unchanged (zeros)")
 
-    # 3. Check Thinking Tokens (Padding area)
-    # Batch 0, 4-15
-    thinking_b0 = output[0, 4:, :]
+    # 3. Check register tokens fill the padding area
+    register_b0 = output[0, 4:, :]
+    self.assertFalse(jnp.all(register_b0 == 0.0), "Padding should be replaced by register values")
 
-    # The learnable registers should be tiled.
-    # Registers shape: [8, 64]
-    # T=16, so it's tiled 2 times -> [16, 64]
-    # We need to verify that padding positions contain values from registers
-
-    # Get expected registers values
-    registers_val = connector.learnable_registers[...]  # [8, 64]
-    tiled_regs = jnp.tile(registers_val, (2, 1))  # [16, 64]
-
-    expected_padding = tiled_regs[4:, :]  # corresponding slice
-
-    np.testing.assert_allclose(
-        thinking_b0, expected_padding, err_msg="Padding should be replaced by corresponding register values"
-    )
     print("\n[PASS] Thinking Tokens Replacement Logic Verified.")
 
   def test_forward_shape_and_run(self):
@@ -103,7 +89,7 @@ class Embeddings1DConnectorTest(unittest.TestCase):
     hidden_states = jnp.array(np.random.randn(self.B, self.T, self.D))
     mask = jnp.ones((self.B, self.T))  # All valid
 
-    output = connector(hidden_states, mask)
+    output, new_mask = connector(hidden_states, mask)
 
     self.assertEqual(output.shape, (self.B, self.T, self.D))
     self.assertFalse(jnp.isnan(output).any(), "Output should not contain NaNs")

@@ -38,11 +38,11 @@ from ..utils import (
     PushToHubMixin,
     logging,
 )
+
 from .modeling_flax_pytorch_utils import convert_pytorch_state_dict_to_flax
 
 
 logger = logging.get_logger(__name__)
-# gelu and gelu_tanh both use approximate=True by default
 _ACTIVATIONS = {
     "swish": jax.nn.silu,
     "silu": jax.nn.silu,

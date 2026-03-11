@@ -22,124 +22,78 @@ from maxdiffusion import common_types
 
 from .feature_extractor_ltx2 import LTX2GemmaFeatureExtractor
 from .embeddings_connector_ltx2 import Embeddings1DConnector
+from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
+from maxdiffusion.models.modeling_flax_utils import FlaxModelMixin
 
 Array = common_types.Array
 DType = common_types.DType
 
 
-class LTX2VideoGemmaTextEncoder(nnx.Module):
-  """
-  Encoder for Video-only tasks.
-  Pipeline: Gemma Hidden States -> Feature Extractor -> Video Connector -> Output
-  """
-
-  def __init__(
-      self,
-      # Feature Extractor Config
-      gemma_dim: int = 3840,  # Gemma-3-12b
-      gemma_layers: int = 49,  # Gemma-3 has 48 layers + 1 embedding layer output = 49 hidden states
-      projection_dim: int = 3840,  # LTX-2 conditioning dim
-      # Connector Config
-      connector_heads: int = 32,
-      connector_head_dim: int = 128,
-      connector_layers: int = 2,
-      num_thinking_tokens: int = 128,
-      dtype: DType = jnp.float32,
-      attention_kernel: str = "flash",
-      mesh: jax.sharding.Mesh = None,
-      rngs: nnx.Rngs = None,
-  ):
-    input_dim = gemma_dim * gemma_layers
-
-    self.feature_extractor = LTX2GemmaFeatureExtractor(
-        input_dim=input_dim,
-        output_dim=projection_dim,
-        dtype=dtype,
-        rngs=rngs,
-    )
-
-    self.embeddings_connector = Embeddings1DConnector(
-        input_dim=projection_dim,
-        heads=connector_heads,
-        head_dim=connector_head_dim,
-        layers=connector_layers,
-        num_learnable_registers=num_thinking_tokens,
-        rope_type="interleaved",
-        attention_kernel=attention_kernel,
-        mesh=mesh,
-        rngs=rngs,
-    )
-
-  def __call__(
-      self,
-      hidden_states: Union[Tuple[Array, ...], List[Array]],
-      attention_mask: Array,
-  ) -> Array:
-    """
-    Args:
-        hidden_states: From Gemma output.hidden_states (Tuple of [B, T, D])
-        attention_mask: [B, T]
-    """
-    # 1. Feature Extraction (Stack -> Norm -> Project)
-    features = self.feature_extractor(hidden_states, attention_mask)
-
-    # 2. Connection (Refine + Thinking Tokens)
-    video_embeds = self.embeddings_connector(features, attention_mask)
-
-    return video_embeds
-
-
-class LTX2AudioVideoGemmaTextEncoder(nnx.Module):
+class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
   """
   Encoder for Audio-Video tasks.
   Pipeline: Gemma Hidden States -> Feature Extractor -> [Video Connector, Audio Connector]
   """
 
+  @register_to_config
   def __init__(
       self,
-      # Feature Extractor Config (Shared)
-      gemma_dim: int = 3840,  # Gemma-3-12b
-      gemma_layers: int = 49,  # Gemma-3 has 48 layers + 1 embedding layer output = 49 hidden states
-      projection_dim: int = 3840,
-      # Connector Config
-      connector_heads: int = 30,
-      connector_head_dim: int = 128,
-      connector_layers: int = 2,
-      num_thinking_tokens: int = 128,
+      caption_channels: int = 3840,
+      text_proj_in_factor: int = 49,
+      video_connector_attention_head_dim: int = 128,
+      video_connector_num_attention_heads: int = 30,
+      video_connector_num_layers: int = 2,
+      video_connector_num_learnable_registers: int = 128,
+      audio_connector_attention_head_dim: int = 128,
+      audio_connector_num_attention_heads: int = 30,
+      audio_connector_num_layers: int = 2,
+      audio_connector_num_learnable_registers: int = 128,
+      connector_rope_base_seq_len: int = 4096,
+      rope_double_precision: bool = True,
+      rope_theta: float = 10000.0,
+      rope_type: str = "split",
+      causal_temporal_positioning: bool = False,
       dtype: DType = jnp.float32,
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
+      **kwargs
   ):
-    input_dim = gemma_dim * gemma_layers
+    input_dim = caption_channels * text_proj_in_factor
 
     self.feature_extractor = LTX2GemmaFeatureExtractor(
         input_dim=input_dim,
-        output_dim=projection_dim,
+        output_dim=caption_channels,
         dtype=dtype,
         rngs=rngs,
     )
 
     # Two independent connectors
     self.video_embeddings_connector = Embeddings1DConnector(
-        input_dim=projection_dim,
-        heads=connector_heads,
-        head_dim=connector_head_dim,
-        layers=connector_layers,
-        num_learnable_registers=num_thinking_tokens,
-        rope_type="interleaved",
+        input_dim=caption_channels,
+        heads=video_connector_num_attention_heads,
+        head_dim=video_connector_attention_head_dim,
+        layers=video_connector_num_layers,
+        num_learnable_registers=video_connector_num_learnable_registers,
+        rope_type=rope_type,
+        theta=rope_theta,
+        base_seq_len=connector_rope_base_seq_len,
+        double_precision=rope_double_precision,
         attention_kernel=attention_kernel,
         mesh=mesh,
         rngs=rngs,
     )
 
     self.audio_embeddings_connector = Embeddings1DConnector(
-        input_dim=projection_dim,
-        heads=connector_heads,
-        head_dim=connector_head_dim,
-        layers=connector_layers,
-        num_learnable_registers=num_thinking_tokens,
-        rope_type="interleaved",
+        input_dim=caption_channels,
+        heads=audio_connector_num_attention_heads,
+        head_dim=audio_connector_attention_head_dim,
+        layers=audio_connector_num_layers,
+        num_learnable_registers=audio_connector_num_learnable_registers,
+        rope_type=rope_type,
+        theta=rope_theta,
+        base_seq_len=connector_rope_base_seq_len,
+        double_precision=rope_double_precision,
         attention_kernel=attention_kernel,
         mesh=mesh,
         rngs=rngs,
@@ -152,13 +106,13 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module):
   ) -> Tuple[Array, Array]:
     """
     Returns:
-        (video_embeds, audio_embeds)
+        (video_embeds, audio_embeds, new_attention_mask)
     """
     # 1. Shared Feature Extraction
     features = self.feature_extractor(hidden_states, attention_mask)
 
     # 2. Parallel Connection
-    video_embeds = self.video_embeddings_connector(features, attention_mask)
-    audio_embeds = self.audio_embeddings_connector(features, attention_mask)
+    video_embeds, new_attention_mask = self.video_embeddings_connector(features, attention_mask)
+    audio_embeds, _ = self.audio_embeddings_connector(features, attention_mask)
 
-    return video_embeds, audio_embeds
+    return video_embeds, audio_embeds, new_attention_mask

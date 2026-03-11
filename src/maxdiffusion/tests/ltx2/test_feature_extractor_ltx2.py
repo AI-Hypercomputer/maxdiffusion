@@ -20,7 +20,7 @@ import numpy as np
 import jax.numpy as jnp
 from flax import nnx
 
-from ..models.ltx2.text_encoders.feature_extractor_ltx2 import LTX2GemmaFeatureExtractor, _norm_and_concat_padded_batch
+from maxdiffusion.models.ltx2.text_encoders.feature_extractor_ltx2 import LTX2GemmaFeatureExtractor, _norm_and_concat_padded_batch
 
 
 # ==========================================
@@ -28,20 +28,16 @@ from ..models.ltx2.text_encoders.feature_extractor_ltx2 import LTX2GemmaFeatureE
 # ==========================================
 def pt_norm_and_concat_padded_batch(
     encoded_text: torch.Tensor,
-    sequence_lengths: torch.Tensor,
-    padding_side: str = "right",
+    attention_mask: torch.Tensor,
 ) -> torch.Tensor:
+  """PyTorch reference with left-padding (matching Diffusers Gemma convention)."""
   b, t, d, l = encoded_text.shape
   device = encoded_text.device
 
+  sequence_lengths = attention_mask.sum(dim=-1)
   token_indices = torch.arange(t, device=device)[None, :]
-  if padding_side == "right":
-    mask = token_indices < sequence_lengths[:, None]
-  elif padding_side == "left":
-    start_indices = t - sequence_lengths[:, None]
-    mask = token_indices >= start_indices
-  else:
-    raise ValueError
+  start_indices = t - sequence_lengths[:, None]
+  mask = token_indices >= start_indices
 
   mask = mask[:, :, None, None]  # [B, T, 1, 1]
 
@@ -78,18 +74,22 @@ class LTX2FeatureExtractorTest(unittest.TestCase):
     # Create random input with some padding
     np_input = np.random.randn(self.B, self.T, self.D, self.L).astype(np.float32)
 
-    # Lengths: e.g. [5, 8] out of 10
-    lengths = np.array([5, 8], dtype=np.int32)
+    # Left-padded attention mask: [5, 8] valid tokens out of 10
+    # Batch 0: first 5 are padding (0), last 5 are valid (1)
+    # Batch 1: first 2 are padding (0), last 8 are valid (1)
+    mask_np = np.zeros((self.B, self.T), dtype=np.float32)
+    mask_np[0, 5:] = 1  # 5 valid tokens
+    mask_np[1, 2:] = 1  # 8 valid tokens
 
     # PyTorch Reference
     pt_input = torch.from_numpy(np_input)
-    pt_lengths = torch.from_numpy(lengths)
-    pt_out = pt_norm_and_concat_padded_batch(pt_input, pt_lengths)
+    pt_mask = torch.from_numpy(mask_np)
+    pt_out = pt_norm_and_concat_padded_batch(pt_input, pt_mask)
 
     # JAX Implementation
     jax_input = jnp.array(np_input)
-    jax_lengths = jnp.array(lengths)
-    jax_out = _norm_and_concat_padded_batch(jax_input, jax_lengths)
+    jax_mask = jnp.array(mask_np)
+    jax_out = _norm_and_concat_padded_batch(jax_input, jax_mask)
 
     diff = np.abs(pt_out.numpy() - np.array(jax_out)).max()
     print(f"\n[Norm Parity] Max Diff: {diff:.6f}")
@@ -104,10 +104,10 @@ class LTX2FeatureExtractorTest(unittest.TestCase):
     # Create input tuple (simulate Gemma output)
     hidden_states = [jnp.array(np.random.randn(self.B, self.T, self.D)) for _ in range(self.L)]
 
-    # Attention Mask [B, T]
-    mask = np.zeros((self.B, self.T), dtype=np.int32)
-    mask[0, :5] = 1
-    mask[1, :8] = 1
+    # Left-padded attention mask [B, T]
+    mask = np.zeros((self.B, self.T), dtype=np.float32)
+    mask[0, 5:] = 1  # 5 valid tokens
+    mask[1, 2:] = 1  # 8 valid tokens
     jax_mask = jnp.array(mask)
 
     output = model(tuple(hidden_states), jax_mask)
@@ -115,9 +115,9 @@ class LTX2FeatureExtractorTest(unittest.TestCase):
     expected_shape = (self.B, self.T, self.target_dim)
     self.assertEqual(output.shape, expected_shape)
 
-    # Check padding regions are zero
-    # Batch 0, indices 5: should be 0
-    padding_val = output[0, 5:, :]
+    # Check padding regions are zero (left-padded)
+    # Batch 0, indices 0-4 should be 0
+    padding_val = output[0, :5, :]
     self.assertTrue(jnp.all(padding_val == 0.0), "Padding region should be zero")
 
     print("\n[PASS] Feature Extractor Module Forward Pass Verified.")
