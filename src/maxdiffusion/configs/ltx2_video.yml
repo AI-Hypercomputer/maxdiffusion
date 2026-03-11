@@ -31,6 +31,8 @@ prompt: "A man in a brightly lit room talks on a vintage telephone. In a low, he
 negative_prompt: "shaky, glitchy, low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly, transition, static."
 height: 512
 width: 768
+decode_timestep: 0.05
+decode_noise_scale: 0.025
 num_frames: 121
 quantization: "int8"
 seed: 10
