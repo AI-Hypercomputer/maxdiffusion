@@ -56,80 +56,14 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
       # Map transformer_blocks_N -> transformer_blocks
       pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[1:]
 
-  # Handle transformer_blocks.N (dot) from original keys if rename_key didn't underscore it
-  if scan_layers and len(pt_tuple_key) > 1 and pt_tuple_key[0] == "transformer_blocks" and pt_tuple_key[1].isdigit():
-    block_index = int(pt_tuple_key[1])
-    pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[2:]
-
-  if scan_layers:
-    if "transformer_blocks" in pt_tuple_key:
-      pass  # Already handled above or matches standard format
-
-  # Handle scale_shift_table keys
-  if "scale_shift_table" in pt_tuple_key[-1] or "scale_shift_table" in pt_tuple_key:
-    pass
-
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   flax_key_str = [str(k) for k in flax_key]
 
-  if flax_key_str[-1] in ["kernel", "weight"]:
-    temp_key_str = flax_key_str[:-1] + ["scale"]
-    temp_key = tuple(temp_key_str)  # Tuple of strings
-
-    if temp_key in random_flax_state_dict:
-      flax_key_str = temp_key_str
-      pass
   if "scale_shift_table" in flax_key_str:
     if flax_key_str[-1] in ["kernel", "weight"]:
       flax_key_str.pop()
-
-  def replace_suffix(lst, old, new):
-    if lst and lst[-1] == old:
-      lst[-1] = new
-    return lst
-
-  if "transformer_blocks" in flax_key_str:
-    if flax_key_str[-1] == "query":
-      flax_key_str[-1] = "to_q"
-    elif flax_key_str[-1] == "key":
-      flax_key_str[-1] = "to_k"
-    elif flax_key_str[-1] == "value":
-      flax_key_str[-1] = "to_v"
-
-    if len(flax_key_str) >= 2 and flax_key_str[-2] == "proj_attn":
-      # proj_attn, kernel -> to_out, kernel
-      flax_key_str[-2] = "to_out"
-
+      
   flax_key = tuple(flax_key_str)
-
-  if flax_key[-1] == "weight":
-    parent = flax_key[-2] if len(flax_key) > 1 else ""
-    grandparent = flax_key[-3] if len(flax_key) > 2 else ""
-
-    should_be_kernel = False
-    if "linear" in parent or "proj" in parent or "proj" in grandparent:
-      should_be_kernel = True
-    if "time_embed" in flax_key[0] or "cross_attn" in flax_key[0]:
-      if "linear" in parent or "emb" in parent:
-        should_be_kernel = True
-
-    if "norm" in parent:
-      should_be_kernel = False
-
-    if should_be_kernel:
-      flax_key = flax_key[:-1] + ("kernel",)
-
-  if flax_key[-1] == "weight":
-    if "norm" in flax_key[-2] or "norm" in flax_key[0]:
-      flax_key = flax_key[:-1] + ("scale",)
-
-  if flax_key[-1] == "weight" and flax_key[-2] in ["to_q", "to_k", "to_v", "to_out"]:
-    flax_key = flax_key[:-1] + ("kernel",)
-
-  if len(flax_key) >= 2 and flax_key[-2] == "0" and flax_key[-3] == "to_out":
-    flax_key = flax_key[:-3] + ("to_out", flax_key[-1])
-
-  flax_key_str = [str(k) for k in flax_key]
   flax_key = _tuple_str_to_int(flax_key)
 
   if scan_layers and block_index is not None:
@@ -206,12 +140,7 @@ def load_transformer_weights(
 
     random_flax_state_dict = {}
     for key in flattened_dict:
-      string_tuple = tuple([str(item) for item in key])
-      random_flax_state_dict[string_tuple] = flattened_dict[key]
-
-    for key in flattened_dict:
-      string_tuple = tuple([str(item) for item in key])
-      random_flax_state_dict[string_tuple] = flattened_dict[key]
+      random_flax_state_dict[tuple(str(item) for item in key)] = flattened_dict[key]
 
     for pt_key, tensor in tensors.items():
       renamed_pt_key = rename_key(pt_key)
@@ -237,25 +166,10 @@ def load_vae_weights(
 ):
   device = jax.local_devices(backend=device)[0]
 
-  filename = "diffusion_pytorch_model.safetensors"
-  try:
-    ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
-  except Exception:
-    filename = "diffusion_pytorch_model.bin"
-    ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
-
   max_logging.log(f"Load and port {pretrained_model_name_or_path} VAE on {device}")
 
   with jax.default_device(device):
-    tensors = {}
-    if filename.endswith(".safetensors"):
-      with safe_open(ckpt_path, framework="pt") as f:
-        for k in f.keys():
-          tensors[k] = torch2jax(f.get_tensor(k))
-    else:
-      loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
-      for k, v in loaded_state_dict.items():
-        tensors[k] = torch2jax(v)
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
 
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
@@ -263,8 +177,7 @@ def load_vae_weights(
 
     random_flax_state_dict = {}
     for key in flattened_eval:
-      string_tuple = tuple([str(item) for item in key])
-      random_flax_state_dict[string_tuple] = flattened_eval[key]
+      random_flax_state_dict[tuple(str(item) for item in key)] = flattened_eval[key]
 
     for pt_key, tensor in tensors.items():
       # latents_mean and latents_std are nnx.Params and will be loaded correctly.
@@ -295,15 +208,7 @@ def load_vae_weights(
           pt_list.append("upsampler")
         elif part in ["conv1", "conv2", "conv", "conv_in", "conv_out", "conv_shortcut"]:
           pt_list.append(part)
-          if i + 1 < len(pt_tuple_key) and pt_tuple_key[i + 1] == "conv":
-            pass
-          elif pt_list[-1] == "conv":
-            pass
-          elif len(pt_list) >= 2 and pt_list[-2] == "conv":
-            pass
-          elif part == "conv":
-            pass
-          else:
+          if part != "conv" and (i + 1 == len(pt_tuple_key) or pt_tuple_key[i + 1] != "conv") and (len(pt_list) < 2 or pt_list[-2] != "conv"):
             pt_list.append("conv")
         else:
           pt_list.append(part)
@@ -314,31 +219,19 @@ def load_vae_weights(
       flax_key = _tuple_str_to_int(flax_key)
 
       if resnet_index is not None:
-        if flax_key in flax_state_dict:
-          current_tensor = flax_state_dict[flax_key]
-        else:
-          str_flax_key = tuple([str(x) for x in flax_key])
-
-          if str_flax_key in random_flax_state_dict:
-            target_shape = random_flax_state_dict[str_flax_key].shape
-            current_tensor = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
-          else:
-            current_tensor = flax_tensor
-
         str_flax_key = tuple([str(x) for x in flax_key])
         if str_flax_key in random_flax_state_dict:
-          current_tensor = current_tensor.at[resnet_index].set(flax_tensor)
-          flax_state_dict[flax_key] = current_tensor
+          if flax_key not in flax_state_dict:
+            target_shape = random_flax_state_dict[str_flax_key].shape
+            flax_state_dict[flax_key] = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
+          flax_state_dict[flax_key] = flax_state_dict[flax_key].at[resnet_index].set(flax_tensor)
         else:
           flax_state_dict[flax_key] = flax_tensor
       else:
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
-    filtered_eval_shapes = {}
-    for k, v in flattened_eval.items():
-      k_str = [str(x) for x in k]
-      if "dropout" in k_str or "rngs" in k_str:
-        continue
-      filtered_eval_shapes[k] = v
+    filtered_eval_shapes = {
+        k: v for k, v in flattened_eval.items() if not any("dropout" in str(x) or "rngs" in str(x) for x in k)
+    }
 
     validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
@@ -366,17 +259,10 @@ def load_vocoder_weights(
     key = rename_for_ltx2_vocoder(pt_key)
     parts = key.split(".")
 
-    flax_key_parts = []
-    for part in parts:
-      if part.isdigit():
-        flax_key_parts.append(int(part))
-      else:
-        flax_key_parts.append(part)
+    if parts[-1] == "weight":
+      parts[-1] = "kernel"
 
-    if flax_key_parts[-1] == "weight":
-      flax_key_parts[-1] = "kernel"
-
-    flax_key = tuple(flax_key_parts)
+    flax_key = _tuple_str_to_int(parts)
 
     if flax_key[-1] == "kernel":
       if "upsamplers" in flax_key:
@@ -432,31 +318,23 @@ def load_connector_weights(
 
     if "stacked_blocks" in key:
       parts = key.split(".")
-      try:
+      if "stacked_blocks" in parts:
         sb_index = parts.index("stacked_blocks")
-        layer_idx = int(parts[sb_index + 1])
-        connector = parts[0]
-
-        param_parts = parts[: sb_index + 1] + parts[sb_index + 2 :]
-        param_name = tuple(param_parts)
-
-        if connector in grouped_weights:
-          if param_name not in grouped_weights[connector]:
-            grouped_weights[connector][param_name] = {}
-          grouped_weights[connector][param_name][layer_idx] = tensor
-          continue
-      except (ValueError, IndexError):
-        pass
+        if sb_index + 1 < len(parts):
+          layer_idx = int(parts[sb_index + 1])
+          connector = parts[0]
+  
+          param_parts = parts[: sb_index + 1] + parts[sb_index + 2 :]
+          param_name = tuple(param_parts)
+  
+          if connector in grouped_weights:
+            if param_name not in grouped_weights[connector]:
+              grouped_weights[connector][param_name] = {}
+            grouped_weights[connector][param_name][layer_idx] = tensor
+            continue
 
     key_tuple = tuple(key.split("."))
-
-    final_key_tuple = []
-    for p in key_tuple:
-      if p.isdigit():
-        final_key_tuple.append(int(p))
-      else:
-        final_key_tuple.append(p)
-    final_key_tuple = tuple(final_key_tuple)
+    final_key_tuple = _tuple_str_to_int(key_tuple)
 
     flax_state_dict[final_key_tuple] = jax.device_put(tensor, device=cpu)
 
@@ -465,15 +343,7 @@ def load_connector_weights(
       sorted_layers = sorted(layers.keys())
       stacked_tensor = jnp.stack([layers[i] for i in sorted_layers], axis=0)
 
-      final_param_name = []
-      for p in param_name:
-        if isinstance(p, str) and p.isdigit():
-          final_param_name.append(int(p))
-        else:
-          final_param_name.append(p)
-      final_param_name = tuple(final_param_name)
-
-      flax_state_dict[final_param_name] = jax.device_put(stacked_tensor, device=cpu)
+      flax_state_dict[_tuple_str_to_int(param_name)] = jax.device_put(stacked_tensor, device=cpu)
 
   del tensors
   jax.clear_caches()
@@ -516,59 +386,26 @@ def load_audio_vae_weights(
   cpu = jax.local_devices(backend="cpu")[0]
 
   flattened_eval = flatten_dict(eval_shapes)
-  random_flax_state_dict = {}
-  for key in flattened_eval:
-    string_tuple = tuple([str(item) for item in key])
-    random_flax_state_dict[string_tuple] = flattened_eval[key]
 
   for pt_key, tensor in tensors.items():
     key = rename_for_ltx2_audio_vae(pt_key)
 
-    should_transpose = False
-    if "latents_mean" in key or "latents_std" in key:
-      # latents_mean and latents_std are loaded fully, no transposing
-      pass
-    elif key.endswith(".kernel"):
-      if tensor.ndim == 4:
-        should_transpose = True
-
-    if should_transpose:
+    if key.endswith(".kernel") and tensor.ndim == 4:
       tensor = tensor.transpose(2, 3, 1, 0)
 
-    parts = key.split(".")
-    flax_key_parts = []
-    for part in parts:
-      if part.isdigit():
-        flax_key_parts.append(int(part))
-      else:
-        flax_key_parts.append(part)
-
-    flax_key = tuple(flax_key_parts)
+    flax_key = _tuple_str_to_int(key.split("."))
 
     if "up_stages" in flax_key:
-      try:
-        up_stages_idx = flax_key.index("up_stages")
-        if up_stages_idx + 1 < len(flax_key):
-          stage_idx = flax_key[up_stages_idx + 1]
-          if isinstance(stage_idx, int):
-            new_stage_idx = 2 - stage_idx
-            flax_key_parts[up_stages_idx + 1] = new_stage_idx
-            flax_key = tuple(flax_key_parts)
-      except ValueError:
-        pass
+      up_stages_idx = flax_key.index("up_stages")
+      if up_stages_idx + 1 < len(flax_key) and isinstance(flax_key[up_stages_idx + 1], int):
+        flax_key_list = list(flax_key)
+        flax_key_list[up_stages_idx + 1] = 2 - flax_key[up_stages_idx + 1]
+        flax_key = tuple(flax_key_list)
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
-  filtered_eval_shapes = {}
-  for k, v in flattened_eval.items():
-    k_str = [str(x) for x in k]
-    is_stat = False
-    for ks in k_str:
-      if "dropout" in ks or "rngs" in ks:
-        is_stat = True
-        break
-    if is_stat:
-      continue
-    filtered_eval_shapes[k] = v
+  filtered_eval_shapes = {
+      k: v for k, v in flattened_eval.items() if not any("dropout" in str(x) or "rngs" in str(x) for x in k)
+  }
 
   validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
   return unflatten_dict(flax_state_dict)
