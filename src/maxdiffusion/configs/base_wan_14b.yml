@@ -72,7 +72,7 @@ mask_padding_tokens: True
 # 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
 #    in cross attention q.
 attention_sharding_uniform: True 
-dropout: 0.1
+dropout: 0.0
 
 flash_block_sizes: {
   "block_q" : 512,
