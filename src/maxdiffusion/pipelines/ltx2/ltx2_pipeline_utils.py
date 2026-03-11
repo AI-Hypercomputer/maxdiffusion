@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -83,17 +83,9 @@ def _write_audio(
   if samples.shape[1] != 2:
     raise ValueError(f"Expected samples with 2 channels; got shape {samples.shape}.")
 
-  # Convert to int16 packed for ingestion; resampler converts to encoder fmt.
   if samples.dtype != np.int16:
-    # Prevent clipping distortion by normalizing volume if extremely loud,
-    # but LTX-2 vocoder outputs naturally fall in [-1, 1].
     samples = np.clip(samples, -1.0, 1.0)
     samples = (samples * 32767.0).astype(np.int16)
-
-  # For PyAV with format="s16" and layout="stereo", we need interleaved data.
-  # A (Time, 2) numpy array inherently interleaves Memory if C-contiguous.
-  # PyAV from_ndarray expects shape (1, Time * 2) or (2, Time) depending on the planar flag.
-  # "s16" is interleaved, so it expects (1, Samples * Channels) where Samples*Channels are C-contiguous interleaved.
   samples_np = np.ascontiguousarray(samples).reshape(1, -1)
 
   frame_in = av.AudioFrame.from_ndarray(
