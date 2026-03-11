@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,13 +55,9 @@ class LTX2PipelineUtilsTest(unittest.TestCase):
     video = torch.randint(0, 255, (frames, height, width, 3), dtype=torch.uint8)
     fps = 24
 
-    # Create dummy audio: 1 second of stereo noise at 16kHz
-    # encode_video expects audio as [samples, channels] usually based on logic:
-    # if samples.shape[1] != 2 and samples.shape[0] == 2: samples = samples.T
     audio_sample_rate = 16000
     duration = frames / fps
     num_samples = int(duration * audio_sample_rate)
-    # Create [2, num_samples] to test transpose logic
     audio = torch.linspace(-1, 1, num_samples).unsqueeze(0).repeat(2, 1)  # [2, N]
 
     ltx2_pipeline_utils.encode_video(
