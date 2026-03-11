@@ -6,6 +6,7 @@ attention_sharding_uniform: True
 precision: 'bf16'
 names_which_can_be_saved: []
 names_which_can_be_offloaded: []
+remat_policy: "NONE"
 
 jax_cache_dir: ''
 weights_dtype: 'bfloat16'
