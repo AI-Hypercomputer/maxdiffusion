@@ -338,7 +338,14 @@ class VaceWanPipeline2_1(WanPipeline2_1):
     return wan_transformer
 
   @classmethod
-  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
+  def _load_and_init(
+      cls,
+      config: HyperParameters,
+      restored_checkpoint=None,
+      vae_only=False,
+      load_transformer=True,
+      load_common_components=True,
+  ):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
@@ -348,20 +355,31 @@ class VaceWanPipeline2_1(WanPipeline2_1):
     scheduler = None
     scheduler_state = None
     text_encoder = None
+    wan_vae = None
+    vae_cache = None
+
     if not vae_only:
       if load_transformer:
         with mesh:
           transformer = cls.load_transformer(
-              devices_array=devices_array, mesh=mesh, rngs=rngs, config=config, subfolder="transformer"
+              devices_array=devices_array,
+              mesh=mesh,
+              rngs=rngs,
+              config=config,
+              restored_checkpoint=restored_checkpoint,
+              subfolder="transformer",
           )
+      if load_common_components:
+        text_encoder = cls.load_text_encoder(config=config)
+        tokenizer = cls.load_tokenizer(config=config)
 
-      text_encoder = cls.load_text_encoder(config=config)
-      tokenizer = cls.load_tokenizer(config=config)
+        scheduler, scheduler_state = cls.load_scheduler(config=config)
 
-      scheduler, scheduler_state = cls.load_scheduler(config=config)
-
-    with mesh:
-      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+    if load_common_components:
+      with mesh:
+        wan_vae, vae_cache = cls.load_vae(
+            devices_array=devices_array, mesh=mesh, rngs=rngs, config=config
+        )
 
     pipeline = cls(
         tokenizer=tokenizer,
@@ -376,7 +394,43 @@ class VaceWanPipeline2_1(WanPipeline2_1):
         config=config,
     )
 
-    pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, mesh)
+    return pipeline
+
+  @classmethod
+  def from_pretrained(
+      cls,
+      config: HyperParameters,
+      vae_only=False,
+      load_transformer=True,
+      load_common_components=True,
+  ):
+    pipeline = cls._load_and_init(
+        config, None, vae_only, load_transformer, load_common_components
+    )
+    pipeline.transformer = cls.quantize_transformer(
+        config, pipeline.transformer, pipeline, pipeline.mesh
+    )
+    return pipeline
+
+  @classmethod
+  def from_checkpoint(
+      cls,
+      config: HyperParameters,
+      restored_checkpoint=None,
+      vae_only=False,
+      load_transformer=True,
+      load_common_components=True,
+  ):
+    pipeline = cls._load_and_init(
+        config,
+        restored_checkpoint,
+        vae_only,
+        load_transformer,
+        load_common_components,
+    )
+    pipeline.transformer = cls.quantize_transformer(
+        config, pipeline.transformer, pipeline, pipeline.mesh
+    )
     return pipeline
 
   def check_inputs(
