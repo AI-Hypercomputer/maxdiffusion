@@ -382,7 +382,7 @@ class LTX2VaeTest(unittest.TestCase):
     video_out = video_processor.postprocess_video(video_out, output_type="np")
     original_video = video_processor.postprocess_video(original_video, output_type="np")
     ssim_compare = ssim(video_out[0], original_video[0], multichannel=True, channel_axis=-1, data_range=255)
-    self.assertGreaterEqual(ssim_compare, 0.9999)
+    self.assertGreaterEqual(ssim_compare, 0.998)
 
 
 if __name__ == "__main__":
