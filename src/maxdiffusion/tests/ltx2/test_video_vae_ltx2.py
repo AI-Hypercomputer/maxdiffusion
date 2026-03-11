@@ -359,7 +359,13 @@ class LTX2VaeTest(unittest.TestCase):
         filtered_eval_shapes[k] = flat_loaded[k]
 
     new_state = unflatten_dict(filtered_eval_shapes)
-    params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16) if hasattr(x, "astype") else x, new_state)
+    
+    def cast_to_bf16(x):
+      if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jnp.floating):
+        return x.astype(jnp.bfloat16)
+      return x
+
+    params = jax.tree_util.tree_map(cast_to_bf16, new_state)
     vae = nnx.merge(graphdef, params)
 
     p_vae_encode = functools.partial(vae_encode, vae=vae, key=key)
