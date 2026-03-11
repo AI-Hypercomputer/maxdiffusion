@@ -255,7 +255,7 @@ class _HyperParameters:
         raw_keys["global_batch_size_to_train_on"],
     ) = _HyperParameters.calculate_global_batch_sizes(raw_keys["per_device_batch_size"])
 
-    if getattr(raw_keys, "vae_spatial", -1) == -1 or "vae_spatial" in raw_keys and raw_keys["vae_spatial"] == -1:
+    if raw_keys.get("vae_spatial", -1) == -1:
       total_device = len(jax.devices())
       dp = raw_keys.get("ici_data_parallelism", 1) * raw_keys.get("dcn_data_parallelism", 1)
       if dp == -1 or dp == 0:
