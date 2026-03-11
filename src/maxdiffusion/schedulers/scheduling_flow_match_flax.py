@@ -151,11 +151,7 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
 
     linear_timesteps_weights = None
     if training:
-      x = timesteps
-      y = jnp.exp(-2 * ((x - num_inference_steps / 2) / num_inference_steps) ** 2)
-      y_shifted = y - jnp.min(y)
-      bsmntw_weighing = y_shifted * (num_inference_steps / jnp.sum(y_shifted))
-      linear_timesteps_weights = bsmntw_weighing
+      linear_timesteps_weights = self._calculate_training_weights(timesteps, num_inference_steps)
 
     return state.replace(
         sigmas=sigmas,
@@ -221,11 +217,7 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
 
     linear_timesteps_weights = None
     if training:
-      x = timesteps
-      y = jnp.exp(-2 * ((x - num_inference_steps / 2) / num_inference_steps) ** 2)
-      y_shifted = y - jnp.min(y)
-      bsmntw_weighing = y_shifted * (num_inference_steps / jnp.sum(y_shifted))
-      linear_timesteps_weights = bsmntw_weighing
+      linear_timesteps_weights = self._calculate_training_weights(timesteps, num_inference_steps)
 
     return state.replace(
         sigmas=sigmas,
@@ -234,6 +226,52 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
         training=training,
         num_inference_steps=num_inference_steps,
     )
+
+  def _calculate_training_weights(self, timesteps: jnp.ndarray, num_inference_steps: int) -> jnp.ndarray:
+    """Calculates the training weight for a given timestep."""
+    x = timesteps
+    y = jnp.exp(-2 * ((x - num_inference_steps / 2) / num_inference_steps) ** 2)
+    y_shifted = y - jnp.min(y)
+    bsmntw_weighing = y_shifted * (num_inference_steps / jnp.sum(y_shifted))
+    linear_timesteps_weights = bsmntw_weighing
+    return linear_timesteps_weights
+
+  def sample_timesteps(self, timestep_rng, batch_size):
+    # 1. Sample continuous timesteps t in [0, 1]
+    t = jax.random.uniform(timestep_rng, (batch_size,))
+
+    # 2. Apply the "Shift" weighting (Time shifting)
+    t_shifted = (t * self.config.shift) / (1 + (self.config.shift - 1) * t)
+
+    # 3. Scale t to [0,  self.config.num_train_timesteps]
+    timesteps = t_shifted.squeeze() * self.config.num_train_timesteps
+
+    return timesteps
+
+  def apply_flow_match(
+      self,
+      noise: jnp.ndarray,
+      batch_images: jnp.ndarray,
+      timesteps: jnp.ndarray,
+  ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Apply flow match to the batch of images.
+
+    Replaces: scheduler.add_noise + scheduler.training_target +
+    scheduler.training_weight
+    """
+
+    t = timesteps.astype(jnp.float32) / self.config.num_train_timesteps
+    broadcast_shape = (-1,) + (1,) * (batch_images.ndim - 1)
+    t = t.reshape(broadcast_shape)
+
+    sigma = (1 - t) * self.config.sigma_min + t * self.config.sigma_max
+
+    noisy_latents = (1 - sigma) * batch_images + sigma * noise
+    target = noise - batch_images
+
+    training_weights = self._calculate_training_weights(timesteps, self.config.num_train_timesteps)
+
+    return noisy_latents, target, training_weights
 
   def _find_timestep_id(self, state: FlowMatchSchedulerState, timestep: jnp.ndarray) -> jnp.ndarray:
     """Finds the index of the closest timestep in the scheduler's `timesteps` array."""

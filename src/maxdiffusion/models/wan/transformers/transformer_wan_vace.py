@@ -487,10 +487,10 @@ class WanVACEModel(WanModel):
       raise NotImplementedError("scan_layers is not supported yet")
     else:
       # Prepare VACE hints
-      control_hidden_states_list = nnx.List([])
+      control_hidden_states_list = []
       for i, vace_block in enumerate(self.vace_blocks):
 
-        def layer_forward(hidden_states, control_hidden_states):
+        def layer_forward(hidden_states, control_hidden_states, rngs):
           return vace_block(
               hidden_states=hidden_states,
               encoder_hidden_states=encoder_hidden_states,
@@ -507,14 +507,14 @@ class WanVACEModel(WanModel):
             self.names_which_can_be_offloaded,
             prevent_cse=not self.scan_layers,
         )
-        conditioning_states, control_hidden_states = rematted_layer_forward(hidden_states, control_hidden_states)
+        conditioning_states, control_hidden_states = rematted_layer_forward(hidden_states, control_hidden_states, rngs)
         control_hidden_states_list.append((conditioning_states, control_hidden_states_scale[i]))
 
       control_hidden_states_list = control_hidden_states_list[::-1]
 
       for i, block in enumerate(self.blocks):
 
-        def layer_forward_vace(hidden_states):
+        def layer_forward_vace(hidden_states, rngs):
           return block(
               hidden_states,
               encoder_hidden_states,
@@ -530,7 +530,7 @@ class WanVACEModel(WanModel):
             self.names_which_can_be_offloaded,
             prevent_cse=not self.scan_layers,
         )
-        hidden_states = rematted_layer_forward(hidden_states)
+        hidden_states = rematted_layer_forward(hidden_states, rngs)
         if i in self.config.vace_layers:
           control_hint, scale = control_hidden_states_list.pop()
           hidden_states = hidden_states + control_hint * scale

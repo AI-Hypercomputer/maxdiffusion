@@ -113,7 +113,9 @@ def _make_tfrecord_iterator(
       "clip_embeddings": tf.io.FixedLenFeature([], tf.string),
   }
 
-  used_feature_description = feature_description_fn if make_cached_tfrecord_iterator else feature_description
+  used_feature_description = (
+      feature_description_fn if (make_cached_tfrecord_iterator or config.dataset_type == "tfrecord") else feature_description
+  )
 
   def _parse_tfrecord_fn(example):
     return tf.io.parse_single_example(example, used_feature_description)
@@ -141,7 +143,9 @@ def _make_tfrecord_iterator(
       ds = ds.concatenate(padding_ds)
       max_logging.log(f"Padded evaluation dataset with {num_to_pad} samples.")
 
-  used_prepare_sample = prepare_sample_fn if make_cached_tfrecord_iterator else prepare_sample
+  used_prepare_sample = (
+      prepare_sample_fn if (make_cached_tfrecord_iterator or config.dataset_type == "tfrecord") else prepare_sample
+  )
   ds = (
       ds.shard(num_shards=dataloading_host_count, index=dataloading_host_index)
       .map(_parse_tfrecord_fn, num_parallel_calls=AUTOTUNE)
