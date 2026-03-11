@@ -144,7 +144,7 @@ class LTX2PipelineTest(unittest.TestCase):
     ]
 
     p_e, p_a, n_e, n_a = pipeline.encode_prompt(
-        prompt="A cute cat", negative_prompt="ugly", do_classifier_free_guidance=True
+        prompt=["A cute cat"], negative_prompt=["ugly"], do_classifier_free_guidance=True
     )
 
     # Check mock calls
@@ -216,9 +216,10 @@ class LTX2PipelineTest(unittest.TestCase):
     # Make quantize transformer pass-through the mock
     mock_quantize.return_value = mock_transformer
 
-    # Initialize from pretrained (using cls to call it properly)
+    # Initialize from pretrained using the mock wrapper
     with patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.__init__", return_value=None) as mock_init:
-        # Instead, we will directly test the private load_and_init method to ensure wiring is correct, since from_pretrained uses it
+        # Since __init__ is mocked, the pipeline object might not be fully formed
+        # but _load_and_init attaches .transformer to it before returning
         pipeline, transformer = LTX2Pipeline._load_and_init(mock_config, None, vae_only=False, load_transformer=True)
 
     # Assert load_transformer was called with the components
