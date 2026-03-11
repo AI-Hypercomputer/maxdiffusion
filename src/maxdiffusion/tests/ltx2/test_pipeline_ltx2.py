@@ -283,14 +283,19 @@ class LTX2PipelineTest(unittest.TestCase):
     mock_encode.return_value = (
         jnp.zeros((1, 10, 32)), jnp.ones((1, 10)), jnp.zeros((1, 10, 32)), jnp.ones((1, 10))
     )
-    mock_prepare_video.return_value = jnp.zeros((1, 100, 64))
-    mock_prepare_audio.return_value = jnp.zeros((1, 50, 32))
+    # latent_num_frames = (9-1)//4 + 1 = 3
+    # latent_height = 64//8 = 8, latent_width = 8
+    # with patch_size=1, video latents packed: (1, 3*8*8, 8) = (1, 192, 8)
+    mock_prepare_video.return_value = jnp.zeros((1, 192, 8))
+    # audio latents packed: (1, 9, 8*16) = (1, 9, 128)
+    mock_prepare_audio.return_value = jnp.zeros((1, 9, 128))
 
     scheduler_state_mock = MagicMock()
     scheduler_state_mock.timesteps = jnp.array([1.0, 0.5]) # 2 steps
     mock_retrieve.return_value = scheduler_state_mock
 
-    mock_forward.return_value = (jnp.zeros((2, 100, 64)), jnp.zeros((2, 50, 32)))
+    # mock noise output (batch size * 2 for guidance)
+    mock_forward.return_value = (jnp.zeros((2, 192, 8)), jnp.zeros((2, 9, 128)))
     
     mock_connectors_model = MagicMock()
     mock_connectors_model.return_value = (jnp.zeros((2, 10, 32)), jnp.zeros((2, 10, 32)), jnp.ones((2, 10)))
@@ -306,6 +311,9 @@ class LTX2PipelineTest(unittest.TestCase):
     
     mock_audio_vae = MagicMock()
     mock_audio_vae.config.latent_channels = 8
+    mock_audio_vae.config.patch_size = None
+    mock_audio_vae.config.patch_size_t = None
+    mock_audio_vae.config.mel_bins = 64
     mock_audio_vae.latents_mean.value = jnp.zeros((8,))
     mock_audio_vae.latents_std.value = jnp.ones((8,))
     mock_audio_vae.decode.return_value = (jnp.zeros((1, 4, 32, 8)),)
@@ -317,6 +325,10 @@ class LTX2PipelineTest(unittest.TestCase):
     mock_vocoder = MagicMock()
     mock_vocoder.return_value = jnp.zeros((1, 2, 1000, 10))
 
+    mock_transformer = MagicMock()
+    mock_transformer.config.patch_size = 1
+    mock_transformer.config.patch_size_t = 1
+
     pipeline = LTX2Pipeline(
         scheduler=mock_scheduler,
         vae=mock_vae,
@@ -324,9 +336,18 @@ class LTX2PipelineTest(unittest.TestCase):
         text_encoder=MagicMock(),
         tokenizer=MagicMock(),
         connectors=MagicMock(),
-        transformer=MagicMock(),
+        transformer=mock_transformer,
         vocoder=mock_vocoder,
     )
+    
+    # Needs to match spatial and temporal compression
+    pipeline.vae_spatial_compression_ratio = 8
+    pipeline.vae_temporal_compression_ratio = 4
+    pipeline.audio_vae_mel_compression_ratio = 4
+    pipeline.audio_sampling_rate = 16000
+    pipeline.audio_hop_length = 160
+    pipeline.transformer_spatial_patch_size = 1
+    pipeline.transformer_temporal_patch_size = 1
     
     # Call the pipeline
     output = pipeline(
