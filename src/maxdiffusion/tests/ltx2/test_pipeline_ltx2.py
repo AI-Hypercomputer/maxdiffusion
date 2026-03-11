@@ -234,5 +234,129 @@ class LTX2PipelineTest(unittest.TestCase):
     self.assertEqual(pipeline.config, mock_config)
 
 
+  def test_pack_unpack_latents(self):
+    """Test video latents packing and unpacking math."""
+    latents = jnp.arange(1 * 8 * 4 * 16 * 16).reshape(1, 8, 4, 16, 16).astype(jnp.float32)
+    packed = LTX2Pipeline._pack_latents(latents, patch_size=2, patch_size_t=2)
+    # 4//2 = 2 frames, 16//2 = 8 height, 16//2 = 8 width -> 2 * 8 * 8 = 128 seq_len
+    # Channels 8, * patch_t 2 * patch_h 2 * patch_w 2 = 8 * 8 = 64
+    self.assertEqual(packed.shape, (1, 128, 64))
+    
+    unpacked = LTX2Pipeline._unpack_latents(packed, num_frames=4, height=16, width=16, patch_size=2, patch_size_t=2)
+    self.assertEqual(unpacked.shape, latents.shape)
+    np.testing.assert_array_equal(unpacked, latents)
+
+  def test_normalize_denormalize_latents(self):
+    """Test normalization and denormalization of video latents."""
+    latents = jnp.ones((1, 8, 4, 16, 16))
+    mean = jnp.ones((8,)) * 0.5
+    std = jnp.ones((8,)) * 0.2
+    
+    normalized = LTX2Pipeline._normalize_latents(latents, mean, std, scaling_factor=1.0)
+    # (1 - 0.5)/0.2 = 2.5
+    np.testing.assert_allclose(normalized, 2.5 * jnp.ones((1, 8, 4, 16, 16)), rtol=1e-5)
+    
+    denormalized = LTX2Pipeline._denormalize_latents(normalized, mean, std, scaling_factor=1.0)
+    np.testing.assert_allclose(denormalized, latents, rtol=1e-5)
+
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.jax.jit", lambda f, *args, **kwargs: f)
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.nnx.split")
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.nnx.merge")
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.transformer_forward_pass")
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.retrieve_timesteps")
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.encode_prompt")
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.prepare_latents")
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.prepare_audio_latents")
+  def test_call_method(
+      self,
+      mock_prepare_audio,
+      mock_prepare_video,
+      mock_encode,
+      mock_retrieve,
+      mock_forward,
+      mock_merge,
+      mock_split,
+  ):
+    """Test the core denoising loop execution structure."""
+    
+    # Mock return values for methods called directly on pipeline (before transformer)
+    mock_encode.return_value = (
+        jnp.zeros((1, 10, 32)), jnp.ones((1, 10)), jnp.zeros((1, 10, 32)), jnp.ones((1, 10))
+    )
+    mock_prepare_video.return_value = jnp.zeros((1, 100, 64))
+    mock_prepare_audio.return_value = jnp.zeros((1, 50, 32))
+
+    scheduler_state_mock = MagicMock()
+    scheduler_state_mock.timesteps = jnp.array([1.0, 0.5]) # 2 steps
+    mock_retrieve.return_value = scheduler_state_mock
+
+    mock_forward.return_value = (jnp.zeros((2, 100, 64)), jnp.zeros((2, 50, 32)))
+    
+    mock_connectors_model = MagicMock()
+    mock_connectors_model.return_value = (jnp.zeros((2, 10, 32)), jnp.zeros((2, 10, 32)), jnp.ones((2, 10)))
+    mock_merge.return_value = mock_connectors_model
+
+    mock_split.return_value = (MagicMock(), MagicMock())
+    
+    mock_vae = MagicMock()
+    mock_vae.config.scaling_factor = 1.0
+    mock_vae.latents_mean.value = jnp.zeros((8,))
+    mock_vae.latents_std.value = jnp.ones((8,))
+    mock_vae.decode.return_value = (jnp.zeros((1, 4, 32, 32, 3)),)
+    
+    mock_audio_vae = MagicMock()
+    mock_audio_vae.config.latent_channels = 8
+    mock_audio_vae.latents_mean.value = jnp.zeros((8,))
+    mock_audio_vae.latents_std.value = jnp.ones((8,))
+    mock_audio_vae.decode.return_value = (jnp.zeros((1, 4, 32, 8)),)
+    
+    mock_scheduler = MagicMock()
+    mock_scheduler.config = {}
+    mock_scheduler.step.side_effect = lambda state, pd, t, latents, return_dict: (latents, None)
+    
+    mock_vocoder = MagicMock()
+    mock_vocoder.return_value = jnp.zeros((1, 2, 1000, 10))
+
+    pipeline = LTX2Pipeline(
+        scheduler=mock_scheduler,
+        vae=mock_vae,
+        audio_vae=mock_audio_vae,
+        text_encoder=MagicMock(),
+        tokenizer=MagicMock(),
+        connectors=MagicMock(),
+        transformer=MagicMock(),
+        vocoder=mock_vocoder,
+    )
+    
+    # Call the pipeline
+    output = pipeline(
+        prompt="Test Prompt",
+        height=64,
+        width=64,
+        num_frames=9,
+        num_inference_steps=2,
+        guidance_scale=3.0,
+    )
+
+    # 1. Check prepare latents
+    mock_prepare_video.assert_called_once()
+    mock_prepare_audio.assert_called_once()
+    
+    # 2. Check timesteps were retrieved
+    mock_retrieve.assert_called_once()
+    
+    # 3. Check loop execution
+    self.assertEqual(mock_forward.call_count, 2)
+    self.assertEqual(mock_scheduler.step.call_count, 4) # 2 steps * (video + audio)
+    
+    # 4. Check Decoding
+    mock_vae.decode.assert_called_once()
+    mock_audio_vae.decode.assert_called_once()
+    mock_vocoder.assert_called_once()
+    
+    # 5. Output structure
+    self.assertIsNotNone(output.frames)
+    self.assertIsNotNone(output.audio)
+
 if __name__ == "__main__":
   unittest.main()
