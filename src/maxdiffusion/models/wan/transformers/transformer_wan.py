@@ -237,7 +237,7 @@ class WanFeedForward(nnx.Module):
     else:
       raise NotImplementedError(f"{activation_fn} is not implemented.")
 
-    self.drop_out = nnx.Dropout(dropout, deterministic=False)
+    self.drop_out = nnx.Dropout(dropout, deterministic=False) if dropout > 0.0 else None
     self.proj_out = nnx.Linear(
         rngs=rngs,
         in_features=inner_dim,
@@ -260,11 +260,16 @@ class WanFeedForward(nnx.Module):
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
 
   def __call__(self, hidden_states: jax.Array, deterministic: bool = True, rngs: nnx.Rngs = None) -> jax.Array:
+    print(f"[SHAPE TRACE] FFN Input | Shape: {hidden_states.shape}")
     hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
+    print(f"[SHAPE TRACE] FFN Expanded (mlp axis) | Shape: {hidden_states.shape} | Maps to logical axis: 'mlp'")
     hidden_states = checkpoint_name(hidden_states, "ffn_activation")
-    hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
+    if self.drop_out:
+      hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     with jax.named_scope("proj_out"):
-      return self.proj_out(hidden_states)  # output is (4, 75600, 5120)
+      out = self.proj_out(hidden_states)
+      print(f"[SHAPE TRACE] FFN Output (embed axis) | Shape: {out.shape} | Maps to logical axis: 'embed'")
+      return out  # output is (4, 75600, 5120)
 
 
 class WanTransformerBlock(nnx.Module):
@@ -380,9 +385,11 @@ class WanTransformerBlock(nnx.Module):
           (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
       )
       axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_heads"))
+      print(f"[SHAPE TRACE] Attention Input (hidden_states) | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'activation_heads')")
       hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
       hidden_states = checkpoint_name(hidden_states, "hidden_states")
-      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_kv"))
+      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_kv_length", "activation_heads"))
+      print(f"[SHAPE TRACE] Attention Input (encoder_hidden_states) | Shape: {encoder_hidden_states.shape} | Logical: ('activation_batch', 'activation_kv_length', 'activation_heads')")
       encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
 
       # 1. Self-attention
@@ -391,7 +398,6 @@ class WanTransformerBlock(nnx.Module):
           norm_fp32 = self.norm1(hidden_states.astype(jnp.float32))
           norm_hidden_states = norm_fp32.astype(hidden_states.dtype)
           norm_hidden_states = norm_hidden_states * (1 + scale_msa.astype(hidden_states.dtype)) + shift_msa.astype(hidden_states.dtype)
-
         with self.conditional_named_scope("self_attn_attn"):
           attn_output = self.attn1(
               hidden_states=norm_hidden_states,
@@ -596,6 +602,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> Union[jax.Array, Dict[str, jax.Array]]:
+    print(f"[SHAPE TRACE] Raw Model Input (hidden_states) | Shape: {hidden_states.shape} | Logical: ('batch', None, None, None, None)")
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size

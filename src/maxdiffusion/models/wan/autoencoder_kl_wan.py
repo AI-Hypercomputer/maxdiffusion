@@ -180,6 +180,7 @@ class WanRMS_norm(nnx.Module):
     # Cast back to original dtype before applying gamma
     normalized = normalized.astype(x.dtype)
     normalized = normalized * self.scale * self.gamma
+    
     if self.bias:
       return normalized + self.bias.value
     return normalized
@@ -1108,6 +1109,8 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         precision=precision,
     )
 
+    self.mesh = mesh
+
   def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
     feat_cache.init_cache()
     if x.shape[-1] != 3:
@@ -1158,47 +1161,121 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     x = self.post_quant_conv(z)
 
     dec_feat_map = feat_cache._feat_map
+    outputs = []
 
-    for i in range(iter_):
-      conv_idx = 0
-      if i == 0:
-        out, dec_feat_map, conv_idx = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=dec_feat_map, feat_idx=conv_idx)
-      else:
-        out_, dec_feat_map, conv_idx = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=dec_feat_map, feat_idx=conv_idx)
+    # =====================================================================
+    # 1. Split the module into pure state and stateless graphdef
+    # =====================================================================
+    graphdef, state = nnx.split(self.decoder)
 
-        # This is to bypass an issue where frame[1] should be frame[2] and vise versa.
-        # Ideally shouldn't need to do this however, can't find where the frame is going out of sync.
-        # Most likely due to an incorrect reshaping in the decoder.
-        fm1, fm2, fm3, fm4 = out_[:, 0, :, :, :], out_[:, 1, :, :, :], out_[:, 2, :, :, :], out_[:, 3, :, :, :]
-        # When batch_size is 0, expand batch dim for concatenation
-        # else, expand frame dim for concatenation so that batch dim stays intact.
-        axis = 0
-        if fm1.shape[0] > 1:
-          axis = 1
+    # =====================================================================
+    # 2. Define a strictly pure functional step for JAX
+    # =====================================================================
+    def pure_decode_step(current_state, chunk_x, current_feat_map):
+        # Reconstruct locally from the traced state
+        local_decoder = nnx.merge(graphdef, current_state)
+        
+        out_chunk, new_feat_map, _ = local_decoder(chunk_x, feat_cache=current_feat_map, feat_idx=0)
+        
+        if out_chunk.shape[1] == 4: 
+            swap_indices = jnp.array([0, 2, 1, 3], dtype=jnp.int32)
+            out_chunk = out_chunk[:, swap_indices, :, :, :]
+            
+        # Extract the pure state back out!
+        _, updated_state = nnx.split(local_decoder)
+        return updated_state, out_chunk, new_feat_map
 
-        if len(fm1.shape) == 4:
-          fm1 = jnp.expand_dims(fm1, axis=axis)
-          fm2 = jnp.expand_dims(fm2, axis=axis)
-          fm3 = jnp.expand_dims(fm3, axis=axis)
-          fm4 = jnp.expand_dims(fm4, axis=axis)
-        out = jnp.concatenate([out, fm1, fm3, fm2, fm4], axis=1)
+    # ==========================================================
+    # Warm-up Steps (Stabilizes cache sizes for scan)
+    # ==========================================================
+    if iter_ > 0:
+        state, out_0, dec_feat_map = pure_decode_step(state, x[:, 0:1, :, :, :], dec_feat_map)
+        outputs.append(out_0)
 
+    if iter_ > 1:
+        state, out_1, dec_feat_map = pure_decode_step(state, x[:, 1:2, :, :, :], dec_feat_map)
+        outputs.append(out_1)
+
+    # ==========================================================
+    # Scan Block
+    # ==========================================================
+    if iter_ > 2:
+        def scan_fn(carry, x_slice):
+            # Unpack the state and cache from the carry
+            carry_state, carry_feat_map = carry
+            
+            x_in = jnp.expand_dims(x_slice, axis=1) 
+            new_state, out_chunk, new_feat_map = pure_decode_step(carry_state, x_in, carry_feat_map)
+            
+            # Pack the updated state and cache back into the carry
+            return (new_state, new_feat_map), out_chunk
+
+        x_rest = x[:, 2:, :, :, :]
+        x_scan = jnp.swapaxes(x_rest, 0, 1)
+        
+        # We explicitly pass the state through the JAX scan dataflow!
+        (state, dec_feat_map), out_rest = jax.lax.scan(scan_fn, (state, dec_feat_map), x_scan)
+        
+        out_rest = jnp.swapaxes(out_rest, 0, 1)
+        B, T_scan, T_out, H, W, C = out_rest.shape
+        out_rest = out_rest.reshape(B, T_scan * T_out, H, W, C)
+        
+        outputs.append(out_rest)
+
+    # =====================================================================
+    # 3. Safely update the original decoder with the final traced state
+    # =====================================================================
+    nnx.update(self.decoder, state)
+
+    out = jnp.concatenate(outputs, axis=1)
     feat_cache._feat_map = dec_feat_map
 
     out = jnp.clip(out, min=-1.0, max=1.0)
     feat_cache.init_cache()
+    
     if not return_dict:
       return (out,)
 
     return FlaxDecoderOutput(sample=out)
 
+  @nnx.jit
   def decode(
       self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
     if z.shape[-1] != self.z_dim:
-      # reshape channel last for JAX
       z = jnp.transpose(z, (0, 2, 3, 4, 1))
-      assert z.shape[-1] == self.z_dim, f"Expected input shape (N, D, H, W, {self.z_dim}, got {z.shape}"
+    # =========================================================================
+    # OPTIMIZATION: DYNAMIC SPATIAL PARTITIONING
+    # Automatically finds the best tiling strategy to prevent XLA crashes.
+    # =========================================================================
+    if hasattr(self, 'mesh') and self.mesh is not None:
+        ctx = self.mesh.shape['context']
+        tsr = self.mesh.shape['tensor']
+        
+        # Static latent dimensions
+        h = z.shape[2]
+        w = z.shape[3]
+        
+        # 1. Determine the Spec
+        spec = None
+        if h % ctx == 0 and w % tsr == 0:
+            spec = jax.sharding.PartitionSpec('data', None, 'context', 'tensor', None)
+        elif h % tsr == 0 and w % ctx == 0:
+            spec = jax.sharding.PartitionSpec('data', None, 'tensor', 'context', None)
+        elif w % (ctx * tsr) == 0:
+            spec = jax.sharding.PartitionSpec('data', None, None, ('context', 'tensor'), None)
+        elif h % (ctx * tsr) == 0:
+            spec = jax.sharding.PartitionSpec('data', None, ('context', 'tensor'), None, None)
+        else:
+            spec = jax.sharding.PartitionSpec('data', None, None, None, None)
+            
+        # 2. Bind the Spec to the Mesh to create a strict NamedSharding
+        # This prevents the "mesh context" crash completely!
+        sharding = jax.sharding.NamedSharding(self.mesh, spec)
+        
+        # 3. Apply the constraint
+        z = jax.lax.with_sharding_constraint(z, sharding)
+    # =========================================================================
     decoded = self._decode(z, feat_cache).sample
     if not return_dict:
       return (decoded,)

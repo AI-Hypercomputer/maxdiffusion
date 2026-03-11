@@ -21,8 +21,9 @@ from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 import jax
 import jax.numpy as jnp
+import numpy as np
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
-
+import time
 
 class WanPipeline2_2(WanPipeline):
   """Pipeline for WAN 2.2 with dual transformers."""
@@ -110,6 +111,9 @@ class WanPipeline2_2(WanPipeline):
       negative_prompt_embeds: jax.Array = None,
       vae_only: bool = False,
   ):
+    print("Starting WAN 2.2 inference...")
+    print("Starting Text Encoder inference...")
+    start = time.time()
     latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
         prompt,
         negative_prompt,
@@ -124,6 +128,7 @@ class WanPipeline2_2(WanPipeline):
         negative_prompt_embeds,
         vae_only,
     )
+    print("Text Encoder inference time:", time.time() - start)
 
     low_noise_graphdef, low_noise_state, low_noise_rest = nnx.split(self.low_noise_transformer, nnx.Param, ...)
     high_noise_graphdef, high_noise_state, high_noise_rest = nnx.split(self.high_noise_transformer, nnx.Param, ...)
@@ -141,6 +146,8 @@ class WanPipeline2_2(WanPipeline):
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      print("Starting Transformer inference...")  
+      start = time.time()  
       latents = p_run_inference(
           low_noise_graphdef=low_noise_graphdef,
           low_noise_state=low_noise_state,
@@ -152,9 +159,14 @@ class WanPipeline2_2(WanPipeline):
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds,
       )
+      latents.block_until_ready()  # Ensure all computations are finished before timing
+      print("Transformer inference time:", time.time() - start)
       latents = self._denormalize_latents(latents)
-    return self._decode_latents_to_video(latents)
-
+    print("Starting Decoder inference...")
+    start = time.time()
+    output = self._decode_latents_to_video(latents)
+    print("Decoder inference time:", time.time() - start)
+    return output
 
 def run_inference_2_2(
     low_noise_graphdef,
@@ -163,60 +175,76 @@ def run_inference_2_2(
     high_noise_graphdef,
     high_noise_state,
     high_noise_rest,
-    latents: jnp.array,
-    prompt_embeds: jnp.array,
-    negative_prompt_embeds: jnp.array,
+    latents: jax.Array,
+    prompt_embeds: jax.Array,
+    negative_prompt_embeds: jax.Array,
     guidance_scale_low: float,
     guidance_scale_high: float,
     boundary: int,
     num_inference_steps: int,
-    scheduler: FlaxUniPCMultistepScheduler,
+    scheduler,
     scheduler_state,
 ):
-  do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
-  if do_classifier_free_guidance:
-    prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
-
-  def low_noise_branch(operands):
-    latents, timestep, prompt_embeds = operands
-    return transformer_forward_pass(
-        low_noise_graphdef,
-        low_noise_state,
-        low_noise_rest,
-        latents,
-        timestep,
-        prompt_embeds,
-        do_classifier_free_guidance,
-        guidance_scale_low,
-    )
-
-  def high_noise_branch(operands):
-    latents, timestep, prompt_embeds = operands
-    return transformer_forward_pass(
-        high_noise_graphdef,
-        high_noise_state,
-        high_noise_rest,
-        latents,
-        timestep,
-        prompt_embeds,
-        do_classifier_free_guidance,
-        guidance_scale_high,
-    )
-
-  for step in range(num_inference_steps):
-    t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+    do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
+    
     if do_classifier_free_guidance:
-      latents = jnp.concatenate([latents] * 2)
-    timestep = jnp.broadcast_to(t, latents.shape[0])
+        prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
 
-    use_high_noise = jnp.greater_equal(t, boundary)
+    # ==========================================================
+    # THE SCAN BODY
+    # Compiles the models EXACTLY ONCE, eliminating the OOM.
+    # ==========================================================
+    def scan_body(carry, t):
+        current_latents, current_scheduler_state = carry
 
-    # Selects the model based on the current timestep:
-    # - high_noise_model: Used for early diffusion steps where t >= config.boundary_timestep (high noise).
-    # - low_noise_model: Used for later diffusion steps where t < config.boundary_timestep (low noise).
-    noise_pred, latents = jax.lax.cond(
-        use_high_noise, high_noise_branch, low_noise_branch, (latents, timestep, prompt_embeds)
-    )
+        # 1. Expand latents to Batch=2 locally inside the step
+        if do_classifier_free_guidance:
+            model_latents = jnp.concatenate([current_latents] * 2)
+        else:
+            model_latents = current_latents
+            
+        timestep = jnp.broadcast_to(t, model_latents.shape[0])
+        use_high_noise = jnp.greater_equal(t, boundary)
 
-    latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
-  return latents
+        # 2. Branch logic (Operands are passed directly via closure)
+        def high_branch(_):
+            return transformer_forward_pass(
+                high_noise_graphdef, high_noise_state, high_noise_rest, 
+                model_latents, timestep, prompt_embeds, 
+                do_classifier_free_guidance, guidance_scale_high
+            )
+
+        def low_branch(_):
+            return transformer_forward_pass(
+                low_noise_graphdef, low_noise_state, low_noise_rest, 
+                model_latents, timestep, prompt_embeds, 
+                do_classifier_free_guidance, guidance_scale_low
+            )
+
+        # 3. Execute the correct model
+        noise_pred, latents_out = jax.lax.cond(use_high_noise, high_branch, low_branch, operand=None)
+
+        # 4. Step the scheduler (Collapses back to Batch=1)
+        new_latents, new_scheduler_state = scheduler.step(
+            current_scheduler_state, noise_pred, t, latents_out
+        ).to_tuple()
+
+        # Carry must perfectly match the shape of the input carry!
+        return (new_latents, new_scheduler_state), None
+
+    # ==========================================================
+    # EXECUTE THE SCAN
+    # ==========================================================
+    timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
+    
+    scheduler_state = scheduler_state.replace(
+        last_sample=jnp.zeros_like(latents),
+        step_index=jnp.array(0, dtype=jnp.int32)
+      )
+    
+    initial_carry = (latents, scheduler_state)
+    
+    final_carry, _ = jax.lax.scan(scan_body, initial_carry, timesteps)
+    
+    final_latents, _ = final_carry
+    return final_latents

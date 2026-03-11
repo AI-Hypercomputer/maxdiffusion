@@ -568,10 +568,60 @@ class WanPipeline:
     return latents
 
   def _decode_latents_to_video(self, latents: jax.Array) -> np.ndarray:
-    """Decodes latents to video frames and postprocesses."""
+    """Decodes latents to video frames using dynamic Temporal Overlap Tiling."""
+    # =========================================================================
+    # OPTIMIZATION: TEMPORAL OVERLAP TILING
+    # These values are hardware limits, NOT sequence limits. 
+    # They will safely process ANY length video without recompiling!
+    # =========================================================================
+    num_latents = latents.shape[2]
+    
+    # Max latents that safely fit in TPU HBM without OOM (~35GB footprint)
+    chunk_size = 7 
+    # Minimum latents needed to maintain 3D Conv causality (prevents flickering)
+    overlap = 2     
+    
+    stride = chunk_size - overlap 
+    video_frames = []
+    previous_end = 0
+    start = 0
+    
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      video = self.vae.decode(latents, self.vae_cache)[0]
+        # If the generated video is very short, no chunking needed
+        if num_latents <= chunk_size:
+            video = self.vae.decode(latents, self.vae_cache)[0]
+            
+        else:
+            while start < num_latents:
+                end = start + chunk_size
+                
+                # Dynamic End-Shift: guarantees the chunk is always EXACTLY `chunk_size`
+                # This mathematically prevents JAX from triggering a 50GB recompilation
+                if end > num_latents:
+                    start = num_latents - chunk_size
+                    end = num_latents
+                    
+                chunk = latents[:, :, start:end, :, :]
+                out = self.vae.decode(chunk, self.vae_cache)[0]
+                
+                if previous_end == 0:
+                    drop_frames = 0
+                else:
+                    # Dynamically calculate overlap drop based on the Wan 4x temporal stride
+                    overlap_latents = previous_end - start
+                    drop_frames = 1 + (overlap_latents - 1) * 4
+                    
+                video_frames.append(out[:, drop_frames:, :, :, :])
+                previous_end = end
+                
+                if end == num_latents:
+                    break
+                    
+                start += stride
+                
+            video = jnp.concatenate(video_frames, axis=1)
 
+    # Post-processing sequence
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
     video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
     video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
