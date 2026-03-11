@@ -12,7 +12,7 @@ jax_cache_dir: ''
 weights_dtype: 'bfloat16'
 activations_dtype: 'bfloat16'
 
-run_name: ''
+run_name: 'ltx2_inference'
 output_dir: ''
 config_path: ''
 save_config_to_gcs: False
