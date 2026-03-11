@@ -13,10 +13,9 @@
 # limitations under the License.
 
 from fractions import Fraction
-from typing import Optional
+from typing import Any, Optional, Union
 
 import numpy as np
-import torch
 
 from ...utils import import_utils
 
@@ -64,14 +63,12 @@ def _resample_audio(container, audio_stream, frame_in) -> None:
 def _write_audio(
     container,
     audio_stream,
-    samples: torch.Tensor,
+    samples: Any,
     audio_sample_rate: int,
 ) -> None:
   import numpy as np
 
-  # If it is a torch tensor, we convert to numpy first
-  if hasattr(samples, "cpu"):
-    samples = samples.contiguous().cpu().numpy()
+  samples = np.asarray(samples)
 
   if samples.ndim == 1:
     samples = samples[:, None]
@@ -99,24 +96,21 @@ def _write_audio(
 
 
 def encode_video(
-    video: torch.Tensor, fps: int, audio: Optional[torch.Tensor], audio_sample_rate: Optional[int], output_path: str
+    video: Any, fps: int, audio: Optional[Any], audio_sample_rate: Optional[int], output_path: str
 ) -> None:
   """
   Encodes video (and optionally audio) to a file using PyAV.
   Args:
-      video: Video tensor [F, H, W, C] (frames, height, width, channels)
+      video: Video array-like [F, H, W, C] (frames, height, width, channels)
       fps: Frames per second
-      audio: Audio tensor [C, L] or [L, C]
+      audio: Audio array-like [C, L] or [L, C]
       audio_sample_rate: Audio sample rate
       output_path: Output file path
   """
   if not import_utils.is_av_available():
     raise ImportError(import_utils.AV_IMPORT_ERROR.format("encode_video"))
 
-  if hasattr(video, "cpu"):
-    video_np = video.cpu().numpy()
-  else:
-    video_np = np.array(video)
+  video_np = np.asarray(video)
 
   if video_np.ndim == 4:
     # [F, H, W, C]
