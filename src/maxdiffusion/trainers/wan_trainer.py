@@ -257,7 +257,9 @@ class WanTrainer:
     scheduler, scheduler_state = self.create_scheduler()
     pipeline.scheduler = scheduler
     pipeline.scheduler_state = scheduler_state
-    optimizer, learning_rate_scheduler = self.checkpointer._create_optimizer(pipeline.transformer, self.config, 1e-5)
+    optimizer, learning_rate_scheduler = self.checkpointer._create_optimizer(
+        pipeline.transformer, self.config, self.config.learning_rate
+    )
     # Returns pipeline with trained transformer state
     pipeline = self.training_loop(pipeline, optimizer, learning_rate_scheduler, train_data_iterator, restore_args)
 
