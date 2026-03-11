@@ -21,48 +21,40 @@ import jax.numpy as jnp
 import jax
 from jax.sharding import PartitionSpec as P
 import jaxopt
-from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
+from maxdiffusion.checkpointing.wan_vace_checkpointer_2_1 import WanVaceCheckpointer2_1
 from maxdiffusion.input_pipeline.input_pipeline_interface import make_data_iterator
 from maxdiffusion.trainers.base_wan_trainer import BaseWanTrainer
 import tensorflow as tf
 
 
-class WanTrainer(BaseWanTrainer):
+class WanVaceTrainer(BaseWanTrainer):
 
   def _get_checkpointer(self):
-    return WanCheckpointer2_1(config=self.config)
+    return WanVaceCheckpointer2_1(config=self.config)
+
+  def post_training_steps(self, pipeline, params, train_states, msg=""):
+    pass
 
   def get_data_shardings(self, mesh):
     data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
-    data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding}
+    data_sharding = {
+        "latents": data_sharding,
+        "encoder_hidden_states": data_sharding,
+        "conditioning_latents": data_sharding,
+    }
     return data_sharding
 
   def get_eval_data_shardings(self, mesh):
     data_sharding = jax.sharding.NamedSharding(mesh, P(*self.config.data_sharding))
-    data_sharding = {"latents": data_sharding, "encoder_hidden_states": data_sharding, "timesteps": data_sharding}
+    data_sharding = {
+        "latents": data_sharding,
+        "encoder_hidden_states": data_sharding,
+        "timesteps": data_sharding,
+        "conditioning_latents": data_sharding,
+    }
     return data_sharding
 
   def load_dataset(self, mesh, pipeline=None, is_training=True):
-    """
-    Load dataset - supports both real tfrecord and synthetic data.
-
-    Args:
-        mesh: JAX mesh for sharding
-        pipeline: Optional WAN pipeline to extract dimensions from (for synthetic data)
-        is_training: Whether this is for training or evaluation
-
-    Returns:
-        Data iterator
-    """
-    # Stages of training as described in the Wan 2.1 paper - https://arxiv.org/pdf/2503.20314
-    # Image pre-training - txt2img 256px
-    # Image-video joint training - stage 1. 256 px images and 192px 5 sec videos at fps=16
-    # Image-video joint training - stage 2. 480px images and 480px 5 sec videos at fps=16
-    # Image-video joint training - stage final. 720px images and 720px 5 sec videos at fps=16
-    # prompt embeds shape: (1, 512, 4096)
-    # For now, we will pass the same latents over and over
-    # TODO - create a dataset
-
     config = self.config
 
     # If using synthetic data
@@ -85,6 +77,7 @@ class WanTrainer(BaseWanTrainer):
     feature_description = {
         "latents": tf.io.FixedLenFeature([], tf.string),
         "encoder_hidden_states": tf.io.FixedLenFeature([], tf.string),
+        "conditioning_latents": tf.io.FixedLenFeature([], tf.string),
     }
 
     if not is_training:
@@ -93,13 +86,24 @@ class WanTrainer(BaseWanTrainer):
     def prepare_sample_train(features):
       latents = tf.io.parse_tensor(features["latents"], out_type=tf.float32)
       encoder_hidden_states = tf.io.parse_tensor(features["encoder_hidden_states"], out_type=tf.float32)
-      return {"latents": latents, "encoder_hidden_states": encoder_hidden_states}
+      conditioning_latents = tf.io.parse_tensor(features["conditioning_latents"], out_type=tf.float32)
+      return {
+          "latents": latents,
+          "encoder_hidden_states": encoder_hidden_states,
+          "conditioning_latents": conditioning_latents,
+      }
 
     def prepare_sample_eval(features):
       latents = tf.io.parse_tensor(features["latents"], out_type=tf.float32)
       encoder_hidden_states = tf.io.parse_tensor(features["encoder_hidden_states"], out_type=tf.float32)
+      conditioning_latents = tf.io.parse_tensor(features["conditioning_latents"], out_type=tf.float32)
       timesteps = features["timesteps"]
-      return {"latents": latents, "encoder_hidden_states": encoder_hidden_states, "timesteps": timesteps}
+      return {
+          "latents": latents,
+          "encoder_hidden_states": encoder_hidden_states,
+          "conditioning_latents": conditioning_latents,
+          "timesteps": timesteps,
+      }
 
     data_iterator = make_data_iterator(
         config,
@@ -143,6 +147,7 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
     model = nnx.merge(state.graphdef, params, state.rest_of_state)
     latents = data["latents"].astype(config.weights_dtype)
     encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
+    control_hidden_states = data["conditioning_latents"].astype(config.weights_dtype)
 
     bsz = latents.shape[0]
     timesteps = scheduler.sample_timesteps(timestep_rng, bsz)
@@ -153,11 +158,14 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
           hidden_states=noisy_latents,
           timestep=timesteps,
           encoder_hidden_states=encoder_hidden_states,
+          control_hidden_states=control_hidden_states,
           deterministic=False,
           rngs=nnx.Rngs(dropout=dropout_rng),
       )
 
     with jax.named_scope("loss"):
+      model_pred = model_pred.astype(jnp.float32)
+      training_target = training_target.astype(jnp.float32)
       loss = (training_target - model_pred) ** 2
       if not config.disable_training_weights:
         training_weight = jnp.expand_dims(training_weight, axis=(1, 2, 3, 4))
@@ -196,7 +204,14 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
 
   # The loss function logic is identical to training. We are evaluating the model's
   # ability to perform its core training objective (e.g., denoising).
-  def loss_fn(params, latents, encoder_hidden_states, timesteps, rng):
+  def loss_fn(
+      params,
+      latents,
+      encoder_hidden_states,
+      timesteps,
+      rng,
+      conditioning_latents,
+  ):
     # Reconstruct the model from its definition and parameters
     model = nnx.merge(state.graphdef, params, state.rest_of_state)
 
@@ -207,10 +222,14 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
         hidden_states=noisy_latents,
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,
+        control_hidden_states=conditioning_latents,
         deterministic=True,
     )
 
     # Calculate the loss against the target
+    model_pred = model_pred.astype(jnp.float32)
+    training_target = training_target.astype(jnp.float32)
+
     loss = (training_target - model_pred) ** 2
     if not config.disable_training_weights:
       training_weight = jnp.expand_dims(training_weight, axis=(1, 2, 3, 4))
@@ -233,9 +252,17 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
     end = min(i + single_batch_size, bs)
     latents = data["latents"][start:end, :].astype(config.weights_dtype)
     encoder_hidden_states = data["encoder_hidden_states"][start:end, :].astype(config.weights_dtype)
+    conditioning_latents = data["conditioning_latents"][start:end, :].astype(config.weights_dtype)
     timesteps = data["timesteps"][start:end].astype("int64")
     _, new_rng = jax.random.split(rng, num=2)
-    loss = loss_fn(state.params, latents, encoder_hidden_states, timesteps, new_rng)
+    loss = loss_fn(
+        state.params,
+        latents,
+        encoder_hidden_states,
+        timesteps,
+        new_rng,
+        conditioning_latents,
+    )
     losses = losses.at[start:end].set(loss)
 
   # Structure the metrics for logging and aggregation
