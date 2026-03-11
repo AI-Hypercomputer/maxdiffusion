@@ -238,8 +238,6 @@ class LTX2PipelineTest(unittest.TestCase):
     """Test video latents packing and unpacking math."""
     latents = jnp.arange(1 * 8 * 4 * 16 * 16).reshape(1, 8, 4, 16, 16).astype(jnp.float32)
     packed = LTX2Pipeline._pack_latents(latents, patch_size=2, patch_size_t=2)
-    # 4//2 = 2 frames, 16//2 = 8 height, 16//2 = 8 width -> 2 * 8 * 8 = 128 seq_len
-    # Channels 8, * patch_t 2 * patch_h 2 * patch_w 2 = 8 * 8 = 64
     self.assertEqual(packed.shape, (1, 128, 64))
     
     unpacked = LTX2Pipeline._unpack_latents(packed, num_frames=4, height=16, width=16, patch_size=2, patch_size_t=2)
@@ -253,12 +251,10 @@ class LTX2PipelineTest(unittest.TestCase):
     std = jnp.ones((8,)) * 0.2
     
     normalized = LTX2Pipeline._normalize_latents(latents, mean, std, scaling_factor=1.0)
-    # (1 - 0.5)/0.2 = 2.5
     np.testing.assert_allclose(normalized, 2.5 * jnp.ones((1, 8, 4, 16, 16)), rtol=1e-5)
     
     denormalized = LTX2Pipeline._denormalize_latents(normalized, mean, std, scaling_factor=1.0)
     np.testing.assert_allclose(denormalized, latents, rtol=1e-5)
-
 
 if __name__ == "__main__":
   unittest.main()
