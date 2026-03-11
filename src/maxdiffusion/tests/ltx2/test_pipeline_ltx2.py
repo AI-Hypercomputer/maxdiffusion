@@ -216,11 +216,7 @@ class LTX2PipelineTest(unittest.TestCase):
     # Make quantize transformer pass-through the mock
     mock_quantize.return_value = mock_transformer
 
-    # Initialize from pretrained using the mock wrapper
-    with patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.__init__", return_value=None) as mock_init:
-        # Since __init__ is mocked, the pipeline object might not be fully formed
-        # but _load_and_init attaches .transformer to it before returning
-        pipeline, transformer = LTX2Pipeline._load_and_init(mock_config, None, vae_only=False, load_transformer=True)
+    pipeline, transformer = LTX2Pipeline._load_and_init(mock_config, None, vae_only=False, load_transformer=True)
 
     # Assert load_transformer was called with the components
     mock_load_transformer.assert_called_once_with(
@@ -228,7 +224,7 @@ class LTX2PipelineTest(unittest.TestCase):
         mesh=mock_common["mesh"],
         rngs=mock_common["rngs"],
         config=mock_config,
-        restored_checkpoint=None,  # Because from_pretrained
+        restored_checkpoint=None,
     )
 
     mock_quantize.assert_called_once_with(mock_config, mock_transformer, pipeline, mock_mesh)
