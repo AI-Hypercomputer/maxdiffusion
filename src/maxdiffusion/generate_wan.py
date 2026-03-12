@@ -85,9 +85,20 @@ def get_git_commit_hash():
 jax.config.update("jax_use_shardy_partitioner", True)
 
 
-def call_pipeline(config, pipeline, prompt, negative_prompt):
+def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=None):
+  """Call the pipeline with optional num_inference_steps override.
+  
+  Args:
+    config: The configuration object.
+    pipeline: The pipeline to call.
+    prompt: The prompt(s) to use.
+    negative_prompt: The negative prompt(s) to use.
+    num_inference_steps: Optional override for number of inference steps.
+                         If None, uses config.num_inference_steps.
+  """
   model_key = config.model_name
   model_type = config.model_type
+  steps = num_inference_steps if num_inference_steps is not None else config.num_inference_steps
   if model_type == "I2V":
     image = load_image(config.image_url)
     if model_key == WAN2_1:
@@ -98,7 +109,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
+          num_inference_steps=steps,
           guidance_scale=config.guidance_scale,
       )
     elif model_key == WAN2_2:
@@ -109,7 +120,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
+          num_inference_steps=steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
       )
@@ -123,7 +134,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
+          num_inference_steps=steps,
           guidance_scale=config.guidance_scale,
           use_cfg_cache=config.use_cfg_cache,
       )
@@ -134,7 +145,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
+          num_inference_steps=steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
       )
@@ -275,15 +286,37 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
-  s0 = time.perf_counter()
+
   if config.enable_profiler:
+    skip_steps = getattr(config, 'skip_first_n_steps_for_profiler', 0)
+    profiler_steps = getattr(config, 'profiler_steps', config.num_inference_steps)
+    
+    max_logging.log(f"Profiler: skip_first_n_steps={skip_steps}, profiler_steps={profiler_steps}")
+    
+    def block_if_jax(x):
+      """Block until ready if x is a JAX array, otherwise no-op."""
+      if hasattr(x, 'block_until_ready'):
+        x.block_until_ready()
+      return x
+    
+    for i in range(skip_steps):
+      max_logging.log(f"Profiler warmup iteration {i + 1}/{skip_steps}")
+      warmup_videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=profiler_steps)
+      # Block until warmup completes
+      jax.tree_util.tree_map(block_if_jax, warmup_videos)
+    
+    s0 = time.perf_counter()
     max_utils.activate_profiler(config)
-    videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+    max_logging.log(f"Profiler: starting profiled run with {profiler_steps} steps")
+    profiled_videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=profiler_steps)
+    # Wait for all computation to finish before stopping profiler
+    jax.tree_util.tree_map(block_if_jax, profiled_videos)
     max_utils.deactivate_profiler(config)
     generation_time_with_profiler = time.perf_counter() - s0
     max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
     if writer and jax.process_index() == 0:
       writer.add_scalar("inference/generation_time_with_profiler", generation_time_with_profiler, global_step=0)
+    max_logging.log("Profiler: completed (video not saved)")
 
   return saved_video_path
 
