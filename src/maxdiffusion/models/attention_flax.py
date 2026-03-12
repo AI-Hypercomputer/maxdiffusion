@@ -1086,18 +1086,28 @@ class FlaxWanAttention(nnx.Module):
       )
 
   def _apply_rope(self, xq: jax.Array, xk: jax.Array, freqs_cis: jax.Array) -> Tuple[jax.Array, jax.Array]:
-    dtype = xq.dtype
-    reshape_xq = xq.astype(jnp.float32).reshape(*xq.shape[:-1], -1, 2)
-    reshape_xk = xk.astype(jnp.float32).reshape(*xk.shape[:-1], -1, 2)
+    # 1. Extract cos and sin, keeping them in native bfloat16
+    cos = jnp.real(freqs_cis).astype(xq.dtype)
+    sin = jnp.imag(freqs_cis).astype(xq.dtype)
 
-    xq_ = jax.lax.complex(reshape_xq[..., 0], reshape_xq[..., 1])
-    xk_ = jax.lax.complex(reshape_xk[..., 0], reshape_xk[..., 1])
+    # 2. Reshape the last dimension into pairs
+    xq_reshaped = xq.reshape(*xq.shape[:-1], -1, 2)
+    xk_reshaped = xk.reshape(*xk.shape[:-1], -1, 2)
 
-    xq_out_complex = xq_ * freqs_cis
-    xk_out_complex = xk_ * freqs_cis
+    # 3. Unbind the pairs
+    xq_0, xq_1 = xq_reshaped[..., 0], xq_reshaped[..., 1]
+    xk_0, xk_1 = xk_reshaped[..., 0], xk_reshaped[..., 1]
 
-    xq_out = jnp.stack([jnp.real(xq_out_complex), jnp.imag(xq_out_complex)], axis=-1).reshape(xq.shape).astype(dtype)
-    xk_out = jnp.stack([jnp.real(xk_out_complex), jnp.imag(xk_out_complex)], axis=-1).reshape(xk.shape).astype(dtype)
+    # 4. Pure real arithmetic (XLA will fuse these instantly into FMA instructions)
+    xq_out_0 = xq_0 * cos - xq_1 * sin
+    xq_out_1 = xq_0 * sin + xq_1 * cos
+
+    xk_out_0 = xk_0 * cos - xk_1 * sin
+    xk_out_1 = xk_0 * sin + xk_1 * cos
+
+    # 5. Stack and reshape back to original
+    xq_out = jnp.stack([xq_out_0, xq_out_1], axis=-1).reshape(xq.shape)
+    xk_out = jnp.stack([xk_out_0, xk_out_1], axis=-1).reshape(xk.shape)
 
     return xq_out, xk_out
 
@@ -1115,12 +1125,17 @@ class FlaxWanAttention(nnx.Module):
       rngs: nnx.Rngs = None,
   ) -> jax.Array:
     print(f"[SHAPE TRACE] FlaxWanAttention Input | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'embed')")
-    axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
-    hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
-    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
+    # 1. Protect Video Input
+    axis_names_q = nn.logical_to_mesh_axes((BATCH, LENGTH, EMBED))
+    hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names_q)
     dtype = hidden_states.dtype
+
+    # 2. Protect Text Input
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
+    else:
+      axis_names_kv = nn.logical_to_mesh_axes((BATCH, KV_LENGTH, EMBED))
+      encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names_kv)
 
     is_i2v_cross_attention = self.added_kv_proj_dim is not None and not (encoder_hidden_states is None)
 

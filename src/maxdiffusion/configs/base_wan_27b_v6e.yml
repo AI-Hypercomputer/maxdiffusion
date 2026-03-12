@@ -65,7 +65,7 @@ flash_min_seq_length: 4096
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
 # Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
 # However, when padding tokens are significant, this will lead to worse quality and should be set to True.
-mask_padding_tokens: False 
+mask_padding_tokens: True 
 # Maxdiffusion has 2 types of attention sharding strategies:
 # 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
 # 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
@@ -154,14 +154,12 @@ logical_axis_rules: [
                       ['activation_cross_attn_q_length', 'context'],
 
                       # 3. MEGATRON WEIGHTS
-                      # The 4 chips chew through the massive parameter matrices locally.
+
                       ['mlp', 'context'],
                       ['heads', 'context'],
                       ['out_channels', 'context'],
 
                       # 4. STRICT COLLISION SAFETIES
-                      # If any of these are accidentally mapped to 'context' or 'tensor', 
-                      # you will trigger the 700s network explosion!
                       ['activation_self_attn_q_length', null],
                       ['activation_self_attn_kv_length', null],
                       ['activation_cross_attn_heads', null],

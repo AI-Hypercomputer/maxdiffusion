@@ -203,7 +203,7 @@ class ApproximateGELU(nnx.Module):
   def __call__(self, x: jax.Array) -> jax.Array:
     with jax.named_scope("gelu"):
       x = self.proj(x)
-    return nnx.gelu(x)
+    return nnx.gelu(x, approximate=True)
 
 
 class WanFeedForward(nnx.Module):
@@ -384,12 +384,12 @@ class WanTransformerBlock(nnx.Module):
       shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
           (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
       )
-      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_heads"))
-      print(f"[SHAPE TRACE] Attention Input (hidden_states) | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'activation_heads')")
+      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+      print(f"[SHAPE TRACE] Attention Input (hidden_states) | Shape: {hidden_states.shape} | Logical: ('activation_batch', 'activation_length', 'activation_embed')")
       hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
       hidden_states = checkpoint_name(hidden_states, "hidden_states")
-      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_kv_length", "activation_heads"))
-      print(f"[SHAPE TRACE] Attention Input (encoder_hidden_states) | Shape: {encoder_hidden_states.shape} | Logical: ('activation_batch', 'activation_kv_length', 'activation_heads')")
+      axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_kv_length", "activation_embed"))
+      print(f"[SHAPE TRACE] Attention Input (encoder_hidden_states) | Shape: {encoder_hidden_states.shape} | Logical: ('activation_batch', 'activation_kv_length', 'activation_embed')")
       encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
 
       # 1. Self-attention
