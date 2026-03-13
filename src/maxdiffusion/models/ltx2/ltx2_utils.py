@@ -47,14 +47,18 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   block_index = None
 
   # Handle transformer_blocks_N (underscore) produced by rename_key
-  if scan_layers and len(pt_tuple_key) > 0 and "transformer_blocks_" in pt_tuple_key[0]:
+  if len(pt_tuple_key) > 0 and "transformer_blocks_" in pt_tuple_key[0]:
     import re
 
     m = re.match(r"transformer_blocks_(\d+)", pt_tuple_key[0])
     if m:
       block_index = int(m.group(1))
-      # Map transformer_blocks_N -> transformer_blocks
-      pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[1:]
+      if scan_layers:
+        # Map transformer_blocks_N -> transformer_blocks
+        pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[1:]
+      else:
+        # Map transformer_blocks_N -> transformer_blocks, index
+        pt_tuple_key = ("transformer_blocks", str(block_index)) + pt_tuple_key[1:]
 
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   flax_key_str = [str(k) for k in flax_key]
