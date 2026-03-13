@@ -303,6 +303,8 @@ def _tpu_flash_attention(
     kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
 
+    jax.debug.print("q_seq {q} k_seq {k} q_pad {qp} kv_pad {kvp}", q=query_seq_len, k=key_seq_len, qp=q_padded_len, kvp=kv_padded_len)
+
     # If attention_mask is provided, apply it to kv_segment_ids
     if attention_mask is not None:
       mask_len = min(key_seq_len, attention_mask.shape[1])
