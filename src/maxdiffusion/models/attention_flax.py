@@ -296,14 +296,15 @@ def _tpu_flash_attention(
     multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
 
     q_padded_len = query.shape[2]
-    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
-    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
+    # We set all query segment IDs to 1, even for padded queries.
+    # This ensures that padded queries (which fall into 100% padded blocks under FSDP)
+    # always have valid keys to attend to, preventing Softmax(0/0) -> NaNs.
+    # Because padded query outputs are sliced away later, this mathematically does not affect the valid output.
+    q_segment_ids = jnp.ones((q_padded_len,), dtype=jnp.int32)
 
     kv_padded_len = key.shape[2]
     kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
-
-    jax.debug.print("q_seq {q} k_seq {k} q_pad {qp} kv_pad {kvp}", q=query_seq_len, k=key_seq_len, qp=q_padded_len, kvp=kv_padded_len)
 
     # If attention_mask is provided, apply it to kv_segment_ids
     if attention_mask is not None:
