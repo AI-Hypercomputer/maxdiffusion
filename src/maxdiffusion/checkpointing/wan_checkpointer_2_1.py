@@ -76,6 +76,25 @@ class WanCheckpointer2_1(WanCheckpointer):
     )
     max_logging.log(f"restored checkpoint {restored_checkpoint.keys()}")
     max_logging.log(f"restored checkpoint wan_state {restored_checkpoint.wan_state.keys()}")
+    
+    # --- DEBUGGING SNIPPET ---
+    # Find the actual type and sharding of the restored parameters
+    try:
+        # Get the first parameter arbitrarily (usually nested in 'params')
+        flat_leaves = jax.tree_util.tree_leaves(restored_checkpoint.wan_state)
+        if flat_leaves:
+            first_leaf = flat_leaves[0]
+            max_logging.log("### DEBUG: RESTORE HYPOTHESIS ###")
+            max_logging.log(f"Type of restored weight: {type(first_leaf)}")
+            if hasattr(first_leaf, "sharding"):
+                max_logging.log(f"Sharding of restored weight: {first_leaf.sharding}")
+            else:
+                max_logging.log("Sharding of restored weight: NONE (Not a JAX Array)")
+            max_logging.log("##################################")
+    except Exception as e:
+        max_logging.log(f"Failed to log debug info: {e}")
+    # --------------------------
+
     max_logging.log(f"optimizer found in checkpoint {'opt_state' in restored_checkpoint.wan_state.keys()}")
     max_logging.log(f"optimizer state saved in attribute self.opt_state {self.opt_state}")
     return restored_checkpoint, step
