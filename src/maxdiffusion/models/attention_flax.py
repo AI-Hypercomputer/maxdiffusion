@@ -1249,7 +1249,10 @@ class FlaxWanAttention(nnx.Module):
 
     with jax.named_scope("proj_attn"):
       hidden_states = self.proj_attn(attn_output)
-      hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
+      if self.drop_out.rate > 0:
+        hidden_states = self.drop_out(
+            hidden_states, deterministic=deterministic, rngs=rngs
+        )
     return hidden_states
 
 
