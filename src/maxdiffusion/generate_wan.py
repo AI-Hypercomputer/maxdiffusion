@@ -87,7 +87,7 @@ jax.config.update("jax_use_shardy_partitioner", True)
 
 def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=None):
   """Call the pipeline with optional num_inference_steps override.
-  
+
   Args:
     config: The configuration object.
     pipeline: The pipeline to call.
@@ -290,25 +290,31 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   if config.enable_profiler:
     skip_steps = getattr(config, 'skip_first_n_steps_for_profiler', 0)
     profiler_steps = getattr(config, 'profiler_steps', config.num_inference_steps)
-    
-    max_logging.log(f"Profiler: skip_first_n_steps={skip_steps}, profiler_steps={profiler_steps}")
-    
+    profile_all = profiler_steps == -1
+    steps_for_profile = config.num_inference_steps if profile_all else profiler_steps
+
+    if profile_all:
+      max_logging.log(f"Profiler: profiling all {steps_for_profile} inference steps (profiler_steps=-1)")
+    else:
+      max_logging.log(f"Profiler: profiling {steps_for_profile} steps out of {config.num_inference_steps} total")
+    max_logging.log(f"Profiler: skip_first_n_steps={skip_steps}")
+
     def block_if_jax(x):
       """Block until ready if x is a JAX array, otherwise no-op."""
       if hasattr(x, 'block_until_ready'):
         x.block_until_ready()
       return x
-    
+
     for i in range(skip_steps):
       max_logging.log(f"Profiler warmup iteration {i + 1}/{skip_steps}")
-      warmup_videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=profiler_steps)
+      warmup_videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=steps_for_profile)
       # Block until warmup completes
       jax.tree_util.tree_map(block_if_jax, warmup_videos)
-    
+
     s0 = time.perf_counter()
     max_utils.activate_profiler(config)
-    max_logging.log(f"Profiler: starting profiled run with {profiler_steps} steps")
-    profiled_videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=profiler_steps)
+    max_logging.log(f"Profiler: starting profiled run with {steps_for_profile} steps")
+    profiled_videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=steps_for_profile)
     # Wait for all computation to finish before stopping profiler
     jax.tree_util.tree_map(block_if_jax, profiled_videos)
     max_utils.deactivate_profiler(config)
