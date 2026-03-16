@@ -911,9 +911,7 @@ def transformer_forward_pass_cfg_cache(
   # Reconstruct unconditional output
   fft_cond_new = jnp.fft.rfft2(noise_cond.astype(jnp.float32))
   fft_uncond_approx = fft_cond_new + fft_bias_weighted
-  noise_uncond_approx = jnp.fft.irfft2(
-      fft_uncond_approx, s=noise_cond.shape[-2:]
-  ).astype(noise_cond.dtype)
+  noise_uncond_approx = jnp.fft.irfft2(fft_uncond_approx, s=noise_cond.shape[-2:]).astype(noise_cond.dtype)
 
   noise_pred_merged = noise_uncond_approx + guidance_scale * (noise_cond - noise_uncond_approx)
   return noise_pred_merged, noise_cond

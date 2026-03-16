@@ -303,6 +303,9 @@ guidance_scale_high: 4.0
 # timestep to switch between low noise and high noise transformer
 boundary_ratio: 0.875
 
+# Diffusion CFG cache (FasterCache-style, WAN 2.1 T2V only)
+use_cfg_cache: False
+
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 30

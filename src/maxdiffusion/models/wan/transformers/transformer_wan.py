@@ -684,7 +684,5 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1
     )
     hidden_states = jnp.transpose(hidden_states, (0, 7, 1, 4, 2, 5, 3, 6))
-    hidden_states = jax.lax.collapse(hidden_states, 6, None)
-    hidden_states = jax.lax.collapse(hidden_states, 4, 6)
-    hidden_states = jax.lax.collapse(hidden_states, 2, 4)
+    hidden_states = hidden_states.reshape(batch_size, -1, num_frames, height, width)
     return hidden_states

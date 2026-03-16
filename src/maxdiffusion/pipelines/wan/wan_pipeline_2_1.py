@@ -93,6 +93,12 @@ class WanPipeline2_1(WanPipeline):
       vae_only: bool = False,
       use_cfg_cache: bool = False,
   ):
+    if use_cfg_cache and guidance_scale <= 1.0:
+      raise ValueError(
+          f"use_cfg_cache=True requires guidance_scale > 1.0 (got {guidance_scale}). "
+          "CFG cache accelerates classifier-free guidance, which is disabled when guidance_scale <= 1.0."
+      )
+
     latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
         prompt,
         negative_prompt,
@@ -211,7 +217,7 @@ def run_inference_2_1(
     if s < t0_step:
       step_w1w2.append((1.0 + cfg_cache_alpha, 1.0))  # early: boost low-freq
     else:
-      step_w1w2.append((1.0, 1.0 + cfg_cache_alpha))   # late: boost high-freq
+      step_w1w2.append((1.0, 1.0 + cfg_cache_alpha))  # late: boost high-freq
 
   # Cache tensors (on-device JAX arrays, initialised to None).
   cached_noise_cond = None

@@ -123,6 +123,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps
           num_inference_steps=steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
+          use_cfg_cache=config.use_cfg_cache,
       )
     else:
       raise ValueError(f"Unsupported model_name for I2V in config: {model_key}")
@@ -148,6 +149,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps
           num_inference_steps=steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
+          use_cfg_cache=config.use_cfg_cache,
       )
     else:
       raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")
