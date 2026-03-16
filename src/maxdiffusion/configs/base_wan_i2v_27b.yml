@@ -129,7 +129,6 @@ diffusion_scheduler_config: {
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
 base_output_directory: ""
-tensorboard_dir: ""
 
 # Hardware
 hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
