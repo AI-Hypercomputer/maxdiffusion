@@ -483,13 +483,21 @@ def create_learning_rate_schedule(learning_rate, learning_rate_schedule_steps, w
 
 
 def create_optimizer(config, learning_rate_scheduler):
-  return optax.adamw(
+  opt = optax.adamw(
       learning_rate=learning_rate_scheduler,
       b1=config.adam_b1,
       b2=config.adam_b2,
       eps=config.adam_eps,
       weight_decay=config.adam_weight_decay,
   )
+  if config.opt_enable_grad_global_norm_clipping:
+    opt = optax.chain(
+        optax.clip_by_global_norm(config.max_grad_norm), opt
+    )
+
+  if config.opt_enable_grad_clipping:
+    opt = optax.chain(optax.clip(config.max_grad_value), opt)
+  return opt
 
 
 def get_precision(config):
