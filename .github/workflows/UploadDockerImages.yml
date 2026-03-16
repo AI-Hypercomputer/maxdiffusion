@@ -20,23 +20,60 @@ name: Build Images
 on:
   schedule:
     # Run the job daily at 12AM UTC
-    - cron:  '0 0 * * *'
-  
+    - cron: '0 0 * * *'
   workflow_dispatch:
+    inputs:
+      target_device:
+        description: 'Specify target device (all or tpu)'
+        required: true
+        type: choice
+        default: 'tpu'
+        options:
+          - all
+          - tpu
+
+permissions:
+  contents: read
 
 jobs:
-  build-image:
-    runs-on: ["self-hosted", "e2", "cpu"]
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      maxdiffusion_sha: ${{ steps.vars.outputs.maxdiffusion_sha }}
+      image_date: ${{ steps.vars.outputs.image_date }}
     steps:
-    - uses: actions/checkout@v3
-    - name: Cleanup old docker images
-      run: docker system prune --all --force
-    - name: build maxdiffusion jax ai image
-      run: |
-        bash .github/workflows/build_and_upload_images.sh CLOUD_IMAGE_NAME=maxdiffusion_jax_stable_stack MODE=jax_ai_image PROJECT=tpu-prod-env-multipod LOCAL_IMAGE_NAME=maxdiffusion_jax_stable_stack BASEIMAGE=us-docker.pkg.dev/cloud-tpu-images/jax-ai-image/tpu:latest
-    - name: build maxdiffusion w/ nightly jax ai image
-      run: |
-        bash .github/workflows/build_and_upload_images.sh CLOUD_IMAGE_NAME=maxdiffusion_jax_stable_stack_nightly MODE=jax_ai_image PROJECT=tpu-prod-env-multipod LOCAL_IMAGE_NAME=maxdiffusion_jax_stable_stack BASEIMAGE=us-docker.pkg.dev/tpu-prod-env-multipod/jax-stable-stack/tpu/jax_nightly:latest
-    - name: build maxdiffusion jax nightly image
-      run: |
-        bash .github/workflows/build_and_upload_images.sh CLOUD_IMAGE_NAME=maxdiffusion_jax_nightly MODE=nightly PROJECT=tpu-prod-env-multipod LOCAL_IMAGE_NAME=maxdiffusion_jax_nightly
+     - name: Checkout MaxDiffusion
+       uses: actions/checkout@v5
+
+     - name: Get metadata
+       id: vars
+       run: |
+        # MaxDiffusion SHA
+        echo "maxdiffusion_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+        # Image date
+        echo "image_date=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
+  build-image:
+    name: ${{ matrix.image_name }}
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - device: tpu
+            build_mode: stable
+            image_name: maxdiffusion_jax_stable
+            dockerfile: ./maxdiffusion_dependencies.Dockerfile
+          - device: tpu
+            build_mode: nightly
+            image_name: maxdiffusion_jax_nightly
+            dockerfile: ./maxdiffusion_dependencies.Dockerfile
+    uses: ./.github/workflows/build_and_push_docker_image.yml
+    with:
+      image_name: ${{ matrix.image_name }}
+      device: ${{ matrix.device }}
+      build_mode: ${{ matrix.build_mode }}
+      dockerfile: ${{ matrix.dockerfile }}
+      maxdiffusion_sha: ${{ needs.setup.outputs.maxdiffusion_sha }}
+      image_date: ${{ needs.setup.outputs.image_date }}

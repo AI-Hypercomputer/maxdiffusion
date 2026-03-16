@@ -1,0 +1,42 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+absl-py
+aqtp
+datasets
+einops
+flax
+ftfy
+google-cloud-storage
+grain
+hf_transfer
+huggingface_hub
+imageio-ffmpeg
+imageio
+jax
+jaxlib
+Jinja2
+opencv-python-headless
+optax
+orbax-checkpoint
+parameterized
+Pillow
+pyink
+pylint
+pytest
+ruff
+scikit-image
+sentencepiece
+tensorboard-plugin-profile
+tensorboard
+tensorboardx
+tensorflow-datasets
+tensorflow
+tokamax
+tokenizers
+transformers
+
+# pinning torch and torchvision to specific versions to avoid
+# installing GPU versions from PyPI when running seed-env
+torch @ https://download.pytorch.org/whl/cpu/torch-2.10.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl
+torchvision @ https://download.pytorch.org/whl/cpu/torchvision-0.25.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl
+qwix @ https://github.com/google/qwix/archive/408a0f48f988b6c5b180e07f0cb1d05997bf0dcc.zip
+
