@@ -19,15 +19,18 @@ import random
 import struct
 import tempfile
 from contextlib import contextmanager
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 import numpy as np
 
 import PIL.Image
 import PIL.ImageOps
 
-from .import_utils import BACKENDS_MAPPING, is_imageio_available, is_opencv_available
+from .import_utils import AV_IMPORT_ERROR, BACKENDS_MAPPING, is_av_available, is_imageio_available, is_opencv_available
 from .logging import get_logger
+
+if is_av_available():
+  import av
 
 
 global_rng = random.Random()
@@ -222,3 +225,146 @@ def export_to_video(
       writer.append_data(frame)
 
   return output_video_path
+
+
+def _prepare_audio_stream(container, audio_sample_rate: int):
+  """
+  Prepare the audio stream for writing.
+  """
+  from fractions import Fraction
+
+  audio_stream = container.add_stream("aac", rate=audio_sample_rate)
+  audio_stream.codec_context.sample_rate = audio_sample_rate
+  audio_stream.codec_context.layout = "stereo"
+  audio_stream.codec_context.time_base = Fraction(1, audio_sample_rate)
+  return audio_stream
+
+
+def _resample_audio(container, audio_stream, frame_in) -> None:
+  cc = audio_stream.codec_context
+
+  target_format = cc.format or "fltp"
+  target_layout = cc.layout or "stereo"
+  target_rate = cc.sample_rate or frame_in.sample_rate
+
+  audio_resampler = av.audio.resampler.AudioResampler(
+      format=target_format,
+      layout=target_layout,
+      rate=target_rate,
+  )
+
+  audio_next_pts = 0
+  for rframe in audio_resampler.resample(frame_in):
+    if rframe.pts is None:
+      rframe.pts = audio_next_pts
+    audio_next_pts += rframe.samples
+    rframe.sample_rate = frame_in.sample_rate
+    container.mux(audio_stream.encode(rframe))
+
+  # flush audio encoder
+  for packet in audio_stream.encode():
+    container.mux(packet)
+
+
+def _write_audio(
+    container,
+    audio_stream,
+    samples: Any,
+    audio_sample_rate: int,
+    target_format: str = "s16",
+) -> None:
+  import numpy as np
+
+  samples = np.asarray(samples)
+
+  if samples.ndim == 1:
+    samples = samples[:, None]
+
+  # The Vocoder naturally outputs (Channels=2, Time)
+  if samples.shape[0] == 2 and samples.shape[1] != 2:
+    samples = samples.T  # Now (Time, 2)
+
+  if samples.shape[1] != 2:
+    raise ValueError(f"Expected samples with 2 channels; got shape {samples.shape}.")
+
+  if target_format == "s16":
+    if samples.dtype != np.int16:
+      samples = np.clip(samples, -1.0, 1.0)
+      samples = (samples * 32767.0).astype(np.int16)
+  elif target_format == "s32":
+    if samples.dtype != np.int32:
+      samples = np.clip(samples, -1.0, 1.0)
+      samples = (samples * 2147483647.0).astype(np.int32)
+  elif target_format in ["flt", "dbl", "fltp", "dblp"]:
+    target_dtype = np.float32 if "flt" in target_format else np.float64
+    if samples.dtype != target_dtype:
+      samples = samples.astype(target_dtype)
+  else:
+    # Fallback to clip and scaling for other int formats if they were added, but raise for now
+    raise ValueError(f"Unsupported target_format for converting numpy array: {target_format}")
+
+  samples_np = np.ascontiguousarray(samples).reshape(1, -1)
+
+  frame_in = av.AudioFrame.from_ndarray(
+      samples_np,
+      format=target_format,
+      layout="stereo",
+  )
+  frame_in.sample_rate = audio_sample_rate
+
+  _resample_audio(container, audio_stream, frame_in)
+
+
+def export_to_video_with_audio(
+    video: Any, fps: int, audio: Optional[Any], audio_sample_rate: Optional[int], output_path: str, audio_format: str = "s16"
+) -> None:
+  """
+  Encodes video (and optionally audio) to a file using PyAV.
+  Args:
+      video: Video array-like [F, H, W, C] (frames, height, width, channels)
+      fps: Frames per second
+      audio: Audio array-like [C, L] or [L, C]
+      audio_sample_rate: Audio sample rate
+      output_path: Output file path
+  """
+  if not is_av_available():
+    raise ImportError(AV_IMPORT_ERROR.format("export_to_video_with_audio"))
+
+  video_np = np.asarray(video)
+
+  if video_np.ndim == 4:
+    # [F, H, W, C]
+    _, height, width, _ = video_np.shape
+  elif video_np.ndim == 5:
+    # [B, F, H, W, C] -> take the first video in the batch
+    video_np = video_np[0]
+    _, height, width, _ = video_np.shape
+  else:
+    raise ValueError(f"export_to_video_with_audio expects a 4D or 5D video tensor, got {video_np.ndim}D")
+
+  container = av.open(output_path, mode="w")
+  stream = container.add_stream("libx264", rate=int(fps))
+  stream.width = width
+  stream.height = height
+  stream.pix_fmt = "yuv420p"
+
+  if audio is not None:
+    if audio_sample_rate is None:
+      raise ValueError("audio_sample_rate is required when audio is provided")
+
+    audio_stream = _prepare_audio_stream(container, audio_sample_rate)
+
+  for frame_array in video_np:
+    # frame_array is [H, W, C]
+    frame = av.VideoFrame.from_ndarray(frame_array, format="rgb24")
+    for packet in stream.encode(frame):
+      container.mux(packet)
+
+  # Flush encoder
+  for packet in stream.encode():
+    container.mux(packet)
+
+  if audio is not None:
+    _write_audio(container, audio_stream, audio, audio_sample_rate, target_format=audio_format)
+
+  container.close()

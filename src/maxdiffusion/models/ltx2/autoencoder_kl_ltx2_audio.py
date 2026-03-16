@@ -821,6 +821,9 @@ class FlaxAutoencoderKLLTX2Audio(nnx.Module, FlaxModelMixin, ConfigMixin):
         is_causal=is_causal,
     )
 
+    self.latents_mean = nnx.Param(jnp.zeros((base_channels,), dtype=dtype))
+    self.latents_std = nnx.Param(jnp.ones((base_channels,), dtype=dtype))
+
   def encode(self, x: jnp.ndarray, return_dict: bool = True, train: bool = False):
     h = self.encoder(x, train=train)
     posterior = FlaxDiagonalGaussianDistribution(h)
