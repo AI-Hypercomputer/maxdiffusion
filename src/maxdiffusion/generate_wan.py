@@ -139,6 +139,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
           use_cfg_cache=config.use_cfg_cache,
+          use_sen_cache=config.use_sen_cache,
       )
     else:
       raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")
@@ -179,6 +180,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       max_logging.log("Could not retrieve Git commit hash.")
 
   if pipeline is None:
+    load_start = time.perf_counter()
     model_type = config.model_type
     if model_key == WAN2_1:
       if model_type == "I2V":
@@ -193,6 +195,10 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     else:
       raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
+    load_time = time.perf_counter() - load_start
+    max_logging.log(f"load_time: {load_time:.1f}s")
+  else:
+    load_time = 0.0
 
   # If LoRA is specified, inject layers and load weights.
   if (
@@ -276,6 +282,17 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
+  max_logging.log(
+      f"\n{'=' * 50}\n"
+      f"  TIMING SUMMARY\n"
+      f"{'=' * 50}\n"
+      f"  Load (checkpoint):   {load_time:>7.1f}s\n"
+      f"  Compile:             {compile_time:>7.1f}s\n"
+      f"  {'─' * 40}\n"
+      f"  Inference:           {generation_time:>7.1f}s\n"
+      f"{'=' * 50}"
+  )
+
   s0 = time.perf_counter()
   if config.enable_profiler:
     max_utils.activate_profiler(config)
