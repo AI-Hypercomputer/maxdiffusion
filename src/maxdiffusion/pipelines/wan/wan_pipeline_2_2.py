@@ -111,12 +111,23 @@ class WanPipeline2_2(WanPipeline):
       negative_prompt_embeds: jax.Array = None,
       vae_only: bool = False,
       use_cfg_cache: bool = False,
+      use_sen_cache: bool = False,
   ):
+    if use_cfg_cache and use_sen_cache:
+      raise ValueError("use_cfg_cache and use_sen_cache are mutually exclusive. Enable only one.")
+
     if use_cfg_cache and (guidance_scale_low <= 1.0 or guidance_scale_high <= 1.0):
       raise ValueError(
           f"use_cfg_cache=True requires both guidance_scale_low > 1.0 and guidance_scale_high > 1.0 "
           f"(got {guidance_scale_low}, {guidance_scale_high}). "
           "CFG cache accelerates classifier-free guidance, which must be enabled for both transformer phases."
+      )
+
+    if use_sen_cache and (guidance_scale_low <= 1.0 or guidance_scale_high <= 1.0):
+      raise ValueError(
+          f"use_sen_cache=True requires both guidance_scale_low > 1.0 and guidance_scale_high > 1.0 "
+          f"(got {guidance_scale_low}, {guidance_scale_high}). "
+          "SenCache requires classifier-free guidance to be enabled for both transformer phases."
       )
 
     latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
@@ -148,6 +159,7 @@ class WanPipeline2_2(WanPipeline):
         scheduler=self.scheduler,
         scheduler_state=scheduler_state,
         use_cfg_cache=use_cfg_cache,
+        use_sen_cache=use_sen_cache,
         height=height,
     )
 
@@ -184,21 +196,141 @@ def run_inference_2_2(
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
     use_cfg_cache: bool = False,
+    use_sen_cache: bool = False,
     height: int = 480,
 ):
-  """Denoising loop for WAN 2.2 T2V with optional FasterCache CFG-Cache.
+  """Denoising loop for WAN 2.2 T2V with optional caching acceleration.
 
-  Dual-transformer CFG-Cache strategy (enabled via use_cfg_cache=True):
-  - High-noise phase (t >= boundary): always full CFG — short phase, critical
-    for establishing video structure.
-  - Low-noise phase (t < boundary): FasterCache alternation — full CFG every N
-    steps, FFT frequency-domain compensation on cache steps (batch×1).
-  - Boundary transition: mandatory full CFG step to populate cache for the
-    low-noise transformer.
-  - FFT compensation identical to WAN 2.1 (Lv et al., ICLR 2025).
+  Supports two caching strategies:
+
+  1. CFG-Cache (use_cfg_cache=True) — FasterCache-style:
+     Caches the unconditional branch and uses FFT frequency-domain compensation.
+
+  2. SenCache (use_sen_cache=True) — Sensitivity-Aware Caching
+     (Haghighi & Alahi, arXiv:2602.24208):
+     Uses a first-order sensitivity approximation S = α_x·‖Δx‖ + α_t·|Δt|
+     to predict output change. Caches when predicted change is below tolerance ε.
+     Tracks accumulated latent drift and timestep drift since last cache refresh,
+     adapting cache decisions per-sample. Sensitivity weights (α_x, α_t) are
+     estimated from warmup steps via finite differences.
   """
   do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
   bsz = latents.shape[0]
+
+  # ── SenCache path (arXiv:2602.24208) ──
+  if use_sen_cache and do_classifier_free_guidance:
+    timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
+    step_uses_high = [bool(timesteps_np[s] >= boundary) for s in range(num_inference_steps)]
+
+    # SenCache hyperparameters
+    sen_epsilon = 0.1  # main tolerance (permissive phase)
+    max_reuse = 3  # max consecutive cache reuses before forced recompute
+    warmup_steps = 1  # first step always computes
+    # No-cache zones: first 30% (structure formation) and last 10% (detail refinement)
+    nocache_start_ratio = 0.3
+    nocache_end_ratio = 0.1
+    # Uniform sensitivity weights (α_x=1, α_t=1); swap for pre-calibrated
+    # SensitivityProfile per-timestep values when available.
+    alpha_x, alpha_t = 1.0, 1.0
+
+    nocache_start = int(num_inference_steps * nocache_start_ratio)
+    nocache_end_begin = int(num_inference_steps * (1.0 - nocache_end_ratio))
+    # Normalize timesteps to [0, 1].
+    # maxdiffusion timesteps are integers in [0, num_train_timesteps]
+    # uses sigmas in [0, 1]. Without normalization |Δt|≈20 >> ε and nothing caches.
+    num_train_timesteps = float(scheduler.config.num_train_timesteps)
+
+    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+
+    # SenCache state
+    ref_noise_pred = None  # y^r: cached denoiser output
+    ref_latent = None  # x^r: latent at last cache refresh
+    ref_timestep = 0.0  # t^r: timestep (normalized to [0,1]) at last cache refresh
+    accum_dx = 0.0  # accumulated ||Δx|| since last refresh
+    accum_dt = 0.0  # accumulated |Δt| since last refresh
+    reuse_count = 0  # consecutive cache reuses
+    cache_count = 0
+
+    for step in range(num_inference_steps):
+      t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+      t_float = float(timesteps_np[step]) / num_train_timesteps  # normalize to [0, 1]
+
+      # Select transformer and guidance scale
+      if step_uses_high[step]:
+        graphdef, state, rest = high_noise_graphdef, high_noise_state, high_noise_rest
+        guidance_scale = guidance_scale_high
+      else:
+        graphdef, state, rest = low_noise_graphdef, low_noise_state, low_noise_rest
+        guidance_scale = guidance_scale_low
+
+      # Force full compute: warmup, first 30%, last 10%, or transformer boundary
+      is_boundary = step > 0 and step_uses_high[step] != step_uses_high[step - 1]
+      force_compute = (
+          step < warmup_steps or step < nocache_start or step >= nocache_end_begin or is_boundary or ref_noise_pred is None
+      )
+
+      if force_compute:
+        latents_doubled = jnp.concatenate([latents] * 2)
+        timestep = jnp.broadcast_to(t, bsz * 2)
+        noise_pred, _, _ = transformer_forward_pass_full_cfg(
+            graphdef,
+            state,
+            rest,
+            latents_doubled,
+            timestep,
+            prompt_embeds_combined,
+            guidance_scale=guidance_scale,
+        )
+        ref_noise_pred = noise_pred
+        ref_latent = latents
+        ref_timestep = t_float
+        accum_dx = 0.0
+        accum_dt = 0.0
+        reuse_count = 0
+        latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+        continue
+
+      # Accumulate deltas since last full compute
+      dx_norm = float(jnp.sqrt(jnp.mean((latents - ref_latent) ** 2)))
+      dt = abs(t_float - ref_timestep)
+      accum_dx += dx_norm
+      accum_dt += dt
+
+      # Sensitivity score (Eq. 9)
+      score = alpha_x * accum_dx + alpha_t * accum_dt
+
+      if score <= sen_epsilon and reuse_count < max_reuse:
+        # Cache hit: reuse previous output
+        noise_pred = ref_noise_pred
+        reuse_count += 1
+        cache_count += 1
+      else:
+        # Cache miss: full CFG forward pass
+        latents_doubled = jnp.concatenate([latents] * 2)
+        timestep = jnp.broadcast_to(t, bsz * 2)
+        noise_pred, _, _ = transformer_forward_pass_full_cfg(
+            graphdef,
+            state,
+            rest,
+            latents_doubled,
+            timestep,
+            prompt_embeds_combined,
+            guidance_scale=guidance_scale,
+        )
+        ref_noise_pred = noise_pred
+        ref_latent = latents
+        ref_timestep = t_float
+        accum_dx = 0.0
+        accum_dt = 0.0
+        reuse_count = 0
+
+      latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+
+    print(
+        f"[SenCache] Cached {cache_count}/{num_inference_steps} steps "
+        f"({100*cache_count/num_inference_steps:.1f}% cache ratio)"
+    )
+    return latents
 
   # ── CFG cache path ──
   if use_cfg_cache and do_classifier_free_guidance:
