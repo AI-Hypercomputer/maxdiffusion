@@ -386,6 +386,7 @@ class FluxTrainer(FluxCheckpointer):
 
       if self.config.enable_profiler and step == last_profiling_step:
         max_utils.deactivate_profiler(self.config)
+        max_utils.upload_profiler_traces(self.config)
 
     train_states[FLUX_STATE_KEY] = flux_state
     if len(times) > 0:

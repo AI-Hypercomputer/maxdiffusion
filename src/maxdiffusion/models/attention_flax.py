@@ -112,6 +112,7 @@ def _reshape_batch_dim_to_heads(tensor, heads):
   head_size = heads
   tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
+  reshaped_tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
   axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
   return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
 

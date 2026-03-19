@@ -78,12 +78,28 @@ def l2norm_pytree(x):
 
 def activate_profiler(config):
   if jax.process_index() == 0 and config.enable_profiler:
-    jax.profiler.start_trace(config.tensorboard_dir)
+    # If tensorboard_dir is GCS, write profiler traces locally instead
+    profiler_path = config.tensorboard_dir
+    if config.tensorboard_dir.startswith("gs://"):
+      profiler_path = "/tmp/profiler_traces"
+      os.makedirs(profiler_path, exist_ok=True)
+      max_logging.log(f"Profiler: saving traces locally to {profiler_path} (GCS paths not supported)")
+    jax.profiler.start_trace(profiler_path)
 
 
 def deactivate_profiler(config):
   if jax.process_index() == 0 and config.enable_profiler:
     jax.profiler.stop_trace()
+
+
+def upload_profiler_traces(config):
+  """No-op for now - profiler traces are saved locally"""
+  if jax.process_index() == 0 and config.enable_profiler:
+    if config.tensorboard_dir.startswith("gs://"):
+      max_logging.log("Profiler traces saved to: /tmp/profiler_traces")
+      max_logging.log("You can download them manually or use: gsutil -m rsync -r /tmp/profiler_traces/ " + config.tensorboard_dir.rstrip("/") + "/")
+    else:
+      max_logging.log(f"Profiler traces saved to: {config.tensorboard_dir}")
 
 
 def initialize_summary_writer(config):
@@ -93,7 +109,6 @@ def initialize_summary_writer(config):
 def close_summary_writer(summary_writer):
   if jax.process_index() == 0:
     summary_writer.close()
-
 
 def _prepare_metrics_for_json(metrics, step, run_name):
   """Converts metric dictionary into json supported types (e.g. float)"""

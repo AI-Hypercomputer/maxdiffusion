@@ -57,6 +57,7 @@ class WanPipeline2_1(WanPipeline):
           devices_array=common_components["devices_array"],
           mesh=common_components["mesh"],
           vae_mesh=common_components["vae_mesh"],
+          vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
           config=config,
         )
 

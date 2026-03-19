@@ -313,6 +313,11 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       # Block until warmup completes
       jax.tree_util.tree_map(block_if_jax, warmup_videos)
 
+    # Warm up GCS connection by flushing writer before starting profiler
+    if writer and jax.process_index() == 0:
+      max_logging.log("Flushing writer to warm up GCS connection before profiler...")
+      writer.flush()
+
     s0 = time.perf_counter()
     max_utils.activate_profiler(config)
     max_logging.log(f"Profiler: starting profiled run with {steps_for_profile} steps")
@@ -320,6 +325,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     # Wait for all computation to finish before stopping profiler
     jax.tree_util.tree_map(block_if_jax, profiled_videos)
     max_utils.deactivate_profiler(config)
+    max_utils.upload_profiler_traces(config)
     generation_time_with_profiler = time.perf_counter() - s0
     max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
     if writer and jax.process_index() == 0:
