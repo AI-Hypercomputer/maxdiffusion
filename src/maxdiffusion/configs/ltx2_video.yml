@@ -68,7 +68,7 @@ enable_profiler: False
 
 replicate_vae: False
 
-allow_split_physical_axes: False
+allow_split_physical_axes: True
 learning_rate_schedule_steps: -1
 max_train_steps: 500
 pretrained_model_name_or_path: 'Lightricks/LTX-2'
