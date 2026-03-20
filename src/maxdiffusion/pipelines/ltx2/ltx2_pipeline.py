@@ -1359,24 +1359,12 @@ class LTX2Pipeline:
     return LTX2PipelineOutput(frames=video, audio=audio)
 
 
-@partial(
-    jax.jit,
-    static_argnames=(
-        "do_classifier_free_guidance",
-        "guidance_scale",
-        "latent_num_frames",
-        "latent_height",
-        "latent_width",
-        "audio_num_frames",
-        "fps",
-    ),
-)
 
 def print_shardings(pytree, prefix=""):
     flat_tree, _ = jax.tree_util.tree_flatten(pytree)
     for i, leaf in enumerate(flat_tree):
         if hasattr(leaf, 'sharding'):
-            print(f"{prefix}leaf_{i} sharding: {leaf.sharding}")
+            print(f"{prefix}leaf_{i} sharding: {{leaf.sharding}}")
         else:
             print(f"{prefix}leaf_{i} has no sharding attribute")
 
@@ -1390,7 +1378,7 @@ def print_shardings(pytree, prefix=""):
         "latent_width",
         "audio_num_frames",
         "fps",
-    ),  
+    ),
 )
 def transformer_forward_pass(
     graphdef,
