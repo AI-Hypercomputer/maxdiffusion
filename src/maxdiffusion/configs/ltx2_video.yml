@@ -49,7 +49,7 @@ logical_axis_rules: [
                       ['mlp','tensor'],
                       ['embed', ['context', 'fsdp']],
                       ['heads', 'tensor'],
-                      ['norm', 'tensor'],
+                      ['norm', ['fsdp']],
                       ['conv_batch', ['data', 'context', 'fsdp']],
                       ['out_channels', 'tensor'],
                       ['conv_out', 'context'],
