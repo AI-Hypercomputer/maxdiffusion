@@ -1364,7 +1364,7 @@ def print_shardings(pytree, prefix=""):
     flat_tree, _ = jax.tree_util.tree_flatten(pytree)
     for i, leaf in enumerate(flat_tree):
         if hasattr(leaf, 'sharding'):
-            print(f"{prefix}leaf_{i} sharding: {{leaf.sharding}}")
+            print(f"{prefix}leaf_{i} sharding: {leaf.sharding}")
         else:
             print(f"{prefix}leaf_{i} has no sharding attribute")
 
