@@ -1,5 +1,4 @@
-"""
-Copyright 2025 Google LLC
+"""Copyright 2025 Google LLC
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,17 +15,16 @@ limitations under the License.
 
 import json
 from typing import Optional, Tuple
-from etils import epath
 import jax
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
 import numpy as np
 import orbax.checkpoint as ocp
 from .. import max_logging
-from ..pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
+from ..pipelines.wan.wan_vace_pipeline_2_1 import VaceWanPipeline2_1
 
 
-class WanCheckpointer2_1(WanCheckpointer):
+class WanVaceCheckpointer2_1(WanCheckpointer):
 
   def load_wan_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
     if step is None:
@@ -58,20 +56,14 @@ class WanCheckpointer2_1(WanCheckpointer):
           add_sharding_to_struct, state, target_shardings
       )
 
-    params_restore = ocp.args.PyTreeRestore(
-        restore_args=jax.tree.map(
-            lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
-            abstract_train_state_with_sharding,
-        )
-    )
-
     max_logging.log("Restoring WAN checkpoint")
     restored_checkpoint = self.checkpoint_manager.restore(
-        directory=epath.Path(self.config.checkpoint_dir),
         step=step,
         args=ocp.args.Composite(
-            wan_state=params_restore,
             wan_config=ocp.args.JsonRestore(),
+            wan_state=ocp.args.StandardRestore(
+                abstract_train_state_with_sharding
+            ),
         ),
     )
     max_logging.log(f"restored checkpoint {restored_checkpoint.keys()}")
@@ -81,15 +73,15 @@ class WanCheckpointer2_1(WanCheckpointer):
     return restored_checkpoint, step
 
   def load_diffusers_checkpoint(self):
-    pipeline = WanPipeline2_1.from_pretrained(self.config)
+    pipeline = VaceWanPipeline2_1.from_pretrained(self.config)
     return pipeline
 
-  def load_checkpoint(self, step=None) -> Tuple[WanPipeline2_1, Optional[dict], Optional[int]]:
+  def load_checkpoint(self, step=None) -> Tuple[VaceWanPipeline2_1, Optional[dict], Optional[int]]:
     restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
     opt_state = None
     if restored_checkpoint:
       max_logging.log("Loading WAN pipeline from checkpoint")
-      pipeline = WanPipeline2_1.from_checkpoint(self.config, restored_checkpoint)
+      pipeline = VaceWanPipeline2_1.from_checkpoint(self.config, restored_checkpoint)
       if "opt_state" in restored_checkpoint.wan_state.keys():
         opt_state = restored_checkpoint.wan_state["opt_state"]
     else:
@@ -98,19 +90,23 @@ class WanCheckpointer2_1(WanCheckpointer):
 
     return pipeline, opt_state, step
 
-  def save_checkpoint(self, train_step, pipeline: WanPipeline2_1, train_states: dict):
+  def save_checkpoint(
+      self, train_step, pipeline: VaceWanPipeline2_1, train_states: dict
+  ):
     """Saves the training state and model configurations."""
 
     def config_to_json(model_or_config):
       return json.loads(model_or_config.to_json_string())
 
     max_logging.log(f"Saving checkpoint for step {train_step}")
-    items = {
-        "wan_config": ocp.args.JsonSave(config_to_json(pipeline.transformer)),
-    }
-
-    items["wan_state"] = ocp.args.PyTreeSave(train_states)
 
     # Save the checkpoint
-    self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
-    max_logging.log(f"Checkpoint for step {train_step} saved.")
+    self.checkpoint_manager.save(
+        train_step,
+        args=ocp.args.Composite(
+            wan_config=ocp.args.JsonSave(config_to_json(pipeline.transformer)),
+            wan_state=ocp.args.StandardSave(train_states),
+        ),
+    )
+
+    max_logging.log(f"Checkpoint for step {train_step} is saved.")
