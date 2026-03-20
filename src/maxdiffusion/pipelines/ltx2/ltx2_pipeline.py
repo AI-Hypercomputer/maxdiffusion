@@ -18,6 +18,7 @@ from typing import Optional, Any, List, Union
 from functools import partial
 
 import numpy as np
+import functools
 import torch
 import jax
 import jax.numpy as jnp
@@ -1231,6 +1232,9 @@ class LTX2Pipeline:
       )
 
       for i, t in enumerate(timesteps):
+        print(f"\n--- DEBUG SHARDING Step {i} Time {t} ---")
+        print_shardings(state, prefix="transformer_state.")
+
         noise_pred, noise_pred_audio = transformer_forward_pass(
             graphdef,
             state,
@@ -1366,6 +1370,27 @@ class LTX2Pipeline:
         "audio_num_frames",
         "fps",
     ),
+)
+
+def print_shardings(pytree, prefix=""):
+    flat_tree, _ = jax.tree_util.tree_flatten(pytree)
+    for i, leaf in enumerate(flat_tree):
+        if hasattr(leaf, 'sharding'):
+            print(f"{prefix}leaf_{i} sharding: {leaf.sharding}")
+        else:
+            print(f"{prefix}leaf_{i} has no sharding attribute")
+
+@partial(
+    jax.jit,
+    static_argnames=(
+        "do_classifier_free_guidance",
+        "guidance_scale",
+        "latent_num_frames",
+        "latent_height",
+        "latent_width",
+        "audio_num_frames",
+        "fps",
+    ),  
 )
 def transformer_forward_pass(
     graphdef,
