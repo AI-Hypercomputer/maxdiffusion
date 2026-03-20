@@ -1361,12 +1361,14 @@ class LTX2Pipeline:
 
 
 def print_shardings(pytree, prefix=""):
-    flat_tree, _ = jax.tree_util.tree_flatten(pytree)
-    for i, leaf in enumerate(flat_tree):
+    flat_tree, treedef = jax.tree_util.tree_flatten_with_path(pytree)
+    for i, (path, leaf) in enumerate(flat_tree):
+        path_str = jax.tree_util.keystr(path)
+        shape_str = f"shape: {leaf.shape}" if hasattr(leaf, 'shape') else "shape: N/A"
         if hasattr(leaf, 'sharding'):
-            print(f"{prefix}leaf_{i} sharding: {leaf.sharding}")
+            print(f"{prefix}leaf_{i} {path_str} {shape_str} sharding: {leaf.sharding}")
         else:
-            print(f"{prefix}leaf_{i} has no sharding attribute")
+            print(f"{prefix}leaf_{i} {path_str} {shape_str} has no sharding attribute")
 
 @partial(
     jax.jit,
