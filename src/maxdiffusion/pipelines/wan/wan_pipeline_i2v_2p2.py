@@ -489,26 +489,28 @@ def run_inference_2_2_i2v(
 
       skip_blocks = False
       if step >= skip_warmup:
-        accumulated_ratio_cond *= cur_mag_ratio_cond
-        accumulated_ratio_uncond *= cur_mag_ratio_uncond
-        accumulated_steps_cond += 1
-        accumulated_steps_uncond += 1
+        new_ratio_cond = accumulated_ratio_cond * cur_mag_ratio_cond
+        new_ratio_uncond = accumulated_ratio_uncond * cur_mag_ratio_uncond
 
-        accumulated_err_cond += abs(1.0 - accumulated_ratio_cond)
-        accumulated_err_uncond += abs(1.0 - accumulated_ratio_uncond)
+        err_cond = np.abs(1.0 - new_ratio_cond)
+        err_uncond = np.abs(1.0 - new_ratio_uncond)
 
-        mean_err = (accumulated_err_cond + accumulated_err_uncond) / 2.0
-        max_steps = max(accumulated_steps_cond, accumulated_steps_uncond)
-
-        if mean_err < magcache_thresh and max_steps <= magcache_K:
+        if (accumulated_err_cond + err_cond < magcache_thresh and accumulated_steps_cond < magcache_K and
+            accumulated_err_uncond + err_uncond < magcache_thresh and accumulated_steps_uncond < magcache_K):
           skip_blocks = True
+          accumulated_ratio_cond = new_ratio_cond
+          accumulated_ratio_uncond = new_ratio_uncond
+          accumulated_err_cond += err_cond
+          accumulated_err_uncond += err_uncond
+          accumulated_steps_cond += 1
+          accumulated_steps_uncond += 1
         else:
+          accumulated_ratio_cond = 1.0
+          accumulated_ratio_uncond = 1.0
           accumulated_err_cond = 0.0
           accumulated_err_uncond = 0.0
           accumulated_steps_cond = 0
           accumulated_steps_uncond = 0
-          accumulated_ratio_cond = 1.0
-          accumulated_ratio_uncond = 1.0
 
       if step_uses_high[step]:
         graphdef, state, rest = high_noise_graphdef, high_noise_state, high_noise_rest

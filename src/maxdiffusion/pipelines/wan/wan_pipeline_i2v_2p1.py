@@ -324,30 +324,33 @@ def run_inference_2_1_i2v(
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
     
     skip_blocks = False
-    if use_magcache and do_classifier_free_guidance and step >= skip_warmup:
+    if use_magcache and do_classifier_free_guidance:
       cur_mag_ratio_cond = mag_ratios[step*2]
       cur_mag_ratio_uncond = mag_ratios[step*2+1]
 
-      accumulated_ratio_cond *= cur_mag_ratio_cond
-      accumulated_ratio_uncond *= cur_mag_ratio_uncond
-      accumulated_steps_cond += 1
-      accumulated_steps_uncond += 1
+      if step >= skip_warmup:
+        new_ratio_cond = accumulated_ratio_cond * cur_mag_ratio_cond
+        new_ratio_uncond = accumulated_ratio_uncond * cur_mag_ratio_uncond
 
-      accumulated_err_cond += abs(1.0 - accumulated_ratio_cond)
-      accumulated_err_uncond += abs(1.0 - accumulated_ratio_uncond)
+        err_cond = np.abs(1.0 - new_ratio_cond)
+        err_uncond = np.abs(1.0 - new_ratio_uncond)
 
-      mean_err = (accumulated_err_cond + accumulated_err_uncond) / 2.0
-      max_steps = max(accumulated_steps_cond, accumulated_steps_uncond)
-
-      if mean_err < magcache_thresh and max_steps <= magcache_K:
-        skip_blocks = True
-      else:
-        accumulated_err_cond = 0.0
-        accumulated_err_uncond = 0.0
-        accumulated_steps_cond = 0
-        accumulated_steps_uncond = 0
-        accumulated_ratio_cond = 1.0
-        accumulated_ratio_uncond = 1.0
+        if (accumulated_err_cond + err_cond < magcache_thresh and accumulated_steps_cond < magcache_K and
+            accumulated_err_uncond + err_uncond < magcache_thresh and accumulated_steps_uncond < magcache_K):
+          skip_blocks = True
+          accumulated_ratio_cond = new_ratio_cond
+          accumulated_ratio_uncond = new_ratio_uncond
+          accumulated_err_cond += err_cond
+          accumulated_err_uncond += err_uncond
+          accumulated_steps_cond += 1
+          accumulated_steps_uncond += 1
+        else:
+          accumulated_ratio_cond = 1.0
+          accumulated_ratio_uncond = 1.0
+          accumulated_err_cond = 0.0
+          accumulated_err_uncond = 0.0
+          accumulated_steps_cond = 0
+          accumulated_steps_uncond = 0
 
     latents_input = latents
     if do_classifier_free_guidance:
