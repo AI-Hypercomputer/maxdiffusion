@@ -23,7 +23,12 @@ import pytest
 
 from maxdiffusion import pyconfig
 from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
+import jax
 
+try:
+  jax.distributed.initialize()
+except Exception:
+  pass
 
 IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
