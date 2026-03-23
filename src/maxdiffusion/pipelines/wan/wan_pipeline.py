@@ -750,7 +750,7 @@ class WanPipeline:
     pass
 
 
-@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale", "return_residual"))
+@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale", "return_residual", "skip_blocks"))
 def transformer_forward_pass(
     graphdef,
     sharded_state,
