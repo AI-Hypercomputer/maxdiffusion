@@ -593,6 +593,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       return_dict: bool = True,
       attention_kwargs: Optional[Dict[str, Any]] = None,
       deterministic: bool = True,
+      rngs: Optional[nnx.Rngs] = None,
       skip_blocks: Optional[jax.Array] = None,
       cached_residual: Optional[jax.Array] = None,
       return_residual: bool = False,
