@@ -14,7 +14,7 @@
 
 from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache
 from ...models.wan.transformers.transformer_wan import WanModel
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Any
 from ...pyconfig import HyperParameters
 from functools import partial
 from flax import nnx
