@@ -100,6 +100,10 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           num_frames=config.num_frames,
           num_inference_steps=config.num_inference_steps,
           guidance_scale=config.guidance_scale,
+          use_magcache=getattr(config, "use_magcache", False),
+          magcache_thresh=getattr(config, "magcache_thresh", 0.04),
+          magcache_K=getattr(config, "magcache_K", 2),
+          retention_ratio=getattr(config, "retention_ratio", 0.2),
       )
     elif model_key == WAN2_2:
       return pipeline(
@@ -113,6 +117,10 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
           use_cfg_cache=config.use_cfg_cache,
+          use_magcache=getattr(config, "use_magcache", False),
+          magcache_thresh=getattr(config, "magcache_thresh", 0.04),
+          magcache_K=getattr(config, "magcache_K", 2),
+          retention_ratio=getattr(config, "retention_ratio", 0.2),
       )
     else:
       raise ValueError(f"Unsupported model_name for I2V in config: {model_key}")
@@ -144,6 +152,10 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           guidance_scale_high=config.guidance_scale_high,
           use_cfg_cache=config.use_cfg_cache,
           use_sen_cache=config.use_sen_cache,
+          use_magcache=getattr(config, "use_magcache", False),
+          magcache_thresh=getattr(config, "magcache_thresh", 0.04),
+          magcache_K=getattr(config, "magcache_K", 2),
+          retention_ratio=getattr(config, "retention_ratio", 0.2),
       )
     else:
       raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")
