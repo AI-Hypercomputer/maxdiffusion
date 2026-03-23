@@ -289,7 +289,7 @@ flow_shift: 5.0
 # Diffusion CFG cache (FasterCache-style, WAN 2.1 T2V only)
 use_cfg_cache: False
 use_magcache: True
-magcache_thresh: 0.04
+magcache_thresh: 0.12
 magcache_K: 2
 retention_ratio: 0.2
 
