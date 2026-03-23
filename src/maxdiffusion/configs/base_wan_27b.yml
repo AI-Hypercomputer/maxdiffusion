@@ -307,6 +307,7 @@ use_cfg_cache: False
 use_magcache: True
 magcache_thresh: 0.04
 magcache_K: 2
+retention_ratio: 0.2
 
 # SenCache: Sensitivity-Aware Caching (arXiv:2602.24208) — skip forward pass
 # when predicted output change (based on accumulated latent/timestep drift) is small

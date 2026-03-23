@@ -291,6 +291,7 @@ use_cfg_cache: False
 use_magcache: True
 magcache_thresh: 0.04
 magcache_K: 2
+retention_ratio: 0.2
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
