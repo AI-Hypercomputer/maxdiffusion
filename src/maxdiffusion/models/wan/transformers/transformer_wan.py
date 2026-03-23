@@ -683,13 +683,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     hidden_states_before_blocks = hidden_states
 
-    if skip_blocks is not None and cached_residual is not None:
-      hidden_states = jax.lax.cond(
-          skip_blocks,
-          lambda h: h + cached_residual,
-          _run_all_blocks,
-          hidden_states
-      )
+    if skip_blocks:
+      if cached_residual is None:
+        raise ValueError("cached_residual must be provided when skip_blocks is True")
+      hidden_states = hidden_states + cached_residual
     else:
       hidden_states = _run_all_blocks(hidden_states)
 

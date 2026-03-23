@@ -302,7 +302,7 @@ def run_inference_2_1(
           prompt_embeds_combined if do_cfg else prompt_cond_embeds,
           do_classifier_free_guidance=do_cfg,
           guidance_scale=guidance_scale,
-          skip_blocks=jnp.array(skip_blocks),
+          skip_blocks=bool(skip_blocks),
           cached_residual=cached_residual,
           return_residual=True,
       )
