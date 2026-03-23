@@ -301,6 +301,14 @@ except importlib_metadata.PackageNotFoundError:
   _peft_available = False
 
 
+_av_available = importlib.util.find_spec("av") is not None
+try:
+  _av_version = importlib_metadata.version("av")
+  logger.debug(f"Successfully imported av version {_av_version}")
+except importlib_metadata.PackageNotFoundError:
+  _av_available = False
+
+
 def is_imageio_available():
   return _imageio_available
 
@@ -391,6 +399,10 @@ def is_invisible_watermark_available():
 
 def is_peft_available():
   return _peft_available
+
+
+def is_av_available():
+  return _av_available
 
 
 # docstyle-ignore
@@ -511,6 +523,12 @@ IMAGEIO_IMPORT_ERROR = """
 {0} requires the imageio library and ffmpeg but it was not found in your environment. You can install it with pip: `pip install imageio imageio-ffmpeg`
 """
 
+# docstyle-ignore
+AV_IMPORT_ERROR = """
+{0} requires the PyAV library but it was not found in your environment. You can install it with pip: `pip install
+av`
+"""
+
 
 BACKENDS_MAPPING = OrderedDict([
     ("bs4", (is_bs4_available, BS4_IMPORT_ERROR)),
@@ -532,6 +550,7 @@ BACKENDS_MAPPING = OrderedDict([
     ("torchsde", (is_torchsde_available, TORCHSDE_IMPORT_ERROR)),
     ("imageio", (is_imageio_available, IMAGEIO_IMPORT_ERROR)),
     ("invisible_watermark", (is_invisible_watermark_available, INVISIBLE_WATERMARK_IMPORT_ERROR)),
+    ("av", (is_av_available, AV_IMPORT_ERROR)),
 ])
 
 
