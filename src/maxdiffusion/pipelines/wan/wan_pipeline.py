@@ -794,7 +794,7 @@ def transformer_forward_pass(
   return noise_pred, latents
 
 
-@partial(jax.jit, static_argnames=("guidance_scale",))
+@partial(jax.jit, static_argnames=("guidance_scale", "skip_blocks", "return_residual"))
 def transformer_forward_pass_full_cfg(
     graphdef,
     sharded_state,
