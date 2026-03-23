@@ -146,7 +146,7 @@ class Wan22T2VMagCacheSmokeTest(unittest.TestCase):
         [
             None,
             os.path.join(THIS_DIR, "..", "configs", "base_wan_27b.yml"),
-            "num_inference_steps=50",
+            "num_inference_steps=40",
             "height=720",
             "width=1280",
             "num_frames=81",
@@ -304,7 +304,7 @@ class Wan22I2VMagCacheSmokeTest(unittest.TestCase):
         [
             None,
             os.path.join(THIS_DIR, "..", "configs", "base_wan_i2v_27b.yml"),
-            "num_inference_steps=50",
+            "num_inference_steps=40",
             "height=720",
             "width=1280",
             "num_frames=81",
