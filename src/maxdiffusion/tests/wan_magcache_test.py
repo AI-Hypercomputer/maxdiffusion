@@ -31,31 +31,41 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def calculate_metrics(v1_baseline, v2_cached):
   """Helper to calculate Speedup, PSNR and SSIM between baseline and cached videos."""
-  v1 = np.array(v1_baseline[0], dtype=np.float64)
-  v2 = np.array(v2_cached[0], dtype=np.float64)
+  num_videos = len(v1_baseline)
+  all_psnr = []
+  all_ssim = []
 
-  # PSNR
-  mse = np.mean((v1 - v2) ** 2)
-  psnr = 10.0 * np.log10(1.0 / mse) if mse > 0 else float("inf")
-  print(f"PSNR: {psnr:.2f} dB")
+  for i in range(num_videos):
+    v1 = np.array(v1_baseline[i], dtype=np.float64)
+    v2 = np.array(v2_cached[i], dtype=np.float64)
 
-  # SSIM (per-frame)
-  C1, C2 = 0.01**2, 0.03**2
-  ssim_scores = []
-  for f in range(v1.shape[0]):
-    mu1, mu2 = np.mean(v1[f]), np.mean(v2[f])
-    sigma1_sq, sigma2_sq = np.var(v1[f]), np.var(v2[f])
-    sigma12 = np.mean((v1[f] - mu1) * (v2[f] - mu2))
-    ssim = ((2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)) / ((mu1**2 + mu2**2 + C1) * (sigma1_sq + sigma2_sq + C2))
-    ssim_scores.append(float(ssim))
+    # PSNR
+    mse = np.mean((v1 - v2) ** 2)
+    psnr = 10.0 * np.log10(1.0 / mse) if mse > 0 else float("inf")
+    all_psnr.append(psnr)
 
-  mean_ssim = np.mean(ssim_scores)
-  print(f"SSIM: mean={mean_ssim:.4f}, min={np.min(ssim_scores):.4f}")
-  return psnr, mean_ssim
+    # SSIM (per-frame)
+    C1, C2 = 0.01**2, 0.03**2
+    ssim_scores = []
+    for f in range(v1.shape[0]):
+      mu1, mu2 = np.mean(v1[f]), np.mean(v2[f])
+      sigma1_sq, sigma2_sq = np.var(v1[f]), np.var(v2[f])
+      sigma12 = np.mean((v1[f] - mu1) * (v2[f] - mu2))
+      ssim = ((2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)) / ((mu1**2 + mu2**2 + C1) * (sigma1_sq + sigma2_sq + C2))
+      ssim_scores.append(float(ssim))
+
+    mean_ssim = np.mean(ssim_scores)
+    all_ssim.append(mean_ssim)
+
+  avg_psnr = np.mean(all_psnr)
+  avg_ssim = np.mean(all_ssim)
+  print(f"PSNR (avg of {num_videos} videos): {avg_psnr:.2f} dB")
+  print(f"SSIM (avg of {num_videos} videos): mean={avg_ssim:.4f}")
+  return avg_psnr, avg_ssim
 
 
 @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Requires TPU v7-8 and model weights")
-class Wan21MagCacheSmokeTest(unittest.TestCase):
+class Wan21T2VMagCacheSmokeTest(unittest.TestCase):
   """End-to-end smoke test: MagCache for Wan 2.1 T2V 14B."""
 
   @classmethod
@@ -150,7 +160,7 @@ class Wan22T2VMagCacheSmokeTest(unittest.TestCase):
             "skip_jax_distributed_system=True",
             "weights_dtype=bfloat16",
             "activations_dtype=bfloat16",
-            "per_device_batch_size=0.125",
+            "per_device_batch_size=0.25",
             "ici_data_parallelism=2",
             "ici_fsdp_parallelism=1",
             "ici_context_parallelism=4",
@@ -308,7 +318,7 @@ class Wan22I2VMagCacheSmokeTest(unittest.TestCase):
             "skip_jax_distributed_system=True",
             "weights_dtype=bfloat16",
             "activations_dtype=bfloat16",
-            "per_device_batch_size=0.125",
+            "per_device_batch_size=0.25",
             "ici_data_parallelism=2",
             "ici_fsdp_parallelism=1",
             "ici_context_parallelism=4",

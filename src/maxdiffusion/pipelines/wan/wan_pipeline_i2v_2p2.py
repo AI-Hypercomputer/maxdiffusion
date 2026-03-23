@@ -521,8 +521,8 @@ def run_inference_2_2_i2v(
 
       timestep = jnp.broadcast_to(t, bsz * 2)
       latents_doubled = jnp.concatenate([latents, latents], axis=0)
-
-      latents_input = jnp.transpose(latents_doubled, (0, 4, 1, 2, 3))
+      latent_model_input = jnp.concatenate([latents_doubled, condition_combined], axis=-1)
+      latents_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
       
       outputs = transformer_forward_pass(
           graphdef,
