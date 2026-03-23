@@ -91,7 +91,7 @@ class Wan21T2VMagCacheSmokeTest(unittest.TestCase):
             "ici_context_parallelism=4",
             "ici_tensor_parallelism=1",
             "flash_min_seq_length=0",
-            'flash_block_sizes={"block_q":2048,"block_kv_compute":512,"block_kv":2048,"block_q_dkv":2048,"block_kv_dkv":2048,"block_kv_dkv_compute":512,"use_fused_bwd_kernel":true}',
+            'flash_block_sizes={"block_q":3024,"block_kv_compute":1024,"block_kv":2048,"block_q_dkv":3024,"block_kv_dkv":2048,"block_kv_dkv_compute":1024,"use_fused_bwd_kernel":false}',
         ],
         unittest=True,
     )
@@ -167,7 +167,7 @@ class Wan22T2VMagCacheSmokeTest(unittest.TestCase):
             "ici_context_parallelism=4",
             "ici_tensor_parallelism=1",
             "flash_min_seq_length=0",
-            'flash_block_sizes={"block_q":2048,"block_kv_compute":512,"block_kv":2048,"block_q_dkv":2048,"block_kv_dkv":2048,"block_kv_dkv_compute":512,"use_fused_bwd_kernel":true}',
+            'flash_block_sizes={"block_q":3024,"block_kv_compute":1024,"block_kv":2048,"block_q_dkv":3024,"block_kv_dkv":2048,"block_kv_dkv_compute":1024,"use_fused_bwd_kernel":false}',
         ],
         unittest=True,
     )
@@ -246,7 +246,7 @@ class Wan21I2VMagCacheSmokeTest(unittest.TestCase):
             "ici_context_parallelism=4",
             "ici_tensor_parallelism=1",
             "flash_min_seq_length=0",
-            'flash_block_sizes={"block_q":2048,"block_kv_compute":512,"block_kv":2048,"block_q_dkv":2048,"block_kv_dkv":2048,"block_kv_dkv_compute":512,"use_fused_bwd_kernel":true}',
+            'flash_block_sizes={"block_q":3024,"block_kv_compute":1024,"block_kv":2048,"block_q_dkv":3024,"block_kv_dkv":2048,"block_kv_dkv_compute":1024,"use_fused_bwd_kernel":false}',
         ],
         unittest=True,
     )
@@ -327,7 +327,7 @@ class Wan22I2VMagCacheSmokeTest(unittest.TestCase):
             "ici_context_parallelism=4",
             "ici_tensor_parallelism=1",
             "flash_min_seq_length=0",
-            'flash_block_sizes={"block_q":2048,"block_kv_compute":512,"block_kv":2048,"block_q_dkv":2048,"block_kv_dkv":2048,"block_kv_dkv_compute":512,"use_fused_bwd_kernel":true}',
+            'flash_block_sizes={"block_q":3024,"block_kv_compute":1024,"block_kv":2048,"block_q_dkv":3024,"block_kv_dkv":2048,"block_kv_dkv_compute":1024,"use_fused_bwd_kernel":false}',
         ],
         unittest=True,
     )
