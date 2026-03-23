@@ -252,7 +252,7 @@ class Wan21I2VMagCacheSmokeTest(unittest.TestCase):
     )
     cls.config = pyconfig.config
     checkpoint_loader = WanCheckpointerI2V_2_1(cls.config)
-    cls.pipeline, _ = checkpoint_loader.load_checkpoint()
+    cls.pipeline, _, _ = checkpoint_loader.load_checkpoint()
 
     cls.image = load_image(cls.config.image_url)
     cls.prompt = [cls.config.prompt] * cls.config.global_batch_size_to_train_on
