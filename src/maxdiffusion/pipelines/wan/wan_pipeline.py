@@ -750,7 +750,7 @@ class WanPipeline:
     pass
 
 
-@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
+@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale", "return_residual"))
 def transformer_forward_pass(
     graphdef,
     sharded_state,
@@ -761,14 +761,26 @@ def transformer_forward_pass(
     do_classifier_free_guidance,
     guidance_scale,
     encoder_hidden_states_image=None,
+    skip_blocks=None,
+    cached_residual=None,
+    return_residual=False,
 ):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  noise_pred = wan_transformer(
+  outputs = wan_transformer(
       hidden_states=latents,
       timestep=timestep,
       encoder_hidden_states=prompt_embeds,
       encoder_hidden_states_image=encoder_hidden_states_image,
+      skip_blocks=skip_blocks,
+      cached_residual=cached_residual,
+      return_residual=return_residual,
   )
+  
+  if return_residual:
+    noise_pred, residual_x = outputs
+  else:
+    noise_pred = outputs
+
   if do_classifier_free_guidance:
     bsz = latents.shape[0] // 2
     noise_cond = noise_pred[:bsz]  # First half = conditional
@@ -777,6 +789,8 @@ def transformer_forward_pass(
 
     latents = latents[:bsz]
 
+  if return_residual:
+    return noise_pred, latents, residual_x
   return noise_pred, latents
 
 

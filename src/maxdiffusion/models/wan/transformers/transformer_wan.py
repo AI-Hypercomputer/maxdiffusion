@@ -593,8 +593,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       return_dict: bool = True,
       attention_kwargs: Optional[Dict[str, Any]] = None,
       deterministic: bool = True,
-      rngs: nnx.Rngs = None,
-  ) -> Union[jax.Array, Dict[str, jax.Array]]:
+      skip_blocks: Optional[jax.Array] = None,
+      cached_residual: Optional[jax.Array] = None,
+      return_residual: bool = False,
+  ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], Dict[str, jax.Array]]:
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size
@@ -628,52 +630,69 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         encoder_attention_mask = jnp.concatenate([encoder_attention_mask, text_mask], axis=1)
       encoder_hidden_states = encoder_hidden_states.astype(hidden_states.dtype)
 
-    if self.scan_layers:
+    def _run_all_blocks(h):
+      if self.scan_layers:
 
-      def scan_fn(carry, block):
-        hidden_states_carry, rngs_carry = carry
-        hidden_states = block(
-            hidden_states_carry,
-            encoder_hidden_states,
-            timestep_proj,
-            rotary_emb,
-            deterministic,
-            rngs_carry,
-            encoder_attention_mask,
-        )
-        new_carry = (hidden_states, rngs_carry)
-        return new_carry, None
-
-      rematted_block_forward = self.gradient_checkpoint.apply(
-          scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
-      )
-      initial_carry = (hidden_states, rngs)
-      final_carry, _ = nnx.scan(
-          rematted_block_forward,
-          length=self.num_layers,
-          in_axes=(nnx.Carry, 0),
-          out_axes=(nnx.Carry, 0),
-      )(initial_carry, self.blocks)
-
-      hidden_states, _ = final_carry
-    else:
-      for block in self.blocks:
-
-        def layer_forward(hidden_states):
-          return block(
-              hidden_states,
+        def scan_fn(carry, block):
+          hidden_states_carry, rngs_carry = carry
+          hidden_states = block(
+              hidden_states_carry,
               encoder_hidden_states,
               timestep_proj,
               rotary_emb,
               deterministic,
-              rngs,
-              encoder_attention_mask=encoder_attention_mask,
+              rngs_carry,
+              encoder_attention_mask,
           )
+          new_carry = (hidden_states, rngs_carry)
+          return new_carry, None
 
-        rematted_layer_forward = self.gradient_checkpoint.apply(
-            layer_forward, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
-        )
-        hidden_states = rematted_layer_forward(hidden_states)
+        rematted_block_forward = self.gradient_checkpoint.apply(
+            scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+         )
+        initial_carry = (h, rngs)
+        final_carry, _ = nnx.scan(
+            rematted_block_forward,
+            length=self.num_layers,
+            in_axes=(nnx.Carry, 0),
+            out_axes=(nnx.Carry, 0),
+        )(initial_carry, self.blocks)
+
+        h_out, _ = final_carry
+      else:
+        h_out = h
+        for block in self.blocks:
+
+          def layer_forward(hidden_states):
+            return block(
+                hidden_states,
+                encoder_hidden_states,
+                timestep_proj,
+                rotary_emb,
+                deterministic,
+                rngs,
+                encoder_attention_mask=encoder_attention_mask,
+            )
+
+          rematted_layer_forward = self.gradient_checkpoint.apply(
+              layer_forward, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+          )
+          h_out = rematted_layer_forward(h_out)
+      return h_out
+
+    hidden_states_before_blocks = hidden_states
+
+    if skip_blocks is not None and cached_residual is not None:
+      hidden_states = jax.lax.cond(
+          skip_blocks,
+          lambda h: h + cached_residual,
+          _run_all_blocks,
+          hidden_states
+      )
+    else:
+      hidden_states = _run_all_blocks(hidden_states)
+
+    residual_x = hidden_states - hidden_states_before_blocks
 
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
@@ -685,4 +704,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
     hidden_states = jnp.transpose(hidden_states, (0, 7, 1, 4, 2, 5, 3, 6))
     hidden_states = hidden_states.reshape(batch_size, -1, num_frames, height, width)
+    
+    if return_residual:
+      return hidden_states, residual_x
     return hidden_states

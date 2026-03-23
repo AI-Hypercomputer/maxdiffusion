@@ -127,6 +127,10 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           num_inference_steps=config.num_inference_steps,
           guidance_scale=config.guidance_scale,
           use_cfg_cache=config.use_cfg_cache,
+          use_magcache=getattr(config, "use_magcache", False),
+          magcache_thresh=getattr(config, "magcache_thresh", 0.12),
+          magcache_K=getattr(config, "magcache_K", 2),
+          retention_ratio=getattr(config, "retention_ratio", 0.2),
       )
     elif model_key == WAN2_2:
       return pipeline(
