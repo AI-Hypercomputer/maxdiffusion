@@ -149,6 +149,10 @@ class WanPipelineI2V_2_1(WanPipeline):
       last_image: Optional[PipelineImageInput] = None,
       output_type: Optional[str] = "np",
       rng: Optional[jax.Array] = None,
+      use_magcache: bool = False,
+      magcache_thresh: float = 0.04,
+      magcache_K: int = 2,
+      retention_ratio: float = 0.2,
   ):
     height = height or self.config.height
     width = width or self.config.width
@@ -232,6 +236,11 @@ class WanPipelineI2V_2_1(WanPipeline):
         guidance_scale=guidance_scale,
         num_inference_steps=num_inference_steps,
         scheduler=self.scheduler,
+        use_magcache=use_magcache,
+        magcache_thresh=magcache_thresh,
+        magcache_K=magcache_K,
+        retention_ratio=retention_ratio,
+        height=height,
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -264,33 +273,118 @@ def run_inference_2_1_i2v(
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
+    use_magcache: bool = False,
+    magcache_thresh: float = 0.04,
+    magcache_K: int = 2,
+    retention_ratio: float = 0.2,
+    height: int = 480,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
 
+  import numpy as np
+
+  if height >= 720:
+    mag_ratios_base = np.array([1.0]*2+[0.99428, 0.99498, 0.98588, 0.98621, 0.98273, 0.98281, 0.99018, 0.99023, 0.98911, 0.98917, 0.98646, 0.98652, 0.99454, 0.99456, 0.9891, 0.98909, 0.99124, 0.99127, 0.99102, 0.99103, 0.99215, 0.99212, 0.99515, 0.99515, 0.99576, 0.99572, 0.99068, 0.99072, 0.99097, 0.99097, 0.99166, 0.99169, 0.99041, 0.99042, 0.99201, 0.99198, 0.99101, 0.99101, 0.98599, 0.98603, 0.98845, 0.98844, 0.98848, 0.98851, 0.98862, 0.98857, 0.98718, 0.98719, 0.98497, 0.98497, 0.98264, 0.98263, 0.98389, 0.98393, 0.97938, 0.9794, 0.97535, 0.97536, 0.97498, 0.97499, 0.973, 0.97301, 0.96827, 0.96828, 0.96261, 0.96263, 0.95335, 0.9534, 0.94649, 0.94655, 0.93397, 0.93414, 0.91636, 0.9165, 0.89088, 0.89109, 0.8679, 0.86768])
+  else:
+    mag_ratios_base = np.array([1.0]*2+[0.98783, 0.98993, 0.97559, 0.97593, 0.98311, 0.98319, 0.98202, 0.98225, 0.9888, 0.98878, 0.98762, 0.98759, 0.98957, 0.98971, 0.99052, 0.99043, 0.99383, 0.99384, 0.98857, 0.9886, 0.99065, 0.99068, 0.98845, 0.98847, 0.99057, 0.99057, 0.98957, 0.98961, 0.98601, 0.9861, 0.98823, 0.98823, 0.98756, 0.98759, 0.98808, 0.98814, 0.98721, 0.98724, 0.98571, 0.98572, 0.98543, 0.98544, 0.98157, 0.98165, 0.98411, 0.98413, 0.97952, 0.97953, 0.98149, 0.9815, 0.9774, 0.97742, 0.97825, 0.97826, 0.97355, 0.97361, 0.97085, 0.97087, 0.97056, 0.97055, 0.96588, 0.96587, 0.96113, 0.96124, 0.9567, 0.95681, 0.94961, 0.94969, 0.93973, 0.93988, 0.93217, 0.93224, 0.91878, 0.91896, 0.90955, 0.90954, 0.92617, 0.92616])
+
+  if len(mag_ratios_base) != num_inference_steps * 2:
+    def nearest_interp(src, target_len):
+      src_len = len(src)
+      if target_len <= 1: return np.array([src[-1]])
+      scale = (src_len - 1) / (max(1, target_len - 1))
+      idx = np.round(np.arange(target_len) * scale).astype(int)
+      return src[idx]
+    mag_cond = nearest_interp(mag_ratios_base[0::2], num_inference_steps)
+    mag_uncond = nearest_interp(mag_ratios_base[1::2], num_inference_steps)
+    mag_ratios = np.concatenate([mag_cond.reshape(-1, 1), mag_uncond.reshape(-1, 1)], axis=1).reshape(-1)
+  else:
+    mag_ratios = mag_ratios_base
+
+  accumulated_ratio_cond = 1.0
+  accumulated_ratio_uncond = 1.0
+  accumulated_err_cond = 0.0
+  accumulated_err_uncond = 0.0
+  accumulated_steps_cond = 0
+  accumulated_steps_uncond = 0
+  cached_residual = None
+
+  skip_warmup = int(num_inference_steps * retention_ratio)
+
   if do_classifier_free_guidance:
-    prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
-    image_embeds = jnp.concatenate([image_embeds, image_embeds], axis=0)
-    condition = jnp.concatenate([condition] * 2)
+    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+    image_embeds_combined = jnp.concatenate([image_embeds, image_embeds], axis=0)
+    condition_combined = jnp.concatenate([condition] * 2)
+  else:
+    prompt_embeds_combined = prompt_embeds
+    image_embeds_combined = image_embeds
+    condition_combined = condition
+
   for step in range(num_inference_steps):
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+    
+    skip_blocks = False
+    if use_magcache and do_classifier_free_guidance and step >= skip_warmup:
+      cur_mag_ratio_cond = mag_ratios[step*2]
+      cur_mag_ratio_uncond = mag_ratios[step*2+1]
+
+      accumulated_ratio_cond *= cur_mag_ratio_cond
+      accumulated_ratio_uncond *= cur_mag_ratio_uncond
+      accumulated_steps_cond += 1
+      accumulated_steps_uncond += 1
+
+      accumulated_err_cond += abs(1.0 - accumulated_ratio_cond)
+      accumulated_err_uncond += abs(1.0 - accumulated_ratio_uncond)
+
+      mean_err = (accumulated_err_cond + accumulated_err_uncond) / 2.0
+      max_steps = max(accumulated_steps_cond, accumulated_steps_uncond)
+
+      if mean_err < magcache_thresh and max_steps <= magcache_K:
+        skip_blocks = True
+      else:
+        accumulated_err_cond = 0.0
+        accumulated_err_uncond = 0.0
+        accumulated_steps_cond = 0
+        accumulated_steps_uncond = 0
+        accumulated_ratio_cond = 1.0
+        accumulated_ratio_uncond = 1.0
+
     latents_input = latents
     if do_classifier_free_guidance:
       latents_input = jnp.concatenate([latents, latents], axis=0)
 
-    latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
+    latent_model_input = jnp.concatenate([latents_input, condition_combined], axis=-1)
     timestep = jnp.broadcast_to(t, latents_input.shape[0])
     latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
-    noise_pred, _ = transformer_forward_pass(
-        graphdef,
-        sharded_state,
-        rest_of_state,
-        latent_model_input,
-        timestep,
-        prompt_embeds,
-        do_classifier_free_guidance=do_classifier_free_guidance,
-        guidance_scale=guidance_scale,
-        encoder_hidden_states_image=image_embeds,
-    )
+    
+    if use_magcache and do_classifier_free_guidance:
+       from .wan_pipeline import transformer_forward_pass_full_cfg
+       noise_pred, _, _, cached_residual = transformer_forward_pass_full_cfg(
+           graphdef,
+           sharded_state,
+           rest_of_state,
+           latents_input,
+           timestep,
+           prompt_embeds_combined,
+           guidance_scale=guidance_scale,
+           encoder_hidden_states_image=image_embeds_combined,
+           skip_blocks=bool(skip_blocks),
+           cached_residual=cached_residual,
+           return_residual=True,
+       )
+    else:
+       noise_pred, _ = transformer_forward_pass(
+           graphdef,
+           sharded_state,
+           rest_of_state,
+           latent_model_input,
+           timestep,
+           prompt_embeds_combined,
+           do_classifier_free_guidance=do_classifier_free_guidance,
+           guidance_scale=guidance_scale,
+           encoder_hidden_states_image=image_embeds_combined,
+       )
+
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents, return_dict=False)
   return latents

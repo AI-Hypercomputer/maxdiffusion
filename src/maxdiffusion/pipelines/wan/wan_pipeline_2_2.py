@@ -112,6 +112,10 @@ class WanPipeline2_2(WanPipeline):
       vae_only: bool = False,
       use_cfg_cache: bool = False,
       use_sen_cache: bool = False,
+      use_magcache: bool = False,
+      magcache_thresh: float = 0.04,
+      magcache_K: int = 2,
+      retention_ratio: float = 0.2,
   ):
     if use_cfg_cache and use_sen_cache:
       raise ValueError("use_cfg_cache and use_sen_cache are mutually exclusive. Enable only one.")
@@ -160,6 +164,10 @@ class WanPipeline2_2(WanPipeline):
         scheduler_state=scheduler_state,
         use_cfg_cache=use_cfg_cache,
         use_sen_cache=use_sen_cache,
+        use_magcache=use_magcache,
+        magcache_thresh=magcache_thresh,
+        magcache_K=magcache_K,
+        retention_ratio=retention_ratio,
         height=height,
     )
 
@@ -197,6 +205,10 @@ def run_inference_2_2(
     scheduler_state,
     use_cfg_cache: bool = False,
     use_sen_cache: bool = False,
+    use_magcache: bool = False,
+    magcache_thresh: float = 0.04,
+    magcache_K: int = 2,
+    retention_ratio: float = 0.2,
     height: int = 480,
 ):
   """Denoising loop for WAN 2.2 T2V with optional caching acceleration.
@@ -438,10 +450,92 @@ def run_inference_2_2(
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     return latents
 
+  # ── MagCache path ──
+  if use_magcache and do_classifier_free_guidance:
+    accumulated_ratio_cond = 1.0
+    accumulated_ratio_uncond = 1.0
+    accumulated_err_cond = 0.0
+    accumulated_err_uncond = 0.0
+    accumulated_steps_cond = 0
+    accumulated_steps_uncond = 0
+    cached_residual = None
+
+    skip_warmup = int(num_inference_steps * retention_ratio)
+
+    # Pre-calculated 2.2 T2V ratios
+    mag_ratios_base = np.array([1.0]*2+[1.00124, 1.00155, 0.99822, 0.99851, 0.99696, 0.99687, 0.99703, 0.99732, 0.9966, 0.99679, 0.99602, 0.99658, 0.99578, 0.99664, 0.99484, 0.9949, 0.99633, 0.996, 0.99659, 0.99683, 0.99534, 0.99549, 0.99584, 0.99577, 0.99681, 0.99694, 0.99563, 0.99554, 0.9944, 0.99473, 0.99594, 0.9964, 0.99466, 0.99461, 0.99453, 0.99481, 0.99389, 0.99365, 0.99391, 0.99406, 0.99354, 0.99361, 0.99283, 0.99278, 0.99268, 0.99263, 0.99057, 0.99091, 0.99125, 0.99126, 0.65523, 0.65252, 0.98808, 0.98852, 0.98765, 0.98736, 0.9851, 0.98535, 0.98311, 0.98339, 0.9805, 0.9806, 0.97776, 0.97771, 0.97278, 0.97286, 0.96731, 0.96728, 0.95857, 0.95855, 0.94385, 0.94385, 0.92118, 0.921, 0.88108, 0.88076, 0.80263, 0.80181])
+
+    if len(mag_ratios_base) != num_inference_steps * 2:
+      def nearest_interp(src, target_len):
+        src_len = len(src)
+        if target_len <= 1: return np.array([src[-1]])
+        scale = (src_len - 1) / (max(1, target_len - 1))
+        idx = np.round(np.arange(target_len) * scale).astype(int)
+        return src[idx]
+      mag_cond = nearest_interp(mag_ratios_base[0::2], num_inference_steps)
+      mag_uncond = nearest_interp(mag_ratios_base[1::2], num_inference_steps)
+      mag_ratios = np.concatenate([mag_cond.reshape(-1, 1), mag_uncond.reshape(-1, 1)], axis=1).reshape(-1)
+    else:
+      mag_ratios = mag_ratios_base
+
+    timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
+    step_uses_high = [bool(timesteps_np[s] >= boundary) for s in range(num_inference_steps)]
+    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+
+    for step in range(num_inference_steps):
+      t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+      cur_mag_ratio_cond = mag_ratios[step*2]
+      cur_mag_ratio_uncond = mag_ratios[step*2+1]
+
+      skip_blocks = False
+      if step >= skip_warmup:
+        accumulated_ratio_cond *= cur_mag_ratio_cond
+        accumulated_ratio_uncond *= cur_mag_ratio_uncond
+        accumulated_steps_cond += 1
+        accumulated_steps_uncond += 1
+
+        accumulated_err_cond += abs(1.0 - accumulated_ratio_cond)
+        accumulated_err_uncond += abs(1.0 - accumulated_ratio_uncond)
+
+        mean_err = (accumulated_err_cond + accumulated_err_uncond) / 2.0
+        max_steps = max(accumulated_steps_cond, accumulated_steps_uncond)
+
+        if mean_err < magcache_thresh and max_steps <= magcache_K:
+          skip_blocks = True
+        else:
+          accumulated_err_cond = 0.0
+          accumulated_err_uncond = 0.0
+          accumulated_steps_cond = 0
+          accumulated_steps_uncond = 0
+          accumulated_ratio_cond = 1.0
+          accumulated_ratio_uncond = 1.0
+
+      if step_uses_high[step]:
+        graphdef, state, rest = high_noise_graphdef, high_noise_state, high_noise_rest
+        guidance_scale = guidance_scale_high
+      else:
+        graphdef, state, rest = low_noise_graphdef, low_noise_state, low_noise_rest
+        guidance_scale = guidance_scale_low
+
+      timestep = jnp.broadcast_to(t, bsz * 2)
+
+      noise_pred, _, _, cached_residual = transformer_forward_pass_full_cfg(
+          graphdef,
+          state,
+          rest,
+          jnp.concatenate([latents] * 2),
+          timestep,
+          prompt_embeds_combined,
+          guidance_scale=guidance_scale,
+          skip_blocks=bool(skip_blocks),
+          cached_residual=cached_residual,
+          return_residual=True,
+      )
+
+      latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+    return latents
+
   # ── Original non-cache path ──
-  # Uses same Python-level if/else transformer selection as the cache path
-  # so both paths compile to identical XLA graphs (critical for bfloat16
-  # reproducibility in the PSNR comparison).
   timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
   step_uses_high = [bool(timesteps_np[s] >= boundary) for s in range(num_inference_steps)]
 
@@ -486,3 +580,4 @@ def run_inference_2_2(
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
   return latents
+
