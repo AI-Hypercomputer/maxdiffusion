@@ -521,18 +521,22 @@ def run_inference_2_2(
 
       timestep = jnp.broadcast_to(t, bsz * 2)
 
-      noise_pred, _, _, cached_residual = transformer_forward_pass_full_cfg(
+      outputs = transformer_forward_pass(
           graphdef,
           state,
           rest,
           jnp.concatenate([latents] * 2),
           timestep,
           prompt_embeds_combined,
+          do_classifier_free_guidance=True,
           guidance_scale=guidance_scale,
           skip_blocks=bool(skip_blocks),
           cached_residual=cached_residual,
           return_residual=True,
       )
+      noise_pred, _, residual_x_cur = outputs
+      if not skip_blocks:
+        cached_residual = residual_x_cur
 
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     return latents

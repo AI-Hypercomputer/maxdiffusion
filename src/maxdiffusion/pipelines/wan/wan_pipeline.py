@@ -794,7 +794,7 @@ def transformer_forward_pass(
   return noise_pred, latents
 
 
-@partial(jax.jit, static_argnames=("guidance_scale", "skip_blocks", "return_residual"))
+@partial(jax.jit, static_argnames=("guidance_scale",))
 def transformer_forward_pass_full_cfg(
     graphdef,
     sharded_state,
@@ -804,9 +804,6 @@ def transformer_forward_pass_full_cfg(
     prompt_embeds_combined: jnp.array,
     guidance_scale: float,
     encoder_hidden_states_image=None,
-    skip_blocks: bool = False,
-    cached_residual: Optional[jax.Array] = None,
-    return_residual: bool = False,
 ):
   """Full CFG forward pass.
 
@@ -818,33 +815,20 @@ def transformer_forward_pass_full_cfg(
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   bsz = latents_doubled.shape[0] // 2
   
-  if return_residual:
-    noise_pred, actual_residual = wan_transformer(
-        hidden_states=latents_doubled,
-        timestep=timestep,
-        encoder_hidden_states=prompt_embeds_combined,
-        encoder_hidden_states_image=encoder_hidden_states_image,
-        skip_blocks=skip_blocks,
-        cached_residual=cached_residual,
-        return_residual=True,
-    )
-  else:
-    noise_pred = wan_transformer(
-        hidden_states=latents_doubled,
-        timestep=timestep,
-        encoder_hidden_states=prompt_embeds_combined,
-        encoder_hidden_states_image=encoder_hidden_states_image,
-        skip_blocks=skip_blocks,
-        cached_residual=cached_residual,
-        return_residual=False,
-    )
+  noise_pred = wan_transformer(
+      hidden_states=latents_doubled,
+      timestep=timestep,
+      encoder_hidden_states=prompt_embeds_combined,
+      encoder_hidden_states_image=encoder_hidden_states_image,
+      skip_blocks=False,
+      cached_residual=None,
+      return_residual=False,
+  )
     
   noise_cond = noise_pred[:bsz]
   noise_uncond = noise_pred[bsz:]
   noise_pred_merged = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
   
-  if return_residual:
-    return noise_pred_merged, noise_cond, noise_uncond, actual_residual
   return noise_pred_merged, noise_cond, noise_uncond
 
 
