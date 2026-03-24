@@ -14,7 +14,7 @@
 
 from maxdiffusion.image_processor import PipelineImageInput
 from maxdiffusion import max_logging
-from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache, nearest_interp
+from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache, nearest_interp, init_magcache, magcache_step
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
 from ...pyconfig import HyperParameters
@@ -273,6 +273,7 @@ class WanPipelineI2V_2_2(WanPipeline):
         magcache_K=magcache_K,
         retention_ratio=retention_ratio,
         height=height,
+        mag_ratios_base=self.config.mag_ratios_base if hasattr(self.config, "mag_ratios_base") else None,
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -321,6 +322,7 @@ def run_inference_2_2_i2v(
     magcache_thresh: float = 0.04,
     magcache_K: int = 2,
     retention_ratio: float = 0.2,
+    mag_ratios_base: Optional[List[float]] = None,
 ):
   do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
   bsz = latents.shape[0]
@@ -445,25 +447,17 @@ def run_inference_2_2_i2v(
 
   # ── MagCache path ──
   if use_magcache and do_classifier_free_guidance:
-    accumulated_ratio_cond = 1.0
-    accumulated_ratio_uncond = 1.0
-    accumulated_err_cond = 0.0
-    accumulated_err_uncond = 0.0
-    accumulated_steps_cond = 0
-    accumulated_steps_uncond = 0
-    cached_residual = None
-
-    skip_warmup = int(num_inference_steps * retention_ratio)
-
-    # Pre-calculated 2.2 I2V ratios
-    mag_ratios_base = np.array([1.0]*2+[0.99512, 0.99559, 0.99559, 0.99561, 0.99595, 0.99577, 0.99512, 0.99512, 0.99546, 0.99534, 0.99543, 0.99531, 0.99496, 0.99491, 0.99504, 0.99499, 0.99444, 0.99449, 0.99481, 0.99481, 0.99435, 0.99435, 0.9943, 0.99431, 0.99411, 0.99406, 0.99373, 0.99376, 0.99413, 0.99405, 0.99363, 0.99359, 0.99335, 0.99331, 0.99244, 0.99243, 0.99229, 0.99229, 0.99239, 0.99236, 0.99163, 0.9916, 0.99149, 0.99151, 0.99191, 0.99192, 0.9898, 0.98981, 0.9899, 0.98987, 0.98849, 0.98849, 0.98846, 0.98846, 0.98861, 0.98861, 0.9874, 0.98738, 0.98588, 0.98589, 0.98539, 0.98534, 0.98444, 0.98439, 0.9831, 0.98309, 0.98119, 0.98118, 0.98001, 0.98, 0.97862, 0.97859, 0.97555, 0.97558, 0.97392, 0.97388, 0.97152, 0.97145, 0.96871, 0.9687, 0.96435, 0.96434, 0.96129, 0.96127, 0.95639, 0.95638, 0.95176, 0.95175, 0.94446, 0.94452, 0.93972, 0.93974, 0.93575, 0.9359, 0.93537, 0.93552, 0.96655, 0.96616])
-
-    if len(mag_ratios_base) != num_inference_steps * 2:
-      mag_cond = nearest_interp(mag_ratios_base[0::2], num_inference_steps)
-      mag_uncond = nearest_interp(mag_ratios_base[1::2], num_inference_steps)
-      mag_ratios = np.concatenate([mag_cond.reshape(-1, 1), mag_uncond.reshape(-1, 1)], axis=1).reshape(-1)
-    else:
-      mag_ratios = mag_ratios_base
+    (
+        accumulated_ratio_cond,
+        accumulated_ratio_uncond,
+        accumulated_err_cond,
+        accumulated_err_uncond,
+        accumulated_steps_cond,
+        accumulated_steps_uncond,
+        cached_residual,
+        skip_warmup,
+        mag_ratios,
+    ) = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base)
 
     timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
     step_uses_high = [bool(timesteps_np[s] >= boundary) for s in range(num_inference_steps)]
@@ -478,33 +472,26 @@ def run_inference_2_2_i2v(
 
     for step in range(num_inference_steps):
       t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
-      cur_mag_ratio_cond = mag_ratios[step*2]
-      cur_mag_ratio_uncond = mag_ratios[step*2+1]
 
-      skip_blocks = False
-      if step >= skip_warmup:
-        new_ratio_cond = accumulated_ratio_cond * cur_mag_ratio_cond
-        new_ratio_uncond = accumulated_ratio_uncond * cur_mag_ratio_uncond
-
-        err_cond = np.abs(1.0 - new_ratio_cond)
-        err_uncond = np.abs(1.0 - new_ratio_uncond)
-
-        if (accumulated_err_cond + err_cond < magcache_thresh and accumulated_steps_cond < magcache_K and
-            accumulated_err_uncond + err_uncond < magcache_thresh and accumulated_steps_uncond < magcache_K):
-          skip_blocks = True
-          accumulated_ratio_cond = new_ratio_cond
-          accumulated_ratio_uncond = new_ratio_uncond
-          accumulated_err_cond += err_cond
-          accumulated_err_uncond += err_uncond
-          accumulated_steps_cond += 1
-          accumulated_steps_uncond += 1
-        else:
-          accumulated_ratio_cond = 1.0
-          accumulated_ratio_uncond = 1.0
-          accumulated_err_cond = 0.0
-          accumulated_err_uncond = 0.0
-          accumulated_steps_cond = 0
-          accumulated_steps_uncond = 0
+      accumulated_state = (
+          accumulated_ratio_cond,
+          accumulated_ratio_uncond,
+          accumulated_err_cond,
+          accumulated_err_uncond,
+          accumulated_steps_cond,
+          accumulated_steps_uncond,
+      )
+      skip_blocks, accumulated_state = magcache_step(
+          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup
+      )
+      (
+          accumulated_ratio_cond,
+          accumulated_ratio_uncond,
+          accumulated_err_cond,
+          accumulated_err_uncond,
+          accumulated_steps_cond,
+          accumulated_steps_uncond,
+      ) = accumulated_state
 
       if step_uses_high[step]:
         graphdef, state, rest = high_noise_graphdef, high_noise_state, high_noise_rest

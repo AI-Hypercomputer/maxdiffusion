@@ -14,7 +14,7 @@
 
 from maxdiffusion import max_logging
 from maxdiffusion.image_processor import PipelineImageInput
-from .wan_pipeline import WanPipeline, transformer_forward_pass, nearest_interp
+from .wan_pipeline import WanPipeline, transformer_forward_pass, nearest_interp, init_magcache, magcache_step
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
 from ...pyconfig import HyperParameters
@@ -241,6 +241,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         magcache_K=magcache_K,
         retention_ratio=retention_ratio,
         height=height,
+        mag_ratios_base=self.config.mag_ratios_base_720p if height >= 720 else self.config.mag_ratios_base_480p,
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -278,32 +279,23 @@ def run_inference_2_1_i2v(
     magcache_K: int = 2,
     retention_ratio: float = 0.2,
     height: int = 480,
+    mag_ratios_base: Optional[List[float]] = None,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
 
   import numpy as np
 
-  if height >= 720:
-    mag_ratios_base = np.array([1.0]*2+[0.99428, 0.99498, 0.98588, 0.98621, 0.98273, 0.98281, 0.99018, 0.99023, 0.98911, 0.98917, 0.98646, 0.98652, 0.99454, 0.99456, 0.9891, 0.98909, 0.99124, 0.99127, 0.99102, 0.99103, 0.99215, 0.99212, 0.99515, 0.99515, 0.99576, 0.99572, 0.99068, 0.99072, 0.99097, 0.99097, 0.99166, 0.99169, 0.99041, 0.99042, 0.99201, 0.99198, 0.99101, 0.99101, 0.98599, 0.98603, 0.98845, 0.98844, 0.98848, 0.98851, 0.98862, 0.98857, 0.98718, 0.98719, 0.98497, 0.98497, 0.98264, 0.98263, 0.98389, 0.98393, 0.97938, 0.9794, 0.97535, 0.97536, 0.97498, 0.97499, 0.973, 0.97301, 0.96827, 0.96828, 0.96261, 0.96263, 0.95335, 0.9534, 0.94649, 0.94655, 0.93397, 0.93414, 0.91636, 0.9165, 0.89088, 0.89109, 0.8679, 0.86768])
-  else:
-    mag_ratios_base = np.array([1.0]*2+[0.98783, 0.98993, 0.97559, 0.97593, 0.98311, 0.98319, 0.98202, 0.98225, 0.9888, 0.98878, 0.98762, 0.98759, 0.98957, 0.98971, 0.99052, 0.99043, 0.99383, 0.99384, 0.98857, 0.9886, 0.99065, 0.99068, 0.98845, 0.98847, 0.99057, 0.99057, 0.98957, 0.98961, 0.98601, 0.9861, 0.98823, 0.98823, 0.98756, 0.98759, 0.98808, 0.98814, 0.98721, 0.98724, 0.98571, 0.98572, 0.98543, 0.98544, 0.98157, 0.98165, 0.98411, 0.98413, 0.97952, 0.97953, 0.98149, 0.9815, 0.9774, 0.97742, 0.97825, 0.97826, 0.97355, 0.97361, 0.97085, 0.97087, 0.97056, 0.97055, 0.96588, 0.96587, 0.96113, 0.96124, 0.9567, 0.95681, 0.94961, 0.94969, 0.93973, 0.93988, 0.93217, 0.93224, 0.91878, 0.91896, 0.90955, 0.90954, 0.92617, 0.92616])
-
-  if len(mag_ratios_base) != num_inference_steps * 2:
-    mag_cond = nearest_interp(mag_ratios_base[0::2], num_inference_steps)
-    mag_uncond = nearest_interp(mag_ratios_base[1::2], num_inference_steps)
-    mag_ratios = np.concatenate([mag_cond.reshape(-1, 1), mag_uncond.reshape(-1, 1)], axis=1).reshape(-1)
-  else:
-    mag_ratios = mag_ratios_base
-
-  accumulated_ratio_cond = 1.0
-  accumulated_ratio_uncond = 1.0
-  accumulated_err_cond = 0.0
-  accumulated_err_uncond = 0.0
-  accumulated_steps_cond = 0
-  accumulated_steps_uncond = 0
-  cached_residual = None
-
-  skip_warmup = int(num_inference_steps * retention_ratio)
+  (
+      accumulated_ratio_cond,
+      accumulated_ratio_uncond,
+      accumulated_err_cond,
+      accumulated_err_uncond,
+      accumulated_steps_cond,
+      accumulated_steps_uncond,
+      cached_residual,
+      skip_warmup,
+      mag_ratios,
+  ) = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base)
 
   if do_classifier_free_guidance:
     prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
@@ -319,32 +311,25 @@ def run_inference_2_1_i2v(
     
     skip_blocks = False
     if use_magcache and do_classifier_free_guidance:
-      cur_mag_ratio_cond = mag_ratios[step*2]
-      cur_mag_ratio_uncond = mag_ratios[step*2+1]
-
-      if step >= skip_warmup:
-        new_ratio_cond = accumulated_ratio_cond * cur_mag_ratio_cond
-        new_ratio_uncond = accumulated_ratio_uncond * cur_mag_ratio_uncond
-
-        err_cond = np.abs(1.0 - new_ratio_cond)
-        err_uncond = np.abs(1.0 - new_ratio_uncond)
-
-        if (accumulated_err_cond + err_cond < magcache_thresh and accumulated_steps_cond < magcache_K and
-            accumulated_err_uncond + err_uncond < magcache_thresh and accumulated_steps_uncond < magcache_K):
-          skip_blocks = True
-          accumulated_ratio_cond = new_ratio_cond
-          accumulated_ratio_uncond = new_ratio_uncond
-          accumulated_err_cond += err_cond
-          accumulated_err_uncond += err_uncond
-          accumulated_steps_cond += 1
-          accumulated_steps_uncond += 1
-        else:
-          accumulated_ratio_cond = 1.0
-          accumulated_ratio_uncond = 1.0
-          accumulated_err_cond = 0.0
-          accumulated_err_uncond = 0.0
-          accumulated_steps_cond = 0
-          accumulated_steps_uncond = 0
+      accumulated_state = (
+          accumulated_ratio_cond,
+          accumulated_ratio_uncond,
+          accumulated_err_cond,
+          accumulated_err_uncond,
+          accumulated_steps_cond,
+          accumulated_steps_uncond,
+      )
+      skip_blocks, accumulated_state = magcache_step(
+          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup
+      )
+      (
+          accumulated_ratio_cond,
+          accumulated_ratio_uncond,
+          accumulated_err_cond,
+          accumulated_err_uncond,
+          accumulated_steps_cond,
+          accumulated_steps_uncond,
+      ) = accumulated_state
 
     latents_input = latents
     if do_classifier_free_guidance:
