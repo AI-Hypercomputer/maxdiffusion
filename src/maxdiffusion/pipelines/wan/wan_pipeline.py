@@ -959,7 +959,8 @@ def magcache_step(
     accumulated_state,
     magcache_thresh,
     magcache_K,
-    skip_warmup,
+    skip_warmup=0,
+    use_magcache=None,
 ):
     """Update MagCache accumulated state and decide if to skip.
     
@@ -970,6 +971,7 @@ def magcache_step(
         magcache_thresh: Error threshold.
         magcache_K: Max skip steps.
         skip_warmup: Warmup steps threshold.
+        use_magcache: Optional manual override boolean to enable/disable cache for this step.
     """
     import numpy as np
     
@@ -985,9 +987,10 @@ def magcache_step(
     cur_mag_ratio_cond = mag_ratios[step * 2]
     cur_mag_ratio_uncond = mag_ratios[step * 2 + 1]
 
-    use_magcache = True
-    if step < skip_warmup:
-        use_magcache = False
+    if use_magcache is None:
+        use_magcache = True
+        if step < skip_warmup:
+            use_magcache = False
 
     skip_blocks = False
     if use_magcache:

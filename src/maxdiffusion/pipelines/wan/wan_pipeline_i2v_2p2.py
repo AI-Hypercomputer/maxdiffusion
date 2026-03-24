@@ -471,8 +471,14 @@ def run_inference_2_2_i2v(
 
     condition_combined = jnp.concatenate([condition] * 2)
 
+    high_noise_steps = sum(step_uses_high)
+
     for step in range(num_inference_steps):
       t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+
+      use_magcache = True
+      if step < int(high_noise_steps + (num_inference_steps - high_noise_steps) * retention_ratio):
+        use_magcache = False
 
       accumulated_state = (
           accumulated_ratio_cond,
@@ -483,7 +489,7 @@ def run_inference_2_2_i2v(
           accumulated_steps_uncond,
       )
       skip_blocks, accumulated_state = magcache_step(
-          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup
+          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, use_magcache=use_magcache
       )
       (
           accumulated_ratio_cond,
@@ -500,7 +506,6 @@ def run_inference_2_2_i2v(
       else:
         graphdef, state, rest = low_noise_graphdef, low_noise_state, low_noise_rest
         guidance_scale = guidance_scale_low
-        skip_blocks = False  # Reference MagCache only caches high_noise_model
 
       timestep = jnp.broadcast_to(t, bsz * 2)
       latents_doubled = jnp.concatenate([latents, latents], axis=0)
