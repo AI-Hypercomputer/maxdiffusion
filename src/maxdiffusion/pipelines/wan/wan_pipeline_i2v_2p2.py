@@ -531,6 +531,7 @@ def run_inference_2_2_i2v(
         cached_residual = residual_x_cur
 
       noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+      noise_pred, _ = jnp.split(noise_pred, [16], axis=-1)
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
     return latents
 
