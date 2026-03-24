@@ -168,10 +168,17 @@ class WanPipelineI2V_2_2(WanPipeline):
       rng: Optional[jax.Array] = None,
       use_cfg_cache: bool = False,
       use_magcache: bool = False,
-      magcache_thresh: float = 0.04,
-      magcache_K: int = 2,
-      retention_ratio: float = 0.2,
+      magcache_thresh: Optional[float] = None,
+      magcache_K: Optional[int] = None,
+      retention_ratio: Optional[float] = None,
   ):
+    if magcache_thresh is None:
+      magcache_thresh = getattr(self.config, "magcache_thresh", 0.04)
+    if magcache_K is None:
+      magcache_K = getattr(self.config, "magcache_K", 2)
+    if retention_ratio is None:
+      retention_ratio = getattr(self.config, "retention_ratio", 0.2)
+
     if use_cfg_cache and (guidance_scale_low <= 1.0 or guidance_scale_high <= 1.0):
       raise ValueError(
           f"use_cfg_cache=True requires both guidance_scale_low > 1.0 and guidance_scale_high > 1.0 "

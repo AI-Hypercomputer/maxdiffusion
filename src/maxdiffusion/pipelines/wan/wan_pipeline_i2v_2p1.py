@@ -150,10 +150,17 @@ class WanPipelineI2V_2_1(WanPipeline):
       output_type: Optional[str] = "np",
       rng: Optional[jax.Array] = None,
       use_magcache: bool = False,
-      magcache_thresh: float = 0.04,
-      magcache_K: int = 2,
-      retention_ratio: float = 0.2,
+      magcache_thresh: Optional[float] = None,
+      magcache_K: Optional[int] = None,
+      retention_ratio: Optional[float] = None,
   ):
+    if magcache_thresh is None:
+      magcache_thresh = getattr(self.config, "magcache_thresh", 0.04)
+    if magcache_K is None:
+      magcache_K = getattr(self.config, "magcache_K", 2)
+    if retention_ratio is None:
+      retention_ratio = getattr(self.config, "retention_ratio", 0.2)
+
     height = height or self.config.height
     width = width or self.config.width
     num_frames = num_frames or self.config.num_frames
