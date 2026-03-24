@@ -295,6 +295,8 @@ def run_inference_2_1_i2v(
       cached_residual,
       skip_warmup,
       mag_ratios,
+      split_step,
+      model_type,
   ) = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base)
 
   if do_classifier_free_guidance:
@@ -320,7 +322,7 @@ def run_inference_2_1_i2v(
           accumulated_steps_uncond,
       )
       skip_blocks, accumulated_state = magcache_step(
-          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup
+          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup, split_step=split_step, model_type=model_type, num_steps=num_inference_steps, retention_ratio=retention_ratio
       )
       (
           accumulated_ratio_cond,

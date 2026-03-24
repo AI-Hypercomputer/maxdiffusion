@@ -447,6 +447,10 @@ def run_inference_2_2_i2v(
 
   # ── MagCache path ──
   if use_magcache and do_classifier_free_guidance:
+    timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
+    step_uses_high = [bool(timesteps_np[s] >= boundary) for s in range(num_inference_steps)]
+    split_step = sum(step_uses_high)
+
     (
         accumulated_ratio_cond,
         accumulated_ratio_uncond,
@@ -457,10 +461,10 @@ def run_inference_2_2_i2v(
         cached_residual,
         skip_warmup,
         mag_ratios,
-    ) = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base)
+        split_step,
+        model_type,
+    ) = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base, split_step=split_step, model_type=self.config.model_type)
 
-    timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
-    step_uses_high = [bool(timesteps_np[s] >= boundary) for s in range(num_inference_steps)]
 
     prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
     if image_embeds is not None:
@@ -482,7 +486,7 @@ def run_inference_2_2_i2v(
           accumulated_steps_uncond,
       )
       skip_blocks, accumulated_state = magcache_step(
-          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup
+          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup, split_step=split_step, model_type=model_type, num_steps=num_inference_steps, retention_ratio=retention_ratio
       )
       (
           accumulated_ratio_cond,
