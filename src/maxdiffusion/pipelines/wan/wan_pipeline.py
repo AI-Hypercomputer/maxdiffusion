@@ -912,15 +912,13 @@ def nearest_interp(src, target_len):
     indices = np.round(np.linspace(0, src_len - 1, target_len)).astype(np.int32)
     return src[indices]
 
-def init_magcache(num_inference_steps, retention_ratio, mag_ratios_base, split_step=None, model_type="T2V"):
+def init_magcache(num_inference_steps, retention_ratio, mag_ratios_base):
     """Initialize MagCache variables and interpolate ratios.
     
     Args:
         num_inference_steps: Number of inference steps.
         retention_ratio: Retention ratio of unchanged steps.
         mag_ratios_base: Base magnitude ratios array or list.
-        split_step: Step at which model switches (e.g. high -> low noise for 2.2).
-        model_type: Pipeline mode ("T2V" or "I2V").
     """
     import numpy as np
     
@@ -953,8 +951,6 @@ def init_magcache(num_inference_steps, retention_ratio, mag_ratios_base, split_s
         cached_residual,
         skip_warmup,
         mag_ratios,
-        split_step,
-        model_type,
     )
 
 def magcache_step(
@@ -964,10 +960,6 @@ def magcache_step(
     magcache_thresh,
     magcache_K,
     skip_warmup,
-    split_step=None,
-    model_type="T2V",
-    num_steps=None,
-    retention_ratio=0.2,
 ):
     """Update MagCache accumulated state and decide if to skip.
     
@@ -978,10 +970,6 @@ def magcache_step(
         magcache_thresh: Error threshold.
         magcache_K: Max skip steps.
         skip_warmup: Warmup steps threshold.
-        split_step: Optional step index where the model switches (e.g., from high to low noise).
-        model_type: Pipeline type ("T2V" or "I2V").
-        num_steps: Total inference steps, used to calculate post-split warmups.
-        retention_ratio: Used to calculate post-split warmups.
     """
     import numpy as np
     
@@ -998,16 +986,8 @@ def magcache_step(
     cur_mag_ratio_uncond = mag_ratios[step * 2 + 1]
 
     use_magcache = True
-    if split_step is not None:
-        if model_type == "I2V":
-            if step < int(split_step + (num_steps - split_step) * retention_ratio):
-                use_magcache = False
-        else:
-            if step < int(split_step * retention_ratio) or (step <= ((num_steps - split_step) * retention_ratio + split_step) and step >= split_step):
-                use_magcache = False
-    else:
-        if step < skip_warmup:
-            use_magcache = False
+    if step < skip_warmup:
+        use_magcache = False
 
     skip_blocks = False
     if use_magcache:
