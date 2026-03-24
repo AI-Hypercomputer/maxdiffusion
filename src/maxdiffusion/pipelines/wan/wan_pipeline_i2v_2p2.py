@@ -463,7 +463,7 @@ def run_inference_2_2_i2v(
         mag_ratios,
         split_step,
         model_type,
-    ) = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base, split_step=split_step, model_type=self.config.model_type)
+    ) = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base, split_step=split_step, model_type="I2V")
 
 
     prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
