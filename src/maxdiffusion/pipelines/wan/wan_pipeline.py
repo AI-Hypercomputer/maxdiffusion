@@ -832,7 +832,6 @@ def transformer_forward_pass_full_cfg(
   return noise_pred_merged, noise_cond, noise_uncond
 
 
-
 @partial(jax.jit, static_argnames=("guidance_scale",))
 def transformer_forward_pass_cfg_cache(
     graphdef,
@@ -902,3 +901,13 @@ def transformer_forward_pass_cfg_cache(
 
   noise_pred_merged = noise_uncond_approx + guidance_scale * (noise_cond - noise_uncond_approx)
   return noise_pred_merged, noise_cond
+
+def nearest_interp(src, target_len):
+    """Nearest neighbor interpolation for ratio scaling layout."""
+    src_len = len(src)
+    if target_len == 1: 
+        import numpy as np
+        return np.array([src[-1]])
+    import numpy as np
+    indices = np.round(np.linspace(0, src_len - 1, target_len)).astype(np.int32)
+    return src[indices]

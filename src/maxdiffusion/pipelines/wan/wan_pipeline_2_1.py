@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache
+from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache, nearest_interp
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Any
 from ...pyconfig import HyperParameters
@@ -233,7 +233,7 @@ def run_inference_2_1(
   cached_noise_cond = None
   cached_noise_uncond = None
 
-  if use_magcache:
+  if use_magcache and do_classifier_free_guidance:
     # ── MagCache Execution Path ──
     accumulated_ratio_cond = 1.0
     accumulated_ratio_uncond = 1.0
@@ -249,12 +249,6 @@ def run_inference_2_1(
     mag_ratios_base = np.array([1.0]*2+[1.02504, 1.03017, 1.00025, 1.00251, 0.9985, 0.99962, 0.99779, 0.99771, 0.9966, 0.99658, 0.99482, 0.99476, 0.99467, 0.99451, 0.99664, 0.99656, 0.99434, 0.99431, 0.99533, 0.99545, 0.99468, 0.99465, 0.99438, 0.99434, 0.99516, 0.99517, 0.99384, 0.9938, 0.99404, 0.99401, 0.99517, 0.99516, 0.99409, 0.99408, 0.99428, 0.99426, 0.99347, 0.99343, 0.99418, 0.99416, 0.99271, 0.99269, 0.99313, 0.99311, 0.99215, 0.99215, 0.99218, 0.99215, 0.99216, 0.99217, 0.99163, 0.99161, 0.99138, 0.99135, 0.98982, 0.9898, 0.98996, 0.98995, 0.9887, 0.98866, 0.98772, 0.9877, 0.98767, 0.98765, 0.98573, 0.9857, 0.98501, 0.98498, 0.9838, 0.98376, 0.98177, 0.98173, 0.98037, 0.98035, 0.97678, 0.97677, 0.97546, 0.97543, 0.97184, 0.97183, 0.96711, 0.96708, 0.96349, 0.96345, 0.95629, 0.95625, 0.94926, 0.94929, 0.93964, 0.93961, 0.92511, 0.92504, 0.90693, 0.90678, 0.8796, 0.87945, 0.86111, 0.86189])
 
     if len(mag_ratios_base) != num_inference_steps * 2:
-      def nearest_interp(src, target_len):
-        src_len = len(src)
-        if target_len == 1: return np.array([src[-1]])
-        scale = (src_len - 1) / (target_len - 1)
-        idx = np.round(np.arange(target_len) * scale).astype(int)
-        return src[idx]
       mag_cond = nearest_interp(mag_ratios_base[0::2], num_inference_steps)
       mag_uncond = nearest_interp(mag_ratios_base[1::2], num_inference_steps)
       mag_ratios = np.concatenate([mag_cond.reshape(-1, 1), mag_uncond.reshape(-1, 1)], axis=1).reshape(-1)

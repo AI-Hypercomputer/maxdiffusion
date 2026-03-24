@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache
+from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache, nearest_interp
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
@@ -466,12 +466,6 @@ def run_inference_2_2(
     mag_ratios_base = np.array([1.0]*2+[1.00124, 1.00155, 0.99822, 0.99851, 0.99696, 0.99687, 0.99703, 0.99732, 0.9966, 0.99679, 0.99602, 0.99658, 0.99578, 0.99664, 0.99484, 0.9949, 0.99633, 0.996, 0.99659, 0.99683, 0.99534, 0.99549, 0.99584, 0.99577, 0.99681, 0.99694, 0.99563, 0.99554, 0.9944, 0.99473, 0.99594, 0.9964, 0.99466, 0.99461, 0.99453, 0.99481, 0.99389, 0.99365, 0.99391, 0.99406, 0.99354, 0.99361, 0.99283, 0.99278, 0.99268, 0.99263, 0.99057, 0.99091, 0.99125, 0.99126, 0.65523, 0.65252, 0.98808, 0.98852, 0.98765, 0.98736, 0.9851, 0.98535, 0.98311, 0.98339, 0.9805, 0.9806, 0.97776, 0.97771, 0.97278, 0.97286, 0.96731, 0.96728, 0.95857, 0.95855, 0.94385, 0.94385, 0.92118, 0.921, 0.88108, 0.88076, 0.80263, 0.80181])
 
     if len(mag_ratios_base) != num_inference_steps * 2:
-      def nearest_interp(src, target_len):
-        src_len = len(src)
-        if target_len <= 1: return np.array([src[-1]])
-        scale = (src_len - 1) / (max(1, target_len - 1))
-        idx = np.round(np.arange(target_len) * scale).astype(int)
-        return src[idx]
       mag_cond = nearest_interp(mag_ratios_base[0::2], num_inference_steps)
       mag_uncond = nearest_interp(mag_ratios_base[1::2], num_inference_steps)
       mag_ratios = np.concatenate([mag_cond.reshape(-1, 1), mag_uncond.reshape(-1, 1)], axis=1).reshape(-1)
@@ -534,7 +528,7 @@ def run_inference_2_2(
           cached_residual=cached_residual,
           return_residual=True,
       )
-      noise_pred, _, residual_x_cur = outputs
+      noise_pred, latents, residual_x_cur = outputs
       if not skip_blocks:
         cached_residual = residual_x_cur
 

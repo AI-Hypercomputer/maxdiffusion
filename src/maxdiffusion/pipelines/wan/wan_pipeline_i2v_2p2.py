@@ -14,7 +14,7 @@
 
 from maxdiffusion.image_processor import PipelineImageInput
 from maxdiffusion import max_logging
-from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache
+from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache, nearest_interp
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
 from ...pyconfig import HyperParameters
@@ -459,12 +459,6 @@ def run_inference_2_2_i2v(
     mag_ratios_base = np.array([1.0]*2+[0.99512, 0.99559, 0.99559, 0.99561, 0.99595, 0.99577, 0.99512, 0.99512, 0.99546, 0.99534, 0.99543, 0.99531, 0.99496, 0.99491, 0.99504, 0.99499, 0.99444, 0.99449, 0.99481, 0.99481, 0.99435, 0.99435, 0.9943, 0.99431, 0.99411, 0.99406, 0.99373, 0.99376, 0.99413, 0.99405, 0.99363, 0.99359, 0.99335, 0.99331, 0.99244, 0.99243, 0.99229, 0.99229, 0.99239, 0.99236, 0.99163, 0.9916, 0.99149, 0.99151, 0.99191, 0.99192, 0.9898, 0.98981, 0.9899, 0.98987, 0.98849, 0.98849, 0.98846, 0.98846, 0.98861, 0.98861, 0.9874, 0.98738, 0.98588, 0.98589, 0.98539, 0.98534, 0.98444, 0.98439, 0.9831, 0.98309, 0.98119, 0.98118, 0.98001, 0.98, 0.97862, 0.97859, 0.97555, 0.97558, 0.97392, 0.97388, 0.97152, 0.97145, 0.96871, 0.9687, 0.96435, 0.96434, 0.96129, 0.96127, 0.95639, 0.95638, 0.95176, 0.95175, 0.94446, 0.94452, 0.93972, 0.93974, 0.93575, 0.9359, 0.93537, 0.93552, 0.96655, 0.96616])
 
     if len(mag_ratios_base) != num_inference_steps * 2:
-      def nearest_interp(src, target_len):
-        src_len = len(src)
-        if target_len <= 1: return np.array([src[-1]])
-        scale = (src_len - 1) / (max(1, target_len - 1))
-        idx = np.round(np.arange(target_len) * scale).astype(int)
-        return src[idx]
       mag_cond = nearest_interp(mag_ratios_base[0::2], num_inference_steps)
       mag_uncond = nearest_interp(mag_ratios_base[1::2], num_inference_steps)
       mag_ratios = np.concatenate([mag_cond.reshape(-1, 1), mag_uncond.reshape(-1, 1)], axis=1).reshape(-1)
@@ -538,7 +532,7 @@ def run_inference_2_2_i2v(
           cached_residual=cached_residual,
           return_residual=True,
       )
-      noise_pred, _, residual_x_cur = outputs
+      noise_pred, latents, residual_x_cur = outputs
       if not skip_blocks:
         cached_residual = residual_x_cur
 
