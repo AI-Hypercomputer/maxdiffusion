@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache
+from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache, init_magcache, magcache_step
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
@@ -91,7 +91,19 @@ class WanPipeline2_1(WanPipeline):
       negative_prompt_embeds: Optional[jax.Array] = None,
       vae_only: bool = False,
       use_cfg_cache: bool = False,
+      use_magcache: bool = False,
+      magcache_thresh: Optional[float] = None,
+      magcache_K: Optional[int] = None,
+      retention_ratio: Optional[float] = None,
   ):
+    config = getattr(self, "config", None)
+    if magcache_thresh is None:
+      magcache_thresh = getattr(config, "magcache_thresh", 0.12)
+    if magcache_K is None:
+      magcache_K = getattr(config, "magcache_K", 2)
+    if retention_ratio is None:
+      retention_ratio = getattr(config, "retention_ratio", 0.2)
+
     if use_cfg_cache and guidance_scale <= 1.0:
       raise ValueError(
           f"use_cfg_cache=True requires guidance_scale > 1.0 (got {guidance_scale}). "
@@ -122,7 +134,12 @@ class WanPipeline2_1(WanPipeline):
         scheduler=self.scheduler,
         scheduler_state=scheduler_state,
         use_cfg_cache=use_cfg_cache,
+        use_magcache=use_magcache,
+        magcache_thresh=magcache_thresh,
+        magcache_K=magcache_K,
+        retention_ratio=retention_ratio,
         height=height,
+        mag_ratios_base=getattr(config, "mag_ratios_base", None),
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -150,7 +167,12 @@ def run_inference_2_1(
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
     use_cfg_cache: bool = False,
+    use_magcache: bool = False,
+    magcache_thresh: float = 0.12,
+    magcache_K: int = 2,
+    retention_ratio: float = 0.2,
     height: int = 480,
+    mag_ratios_base: Optional[List[float]] = None,
 ):
   """Denoising loop for WAN 2.1 T2V with FasterCache CFG-Cache.
 
@@ -222,55 +244,86 @@ def run_inference_2_1(
   cached_noise_cond = None
   cached_noise_uncond = None
 
+  if use_magcache and do_cfg:
+    magcache_init = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base)
+    accumulated_state = magcache_init[:6]
+    cached_residual = magcache_init[6]
+    skip_warmup = magcache_init[7]
+    mag_ratios = magcache_init[8]
+
   for step in range(num_inference_steps):
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
-    is_cache_step = step_is_cache[step]
 
-    if is_cache_step:
-      # ── Cache step: cond-only forward + FFT frequency compensation ──
-      w1, w2 = step_w1w2[step]
-      timestep = jnp.broadcast_to(t, bsz)
-      noise_pred, cached_noise_cond = transformer_forward_pass_cfg_cache(
+    if use_magcache and do_cfg:
+      timestep = jnp.broadcast_to(t, bsz * 2 if do_cfg else bsz)
+
+      skip_blocks, accumulated_state = magcache_step(
+          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup
+      )
+
+      noise_pred, latents, residual_x_cur = transformer_forward_pass(
           graphdef,
           sharded_state,
           rest_of_state,
-          latents,
+          jnp.concatenate([latents] * 2) if do_cfg else latents,
           timestep,
-          prompt_cond_embeds,
-          cached_noise_cond,
-          cached_noise_uncond,
+          prompt_embeds_combined if do_cfg else prompt_cond_embeds,
+          do_classifier_free_guidance=do_cfg,
           guidance_scale=guidance_scale,
-          w1=jnp.float32(w1),
-          w2=jnp.float32(w2),
+          skip_blocks=bool(skip_blocks),
+          cached_residual=cached_residual,
+          return_residual=True,
       )
 
-    elif do_cfg:
-      # ── Full CFG step: doubled batch, store raw cond/uncond for cache ──
-      latents_doubled = jnp.concatenate([latents] * 2)
-      timestep = jnp.broadcast_to(t, bsz * 2)
-      noise_pred, cached_noise_cond, cached_noise_uncond = transformer_forward_pass_full_cfg(
-          graphdef,
-          sharded_state,
-          rest_of_state,
-          latents_doubled,
-          timestep,
-          prompt_embeds_combined,
-          guidance_scale=guidance_scale,
-      )
+      if not skip_blocks:
+        cached_residual = residual_x_cur
 
     else:
-      # ── No CFG (guidance_scale <= 1.0) ──
-      timestep = jnp.broadcast_to(t, bsz)
-      noise_pred, latents = transformer_forward_pass(
-          graphdef,
-          sharded_state,
-          rest_of_state,
-          latents,
-          timestep,
-          prompt_cond_embeds,
-          do_classifier_free_guidance=False,
-          guidance_scale=guidance_scale,
-      )
+      is_cache_step = step_is_cache[step]
+
+      if is_cache_step:
+        w1, w2 = step_w1w2[step]
+        timestep = jnp.broadcast_to(t, bsz)
+        noise_pred, cached_noise_cond = transformer_forward_pass_cfg_cache(
+            graphdef,
+            sharded_state,
+            rest_of_state,
+            latents,
+            timestep,
+            prompt_cond_embeds,
+            cached_noise_cond,
+            cached_noise_uncond,
+            guidance_scale=guidance_scale,
+            w1=jnp.float32(w1),
+            w2=jnp.float32(w2),
+        )
+
+      elif do_cfg:
+        latents_doubled = jnp.concatenate([latents] * 2)
+        timestep = jnp.broadcast_to(t, bsz * 2)
+        noise_pred, cached_noise_cond, cached_noise_uncond = transformer_forward_pass_full_cfg(
+            graphdef,
+            sharded_state,
+            rest_of_state,
+            latents_doubled,
+            timestep,
+            prompt_embeds_combined,
+            guidance_scale=guidance_scale,
+        )
+
+      else:
+        timestep = jnp.broadcast_to(t, bsz)
+        noise_pred, latents = transformer_forward_pass(
+            graphdef,
+            sharded_state,
+            rest_of_state,
+            latents,
+            timestep,
+            prompt_cond_embeds,
+            do_classifier_free_guidance=False,
+            guidance_scale=guidance_scale,
+        )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+
   return latents
