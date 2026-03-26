@@ -434,3 +434,105 @@ def load_audio_vae_weights(
 
   validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
   return unflatten_dict(flax_state_dict)
+
+
+def rename_for_ltx2_upsampler(key):
+  """
+  Renames PyTorch Latent Upsampler keys to match Flax LTX2LatentUpsamplerModel.
+  """
+  # Map weights to Flax's kernel
+  key = key.replace(".weight", ".kernel")
+
+  # Map GroupNorm weight/kernel to Flax's scale
+  if "norm" in key:
+    key = key.replace(".kernel", ".scale")
+
+  # Standardize the loop naming to lowercase
+  key = key.replace("res_blocks.", "res_blocks_")
+  key = key.replace("post_upsample_res_blocks.", "post_upsample_res_blocks_")
+
+  # PyTorch Sequential upsampler uses index 0 (upsampler.0.weight)
+  key = key.replace("upsampler.0.", "upsampler_0.")
+
+  # PyTorch Rational Resampler upsampler uses self.conv (upsampler.conv.weight)
+  # We don't need to replace this! It naturally maps to "upsampler/conv/kernel"
+
+  return key
+
+
+def load_upsampler_weights(
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    subfolder: str = "latent_upsampler",
+    dims: int = 3,
+):
+  """
+  Loads and ports PyTorch upsampler weights to Flax.
+  """
+  device_obj = jax.local_devices(backend=device)[0]
+  max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device_obj}")
+
+  with jax.default_device(device_obj):
+    # This native util automatically handles HF hub downloads and caching!
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device_obj)
+
+    flax_state_dict = {}
+    cpu = jax.local_devices(backend="cpu")[0]
+
+    for pt_key, tensor in tensors.items():
+      key = rename_for_ltx2_upsampler(pt_key)
+
+      # Transpose kernels for Flax
+      if key.endswith(".kernel") and tensor.ndim > 1:
+        if tensor.ndim == 5:
+          # 3D Conv: (Out, In, D, H, W) -> (D, H, W, In, Out)
+          tensor = tensor.transpose(2, 3, 4, 1, 0)
+        elif tensor.ndim == 4:
+          # 2D Conv: (Out, In, H, W) -> (H, W, In, Out)
+          tensor = tensor.transpose(2, 3, 1, 0)
+        elif tensor.ndim == 2:
+          # Linear: (Out, In) -> (In, Out)
+          tensor = tensor.transpose(1, 0)
+
+      # Convert string key to tuple for unflattening
+      parts = key.split(".")
+      flax_key = tuple(int(p) if p.isdigit() else p for p in parts)
+
+      flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
+
+    # Optional validation against model shapes
+    if eval_shapes:
+      try:
+        validate_flax_state_dict(flatten_dict(eval_shapes), flax_state_dict)
+      except ValueError as e:
+        max_logging.log(f"CRITICAL: Upsampler weight shape mismatch detected: {e}")
+        raise RuntimeError("Failed to validate upsampler weights against expected shapes.") from e
+
+    del tensors
+    jax.clear_caches()
+    return unflatten_dict(flax_state_dict)
+
+
+def adain_filter_latent(latents: jax.Array, reference_latents: jax.Array, factor: float = 1.0) -> jax.Array:
+  """Scales high-res latents using global channel statistics from reference latents."""
+  axes = (1, 2, 3)
+  r_sd = jnp.std(reference_latents, axis=axes, keepdims=True)
+  r_mean = jnp.mean(reference_latents, axis=axes, keepdims=True)
+
+  i_sd = jnp.std(latents, axis=axes, keepdims=True)
+  i_mean = jnp.mean(latents, axis=axes, keepdims=True)
+
+  result = ((latents - i_mean) / (i_sd + 1e-5)) * r_sd + r_mean
+  result = latents + factor * (result - latents)
+  return result
+
+
+def tone_map_latents(latents: jax.Array, compression: float) -> jax.Array:
+  """Sigmoid-based compression to regularize high-variance latents."""
+  scale_factor = compression * 0.75
+  abs_latents = jnp.abs(latents)
+  sigmoid_term = jax.nn.sigmoid(4.0 * scale_factor * (abs_latents - 1.0))
+  scales = 1.0 - 0.8 * scale_factor * sigmoid_term
+  return latents * scales

@@ -128,7 +128,7 @@ def _unflatten_heads(tensor, heads):
   return tensor
 
 
-def _reshape_data_for_flash(tensor, heads, num_context_shards = 1):
+def _reshape_data_for_flash(tensor, heads, num_context_shards=1):
   """
   Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
   Pads seq_len to a multiple of flash_block_size, and ensures the resulting number of
