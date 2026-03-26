@@ -79,19 +79,19 @@ class LTX2Checkpointer:
     return restored_checkpoint, step
 
   def load_checkpoint(
-      self, step=None, vae_only=False, load_transformer=True
+      self, step=None, vae_only=False, load_transformer=True, load_upsampler=False
   ) -> Tuple[LTX2Pipeline, Optional[dict], Optional[int]]:
     restored_checkpoint, step = self.load_ltx2_configs_from_orbax(step)
     opt_state = None
 
     if restored_checkpoint:
       max_logging.log("Loading LTX2 pipeline from checkpoint")
-      pipeline = LTX2Pipeline.from_checkpoint(self.config, restored_checkpoint, vae_only, load_transformer)
+      pipeline = LTX2Pipeline.from_checkpoint(self.config, restored_checkpoint, vae_only, load_transformer, load_upsampler)
       if "opt_state" in restored_checkpoint.ltx2_state.keys():
         opt_state = restored_checkpoint.ltx2_state["opt_state"]
     else:
       max_logging.log("No checkpoint found, loading pipeline from pretrained hub")
-      pipeline = LTX2Pipeline.from_pretrained(self.config, vae_only, load_transformer)
+      pipeline = LTX2Pipeline.from_pretrained(self.config, vae_only, load_transformer, load_upsampler)
 
     return pipeline, opt_state, step
 
