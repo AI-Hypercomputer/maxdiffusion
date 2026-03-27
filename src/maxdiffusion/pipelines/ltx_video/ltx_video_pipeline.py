@@ -982,9 +982,10 @@ def run_inference(
     conditioning_mask,
     original_conditioning_mask,
 ):
+  total_diffusion_time = 0.0
   for i, t in enumerate(scheduler_state.timesteps):
+    step_start_time = time.perf_counter()
     current_timestep = t
-
     latent_model_input = jnp.concatenate([latents] * num_conds) if num_conds > 1 else latents
 
     if not isinstance(current_timestep, (jnp.ndarray, jax.Array)):
@@ -1058,7 +1059,12 @@ def run_inference(
     latents, scheduler_state = denoising_step(
         scheduler, scheduler_state, noise_pred, current_timestep, original_conditioning_mask, t, latents
     )
+    latents.block_until_ready()
+    step_duration = time.perf_counter() - step_start_time
+    total_diffusion_time += step_duration
+    max_logging.log(f"[Tuning] Diffusion Step {i} e2e time: {step_duration:.4f} seconds")
 
+  max_logging.log(f"[Tuning] Total pure diffusion time (all steps): {total_diffusion_time:.4f} seconds")
   return latents, scheduler_state
 
 

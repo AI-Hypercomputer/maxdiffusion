@@ -24,7 +24,7 @@ sampler: "from_checkpoint"
 
 # Generation parameters
 global_batch_size_to_train_on: 1
-num_inference_steps: 40
+num_inference_steps: 10
 guidance_scale: 3.0
 fps: 24
 pipeline_type: multi-scale
@@ -58,6 +58,12 @@ data_sharding: ['data', 'fsdp', 'context', 'tensor']
 
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: -1
+
+flash_block_sizes: {
+  block_q: 1024,
+  block_kv: 1024,
+  block_kv_compute: 1024
+}
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
