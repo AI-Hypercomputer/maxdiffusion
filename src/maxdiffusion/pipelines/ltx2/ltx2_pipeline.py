@@ -1230,7 +1230,10 @@ class LTX2Pipeline:
           connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
       )
 
+      import time
+      total_diffusion_time = 0.0
       for i, t in enumerate(timesteps):
+        step_start_time = time.perf_counter()
         noise_pred, noise_pred_audio = transformer_forward_pass(
             graphdef,
             state,
@@ -1275,6 +1278,12 @@ class LTX2Pipeline:
         else:
           latents_jax = latents_step
           audio_latents_jax = audio_latents_step
+
+        latents_jax.block_until_ready()
+        step_duration = time.perf_counter() - step_start_time
+        total_diffusion_time += step_duration
+        max_logging.log(f"[Tuning] Diffusion Step {i} e2e time: {step_duration:.4f} seconds")
+      max_logging.log(f"[Tuning] Total pure diffusion time (all steps): {total_diffusion_time:.4f} seconds")
 
     # 8. Decode Latents
     if guidance_scale > 1.0:
