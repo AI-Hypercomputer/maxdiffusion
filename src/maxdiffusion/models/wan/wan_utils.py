@@ -300,6 +300,144 @@ def load_base_wan_transformer(
     return flax_state_dict
 
 
+def _is_motion_encoder_custom_weight(pt_key: str) -> bool:
+  """Returns True for FlaxMotionConv2d/FlaxMotionLinear weight keys that must NOT be renamed to kernel."""
+  prefixes = (
+      "motion_encoder.conv_in.",
+      "motion_encoder.conv_out.",
+  )
+  if any(pt_key.startswith(p) for p in prefixes) and pt_key.endswith(".weight"):
+    return True
+  if "motion_encoder.res_blocks." in pt_key and pt_key.endswith(".weight"):
+    return True
+  if "motion_encoder.motion_network." in pt_key and pt_key.endswith(".weight"):
+    return True
+  return False
+
+
+def load_wan_animate_transformer(
+    pretrained_model_name_or_path: str,
+    eval_shapes: dict,
+    device: str,
+    hf_download: bool = True,
+    num_layers: int = 40,
+    scan_layers: bool = True,
+    subfolder: str = "transformer",
+):
+  """Loads WanAnimate transformer weights from a HuggingFace checkpoint.
+
+  Handles the additional key mappings for:
+    - pose_patch_embedding (nnx.Conv3d → kernel)
+    - motion_encoder.* (FlaxMotionConv2d/FlaxMotionLinear → keep as 'weight', no transpose)
+    - activation.bias → act_fn.bias  (FusedLeakyReLU bias remapping)
+    - face_encoder.* (nnx.Conv/Linear → standard rename to kernel)
+    - face_adapter.* (nnx.Linear → standard rename to kernel)
+  """
+  device = jax.local_devices(backend=device)[0]
+  filename = "diffusion_pytorch_model.safetensors.index.json"
+  local_files = False
+  if os.path.isdir(pretrained_model_name_or_path):
+    index_file_path = os.path.join(pretrained_model_name_or_path, subfolder, filename)
+    if not os.path.isfile(index_file_path):
+      raise FileNotFoundError(f"File {index_file_path} not found for local directory.")
+    local_files = True
+  elif hf_download:
+    index_file_path = hf_hub_download(
+        pretrained_model_name_or_path,
+        subfolder=subfolder,
+        filename=filename,
+    )
+  with jax.default_device(device):
+    with open(index_file_path, "r") as f:
+      index_dict = json.load(f)
+    model_files = set()
+    for key in index_dict["weight_map"].keys():
+      model_files.add(index_dict["weight_map"][key])
+
+    model_files = list(model_files)
+    tensors = {}
+    for model_file in model_files:
+      if local_files:
+        ckpt_shard_path = os.path.join(pretrained_model_name_or_path, subfolder, model_file)
+      else:
+        ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
+      max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device}")
+      if ckpt_shard_path is not None:
+        with safe_open(ckpt_shard_path, framework="pt") as f:
+          for k in f.keys():
+            tensors[k] = torch2jax(f.get_tensor(k))
+
+    flax_state_dict = {}
+    cpu = jax.local_devices(backend="cpu")[0]
+    flattened_dict = flatten_dict(eval_shapes)
+    random_flax_state_dict = {}
+    for key in flattened_dict:
+      string_tuple = tuple([str(item) for item in key])
+      random_flax_state_dict[string_tuple] = flattened_dict[key]
+    del flattened_dict
+
+    for pt_key, tensor in tensors.items():
+      if "norm_added_q" in pt_key:
+        continue
+
+      renamed_pt_key = rename_key(pt_key)
+
+      # --- Standard WAN transformer renames (shared with base transformer) ---
+      if "condition_embedder" in renamed_pt_key:
+        renamed_pt_key = renamed_pt_key.replace("time_embedding_0", "time_embedder.linear_1")
+        renamed_pt_key = renamed_pt_key.replace("time_embedding_2", "time_embedder.linear_2")
+        renamed_pt_key = renamed_pt_key.replace("time_projection_1", "time_proj")
+        renamed_pt_key = renamed_pt_key.replace("text_embedding_0", "text_embedder.linear_1")
+        renamed_pt_key = renamed_pt_key.replace("text_embedding_2", "text_embedder.linear_2")
+
+      if "image_embedder" in renamed_pt_key:
+        if "net.0.proj" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
+        elif "net_0.proj" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
+        if "net.2" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
+        renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
+        if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+          renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
+
+      renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
+      renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
+      renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
+      renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
+      renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
+      renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
+
+      # --- Animate-specific renames ---
+      # FusedLeakyReLU bias: HuggingFace stores it under "activation.bias",
+      # JAX stores it under "act_fn.bias" within FlaxMotionConv2d/FlaxMotionLinear.
+      renamed_pt_key = renamed_pt_key.replace(".activation.bias", ".act_fn.bias")
+
+      # face_adapter cross-attention: norm_q/norm_k scale renaming
+      # (rename_for_nnx handles norm_k/norm_q -> scale in get_key_and_value)
+
+      pt_tuple_key = tuple(renamed_pt_key.split("."))
+
+      # FlaxMotionConv2d and FlaxMotionLinear store weights as nnx.Param in PyTorch
+      # OIHW / (out, in) format — do NOT rename weight→kernel or transpose.
+      if _is_motion_encoder_custom_weight(renamed_pt_key):
+        flax_key = _tuple_str_to_int(pt_tuple_key)
+        flax_tensor = tensor
+      else:
+        flax_key, flax_tensor = get_key_and_value(
+            pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
+        )
+
+      flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+
+    validate_flax_state_dict(eval_shapes, flax_state_dict)
+    flax_state_dict = unflatten_dict(flax_state_dict)
+    del tensors
+    jax.clear_caches()
+    return flax_state_dict
+
+
 def load_wan_vae(pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True):
   device = jax.devices(device)[0]
   subfolder = "vae"

@@ -19,6 +19,7 @@ import contextlib
 import math
 import jax
 import jax.numpy as jnp
+import flax.linen as nn
 from flax import nnx
 from .... import common_types
 from ...modeling_flax_utils import FlaxModelMixin
@@ -81,6 +82,13 @@ class FlaxFusedLeakyReLU(nnx.Module):
 
 
 class FlaxMotionConv2d(nnx.Module):
+  """2-D convolution with EqualizedLR scaling and optional FusedLeakyReLU.
+
+  Weights are stored in PyTorch OIHW format (out, in, k, k) as raw nnx.Param
+  so that the weight-loading code in wan_utils.py can map them without
+  transposing.  No sharding annotations are applied because this module is
+  part of the small motion encoder network.
+  """
 
   def __init__(
       self,
@@ -123,7 +131,7 @@ class FlaxMotionConv2d(nnx.Module):
       self.blur_kernel = None
 
     key = rngs.params()
-    # Shape: (out_channels, in_channels, kernel, kernel) mapping PyTorch 'OIHW'
+    # Shape: (out_channels, in_channels, kernel, kernel) — PyTorch OIHW format.
     self.weight = nnx.Param(jax.random.normal(key, (out_channels, in_channels, kernel_size, kernel_size), dtype=dtype))
     self.scale = 1.0 / math.sqrt(in_channels * kernel_size**2)
 
@@ -156,7 +164,7 @@ class FlaxMotionConv2d(nnx.Module):
           x,
           expanded_kernel,
           window_strides=(1, 1),
-          padding=[(pad_h, pad_h), (pad_w, pad_w)],  # Corrected Symmetric Padding
+          padding=[(pad_h, pad_h), (pad_w, pad_w)],
           dimension_numbers=("NCHW", "OIHW", "NCHW"),
           feature_group_count=self.in_channels,
       )
@@ -186,6 +194,11 @@ class FlaxMotionConv2d(nnx.Module):
 
 
 class FlaxMotionLinear(nnx.Module):
+  """Equalized-LR linear layer with optional FusedLeakyReLU.
+
+  Weights are stored in PyTorch (out, in) format as raw nnx.Param — same
+  reason as FlaxMotionConv2d.  No sharding annotations needed (small layer).
+  """
 
   def __init__(
       self,
@@ -296,6 +309,11 @@ class FlaxMotionEncoderResBlock(nnx.Module):
 
 
 class FlaxWanAnimateMotionEncoder(nnx.Module):
+  """Encodes a face video frame into a motion vector.
+
+  All weights in this network are small (the largest is 32×512→16) so
+  sharding annotations are not applied.
+  """
 
   def __init__(
       self,
@@ -395,7 +413,6 @@ class FlaxWanAnimateFaceEncoder(nnx.Module):
 
     self.act = jax.nn.silu
 
-    # Added explicit padding="VALID" to exactly mirror PyTorch's padding=0 default
     self.conv1_local = nnx.Conv(
         in_dim,
         hidden_dim * num_heads,
@@ -449,7 +466,15 @@ class FlaxWanAnimateFaceEncoder(nnx.Module):
         dtype=dtype,
     )
 
-    self.out_proj = nnx.Linear(hidden_dim, out_dim, rngs=rngs, dtype=dtype)
+    # hidden_dim (mlp) → out_dim (embed): ("mlp", "embed")
+    self.out_proj = nnx.Linear(
+        hidden_dim,
+        out_dim,
+        rngs=rngs,
+        dtype=dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+    )
 
     self.padding_tokens = nnx.Param(jnp.zeros((1, 1, 1, out_dim), dtype=dtype))
 
@@ -510,11 +535,45 @@ class FlaxWanAnimateFaceBlockCrossAttention(nnx.Module):
     self.pre_norm_q = nnx.LayerNorm(dim, epsilon=eps, use_bias=False, use_scale=False, rngs=rngs, dtype=dtype)
     self.pre_norm_kv = nnx.LayerNorm(dim, epsilon=eps, use_bias=False, use_scale=False, rngs=rngs, dtype=dtype)
 
-    self.to_q = nnx.Linear(dim, self.inner_dim, use_bias=use_bias, rngs=rngs, dtype=dtype)
-    self.to_k = nnx.Linear(dim, self.kv_inner_dim, use_bias=use_bias, rngs=rngs, dtype=dtype)
-    self.to_v = nnx.Linear(dim, self.kv_inner_dim, use_bias=use_bias, rngs=rngs, dtype=dtype)
+    # embed → heads
+    self.to_q = nnx.Linear(
+        dim,
+        self.inner_dim,
+        use_bias=use_bias,
+        rngs=rngs,
+        dtype=dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
+    )
+    self.to_k = nnx.Linear(
+        dim,
+        self.kv_inner_dim,
+        use_bias=use_bias,
+        rngs=rngs,
+        dtype=dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
+    )
+    self.to_v = nnx.Linear(
+        dim,
+        self.kv_inner_dim,
+        use_bias=use_bias,
+        rngs=rngs,
+        dtype=dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
+    )
 
-    self.to_out = nnx.Linear(self.inner_dim, dim, use_bias=use_bias, rngs=rngs, dtype=dtype)
+    # heads → embed
+    self.to_out = nnx.Linear(
+        self.inner_dim,
+        dim,
+        use_bias=use_bias,
+        rngs=rngs,
+        dtype=dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+    )
 
     self.norm_q = nnx.RMSNorm(dim_head, epsilon=eps, use_scale=True, rngs=rngs, dtype=dtype)
     self.norm_k = nnx.RMSNorm(dim_head, epsilon=eps, use_scale=True, rngs=rngs, dtype=dtype)
@@ -544,14 +603,14 @@ class FlaxWanAnimateFaceBlockCrossAttention(nnx.Module):
 
     query_S = query.shape[1]
 
-    # Prepare for attention by folding Time into the Batch dimension
+    # Fold Time into the Batch dimension for attention
     query = jnp.reshape(query, (B * T, query_S // T, self.heads, -1))
     key = jnp.reshape(key, (B * T, N, self.heads, -1))
     value = jnp.reshape(value, (B * T, N, self.heads, -1))
 
     attn_output = jax.nn.dot_product_attention(query, key, value)
 
-    # Collapse Time, Seq Length, and Heads straight back to (Batch, Total Sequence, Dim)
+    # Restore (Batch, Total Sequence, Dim)
     attn_output = jnp.reshape(attn_output, (B, query_S, -1))
 
     hidden_states = self.to_out(attn_output)
@@ -624,6 +683,8 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
 
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
+
+    # Patch embeddings — shard output (conv_out) axis across model parallelism.
     self.patch_embedding = nnx.Conv(
         in_channels,
         inner_dim,
@@ -632,6 +693,10 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         rngs=rngs,
         dtype=dtype,
         param_dtype=weights_dtype,
+        kernel_init=nnx.with_partitioning(
+            nnx.initializers.xavier_uniform(),
+            (None, None, None, None, "conv_out"),
+        ),
     )
     self.pose_patch_embedding = nnx.Conv(
         latent_channels,
@@ -641,6 +706,10 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         rngs=rngs,
         dtype=dtype,
         param_dtype=weights_dtype,
+        kernel_init=nnx.with_partitioning(
+            nnx.initializers.xavier_uniform(),
+            (None, None, None, None, "conv_out"),
+        ),
     )
 
     self.condition_embedder = WanTimeTextImageEmbedding(
@@ -714,15 +783,22 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.face_adapter = nnx.List(face_adapters)
 
     self.norm_out = FP32LayerNorm(rngs=rngs, dim=inner_dim, eps=eps, elementwise_affine=False)
+
+    # Final projection — embed → output tokens.
     self.proj_out = nnx.Linear(
         rngs=rngs,
         in_features=inner_dim,
         out_features=out_channels * math.prod(patch_size),
         dtype=dtype,
         param_dtype=weights_dtype,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", None)),
     )
+
     key = rngs.params()
-    self.scale_shift_table = nnx.Param(jax.random.normal(key, (1, 2, inner_dim), dtype=dtype) / inner_dim**0.5)
+    self.scale_shift_table = nnx.Param(
+        jax.random.normal(key, (1, 2, inner_dim), dtype=dtype) / inner_dim**0.5,
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, "embed")),
+    )
 
   def conditional_named_scope(self, name: str):
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
@@ -746,6 +822,9 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       raise ValueError(
           f"Pose frames + 1 ({pose_hidden_states.shape[2]} + 1) must equal hidden_states frames ({hidden_states.shape[2]})"
       )
+
+    # Constrain input to batch-sharded layout before any computation.
+    hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
 
     batch_size, num_channels, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.patch_size
@@ -850,7 +929,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           rngs,
       )
 
-      # Face adapter integration: apply after every 5th block (0, 5, 10, 15, ...)
+      # Face adapter integration: apply after every inject_face_latents_blocks-th block
       if motion_vec is not None and block_idx % self.inject_face_latents_blocks == 0:
         face_adapter_block_idx = block_idx // self.inject_face_latents_blocks
         face_adapter_output = self.face_adapter[face_adapter_block_idx](hidden_states, motion_vec)
