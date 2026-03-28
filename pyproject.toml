@@ -1,3 +1,95 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[build-system]
+requires = ["hatchling", "hatch-requirements-txt"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/maxdiffusion/__init__.py"
+
+[project]
+name = "maxdiffusion"
+dynamic = ["version", "dependencies"]
+requires-python = ">=3.12"
+readme = "README.md"
+license = "Apache-2.0"
+description = "State-of-the-art diffusion in PyTorch and JAX."
+keywords = ["deep learning", "diffusion", "jax", "pytorch", "stable diffusion", "audioldm"]
+authors = [
+  {name = "Google LLC", email = "shahrokhi@google.com"},
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+quality = ["urllib3", "black", "isort", "ruff", "hf-doc-builder"]
+docs = ["hf-doc-builder"]
+training = ["accelerate", "datasets", "protobuf", "tensorboard", "Jinja2"]
+test = [
+    "compel",
+    "datasets",
+    "Jinja2",
+    "invisible-watermark",
+    "k-diffusion",
+    "librosa",
+    "omegaconf",
+    "parameterized",
+    "pytest",
+    "pytest-timeout",
+    "pytest-xdist",
+    "requests-mock",
+    "safetensors",
+    "sentencepiece",
+    "scipy",
+    "torchvision",
+]
+torch = ["torch", "accelerate"]
+flax = ["jax", "jaxlib", "flax"]
+dev = [
+    "urllib3", "black", "isort", "ruff", "hf-doc-builder", "compel", "datasets", "Jinja2", 
+    "invisible-watermark", "k-diffusion", "librosa", "omegaconf", "parameterized", "pytest", 
+    "pytest-timeout", "pytest-xdist", "requests-mock", "safetensors", "sentencepiece", "scipy", 
+    "torchvision", "accelerate", "protobuf", "tensorboard", "torch", "jax", "jaxlib", "flax"
+]
+
+[project.urls]
+Repository = "https://github.com/AI-Hypercomputer/maxdiffusion.git"
+"Bug Tracker" = "https://github.com/AI-Hypercomputer/maxdiffusion/issues"
+
+[project.scripts]
+maxdiffusion-cli = "maxdiffusion.commands.maxdiffusion_cli:main"
+install_maxdiffusion_github_deps = "install_maxdiffusion_extra_deps.install_github_deps:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.metadata.hooks.requirements_txt]
+files = ["dependencies/requirements/base_requirements/requirements.txt"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maxdiffusion", "src/install_maxdiffusion_extra_deps"]
+
 [tool.ruff]
 # Never enforce `E501` (line length violations).
 ignore = ["C901", "E501", "E741", "F402", "F823", "E402", "I001"]
