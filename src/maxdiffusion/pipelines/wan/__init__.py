@@ -14,4 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+from .image_processor import WanAnimateImageProcessor
 from .wan_pipeline import WanPipeline
+from .wan_pipeline_animate import WanAnimatePipeline
