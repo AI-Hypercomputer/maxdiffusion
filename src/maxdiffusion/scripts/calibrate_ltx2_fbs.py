@@ -54,20 +54,20 @@ def calibrate_fbs(config):
     
     print(f"Creating model with flash_block_sizes: {ltx2_config_dict['flash_block_sizes']}")
     
+    print(f"Loading Sharded Transformer using LTX2Pipeline.load_transformer...")
+    from maxdiffusion.pipelines.ltx2.ltx2_pipeline import LTX2Pipeline
+    
     with mesh:
-        # Standard initialization
-        transformer = LTX2VideoTransformer3DModel(**ltx2_config_dict, rngs=rngs)
-        
-        # Shard the model
-        graphdef, state, rest_of_state = nnx.split(transformer, nnx.Param, ...)
-        def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules):
-            vs.sharding_rules = logical_axis_rules
-            return vs
-        
-        p_add_sharding_rule = partial(_add_sharding_rule, logical_axis_rules=config.logical_axis_rules)
-        state_sharded = jax.tree.map(p_add_sharding_rule, state, is_leaf=lambda x: isinstance(x, nnx.VariableState))
-        pspecs = nnx.get_partition_spec(state_sharded)
-        sharded_state = jax.lax.with_sharding_constraint(state_sharded, pspecs)
+        # Load transformer via the robust HF sharded logical mechanism to bypass 16GB Single-Device Allocation Limit
+        transformer = LTX2Pipeline.load_transformer(
+            devices_array=devices_array,
+            mesh=mesh,
+            rngs=rngs,
+            config=config,
+            restored_checkpoint=None,
+            subfolder="transformer",
+        )
+        graphdef, sharded_state, rest_of_state = nnx.split(transformer, nnx.Param, ...)
 
         from maxdiffusion.pipelines.ltx2.ltx2_pipeline import transformer_forward_pass
         
