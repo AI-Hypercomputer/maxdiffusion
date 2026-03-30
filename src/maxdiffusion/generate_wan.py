@@ -100,6 +100,10 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           num_frames=config.num_frames,
           num_inference_steps=config.num_inference_steps,
           guidance_scale=config.guidance_scale,
+          use_magcache=config.use_magcache,
+          magcache_thresh=config.magcache_thresh,
+          magcache_K=config.magcache_K,
+          retention_ratio=config.retention_ratio,
       )
     elif model_key == WAN2_2:
       return pipeline(
@@ -127,6 +131,10 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           num_inference_steps=config.num_inference_steps,
           guidance_scale=config.guidance_scale,
           use_cfg_cache=config.use_cfg_cache,
+          use_magcache=config.use_magcache,
+          magcache_thresh=config.magcache_thresh,
+          magcache_K=config.magcache_K,
+          retention_ratio=config.retention_ratio,
       )
     elif model_key == WAN2_2:
       return pipeline(

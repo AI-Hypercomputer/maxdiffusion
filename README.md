@@ -17,6 +17,8 @@
 [![Unit Tests](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2026/03/25`**: Wan2.1 and Wan2.2 Magcache inference is now supported
+- **`2026/03/25`**: LTX-2 Video Inference is now supported
 - **`2026/01/29`**: Wan LoRA for inference is now supported
 - **`2026/01/15`**: Wan2.1 and Wan2.2 Img2vid generation is now supported
 - **`2025/11/11`**: Wan2.2 txt2vid generation is now supported
@@ -49,6 +51,7 @@ MaxDiffusion supports
 * ControlNet inference (Stable Diffusion 1.4 & SDXL).
 * Dreambooth training support for Stable Diffusion 1.x,2.x.
 * LTX-Video text2vid, img2vid (inference).
+* LTX-2 Video text2vid (inference).
 * Wan2.1 text2vid (training and inference).
 * Wan2.2 text2vid (inference).
 
@@ -73,6 +76,7 @@ MaxDiffusion supports
   - [Inference](#inference)
     - [Wan](#wan-models)
     - [LTX-Video](#ltx-video)
+    - [LTX-2 Video](#ltx-2-video)
     - [Flux](#flux)
       - [Fused Attention for GPU](#fused-attention-for-gpu)
     - [SDXL](#stable-diffusion-xl)
@@ -496,6 +500,33 @@ To generate images, run the following command:
   Img2video Generation: 
   
   Add conditioning image path as conditioning_media_paths in the form of ["IMAGE_PATH"] along with other generation parameters in the ltx_video.yml file. Then follow same instruction as above.
+
+  ## LTX-2 Video
+
+  Although not required, attaching an external disk is recommended as weights take up a lot of disk space. [Follow these instructions if you would like to attach an external disk](https://cloud.google.com/tpu/docs/attach-durable-block-storage).
+
+  The following command will run LTX-2 T2V:
+
+   ```bash
+  HF_HUB_CACHE=/mnt/disks/external_disk/maxdiffusion_hf_cache/ \
+  LIBTPU_INIT_ARGS="--xla_tpu_enable_async_collective_fusion=true \
+  --xla_tpu_enable_async_collective_fusion_fuse_all_reduce=true \
+  --xla_tpu_enable_async_collective_fusion_multiple_steps=true \
+  --xla_tpu_overlap_compute_collective_tc=true \
+  --xla_enable_async_all_reduce=true" \
+  HF_HUB_ENABLE_HF_TRANSFER=1 \
+  python src/maxdiffusion/generate_ltx2.py \
+  src/maxdiffusion/configs/ltx2_video.yml \
+  attention="flash" \
+  num_inference_steps=40 \
+  num_frames=121 \
+  width=768 \
+  height=512 \
+  per_device_batch_size=.125 \
+  ici_data_parallelism=2 \
+  ici_context_parallelism=4 \
+  run_name=ltx2-inference
+  ```
 
   ## Wan Models
 
