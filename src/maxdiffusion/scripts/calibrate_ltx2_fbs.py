@@ -158,6 +158,11 @@ def calibrate_fbs(config):
             
         print(f"Average pure diffusion cycle (after warmup): {(total_time/(num_runs-6))*1000:.2f} ms")
         
+from absl import app
+
+def main(argv):
+    pyconfig.initialize(argv)
+    calibrate_fbs(pyconfig.config)
+
 if __name__ == "__main__":
-    config = pyconfig.initialize(sys.argv)
-    calibrate_fbs(config)
+    app.run(main)
