@@ -41,9 +41,7 @@ _splash_attention_forward = splash_kernel._splash_attention_forward  # pylint: d
 _splash_attention_bwd = splash_kernel._splash_attention_bwd  # pylint: disable=protected-access
 
 
-def _dynamic_slice_mask_info(
-    mask_info: MaskInfo, kv_shard_idx: jax.Array, ring_size: int
-) -> MaskInfo:
+def _dynamic_slice_mask_info(mask_info: MaskInfo, kv_shard_idx: jax.Array, ring_size: int) -> MaskInfo:
   """Slices MaskInfo for the current ring step."""
 
   def slice_if_exists(arr: jax.Array | None):
@@ -81,11 +79,8 @@ def _ring_attention_forward(
     ring_axis: str,
     rotate_segment_ids: bool = True,
 ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
-
   if q.shape[-1] != k.shape[-1]:
-    raise NotImplementedError(
-        "Queries and keys must have the same head dimension."
-    )
+    raise NotImplementedError("Queries and keys must have the same head dimension.")
 
   if sinks is not None:
     raise NotImplementedError("Sinks aren't supportd yet.")
@@ -124,13 +119,11 @@ def _ring_attention_forward(
   l_init = jnp.zeros((o_shape[0], o_shape[1]), jnp.float32)
   m_init = jnp.full_like(l_init, mask_value, dtype=jnp.float32)
 
-  def body(carry, i: int)-> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, SegmentIds | None], None]:
+  def body(carry, i: int) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, SegmentIds | None], None]:
     m_prev, l_prev, o_prev, k_current, v_current, segment_ids_current = carry
 
     current_kv_shard_idx = (ring_axis_idx - i) % ring_axis_size
-    local_fwd_mask_info = _dynamic_slice_mask_info(
-        fwd_mask_info, current_kv_shard_idx, ring_axis_size
-    )
+    local_fwd_mask_info = _dynamic_slice_mask_info(fwd_mask_info, current_kv_shard_idx, ring_axis_size)
     k_next = shift(k_current)
     v_next = shift(v_current)
 
@@ -225,9 +218,7 @@ def _ring_attention_bwd(
     v_next = shift(v_current)
 
     current_kv_shard_idx = (ring_axis_idx - i) % ring_axis_size
-    local_dkv_mask_info = _dynamic_slice_mask_info(
-        dkv_mask_info, current_kv_shard_idx, ring_axis_size
-    )
+    local_dkv_mask_info = _dynamic_slice_mask_info(dkv_mask_info, current_kv_shard_idx, ring_axis_size)
     if segment_ids is not None and rotate_segment_ids:
       kv_segment_ids_next = shift(segment_ids_current.kv)
       segment_ids_next = SegmentIds(segment_ids.q, kv_segment_ids_next)
@@ -255,9 +246,7 @@ def _ring_attention_bwd(
         fwd_mask_sparsity=fwd_mask_sparsity,
         dkv_mask_sparsity=dkv_mask_sparsity,
     )
-    _, _, dq_i, dk_i, dv_i, _, dsinks, _ = attn_bwd(
-        res=residuals_for_chunk, do=do
-    )
+    _, _, dq_i, dk_i, dv_i, _, dsinks, _ = attn_bwd(res=residuals_for_chunk, do=do)
     dv_next = shift(dv_accum + dv_i.astype(dv_accum.dtype))
     dk_next = shift(dk_accum + dk_i.astype(dk_accum.dtype))
     dq_accum = dq_accum + dq_i.astype(dq_accum.dtype)
@@ -394,7 +383,7 @@ def _ring_attention_custom(
     dkv_mask_sparsity: float,
     save_residuals: bool,
     ring_axis: str,
-    rotate_segment_ids: bool ,
+    rotate_segment_ids: bool,
 ) -> SplashCustomReturnType:
   """Performs ring attention with a custom VJP.
 
@@ -544,7 +533,7 @@ class RingSplashAttentionKernel:
   """Implements Ring Attention using SplashAttention for sequence parallelism.
 
   This kernel computes global attention by keeping Keys and Values distributed
-  across the `ring_axis`. Instead of gathering full sequences, it rotates K/V 
+  across the `ring_axis`. Instead of gathering full sequences, it rotates K/V
   shards between devices and accumulates results incrementally. This allows
   processing sequence lengths that exceed single-device memory limits.
 
@@ -561,7 +550,7 @@ class RingSplashAttentionKernel:
       fwd_mask_info: MaskInfo,
       dkv_mask_info: MaskInfo | None,
       ring_axis: str,
-      rotate_segment_ids: bool ,
+      rotate_segment_ids: bool,
       **kwargs,
   ):
     self.fwd_mask_info = fwd_mask_info
@@ -590,7 +579,9 @@ class RingSplashAttentionKernel:
     """
 
     spec = jax.sharding.PartitionSpec(self.ring_axis)
-    _resolve_spec = lambda x: spec if x is not None else None
+
+    def _resolve_spec(x):
+      return spec if x is not None else None
 
     mask_info_specs = MaskInfo(  # pytype: disable=wrong-arg-types
         mask_next=_resolve_spec(self.fwd_mask_info.mask_next),
@@ -617,11 +608,7 @@ class RingSplashAttentionKernel:
   @classmethod
   def tree_unflatten(cls, aux_data, children):
     fwd_mask_info, dkv_mask_info = children
-    dkv_mask_info = (
-        mask_info_lib.MaskInfo(*dkv_mask_info)
-        if dkv_mask_info is not None
-        else None
-    )
+    dkv_mask_info = mask_info_lib.MaskInfo(*dkv_mask_info) if dkv_mask_info is not None else None
     return cls(
         mask_info_lib.MaskInfo(*fwd_mask_info),
         dkv_mask_info,
@@ -673,9 +660,7 @@ def make_ring_attention(
     mask = mask_lib.NumpyMask(mask)
 
   if not isinstance(mask, (mask_lib.NumpyMask, mask_lib.FullMask)):
-    raise NotImplementedError(
-        f"Only NumpyMask and FullMask are supported, but got {type(mask)}."
-    )
+    raise NotImplementedError(f"Only NumpyMask and FullMask are supported, but got {type(mask)}.")
 
   if config is None:
     config = SplashConfig.get_default()

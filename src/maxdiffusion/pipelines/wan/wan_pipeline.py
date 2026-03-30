@@ -273,7 +273,9 @@ class WanPipeline:
     return image_processor, image_encoder
 
   @classmethod
-  def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, vae_logical_axis_rules: tuple = None):
+  def load_vae(
+      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, vae_logical_axis_rules: tuple = None
+  ):
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
       wan_vae = AutoencoderKLWan.from_config(
           config.pretrained_model_name_or_path,
@@ -594,17 +596,21 @@ class WanPipeline:
     if vae_spatial <= 0:
       dp_size = mesh.shape.get("data", 1)
       if dp_size == -1 or dp_size == 0:
-          dp_size = 1
+        dp_size = 1
       vae_spatial = (2 * total_devices) // dp_size
 
-    assert total_devices % vae_spatial == 0, f"total devices ({total_devices}) must be a multiple of vae_spatial ({vae_spatial})"
+    assert (
+        total_devices % vae_spatial == 0
+    ), f"total devices ({total_devices}) must be a multiple of vae_spatial ({vae_spatial})"
 
     flat_devices = devices_array.flatten()
     vae_devices_array = flat_devices.reshape(total_devices // vae_spatial, vae_spatial)
 
     vae_mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
     vae_mesh.vae_spatial_axis_name = "vae_spatial"
-    max_logging.log(f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') to support spatial sharding of {vae_spatial}.")
+    max_logging.log(
+        f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') to support spatial sharding of {vae_spatial}."
+    )
 
     # logical axis rules for VAE encoding/decoding
     vae_logical_axis_rules = (
@@ -617,20 +623,29 @@ class WanPipeline:
         ("norm", None),
         ("conv_batch", "redundant"),
         ("out_channels", "vae_spatial"),
-        ("conv_out", "vae_spatial")
+        ("conv_out", "vae_spatial"),
     )
 
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
 
     with vae_mesh:
-        wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=vae_mesh, rngs=rngs, config=config, vae_logical_axis_rules=vae_logical_axis_rules)
+      wan_vae, vae_cache = cls.load_vae(
+          devices_array=devices_array, mesh=vae_mesh, rngs=rngs, config=config, vae_logical_axis_rules=vae_logical_axis_rules
+      )
 
     components = {
-        "vae": wan_vae, "vae_cache": vae_cache,
-        "devices_array": devices_array, "rngs": rngs, "mesh": mesh, "vae_mesh": vae_mesh,
+        "vae": wan_vae,
+        "vae_cache": vae_cache,
+        "devices_array": devices_array,
+        "rngs": rngs,
+        "mesh": mesh,
+        "vae_mesh": vae_mesh,
         "vae_logical_axis_rules": vae_logical_axis_rules,
-        "tokenizer": None, "text_encoder": None, "scheduler": None, "scheduler_state": None,
+        "tokenizer": None,
+        "text_encoder": None,
+        "scheduler": None,
+        "scheduler_state": None,
         "image_processor": None,
         "image_encoder": None,
     }

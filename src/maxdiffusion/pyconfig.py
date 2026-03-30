@@ -50,6 +50,7 @@ def _validate_training_model_name(model_name: str | None):
         f"Invalid config.model_name '{model_name}' for training. Allowed values: {sorted(_ALLOWED_TRAINING_MODEL_NAMES)}"
     )
 
+
 def string_to_bool(s: str) -> bool:
   if s.lower() == "true":
     return True

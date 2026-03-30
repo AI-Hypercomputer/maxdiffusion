@@ -67,10 +67,7 @@ class RingAttentionTest(test_utils.SplashAttentionTestCase):
       mask_type,
   ):
     if len(jax.devices()) < ring_size:
-      self.skipTest(
-          f"This test requires {ring_size} devices, but has only"
-          f" {len(jax.devices())} devices available."
-      )
+      self.skipTest(f"This test requires {ring_size} devices, but has only" f" {len(jax.devices())} devices available.")
 
     # Mesh Creation and Input Generation
     ring_axis = "ring"
@@ -85,14 +82,8 @@ class RingAttentionTest(test_utils.SplashAttentionTestCase):
       k = random.normal(k2, (seq_len, head_dim), dtype=dtype) * scale
       v = random.normal(k3, (seq_len, head_dim), dtype=dtype) * scale
     else:
-      k = (
-          random.normal(k2, (num_heads, seq_len, head_dim), dtype=dtype)
-          * scale
-      )
-      v = (
-          random.normal(k3, (num_heads, seq_len, head_dim), dtype=dtype)
-          * scale
-      )
+      k = random.normal(k2, (num_heads, seq_len, head_dim), dtype=dtype) * scale
+      v = random.normal(k3, (num_heads, seq_len, head_dim), dtype=dtype) * scale
     do = random.normal(k4, q.shape, dtype=dtype) * scale
 
     if mask_type == "CAUSAL":
@@ -111,7 +102,6 @@ class RingAttentionTest(test_utils.SplashAttentionTestCase):
     # For ring attention, sequence dimension is sharded over 'ring' axis
     q_spec = P(None, ring_axis, None)
     kv_spec = P(ring_axis, None) if is_mqa else q_spec
-
 
     splash_config = splash.SplashConfig.get_default()
     splash_config = dataclasses.replace(
@@ -159,9 +149,7 @@ class RingAttentionTest(test_utils.SplashAttentionTestCase):
 
     with self.subTest("bwd"):
       out, out_vjp = jax.vjp(ring_attn, ring_kernel, q, k, v, segment_ids)
-      out_ref, out_vjp_ref = jax.vjp(
-          ring_attn_ref, q, k, v, mask[:, :], segment_ids
-      )
+      out_ref, out_vjp_ref = jax.vjp(ring_attn_ref, q, k, v, mask[:, :], segment_ids)
       self._assert_allclose(out, out_ref, rtol=5e-3, atol=3e-3)
 
       _, dq, dk, dv, _ = out_vjp(do)

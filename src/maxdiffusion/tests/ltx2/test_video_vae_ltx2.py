@@ -16,17 +16,25 @@ limitations under the License.
 
 import sys
 import os
+import functools
+import torch
+import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
+from flax.traverse_util import flatten_dict, unflatten_dict
 from jax.sharding import Mesh
 import unittest
 from absl.testing import absltest
+from skimage.metrics import structural_similarity as ssim
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import create_device_mesh
+from maxdiffusion.utils import load_video
+from maxdiffusion.video_processor import VideoProcessor
+from maxdiffusion.models.ltx2.ltx2_utils import load_vae_weights
 from maxdiffusion.models.ltx2.autoencoder_kl_ltx2 import (
     LTX2VideoCausalConv3d,
     LTX2VideoDownBlock3D,
@@ -278,6 +286,101 @@ class LTX2VaeTest(unittest.TestCase):
 
       decoded = vae.decode(latents, return_dict=False)[0]
       self.assertEqual(decoded.shape, (B, 25, 64, 64, C))
+
+  def test_load_checkpoint(self):
+    def vae_encode(video, vae, key):
+      latent = vae.encode(video, return_dict=False)[0]
+      latent = latent.sample(key)
+      return latent
+
+    key = jax.random.PRNGKey(0)
+    rngs = nnx.Rngs(key)
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "..", "configs", "ltx2_video.yml"),
+        ],
+        unittest=True,
+    )
+    config = pyconfig.config
+    devices_array = create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      vae = LTX2VideoAutoencoderKL(
+          rngs=rngs,
+          in_channels=3,
+          out_channels=3,
+          latent_channels=128,
+          block_out_channels=(256, 512, 1024, 2048),
+          decoder_block_out_channels=(256, 512, 1024),
+          layers_per_block=(4, 6, 6, 2, 2),
+          decoder_layers_per_block=(5, 5, 5, 5),
+          spatio_temporal_scaling=(True, True, True, True),
+          decoder_spatio_temporal_scaling=(True, True, True),
+          decoder_inject_noise=(False, False, False, False),
+          downsample_type=("spatial", "temporal", "spatiotemporal", "spatiotemporal"),
+          upsample_residual=(True, True, True),
+          upsample_factor=(2, 2, 2),
+          mesh=mesh,
+      )
+
+    video_path = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/hiker.mp4"
+    video = load_video(video_path)
+
+    vae_scale_factor_spatial = 32
+    video_processor = VideoProcessor(vae_scale_factor=vae_scale_factor_spatial)
+    width, height = video[0].size
+    video = video_processor.preprocess_video(video, height=height, width=width)
+    original_video = jnp.array(np.array(video), dtype=jnp.bfloat16)
+
+    video_input = jnp.transpose(original_video, (0, 2, 3, 4, 1))
+
+    graphdef, state = nnx.split(vae)
+    eval_shapes = state.to_pure_dict()
+    pretrained_model_name_or_path = "Lightricks/LTX-2"
+    loaded_weights = load_vae_weights(
+        pretrained_model_name_or_path=pretrained_model_name_or_path,
+        eval_shapes=eval_shapes,
+        device="cpu",
+        hf_download=True,
+    )
+
+    filtered_eval_shapes = {}
+    flat_eval_shapes = flatten_dict(eval_shapes)
+    flat_loaded = flatten_dict(loaded_weights)
+    for k, v in flat_eval_shapes.items():
+      k_str = [str(x) for x in k]
+      if "dropout" in k_str or "rngs" in k_str:
+        filtered_eval_shapes[k] = v
+      else:
+        filtered_eval_shapes[k] = flat_loaded[k]
+
+    new_state = unflatten_dict(filtered_eval_shapes)
+
+    def cast_to_bf16(x):
+      if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jnp.floating):
+        return x.astype(jnp.bfloat16)
+      return x
+
+    params = jax.tree_util.tree_map(cast_to_bf16, new_state)
+    vae = nnx.merge(graphdef, params)
+
+    p_vae_encode = functools.partial(vae_encode, vae=vae, key=key)
+    original_video_shape = original_video.shape
+    latent = p_vae_encode(video_input)
+
+    jitted_decode = functools.partial(vae.decode, return_dict=False)
+    video_out = jitted_decode(latent)[0]
+    video_out = jnp.transpose(video_out, (0, 4, 1, 2, 3))
+    self.assertEqual(video_out.shape, original_video_shape)
+
+    original_video = torch.from_numpy(np.array(original_video.astype(jnp.float32))).to(dtype=torch.bfloat16)
+    video_out = torch.from_numpy(np.array(video_out.astype(jnp.float32))).to(dtype=torch.bfloat16)
+    video_out = video_processor.postprocess_video(video_out, output_type="np")
+    original_video = video_processor.postprocess_video(original_video, output_type="np")
+    ssim_compare = ssim(video_out[0], original_video[0], multichannel=True, channel_axis=-1, data_range=255)
+    self.assertGreaterEqual(ssim_compare, 0.998)
 
 
 if __name__ == "__main__":

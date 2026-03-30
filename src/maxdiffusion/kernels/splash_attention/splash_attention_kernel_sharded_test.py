@@ -64,9 +64,7 @@ class SplashAttentionShardingTest(PallasBaseTest):
       is_segmented=[False, True],
       is_dynamic_mask=[False, True],
   )
-  def test_manual_partitioning_mha_fwd(
-      self, topology, num_heads, dtype, is_segmented, is_dynamic_mask
-  ):
+  def test_manual_partitioning_mha_fwd(self, topology, num_heads, dtype, is_segmented, is_dynamic_mask):
     # TODO: Re-enable once dynamic masks are fixed.
     if is_dynamic_mask:
       self.skipTest("Dynamic masks not supported.")
@@ -79,16 +77,10 @@ class SplashAttentionShardingTest(PallasBaseTest):
     num_devices = math.prod(topology)
 
     if head_shards > num_heads:
-      self.skipTest(
-          f"This test requires {num_heads} heads, but has only"
-          f" {head_shards} head shards available."
-      )
+      self.skipTest(f"This test requires {num_heads} heads, but has only" f" {head_shards} head shards available.")
 
     if len(jax.devices()) < num_devices:
-      self.skipTest(
-          f"This test requires {num_devices} devices, but has only"
-          f" {len(jax.devices())} devices available."
-      )
+      self.skipTest(f"This test requires {num_devices} devices, but has only" f" {len(jax.devices())} devices available.")
 
     q = random.uniform(k1, (num_heads, seq_len, head_dim), dtype=dtype)
     k = random.uniform(k2, (num_heads, seq_len, head_dim), dtype=dtype)
@@ -107,9 +99,7 @@ class SplashAttentionShardingTest(PallasBaseTest):
     else:
       segment_ids = segment_ids_spec = None
 
-    devices = np.asarray(jax.devices()[:num_devices]).reshape(
-        head_shards, q_seq_shards
-    )
+    devices = np.asarray(jax.devices()[:num_devices]).reshape(head_shards, q_seq_shards)
 
     mesh = jax.sharding.Mesh(devices, ("heads", "q_seq"))
     q_spec = PartitionSpec(
@@ -120,14 +110,10 @@ class SplashAttentionShardingTest(PallasBaseTest):
     kv_spec = PartitionSpec("heads" if head_shards > 1 else None, None)
 
     if is_dynamic_mask:
-      kernel, kernel_spec = splash.make_dynamic_splash_mha(
-          mask, mesh=mesh, mask_spec=mask_spec
-      )
+      kernel, kernel_spec = splash.make_dynamic_splash_mha(mask, mesh=mesh, mask_spec=mask_spec)
     else:
       kernel = splash.make_splash_mha(mask, q_seq_shards=q_seq_shards)
-      kernel_spec = kernel.manual_sharding_spec(
-          jax.sharding.NamedSharding(mesh, mask_spec)
-      )
+      kernel_spec = kernel.manual_sharding_spec(jax.sharding.NamedSharding(mesh, mask_spec))
 
     @partial(
         jax.shard_map,
@@ -156,9 +142,7 @@ class SplashAttentionShardingTest(PallasBaseTest):
       is_segmented=[False, True],
       is_dynamic_mask=[False, True],
   )
-  def test_manual_partitioning_mha_bwd(
-      self, topology, num_heads, dtype, is_segmented, is_dynamic_mask
-  ):
+  def test_manual_partitioning_mha_bwd(self, topology, num_heads, dtype, is_segmented, is_dynamic_mask):
     # TODO: Re-enable once dynamic masks are fixed.
     if is_dynamic_mask:
       self.skipTest("Dynamic masks not supported.")
@@ -172,10 +156,7 @@ class SplashAttentionShardingTest(PallasBaseTest):
     num_devices = math.prod(topology)
 
     if head_shards > num_heads:
-      self.skipTest(
-          f"This test requires {num_heads} heads, but has only"
-          f" {head_shards} head shards available."
-      )
+      self.skipTest(f"This test requires {num_heads} heads, but has only" f" {head_shards} head shards available.")
 
     q = random.uniform(k1, (num_heads, seq_len, head_dim), dtype=dtype)
     k = random.uniform(k2, (num_heads, seq_len, head_dim), dtype=dtype)
@@ -194,9 +175,7 @@ class SplashAttentionShardingTest(PallasBaseTest):
     else:
       segment_ids = segment_ids_spec = None
 
-    devices = np.asarray(jax.devices()[:num_devices]).reshape(
-        head_shards, q_seq_shards
-    )
+    devices = np.asarray(jax.devices()[:num_devices]).reshape(head_shards, q_seq_shards)
 
     mesh = jax.sharding.Mesh(devices, ("heads", "q_seq"))
     q_spec = PartitionSpec(
@@ -207,14 +186,10 @@ class SplashAttentionShardingTest(PallasBaseTest):
     kv_spec = PartitionSpec("heads" if head_shards > 1 else None, None)
 
     if is_dynamic_mask:
-      kernel, kernel_spec = splash.make_dynamic_splash_mha(
-          mask, mesh=mesh, mask_spec=mask_spec
-      )
+      kernel, kernel_spec = splash.make_dynamic_splash_mha(mask, mesh=mesh, mask_spec=mask_spec)
     else:
       kernel = splash.make_splash_mha(mask, q_seq_shards=q_seq_shards)
-      kernel_spec = kernel.manual_sharding_spec(
-          jax.sharding.NamedSharding(mesh, mask_spec)
-      )
+      kernel_spec = kernel.manual_sharding_spec(jax.sharding.NamedSharding(mesh, mask_spec))
 
     @partial(
         jax.shard_map,

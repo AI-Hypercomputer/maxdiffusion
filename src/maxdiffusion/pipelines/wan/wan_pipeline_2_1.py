@@ -47,18 +47,18 @@ class WanPipeline2_1(WanPipeline):
         )
 
         pipeline = cls(
-          tokenizer=common_components["tokenizer"],
-          text_encoder=common_components["text_encoder"],
-          transformer=transformer,
-          vae=common_components["vae"],
-          vae_cache=common_components["vae_cache"],
-          scheduler=common_components["scheduler"],
-          scheduler_state=common_components["scheduler_state"],
-          devices_array=common_components["devices_array"],
-          mesh=common_components["mesh"],
-          vae_mesh=common_components["vae_mesh"],
-          vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
-          config=config,
+            tokenizer=common_components["tokenizer"],
+            text_encoder=common_components["text_encoder"],
+            transformer=transformer,
+            vae=common_components["vae"],
+            vae_cache=common_components["vae_cache"],
+            scheduler=common_components["scheduler"],
+            scheduler_state=common_components["scheduler_state"],
+            devices_array=common_components["devices_array"],
+            mesh=common_components["mesh"],
+            vae_mesh=common_components["vae_mesh"],
+            vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
+            config=config,
         )
 
     return pipeline, transformer

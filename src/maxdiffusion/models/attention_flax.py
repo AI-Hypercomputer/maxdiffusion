@@ -85,6 +85,7 @@ def _coerce_tokamax_block_sizes(block_sizes):
 def _maybe_aqt_einsum(quant: Quant):
   return jnp.einsum if quant is None else quant.einsum()
 
+
 def _check_attention_inputs(query: Array, key: Array, value: Array) -> None:
   """Check attention inputs."""
 
@@ -199,17 +200,20 @@ def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
 
   return tensor, kv_size, seq_len
 
-def convert_to_tokamax_splash_config( block_sizes: BlockSizes,
-                                      q_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
-                                      k_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
-                                      v_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
-                                      residual_checkpoint_name: str | None = None,
-                                      attn_logits_soft_cap: float | None = None,
-                                      fuse_reciprocal: bool = True,
-                                      use_base2_exp: bool = False,
-                                      max_logit_const: float | None = None,
-                                      interpret: bool = False,
-                                      dq_reduction_steps: int | None = None) -> tokamax_splash_attention_kernel.SplashConfig:
+
+def convert_to_tokamax_splash_config(
+    block_sizes: BlockSizes,
+    q_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+    k_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+    v_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
+    residual_checkpoint_name: str | None = None,
+    attn_logits_soft_cap: float | None = None,
+    fuse_reciprocal: bool = True,
+    use_base2_exp: bool = False,
+    max_logit_const: float | None = None,
+    interpret: bool = False,
+    dq_reduction_steps: int | None = None,
+) -> tokamax_splash_attention_kernel.SplashConfig:
   assert block_sizes.use_fused_bwd_kernel, "Tokamax Splash attention only supports fused bwd kernel."
   return tokamax_splash_attention_kernel.SplashConfig(
       block_q=block_sizes.block_q,
@@ -218,7 +222,7 @@ def convert_to_tokamax_splash_config( block_sizes: BlockSizes,
       block_q_dkv=block_sizes.block_q_dkv,
       block_kv_dkv=block_sizes.block_kv_dkv,
       block_kv_dkv_compute=block_sizes.block_kv_dkv_compute,
-      block_q_dq= None if block_sizes.use_fused_bwd_kernel else block_sizes.block_q_dq,
+      block_q_dq=None if block_sizes.use_fused_bwd_kernel else block_sizes.block_q_dq,
       block_kv_dq=None if block_sizes.use_fused_bwd_kernel else block_sizes.block_kv_dq,
       use_fused_bwd_kernel=block_sizes.use_fused_bwd_kernel,
       q_layout=q_layout,
@@ -253,8 +257,7 @@ def _tpu_flash_attention(
   q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
   # This is the case for cross-attn.
   if key.shape[1] != query.shape[1]:
-    assert key.shape[1] % 128 == 0
-    kv_max_block_size = key.shape[1]
+    kv_max_block_size = ((key.shape[1] + 127) // 128) * 128
   else:
     kv_max_block_size = q_max_block_size
 
@@ -292,7 +295,6 @@ def _tpu_flash_attention(
       check_rep=False,
   )
   def wrap_flash_attention(query, key, value):
-
     uses_fused_kernel = block_sizes.use_fused_bwd_kernel
     block_q_sizes = (
         block_sizes.block_q,
@@ -331,7 +333,9 @@ def _tpu_flash_attention(
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
     if attention_kernel == "tokamax_flash":
-      mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
+      mask = tokamax_splash_attention_mask.FullMask(
+          _shape=(query.shape[2], key.shape[2]),
+      )
       splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
           mask=mask,
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
@@ -339,7 +343,9 @@ def _tpu_flash_attention(
           save_residuals=False,
       )
     elif attention_kernel == "tokamax_ring":
-      mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]),)
+      mask = tokamax_splash_attention_mask.FullMask(
+          _shape=(query.shape[2], key.shape[2]),
+      )
       splash_kernel = tokamax_ring_attention_kernel.make_ring_attention(
           mask=mask,
           is_mqa=False,
@@ -355,9 +361,8 @@ def _tpu_flash_attention(
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
           block_sizes=block_sizes,
           save_residuals=True if "ring" in attention_kernel else False,
-          residual_checkpoint_name=residual_checkpoint_name
+          residual_checkpoint_name=residual_checkpoint_name,
       )
-
 
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
@@ -399,7 +404,9 @@ def _tpu_flash_attention(
           return (m, l, o, k_next, v_next), None
 
         initial_carry = (m, l, o, k1, v1)
-        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(ring_scan_body, initial_carry, None, length=num_context_shards - 1)
+        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(
+            ring_scan_body, initial_carry, None, length=num_context_shards - 1
+        )
 
         attention_output = o_final / l_final[..., None]
       else:
@@ -581,7 +588,16 @@ def _apply_attention(
     )
   elif "ring" in attention_kernel:
     return _tpu_flash_attention(
-        query, key * scale, value, heads, mesh, axis_names_q, axis_names_kv, flash_block_sizes, dtype, attention_kernel,
+        query,
+        key * scale,
+        value,
+        heads,
+        mesh,
+        axis_names_q,
+        axis_names_kv,
+        flash_block_sizes,
+        dtype,
+        attention_kernel,
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
     )
@@ -589,7 +605,6 @@ def _apply_attention(
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
   else:
     raise ValueError(f"Unexpected attention kernel {attention_kernel=}.")
-
 
 
 def _query_chunk_attention(query, key, value, precision, key_chunk_size: int = 4096):
@@ -924,7 +939,7 @@ class FlaxWanAttention(nnx.Module):
       axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
       axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
     if attention_kernel == "tokamax_ring" and not is_self_attention:
-      attention_kernel = "tokamax_flash" # do not use ring attention for cross attention
+      attention_kernel = "tokamax_flash"  # do not use ring attention for cross attention
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
         attention_kernel=attention_kernel,
@@ -1235,7 +1250,6 @@ class FlaxFluxAttention(nn.Module):
     )
 
   def __call__(self, hidden_states, encoder_hidden_states=None, attention_mask=None, image_rotary_emb=None):
-
     qkv_proj = self.qkv(hidden_states)
     B, L = hidden_states.shape[:2]
     H, D, K = self.heads, qkv_proj.shape[-1] // (self.heads * 3), 3
@@ -1247,7 +1261,6 @@ class FlaxFluxAttention(nn.Module):
     key_proj = self.key_norm(key_proj)
 
     if encoder_hidden_states is not None:
-
       encoder_qkv_proj = self.encoder_qkv(encoder_hidden_states)
       B, L = encoder_hidden_states.shape[:2]
       H, D, K = self.heads, encoder_qkv_proj.shape[-1] // (self.heads * 3), 3
@@ -1341,7 +1354,6 @@ class FlaxAttention(nn.Module):
   quant: Quant = None
 
   def setup(self):
-
     if self.attention_kernel == "flash" and self.mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
     inner_dim = self.dim_head * self.heads

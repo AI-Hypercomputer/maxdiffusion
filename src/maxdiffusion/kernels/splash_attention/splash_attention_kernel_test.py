@@ -84,9 +84,7 @@ class Mask:
     raise NotImplementedError()
 
 
-def full_mask_strategy(
-    q_seq_len: int, kv_seq_len: int
-) -> hps.SearchStrategy[Mask]:
+def full_mask_strategy(q_seq_len: int, kv_seq_len: int) -> hps.SearchStrategy[Mask]:
   return hps.just(FullMask(q_seq_len, kv_seq_len))
 
 
@@ -101,9 +99,7 @@ class SplitMask(Mask):
     return mask_lib.NumpyMask(mask)
 
 
-def split_mask_strategy(
-    q_seq_len: int, kv_seq_len: int
-) -> hps.SearchStrategy[Mask]:
+def split_mask_strategy(q_seq_len: int, kv_seq_len: int) -> hps.SearchStrategy[Mask]:
   return hps.just(SplitMask(q_seq_len, kv_seq_len))
 
 
@@ -116,9 +112,7 @@ class FullMask(Mask):
     return mask_lib.FullMask((self.q_seq_len, self.kv_seq_len))
 
 
-def causal_mask_strategy(
-    q_seq_len: int, kv_seq_len: int
-) -> hps.SearchStrategy[Mask]:
+def causal_mask_strategy(q_seq_len: int, kv_seq_len: int) -> hps.SearchStrategy[Mask]:
   return hps.just(CausalMask(q_seq_len, kv_seq_len))
 
 
@@ -152,12 +146,8 @@ class LocalAttentionMask(Mask):
 
 @hps.composite
 def local_attention_mask_strategy(draw: Draw, seq_len: int) -> Mask:
-  left_window = draw(
-      hps.one_of(hps.none(), hps.integers(min_value=0, max_value=seq_len))
-  )
-  right_window = draw(
-      hps.one_of(hps.none(), hps.integers(min_value=0, max_value=seq_len))
-  )
+  left_window = draw(hps.one_of(hps.none(), hps.integers(min_value=0, max_value=seq_len)))
+  right_window = draw(hps.one_of(hps.none(), hps.integers(min_value=0, max_value=seq_len)))
   offset = draw(hps.integers(min_value=-seq_len, max_value=seq_len - 1))
   return LocalAttentionMask(seq_len, left_window, right_window, offset=offset)
 
@@ -170,9 +160,7 @@ class RandomMask(Mask):
   seed: int
 
   def get_mask(self) -> mask_lib.Mask:
-    mask = mask_lib.make_random_mask(
-        (self.q_seq_len, self.kv_seq_len), self.sparsity, self.seed
-    )
+    mask = mask_lib.make_random_mask((self.q_seq_len, self.kv_seq_len), self.sparsity, self.seed)
     # Make sure that no row is full of zeros as this is leads to undefined
     # softmax.
     mask[:, 0] = True
@@ -202,9 +190,7 @@ class ComposeMask(Mask):
 def compose_mask_strategy(draw: Draw, q_seq_len: int, kv_seq_len: int) -> Mask:
   mask1 = draw(mask_strategy(q_seq_len, kv_seq_len))
   mask2 = draw(mask_strategy(q_seq_len, kv_seq_len))
-  op = draw(
-      hps.one_of(hps.just(mask_lib.LogicalOr), hps.just(mask_lib.LogicalAnd))
-  )
+  op = draw(hps.one_of(hps.just(mask_lib.LogicalOr), hps.just(mask_lib.LogicalAnd)))
   return ComposeMask(mask1, mask2, op)
 
 
@@ -230,21 +216,13 @@ def mask_strategy(draw: Draw, q_seq_len: int, kv_seq_len: int) -> Mask:
 def model_config_strategy(draw: Draw) -> ModelConfig:
   q_seq_len = draw(hps.sampled_from([1024, 2048, 4096]))
   kv_seq_len = draw(hps.sampled_from([1024, 2048, 4096]))
-  head_dim_qk, head_dim_v = draw(
-      hps.sampled_from(
-          [(64, 128), (64, 64), (128, 128), (256, 256), (192, 128)]
-      )
-  )
+  head_dim_qk, head_dim_v = draw(hps.sampled_from([(64, 128), (64, 64), (128, 128), (256, 256), (192, 128)]))
   if q_seq_len >= 4096 and kv_seq_len >= 4096:
     dtype = np.dtype("float32")
   else:
-    dtype = draw(
-        hps.sampled_from([np.dtype("float32"), np.dtype(jnp.bfloat16)])
-    )
+    dtype = draw(hps.sampled_from([np.dtype("float32"), np.dtype(jnp.bfloat16)]))
 
-  num_q_heads, num_kv_heads = draw(
-      hps.sampled_from([(1, 1), (2, 2), (4, 1), (8, 4), (6, 2)])
-  )
+  num_q_heads, num_kv_heads = draw(hps.sampled_from([(1, 1), (2, 2), (4, 1), (8, 4), (6, 2)]))
   return ModelConfig(
       q_seq_len,
       kv_seq_len,
@@ -256,9 +234,7 @@ def model_config_strategy(draw: Draw) -> ModelConfig:
   )
 
 
-def check_mask_no_empty_rows(
-    mask: mask_lib.Mask, segment_ids: splash.SegmentIds | None
-):
+def check_mask_no_empty_rows(mask: mask_lib.Mask, segment_ids: splash.SegmentIds | None):
   effective_mask = np.array(mask[:, :])
 
   if segment_ids is not None:
@@ -279,20 +255,16 @@ def block_sizes_strategy(
   q_layout = draw(hps.sampled_from(splash.QKVLayout))
   k_layout = draw(hps.sampled_from(splash.QKVLayout))
   v_layout = draw(hps.sampled_from(splash.QKVLayout))
-  layouts = dict(q_layout=q_layout, k_layout=k_layout, v_layout=v_layout)
+  layouts = {"q_layout": q_layout, "k_layout": k_layout, "v_layout": v_layout}
   q_valid_block_shapes = [bs for bs in all_block_shapes if bs <= q_seq_len]
   kv_valid_block_shapes = [bs for bs in all_block_shapes if bs <= kv_seq_len]
   bq, bkv = (
       draw(hps.sampled_from(q_valid_block_shapes)),
       draw(hps.sampled_from(kv_valid_block_shapes)),
   )
-  bkv_compute = draw(
-      hps.sampled_from([None, *[b for b in kv_valid_block_shapes if b <= bkv]])
-  )
+  bkv_compute = draw(hps.sampled_from([None, *[b for b in kv_valid_block_shapes if b <= bkv]]))
   if not include_bwd_blocks:
-    return splash.SplashConfig(
-        block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute, **layouts
-    )
+    return splash.SplashConfig(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute, **layouts)
   all_block_shapes = [128, 256]
   q_valid_block_shapes = [bs for bs in all_block_shapes if bs <= q_seq_len]
   kv_valid_block_shapes = [bs for bs in all_block_shapes if bs <= kv_seq_len]
@@ -300,11 +272,7 @@ def block_sizes_strategy(
       draw(hps.sampled_from(q_valid_block_shapes)),
       draw(hps.sampled_from(kv_valid_block_shapes)),
   )
-  block_kv_dkv_compute = draw(
-      hps.sampled_from(
-          [None, *[b for b in kv_valid_block_shapes if b <= bkv_dkv]]
-      )
-  )
+  block_kv_dkv_compute = draw(hps.sampled_from([None, *[b for b in kv_valid_block_shapes if b <= bkv_dkv]]))
   return splash.SplashConfig(
       block_q=bq,
       block_kv=bkv,
@@ -322,14 +290,7 @@ def _generate_inputs(
     is_mqa: bool,
     is_segmented: bool,
     use_sinks: bool = False,
-) -> tuple[
-    jax.Array,
-    jax.Array,
-    jax.Array,
-    jax.Array | None,
-    splash.SegmentIds | None,
-    jax.Array,
-]:
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array | None, splash.SegmentIds | None, jax.Array,]:
   seed = data.draw(seed_strategy())
   key = random.key(seed)
   k1, k2, k3, k_sinks, k_do = random.split(key, 5)
@@ -381,9 +342,7 @@ class SplashAttentionTest(test_utils.SplashAttentionTestCase):
   def test_splash_attention(self, is_mqa, is_segmented, is_dynamic_mask, data):
     model_config = data.draw(model_config_strategy())
     q_seq_len, kv_seq_len = model_config.q_seq_len, model_config.kv_seq_len
-    q, k, v, _, segment_ids, _ = _generate_inputs(
-        data, model_config, is_mqa, is_segmented
-    )
+    q, k, v, _, segment_ids, _ = _generate_inputs(data, model_config, is_mqa, is_segmented)
     attn_logits_soft_cap = data.draw(attn_logits_soft_cap_strategy())
     mask = data.draw(mask_strategy(q_seq_len, kv_seq_len)).get_mask()
     check_mask_no_empty_rows(mask, segment_ids)
@@ -431,14 +390,12 @@ class SplashAttentionTest(test_utils.SplashAttentionTestCase):
       use_sinks=(False, True),
   )
   @hp.given(hps.data())
-  def test_splash_attention_fwd(self, is_mqa, is_segmented, is_dynamic_mask,
-                                use_base2_exp, use_max_logit_estimate,
-                                fuse_reciprocal, use_sinks, data):
+  def test_splash_attention_fwd(
+      self, is_mqa, is_segmented, is_dynamic_mask, use_base2_exp, use_max_logit_estimate, fuse_reciprocal, use_sinks, data
+  ):
     model_config = data.draw(model_config_strategy())
     q_seq_len, kv_seq_len = model_config.q_seq_len, model_config.kv_seq_len
-    q, k, v, sinks, segment_ids, _ = _generate_inputs(
-        data, model_config, is_mqa, is_segmented, use_sinks
-    )
+    q, k, v, sinks, segment_ids, _ = _generate_inputs(data, model_config, is_mqa, is_segmented, use_sinks)
     attn_logits_soft_cap = data.draw(attn_logits_soft_cap_strategy())
     mask = data.draw(mask_strategy(q_seq_len, kv_seq_len)).get_mask()
     check_mask_no_empty_rows(mask, segment_ids)
@@ -470,9 +427,7 @@ class SplashAttentionTest(test_utils.SplashAttentionTestCase):
     elif use_max_logit_estimate == "value_1d":
       max_logit_value = max_val * jnp.ones((1,), dtype=jnp.bfloat16)
     elif use_max_logit_estimate == "value_2d":
-      max_logit_value = max_val * jnp.ones(
-          (model_config.num_q_heads,), dtype=jnp.bfloat16
-      )
+      max_logit_value = max_val * jnp.ones((model_config.num_q_heads,), dtype=jnp.bfloat16)
     attn = make_mask_fn(mask, config=config, save_residuals=True)
     attn_ref = partial(
         base.attention_reference,
@@ -481,9 +436,7 @@ class SplashAttentionTest(test_utils.SplashAttentionTestCase):
         attn_logits_soft_cap=attn_logits_soft_cap,
     )
 
-    o, stats = attn(
-        q, k, v, segment_ids, sinks, max_logit_value=max_logit_value
-    )
+    o, stats = attn(q, k, v, segment_ids, sinks, max_logit_value=max_logit_value)
 
     o_ref, stats_ref = attn_ref(
         q.astype(jnp.float32),
@@ -494,23 +447,20 @@ class SplashAttentionTest(test_utils.SplashAttentionTestCase):
         sinks,
     )
 
-    lse_tol = dict(atol=1e-3, rtol=3e-3)
-    max_logits_tol = dict(atol=1e-3, rtol=4e-3)
+    lse_tol = {"atol": 1e-3, "rtol": 3e-3}
+    max_logits_tol = {"atol": 1e-3, "rtol": 4e-3}
     if use_sinks:
-      o_tol = dict(atol=8e-2, rtol=1e-1)
-      lse_tol['rtol'] = 6e-2
-    elif (use_base2_exp or use_max_logit_estimate is not None
-          or not fuse_reciprocal):
-      o_tol = dict(atol=8e-3, rtol=3e-3)
+      o_tol = {"atol": 8e-2, "rtol": 1e-1}
+      lse_tol["rtol"] = 6e-2
+    elif use_base2_exp or use_max_logit_estimate is not None or not fuse_reciprocal:
+      o_tol = {"atol": 8e-3, "rtol": 3e-3}
     else:
-      o_tol = dict(atol=4e-3, rtol=3e-3)
+      o_tol = {"atol": 4e-3, "rtol": 3e-3}
 
     self._assert_allclose(o, o_ref, **o_tol)
-    self._assert_allclose(stats["logsumexp"],
-                          stats_ref["logsumexp"], **lse_tol)
+    self._assert_allclose(stats["logsumexp"], stats_ref["logsumexp"], **lse_tol)
     if use_max_logit_estimate is None:
-      self._assert_allclose(stats["max_logits"],
-                            stats_ref["max_logits"], **max_logits_tol)
+      self._assert_allclose(stats["max_logits"], stats_ref["max_logits"], **max_logits_tol)
 
   @parameterized.product(
       is_mqa=(False, True),
@@ -538,17 +488,13 @@ class SplashAttentionTest(test_utils.SplashAttentionTestCase):
 
     model_config = data.draw(model_config_strategy())
     q_seq_len, kv_seq_len = model_config.q_seq_len, model_config.kv_seq_len
-    q, k, v, sinks, segment_ids, do = _generate_inputs(
-        data, model_config, is_mqa, is_segmented, use_sinks=use_sinks
-    )
+    q, k, v, sinks, segment_ids, do = _generate_inputs(data, model_config, is_mqa, is_segmented, use_sinks=use_sinks)
     attn_logits_soft_cap = data.draw(attn_logits_soft_cap_strategy())
     mask = data.draw(mask_strategy(q_seq_len, kv_seq_len)).get_mask()
     check_mask_no_empty_rows(mask, segment_ids)
     if is_dynamic_mask:
       mask = jnp.array(mask[:, :])
-    config = data.draw(
-        block_sizes_strategy(q_seq_len, kv_seq_len, include_bwd_blocks=True)
-    )
+    config = data.draw(block_sizes_strategy(q_seq_len, kv_seq_len, include_bwd_blocks=True))
 
     config = dataclasses.replace(
         config,
@@ -575,16 +521,11 @@ class SplashAttentionTest(test_utils.SplashAttentionTestCase):
     elif use_max_logit_estimate == "value_1d":
       max_logit_value = max_val * jnp.ones((1,), dtype=jnp.bfloat16)
     elif use_max_logit_estimate == "value_2d":
-      max_logit_value = max_val * jnp.ones(
-          (model_config.num_q_heads,), dtype=jnp.bfloat16
-      )
+      max_logit_value = max_val * jnp.ones((model_config.num_q_heads,), dtype=jnp.bfloat16)
 
-    attn = make_mask_fn(
-        mask, config=config, downcast_smem_data=downcast_smem_data
-    )
+    attn = make_mask_fn(mask, config=config, downcast_smem_data=downcast_smem_data)
 
-    o, attn_vjp = jax.vjp(partial(attn, max_logit_value=max_logit_value),
-                          q, k, v, segment_ids, sinks)
+    o, attn_vjp = jax.vjp(partial(attn, max_logit_value=max_logit_value), q, k, v, segment_ids, sinks)
     q32, k32, v32 = jax.tree.map(lambda x: x.astype(jnp.float32), (q, k, v))
     o_ref, stats_ref = base.attention_reference(
         q32,
@@ -598,12 +539,11 @@ class SplashAttentionTest(test_utils.SplashAttentionTestCase):
         attn_logits_soft_cap=attn_logits_soft_cap,
     )
     if use_sinks:
-      o_tol = dict(atol=1e-2, rtol=1e-1)
-    elif (use_base2_exp or use_max_logit_estimate is not None
-          or not fuse_reciprocal):
-      o_tol = dict(atol=8e-3, rtol=1e-2)
+      o_tol = {"atol": 1e-2, "rtol": 1e-1}
+    elif use_base2_exp or use_max_logit_estimate is not None or not fuse_reciprocal:
+      o_tol = {"atol": 8e-3, "rtol": 1e-2}
     else:
-      o_tol = dict(atol=4e-3, rtol=3e-3)
+      o_tol = {"atol": 4e-3, "rtol": 3e-3}
     self._assert_allclose(o, o_ref, **o_tol)
 
     dq, dk, dv, _, dsinks = attn_vjp(do)

@@ -30,7 +30,6 @@ from ..utils import BaseOutput
 from .modeling_flax_utils import FlaxModelMixin
 
 
-
 @flax.struct.dataclass
 class FlaxDecoderOutput(BaseOutput):
   """
@@ -932,8 +931,6 @@ class FlaxAutoencoderKL(nn.Module, FlaxModelMixin, ConfigMixin):
       return (sample,)
 
     return FlaxDecoderOutput(sample=sample)
-
-
 
 
 class WanDiagonalGaussianDistribution(FlaxDiagonalGaussianDistribution):

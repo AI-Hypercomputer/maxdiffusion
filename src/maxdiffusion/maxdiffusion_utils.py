@@ -286,6 +286,66 @@ def get_dummy_flux_inputs(config, pipeline, batch_size):
   return (latents, timesteps, latents_ids, guidance_vec, t5_hidden_states, t5_ids, clip_hidden_states)
 
 
+def get_dummy_ltx2_inputs(config, pipeline, batch_size):
+  raw_keys = config.get_keys() if hasattr(config, "get_keys") else {}
+  height = raw_keys.get("height", 512) if raw_keys.get("height") else 512
+  width = raw_keys.get("width", 768) if raw_keys.get("width") else 768
+  num_frames = raw_keys.get("num_frames", 121) if raw_keys.get("num_frames") else 121
+  fps = raw_keys.get("fps", 24.0) if raw_keys.get("fps") else 24.0
+  duration_s = num_frames / fps
+  audio_latents_per_second = (
+      pipeline.audio_sampling_rate / pipeline.audio_hop_length / float(pipeline.audio_vae_temporal_compression_ratio)
+  )
+  audio_num_frames = round(duration_s * audio_latents_per_second)
+  audio_num_frames = ((audio_num_frames + 127) // 128) * 128
+
+  hidden_states = pipeline.prepare_latents(
+      batch_size,
+      pipeline.transformer.in_channels,
+      height,
+      width,
+      num_frames,
+      dtype=jnp.float32,
+      generator=jax.random.PRNGKey(0),
+  )
+
+  audio_hidden_states = pipeline.prepare_audio_latents(
+      batch_size,
+      getattr(pipeline.audio_vae.config, "latent_channels", 8)
+      if hasattr(pipeline, "audio_vae") and pipeline.audio_vae is not None
+      else 8,
+      audio_num_frames,
+      dtype=jnp.float32,
+      generator=jax.random.PRNGKey(0),
+  )
+
+  caption_channels = getattr(
+      pipeline.transformer, "caption_channels", getattr(pipeline.transformer.config, "caption_channels", 3840)
+  )
+
+  seq_len_text = raw_keys.get("max_sequence_length", 128) if raw_keys.get("max_sequence_length") else 128
+
+  encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, caption_channels), dtype=jnp.float32)
+  audio_encoder_hidden_states = jnp.zeros((batch_size, seq_len_text, caption_channels), dtype=jnp.float32)
+  timestep = jnp.ones((batch_size,), dtype=jnp.float32)
+
+  return (
+      hidden_states,
+      audio_hidden_states,
+      encoder_hidden_states,
+      audio_encoder_hidden_states,
+      timestep,
+      None,  # audio_timestep
+      jnp.ones((batch_size, seq_len_text), dtype=jnp.float32),  # encoder_attention_mask
+      jnp.ones((batch_size, seq_len_text), dtype=jnp.float32),  # audio_encoder_attention_mask
+      (num_frames - 1) // 8 + 1 if hasattr(pipeline, "vae_temporal_compression_ratio") else 1,  # latent num_frames
+      height // 32 if hasattr(pipeline, "vae_spatial_compression_ratio") else 1,  # latent height
+      width // 32 if hasattr(pipeline, "vae_spatial_compression_ratio") else 1,  # latent width
+      fps,
+      audio_num_frames,
+  )
+
+
 def get_dummy_wan_inputs(config, pipeline, batch_size):
   latents = pipeline.prepare_latents(
       batch_size,

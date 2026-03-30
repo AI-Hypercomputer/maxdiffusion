@@ -188,7 +188,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
     if mask is not None:
       mask = self.video_processor.preprocess_video(mask, image_size[0], image_size[1])
       mask = jnp.array(np.asarray(mask), dtype=video.dtype)
-      mask = jnp.clip((mask + 1) / 2, a_min=0, a_max=1)
+      mask = jnp.clip((mask + 1) / 2, min=0, max=1)
     else:
       mask = jnp.ones_like(video)
 

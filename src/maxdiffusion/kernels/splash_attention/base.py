@@ -25,9 +25,7 @@ from . import splash_attention_mask_info as mask_info_lib
 MaskInfo = mask_info_lib.MaskInfo
 
 
-DEFAULT_MASK_VALUE: Final[float] = -0.7 * float(
-    np.finfo(np.dtype("float32")).max
-)
+DEFAULT_MASK_VALUE: Final[float] = -0.7 * float(np.finfo(np.dtype("float32")).max)
 
 
 class SegmentIds(NamedTuple):
@@ -55,9 +53,7 @@ class SegmentIds(NamedTuple):
 
 
 # Return type of SplashAttention function that implements the custom vjp rule.
-SplashCustomReturnType: TypeAlias = (
-    jax.Array | tuple[jax.Array, dict[str, jax.Array]]
-)
+SplashCustomReturnType: TypeAlias = jax.Array | tuple[jax.Array, dict[str, jax.Array]]
 
 SplashResidualsType = tuple[
     jax.Array,  # q
@@ -85,9 +81,7 @@ def _attention_reference_impl(
   logits = jnp.einsum("sd,td->st", q.astype(jnp.float32), k.astype(jnp.float32))
 
   if segment_ids is not None:
-    mask = jnp.logical_and(
-        mask, segment_ids.q[:, None] == segment_ids.kv[None, :]
-    )
+    mask = jnp.logical_and(mask, segment_ids.q[:, None] == segment_ids.kv[None, :])
 
   if attn_logits_soft_cap is not None:
     logits = jnp.tanh(logits / attn_logits_soft_cap)
@@ -126,9 +120,7 @@ def _attention_reference_custom_bwd(
     backward_impl: str = "vanilla",
     attn_logits_soft_cap: float | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, None, None, jax.Array | None]:
-  uncapped_logits = jnp.einsum(
-      "qc,kc->qk", q, k, preferred_element_type=jnp.float32
-  )
+  uncapped_logits = jnp.einsum("qc,kc->qk", q, k, preferred_element_type=jnp.float32)
 
   if attn_logits_soft_cap is not None:
     logits = jnp.tanh(uncapped_logits / attn_logits_soft_cap)
@@ -137,9 +129,7 @@ def _attention_reference_custom_bwd(
     logits = uncapped_logits
 
   if segment_ids is not None:
-    mask = jnp.logical_and(
-        mask, segment_ids.q[:, None] == segment_ids.kv[None, :]
-    )
+    mask = jnp.logical_and(mask, segment_ids.q[:, None] == segment_ids.kv[None, :])
   logits = jnp.where(mask, logits, mask_value)
 
   p = jnp.exp(logits - logsumexp[..., None])
@@ -165,10 +155,7 @@ def _attention_reference_custom_bwd(
   dq = jnp.einsum("st,td->sd", ds, k.astype(jnp.float32)).astype(q.dtype)
   dsinks = None
   if sinks is not None:
-    sinks_exp = -jnp.exp(
-        sinks[..., None, None].astype(jnp.float32)
-        - logsumexp[..., None].astype(jnp.float32)
-    )
+    sinks_exp = -jnp.exp(sinks[..., None, None].astype(jnp.float32) - logsumexp[..., None].astype(jnp.float32))
     dsinks = jnp.sum(sinks_exp.astype(o.dtype) * o * do, axis=(-1, -2))
   return dq, dk, dv, None, None, dsinks
 
@@ -229,9 +216,7 @@ def attention_reference(
   return out
 
 
-@functools.partial(
-    jax.jit, static_argnames=["is_mqa", "backward_impl", "attn_logits_soft_cap"]
-)
+@functools.partial(jax.jit, static_argnames=["is_mqa", "backward_impl", "attn_logits_soft_cap"])
 def attention_reference_vjp(
     do,
     q,
@@ -269,9 +254,7 @@ def attention_reference_vjp(
       k = jnp.repeat(k, head_multiplier, axis=0)
       v = jnp.repeat(v, head_multiplier, axis=0)
 
-  dq, dk, dv, _, _, dsinks = bwd(
-      do, q, k, v, mask, segment_ids, sinks, o, logsumexp
-  )
+  dq, dk, dv, _, _, dsinks = bwd(do, q, k, v, mask, segment_ids, sinks, o, logsumexp)
 
   if is_mqa:
     dk, dv = dk.sum(axis=0), dv.sum(axis=0)

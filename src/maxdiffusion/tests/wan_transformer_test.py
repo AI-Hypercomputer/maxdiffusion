@@ -65,7 +65,6 @@ class WanTransformerTest(unittest.TestCase):
     devices_array = create_device_mesh(config)
     self.mesh = Mesh(devices_array, config.mesh_axes)
 
-
   def test_rotary_pos_embed(self):
     batch_size = 1
     channels = 16

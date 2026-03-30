@@ -85,20 +85,9 @@ def get_git_commit_hash():
 jax.config.update("jax_use_shardy_partitioner", True)
 
 
-def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=None):
-  """Call the pipeline with optional num_inference_steps override.
-
-  Args:
-    config: The configuration object.
-    pipeline: The pipeline to call.
-    prompt: The prompt(s) to use.
-    negative_prompt: The negative prompt(s) to use.
-    num_inference_steps: Optional override for number of inference steps.
-                         If None, uses config.num_inference_steps.
-  """
+def call_pipeline(config, pipeline, prompt, negative_prompt):
   model_key = config.model_name
   model_type = config.model_type
-  steps = num_inference_steps if num_inference_steps is not None else config.num_inference_steps
   if model_type == "I2V":
     image = load_image(config.image_url)
     if model_key == WAN2_1:
@@ -109,7 +98,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=steps,
+          num_inference_steps=config.num_inference_steps,
           guidance_scale=config.guidance_scale,
       )
     elif model_key == WAN2_2:
@@ -120,7 +109,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=steps,
+          num_inference_steps=config.num_inference_steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
           use_cfg_cache=config.use_cfg_cache,
@@ -135,7 +124,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=steps,
+          num_inference_steps=config.num_inference_steps,
           guidance_scale=config.guidance_scale,
           use_cfg_cache=config.use_cfg_cache,
       )
@@ -146,10 +135,11 @@ def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=steps,
+          num_inference_steps=config.num_inference_steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
           use_cfg_cache=config.use_cfg_cache,
+          use_sen_cache=config.use_sen_cache,
       )
     else:
       raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")
@@ -190,6 +180,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       max_logging.log("Could not retrieve Git commit hash.")
 
   if pipeline is None:
+    load_start = time.perf_counter()
     model_type = config.model_type
     if model_key == WAN2_1:
       if model_type == "I2V":
@@ -204,6 +195,10 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     else:
       raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
+    load_time = time.perf_counter() - load_start
+    max_logging.log(f"load_time: {load_time:.1f}s")
+  else:
+    load_time = 0.0
 
   # If LoRA is specified, inject layers and load weights.
   if (
@@ -259,7 +254,6 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log(f"hardware: {jax.devices()[0].platform}")
   max_logging.log(f"number of devices: {jax.device_count()}")
   max_logging.log(f"per_device_batch_size: {config.per_device_batch_size}")
-  max_logging.log(f"vae_spatial: {config.vae_spatial}")
   max_logging.log("============================================================")
 
   compile_time = time.perf_counter() - s0
@@ -288,49 +282,26 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
+  max_logging.log(
+      f"\n{'=' * 50}\n"
+      f"  TIMING SUMMARY\n"
+      f"{'=' * 50}\n"
+      f"  Load (checkpoint):   {load_time:>7.1f}s\n"
+      f"  Compile:             {compile_time:>7.1f}s\n"
+      f"  {'─' * 40}\n"
+      f"  Inference:           {generation_time:>7.1f}s\n"
+      f"{'=' * 50}"
+  )
 
+  s0 = time.perf_counter()
   if config.enable_profiler:
-    skip_steps = getattr(config, 'skip_first_n_steps_for_profiler', 0)
-    profiler_steps = getattr(config, 'profiler_steps', config.num_inference_steps)
-    profile_all = profiler_steps == -1
-    steps_for_profile = config.num_inference_steps if profile_all else profiler_steps
-
-    if profile_all:
-      max_logging.log(f"Profiler: profiling all {steps_for_profile} inference steps (profiler_steps=-1)")
-    else:
-      max_logging.log(f"Profiler: profiling {steps_for_profile} steps out of {config.num_inference_steps} total")
-    max_logging.log(f"Profiler: skip_first_n_steps={skip_steps}")
-
-    def block_if_jax(x):
-      """Block until ready if x is a JAX array, otherwise no-op."""
-      if hasattr(x, 'block_until_ready'):
-        x.block_until_ready()
-      return x
-
-    for i in range(skip_steps):
-      max_logging.log(f"Profiler warmup iteration {i + 1}/{skip_steps}")
-      warmup_videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=steps_for_profile)
-      # Block until warmup completes
-      jax.tree_util.tree_map(block_if_jax, warmup_videos)
-
-    # Warm up GCS connection by flushing writer before starting profiler
-    if writer and jax.process_index() == 0:
-      max_logging.log("Flushing writer to warm up GCS connection before profiler...")
-      writer.flush()
-
-    s0 = time.perf_counter()
     max_utils.activate_profiler(config)
-    max_logging.log(f"Profiler: starting profiled run with {steps_for_profile} steps")
-    profiled_videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=steps_for_profile)
-    # Wait for all computation to finish before stopping profiler
-    jax.tree_util.tree_map(block_if_jax, profiled_videos)
+    videos = call_pipeline(config, pipeline, prompt, negative_prompt)
     max_utils.deactivate_profiler(config)
-    max_utils.upload_profiler_traces(config)
     generation_time_with_profiler = time.perf_counter() - s0
     max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
     if writer and jax.process_index() == 0:
       writer.add_scalar("inference/generation_time_with_profiler", generation_time_with_profiler, global_step=0)
-    max_logging.log("Profiler: completed (video not saved)")
 
   return saved_video_path
 

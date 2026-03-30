@@ -105,11 +105,11 @@ def _downcast_to_small_type(array: np.ndarray) -> np.ndarray:
     all positive.
   """
   if array.dtype != np.int32:
-    raise ValueError(f'Expected int32 input, but got {array.dtype}.')
+    raise ValueError(f"Expected int32 input, but got {array.dtype}.")
 
   if not np.all(array >= -1):
     # Allow -1 for padding.
-    raise ValueError('Expected non-negative array.')
+    raise ValueError("Expected non-negative array.")
 
   if array.size == 0:
     return array
@@ -141,9 +141,9 @@ def _check_mask(mask: mask_lib.Mask) -> None:
   assert len(mask.shape) == 2
 
   exception_message = (
-      'Some rows of the mask (along the kv dimension) are all zeros.\nThis is'
-      ' would result in a division by zero when computing the attention'
-      ' softmax.'
+      "Some rows of the mask (along the kv dimension) are all zeros.\nThis is"
+      " would result in a division by zero when computing the attention"
+      " softmax."
   )
 
   is_row_non_zero = np.zeros(mask.shape[0], dtype=np.bool_)
@@ -164,7 +164,7 @@ class _HashableNDArray:
     array: The underlying numpy array.
   """
 
-  __slots__ = ('array', '_hash')
+  __slots__ = ("array", "_hash")
   array: np.ndarray
 
   def __init__(self, array: np.ndarray):
@@ -257,7 +257,7 @@ def _process_dynamic_mask(
     compatible with the mask sizes.
   """
   if len(mask.shape) != 2:
-    raise ValueError(f'Expected a 2-dim mask, instead got: {mask.shape}.')
+    raise ValueError(f"Expected a 2-dim mask, instead got: {mask.shape}.")
 
   q_seq_len, kv_seq_len = mask.shape
   q_block_size, kv_block_size = block_shape
@@ -265,9 +265,9 @@ def _process_dynamic_mask(
   kv_blocks_count, kv_mod = divmod(kv_seq_len, kv_block_size)
 
   if q_mod != 0:
-    raise ValueError(f'{q_block_size=} should divide {q_seq_len=}.')
+    raise ValueError(f"{q_block_size=} should divide {q_seq_len=}.")
   if kv_mod != 0:
-    raise ValueError(f'{kv_block_size=} should divide {kv_seq_len=}.')
+    raise ValueError(f"{kv_block_size=} should divide {kv_seq_len=}.")
 
   # Tile the last 2 dimensions of the mask into 2D tiles of size `block_shape`.
   mask_blocks = (
@@ -285,9 +285,7 @@ def _process_dynamic_mask(
   all_mask = jnp.all(mask_blocks, axis=(-1, -2)).astype(np.int32)
   block_mask = any_mask + all_mask
 
-  block_ids = jnp.arange(block_mask.size, dtype=np.int32).reshape(
-      block_mask.shape
-  )
+  block_ids = jnp.arange(block_mask.size, dtype=np.int32).reshape(block_mask.shape)
   if is_dkv:
     block_mask = block_mask.swapaxes(-1, -2)
     block_ids = block_ids.swapaxes(-1, -2)
@@ -299,19 +297,15 @@ def _process_dynamic_mask(
     # We extend the grid to visit these tiles to initialize them.
     empty_rows = jnp.all(block_mask == 0, axis=-1)
     first_col = jnp.arange(block_mask.shape[1]) == 0
-    active_mask |= (empty_rows[:, None] & first_col)
+    active_mask |= empty_rows[:, None] & first_col
 
   num_active_blocks = active_mask.flatten().sum(keepdims=True)
-  active_indices = jnp.argwhere(
-      active_mask, size=active_mask.size, fill_value=-1
-  )
+  active_indices = jnp.argwhere(active_mask, size=active_mask.size, fill_value=-1)
   active_rows = active_indices[:, 0].astype(np.int32)
   active_cols = active_indices[:, 1].astype(np.int32)
 
   block_mask = block_mask[active_rows, active_cols]
-  mask_next = block_ids.at[active_rows, active_cols].get(
-      wrap_negative_indices=False
-  )
+  mask_next = block_ids.at[active_rows, active_cols].get(wrap_negative_indices=False)
   mask_next = jnp.where(block_mask == 1, mask_next, 0)
 
   # Mask out the blocks that aren't active.
@@ -326,7 +320,7 @@ def _process_dynamic_mask(
       return array
 
     if array.dtype != np.int32:
-      raise ValueError(f'Expected int32 input, but got {array.dtype}.')
+      raise ValueError(f"Expected int32 input, but got {array.dtype}.")
 
     if max_value <= np.iinfo(np.int8).max:
       return array.astype(np.int8)
@@ -390,7 +384,7 @@ def _process_mask(
   """
 
   if len(mask.shape) != 2:
-    raise ValueError(f'Expected a 2-dim mask, instead got: {mask.shape=}')
+    raise ValueError(f"Expected a 2-dim mask, instead got: {mask.shape=}")
 
   q_seq_len, kv_seq_len = mask.shape
   q_block_size, kv_block_size = block_shape
@@ -398,38 +392,38 @@ def _process_mask(
   kv_blocks_count, kv_mod = divmod(kv_seq_len, kv_block_size)
 
   if q_mod != 0:
-    raise ValueError(f'{q_block_size=} should divide {q_seq_len=}.')
+    raise ValueError(f"{q_block_size=} should divide {q_seq_len=}.")
   if kv_mod != 0:
-    raise ValueError(f'{kv_block_size=} should divide {kv_seq_len=}.')
+    raise ValueError(f"{kv_block_size=} should divide {kv_seq_len=}.")
 
   q_seq_len_per_shard, mod = divmod(q_seq_len, q_seq_shards)
   if mod != 0:
-    raise ValueError(f'{q_seq_shards=} should divide {q_seq_len=}.')
+    raise ValueError(f"{q_seq_shards=} should divide {q_seq_len=}.")
 
   q_blocks_per_shard, mod = divmod(q_seq_len_per_shard, q_block_size)
   if mod != 0:
-    raise ValueError(f'{q_block_size=} should divide {q_seq_len_per_shard=}.')
+    raise ValueError(f"{q_block_size=} should divide {q_seq_len_per_shard=}.")
 
   kv_seq_len_per_shard, mod = divmod(kv_seq_len, kv_seq_shards)
   if mod != 0:
-    raise ValueError(f'{kv_seq_shards=} should divide {kv_seq_len=}.')
+    raise ValueError(f"{kv_seq_shards=} should divide {kv_seq_len=}.")
 
   kv_blocks_per_shard, mod = divmod(kv_seq_len_per_shard, kv_block_size)
   if mod != 0:
-    raise ValueError(f'{kv_block_size=} should divide {kv_seq_len_per_shard=}.')
+    raise ValueError(f"{kv_block_size=} should divide {kv_seq_len_per_shard=}.")
 
   # TODO: checking the validity of the masks is slow for large masks.
   # Disable it for now, reevaluate in the future.
 
   # The mask object either define q_sequence and mask_function or none of
   # them.
-  assert hasattr(mask, 'q_sequence') == hasattr(mask, 'mask_function')
+  assert hasattr(mask, "q_sequence") == hasattr(mask, "mask_function")
 
   # If the mask object defines a q_sequence and a mask_function, then make use
   # of these in the kernel rather. This is preferable over loading the mask
   # from memory. When using a mask_function, then mask_next and
   # partial_mask_blocks are left undefined and not used in the kernel.
-  if hasattr(mask, 'q_sequence') and hasattr(mask, 'mask_function'):
+  if hasattr(mask, "q_sequence") and hasattr(mask, "mask_function"):
     q_sequence = mask.q_sequence
     mask_function = mask.mask_function
   else:
@@ -469,20 +463,21 @@ def _process_mask(
 
   full_mask = (state_grid == 2).all()
   if full_mask:
-    return MaskInfo(
-        mask_next=None,
-        active_rows=None,
-        active_cols=None,
-        block_mask=None,
-        num_active_blocks=None,
-        partial_mask_blocks=None,
-        q_sequence=q_sequence,
-    ), None
+    return (
+        MaskInfo(
+            mask_next=None,
+            active_rows=None,
+            active_cols=None,
+            block_mask=None,
+            num_active_blocks=None,
+            partial_mask_blocks=None,
+            q_sequence=q_sequence,
+        ),
+        None,
+    )
 
   if unique_chunks:
-    partial_mask_blocks = np.stack(unique_chunks).astype(
-        partial_mask_blocks_dtype
-    )
+    partial_mask_blocks = np.stack(unique_chunks).astype(partial_mask_blocks_dtype)
     if is_dkv:
       partial_mask_blocks = partial_mask_blocks.mT
   else:
@@ -521,9 +516,10 @@ def _process_mask(
   if return_dynamic_grid:
     # Pad each slice to the largest number of active blocks in any shard.
     max_size = max(num_active_blocks)
-    pad_slice = lambda arr: np.pad(
-        arr, (0, max_size - arr.shape[0]), mode='constant', constant_values=-1
-    )
+
+    def pad_slice(arr):
+      return np.pad(arr, (0, max_size - arr.shape[0]), mode="constant", constant_values=-1)
+
     active_rows_slices = list(map(pad_slice, active_rows_slices))
     active_cols_slices = list(map(pad_slice, active_cols_slices))
     mask_next_slices = list(map(pad_slice, mask_next_slices))
@@ -561,9 +557,7 @@ def _process_mask(
           active_cols=active_cols,
           block_mask=block_mask,
           num_active_blocks=num_active_blocks,
-          partial_mask_blocks=partial_mask_blocks
-          if mask_function is None
-          else None,
+          partial_mask_blocks=partial_mask_blocks if mask_function is None else None,
           q_sequence=q_sequence,
       ),
       mask_function,

@@ -80,7 +80,7 @@ def apply_split_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
   last_dim = x.shape[-1]
   r = last_dim // 2
 
-  split_x = x.reshape(*x.shape[:-1], 2, r)
+  split_x = x.reshape(*x.shape[:-1], 2, r).astype(jnp.float32)
 
   first_x = split_x[..., 0, :]
   second_x = split_x[..., 1, :]
@@ -193,7 +193,7 @@ class LTX2RotaryPosEmbed(nnx.Module):
     # pixel_coords[:, 0, ...] selects Frame dimension.
     # pixel_coords shape: [B, 3, num_patches, 2] -> dim 1 is (F, H, W)
     frame_coords = pixel_coords[:, 0, ...]
-    frame_coords = jnp.clip(frame_coords + self.causal_offset - self.scale_factors[0], a_min=0)
+    frame_coords = jnp.clip(frame_coords + self.causal_offset - self.scale_factors[0], min=0)
     pixel_coords = pixel_coords.at[:, 0, ...].set(frame_coords / fps)
 
     return pixel_coords
@@ -210,12 +210,12 @@ class LTX2RotaryPosEmbed(nnx.Module):
     # 2. Start timestamps
     audio_scale_factor = self.scale_factors[0]
     grid_start_mel = grid_f * audio_scale_factor
-    grid_start_mel = jnp.clip(grid_start_mel + self.causal_offset - audio_scale_factor, a_min=0)
+    grid_start_mel = jnp.clip(grid_start_mel + self.causal_offset - audio_scale_factor, min=0)
     grid_start_s = grid_start_mel * self.hop_length / self.sampling_rate
 
     # 3. End timestamps
     grid_end_mel = (grid_f + self.patch_size_t) * audio_scale_factor
-    grid_end_mel = jnp.clip(grid_end_mel + self.causal_offset - audio_scale_factor, a_min=0)
+    grid_end_mel = jnp.clip(grid_end_mel + self.causal_offset - audio_scale_factor, min=0)
     grid_end_s = grid_end_mel * self.hop_length / self.sampling_rate
 
     # Stack [num_patches, 2]
@@ -355,13 +355,13 @@ class LTX2Attention(nnx.Module):
     # 1. Define Partitioned Initializers (Logical Axes)
     # Q, K, V kernels: [in_features (embed), out_features (heads)]
     qkv_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads"))
-    # Q, K, V biases: [out_features (heads)]
-    qkv_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("heads",))
+    # Q, K, V biases: [out_features (embed)]
+    qkv_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("embed",))
 
     # Out kernel: [in_features (heads), out_features (embed)]
     out_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed"))
-    # Out bias: [out_features (embed)]
-    out_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("embed",))
+    # Out bias: [out_features (heads)]
+    out_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("heads",))
 
     # Norm scales
     norm_scale_init = nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",))
@@ -429,6 +429,8 @@ class LTX2Attention(nnx.Module):
         heads=heads,
         dim_head=dim_head,
         dtype=dtype,
+        axis_names_q=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_Q_LENGTH, common_types.D_KV),
+        axis_names_kv=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_KV_LENGTH, common_types.D_KV),
     )
 
   def __call__(

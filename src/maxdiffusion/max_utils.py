@@ -97,7 +97,11 @@ def upload_profiler_traces(config):
   if jax.process_index() == 0 and config.enable_profiler:
     if config.tensorboard_dir.startswith("gs://"):
       max_logging.log("Profiler traces saved to: /tmp/profiler_traces")
-      max_logging.log("You can download them manually or use: gsutil -m rsync -r /tmp/profiler_traces/ " + config.tensorboard_dir.rstrip("/") + "/")
+      max_logging.log(
+          "You can download them manually or use: gsutil -m rsync -r /tmp/profiler_traces/ "
+          + config.tensorboard_dir.rstrip("/")
+          + "/"
+      )
     else:
       max_logging.log(f"Profiler traces saved to: {config.tensorboard_dir}")
 
@@ -109,6 +113,7 @@ def initialize_summary_writer(config):
 def close_summary_writer(summary_writer):
   if jax.process_index() == 0:
     summary_writer.close()
+
 
 def _prepare_metrics_for_json(metrics, step, run_name):
   """Converts metric dictionary into json supported types (e.g. float)"""
