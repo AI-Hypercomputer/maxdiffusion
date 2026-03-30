@@ -478,7 +478,7 @@ class LTX2Attention(nnx.Module):
 
     # 4. Attention
     # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
-    attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
+    attn_output = self.attention_op.apply_attention(query=query, key=key, value=value)
 
     # 7. Output Projection
     hidden_states = self.to_out(attn_output)
