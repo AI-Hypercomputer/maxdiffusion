@@ -23,9 +23,10 @@ def get_dummy_ltx2_inputs(batch_size, dtype):
     timestep = jnp.array(500.0, dtype=jnp.float32)
     # Gemma dim=3072, sequence=128
     prompt_embeds = jax.random.normal(rng, (batch_size, 128, 3072), dtype=dtype)
-    audio_prompt_embeds = None
-    encoder_attention_mask = jnp.ones((batch_size, 128), dtype=jnp.int32)
-    audio_encoder_attention_mask = None
+    # LTX-2 Audio latents default channels = 128
+    audio_latents = jax.random.normal(rng, (batch_size, 64, 128), dtype=dtype)
+    audio_prompt_embeds = jax.random.normal(rng, (batch_size, 64, 3072), dtype=dtype)
+    audio_encoder_attention_mask = jnp.ones((batch_size, 64), dtype=jnp.int32)
 
     return latents, audio_latents, timestep, prompt_embeds, audio_prompt_embeds, encoder_attention_mask, audio_encoder_attention_mask
 
@@ -83,13 +84,19 @@ def calibrate_fbs(config):
         
         # Add unconditional latents for CFG
         double_latents = jnp.concatenate([latents, latents], axis=0)
+        double_audio_latents = jnp.concatenate([audio_latents, audio_latents], axis=0)
         double_prompt_embeds = jnp.concatenate([prompt_embeds, prompt_embeds], axis=0)
+        double_audio_prompt_embeds = jnp.concatenate([audio_prompt_embeds, audio_prompt_embeds], axis=0)
         double_encoder_attention_mask = jnp.concatenate([encoder_attention_mask, encoder_attention_mask], axis=0)
+        double_audio_encoder_attention_mask = jnp.concatenate([audio_encoder_attention_mask, audio_encoder_attention_mask], axis=0)
 
         double_latents = jax.device_put(double_latents, data_sharding)
+        double_audio_latents = jax.device_put(double_audio_latents, data_sharding)
         timestep = jax.device_put(timestep, data_sharding)
         double_prompt_embeds = jax.device_put(double_prompt_embeds, data_sharding)
+        double_audio_prompt_embeds = jax.device_put(double_audio_prompt_embeds, data_sharding)
         double_encoder_attention_mask = jax.device_put(double_encoder_attention_mask, data_sharding)
+        double_audio_encoder_attention_mask = jax.device_put(double_audio_encoder_attention_mask, data_sharding)
         
         print("Compiling transformer forward pass...")
         start_compile = time.perf_counter()
@@ -101,16 +108,16 @@ def calibrate_fbs(config):
         latent_num_frames = 16
         latent_height = 16
         latent_width = 24
-        audio_num_frames = 0
+        audio_num_frames = 64
         fps = 24.0
 
         _ = transformer_forward_pass(
             graphdef, sharded_state, double_latents,
-            None, # audio_latents
+            double_audio_latents,
             timestep, double_prompt_embeds,
-            None, # audio_encoder_hidden_states
+            double_audio_prompt_embeds,
             double_encoder_attention_mask,
-            None, # audio_encoder_attention_mask
+            double_audio_encoder_attention_mask,
             do_classifier_free_guidance=True,
             guidance_scale=1.5,
             latent_num_frames=latent_num_frames,
@@ -135,11 +142,11 @@ def calibrate_fbs(config):
             start = time.perf_counter()
             _ = transformer_forward_pass(
                 graphdef, sharded_state, double_latents,
-                None, 
+                double_audio_latents, 
                 timestep, double_prompt_embeds,
-                None, 
+                double_audio_prompt_embeds, 
                 double_encoder_attention_mask,
-                None, 
+                double_audio_encoder_attention_mask, 
                 do_classifier_free_guidance=True,
                 guidance_scale=1.5,
                 latent_num_frames=latent_num_frames,
