@@ -11,7 +11,7 @@ from maxdiffusion import pyconfig
 from maxdiffusion.utils import logging
 from maxdiffusion import max_utils
 from maxdiffusion.models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
-from maxdiffusion.maxdiffusion_utils import get_precision
+from maxdiffusion.max_utils import get_precision
 
 logger = logging.get_logger(__name__)
 
