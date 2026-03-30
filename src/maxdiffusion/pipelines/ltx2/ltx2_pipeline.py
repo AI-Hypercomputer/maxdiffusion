@@ -47,7 +47,7 @@ from ...video_processor import VideoProcessor
 from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
-from ...max_utils import get_precision, device_put_replicated
+from ...max_utils import get_precision, device_put_replicated, get_flash_block_sizes
 from maxdiffusion.maxdiffusion_utils import get_dummy_ltx2_inputs
 
 
@@ -124,6 +124,7 @@ def create_sharded_logical_transformer(
   ltx2_config["weights_dtype"] = config.weights_dtype
   ltx2_config["attention_kernel"] = config.attention
   ltx2_config["precision"] = get_precision(config)
+  ltx2_config["flash_block_sizes"] = get_flash_block_sizes(config)
   ltx2_config["remat_policy"] = config.remat_policy
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
