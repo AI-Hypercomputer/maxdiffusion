@@ -14,7 +14,7 @@
 
 from maxdiffusion import max_logging
 from maxdiffusion.image_processor import PipelineImageInput
-from .wan_pipeline import WanPipeline, transformer_forward_pass
+from .wan_pipeline import WanPipeline, transformer_forward_pass, init_magcache, magcache_step
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
 from ...pyconfig import HyperParameters
@@ -151,7 +151,19 @@ class WanPipelineI2V_2_1(WanPipeline):
       last_image: Optional[PipelineImageInput] = None,
       output_type: Optional[str] = "np",
       rng: Optional[jax.Array] = None,
+      use_magcache: bool = False,
+      magcache_thresh: Optional[float] = None,
+      magcache_K: Optional[int] = None,
+      retention_ratio: Optional[float] = None,
   ):
+    config = getattr(self, "config", None)
+    if magcache_thresh is None:
+      magcache_thresh = getattr(config, "magcache_thresh", 0.04)
+    if magcache_K is None:
+      magcache_K = getattr(config, "magcache_K", 2)
+    if retention_ratio is None:
+      retention_ratio = getattr(config, "retention_ratio", 0.2)
+
     height = height or self.config.height
     width = width or self.config.width
     num_frames = num_frames or self.config.num_frames
@@ -234,6 +246,12 @@ class WanPipelineI2V_2_1(WanPipeline):
         guidance_scale=guidance_scale,
         num_inference_steps=num_inference_steps,
         scheduler=self.scheduler,
+        use_magcache=use_magcache,
+        magcache_thresh=magcache_thresh,
+        magcache_K=magcache_K,
+        retention_ratio=retention_ratio,
+        height=height,
+        mag_ratios_base=self.config.mag_ratios_base_720p if height >= 720 else self.config.mag_ratios_base_480p,
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -266,33 +284,69 @@ def run_inference_2_1_i2v(
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
+    use_magcache: bool = False,
+    magcache_thresh: float = 0.04,
+    magcache_K: int = 2,
+    retention_ratio: float = 0.2,
+    height: int = 480,
+    mag_ratios_base: Optional[List[float]] = None,
 ):
-  do_classifier_free_guidance = guidance_scale > 1.0
+  do_cfg = guidance_scale > 1.0
 
-  if do_classifier_free_guidance:
-    prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
-    image_embeds = jnp.concatenate([image_embeds, image_embeds], axis=0)
-    condition = jnp.concatenate([condition] * 2)
+  if use_magcache and do_cfg:
+    magcache_init = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base)
+    accumulated_state = magcache_init[:6]
+    cached_residual = magcache_init[6]
+    skip_warmup = magcache_init[7]
+    mag_ratios = magcache_init[8]
+
+  if do_cfg:
+    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+    image_embeds_combined = jnp.concatenate([image_embeds, image_embeds], axis=0)
+    condition_combined = jnp.concatenate([condition] * 2)
+  else:
+    prompt_embeds_combined = prompt_embeds
+    image_embeds_combined = image_embeds
+    condition_combined = condition
+
   for step in range(num_inference_steps):
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+
+    skip_blocks = False
+    if use_magcache and do_cfg:
+      skip_blocks, accumulated_state = magcache_step(
+          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup
+      )
+
     latents_input = latents
-    if do_classifier_free_guidance:
+    if do_cfg:
       latents_input = jnp.concatenate([latents, latents], axis=0)
 
-    latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
+    latent_model_input = jnp.concatenate([latents_input, condition_combined], axis=-1)
     timestep = jnp.broadcast_to(t, latents_input.shape[0])
     latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
-    noise_pred, _ = transformer_forward_pass(
+
+    outputs = transformer_forward_pass(
         graphdef,
         sharded_state,
         rest_of_state,
         latent_model_input,
         timestep,
-        prompt_embeds,
-        do_classifier_free_guidance=do_classifier_free_guidance,
+        prompt_embeds_combined,
+        do_classifier_free_guidance=do_cfg,
         guidance_scale=guidance_scale,
-        encoder_hidden_states_image=image_embeds,
+        encoder_hidden_states_image=image_embeds_combined,
+        skip_blocks=bool(skip_blocks) if use_magcache and do_cfg else None,
+        cached_residual=cached_residual if use_magcache and do_cfg else None,
+        return_residual=True if use_magcache and do_cfg else False,
     )
+    if use_magcache and do_cfg:
+      noise_pred, _, residual_x_cur = outputs
+      if not skip_blocks:
+        cached_residual = residual_x_cur
+    else:
+      noise_pred, _ = outputs
+
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents, return_dict=False)
   return latents

@@ -799,7 +799,7 @@ class WanPipeline:
     pass
 
 
-@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
+@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale", "return_residual", "skip_blocks"))
 def transformer_forward_pass(
     graphdef,
     sharded_state,
@@ -810,14 +810,26 @@ def transformer_forward_pass(
     do_classifier_free_guidance,
     guidance_scale,
     encoder_hidden_states_image=None,
+    skip_blocks=None,
+    cached_residual=None,
+    return_residual=False,
 ):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  noise_pred = wan_transformer(
+  outputs = wan_transformer(
       hidden_states=latents,
       timestep=timestep,
       encoder_hidden_states=prompt_embeds,
       encoder_hidden_states_image=encoder_hidden_states_image,
+      skip_blocks=skip_blocks,
+      cached_residual=cached_residual,
+      return_residual=return_residual,
   )
+
+  if return_residual:
+    noise_pred, residual_x = outputs
+  else:
+    noise_pred = outputs
+
   if do_classifier_free_guidance:
     bsz = latents.shape[0] // 2
     noise_cond = noise_pred[:bsz]  # First half = conditional
@@ -826,6 +838,8 @@ def transformer_forward_pass(
 
     latents = latents[:bsz]
 
+  if return_residual:
+    return noise_pred, latents, residual_x
   return noise_pred, latents
 
 
@@ -854,6 +868,9 @@ def transformer_forward_pass_full_cfg(
       timestep=timestep,
       encoder_hidden_states=prompt_embeds_combined,
       encoder_hidden_states_image=encoder_hidden_states_image,
+      skip_blocks=False,
+      cached_residual=None,
+      return_residual=False,
   )
   noise_cond = noise_pred[:bsz]
   noise_uncond = noise_pred[bsz:]
@@ -930,3 +947,137 @@ def transformer_forward_pass_cfg_cache(
 
   noise_pred_merged = noise_uncond_approx + guidance_scale * (noise_cond - noise_uncond_approx)
   return noise_pred_merged, noise_cond
+
+
+def nearest_interp(src, target_len):
+  """Nearest neighbor interpolation for ratio scaling layout."""
+  src_len = len(src)
+  if target_len == 1:
+    import numpy as np
+
+    return np.array([src[-1]])
+  import numpy as np
+
+  indices = np.round(np.linspace(0, src_len - 1, target_len)).astype(np.int32)
+  return src[indices]
+
+
+def init_magcache(num_inference_steps, retention_ratio, mag_ratios_base):
+  """Initialize MagCache variables and interpolate ratios.
+
+  Args:
+      num_inference_steps: Number of inference steps.
+      retention_ratio: Retention ratio of unchanged steps.
+      mag_ratios_base: Base magnitude ratios array or list.
+  """
+  import numpy as np
+
+  accumulated_ratio_cond = 1.0
+  accumulated_ratio_uncond = 1.0
+  accumulated_err_cond = 0.0
+  accumulated_err_uncond = 0.0
+  accumulated_steps_cond = 0
+  accumulated_steps_uncond = 0
+  cached_residual = None
+
+  skip_warmup = int(num_inference_steps * retention_ratio)
+
+  mag_ratios_base = np.array(mag_ratios_base)
+
+  if len(mag_ratios_base) != num_inference_steps * 2:
+    mag_cond = nearest_interp(mag_ratios_base[0::2], num_inference_steps)
+    mag_uncond = nearest_interp(mag_ratios_base[1::2], num_inference_steps)
+    mag_ratios = np.concatenate([mag_cond.reshape(-1, 1), mag_uncond.reshape(-1, 1)], axis=1).reshape(-1)
+  else:
+    mag_ratios = mag_ratios_base
+
+  return (
+      accumulated_ratio_cond,
+      accumulated_ratio_uncond,
+      accumulated_err_cond,
+      accumulated_err_uncond,
+      accumulated_steps_cond,
+      accumulated_steps_uncond,
+      cached_residual,
+      skip_warmup,
+      mag_ratios,
+  )
+
+
+def magcache_step(
+    step,
+    mag_ratios,
+    accumulated_state,
+    magcache_thresh,
+    magcache_K,
+    skip_warmup=0,
+    use_magcache=None,
+):
+  """Update MagCache accumulated state and decide if to skip.
+
+  Args:
+      step: Current inference step.
+      mag_ratios: Interpolated magnitude ratios array.
+      accumulated_state: Tuple containing accumulated variables.
+      magcache_thresh: Error threshold.
+      magcache_K: Max skip steps.
+      skip_warmup: Warmup steps threshold.
+      use_magcache: Optional manual override boolean to enable/disable cache for this step.
+  """
+  import numpy as np
+
+  (
+      accumulated_ratio_cond,
+      accumulated_ratio_uncond,
+      accumulated_err_cond,
+      accumulated_err_uncond,
+      accumulated_steps_cond,
+      accumulated_steps_uncond,
+  ) = accumulated_state
+
+  cur_mag_ratio_cond = mag_ratios[step * 2]
+  cur_mag_ratio_uncond = mag_ratios[step * 2 + 1]
+
+  if use_magcache is None:
+    use_magcache = True
+    if step < skip_warmup:
+      use_magcache = False
+
+  skip_blocks = False
+  if use_magcache:
+    new_ratio_cond = accumulated_ratio_cond * cur_mag_ratio_cond
+    new_ratio_uncond = accumulated_ratio_uncond * cur_mag_ratio_uncond
+
+    err_cond = np.abs(1.0 - new_ratio_cond)
+    err_uncond = np.abs(1.0 - new_ratio_uncond)
+
+    if (
+        accumulated_err_cond + err_cond < magcache_thresh
+        and accumulated_steps_cond < magcache_K
+        and accumulated_err_uncond + err_uncond < magcache_thresh
+        and accumulated_steps_uncond < magcache_K
+    ):
+      skip_blocks = True
+      accumulated_ratio_cond = new_ratio_cond
+      accumulated_ratio_uncond = new_ratio_uncond
+      accumulated_err_cond += err_cond
+      accumulated_err_uncond += err_uncond
+      accumulated_steps_cond += 1
+      accumulated_steps_uncond += 1
+    else:
+      accumulated_ratio_cond = 1.0
+      accumulated_ratio_uncond = 1.0
+      accumulated_err_cond = 0.0
+      accumulated_err_uncond = 0.0
+      accumulated_steps_cond = 0
+      accumulated_steps_uncond = 0
+
+  new_state = (
+      accumulated_ratio_cond,
+      accumulated_ratio_uncond,
+      accumulated_err_cond,
+      accumulated_err_uncond,
+      accumulated_steps_cond,
+      accumulated_steps_uncond,
+  )
+  return skip_blocks, new_state
