@@ -26,6 +26,7 @@ def get_dummy_ltx2_inputs(batch_size, dtype):
     # LTX-2 Audio latents default channels = 128
     audio_latents = jax.random.normal(rng, (batch_size, 64, 128), dtype=dtype)
     audio_prompt_embeds = jax.random.normal(rng, (batch_size, 64, 3072), dtype=dtype)
+    encoder_attention_mask = jnp.ones((batch_size, 128), dtype=jnp.int32)
     audio_encoder_attention_mask = jnp.ones((batch_size, 64), dtype=jnp.int32)
 
     return latents, audio_latents, timestep, prompt_embeds, audio_prompt_embeds, encoder_attention_mask, audio_encoder_attention_mask
