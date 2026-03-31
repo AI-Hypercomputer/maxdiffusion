@@ -1093,6 +1093,8 @@ class LTX2Pipeline:
     )
 
     # 2. Encode inputs (Text)
+    import time
+    s_text = time.perf_counter()
     prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask = self.encode_prompt(
         prompt,
         negative_prompt,
@@ -1105,6 +1107,8 @@ class LTX2Pipeline:
         max_sequence_length=max_sequence_length,
         dtype=dtype,
     )
+    t_text = time.perf_counter() - s_text
+    max_logging.log(f"[Tuning] Prompt encoding took: {t_text:.4f} seconds")
 
     # 3. Prepare latents
     batch_size = prompt_embeds[0].shape[0] if isinstance(prompt_embeds, list) else prompt_embeds.shape[0]
@@ -1326,6 +1330,7 @@ class LTX2Pipeline:
     if output_type == "latent":
       return LTX2PipelineOutput(frames=latents, audio=audio_latents)
 
+    s_vae = time.perf_counter()
     if getattr(self.vae.config, "timestep_conditioning", False):
       noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
 
@@ -1346,6 +1351,8 @@ class LTX2Pipeline:
     else:
       latents = latents.astype(self.vae.dtype)
       video = self.vae.decode(latents, return_dict=False)[0]
+    t_vae = time.perf_counter() - s_vae
+    max_logging.log(f"[Tuning] VAE decoding took: {t_vae:.4f} seconds")
     # Post-process video (converts to numpy/PIL)
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
     video_np = np.array(video).transpose(0, 4, 1, 2, 3)
@@ -1357,7 +1364,10 @@ class LTX2Pipeline:
 
     # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
     generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
+    s_vocoder = time.perf_counter()
     audio = self.vocoder(generated_mel_spectrograms)
+    t_vocoder = time.perf_counter() - s_vocoder
+    max_logging.log(f"[Tuning] Vocoder took: {t_vocoder:.4f} seconds")
 
     # Convert audio to numpy
     audio = np.array(audio)
