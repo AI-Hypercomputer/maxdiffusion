@@ -6,7 +6,6 @@ __pycache__/
 *$py.class
 # C extensions
 *.so
-Gemini.md
 
 # tests and logs
 tests/fixtures/cached_*_text.txt
@@ -181,3 +180,8 @@ wandb
 # Gemini CLI
 .gemini/
 gha-creds-*.json
+Gemini.md
+gemini.md
+
+#jax cache
+.jax_cache/

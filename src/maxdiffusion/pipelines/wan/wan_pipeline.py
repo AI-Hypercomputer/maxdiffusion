@@ -605,7 +605,7 @@ class WanPipeline:
       components["tokenizer"] = cls.load_tokenizer(config=config)
       components["text_encoder"] = cls.load_text_encoder(config=config)
       components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
-      if i2v and config.model_name == "wan2.1":
+      if i2v:
         components["image_processor"], components["image_encoder"] = cls.load_image_encoder(config)
     return components
 

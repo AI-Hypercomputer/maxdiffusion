@@ -1,0 +1,108 @@
+Log file created at: 2026/03/31 19:02:04
+Running on machine: t1v-n-198ece26-w-0
+Binary: Built on Mar 4 2026 11:32:08 (1772652728)
+Binary: Built at rbex-enqueue-targets@otv10.prod.google.com:/google/src/cloud/buildrabbit-username/buildrabbit-client/g3     
+Binary: Built for gcc-4.X.Y-crosstool-v18-llvm-grtev4-k8.k8
+Log line format: [IWEF]mmdd hh:mm:ss.uuuuuu threadid file:line] msg
+I0331 19:02:04.772010       2 b295d63588a.cc:748] Linux version 6.8.0-1015-gcp (buildd@lcy02-amd64-112) (x86_64-linux-gnu-gcc-12 (Ubuntu 12.3.0-1ubuntu1~22.04) 12.3.0, GNU ld (GNU Binutils for Ubuntu) 2.38) #17~22.04.1-Ubuntu SMP Tue Sep  3 16:11:52 UTC 2024
+I0331 19:02:04.779665       2 b295d63588a.cc:830] Process id 2
+I0331 19:02:04.779683       2 b295d63588a.cc:835] Current working directory /mnt/data/sagarchapara_google_com/maxdiffusion
+I0331 19:02:04.779688       2 b295d63588a.cc:837] Current timezone is UTC (currently UTC +00:00)
+I0331 19:02:04.779691       2 b295d63588a.cc:841] Built on Mar 4 2026 11:32:08 (1772652728)
+I0331 19:02:04.779691       2 b295d63588a.cc:842]  at rbex-enqueue-targets@otv10.prod.google.com:/google/src/cloud/buildrabbit-username/buildrabbit-client/g3     
+I0331 19:02:04.779692       2 b295d63588a.cc:843]  as //learning/45eac/tfrc/executor:_libtpu.so.native
+I0331 19:02:04.779693       2 b295d63588a.cc:844]  for gcc-4.X.Y-crosstool-v18-llvm-grtev4-k8.k8
+I0331 19:02:04.779704       2 b295d63588a.cc:847]  from changelist 878335365 with baseline 878335365 in a mint client based on __ar56t/g3     
+I0331 19:02:04.779708       2 b295d63588a.cc:851] Build label: libtpu_lts_20260304_b_RC00
+I0331 19:02:04.779709       2 b295d63588a.cc:853] Build tool: Bazel, release r4rca-2026.02.23-3 (mainline @873791756)
+I0331 19:02:04.779710       2 b295d63588a.cc:854] Build target: 
+I0331 19:02:04.779711       2 b295d63588a.cc:861] Command line arguments:
+I0331 19:02:04.779712       2 b295d63588a.cc:863] argv[0]: './tpu_driver'
+I0331 19:02:04.779714       2 b295d63588a.cc:863] argv[1]: '--minloglevel=0'
+I0331 19:02:04.779715       2 b295d63588a.cc:863] argv[2]: '--stderrthreshold=3'
+I0331 19:02:04.779715       2 b295d63588a.cc:863] argv[3]: '--v=0'
+I0331 19:02:04.779716       2 b295d63588a.cc:863] argv[4]: '--vmodule='
+I0331 19:02:04.779717       2 b295d63588a.cc:863] argv[5]: '--log_dir=/mnt/data/sagarchapara_google_com/maxdiffusion/.tpu_logs'
+I0331 19:02:04.779717       2 b295d63588a.cc:863] argv[6]: '--max_log_size=1024'
+I0331 19:02:04.779718       2 b295d63588a.cc:863] argv[7]: '--enforce_kernel_ipv6_support=0'
+I0331 19:02:04.779719       2 b295d63588a.cc:863] argv[8]: '--next_pluggable_device_use_c_api=0'
+I0331 19:02:04.779719       2 b295d63588a.cc:863] argv[9]: '--deepsea_chips_per_host_bounds=2,2,1'
+I0331 19:02:04.779720       2 b295d63588a.cc:863] argv[10]: '--deepsea_slice_builder_worker_port=8471'
+I0331 19:02:04.779721       2 b295d63588a.cc:863] argv[11]: '--tpu_slice_builder_dump_chip=false'
+I0331 19:02:04.779722       2 b295d63588a.cc:863] argv[12]: '--tpu_slice_builder_dump_chip_force=false'
+I0331 19:02:04.779722       2 b295d63588a.cc:863] argv[13]: '--tpu_slice_builder_dump_to_localhost=1'
+I0331 19:02:04.779723       2 b295d63588a.cc:863] argv[14]: '--bypass_vbar_control_service=0'
+I0331 19:02:04.779724       2 b295d63588a.cc:863] argv[15]: '--enable_runtime_uptime_telemetry=true'
+I0331 19:02:04.779724       2 b295d63588a.cc:863] argv[16]: ''
+I0331 19:02:04.779725       2 b295d63588a.cc:863] argv[17]: '--xla_tpu_use_enhanced_launch_barrier=true'
+I0331 19:02:04.779979       2 init.cc:78] Remote crash gathering hook installed.
+I0331 19:02:04.796755       2 tpu_hal.cc:439] Registered plugin from module: breakpoint_debugger_server
+I0331 19:02:04.796910       2 tpu_runtime_type_flags.cc:78] --tpu_use_tfrt not specified. Using default value: true
+I0331 19:02:04.797053       2 host_command_handler_factory.cc:31] Skipping registration of host command handler for opcode Log because it is not in the allowlist.
+I0331 19:02:04.797075       2 tpu_hal.cc:439] Registered plugin from module: megascale_sync_flag_logger
+I0331 19:02:04.799722       2 tpu_hal.cc:439] Registered plugin from module: RuntimeMetricHelper
+I0331 19:02:04.799778       2 tf_tpu_flags.cc:63] DeepseaPlatform is NOT registered.
+I0331 19:02:04.799935       2 logger.cc:310] Enabling threaded logging for severity WARNING
+I0331 19:02:04.799955       2 tpu_hal.cc:439] Registered plugin from module: sdc_checker_callback
+I0331 19:02:04.800131       2 mlock.cc:220] mlock()-ed 4096 bytes for BuildID, using 1 syscalls.
+W0331 19:02:04.820107     142 address_selection.cc:199] Unable to create socket; source address lookups not supported.: Operation not permitted [1]
+W0331 19:02:04.820138     142 address_selection.cc:199] Unable to create socket; source address lookups not supported.: Operation not permitted [1]
+W0331 19:02:04.820144     142 address_selection.cc:199] Unable to create socket; source address lookups not supported.: Operation not permitted [1]
+W0331 19:02:04.820146     142 address_selection.cc:199] Unable to create socket; source address lookups not supported.: Operation not permitted [1]
+I0331 19:02:30.836105       2 debug_manager.cc:248] Registering error handler with name: libtpu_telemetry_handler
+W0331 19:02:30.836982       2 uptime_telemetry.cc:187] UptimeMetric attributes are updated.
+Previous Attributes: go/debugstr  
+key: "uptime_attributes"
+value {
+  kvlist_attr {
+    attributes {
+      key: "ml_framework_name"
+      value {
+        string_attr: "tensorflow"
+      }
+    }
+    attributes {
+      key: "ml_framework_version"
+      value {
+        string_attr: "tensorflow-2.21.0"
+      }
+    }
+  }
+}
+
+New Attributes: go/debugstr  
+key: "uptime_attributes"
+value {
+  kvlist_attr {
+    attributes {
+      key: "ml_framework_name"
+      value {
+        string_attr: "jax"
+      }
+    }
+    attributes {
+      key: "ml_framework_version"
+      value {
+        string_attr: "jax-0.9.2"
+      }
+    }
+  }
+}
+I0331 19:02:30.848843       2 singleton_tpu_states_manager.cc:96] TpuStatesManager::GetOrCreate(): no tpu system exists. Creating a new tpu system.
+W0331 19:02:30.850707       2 tpu_version_flag.cc:67] No hardware is found. Using default TPU version: jellyfish
+I0331 19:02:30.855550       2 pending_event_logger.cc:954] Enabling PjRt/TPU event dependency logging
+I0331 19:02:30.855555       2 pending_event_logger.cc:954] Enabling PjRt/TPU event dependency logging
+I0331 19:02:30.855558       2 pending_event_logger.cc:954] Enabling PjRt/TPU event dependency logging
+I0331 19:02:30.855559       2 pending_event_logger.cc:954] Enabling PjRt/TPU event dependency logging
+I0331 19:02:30.855559       2 pending_event_logger.cc:954] Enabling PjRt/TPU event dependency logging
+I0331 19:02:30.855560       2 pending_event_logger.cc:954] Enabling PjRt/TPU event dependency logging
+I0331 19:02:30.855560       2 pending_event_logger.cc:954] Enabling PjRt/TPU event dependency logging
+I0331 19:02:30.855561       2 pending_event_logger.cc:954] Enabling PjRt/TPU event dependency logging
+I0331 19:02:30.857566       2 pending_event_logger.cc:173] Waiting for pending events to become available
+I0331 19:02:30.857571       2 pending_event_logger.cc:173] Waiting for pending events to become available
+I0331 19:02:30.857571       2 pending_event_logger.cc:173] Waiting for pending events to become available
+I0331 19:02:30.857572       2 pending_event_logger.cc:173] Waiting for pending events to become available
+I0331 19:02:30.857572       2 pending_event_logger.cc:173] Waiting for pending events to become available
+I0331 19:02:30.857572       2 pending_event_logger.cc:173] Waiting for pending events to become available
+I0331 19:02:30.857573       2 pending_event_logger.cc:173] Waiting for pending events to become available
+I0331 19:02:30.857573       2 pending_event_logger.cc:173] Waiting for pending events to become available

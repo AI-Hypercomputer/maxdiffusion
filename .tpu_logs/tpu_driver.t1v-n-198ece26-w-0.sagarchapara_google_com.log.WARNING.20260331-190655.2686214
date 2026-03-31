@@ -1,0 +1,976 @@
+Log file created at: 2026/03/31 19:06:55
+Running on machine: t1v-n-198ece26-w-0
+Binary: Built on Mar 4 2026 11:32:08 (1772652728)
+Binary: Built at rbex-enqueue-targets@otv10.prod.google.com:/google/src/cloud/buildrabbit-username/buildrabbit-client/g3     
+Binary: Built for gcc-4.X.Y-crosstool-v18-llvm-grtev4-k8.k8
+Log line format: [IWEF]mmdd hh:mm:ss.uuuuuu threadid file:line] msg
+W0331 19:06:55.000993 2686214 uptime_telemetry.cc:187] UptimeMetric attributes are updated.
+Previous Attributes: go/debugonly   
+key: "uptime_attributes"
+value {
+  kvlist_attr {
+    attributes {
+      key: "ml_framework_name"
+      value {
+        string_attr: "tensorflow"
+      }
+    }
+    attributes {
+      key: "ml_framework_version"
+      value {
+        string_attr: "tensorflow-2.21.0"
+      }
+    }
+  }
+}
+
+New Attributes: go/debugonly   
+key: "uptime_attributes"
+value {
+  kvlist_attr {
+    attributes {
+      key: "ml_framework_name"
+      value {
+        string_attr: "jax"
+      }
+    }
+    attributes {
+      key: "ml_framework_version"
+      value {
+        string_attr: "jax-0.9.2"
+      }
+    }
+  }
+}
+W0331 19:06:55.033485 2686634 tpu_runtime_abi.cc:295] Failed to read current TPU runtime ABI from memfile: NOT_FOUND: embed://current_tpu_runtime_abi_memfile/current_tpu_runtime_abi.binarypb does not exist.
+=== Source Location Trace: ===
+third_party/tensorflow/compiler/xla/tsl/platform/embedded_filesystem.cc:82
+third_party/tensorflow/compiler/xla/tsl/platform/env.cc:618
+W0331 19:06:55.033499 2686634 tpu_runtime_abi.cc:297] You may be missing a dependency on //learning/45eac/tpu/runtime:current_tpu_runtime_abi_memfile
+W0331 19:07:01.315470 2687097 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.execution.timing.distribution.microseconds
+W0331 19:07:01.315363 2687095 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.execution.timing.distribution.microseconds
+W0331 19:07:01.315495 2687097 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.queue.size.gauge
+W0331 19:07:01.315499 2687095 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.queue.size.gauge
+W0331 19:07:01.315398 2687099 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.execution.timing.distribution.microseconds
+W0331 19:07:01.315654 2687099 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.queue.size.gauge
+W0331 19:07:01.315566 2687098 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.execution.timing.distribution.microseconds
+W0331 19:07:01.315728 2687098 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.queue.size.gauge
+W0331 19:07:01.315947 2687094 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.execution.timing.distribution.microseconds
+W0331 19:07:01.315969 2687094 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.queue.size.gauge
+W0331 19:07:01.316033 2687100 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.execution.timing.distribution.microseconds
+W0331 19:07:01.316071 2687100 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.queue.size.gauge
+W0331 19:07:01.315669 2687101 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.execution.timing.distribution.microseconds
+W0331 19:07:01.316079 2687101 libtpu_telemetry_utils.cc:44] Metric already exists: hlo.queue.size.gauge
+W0331 19:07:11.678188 2687733 llo_loop.cc:101] [copy.14] 0-iteration loop inserted, body will not be executed: start=0, step=1, limit=0
+W0331 19:07:11.679239 2687733 llo_loop.cc:101] [copy.14] 0-iteration loop inserted, body will not be executed: start=0, step=1, limit=0
+W0331 19:08:44.300590 2691393 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:02.999375 2687713 lowering_emitter.cc:5565] Successful retry compilation of select_add_fusion.15 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)S(1)} fusion(copy-done.163, copy-done.140, bitcast.569, slice.117, copy.681), kind=kOutput, calls=
+{
+  param_1.1150 = pred[8,21]{0,1:T(8,128)(4,1)S(1)} parameter(1)
+  broadcast.887 = pred[1,90,8,21,384]{4,2,3,1,0:T(8,128)(4,1)} broadcast(param_1.1150), dimensions={2,3}
+  param_3.641 = bf16[1,90,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(3)
+  param_4.386 = bf16[1,90,1,8,21,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(4)
+  fusion.233 = bf16[1,90,8,23,384]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_3.641, param_4.386), kind=kLoop, calls=
+  {
+    param_1.1151 = bf16[1,90,1,8,21,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(1)
+    constant.686 = f32[]{:T(128)} constant(-inf)
+    pad.387 = bf16[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_1.1151, constant.686), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.125 = s32[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)} iota(), iota_dimension=4
+    constant.546 = s32[] constant(21)
+    broadcast.903 = s32[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.546), dimensions={}
+    compare.125 = pred[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(4,1)} compare(iota.125, broadcast.903), direction=GE
+    param_0.944 = bf16[1,90,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(0)
+    constant.855 = f32[]{:T(128)} constant(0)
+    pad.386 = bf16[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_0.944, constant.855), padding=0_0x0_0x0_0x0_1x21_0x0_0
+    broadcast.902 = f32[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.686), dimensions={}
+    select.193 = bf16[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(2,1)} select(compare.125, pad.386, broadcast.902)
+    maximum.140 = bf16[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(2,1)} maximum(pad.387, select.193)
+    ROOT bitcast.320 = bf16[1,90,8,23,384]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.140)
+  }
+  param_2.757 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(2)
+  fusion.366 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_2.757), kind=kLoop, calls=
+  {
+    bitcast_input.19 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.411 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.19)
+  }
+  convolution.126 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)} convolution(fusion.233, fusion.366), window={size=3x3x3 pad=2_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+  constant.83.clone.3 = f32[]{:T(128)} constant(0)
+  broadcast.882 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)} broadcast(constant.83.clone.3), dimensions={}
+  select.185 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)} select(broadcast.887, convolution.126, broadcast.882)
+  param_0.943 = f32[384]{0:T(512)S(1)} parameter(0)
+  broadcast.874 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)} broadcast(param_0.943), dimensions={4}
+  ROOT add.329.clone.1 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)S(1)} add(select.185, broadcast.874)
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 1 retry with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 48
+  kernel_window_bounds: 3
+  output_window_bounds: 1
+  output_window_bounds: 10
+  output_window_bounds: 21
+  output_window_bounds: 1
+  output_window_bounds: 3
+  input_window_bounds: 3
+  input_window_bounds: 12
+  input_window_bounds: 23
+  input_window_bounds: 1
+  input_window_bounds: 3
+  estimated_cycles: 319176
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 9
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 4067328
+}
+retry_config {
+  retry_count: 1
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:09:07.118710 2690286 lowering_emitter.cc:5565] Successful retry compilation of add_add_fusion.4 = bf16[1,180,8,41,384]{4,2,3,1,0:T(8,128)(2,1)} fusion(get-tuple-element.577, copy-done.166, copy-done.9, bitcast.561, slice.109, copy.666), kind=kOutput, calls=
+{
+  param_2.763 = pred[8,41]{0,1:T(8,128)(4,1)S(1)} parameter(2)
+  broadcast.751 = pred[1,180,8,41,384]{4,2,3,1,0:T(8,128)(4,1)} broadcast(param_2.763), dimensions={2,3}
+  param_4.389 = bf16[1,180,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(4)
+  param_5.209 = bf16[1,180,1,8,41,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(5)
+  fusion.138 = bf16[1,180,8,43,384]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_4.389, param_5.209), kind=kLoop, calls=
+  {
+    param_1.1157 = bf16[1,180,1,8,41,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(1)
+    constant.656 = f32[]{:T(128)} constant(-inf)
+    pad.291 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_1.1157, constant.656), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.85 = s32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} iota(), iota_dimension=4
+    constant.561 = s32[] constant(41)
+    broadcast.775 = s32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.561), dimensions={}
+    compare.85 = pred[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(4,1)} compare(iota.85, broadcast.775), direction=GE
+    param_0.569 = bf16[1,180,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(0)
+    constant.882 = f32[]{:T(128)} constant(0)
+    pad.290 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_0.569, constant.882), padding=0_0x0_0x0_0x0_1x41_0x0_0
+    broadcast.774 = f32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.656), dimensions={}
+    select.136 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} select(compare.85, pad.290, broadcast.774)
+    maximum.92 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} maximum(pad.291, select.136)
+    ROOT bitcast.247 = bf16[1,180,8,43,384]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.92)
+  }
+  param_3.645 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(3)
+  fusion.359 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_3.645), kind=kLoop, calls=
+  {
+    bitcast_input.12 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.404 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.12)
+  }
+  convolution.102 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} convolution(fusion.138, fusion.359), window={size=3x3x3 pad=2_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+  constant.83.clone.9 = f32[]{:T(128)} constant(0)
+  broadcast.744 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(constant.83.clone.9), dimensions={}
+  select.124 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} select(broadcast.751, convolution.102, broadcast.744)
+  param_1.591 = f32[384]{0:T(512)S(1)} parameter(1)
+  broadcast.740 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(param_1.591), dimensions={4}
+  add.320.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} add(select.124, broadcast.740)
+  param_0.437 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} parameter(0)
+  ROOT add.321.clone.1 = bf16[1,180,8,41,384]{4,2,3,1,0:T(8,128)(2,1)} add(add.320.clone.1, param_0.437)
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 2 retries with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 48
+  kernel_window_bounds: 3
+  output_window_bounds: 1
+  output_window_bounds: 3
+  output_window_bounds: 41
+  output_window_bounds: 1
+  output_window_bounds: 3
+  input_window_bounds: 3
+  input_window_bounds: 5
+  input_window_bounds: 43
+  input_window_bounds: 1
+  input_window_bounds: 3
+  estimated_cycles: 1277896
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 60
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 9252864
+}
+retry_config {
+  retry_count: 2
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:09:13.597657 2690257 lowering_emitter.cc:5565] Successful retry compilation of fusion.341 = (f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)}, f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)}) fusion(copy-done.167, bitcast.557, slice.106, copy.662, copy-done.8), kind=kOutput, calls=
+{
+  param_4.413 = pred[8,41]{0,1:T(8,128)(4,1)S(1)} parameter(4)
+  broadcast.750.clone.1 = pred[1,180,8,41,384]{4,2,3,1,0:T(8,128)(4,1)} broadcast(param_4.413), dimensions={2,3}
+  param_2.883 = bf16[1,180,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(2)
+  param_3.700 = bf16[1,180,1,8,41,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(3)
+  fusion.140.clone.1 = bf16[1,180,8,43,384]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_2.883, param_3.700), kind=kLoop, calls=
+  {
+    param_1.1310 = bf16[1,180,1,8,41,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(1)
+    constant.1034 = f32[]{:T(128)} constant(-inf)
+    pad.427 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_1.1310, constant.1034), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.145 = s32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} iota(), iota_dimension=4
+    constant.1033 = s32[] constant(41)
+    broadcast.1000 = s32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.1033), dimensions={}
+    compare.145 = pred[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(4,1)} compare(iota.145, broadcast.1000), direction=GE
+    param_0.1239 = bf16[1,180,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(0)
+    constant.1035 = f32[]{:T(128)} constant(0)
+    pad.426 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_0.1239, constant.1035), padding=0_0x0_0x0_0x0_1x41_0x0_0
+    broadcast.999 = f32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.1034), dimensions={}
+    select.222 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} select(compare.145, pad.426, broadcast.999)
+    maximum.160 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} maximum(pad.427, select.222)
+    ROOT bitcast.381 = bf16[1,180,8,43,384]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.160)
+  }
+  param_1.1311 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(1)
+  fusion.371 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_1.1311), kind=kLoop, calls=
+  {
+    bitcast_input.24 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.416 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.24)
+  }
+  convolution.104.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} convolution(fusion.140.clone.1, fusion.371), window={size=3x3x3 pad=2_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+  constant.83.clone.13.clone.1 = f32[]{:T(128)} constant(0)
+  broadcast.745.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(constant.83.clone.13.clone.1), dimensions={}
+  select.125.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} select(broadcast.750.clone.1, convolution.104.clone.1, broadcast.745.clone.1)
+  param_0.1238 = f32[384]{0:T(512)S(1)} parameter(0)
+  broadcast.741.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(param_0.1238), dimensions={4}
+  add.317.clone.1.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} add(select.125.clone.1, broadcast.741.clone.1)
+  mul.419.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} multiply(add.317.clone.1.clone.1, add.317.clone.1.clone.1)
+  ROOT tuple.22 = (f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)}, f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)}) tuple(mul.419.clone.1, add.317.clone.1.clone.1)
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 2 retries with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 48
+  kernel_window_bounds: 3
+  output_window_bounds: 1
+  output_window_bounds: 3
+  output_window_bounds: 41
+  output_window_bounds: 1
+  output_window_bounds: 3
+  input_window_bounds: 3
+  input_window_bounds: 5
+  input_window_bounds: 43
+  input_window_bounds: 1
+  input_window_bounds: 3
+  estimated_cycles: 1277089
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 60
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 9912320
+}
+retry_config {
+  retry_count: 2
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:09:17.296546 2691681 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:17.338679 2691685 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:17.379239 2691691 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:17.781985 2691695 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:17.824449 2691699 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:17.984218 2691711 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:18.070899 2691715 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:18.128547 2691719 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:18.230148 2691723 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:18.305164 2691727 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:18.375772 2691731 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:18.437016 2691735 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:18.561286 2691747 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:18.623253 2691751 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:18.684269 2691755 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:19.130931 2691807 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:26.991823 2692271 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:09:46.883387 2690277 lowering_emitter.cc:5565] Successful retry compilation of select_add_fusion.15 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)S(1)} fusion(copy-done.163, copy-done.140, bitcast.569, slice.117, copy.681), kind=kOutput, calls=
+{
+  param_1.1150 = pred[8,21]{0,1:T(8,128)(4,1)S(1)} parameter(1)
+  broadcast.887 = pred[1,90,8,21,384]{4,2,3,1,0:T(8,128)(4,1)} broadcast(param_1.1150), dimensions={2,3}
+  param_3.641 = bf16[1,90,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(3)
+  param_4.386 = bf16[1,90,1,8,21,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(4)
+  fusion.233 = bf16[1,90,8,23,384]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_3.641, param_4.386), kind=kLoop, calls=
+  {
+    param_1.1151 = bf16[1,90,1,8,21,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(1)
+    constant.686 = f32[]{:T(128)} constant(-inf)
+    pad.387 = bf16[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_1.1151, constant.686), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.125 = s32[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)} iota(), iota_dimension=4
+    constant.546 = s32[] constant(21)
+    broadcast.903 = s32[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.546), dimensions={}
+    compare.125 = pred[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(4,1)} compare(iota.125, broadcast.903), direction=GE
+    param_0.944 = bf16[1,90,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(0)
+    constant.855 = f32[]{:T(128)} constant(0)
+    pad.386 = bf16[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_0.944, constant.855), padding=0_0x0_0x0_0x0_1x21_0x0_0
+    broadcast.902 = f32[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.686), dimensions={}
+    select.193 = bf16[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(2,1)} select(compare.125, pad.386, broadcast.902)
+    maximum.140 = bf16[1,90,1,8,23,384]{5,3,4,1,2,0:T(8,128)(2,1)} maximum(pad.387, select.193)
+    ROOT bitcast.320 = bf16[1,90,8,23,384]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.140)
+  }
+  param_2.757 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(2)
+  fusion.366 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_2.757), kind=kLoop, calls=
+  {
+    bitcast_input.19 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.411 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.19)
+  }
+  convolution.126 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)} convolution(fusion.233, fusion.366), window={size=3x3x3 pad=2_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+  constant.83.clone.3 = f32[]{:T(128)} constant(0)
+  broadcast.882 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)} broadcast(constant.83.clone.3), dimensions={}
+  select.185 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)} select(broadcast.887, convolution.126, broadcast.882)
+  param_0.943 = f32[384]{0:T(512)S(1)} parameter(0)
+  broadcast.874 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)} broadcast(param_0.943), dimensions={4}
+  ROOT add.329.clone.1 = f32[1,90,8,21,384]{4,2,3,1,0:T(8,128)S(1)} add(select.185, broadcast.874)
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 1 retry with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 48
+  kernel_window_bounds: 3
+  output_window_bounds: 1
+  output_window_bounds: 10
+  output_window_bounds: 21
+  output_window_bounds: 1
+  output_window_bounds: 3
+  input_window_bounds: 3
+  input_window_bounds: 12
+  input_window_bounds: 23
+  input_window_bounds: 1
+  input_window_bounds: 3
+  estimated_cycles: 319176
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 9
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 4067328
+}
+retry_config {
+  retry_count: 1
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:09:49.738512 2687755 lowering_emitter.cc:5565] Successful retry compilation of add_add_fusion.4 = bf16[1,180,8,41,384]{4,2,3,1,0:T(8,128)(2,1)} fusion(get-tuple-element.577, copy-done.166, copy-done.9, bitcast.561, slice.109, copy.666), kind=kOutput, calls=
+{
+  param_2.763 = pred[8,41]{0,1:T(8,128)(4,1)S(1)} parameter(2)
+  broadcast.751 = pred[1,180,8,41,384]{4,2,3,1,0:T(8,128)(4,1)} broadcast(param_2.763), dimensions={2,3}
+  param_4.389 = bf16[1,180,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(4)
+  param_5.209 = bf16[1,180,1,8,41,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(5)
+  fusion.138 = bf16[1,180,8,43,384]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_4.389, param_5.209), kind=kLoop, calls=
+  {
+    param_1.1157 = bf16[1,180,1,8,41,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(1)
+    constant.656 = f32[]{:T(128)} constant(-inf)
+    pad.291 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_1.1157, constant.656), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.85 = s32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} iota(), iota_dimension=4
+    constant.561 = s32[] constant(41)
+    broadcast.775 = s32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.561), dimensions={}
+    compare.85 = pred[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(4,1)} compare(iota.85, broadcast.775), direction=GE
+    param_0.569 = bf16[1,180,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(0)
+    constant.882 = f32[]{:T(128)} constant(0)
+    pad.290 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_0.569, constant.882), padding=0_0x0_0x0_0x0_1x41_0x0_0
+    broadcast.774 = f32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.656), dimensions={}
+    select.136 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} select(compare.85, pad.290, broadcast.774)
+    maximum.92 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} maximum(pad.291, select.136)
+    ROOT bitcast.247 = bf16[1,180,8,43,384]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.92)
+  }
+  param_3.645 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(3)
+  fusion.359 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_3.645), kind=kLoop, calls=
+  {
+    bitcast_input.12 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.404 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.12)
+  }
+  convolution.102 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} convolution(fusion.138, fusion.359), window={size=3x3x3 pad=2_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+  constant.83.clone.9 = f32[]{:T(128)} constant(0)
+  broadcast.744 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(constant.83.clone.9), dimensions={}
+  select.124 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} select(broadcast.751, convolution.102, broadcast.744)
+  param_1.591 = f32[384]{0:T(512)S(1)} parameter(1)
+  broadcast.740 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(param_1.591), dimensions={4}
+  add.320.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} add(select.124, broadcast.740)
+  param_0.437 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} parameter(0)
+  ROOT add.321.clone.1 = bf16[1,180,8,41,384]{4,2,3,1,0:T(8,128)(2,1)} add(add.320.clone.1, param_0.437)
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 2 retries with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 48
+  kernel_window_bounds: 3
+  output_window_bounds: 1
+  output_window_bounds: 3
+  output_window_bounds: 41
+  output_window_bounds: 1
+  output_window_bounds: 3
+  input_window_bounds: 3
+  input_window_bounds: 5
+  input_window_bounds: 43
+  input_window_bounds: 1
+  input_window_bounds: 3
+  estimated_cycles: 1277896
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 60
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 9252864
+}
+retry_config {
+  retry_count: 2
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:09:53.998004 2687783 lowering_emitter.cc:5565] Successful retry compilation of fusion.341 = (f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)}, f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)}) fusion(copy-done.167, bitcast.557, slice.106, copy.662, copy-done.8), kind=kOutput, calls=
+{
+  param_4.413 = pred[8,41]{0,1:T(8,128)(4,1)S(1)} parameter(4)
+  broadcast.750.clone.1 = pred[1,180,8,41,384]{4,2,3,1,0:T(8,128)(4,1)} broadcast(param_4.413), dimensions={2,3}
+  param_2.883 = bf16[1,180,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(2)
+  param_3.700 = bf16[1,180,1,8,41,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(3)
+  fusion.140.clone.1 = bf16[1,180,8,43,384]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_2.883, param_3.700), kind=kLoop, calls=
+  {
+    param_1.1310 = bf16[1,180,1,8,41,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(1)
+    constant.1034 = f32[]{:T(128)} constant(-inf)
+    pad.427 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_1.1310, constant.1034), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.145 = s32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} iota(), iota_dimension=4
+    constant.1033 = s32[] constant(41)
+    broadcast.1000 = s32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.1033), dimensions={}
+    compare.145 = pred[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(4,1)} compare(iota.145, broadcast.1000), direction=GE
+    param_0.1239 = bf16[1,180,1,7,2,384]{5,3,4,1,2,0:T(8,128)(2,1)S(1)} parameter(0)
+    constant.1035 = f32[]{:T(128)} constant(0)
+    pad.426 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} pad(param_0.1239, constant.1035), padding=0_0x0_0x0_0x0_1x41_0x0_0
+    broadcast.999 = f32[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)} broadcast(constant.1034), dimensions={}
+    select.222 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} select(compare.145, pad.426, broadcast.999)
+    maximum.160 = bf16[1,180,1,8,43,384]{5,3,4,1,2,0:T(8,128)(2,1)} maximum(pad.427, select.222)
+    ROOT bitcast.381 = bf16[1,180,8,43,384]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.160)
+  }
+  param_1.1311 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(1)
+  fusion.371 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_1.1311), kind=kLoop, calls=
+  {
+    bitcast_input.24 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.416 = bf16[3,3,3,384,384]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.24)
+  }
+  convolution.104.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} convolution(fusion.140.clone.1, fusion.371), window={size=3x3x3 pad=2_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+  constant.83.clone.13.clone.1 = f32[]{:T(128)} constant(0)
+  broadcast.745.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(constant.83.clone.13.clone.1), dimensions={}
+  select.125.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} select(broadcast.750.clone.1, convolution.104.clone.1, broadcast.745.clone.1)
+  param_0.1238 = f32[384]{0:T(512)S(1)} parameter(0)
+  broadcast.741.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(param_0.1238), dimensions={4}
+  add.317.clone.1.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} add(select.125.clone.1, broadcast.741.clone.1)
+  mul.419.clone.1 = f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)} multiply(add.317.clone.1.clone.1, add.317.clone.1.clone.1)
+  ROOT tuple.22 = (f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)}, f32[1,180,8,41,384]{4,2,3,1,0:T(8,128)}) tuple(mul.419.clone.1, add.317.clone.1.clone.1)
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 2 retries with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 48
+  kernel_window_bounds: 3
+  output_window_bounds: 1
+  output_window_bounds: 3
+  output_window_bounds: 41
+  output_window_bounds: 1
+  output_window_bounds: 3
+  input_window_bounds: 3
+  input_window_bounds: 5
+  input_window_bounds: 43
+  input_window_bounds: 1
+  input_window_bounds: 3
+  estimated_cycles: 1277089
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 60
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 9912320
+}
+retry_config {
+  retry_count: 2
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:09:57.971010 2692542 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:18.287953 2690284 lowering_emitter.cc:5565] Successful retry compilation of fusion.73 = f32[4,360,8,81,192]{4,2,3,1,0:T(8,128)} fusion(copy-done.27, slice.123, copy.578), kind=kOutput, calls=
+{
+  param_1.393 = bf16[5,360,1,7,2,96]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(1)
+  param_2.792 = bf16[5,360,1,8,81,96]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(2)
+  fusion.74 = bf16[5,360,8,83,96]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_1.393, param_2.792), kind=kLoop, calls=
+  {
+    param_1.1239 = bf16[5,360,1,8,81,96]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(1)
+    constant.771 = f32[]{:T(128)} constant(-inf)
+    pad.294 = bf16[5,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_1.1239, constant.771), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.61 = s32[5,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)} iota(), iota_dimension=4
+    constant.621 = s32[] constant(81)
+    broadcast.620 = s32[5,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)} broadcast(constant.621), dimensions={}
+    compare.61 = pred[5,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(4,1)} compare(iota.61, broadcast.620), direction=GE
+    param_0.377 = bf16[5,360,1,7,2,96]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(0)
+    constant.860 = f32[]{:T(128)} constant(0)
+    pad.290 = bf16[5,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_0.377, constant.860), padding=0_0x0_0x0_0x0_1x81_0x0_0
+    broadcast.616 = f32[5,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)} broadcast(constant.771), dimensions={}
+    select.102 = bf16[5,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(2,1)} select(compare.61, pad.290, broadcast.616)
+    maximum.93 = bf16[5,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(2,1)} maximum(pad.294, select.102)
+    ROOT bitcast.266 = bf16[5,360,8,83,96]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.93)
+  }
+  param_0.333 = bf16[3,3,3,96,192]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+  fusion.342 = bf16[3,3,3,96,192]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_0.333), kind=kLoop, calls=
+  {
+    bitcast_input.10 = bf16[3,3,3,96,192]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.451 = bf16[3,3,3,96,192]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.10)
+  }
+  ROOT convolution.94 = f32[4,360,8,81,192]{4,2,3,1,0:T(8,128)} convolution(fusion.74, fusion.342), window={size=3x3x3 pad=1_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 2 retries with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 12
+  kernel_window_bounds: 2
+  output_window_bounds: 4
+  output_window_bounds: 6
+  output_window_bounds: 9
+  output_window_bounds: 1
+  output_window_bounds: 2
+  input_window_bounds: 6
+  input_window_bounds: 8
+  input_window_bounds: 11
+  input_window_bounds: 1
+  input_window_bounds: 1
+  estimated_cycles: 4758394
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 60
+  iteration_bounds: 9
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 12451840
+}
+retry_config {
+  retry_count: 2
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:10:19.491752 2690274 lowering_emitter.cc:5565] Successful retry compilation of fusion.13 = f32[4,720,8,161,96]{4,2,3,1,0:T(8,128)} fusion(copy-done.39, slice.109, copy.555), kind=kOutput, calls=
+{
+  param_1.216 = bf16[5,720,1,7,2,96]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(1)
+  param_2.805 = bf16[5,720,1,8,161,96]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(2)
+  fusion.14 = bf16[5,720,8,163,96]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_1.216, param_2.805), kind=kLoop, calls=
+  {
+    param_1.1257 = bf16[5,720,1,8,161,96]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(1)
+    constant.703 = f32[]{:T(128)} constant(-inf)
+    pad.224 = bf16[5,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_1.1257, constant.703), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.37 = s32[5,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)} iota(), iota_dimension=4
+    constant.642 = s32[] constant(161)
+    broadcast.541 = s32[5,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)} broadcast(constant.642), dimensions={}
+    compare.37 = pred[5,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(4,1)} compare(iota.37, broadcast.541), direction=GE
+    param_0.211 = bf16[5,720,1,7,2,96]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(0)
+    constant.930 = f32[]{:T(128)} constant(0)
+    pad.220 = bf16[5,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_0.211, constant.930), padding=0_0x0_0x0_0x0_1x161_0x0_0
+    broadcast.525 = f32[5,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)} broadcast(constant.703), dimensions={}
+    select.71 = bf16[5,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(2,1)} select(compare.37, pad.220, broadcast.525)
+    maximum.64 = bf16[5,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(2,1)} maximum(pad.224, select.71)
+    ROOT bitcast.208 = bf16[5,720,8,163,96]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.64)
+  }
+  param_0.33 = bf16[3,3,3,96,96]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+  fusion.337 = bf16[3,3,3,96,96]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_0.33), kind=kLoop, calls=
+  {
+    bitcast_input.5 = bf16[3,3,3,96,96]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.446 = bf16[3,3,3,96,96]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.5)
+  }
+  ROOT convolution.87 = f32[4,720,8,161,96]{4,2,3,1,0:T(8,128)} convolution(fusion.14, fusion.337), window={size=3x3x3 pad=1_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 2 retries with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 12
+  kernel_window_bounds: 1
+  output_window_bounds: 4
+  output_window_bounds: 8
+  output_window_bounds: 5
+  output_window_bounds: 1
+  output_window_bounds: 1
+  input_window_bounds: 6
+  input_window_bounds: 10
+  input_window_bounds: 7
+  input_window_bounds: 1
+  input_window_bounds: 1
+  estimated_cycles: 14735428
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 90
+  iteration_bounds: 33
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 7950336
+}
+retry_config {
+  retry_count: 2
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:10:23.295167 2692821 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:23.642882 2692851 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:39.710062 2687699 lowering_emitter.cc:5565] Successful retry compilation of fusion.314 = (f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)}, f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)}) fusion(copy-done.142, copy-done.9, slice.163, copy.607, copy-done.147), kind=kOutput, calls=
+{
+  param_4.415 = pred[8,41]{0,1:T(8,128)(4,1)S(1)} parameter(4)
+  broadcast.673.clone.1 = pred[2,180,8,41,384]{4,2,3,1,0:T(8,128)(4,1)} broadcast(param_4.415), dimensions={2,3}
+  param_2.871 = bf16[4,180,1,7,2,192]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(2)
+  param_3.652 = bf16[4,180,1,8,41,192]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(3)
+  fusion.124.clone.1 = bf16[4,180,8,43,192]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_2.871, param_3.652), kind=kLoop, calls=
+  {
+    param_1.1355 = bf16[4,180,1,8,41,192]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(1)
+    constant.1029 = f32[]{:T(128)} constant(-inf)
+    pad.522 = bf16[4,180,1,8,43,192]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_1.1355, constant.1029), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.132 = s32[4,180,1,8,43,192]{5,3,4,1,0,2:T(8,128)} iota(), iota_dimension=4
+    constant.1028 = s32[] constant(41)
+    broadcast.885 = s32[4,180,1,8,43,192]{5,3,4,1,0,2:T(8,128)} broadcast(constant.1028), dimensions={}
+    compare.132 = pred[4,180,1,8,43,192]{5,3,4,1,0,2:T(8,128)(4,1)} compare(iota.132, broadcast.885), direction=GE
+    param_0.1256 = bf16[4,180,1,7,2,192]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(0)
+    constant.1030 = f32[]{:T(128)} constant(0)
+    pad.521 = bf16[4,180,1,8,43,192]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_0.1256, constant.1030), padding=0_0x0_0x0_0x0_1x41_0x0_0
+    broadcast.884 = f32[4,180,1,8,43,192]{5,3,4,1,0,2:T(8,128)} broadcast(constant.1029), dimensions={}
+    select.204 = bf16[4,180,1,8,43,192]{5,3,4,1,0,2:T(8,128)(2,1)} select(compare.132, pad.521, broadcast.884)
+    maximum.207 = bf16[4,180,1,8,43,192]{5,3,4,1,0,2:T(8,128)(2,1)} maximum(pad.522, select.204)
+    ROOT bitcast.451 = bf16[4,180,8,43,192]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.207)
+  }
+  param_1.1356 = bf16[3,3,3,192,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(1)
+  fusion.347 = bf16[3,3,3,192,384]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_1.1356), kind=kLoop, calls=
+  {
+    bitcast_input.24 = bf16[3,3,3,192,384]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.492 = bf16[3,3,3,192,384]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.24)
+  }
+  convolution.105.clone.1 = f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)} convolution(fusion.124.clone.1, fusion.347), window={size=3x3x3 pad=0_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+  constant.83.clone.1.clone.1 = f32[]{:T(128)} constant(0)
+  broadcast.672.clone.1 = f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(constant.83.clone.1.clone.1), dimensions={}
+  select.125.clone.1 = f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)} select(broadcast.673.clone.1, convolution.105.clone.1, broadcast.672.clone.1)
+  param_0.1255 = f32[384]{0:T(512)S(1)} parameter(0)
+  broadcast.668.clone.1 = f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)} broadcast(param_0.1255), dimensions={4}
+  add.299.clone.1.clone.1 = f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)} add(select.125.clone.1, broadcast.668.clone.1)
+  mul.356.clone.1 = f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)} multiply(add.299.clone.1.clone.1, add.299.clone.1.clone.1)
+  ROOT tuple.18 = (f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)}, f32[2,180,8,41,384]{4,2,3,1,0:T(8,128)}) tuple(mul.356.clone.1, add.299.clone.1.clone.1)
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 1 retry with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 24
+  kernel_window_bounds: 3
+  output_window_bounds: 2
+  output_window_bounds: 15
+  output_window_bounds: 6
+  output_window_bounds: 1
+  output_window_bounds: 3
+  input_window_bounds: 4
+  input_window_bounds: 17
+  input_window_bounds: 8
+  input_window_bounds: 1
+  input_window_bounds: 2
+  estimated_cycles: 1366561
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 12
+  iteration_bounds: 7
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 22716416
+}
+retry_config {
+  retry_count: 1
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:10:44.981942 2687770 lowering_emitter.cc:5565] Successful retry compilation of fusion.73 = f32[4,360,8,81,192]{4,2,3,1,0:T(8,128)} fusion(copy-done.22, slice.150, copy.578), kind=kOutput, calls=
+{
+  param_1.440 = bf16[6,360,1,7,2,96]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(1)
+  param_2.810 = bf16[6,360,1,8,81,96]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(2)
+  fusion.74 = bf16[6,360,8,83,96]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_1.440, param_2.810), kind=kLoop, calls=
+  {
+    param_1.1274 = bf16[6,360,1,8,81,96]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(1)
+    constant.751 = f32[]{:T(128)} constant(-inf)
+    pad.312 = bf16[6,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_1.1274, constant.751), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.61 = s32[6,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)} iota(), iota_dimension=4
+    constant.630 = s32[] constant(81)
+    broadcast.620 = s32[6,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)} broadcast(constant.630), dimensions={}
+    compare.61 = pred[6,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(4,1)} compare(iota.61, broadcast.620), direction=GE
+    param_0.421 = bf16[6,360,1,7,2,96]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(0)
+    constant.878 = f32[]{:T(128)} constant(0)
+    pad.308 = bf16[6,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_0.421, constant.878), padding=0_0x0_0x0_0x0_1x81_0x0_0
+    broadcast.616 = f32[6,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)} broadcast(constant.751), dimensions={}
+    select.102 = bf16[6,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(2,1)} select(compare.61, pad.308, broadcast.616)
+    maximum.102 = bf16[6,360,1,8,83,96]{5,3,4,1,0,2:T(8,128)(2,1)} maximum(pad.312, select.102)
+    ROOT bitcast.275 = bf16[6,360,8,83,96]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.102)
+  }
+  param_0.333 = bf16[3,3,3,96,192]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+  fusion.333 = bf16[3,3,3,96,192]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_0.333), kind=kLoop, calls=
+  {
+    bitcast_input.10 = bf16[3,3,3,96,192]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.478 = bf16[3,3,3,96,192]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.10)
+  }
+  ROOT convolution.94 = f32[4,360,8,81,192]{4,2,3,1,0:T(8,128)} convolution(fusion.74, fusion.333), window={size=3x3x3 pad=0_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 2 retries with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 12
+  kernel_window_bounds: 2
+  output_window_bounds: 4
+  output_window_bounds: 6
+  output_window_bounds: 9
+  output_window_bounds: 1
+  output_window_bounds: 2
+  input_window_bounds: 6
+  input_window_bounds: 8
+  input_window_bounds: 11
+  input_window_bounds: 1
+  input_window_bounds: 1
+  estimated_cycles: 4758394
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 60
+  iteration_bounds: 9
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 12652544
+}
+retry_config {
+  retry_count: 2
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:10:47.469315 2690280 lowering_emitter.cc:5565] Successful retry compilation of fusion.13 = f32[4,720,8,161,96]{4,2,3,1,0:T(8,128)} fusion(copy-done.34, slice.136, copy.555), kind=kOutput, calls=
+{
+  param_1.216 = bf16[6,720,1,7,2,96]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(1)
+  param_2.825 = bf16[6,720,1,8,161,96]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(2)
+  fusion.14 = bf16[6,720,8,163,96]{4,2,3,1,0:T(8,128)(2,1)} fusion(param_1.216, param_2.825), kind=kLoop, calls=
+  {
+    param_1.1291 = bf16[6,720,1,8,161,96]{5,3,4,1,0,2:T(8,128)(2,1)} parameter(1)
+    constant.683 = f32[]{:T(128)} constant(-inf)
+    pad.242 = bf16[6,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_1.1291, constant.683), padding=0_0x0_0x0_0x0_0x0_2x0_0
+    iota.37 = s32[6,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)} iota(), iota_dimension=4
+    constant.651 = s32[] constant(161)
+    broadcast.541 = s32[6,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)} broadcast(constant.651), dimensions={}
+    compare.37 = pred[6,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(4,1)} compare(iota.37, broadcast.541), direction=GE
+    param_0.211 = bf16[6,720,1,7,2,96]{5,3,4,1,0,2:T(8,128)(2,1)S(1)} parameter(0)
+    constant.944 = f32[]{:T(128)} constant(0)
+    pad.238 = bf16[6,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(2,1)} pad(param_0.211, constant.944), padding=0_0x0_0x0_0x0_1x161_0x0_0
+    broadcast.525 = f32[6,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)} broadcast(constant.683), dimensions={}
+    select.71 = bf16[6,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(2,1)} select(compare.37, pad.238, broadcast.525)
+    maximum.73 = bf16[6,720,1,8,163,96]{5,3,4,1,0,2:T(8,128)(2,1)} maximum(pad.242, select.71)
+    ROOT bitcast.217 = bf16[6,720,8,163,96]{4,2,3,1,0:T(8,128)(2,1)} bitcast(maximum.73)
+  }
+  param_0.33 = bf16[3,3,3,96,96]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+  fusion.328 = bf16[3,3,3,96,96]{4,3,2,1,0:T(8,128)(2,1)} fusion(param_0.33), kind=kLoop, calls=
+  {
+    bitcast_input.5 = bf16[3,3,3,96,96]{4,3,2,1,0:T(8,128)(2,1)S(1)} parameter(0)
+    ROOT bitcast.473 = bf16[3,3,3,96,96]{4,3,2,1,0:T(8,128)(2,1)} bitcast(bitcast_input.5)
+  }
+  ROOT convolution.87 = f32[4,720,8,161,96]{4,2,3,1,0:T(8,128)} convolution(fusion.14, fusion.328), window={size=3x3x3 pad=0_0x1_1x0_0}, dim_labels=01b2f_012io->01b2f
+}, backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}} after 2 retries with backend config: go/debugonly   
+window_config {
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 3
+  kernel_window_bounds: 12
+  kernel_window_bounds: 1
+  output_window_bounds: 4
+  output_window_bounds: 8
+  output_window_bounds: 5
+  output_window_bounds: 1
+  output_window_bounds: 1
+  input_window_bounds: 6
+  input_window_bounds: 10
+  input_window_bounds: 7
+  input_window_bounds: 1
+  input_window_bounds: 1
+  estimated_cycles: 14735428
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 90
+  iteration_bounds: 33
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  iteration_bounds: 1
+  cost_model_type: COST_MODEL_TYPE_CLASSIC
+}
+used_scoped_memory_configs {
+  memory_space: 1
+  size: 7950336
+}
+retry_config {
+  retry_count: 2
+}
+convolution_algorithm_config {
+  emitter: "EmitAllBatchInSublanes"
+}
+aliasing_operands {
+}
+W0331 19:10:51.031747 2693104 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:51.297064 2693108 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:51.455868 2687210 buffer_utils.cc:61] Applying backpressure to TPU buffer allocation due to high HBM capacity pressure; dispatch performance may suffer
+W0331 19:10:51.513443 2693125 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:51.731472 2693133 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:51.950096 2693137 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:52.168411 2693141 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:52.387116 2693145 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:52.604862 2693149 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:52.823487 2693154 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:53.041842 2693158 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:53.260828 2693162 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:53.478394 2693166 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:53.697341 2693172 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:53.915861 2693176 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:54.135872 2693180 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:54.353135 2693184 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:54.571799 2693188 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:54.790479 2693192 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:54.942568 2693196 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:54.985836 2693200 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:55.033018 2693204 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:55.648721 2693208 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:55.692927 2693212 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:55.867682 2693224 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:56.038172 2693228 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:56.129992 2693232 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:56.295736 2693236 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:56.436889 2693240 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:56.560997 2693244 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:56.663102 2693248 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:56.781871 2693260 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:56.888810 2693264 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:56.995116 2693268 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+W0331 19:10:58.154850 2693309 tpu_spmd_partitioner.cc:454] Collective matmul V1 is enabled. Please consider migrating to V2 since V1 will be deprecated soon. You can enable V2 by setting xla_tpu_all_gather_collective_matmul_mode=post_spmd and xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd.
+E0331 19:10:58.655107 2687210 tpu_pjrt_client.cc:1931] TpuClient::AllocateBuffer returning error after 1 attempt(s): RESOURCE_EXHAUSTED: E0100: RuntimeBufferAllocationFailure:
+Error allocating device buffer: Attempting to allocate 337.50M. That was not possible. There are 918.07M free. The largest contiguous region of free memory is 230.58M due to fragmentation.; (0x0x0_HBM0)
+See https://openxla.org/xla/errors/error_0100 for more details.
+=== Source Location Trace: ===
+learning/45eac/research/pjrt/tpu_pjrt_client.cc:1899
+[OOM Summary: Reason: Fragmentation. Allocator stats:
+Limit:                     33550233600
+InUse:                     24357461504
+MaxInUse:                  25270668288
+NumAllocs:                        2454
+MaxAllocSize:               1692057600
+Reserved:                   8230109184
+PeakReserved:               8230109184
+LargestFreeBlock:                    0
+]
+W0331 19:10:58.695570 2693099 tpu_core_common_impl.cc:723] RESOURCE_EXHAUSTED: Attempting to reserve 7.66G at the bottom of memory. That was not possible. There are 7.06G free, 0B reserved, and 7.06G reservable.
+=== Source Location Trace: ===
+learning/45eac/tpu/runtime/hal/internal/best_fit_allocator.cc:757
+learning/45eac/tpu/runtime/hal/tpu_shared_memory.cc:543
+learning/45eac/tpu/runtime/hal/tpu_shared_memory.cc:119
+learning/45eac/tpu/runtime/hal/tpu_program_stack.cc:63
+learning/45eac/tpu/runtime/hal/internal/tpu_core_common_impl.cc:703
+W0331 19:11:01.497740 2686645 firmware_indirect_registers.cc:76] Released last reference with existing Open. Performing implicit close-on-destruction.
+W0331 19:11:02.468947 2693356 firmware_indirect_registers.cc:76] Released last reference with existing Open. Performing implicit close-on-destruction.
+W0331 19:11:03.288580 2686400 firmware_indirect_registers.cc:76] Released last reference with existing Open. Performing implicit close-on-destruction.
+W0331 19:11:03.326915 2692750 firmware_indirect_registers.cc:76] Released last reference with existing Open. Performing implicit close-on-destruction.
+W0331 19:11:04.032497 2686645 firmware_indirect_registers.cc:76] Released last reference with existing Open. Performing implicit close-on-destruction.
+W0331 19:11:04.856432 2686401 firmware_indirect_registers.cc:76] Released last reference with existing Open. Performing implicit close-on-destruction.
+W0331 19:11:05.470610 2693366 firmware_indirect_registers.cc:76] Released last reference with existing Open. Performing implicit close-on-destruction.
+W0331 19:11:06.143562 2693368 firmware_indirect_registers.cc:76] Released last reference with existing Open. Performing implicit close-on-destruction.

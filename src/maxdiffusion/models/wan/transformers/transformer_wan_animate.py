@@ -17,6 +17,7 @@ limitations under the License.
 from typing import Tuple, Optional, Dict, Union, Any
 import contextlib
 import math
+import numpy as np
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
@@ -59,14 +60,16 @@ class FlaxFusedLeakyReLU(nnx.Module):
       scale: float = 2**0.5,
       bias_channels: Optional[int] = None,
       dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
   ):
     self.negative_slope = negative_slope
     self.scale = scale
     self.channels = bias_channels
     self.dtype = dtype
+    self.weights_dtype = weights_dtype
 
     if self.channels is not None:
-      self.bias = nnx.Param(jnp.zeros((self.channels,), dtype=self.dtype))
+      self.bias = nnx.Param(jnp.zeros((self.channels,), dtype=self.weights_dtype))
     else:
       self.bias = None
 
@@ -103,6 +106,7 @@ class FlaxMotionConv2d(nnx.Module):
       blur_upsample_factor: int = 1,
       use_activation: bool = True,
       dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
   ):
     self.use_activation = use_activation
     self.in_channels = in_channels
@@ -111,44 +115,50 @@ class FlaxMotionConv2d(nnx.Module):
     self.stride = stride
     self.padding_size = padding
     self.dtype = dtype
+    self.weights_dtype = weights_dtype
 
     self.blur = False
     if blur_kernel is not None:
       p = (len(blur_kernel) - stride) + (kernel_size - 1)
       self.blur_padding = ((p + 1) // 2, p // 2)
 
-      kernel = jnp.array(blur_kernel, dtype=jnp.float32)
+      kernel = np.asarray(blur_kernel, dtype=np.float32)
       if kernel.ndim == 1:
-        kernel = jnp.expand_dims(kernel, 0) * jnp.expand_dims(kernel, 1)
+        kernel = np.expand_dims(kernel, 0) * np.expand_dims(kernel, 1)
       kernel = kernel / kernel.sum()
 
       if blur_upsample_factor > 1:
         kernel = kernel * (blur_upsample_factor**2)
 
-      self.blur_kernel = jnp.array(kernel)
+      self.blur_kernel = nnx.static(tuple(tuple(float(v) for v in row) for row in kernel))
       self.blur = True
     else:
-      self.blur_kernel = None
+      self.blur_kernel = nnx.static(None)
 
     key = rngs.params()
     # Shape: (out_channels, in_channels, kernel, kernel) — PyTorch OIHW format.
-    self.weight = nnx.Param(jax.random.normal(key, (out_channels, in_channels, kernel_size, kernel_size), dtype=dtype))
+    self.weight = nnx.Param(
+        jax.random.normal(key, (out_channels, in_channels, kernel_size, kernel_size), dtype=weights_dtype)
+    )
     self.scale = 1.0 / math.sqrt(in_channels * kernel_size**2)
 
     if bias and not self.use_activation:
-      self.bias = nnx.Param(jnp.zeros((out_channels,), dtype=dtype))
+      self.bias = nnx.Param(jnp.zeros((out_channels,), dtype=weights_dtype))
     else:
       self.bias = None
 
     if self.use_activation:
-      self.act_fn = FlaxFusedLeakyReLU(rngs=rngs, bias_channels=out_channels, dtype=dtype)
+      self.act_fn = FlaxFusedLeakyReLU(
+          rngs=rngs, bias_channels=out_channels, dtype=dtype, weights_dtype=weights_dtype
+      )
     else:
       self.act_fn = None
 
   def __call__(self, x: jax.Array, channel_dim: int = 1) -> jax.Array:
     # 1. Blur Pass (Depthwise)
     if self.blur:
-      expanded_kernel = jnp.expand_dims(jnp.expand_dims(self.blur_kernel, 0), 0)
+      blur_kernel = jnp.asarray(self.blur_kernel, dtype=jnp.float32)
+      expanded_kernel = jnp.expand_dims(jnp.expand_dims(blur_kernel, 0), 0)
       expanded_kernel = jnp.broadcast_to(
           expanded_kernel,
           (
@@ -158,6 +168,7 @@ class FlaxMotionConv2d(nnx.Module):
               expanded_kernel.shape[3],
           ),
       )
+      x = x.astype(expanded_kernel.dtype)
 
       pad_h, pad_w = self.blur_padding
       x = jax.lax.conv_general_dilated(
@@ -170,6 +181,7 @@ class FlaxMotionConv2d(nnx.Module):
       )
 
     # 2. Main Convolution Pass
+    x = x.astype(self.weight.dtype)
     conv_weight = self.weight * self.scale
     x = jax.lax.conv_general_dilated(
         x,
@@ -208,27 +220,30 @@ class FlaxMotionLinear(nnx.Module):
       bias: bool = True,
       use_activation: bool = False,
       dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
   ):
     self.use_activation = use_activation
     self.in_dim = in_dim
     self.out_dim = out_dim
     self.dtype = dtype
+    self.weights_dtype = weights_dtype
 
     key = rngs.params()
-    self.weight = nnx.Param(jax.random.normal(key, (out_dim, in_dim), dtype=dtype))
+    self.weight = nnx.Param(jax.random.normal(key, (out_dim, in_dim), dtype=weights_dtype))
     self.scale = 1.0 / math.sqrt(in_dim)
 
     if bias and not self.use_activation:
-      self.bias = nnx.Param(jnp.zeros((out_dim,), dtype=dtype))
+      self.bias = nnx.Param(jnp.zeros((out_dim,), dtype=weights_dtype))
     else:
       self.bias = None
 
     if self.use_activation:
-      self.act_fn = FlaxFusedLeakyReLU(rngs=rngs, bias_channels=out_dim, dtype=dtype)
+      self.act_fn = FlaxFusedLeakyReLU(rngs=rngs, bias_channels=out_dim, dtype=dtype, weights_dtype=weights_dtype)
     else:
       self.act_fn = None
 
   def __call__(self, inputs: jax.Array, channel_dim: int = 1) -> jax.Array:
+    inputs = inputs.astype(self.weight.dtype)
     # Transpose to (in_dim, out_dim) and apply scale
     w = self.weight.T * self.scale
 
@@ -255,6 +270,7 @@ class FlaxMotionEncoderResBlock(nnx.Module):
       blur_kernel: Tuple[int, ...] = (1, 3, 3, 1),
       downsample_factor: int = 2,
       dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
   ):
     self.downsample_factor = downsample_factor
     self.dtype = dtype
@@ -269,6 +285,7 @@ class FlaxMotionEncoderResBlock(nnx.Module):
         padding=kernel_size // 2,
         use_activation=True,
         dtype=dtype,
+        weights_dtype=weights_dtype,
     )
 
     # 3 X 3 Conv + downsample 2x + fused leaky ReLU
@@ -282,6 +299,7 @@ class FlaxMotionEncoderResBlock(nnx.Module):
         blur_kernel=blur_kernel,
         use_activation=True,
         dtype=dtype,
+        weights_dtype=weights_dtype,
     )
 
     # 1 X 1 Conv + downsample 2x in skip connection
@@ -296,6 +314,7 @@ class FlaxMotionEncoderResBlock(nnx.Module):
         blur_kernel=blur_kernel,
         use_activation=False,
         dtype=dtype,
+        weights_dtype=weights_dtype,
     )
 
   def __call__(self, x: jax.Array, channel_dim: int = 1) -> jax.Array:
@@ -325,21 +344,27 @@ class FlaxWanAnimateMotionEncoder(nnx.Module):
       motion_blocks: int = 5,
       channels: Optional[Dict[str, int]] = None,
       dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
   ):
     self.size = size
     self.dtype = dtype
+    self.weights_dtype = weights_dtype
 
     if channels is None:
       channels = WAN_ANIMATE_MOTION_ENCODER_CHANNEL_SIZES
 
-    self.conv_in = FlaxMotionConv2d(rngs, 3, channels[str(size)], 1, use_activation=True, dtype=dtype)
+    self.conv_in = FlaxMotionConv2d(
+        rngs, 3, channels[str(size)], 1, use_activation=True, dtype=dtype, weights_dtype=weights_dtype
+    )
 
     res_blocks = []
     in_channels = channels[str(size)]
     log_size = int(math.log(size, 2))
     for i in range(log_size, 2, -1):
       out_channels = channels[str(2 ** (i - 1))]
-      res_blocks.append(FlaxMotionEncoderResBlock(rngs, in_channels, out_channels, dtype=dtype))
+      res_blocks.append(
+          FlaxMotionEncoderResBlock(rngs, in_channels, out_channels, dtype=dtype, weights_dtype=weights_dtype)
+      )
       in_channels = out_channels
     self.res_blocks = nnx.List(res_blocks)
 
@@ -352,17 +377,18 @@ class FlaxWanAnimateMotionEncoder(nnx.Module):
         bias=False,
         use_activation=False,
         dtype=dtype,
+        weights_dtype=weights_dtype,
     )
 
     linears = []
     for _ in range(motion_blocks - 1):
-      linears.append(FlaxMotionLinear(rngs, style_dim, style_dim, dtype=dtype))
+      linears.append(FlaxMotionLinear(rngs, style_dim, style_dim, dtype=dtype, weights_dtype=weights_dtype))
 
-    linears.append(FlaxMotionLinear(rngs, style_dim, motion_dim, dtype=dtype))
+    linears.append(FlaxMotionLinear(rngs, style_dim, motion_dim, dtype=dtype, weights_dtype=weights_dtype))
     self.motion_network = nnx.List(linears)
 
     key = rngs.params()
-    self.motion_synthesis_weight = nnx.Param(jax.random.normal(key, (out_dim, motion_dim), dtype=dtype))
+    self.motion_synthesis_weight = nnx.Param(jax.random.normal(key, (out_dim, motion_dim), dtype=weights_dtype))
 
   def __call__(self, face_image: jax.Array, channel_dim: int = 1) -> jax.Array:
     if face_image.shape[-2] != self.size or face_image.shape[-1] != self.size:
@@ -404,6 +430,7 @@ class FlaxWanAnimateFaceEncoder(nnx.Module):
       eps: float = 1e-6,
       pad_mode: str = "edge",
       dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
   ):
     self.num_heads = num_heads
     self.kernel_size = kernel_size
@@ -421,6 +448,7 @@ class FlaxWanAnimateFaceEncoder(nnx.Module):
         padding="VALID",
         rngs=rngs,
         dtype=dtype,
+        param_dtype=weights_dtype,
     )
     self.conv2 = nnx.Conv(
         hidden_dim,
@@ -430,6 +458,7 @@ class FlaxWanAnimateFaceEncoder(nnx.Module):
         padding="VALID",
         rngs=rngs,
         dtype=dtype,
+        param_dtype=weights_dtype,
     )
     self.conv3 = nnx.Conv(
         hidden_dim,
@@ -439,6 +468,7 @@ class FlaxWanAnimateFaceEncoder(nnx.Module):
         padding="VALID",
         rngs=rngs,
         dtype=dtype,
+        param_dtype=weights_dtype,
     )
 
     self.norm1 = nnx.LayerNorm(
@@ -472,11 +502,12 @@ class FlaxWanAnimateFaceEncoder(nnx.Module):
         out_dim,
         rngs=rngs,
         dtype=dtype,
+        param_dtype=weights_dtype,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
-    self.padding_tokens = nnx.Param(jnp.zeros((1, 1, 1, out_dim), dtype=dtype))
+    self.padding_tokens = nnx.Param(jnp.zeros((1, 1, 1, out_dim), dtype=weights_dtype))
 
   def __call__(self, x: jax.Array) -> jax.Array:
     batch_size = x.shape[0]
@@ -525,6 +556,7 @@ class FlaxWanAnimateFaceBlockCrossAttention(nnx.Module):
       cross_attention_dim_head: Optional[int] = None,
       use_bias: bool = True,
       dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
   ):
     self.heads = heads
     self.inner_dim = dim_head * heads
@@ -542,6 +574,7 @@ class FlaxWanAnimateFaceBlockCrossAttention(nnx.Module):
         use_bias=use_bias,
         rngs=rngs,
         dtype=dtype,
+        param_dtype=weights_dtype,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
     )
@@ -551,6 +584,7 @@ class FlaxWanAnimateFaceBlockCrossAttention(nnx.Module):
         use_bias=use_bias,
         rngs=rngs,
         dtype=dtype,
+        param_dtype=weights_dtype,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
     )
@@ -560,6 +594,7 @@ class FlaxWanAnimateFaceBlockCrossAttention(nnx.Module):
         use_bias=use_bias,
         rngs=rngs,
         dtype=dtype,
+        param_dtype=weights_dtype,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
     )
@@ -571,12 +606,13 @@ class FlaxWanAnimateFaceBlockCrossAttention(nnx.Module):
         use_bias=use_bias,
         rngs=rngs,
         dtype=dtype,
+        param_dtype=weights_dtype,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
-    self.norm_q = nnx.RMSNorm(dim_head, epsilon=eps, use_scale=True, rngs=rngs, dtype=dtype)
-    self.norm_k = nnx.RMSNorm(dim_head, epsilon=eps, use_scale=True, rngs=rngs, dtype=dtype)
+    self.norm_q = nnx.RMSNorm(dim_head, epsilon=eps, use_scale=True, rngs=rngs, dtype=dtype, param_dtype=weights_dtype)
+    self.norm_k = nnx.RMSNorm(dim_head, epsilon=eps, use_scale=True, rngs=rngs, dtype=dtype, param_dtype=weights_dtype)
 
   def __call__(
       self,
@@ -733,6 +769,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         out_dim=motion_encoder_dim,
         channels=motion_encoder_channel_sizes,
         dtype=dtype,
+        weights_dtype=weights_dtype,
     )
     self.face_encoder = FlaxWanAnimateFaceEncoder(
         rngs=rngs,
@@ -741,6 +778,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         hidden_dim=face_encoder_hidden_dim,
         num_heads=face_encoder_num_heads,
         dtype=dtype,
+        weights_dtype=weights_dtype,
     )
 
     blocks = []
@@ -778,6 +816,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           eps=eps,
           cross_attention_dim_head=inner_dim // num_attention_heads,
           dtype=dtype,
+          weights_dtype=weights_dtype,
       )
       face_adapters.append(fa)
     self.face_adapter = nnx.List(face_adapters)
@@ -796,7 +835,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     key = rngs.params()
     self.scale_shift_table = nnx.Param(
-        jax.random.normal(key, (1, 2, inner_dim), dtype=dtype) / inner_dim**0.5,
+        jax.random.normal(key, (1, 2, inner_dim), dtype=weights_dtype) / inner_dim**0.5,
         kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, "embed")),
     )
 

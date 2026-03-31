@@ -39,6 +39,22 @@ def _tuple_str_to_int(in_tuple):
   return tuple(out_list)
 
 
+def _normalize_animate_list_key(key):
+  """Convert flattened animate list names into nnx.List-style tuple paths."""
+  if not key:
+    return key
+
+  if isinstance(key[0], str) and key[0].startswith("face_adapter_"):
+    adapter_idx = int(key[0].split("_")[-1])
+    return ("face_adapter", adapter_idx) + key[1:]
+
+  if len(key) >= 2 and key[0] == "motion_encoder" and isinstance(key[1], str) and key[1].startswith("motion_network_"):
+    layer_idx = int(key[1].split("_")[-1])
+    return ("motion_encoder", "motion_network", layer_idx) + key[2:]
+
+  return key
+
+
 def rename_for_nnx(key):
   new_key = key
   if "norm_k" in key or "norm_q" in key:
@@ -381,6 +397,7 @@ def load_wan_animate_transformer(
         continue
 
       renamed_pt_key = rename_key(pt_key)
+      is_motion_custom_weight = _is_motion_encoder_custom_weight(pt_key)
 
       # --- Standard WAN transformer renames (shared with base transformer) ---
       if "condition_embedder" in renamed_pt_key:
@@ -413,6 +430,8 @@ def load_wan_animate_transformer(
       # FusedLeakyReLU bias: HuggingFace stores it under "activation.bias",
       # JAX stores it under "act_fn.bias" within FlaxMotionConv2d/FlaxMotionLinear.
       renamed_pt_key = renamed_pt_key.replace(".activation.bias", ".act_fn.bias")
+      if is_motion_custom_weight and renamed_pt_key.endswith(".kernel"):
+        renamed_pt_key = renamed_pt_key[:-7] + ".weight"
 
       # face_adapter cross-attention: norm_q/norm_k scale renaming
       # (rename_for_nnx handles norm_k/norm_q -> scale in get_key_and_value)
@@ -421,13 +440,14 @@ def load_wan_animate_transformer(
 
       # FlaxMotionConv2d and FlaxMotionLinear store weights as nnx.Param in PyTorch
       # OIHW / (out, in) format — do NOT rename weight→kernel or transpose.
-      if _is_motion_encoder_custom_weight(renamed_pt_key):
-        flax_key = _tuple_str_to_int(pt_tuple_key)
+      if is_motion_custom_weight:
+        flax_key = _normalize_animate_list_key(_tuple_str_to_int(pt_tuple_key))
         flax_tensor = tensor
       else:
         flax_key, flax_tensor = get_key_and_value(
             pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
         )
+        flax_key = _normalize_animate_list_key(flax_key)
 
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 

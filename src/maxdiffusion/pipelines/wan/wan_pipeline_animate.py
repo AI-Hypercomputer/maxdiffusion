@@ -41,10 +41,10 @@ import torch
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from jax.sharding import NamedSharding, PartitionSpec as P
-
 from maxdiffusion import max_logging
 from maxdiffusion.image_processor import PipelineImageInput
 from maxdiffusion.max_utils import device_put_replicated, get_flash_block_sizes, get_precision
+from maxdiffusion.video_processor import VideoProcessor
 
 from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan
 from ...models.wan.transformers.transformer_wan_animate import NNXWanAnimateTransformer3DModel
@@ -237,6 +237,11 @@ class WanAnimatePipeline(WanPipeline):
         vae_scale_factor=self.vae_scale_factor_spatial,
         spatial_patch_size=(2, 2),
     )
+    self.video_processor_for_mask = VideoProcessor(
+        vae_scale_factor=self.vae_scale_factor_spatial,
+        do_normalize=False,
+        do_convert_grayscale=True,
+    )
 
   @classmethod
   def load_animate_transformer(
@@ -326,6 +331,82 @@ class WanAnimatePipeline(WanPipeline):
   # ------------------------------------------------------------------
   # Video utilities
   # ------------------------------------------------------------------
+
+  def check_inputs(
+      self,
+      prompt,
+      negative_prompt,
+      image,
+      pose_video,
+      face_video,
+      background_video,
+      mask_video,
+      height,
+      width,
+      prompt_embeds=None,
+      negative_prompt_embeds=None,
+      image_embeds=None,
+      mode=None,
+      prev_segment_conditioning_frames=None,
+  ):
+    """Validate user-facing pipeline inputs with Diffusers-compatible checks."""
+    supported_image_types = (torch.Tensor, PIL.Image.Image, np.ndarray, jnp.ndarray)
+
+    if image is not None and image_embeds is not None:
+      raise ValueError(
+          f"Cannot forward both `image`: {image} and `image_embeds`: {image_embeds}. Please make sure to"
+          " only forward one of the two."
+      )
+    if image is None and image_embeds is None:
+      raise ValueError("Provide either `image` or `image_embeds`. Cannot leave both undefined.")
+    if image is not None and not isinstance(image, supported_image_types):
+      raise ValueError(
+          f"`image` has to be of type `torch.Tensor`, `PIL.Image.Image`, `np.ndarray`, or `jnp.ndarray` but is {type(image)}"
+      )
+    if pose_video is None:
+      raise ValueError("Provide `pose_video`. Cannot leave `pose_video` undefined.")
+    if face_video is None:
+      raise ValueError("Provide `face_video`. Cannot leave `face_video` undefined.")
+    if not isinstance(pose_video, list) or not isinstance(face_video, list):
+      raise ValueError("`pose_video` and `face_video` must be lists of PIL images.")
+    if len(pose_video) == 0 or len(face_video) == 0:
+      raise ValueError("`pose_video` and `face_video` must contain at least one frame.")
+    if mode == "replace" and (background_video is None or mask_video is None):
+      raise ValueError(
+          "Provide `background_video` and `mask_video`. Cannot leave both `background_video` and `mask_video`"
+          " undefined when mode is `replace`."
+      )
+    if mode == "replace" and (not isinstance(background_video, list) or not isinstance(mask_video, list)):
+      raise ValueError("`background_video` and `mask_video` must be lists of PIL images when mode is `replace`.")
+    if height % 16 != 0 or width % 16 != 0:
+      raise ValueError(f"`height` and `width` have to be divisible by 16 but are {height} and {width}.")
+    if prompt is not None and prompt_embeds is not None:
+      raise ValueError(
+          f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
+          " only forward one of the two."
+      )
+    if negative_prompt is not None and negative_prompt_embeds is not None:
+      raise ValueError(
+          f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`: {negative_prompt_embeds}. Please make sure to"
+          " only forward one of the two."
+      )
+    if prompt is None and prompt_embeds is None:
+      raise ValueError("Provide either `prompt` or `prompt_embeds`. Cannot leave both undefined.")
+    if prompt is not None and not isinstance(prompt, (str, list)):
+      raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
+    if negative_prompt is not None and not isinstance(negative_prompt, (str, list)):
+      raise ValueError(f"`negative_prompt` has to be of type `str` or `list` but is {type(negative_prompt)}")
+    if mode is not None and (not isinstance(mode, str) or mode not in ("animate", "replace")):
+      raise ValueError(
+          f"`mode` has to be of type `str` and in ('animate', 'replace') but its type is {type(mode)} and value is {mode}"
+      )
+    if prev_segment_conditioning_frames is not None and (
+        not isinstance(prev_segment_conditioning_frames, int) or prev_segment_conditioning_frames not in (1, 5)
+    ):
+      raise ValueError(
+          f"`prev_segment_conditioning_frames` has to be of type `int` and 1 or 5 but its type is"
+          f" {type(prev_segment_conditioning_frames)} and value is {prev_segment_conditioning_frames}"
+      )
 
   @staticmethod
   def pad_video_frames(frames: list, num_target_frames: int) -> list:
@@ -474,11 +555,11 @@ class WanAnimatePipeline(WanPipeline):
     B, C, T, H, W = mask.shape
     if H == latent_h and W == latent_w:
       return mask
-    # Reshape to (B*T, H, W, C) for jax.image.resize.
-    mask_flat = jnp.transpose(mask, (0, 2, 3, 4, 1)).reshape(B * T, H, W, C)
-    mask_resized = jax.image.resize(mask_flat, (B * T, latent_h, latent_w, C), method="nearest")
-    mask_resized = mask_resized.reshape(B, T, latent_h, latent_w, C)
-    return jnp.transpose(mask_resized, (0, 4, 1, 2, 3))  # (B, C, T, H_lat, W_lat)
+    # Match torch.nn.functional.interpolate(..., mode="nearest") exactly.
+    h_indices = jnp.floor(jnp.arange(latent_h) * (H / latent_h)).astype(jnp.int32)
+    w_indices = jnp.floor(jnp.arange(latent_w) * (W / latent_w)).astype(jnp.int32)
+    mask = jnp.take(mask, h_indices, axis=3)
+    return jnp.take(mask, w_indices, axis=4)
 
   def prepare_prev_segment_cond_latents(
       self,
@@ -586,6 +667,7 @@ class WanAnimatePipeline(WanPipeline):
       segment_frame_length: int,
       dtype: jnp.dtype,
       rng: jax.Array,
+      latents: Optional[jnp.ndarray] = None,
   ) -> jnp.ndarray:
     """Sample noisy latents for a denoising segment.
 
@@ -598,7 +680,12 @@ class WanAnimatePipeline(WanPipeline):
     latent_h = height // self.vae_scale_factor_spatial
     latent_w = width // self.vae_scale_factor_spatial
     shape = (batch_size, num_latent_frames + 1, latent_h, latent_w, self.vae.z_dim)
-    return jax.random.normal(rng, shape=shape, dtype=jnp.float32)
+    if latents is not None:
+      latents = jnp.asarray(latents)
+      if latents.shape != shape:
+        raise ValueError(f"Unexpected latents shape {latents.shape}; expected {shape}.")
+      return latents.astype(dtype)
+    return jax.random.normal(rng, shape=shape, dtype=jnp.float32).astype(dtype)
 
   def _decode_segment_to_pixels(self, latents_cl: jnp.ndarray) -> jnp.ndarray:
     """Decode latents and return raw pixel-space frames for re-encoding.
@@ -674,6 +761,23 @@ class WanAnimatePipeline(WanPipeline):
     """
     height = height or self.config.height
     width = width or self.config.width
+
+    self.check_inputs(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        image=image,
+        pose_video=pose_video,
+        face_video=face_video,
+        background_video=background_video,
+        mask_video=mask_video,
+        height=height,
+        width=width,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
+        image_embeds=image_embeds,
+        mode=mode,
+        prev_segment_conditioning_frames=prev_segment_conditioning_frames,
+    )
 
     # Ensure segment_frame_length satisfies the VAE temporal constraint.
     if segment_frame_length % self.vae_scale_factor_temporal != 1:
@@ -762,14 +866,8 @@ class WanAnimatePipeline(WanPipeline):
           background_video, height=height, width=width
       )
       background_video_tensor = jnp.array(background_video_tensor.cpu().numpy())
-
-      # Grayscale mask preprocessing (do_normalize=False, values in [0, 1]).
-      mask_frames_torch = [
-          f.convert("L").resize((width, height), PIL.Image.NEAREST) for f in mask_video
-      ]
-      mask_np = np.stack([np.array(f, dtype=np.float32) / 255.0 for f in mask_frames_torch])
-      # (T, H, W) → (1, 1, T, H, W)
-      mask_video_tensor = jnp.array(mask_np)[None, None, :, :, :]
+      mask_video_tensor = self.video_processor_for_mask.preprocess_video(mask_video, height=height, width=width)
+      mask_video_tensor = jnp.array(mask_video_tensor.cpu().numpy())
 
     if rng is None:
       rng = jax.random.key(self.config.seed)
@@ -777,7 +875,7 @@ class WanAnimatePipeline(WanPipeline):
     # ---- 5. Device placement ----
     data_sharding = NamedSharding(self.mesh, P())
     if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
-      data_sharding = NamedSharding(self.mesh, P(*self.config.data_sharding))
+      data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
 
     prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
     if negative_prompt_embeds is not None:
@@ -796,7 +894,13 @@ class WanAnimatePipeline(WanPipeline):
       rng, latents_rng = jax.random.split(rng)
 
       seg_latents = self.prepare_segment_latents(
-          effective_batch_size, height, width, segment_frame_length, transformer_dtype, latents_rng
+          effective_batch_size,
+          height,
+          width,
+          segment_frame_length,
+          transformer_dtype,
+          latents_rng,
+          latents=latents if start == 0 else None,
       )  # (B, T_lat+1, H_lat, W_lat, z_dim)
 
       # Extract segment slices.
