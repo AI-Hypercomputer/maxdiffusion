@@ -1330,6 +1330,15 @@ class LTX2Pipeline:
     if output_type == "latent":
       return LTX2PipelineOutput(frames=latents, audio=audio_latents)
 
+    # EXPERIMENT: Force latents to be fully replicated using with_sharding_constraint
+    try:
+      mesh = latents.sharding.mesh
+      replicated_sharding = NamedSharding(mesh, P())
+      latents = jax.lax.with_sharding_constraint(latents, replicated_sharding)
+      max_logging.log("[Tuning] Applied replication constraint using with_sharding_constraint.")
+    except Exception as e:
+      max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
+
     s_vae = time.perf_counter()
     if getattr(self.vae.config, "timestep_conditioning", False):
       noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
