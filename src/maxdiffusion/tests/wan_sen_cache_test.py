@@ -23,6 +23,7 @@ import pytest
 from absl.testing import absltest
 
 from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
+from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p2 import WanPipelineI2V_2_2
 
 IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -347,6 +348,281 @@ class WanSenCacheSmokeTest(unittest.TestCase):
 
     mean_ssim = np.mean(ssim_scores)
     print(f"SSIM: mean={mean_ssim:.4f}, min={np.min(ssim_scores):.4f}")
+    self.assertGreaterEqual(mean_ssim, 0.95, f"Mean SSIM={mean_ssim:.4f} < 0.95")
+
+
+class Wan22I2VSenCacheValidationTest(unittest.TestCase):
+  """Tests that use_sen_cache validation raises correct errors for Wan 2.2 I2V."""
+
+  def _make_pipeline(self):
+    pipeline = WanPipelineI2V_2_2.__new__(WanPipelineI2V_2_2)
+    return pipeline
+
+  def test_sen_cache_with_both_scales_low_raises(self):
+    pipeline = self._make_pipeline()
+    with self.assertRaises(ValueError) as ctx:
+      pipeline(
+          prompt=["test"],
+          image=None,
+          guidance_scale_low=1.0,
+          guidance_scale_high=1.0,
+          use_sen_cache=True,
+      )
+    self.assertIn("use_sen_cache", str(ctx.exception))
+
+  def test_sen_cache_with_low_scale_low_raises(self):
+    pipeline = self._make_pipeline()
+    with self.assertRaises(ValueError) as ctx:
+      pipeline(
+          prompt=["test"],
+          image=None,
+          guidance_scale_low=0.5,
+          guidance_scale_high=4.0,
+          use_sen_cache=True,
+      )
+    self.assertIn("use_sen_cache", str(ctx.exception))
+
+  def test_sen_cache_with_high_scale_low_raises(self):
+    pipeline = self._make_pipeline()
+    with self.assertRaises(ValueError) as ctx:
+      pipeline(
+          prompt=["test"],
+          image=None,
+          guidance_scale_low=3.0,
+          guidance_scale_high=1.0,
+          use_sen_cache=True,
+      )
+    self.assertIn("use_sen_cache", str(ctx.exception))
+
+  def test_sen_cache_mutually_exclusive_with_cfg_cache(self):
+    pipeline = self._make_pipeline()
+    with self.assertRaises(ValueError) as ctx:
+      pipeline(
+          prompt=["test"],
+          image=None,
+          guidance_scale_low=3.0,
+          guidance_scale_high=4.0,
+          use_cfg_cache=True,
+          use_sen_cache=True,
+      )
+    self.assertIn("mutually exclusive", str(ctx.exception))
+
+  def test_sen_cache_with_valid_scales_no_validation_error(self):
+    """Both guidance_scales > 1.0 should pass validation (may fail later without model)."""
+    pipeline = self._make_pipeline()
+    try:
+      pipeline(
+          prompt=["test"],
+          image=None,
+          guidance_scale_low=3.0,
+          guidance_scale_high=4.0,
+          use_sen_cache=True,
+      )
+    except ValueError as e:
+      if "use_sen_cache" in str(e):
+        self.fail(f"Unexpected validation error: {e}")
+    except Exception:
+      pass
+
+  def test_no_sen_cache_with_low_scales_no_error(self):
+    """use_sen_cache=False should never raise our ValueError."""
+    pipeline = self._make_pipeline()
+    try:
+      pipeline(
+          prompt=["test"],
+          image=None,
+          guidance_scale_low=0.5,
+          guidance_scale_high=0.5,
+          use_sen_cache=False,
+      )
+    except ValueError as e:
+      if "use_sen_cache" in str(e):
+        self.fail(f"Unexpected validation error: {e}")
+    except Exception:
+      pass
+
+
+class Wan22I2VSenCacheScheduleTest(unittest.TestCase):
+  """Tests the SenCache schedule logic for Wan 2.2 I2V.
+
+  The schedule logic is identical to T2V — validates force_compute zones
+  and sensitivity gating constraints.
+  """
+
+  def _get_force_compute_schedule(self, num_inference_steps, boundary_ratio=0.875, num_train_timesteps=1000):
+    """Extract which steps are forced to compute — mirrors run_inference_2_2_i2v's SenCache logic."""
+    boundary = boundary_ratio * num_train_timesteps
+    timesteps = np.linspace(num_train_timesteps - 1, 0, num_inference_steps, dtype=np.int32)
+    step_uses_high = [bool(timesteps[s] >= boundary) for s in range(num_inference_steps)]
+
+    warmup_steps = 1
+    nocache_start_ratio = 0.3
+    nocache_end_ratio = 0.1
+
+    nocache_start = int(num_inference_steps * nocache_start_ratio)
+    nocache_end_begin = int(num_inference_steps * (1.0 - nocache_end_ratio))
+
+    force_compute = []
+    for s in range(num_inference_steps):
+      is_boundary = s > 0 and step_uses_high[s] != step_uses_high[s - 1]
+      forced = s < warmup_steps or s < nocache_start or s >= nocache_end_begin or is_boundary or s == 0
+      force_compute.append(forced)
+
+    return force_compute, step_uses_high
+
+  def test_first_step_always_forced(self):
+    force_compute, _ = self._get_force_compute_schedule(50)
+    self.assertTrue(force_compute[0])
+
+  def test_first_30_percent_always_forced(self):
+    force_compute, _ = self._get_force_compute_schedule(50)
+    nocache_start = int(50 * 0.3)
+    self.assertTrue(all(force_compute[:nocache_start]))
+
+  def test_last_10_percent_always_forced(self):
+    force_compute, _ = self._get_force_compute_schedule(50)
+    nocache_end_begin = int(50 * 0.9)
+    self.assertTrue(all(force_compute[nocache_end_begin:]))
+
+  def test_boundary_transition_forced(self):
+    force_compute, step_uses_high = self._get_force_compute_schedule(50)
+    for s in range(1, 50):
+      if step_uses_high[s] != step_uses_high[s - 1]:
+        self.assertTrue(force_compute[s], f"Boundary step {s} should be forced")
+
+  def test_cacheable_window_exists(self):
+    force_compute, _ = self._get_force_compute_schedule(50)
+    nocache_start = int(50 * 0.3)
+    nocache_end_begin = int(50 * 0.9)
+    cacheable = [not force_compute[s] for s in range(nocache_start, nocache_end_begin)]
+    self.assertGreater(sum(cacheable), 0, "Should have cacheable steps in the middle window")
+
+  def test_schedule_matches_t2v(self):
+    """I2V SenCache schedule should be identical to T2V SenCache schedule."""
+    t2v_test = WanSenCacheScheduleTest()
+    for n_steps in [20, 50, 100]:
+      fc_i2v, high_i2v = self._get_force_compute_schedule(n_steps)
+      fc_t2v, high_t2v = t2v_test._get_force_compute_schedule(n_steps)
+      self.assertEqual(fc_i2v, fc_t2v, f"I2V and T2V schedules should match for {n_steps} steps")
+      self.assertEqual(high_i2v, high_t2v, f"I2V and T2V high-noise schedules should match for {n_steps} steps")
+
+
+@pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Requires TPU v7-8 and model weights")
+class Wan22I2VSenCacheSmokeTest(unittest.TestCase):
+  """End-to-end smoke test: SenCache for Wan 2.2 I2V should be faster with SSIM >= 0.95.
+
+  Runs on TPU v7-8 (8 chips, context_parallelism=8) with WAN 2.2 I2V 27B, 720p.
+  Skipped in CI (GitHub Actions) — run locally with:
+    python -m pytest src/maxdiffusion/tests/wan_sen_cache_test.py::Wan22I2VSenCacheSmokeTest -v
+  """
+
+  @classmethod
+  def setUpClass(cls):
+    from maxdiffusion import pyconfig
+    from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
+    from maxdiffusion.utils.loading_utils import load_image
+
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_i2v_27b.yml"),
+            "num_inference_steps=50",
+            "height=720",
+            "width=1280",
+            "num_frames=81",
+            "fps=24",
+            "guidance_scale_low=3.0",
+            "guidance_scale_high=4.0",
+            "boundary_ratio=0.875",
+            "flow_shift=3.0",
+            "seed=11234567893",
+            "attention=flash",
+            "remat_policy=FULL",
+            "allow_split_physical_axes=True",
+            "skip_jax_distributed_system=True",
+            "weights_dtype=bfloat16",
+            "activations_dtype=bfloat16",
+            "per_device_batch_size=0.125",
+            "ici_data_parallelism=1",
+            "ici_fsdp_parallelism=1",
+            "ici_context_parallelism=8",
+            "ici_tensor_parallelism=1",
+            "flash_min_seq_length=0",
+            'flash_block_sizes={"block_q": 2048, "block_kv_compute": 1024, "block_kv": 2048, "block_q_dkv": 2048, "block_kv_dkv": 2048, "block_kv_dkv_compute": 2048, "use_fused_bwd_kernel": true}',
+        ],
+        unittest=True,
+    )
+    cls.config = pyconfig.config
+    checkpoint_loader = WanCheckpointerI2V_2_2(config=cls.config)
+    cls.pipeline, _, _ = checkpoint_loader.load_checkpoint()
+
+    cls.prompt = [cls.config.prompt] * cls.config.global_batch_size_to_train_on
+    cls.negative_prompt = [cls.config.negative_prompt] * cls.config.global_batch_size_to_train_on
+    cls.image = load_image(cls.config.image_url)
+
+    # Warmup both XLA code paths
+    for use_cache in [False, True]:
+      cls.pipeline(
+          prompt=cls.prompt,
+          image=cls.image,
+          negative_prompt=cls.negative_prompt,
+          height=cls.config.height,
+          width=cls.config.width,
+          num_frames=cls.config.num_frames,
+          num_inference_steps=cls.config.num_inference_steps,
+          guidance_scale_low=cls.config.guidance_scale_low,
+          guidance_scale_high=cls.config.guidance_scale_high,
+          use_sen_cache=use_cache,
+      )
+
+  def _run_pipeline(self, use_sen_cache):
+    t0 = time.perf_counter()
+    videos = self.pipeline(
+        prompt=self.prompt,
+        image=self.image,
+        negative_prompt=self.negative_prompt,
+        height=self.config.height,
+        width=self.config.width,
+        num_frames=self.config.num_frames,
+        num_inference_steps=self.config.num_inference_steps,
+        guidance_scale_low=self.config.guidance_scale_low,
+        guidance_scale_high=self.config.guidance_scale_high,
+        use_sen_cache=use_sen_cache,
+    )
+    return videos, time.perf_counter() - t0
+
+  def test_sen_cache_speedup_and_fidelity(self):
+    """I2V SenCache must be faster than baseline with PSNR >= 30 dB and SSIM >= 0.95."""
+    videos_baseline, t_baseline = self._run_pipeline(use_sen_cache=False)
+    videos_cached, t_cached = self._run_pipeline(use_sen_cache=True)
+
+    # Speed check
+    speedup = t_baseline / t_cached
+    print(f"I2V Baseline: {t_baseline:.2f}s, SenCache: {t_cached:.2f}s, Speedup: {speedup:.3f}x")
+    self.assertGreater(speedup, 1.0, f"SenCache should be faster. Speedup={speedup:.3f}x")
+
+    # Fidelity checks
+    v1 = np.array(videos_baseline[0], dtype=np.float64)
+    v2 = np.array(videos_cached[0], dtype=np.float64)
+
+    # PSNR
+    mse = np.mean((v1 - v2) ** 2)
+    psnr = 10.0 * np.log10(1.0 / mse) if mse > 0 else float("inf")
+    print(f"I2V PSNR: {psnr:.2f} dB")
+    self.assertGreaterEqual(psnr, 30.0, f"PSNR={psnr:.2f} dB < 30 dB")
+
+    # SSIM (per-frame)
+    C1, C2 = 0.01**2, 0.03**2
+    ssim_scores = []
+    for f in range(v1.shape[0]):
+      mu1, mu2 = np.mean(v1[f]), np.mean(v2[f])
+      sigma1_sq, sigma2_sq = np.var(v1[f]), np.var(v2[f])
+      sigma12 = np.mean((v1[f] - mu1) * (v2[f] - mu2))
+      ssim = ((2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)) / ((mu1**2 + mu2**2 + C1) * (sigma1_sq + sigma2_sq + C2))
+      ssim_scores.append(float(ssim))
+
+    mean_ssim = np.mean(ssim_scores)
+    print(f"I2V SSIM: mean={mean_ssim:.4f}, min={np.min(ssim_scores):.4f}")
     self.assertGreaterEqual(mean_ssim, 0.95, f"Mean SSIM={mean_ssim:.4f} < 0.95")
 
 
