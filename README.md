@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2026/03/31`**: Wan2.2 SenCache inference is now supported for T2V and I2V (up to 1.4x speedup)
 - **`2026/03/25`**: Wan2.1 and Wan2.2 Magcache inference is now supported
 - **`2026/03/25`**: LTX-2 Video Inference is now supported
 - **`2026/01/29`**: Wan LoRA for inference is now supported
@@ -570,6 +571,31 @@ To generate images, run the following command:
   * For Wan2.1 I2V, use `base_wan_i2v_14b.yml`.
   * For Wan2.2 T2V, use `base_wan_27b.yml`.
   * For Wan2.2 I2V, use `base_wan_i2v_27b.yml`.
+
+  ### Caching Mechanisms
+
+  Wan 2.x pipelines support several caching strategies to accelerate inference by skipping redundant transformer forward passes. These are **mutually exclusive** — enable only one at a time.
+
+  | Cache Type | Config Flag | Supported Pipelines | Speedup | Description |
+  | --- | --- | --- | --- | --- |
+  | **CFG Cache** | `use_cfg_cache: True` | Wan 2.1 T2V, Wan 2.2 T2V/I2V | ~1.2x | FasterCache-style: caches the unconditional branch and applies FFT frequency-domain compensation on skipped steps. |
+  | **SenCache** | `use_sen_cache: True` | Wan 2.2 T2V/I2V | ~1.4x | Sensitivity-Aware Caching ([arXiv:2602.24208](https://arxiv.org/abs/2602.24208)): predicts output change via first-order sensitivity S = α_x·‖Δx‖ + α_t·\|Δt\|. Skips the full CFG forward pass when predicted change is below tolerance ε. |
+
+  To enable a caching mechanism, set the corresponding flag in your config YAML or pass it as a command-line override:
+
+  ```bash
+  # Example: enable SenCache for Wan 2.2 T2V
+  python src/maxdiffusion/generate_wan.py \
+    src/maxdiffusion/configs/base_wan_27b.yml \
+    use_sen_cache=True \
+    ...
+
+  # Example: enable CFG Cache for Wan 2.2 I2V
+  python src/maxdiffusion/generate_wan.py \
+    src/maxdiffusion/configs/base_wan_i2v_27b.yml \
+    use_cfg_cache=True \
+    ...
+  ```
 
   ## Flux
 
