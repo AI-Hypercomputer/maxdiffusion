@@ -390,6 +390,7 @@ class LTX2Pipeline:
           sharding = NamedSharding(mesh, P())
         state[path].value = device_put_replicated(val, sharding)
       else:
+        max_logging.log(f"[Tuning] VAE Key {path} fell into default sharding fallback!")
         state[path].value = jax.device_put(val)
 
     state = nnx.from_flat_state(state)
