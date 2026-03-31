@@ -23,6 +23,7 @@ from ..attention_flax import NNXAttentionOp
 Array = common_types.Array
 Mesh = common_types.Mesh
 DType = common_types.DType
+BlockSizes = common_types.BlockSizes
 
 
 def apply_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
@@ -193,9 +194,7 @@ class LTX2RotaryPosEmbed(nnx.Module):
     # pixel_coords[:, 0, ...] selects Frame dimension.
     # pixel_coords shape: [B, 3, num_patches, 2] -> dim 1 is (F, H, W)
     frame_coords = pixel_coords[:, 0, ...]
-    frame_coords = jnp.clip(
-        frame_coords + self.causal_offset - self.scale_factors[0], min=0
-    )
+    frame_coords = jnp.clip(frame_coords + self.causal_offset - self.scale_factors[0], min=0)
     pixel_coords = pixel_coords.at[:, 0, ...].set(frame_coords / fps)
 
     return pixel_coords
@@ -212,16 +211,12 @@ class LTX2RotaryPosEmbed(nnx.Module):
     # 2. Start timestamps
     audio_scale_factor = self.scale_factors[0]
     grid_start_mel = grid_f * audio_scale_factor
-    grid_start_mel = jnp.clip(
-        grid_start_mel + self.causal_offset - audio_scale_factor, min=0
-    )
+    grid_start_mel = jnp.clip(grid_start_mel + self.causal_offset - audio_scale_factor, min=0)
     grid_start_s = grid_start_mel * self.hop_length / self.sampling_rate
 
     # 3. End timestamps
     grid_end_mel = (grid_f + self.patch_size_t) * audio_scale_factor
-    grid_end_mel = jnp.clip(
-        grid_end_mel + self.causal_offset - audio_scale_factor, min=0
-    )
+    grid_end_mel = jnp.clip(grid_end_mel + self.causal_offset - audio_scale_factor, min=0)
     grid_end_s = grid_end_mel * self.hop_length / self.sampling_rate
 
     # Stack [num_patches, 2]
@@ -351,6 +346,7 @@ class LTX2Attention(nnx.Module):
       dtype: DType = jnp.float32,
       attention_kernel: str = "flash",
       rope_type: str = "interleaved",
+      flash_block_sizes: BlockSizes = None,
   ):
     self.heads = heads
     self.rope_type = rope_type
@@ -437,6 +433,7 @@ class LTX2Attention(nnx.Module):
         dtype=dtype,
         axis_names_q=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_Q_LENGTH, common_types.D_KV),
         axis_names_kv=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_KV_LENGTH, common_types.D_KV),
+        flash_block_sizes=flash_block_sizes,
     )
 
   def __call__(
