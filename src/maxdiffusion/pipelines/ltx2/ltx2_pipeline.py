@@ -1240,14 +1240,28 @@ class LTX2Pipeline:
       total_diffusion_time = 0.0
       for i, t in enumerate(timesteps):
         step_start_time = time.perf_counter()
+        
+        # Isolate input sharding to scan_layers=False to avoid affecting the standard path
+        latents_jax_sharded = latents_jax
+        audio_latents_jax_sharded = audio_latents_jax
+        video_embeds_sharded = video_embeds
+        audio_embeds_sharded = audio_embeds
+
+        if not self.transformer.scan_layers:
+          activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+          latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax, activation_axis_names)
+          audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax, activation_axis_names)
+          video_embeds_sharded = jax.lax.with_sharding_constraint(video_embeds, activation_axis_names)
+          audio_embeds_sharded = jax.lax.with_sharding_constraint(audio_embeds, activation_axis_names)
+
         noise_pred, noise_pred_audio = transformer_forward_pass(
             graphdef,
             state,
-            latents_jax,
-            audio_latents_jax,
+            latents_jax_sharded,
+            audio_latents_jax_sharded,
             t,
-            video_embeds,
-            audio_embeds,
+            video_embeds_sharded,
+            audio_embeds_sharded,
             new_attention_mask,
             new_attention_mask,
             guidance_scale > 1.0,
