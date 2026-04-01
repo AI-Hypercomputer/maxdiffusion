@@ -1392,17 +1392,21 @@ class LTX2Pipeline:
     max_logging.log(f"[Tuning] VAE decoding took: {t_vae:.4f} seconds")
     # Post-process video (converts to numpy/PIL)
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
-    video_np = np.array(video).transpose(0, 4, 1, 2, 3)
-    video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
+    with jax.profiler.TraceMe("Video Post-processing"):
+      video_np = np.array(video).transpose(0, 4, 1, 2, 3)
+      video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
 
     # Decode Audio
     audio_latents = audio_latents.astype(self.audio_vae.dtype)
-    generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
+    with jax.profiler.TraceMe("Audio VAE Decode"):
+      generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
 
     # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
     generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
+    
     s_vocoder = time.perf_counter()
-    audio = self.vocoder(generated_mel_spectrograms)
+    with jax.profiler.TraceMe("Vocoder Audio Generation"):
+      audio = self.vocoder(generated_mel_spectrograms)
     t_vocoder = time.perf_counter() - s_vocoder
     max_logging.log(f"[Tuning] Vocoder took: {t_vocoder:.4f} seconds")
 
