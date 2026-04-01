@@ -1010,25 +1010,26 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             transform_metadata={nnx.PARTITION_NAME: "layers"},
         )(carry, self.transformer_blocks)
       else:
-        for block in self.transformer_blocks:
-          hidden_states, audio_hidden_states = block(
-              hidden_states=hidden_states,
-              audio_hidden_states=audio_hidden_states,
-              encoder_hidden_states=encoder_hidden_states,
-              audio_encoder_hidden_states=audio_encoder_hidden_states,
-              temb=temb,
-              temb_audio=temb_audio,
-              temb_ca_scale_shift=video_cross_attn_scale_shift,
-              temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
-              temb_ca_gate=video_cross_attn_a2v_gate,
-              temb_ca_audio_gate=audio_cross_attn_v2a_gate,
-              video_rotary_emb=video_rotary_emb,
-              audio_rotary_emb=audio_rotary_emb,
-              ca_video_rotary_emb=video_cross_attn_rotary_emb,
-              ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
-              encoder_attention_mask=encoder_attention_mask,
-              audio_encoder_attention_mask=audio_encoder_attention_mask,
-          )
+        for i, block in enumerate(self.transformer_blocks):
+          with jax.named_scope(f"Transformer Block {i}"):
+            hidden_states, audio_hidden_states = block(
+                hidden_states=hidden_states,
+                audio_hidden_states=audio_hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                audio_encoder_hidden_states=audio_encoder_hidden_states,
+                temb=temb,
+                temb_audio=temb_audio,
+                temb_ca_scale_shift=video_cross_attn_scale_shift,
+                temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
+                temb_ca_gate=video_cross_attn_a2v_gate,
+                temb_ca_audio_gate=audio_cross_attn_v2a_gate,
+                video_rotary_emb=video_rotary_emb,
+                audio_rotary_emb=audio_rotary_emb,
+                ca_video_rotary_emb=video_cross_attn_rotary_emb,
+                ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
+                encoder_attention_mask=encoder_attention_mask,
+                audio_encoder_attention_mask=audio_encoder_attention_mask,
+            )
 
     # 6. Output layers
     scale_shift_values = jnp.expand_dims(self.scale_shift_table, axis=(0, 1)) + jnp.expand_dims(embedded_timestep, axis=2)
