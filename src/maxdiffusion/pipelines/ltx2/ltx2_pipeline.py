@@ -1237,7 +1237,9 @@ class LTX2Pipeline:
       )
 
       import time
-      for i, t in enumerate(timesteps):
+      timesteps_jax = jnp.array(timesteps, dtype=jnp.float32)
+      for i, t_val in enumerate(timesteps):
+        t = timesteps_jax[i]
         
         # Isolate input sharding to scan_layers=False to avoid affecting the standard path
         latents_jax_sharded = latents_jax
