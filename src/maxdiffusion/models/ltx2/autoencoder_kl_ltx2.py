@@ -1513,15 +1513,16 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
     return FlaxDecoderOutput(sample=dec)
 
   def _encode(self, x: jax.Array, key: Optional[jax.Array] = None, causal: Optional[bool] = None) -> jax.Array:
-    B, T, H, W, C = x.shape
-    if self.use_framewise_decoding and T > self.tile_sample_min_num_frames:
-      return self._temporal_tiled_encode(x, key=key, causal=causal)
+    with jax.named_scope("VAE _encode"):
+      B, T, H, W, C = x.shape
+      if self.use_framewise_decoding and T > self.tile_sample_min_num_frames:
+        return self._temporal_tiled_encode(x, key=key, causal=causal)
 
-    if self.use_tiling and (W > self.tile_sample_min_width or H > self.tile_sample_min_height):
-      return self.tiled_encode(x, key=key, causal=causal)
+      if self.use_tiling and (W > self.tile_sample_min_width or H > self.tile_sample_min_height):
+        return self.tiled_encode(x, key=key, causal=causal)
 
-    enc = self.encoder(x, key=key, causal=causal)
-    return enc
+      enc = self.encoder(x, key=key, causal=causal)
+      return enc
 
   def _decode(
       self,
@@ -1531,22 +1532,23 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
       causal: Optional[bool] = None,
       return_dict: bool = True,
   ) -> Union[FlaxDecoderOutput, jax.Array]:
-    B, T, H, W, C = z.shape
-    tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
-    tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
-    tile_latent_min_num_frames = self.tile_sample_min_num_frames // self.temporal_compression_ratio
+    with jax.named_scope("VAE _decode"):
+      B, T, H, W, C = z.shape
+      tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
+      tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
+      tile_latent_min_num_frames = self.tile_sample_min_num_frames // self.temporal_compression_ratio
 
-    if self.use_framewise_decoding and T > tile_latent_min_num_frames:
-      return self._temporal_tiled_decode(z, temb, key=key, causal=causal, return_dict=return_dict)
+      if self.use_framewise_decoding and T > tile_latent_min_num_frames:
+        return self._temporal_tiled_decode(z, temb, key=key, causal=causal, return_dict=return_dict)
 
-    if self.use_tiling and (W > tile_latent_min_width or H > tile_latent_min_height):
-      return self.tiled_decode(z, temb, key=key, causal=causal, return_dict=return_dict)
+      if self.use_tiling and (W > tile_latent_min_width or H > tile_latent_min_height):
+        return self.tiled_decode(z, temb, key=key, causal=causal, return_dict=return_dict)
 
-    dec = self.decoder(z, temb, key=key, causal=causal)
+      dec = self.decoder(z, temb, key=key, causal=causal)
 
-    if not return_dict:
-      return (dec,)
-    return FlaxDecoderOutput(sample=dec)
+      if not return_dict:
+        return (dec,)
+      return FlaxDecoderOutput(sample=dec)
 
   def encode(
       self,
