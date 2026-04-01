@@ -16,6 +16,7 @@ limitations under the License.
 
 from typing import Optional, Tuple
 from flax import nnx
+import jax
 import jax.numpy as jnp
 from ... import common_types
 from ..attention_flax import NNXAttentionOp
@@ -446,46 +447,48 @@ class LTX2Attention(nnx.Module):
     # Determine context (Self or Cross)
     context = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
 
-    # 1. Project
-    query = self.to_q(hidden_states)
-    key = self.to_k(context)
-    value = self.to_v(context)
+    # 1. Project and Norm
+    with jax.named_scope("QKV Projection and Norm"):
+      query = self.to_q(hidden_states)
+      key = self.to_k(context)
+      value = self.to_v(context)
 
-    # 2. Norm (Full Inner Dimension)
-    query = self.norm_q(query)
-    key = self.norm_k(key)
+      query = self.norm_q(query)
+      key = self.norm_k(key)
 
     # 3. Apply RoPE to tensors of shape [B, S, InnerDim]
     # Frequencies are shape [B, S, InnerDim]
     # 3. Apply RoPE
-    if rotary_emb is not None:
-      if hasattr(self, "rope_type") and self.rope_type == "split":
-        # Split RoPE: passing full freqs [B, H, S, D//2]
-        # apply_split_rotary_emb handles reshaping query/key
+    with jax.named_scope("Apply RoPE"):
+      if rotary_emb is not None:
+        if hasattr(self, "rope_type") and self.rope_type == "split":
+          # Split RoPE: passing full freqs [B, H, S, D//2]
+          # apply_split_rotary_emb handles reshaping query/key
 
-        query = apply_split_rotary_emb(query, rotary_emb)
+          query = apply_split_rotary_emb(query, rotary_emb)
 
-        if k_rotary_emb is not None:
-          key = apply_split_rotary_emb(key, k_rotary_emb)
-        elif encoder_hidden_states is None:
-          key = apply_split_rotary_emb(key, rotary_emb)
+          if k_rotary_emb is not None:
+            key = apply_split_rotary_emb(key, k_rotary_emb)
+          elif encoder_hidden_states is None:
+            key = apply_split_rotary_emb(key, rotary_emb)
 
-      else:
-        # Interleaved (Default)
-        query = apply_rotary_emb(query, rotary_emb)
-        if k_rotary_emb is not None:
-          key = apply_rotary_emb(key, k_rotary_emb)
-        elif encoder_hidden_states is None:
-          key = apply_rotary_emb(key, rotary_emb)
+        else:
+          # Interleaved (Default)
+          query = apply_rotary_emb(query, rotary_emb)
+          if k_rotary_emb is not None:
+            key = apply_rotary_emb(key, k_rotary_emb)
+          elif encoder_hidden_states is None:
+            key = apply_rotary_emb(key, rotary_emb)
 
-    # 4. Attention
-    # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
-    attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
+    with jax.named_scope("Attention and Output Project"):
+      # 4. Attention
+      # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
+      attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
 
-    # 7. Output Projection
-    hidden_states = self.to_out(attn_output)
+      # 7. Output Projection
+      hidden_states = self.to_out(attn_output)
 
-    if self.dropout_layer is not None:
-      hidden_states = self.dropout_layer(hidden_states)
+      if self.dropout_layer is not None:
+        hidden_states = self.dropout_layer(hidden_states)
 
     return hidden_states

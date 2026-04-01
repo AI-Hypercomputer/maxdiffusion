@@ -900,113 +900,79 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     batch_size = hidden_states.shape[0]
 
     # 1. Prepare RoPE positional embeddings
-    if video_coords is None:
-      video_coords = self.rope.prepare_video_coords(batch_size, num_frames, height, width, fps=fps)
-    if audio_coords is None:
-      audio_coords = self.audio_rope.prepare_audio_coords(batch_size, audio_num_frames)
+    with jax.named_scope("RoPE Preparation"):
+      if video_coords is None:
+        video_coords = self.rope.prepare_video_coords(batch_size, num_frames, height, width, fps=fps)
+      if audio_coords is None:
+        audio_coords = self.audio_rope.prepare_audio_coords(batch_size, audio_num_frames)
 
-    video_rotary_emb = self.rope(video_coords)
-    audio_rotary_emb = self.audio_rope(audio_coords)
+      video_rotary_emb = self.rope(video_coords)
+      audio_rotary_emb = self.audio_rope(audio_coords)
 
-    video_cross_attn_rotary_emb = self.cross_attn_rope(video_coords[:, 0:1, :])
-    audio_cross_attn_rotary_emb = self.cross_attn_audio_rope(audio_coords[:, 0:1, :])
+      video_cross_attn_rotary_emb = self.cross_attn_rope(video_coords[:, 0:1, :])
+      audio_cross_attn_rotary_emb = self.cross_attn_audio_rope(audio_coords[:, 0:1, :])
 
     # 2. Patchify input projections
-    hidden_states = self.proj_in(hidden_states)
-    audio_hidden_states = self.audio_proj_in(audio_hidden_states)
+    with jax.named_scope("Input Projection"):
+      hidden_states = self.proj_in(hidden_states)
+      audio_hidden_states = self.audio_proj_in(audio_hidden_states)
 
     # 3. Prepare timestep embeddings and modulation parameters
-    timestep_cross_attn_gate_scale_factor = self.cross_attn_timestep_scale_multiplier / self.timestep_scale_multiplier
+    with jax.named_scope("Timestep and Caption Projection"):
+      timestep_cross_attn_gate_scale_factor = self.cross_attn_timestep_scale_multiplier / self.timestep_scale_multiplier
 
-    temb, embedded_timestep = self.time_embed(
-        timestep.flatten(),
-        hidden_dtype=hidden_states.dtype,
-    )
-    temb = temb.reshape(batch_size, -1, temb.shape[-1])
-    embedded_timestep = embedded_timestep.reshape(batch_size, -1, embedded_timestep.shape[-1])
+      temb, embedded_timestep = self.time_embed(
+          timestep.flatten(),
+          hidden_dtype=hidden_states.dtype,
+      )
+      temb = temb.reshape(batch_size, -1, temb.shape[-1])
+      embedded_timestep = embedded_timestep.reshape(batch_size, -1, embedded_timestep.shape[-1])
 
-    temb_audio, audio_embedded_timestep = self.audio_time_embed(
-        audio_timestep.flatten(),
-        hidden_dtype=audio_hidden_states.dtype,
-    )
-    temb_audio = temb_audio.reshape(batch_size, -1, temb_audio.shape[-1])
-    audio_embedded_timestep = audio_embedded_timestep.reshape(batch_size, -1, audio_embedded_timestep.shape[-1])
+      temb_audio, audio_embedded_timestep = self.audio_time_embed(
+          audio_timestep.flatten(),
+          hidden_dtype=audio_hidden_states.dtype,
+      )
+      temb_audio = temb_audio.reshape(batch_size, -1, temb_audio.shape[-1])
+      audio_embedded_timestep = audio_embedded_timestep.reshape(batch_size, -1, audio_embedded_timestep.shape[-1])
 
-    video_cross_attn_scale_shift, _ = self.av_cross_attn_video_scale_shift(
-        timestep.flatten(),
-        hidden_dtype=hidden_states.dtype,
-    )
-    video_cross_attn_a2v_gate, _ = self.av_cross_attn_video_a2v_gate(
-        timestep.flatten() * timestep_cross_attn_gate_scale_factor,
-        hidden_dtype=hidden_states.dtype,
-    )
-    video_cross_attn_scale_shift = video_cross_attn_scale_shift.reshape(
-        batch_size, -1, video_cross_attn_scale_shift.shape[-1]
-    )
-    video_cross_attn_a2v_gate = video_cross_attn_a2v_gate.reshape(batch_size, -1, video_cross_attn_a2v_gate.shape[-1])
+      video_cross_attn_scale_shift, _ = self.av_cross_attn_video_scale_shift(
+          timestep.flatten(),
+          hidden_dtype=hidden_states.dtype,
+      )
+      video_cross_attn_a2v_gate, _ = self.av_cross_attn_video_a2v_gate(
+          timestep.flatten() * timestep_cross_attn_gate_scale_factor,
+          hidden_dtype=hidden_states.dtype,
+      )
+      video_cross_attn_scale_shift = video_cross_attn_scale_shift.reshape(
+          batch_size, -1, video_cross_attn_scale_shift.shape[-1]
+      )
+      video_cross_attn_a2v_gate = video_cross_attn_a2v_gate.reshape(batch_size, -1, video_cross_attn_a2v_gate.shape[-1])
 
-    audio_cross_attn_scale_shift, _ = self.av_cross_attn_audio_scale_shift(
-        audio_timestep.flatten(),
-        hidden_dtype=audio_hidden_states.dtype,
-    )
-    audio_cross_attn_v2a_gate, _ = self.av_cross_attn_audio_v2a_gate(
-        audio_timestep.flatten() * timestep_cross_attn_gate_scale_factor,
-        hidden_dtype=audio_hidden_states.dtype,
-    )
-    audio_cross_attn_scale_shift = audio_cross_attn_scale_shift.reshape(
-        batch_size, -1, audio_cross_attn_scale_shift.shape[-1]
-    )
-    audio_cross_attn_v2a_gate = audio_cross_attn_v2a_gate.reshape(batch_size, -1, audio_cross_attn_v2a_gate.shape[-1])
+      audio_cross_attn_scale_shift, _ = self.av_cross_attn_audio_scale_shift(
+          audio_timestep.flatten(),
+          hidden_dtype=audio_hidden_states.dtype,
+      )
+      audio_cross_attn_v2a_gate, _ = self.av_cross_attn_audio_v2a_gate(
+          audio_timestep.flatten() * timestep_cross_attn_gate_scale_factor,
+          hidden_dtype=audio_hidden_states.dtype,
+      )
+      audio_cross_attn_scale_shift = audio_cross_attn_scale_shift.reshape(
+          batch_size, -1, audio_cross_attn_scale_shift.shape[-1]
+      )
+      audio_cross_attn_v2a_gate = audio_cross_attn_v2a_gate.reshape(batch_size, -1, audio_cross_attn_v2a_gate.shape[-1])
 
-    # 4. Prepare prompt embeddings
-    encoder_hidden_states = self.caption_projection(encoder_hidden_states)
-    encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
+      # 4. Prepare prompt embeddings
+      encoder_hidden_states = self.caption_projection(encoder_hidden_states)
+      encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
 
-    audio_encoder_hidden_states = self.audio_caption_projection(audio_encoder_hidden_states)
-    audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
+      audio_encoder_hidden_states = self.audio_caption_projection(audio_encoder_hidden_states)
+      audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
 
     # 5. Run transformer blocks
     def scan_fn(carry, block):
       hidden_states, audio_hidden_states, rngs_carry = carry
-      hidden_states_out, audio_hidden_states_out = block(
-          hidden_states=hidden_states,
-          audio_hidden_states=audio_hidden_states,
-          encoder_hidden_states=encoder_hidden_states,
-          audio_encoder_hidden_states=audio_encoder_hidden_states,
-          temb=temb,
-          temb_audio=temb_audio,
-          temb_ca_scale_shift=video_cross_attn_scale_shift,
-          temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
-          temb_ca_gate=video_cross_attn_a2v_gate,
-          temb_ca_audio_gate=audio_cross_attn_v2a_gate,
-          video_rotary_emb=video_rotary_emb,
-          audio_rotary_emb=audio_rotary_emb,
-          ca_video_rotary_emb=video_cross_attn_rotary_emb,
-          ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
-          encoder_attention_mask=encoder_attention_mask,
-          audio_encoder_attention_mask=audio_encoder_attention_mask,
-      )
-      return (
-          hidden_states_out.astype(hidden_states.dtype),
-          audio_hidden_states_out.astype(audio_hidden_states.dtype),
-          rngs_carry,
-      ), None
-
-    if self.scan_layers:
-      rematted_scan_fn = self.gradient_checkpoint.apply(
-          scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
-      )
-      carry = (hidden_states, audio_hidden_states, nnx.Rngs(0))  # Placeholder RNGs for now if not used in block
-      (hidden_states, audio_hidden_states, _), _ = nnx.scan(
-          rematted_scan_fn,
-          length=self.num_layers,
-          in_axes=(nnx.Carry, 0),
-          out_axes=(nnx.Carry, 0),
-          transform_metadata={nnx.PARTITION_NAME: "layers"},
-      )(carry, self.transformer_blocks)
-    else:
-      for block in self.transformer_blocks:
-        hidden_states, audio_hidden_states = block(
+      with jax.named_scope("Transformer Block i"):
+        hidden_states_out, audio_hidden_states_out = block(
             hidden_states=hidden_states,
             audio_hidden_states=audio_hidden_states,
             encoder_hidden_states=encoder_hidden_states,
@@ -1024,6 +990,45 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             encoder_attention_mask=encoder_attention_mask,
             audio_encoder_attention_mask=audio_encoder_attention_mask,
         )
+      return (
+          hidden_states_out.astype(hidden_states.dtype),
+          audio_hidden_states_out.astype(audio_hidden_states.dtype),
+          rngs_carry,
+      ), None
+
+    with jax.named_scope("Transformer Blocks"):
+      if self.scan_layers:
+        rematted_scan_fn = self.gradient_checkpoint.apply(
+            scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+        )
+        carry = (hidden_states, audio_hidden_states, nnx.Rngs(0))  # Placeholder RNGs for now if not used in block
+        (hidden_states, audio_hidden_states, _), _ = nnx.scan(
+            rematted_scan_fn,
+            length=self.num_layers,
+            in_axes=(nnx.Carry, 0),
+            out_axes=(nnx.Carry, 0),
+            transform_metadata={nnx.PARTITION_NAME: "layers"},
+        )(carry, self.transformer_blocks)
+      else:
+        for block in self.transformer_blocks:
+          hidden_states, audio_hidden_states = block(
+              hidden_states=hidden_states,
+              audio_hidden_states=audio_hidden_states,
+              encoder_hidden_states=encoder_hidden_states,
+              audio_encoder_hidden_states=audio_encoder_hidden_states,
+              temb=temb,
+              temb_audio=temb_audio,
+              temb_ca_scale_shift=video_cross_attn_scale_shift,
+              temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
+              temb_ca_gate=video_cross_attn_a2v_gate,
+              temb_ca_audio_gate=audio_cross_attn_v2a_gate,
+              video_rotary_emb=video_rotary_emb,
+              audio_rotary_emb=audio_rotary_emb,
+              ca_video_rotary_emb=video_cross_attn_rotary_emb,
+              ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
+              encoder_attention_mask=encoder_attention_mask,
+              audio_encoder_attention_mask=audio_encoder_attention_mask,
+          )
 
     # 6. Output layers
     scale_shift_values = jnp.expand_dims(self.scale_shift_table, axis=(0, 1)) + jnp.expand_dims(embedded_timestep, axis=2)
