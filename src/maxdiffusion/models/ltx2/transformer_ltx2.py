@@ -1012,6 +1012,16 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       else:
         for i, block in enumerate(self.transformer_blocks):
           with jax.named_scope(f"Transformer Block {i}"):
+            graphdef, state = nnx.split(block)
+            
+            def _apply_sharding(x):
+              if hasattr(x, "sharding") and x.sharding is not None:
+                return jax.lax.with_sharding_constraint(x, x.sharding)
+              return x
+              
+            state = jax.tree_util.tree_map(_apply_sharding, state)
+            nnx.update(block, state)
+            
             hidden_states, audio_hidden_states = block(
                 hidden_states=hidden_states,
                 audio_hidden_states=audio_hidden_states,
