@@ -1595,15 +1595,17 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
         keys_slice = jax.random.split(key, latents.shape[0])
       decoded_slices = []
       for i in range(latents.shape[0]):
-        z_slice = latents[i : i + 1]
-        t_slice = temb[i : i + 1] if temb is not None else None
-        subkey = keys_slice[i] if keys_slice is not None else None
-        res = self._decode(z_slice, t_slice, key=subkey, causal=causal, return_dict=True)
-        decoded_slices.append(res.sample)
+        with jax.named_scope(f"Decode Slice {i}"):
+          z_slice = latents[i : i + 1]
+          t_slice = temb[i : i + 1] if temb is not None else None
+          subkey = keys_slice[i] if keys_slice is not None else None
+          res = self._decode(z_slice, t_slice, key=subkey, causal=causal, return_dict=True)
+          decoded_slices.append(res.sample)
 
       dec = jnp.concatenate(decoded_slices, axis=0)
     else:
-      dec = self._decode(latents, temb, key=key, causal=causal, return_dict=True).sample
+      with jax.named_scope("Decode Full Batch"):
+        dec = self._decode(latents, temb, key=key, causal=causal, return_dict=True).sample
 
     if not return_dict:
       return (dec,)
