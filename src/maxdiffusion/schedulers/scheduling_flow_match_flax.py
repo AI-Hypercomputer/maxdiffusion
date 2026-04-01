@@ -15,6 +15,7 @@
 # DISCLAIMER: This is a JAX/Flax conversion of a PyTorch implementation.
 # The original PyTorch code was provided by the user.
 
+from functools import partial
 from typing import Optional, Tuple, Union
 
 import flax
@@ -243,6 +244,7 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
       diffs = jnp.abs(state.timesteps[None, :] - timestep[:, None])
       return jnp.argmin(diffs, axis=1)
 
+  @partial(jax.jit, static_argnums=(0, 5, 6))
   def step(
       self,
       state: FlowMatchSchedulerState,
