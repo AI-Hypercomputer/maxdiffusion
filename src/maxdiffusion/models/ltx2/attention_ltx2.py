@@ -23,6 +23,7 @@ from ..attention_flax import NNXAttentionOp
 Array = common_types.Array
 Mesh = common_types.Mesh
 DType = common_types.DType
+BlockSizes = common_types.BlockSizes
 
 
 def apply_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
@@ -345,6 +346,7 @@ class LTX2Attention(nnx.Module):
       dtype: DType = jnp.float32,
       attention_kernel: str = "flash",
       rope_type: str = "interleaved",
+      flash_block_sizes: BlockSizes = None,
   ):
     self.heads = heads
     self.rope_type = rope_type
@@ -431,6 +433,7 @@ class LTX2Attention(nnx.Module):
         dtype=dtype,
         axis_names_q=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_Q_LENGTH, common_types.D_KV),
         axis_names_kv=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_KV_LENGTH, common_types.D_KV),
+        flash_block_sizes=flash_block_sizes,
     )
 
   def __call__(

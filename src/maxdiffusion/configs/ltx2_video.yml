@@ -58,6 +58,16 @@ data_sharding: ['data', 'fsdp', 'context', 'tensor']
 
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: -1
+
+flash_block_sizes: {
+  block_q: 2048,
+  block_kv: 2048,
+  block_kv_compute: 1024,
+  block_q_dkv: 2048,
+  block_kv_dkv: 2048,
+  block_kv_dkv_compute: 2048,
+  use_fused_bwd_kernel: True,
+}
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
