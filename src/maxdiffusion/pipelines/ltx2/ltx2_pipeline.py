@@ -1380,10 +1380,14 @@ class LTX2Pipeline:
       latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
 
       latents = latents.astype(self.vae.dtype)
+      max_logging.log(f"[Profiling] Latents device before VAE Decode: {latents.devices()}")
       video = self.vae.decode(latents, temb=timestep, return_dict=False)[0]
+      max_logging.log(f"[Profiling] Video device after VAE Decode: {getattr(video, 'devices', lambda: 'Unknown')()}")
     else:
       latents = latents.astype(self.vae.dtype)
+      max_logging.log(f"[Profiling] Latents device before VAE Decode (else): {latents.devices()}")
       video = self.vae.decode(latents, return_dict=False)[0]
+      max_logging.log(f"[Profiling] Video device after VAE Decode (else): {getattr(video, 'devices', lambda: 'Unknown')()}")
     t_vae = time.perf_counter() - s_vae
     max_logging.log(f"[Tuning] VAE decoding took: {t_vae:.4f} seconds")
     # Post-process video (converts to numpy/PIL)
