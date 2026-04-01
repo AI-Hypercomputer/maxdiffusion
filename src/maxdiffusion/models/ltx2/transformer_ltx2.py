@@ -1032,23 +1032,24 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             )
 
     # 6. Output layers
-    scale_shift_values = jnp.expand_dims(self.scale_shift_table, axis=(0, 1)) + jnp.expand_dims(embedded_timestep, axis=2)
-    shift = scale_shift_values[:, :, 0, :]
-    scale = scale_shift_values[:, :, 1, :]
+    with jax.named_scope("Output Projection & Norm"):
+      scale_shift_values = jnp.expand_dims(self.scale_shift_table, axis=(0, 1)) + jnp.expand_dims(embedded_timestep, axis=2)
+      shift = scale_shift_values[:, :, 0, :]
+      scale = scale_shift_values[:, :, 1, :]
 
-    hidden_states = self.norm_out(hidden_states)
-    hidden_states = hidden_states * (1 + scale) + shift
-    output = self.proj_out(hidden_states)
+      hidden_states = self.norm_out(hidden_states)
+      hidden_states = hidden_states * (1 + scale) + shift
+      output = self.proj_out(hidden_states)
 
-    audio_scale_shift_values = jnp.expand_dims(self.audio_scale_shift_table, axis=(0, 1)) + jnp.expand_dims(
-        audio_embedded_timestep, axis=2
-    )
-    audio_shift = audio_scale_shift_values[:, :, 0, :]
-    audio_scale = audio_scale_shift_values[:, :, 1, :]
+      audio_scale_shift_values = jnp.expand_dims(self.audio_scale_shift_table, axis=(0, 1)) + jnp.expand_dims(
+          audio_embedded_timestep, axis=2
+      )
+      audio_shift = audio_scale_shift_values[:, :, 0, :]
+      audio_scale = audio_scale_shift_values[:, :, 1, :]
 
-    audio_hidden_states = self.audio_norm_out(audio_hidden_states)
-    audio_hidden_states = audio_hidden_states * (1 + audio_scale) + audio_shift
-    audio_output = self.audio_proj_out(audio_hidden_states)
+      audio_hidden_states = self.audio_norm_out(audio_hidden_states)
+      audio_hidden_states = audio_hidden_states * (1 + audio_scale) + audio_shift
+      audio_output = self.audio_proj_out(audio_hidden_states)
 
     if not return_dict:
       return (output, audio_output)
