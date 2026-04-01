@@ -1010,12 +1010,24 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             transform_metadata={nnx.PARTITION_NAME: "layers"},
         )(carry, self.transformer_blocks)
       else:
-        activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+        mlp_rules = nn.logical_to_mesh_axes(("mlp", "tensor"))
+        tensor_rules = nn.logical_to_mesh_axes(("tensor",))
         
         for i, block in enumerate(self.transformer_blocks):
           with jax.named_scope(f"Transformer Block {i}"):
-            hidden_states = jax.lax.with_sharding_constraint(hidden_states, activation_axis_names)
-            audio_hidden_states = jax.lax.with_sharding_constraint(audio_hidden_states, activation_axis_names)
+            graphdef, state = nnx.split(block)
+            
+            def _apply_weight_sharding(path, x):
+              path_str = "/".join(getattr(p, "name", getattr(p, "key", str(p))) for p in path)
+              if "kernel" in path_str:
+                if "ff" in path_str:
+                  return jax.lax.with_sharding_constraint(x, mlp_rules)
+                elif "attn" in path_str:
+                  return jax.lax.with_sharding_constraint(x, tensor_rules)
+              return x
+              
+            state = jax.tree_util.tree_map_with_path(_apply_weight_sharding, state)
+            nnx.update(block, state)
             
             hidden_states, audio_hidden_states = block(
                 hidden_states=hidden_states,
