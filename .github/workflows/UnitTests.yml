@@ -42,8 +42,6 @@ jobs:
         python-version: '3.12'
     - name: Install dependencies
       run: |
-        pip install -e .
-        pip uninstall jax jaxlib libtpu-nightly libtpu -y
         bash setup.sh MODE=stable
         export PATH=$PATH:$HOME/.local/bin
         pip install ruff

@@ -57,7 +57,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
-      **kwargs
+      **kwargs,
   ):
     input_dim = caption_channels * text_proj_in_factor
 
