@@ -185,3 +185,5 @@ gemini.md
 
 #jax cache
 .jax_cache/
+
+.tpu_logs/

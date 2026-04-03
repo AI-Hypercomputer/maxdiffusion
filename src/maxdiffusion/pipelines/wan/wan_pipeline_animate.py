@@ -180,10 +180,10 @@ def animate_transformer_forward_pass(
   # → (B, T+1, H, W, 2*z_dim+4 = 36)
   latent_model_input = jnp.concatenate([latents, reference_latents], axis=-1)
   # Transpose to channel-first for the transformer: (B, 36, T+1, H, W)
-  latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
+  latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3)).astype(encoder_hidden_states.dtype)
 
   # Pose latents channel-first: (B, z_dim, T_lat, H_lat, W_lat)
-  pose_latents_cf = jnp.transpose(pose_latents, (0, 4, 1, 2, 3))
+  pose_latents_cf = jnp.transpose(pose_latents, (0, 4, 1, 2, 3)).astype(encoder_hidden_states.dtype)
 
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   output = wan_transformer(
@@ -233,9 +233,12 @@ class WanAnimatePipeline(WanPipeline):
   ):
     super().__init__(config=config, **kwargs)
     self.transformer = transformer
+    spatial_patch_size = self.transformer.config.patch_size[-2:] if self.transformer is not None else (2, 2)
     self.ref_image_processor = WanAnimateImageProcessor(
         vae_scale_factor=self.vae_scale_factor_spatial,
-        spatial_patch_size=(2, 2),
+        spatial_patch_size=spatial_patch_size,
+        resample="bilinear",
+        fill_color=0,
     )
     self.video_processor_for_mask = VideoProcessor(
         vae_scale_factor=self.vae_scale_factor_spatial,
@@ -296,6 +299,8 @@ class WanAnimatePipeline(WanPipeline):
         scheduler_state=common_components["scheduler_state"],
         devices_array=common_components["devices_array"],
         mesh=common_components["mesh"],
+        vae_mesh=common_components["vae_mesh"],
+        vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
     )
     return pipeline, transformer
 
@@ -498,7 +503,7 @@ class WanAnimatePipeline(WanPipeline):
       Normalized latents: (B, T_lat, H_lat, W_lat, z_dim) channel-last.
     """
     vae_dtype = getattr(self.vae, "dtype", jnp.float32)
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
       encoded = self.vae.encode(video.astype(vae_dtype), self.vae_cache)[0].mode()
     # Normalize
     mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
@@ -698,7 +703,7 @@ class WanAnimatePipeline(WanPipeline):
     """
     latents_cf = jnp.transpose(latents_cl, (0, 4, 1, 2, 3))  # (B, z_dim, T, H, W)
     latents_cf = self._denormalize_latents(latents_cf)
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
       video_cl = self.vae.decode(latents_cf, self.vae_cache)[0]  # (B, T, H, W, C)
     return jnp.transpose(video_cl, (0, 4, 1, 2, 3))  # (B, C, T, H, W)
 
@@ -819,6 +824,7 @@ class WanAnimatePipeline(WanPipeline):
         negative_prompt_embeds=negative_prompt_embeds,
     )
     transformer_dtype = self.config.activations_dtype
+    latent_dtype = jnp.float32
     prompt_embeds = prompt_embeds.astype(transformer_dtype)
     if negative_prompt_embeds is not None:
       negative_prompt_embeds = negative_prompt_embeds.astype(transformer_dtype)
@@ -898,7 +904,7 @@ class WanAnimatePipeline(WanPipeline):
           height,
           width,
           segment_frame_length,
-          transformer_dtype,
+          latent_dtype,
           latents_rng,
           latents=latents if start == 0 else None,
       )  # (B, T_lat+1, H_lat, W_lat, z_dim)
@@ -997,6 +1003,7 @@ class WanAnimatePipeline(WanPipeline):
             )
             noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
 
+          noise_pred = noise_pred.astype(seg_latents.dtype)
           seg_latents, scheduler_state = self.scheduler.step(
               scheduler_state, noise_pred, t, seg_latents, return_dict=False
           )

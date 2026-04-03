@@ -219,7 +219,9 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     self.max_pipeline.vae_scale_factor_temporal = 4
     self.max_pipeline.vae_scale_factor_spatial = 8
     self.max_pipeline.mesh = nullcontext()
+    self.max_pipeline.vae_mesh = nullcontext()
     self.max_pipeline.config = SimpleNamespace(logical_axis_rules=())
+    self.max_pipeline.vae_logical_axis_rules = ()
     self.max_pipeline.vae_cache = None
     self.max_pipeline.video_processor_for_mask = MaxVideoProcessor(
         vae_scale_factor=8, do_normalize=False, do_convert_grayscale=True
@@ -363,6 +365,66 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     )
 
     np.testing.assert_allclose(to_numpy(max_latents), hf_channel_first_to_last(hf_latents), atol=0.0, rtol=0.0)
+
+  def test_prepare_prev_segment_cond_latents_animate_only_encodes_one_frame_overlap(self):
+    call_lengths = []
+
+    def fake_encode(video, dtype):
+      del dtype
+      call_lengths.append(video.shape[2])
+      latent_t = (video.shape[2] - 1) // self.max_pipeline.vae_scale_factor_temporal + 1
+      latent_h = video.shape[3] // self.max_pipeline.vae_scale_factor_spatial
+      latent_w = video.shape[4] // self.max_pipeline.vae_scale_factor_spatial
+      return jnp.ones((video.shape[0], latent_t, latent_h, latent_w, self.max_pipeline.vae.z_dim), dtype=jnp.float32)
+
+    self.max_pipeline._encode_video_to_latents = fake_encode
+    prev_segment = jnp.ones((1, 3, 1, 16, 16), dtype=jnp.float32)
+
+    _ = MaxWanAnimatePipeline.prepare_prev_segment_cond_latents(
+        self.max_pipeline,
+        prev_segment_cond_video=prev_segment,
+        background_video=None,
+        mask_video=None,
+        batch_size=1,
+        segment_frame_length=9,
+        start_frame=4,
+        height=16,
+        width=16,
+        prev_segment_cond_frames=1,
+        task="animate",
+        dtype=jnp.float32,
+    )
+
+    self.assertEqual(call_lengths, [1, 1])
+
+  def test_prepare_prev_segment_cond_latents_animate_first_segment_skips_full_segment_encode(self):
+    call_lengths = []
+
+    def fake_encode(video, dtype):
+      del dtype
+      call_lengths.append(video.shape[2])
+      latent_h = video.shape[3] // self.max_pipeline.vae_scale_factor_spatial
+      latent_w = video.shape[4] // self.max_pipeline.vae_scale_factor_spatial
+      return jnp.zeros((video.shape[0], 1, latent_h, latent_w, self.max_pipeline.vae.z_dim), dtype=jnp.float32)
+
+    self.max_pipeline._encode_video_to_latents = fake_encode
+
+    _ = MaxWanAnimatePipeline.prepare_prev_segment_cond_latents(
+        self.max_pipeline,
+        prev_segment_cond_video=None,
+        background_video=None,
+        mask_video=None,
+        batch_size=1,
+        segment_frame_length=9,
+        start_frame=0,
+        height=16,
+        width=16,
+        prev_segment_cond_frames=1,
+        task="animate",
+        dtype=jnp.float32,
+    )
+
+    self.assertEqual(call_lengths, [1])
 
   def test_prepare_prev_segment_cond_latents_matches_diffusers_for_replace(self):
     prev_segment = torch.arange(1 * 3 * 1 * 16 * 16, dtype=torch.float32).reshape(1, 3, 1, 16, 16)
