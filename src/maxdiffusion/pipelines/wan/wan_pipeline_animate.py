@@ -299,8 +299,6 @@ class WanAnimatePipeline(WanPipeline):
         scheduler_state=common_components["scheduler_state"],
         devices_array=common_components["devices_array"],
         mesh=common_components["mesh"],
-        vae_mesh=common_components["vae_mesh"],
-        vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
     )
     return pipeline, transformer
 
@@ -503,7 +501,7 @@ class WanAnimatePipeline(WanPipeline):
       Normalized latents: (B, T_lat, H_lat, W_lat, z_dim) channel-last.
     """
     vae_dtype = getattr(self.vae, "dtype", jnp.float32)
-    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       encoded = self.vae.encode(video.astype(vae_dtype), self.vae_cache)[0].mode()
     # Normalize
     mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
@@ -703,7 +701,7 @@ class WanAnimatePipeline(WanPipeline):
     """
     latents_cf = jnp.transpose(latents_cl, (0, 4, 1, 2, 3))  # (B, z_dim, T, H, W)
     latents_cf = self._denormalize_latents(latents_cf)
-    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       video_cl = self.vae.decode(latents_cf, self.vae_cache)[0]  # (B, T, H, W, C)
     return jnp.transpose(video_cl, (0, 4, 1, 2, 3))  # (B, C, T, H, W)
 

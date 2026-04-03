@@ -20,7 +20,6 @@ import flax
 import jax
 import jax.numpy as jnp
 from jax import tree_util
-from jax.sharding import NamedSharding, PartitionSpec as P
 from flax import nnx
 from ...configuration_utils import ConfigMixin
 from ..modeling_flax_utils import FlaxModelMixin, get_activation
@@ -100,10 +99,10 @@ class WanCausalConv3d(nnx.Module):
 
     self.mesh = mesh
     # Set sharding dynamically based on out_channels.
-    num_vae_spatial_devices = mesh.shape["vae_spatial"]
+    num_context_axis_devices = mesh.shape["context"]
     kernel_sharding = (None, None, None, None, None)
-    if out_channels % num_vae_spatial_devices == 0:
-      kernel_sharding = (None, None, None, None, "vae_spatial")
+    if out_channels % num_context_axis_devices == 0:
+      kernel_sharding = (None, None, None, None, "conv_out")
 
     self.conv = nnx.Conv(
         in_features=in_channels,
@@ -120,8 +119,6 @@ class WanCausalConv3d(nnx.Module):
     )
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None, idx=-1) -> jax.Array:
-    # Shard the widest activation dimension across the dedicated VAE mesh.
-    x = jax.lax.with_sharding_constraint(x, NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None)))
     current_padding = list(self._causal_padding)  # Mutable copy
     padding_needed = self._depth_padding_before
 

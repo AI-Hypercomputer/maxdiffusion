@@ -366,7 +366,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
 
     np.testing.assert_allclose(to_numpy(max_latents), hf_channel_first_to_last(hf_latents), atol=0.0, rtol=0.0)
 
-  def test_prepare_prev_segment_cond_latents_animate_only_encodes_one_frame_overlap(self):
+  def test_prepare_prev_segment_cond_latents_animate_encodes_full_segment_like_diffusers(self):
     call_lengths = []
 
     def fake_encode(video, dtype):
@@ -395,17 +395,20 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
         dtype=jnp.float32,
     )
 
-    self.assertEqual(call_lengths, [1, 1])
+    self.assertEqual(call_lengths, [9])
 
-  def test_prepare_prev_segment_cond_latents_animate_first_segment_skips_full_segment_encode(self):
+  def test_prepare_prev_segment_cond_latents_animate_first_segment_encodes_zero_filled_segment_like_diffusers(self):
     call_lengths = []
 
     def fake_encode(video, dtype):
       del dtype
       call_lengths.append(video.shape[2])
+      latent_t = (video.shape[2] - 1) // self.max_pipeline.vae_scale_factor_temporal + 1
       latent_h = video.shape[3] // self.max_pipeline.vae_scale_factor_spatial
       latent_w = video.shape[4] // self.max_pipeline.vae_scale_factor_spatial
-      return jnp.zeros((video.shape[0], 1, latent_h, latent_w, self.max_pipeline.vae.z_dim), dtype=jnp.float32)
+      return jnp.zeros(
+          (video.shape[0], latent_t, latent_h, latent_w, self.max_pipeline.vae.z_dim), dtype=jnp.float32
+      )
 
     self.max_pipeline._encode_video_to_latents = fake_encode
 
@@ -424,7 +427,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
         dtype=jnp.float32,
     )
 
-    self.assertEqual(call_lengths, [1])
+    self.assertEqual(call_lengths, [9])
 
   def test_prepare_prev_segment_cond_latents_matches_diffusers_for_replace(self):
     prev_segment = torch.arange(1 * 3 * 1 * 16 * 16, dtype=torch.float32).reshape(1, 3, 1, 16, 16)

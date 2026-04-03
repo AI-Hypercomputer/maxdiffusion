@@ -156,22 +156,17 @@ mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 # conv_in : conv.shape[2] weight
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
-                      ['batch', 'data'],
-                      ['activation_batch', 'data'],
+                      ['batch', ['data', 'fsdp']],
+                      ['activation_batch', ['data', 'fsdp']],
                       ['activation_self_attn_heads', ['context', 'tensor']],
-                      ['activation_self_attn_q_length', 'context'],
-                      ['activation_self_attn_kv_length', None],
-                      ['activation_cross_attn_q_length', 'context'],
-                      ['activation_cross_attn_heads', 'tensor'],
-                      ['activation_cross_attn_kv_length', None],
+                      ['activation_cross_attn_q_length', ['context', 'tensor']],
                       ['activation_length', 'context'],
                       ['activation_heads', 'tensor'],
-                      ['activation_kv', 'tensor'],
                       ['mlp','tensor'],
-                      ['embed', 'fsdp'],
+                      ['embed', ['context', 'fsdp']],
                       ['heads', 'tensor'],
                       ['norm', 'tensor'],
-                      ['conv_batch', ['data', 'context']],
+                      ['conv_batch', ['data', 'context', 'fsdp']],
                       ['out_channels', 'tensor'],
                       ['conv_out', 'context'],
                     ]
@@ -183,12 +178,12 @@ data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 # and product of the ICI axes should equal number of devices per slice.
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: 1
-dcn_context_parallelism: 1
+dcn_context_parallelism: -1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_parallelism: 4
-ici_context_parallelism: 1
-ici_tensor_parallelism: 2
+ici_fsdp_parallelism: 1
+ici_context_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_tensor_parallelism: 1
 
 allow_split_physical_axes: False
 
@@ -294,7 +289,7 @@ negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles,
 do_classifier_free_guidance: True
 height: 720
 width: 1280
-num_frames: 81
+num_frames: 121
 flow_shift: 5.0
 
 # Reference for below guidance scale and boundary values: https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_t2v_A14B.py

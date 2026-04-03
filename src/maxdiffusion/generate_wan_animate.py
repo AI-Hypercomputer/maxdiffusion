@@ -39,6 +39,14 @@ def _get_animate_inference_settings(config):
       "guidance_scale": getattr(config, "animate_guidance_scale", 1.0),
   }
 
+
+def _frame_summary(name, frames):
+  """Return a compact frame-count/size summary for logging."""
+  if not frames:
+    return f"{name}_frames=0"
+  return f"{name}_frames={len(frames)}, {name}_frame_size={getattr(frames[0], 'size', None)}"
+
+
 def run(config):
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
@@ -53,9 +61,11 @@ def run(config):
   reference_image_path = getattr(config, "reference_image_path", "")
   if reference_image_path:
     image = load_image(reference_image_path)
+    reference_image_source = reference_image_path
   else:
     image_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/astronaut.jpg"
     image = load_image(image_url)
+    reference_image_source = image_url
 
   mode = getattr(config, "mode", "animate")
   pose_video_path = getattr(config, "pose_video_path", "")
@@ -97,6 +107,28 @@ def run(config):
       raise ValueError("Replace mode requires both `background_video_path` and `mask_video_path`.")
     background_video = load_video(background_video_path)[:num_frames]
     mask_video = load_video(mask_video_path)[:num_frames]
+
+  max_logging.log(
+      "Wan animate inputs: reference_image=%s, image_size=%s, pose_video_path=%s, face_video_path=%s, %s, %s"
+      % (
+          reference_image_source,
+          getattr(image, "size", None),
+          pose_video_path or "<dummy>",
+          face_video_path or "<dummy>",
+          _frame_summary("pose", pose_video),
+          _frame_summary("face", face_video),
+      )
+  )
+  if mode == "replace":
+    max_logging.log(
+        "Wan replace inputs: background_video_path=%s, mask_video_path=%s, %s, %s"
+        % (
+            background_video_path,
+            mask_video_path,
+            _frame_summary("background", background_video),
+            _frame_summary("mask", mask_video),
+        )
+    )
 
   animate_settings = _get_animate_inference_settings(config)
   prompt = config.prompt
