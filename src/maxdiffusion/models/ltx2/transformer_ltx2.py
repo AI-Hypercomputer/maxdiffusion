@@ -378,11 +378,12 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
     norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
 
-    attn_hidden_states = self.attn1(
-        hidden_states=norm_hidden_states,
-        encoder_hidden_states=None,
-        rotary_emb=video_rotary_emb,
-    )
+    with jax.named_scope("Video Self-Attention"):
+      attn_hidden_states = self.attn1(
+          hidden_states=norm_hidden_states,
+          encoder_hidden_states=None,
+          rotary_emb=video_rotary_emb,
+      )
     hidden_states = hidden_states + attn_hidden_states * gate_msa
 
     # Calculate Audio AdaLN values
@@ -402,11 +403,12 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
     norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_msa) + audio_shift_msa
 
-    attn_audio_hidden_states = self.audio_attn1(
-        hidden_states=norm_audio_hidden_states,
-        encoder_hidden_states=None,
-        rotary_emb=audio_rotary_emb,
-    )
+    with jax.named_scope("Audio Self-Attention"):
+      attn_audio_hidden_states = self.audio_attn1(
+          hidden_states=norm_audio_hidden_states,
+          encoder_hidden_states=None,
+          rotary_emb=audio_rotary_emb,
+      )
     audio_hidden_states = audio_hidden_states + attn_audio_hidden_states * audio_gate_msa
 
     # 2. Video and Audio Cross-Attention with the text embeddings
