@@ -185,5 +185,6 @@ gemini.md
 
 #jax cache
 .jax_cache/
+.mplconfig/
 
 .tpu_logs/
