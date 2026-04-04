@@ -16,6 +16,10 @@ limitations under the License.
 
 """Stub for logging utilities. Right now just meant to avoid raw prints"""
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 def log(user_str):
+  logger.info(user_str)
   print(user_str, flush=True)
