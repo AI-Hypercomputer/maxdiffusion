@@ -1277,6 +1277,9 @@ class LTX2Pipeline:
           latents_jax = latents_step
           audio_latents_jax = audio_latents_step
 
+        # Replicate audio latents to avoid sharding accumulation issues
+        audio_latents_jax = jax.device_put(audio_latents_jax, NamedSharding(self.mesh, P()))
+
     # 8. Decode Latents
     if guidance_scale > 1.0:
       latents_jax = latents_jax[batch_size:]
