@@ -159,7 +159,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         eps=norm_eps,
         dtype=dtype,
         mesh=mesh,
-        attention_kernel=self.attention_kernel,
+        attention_kernel="dot_product",
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
     )
@@ -212,7 +212,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         eps=norm_eps,
         dtype=dtype,
         mesh=mesh,
-        attention_kernel=self.attention_kernel,
+        attention_kernel="dot_product",
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
     )
@@ -350,7 +350,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
     axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
-    audio_hidden_states = jax.lax.with_sharding_constraint(audio_hidden_states, axis_names)
+    axis_names_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
+    audio_hidden_states = jax.lax.with_sharding_constraint(audio_hidden_states, axis_names_audio)
 
     if encoder_hidden_states is not None:
       encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
