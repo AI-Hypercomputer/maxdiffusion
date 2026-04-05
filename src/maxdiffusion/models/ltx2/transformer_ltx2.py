@@ -353,6 +353,9 @@ class LTX2VideoTransformerBlock(nnx.Module):
     axis_names_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
     audio_hidden_states = jax.lax.with_sharding_constraint(audio_hidden_states, axis_names_audio)
 
+    jax.debug.print("[LTX2] Video hidden states shape: {shape}", shape=hidden_states.shape)
+    jax.debug.print("[LTX2] Audio hidden states shape: {shape}", shape=audio_hidden_states.shape)
+
     if encoder_hidden_states is not None:
       encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
     if audio_encoder_hidden_states is not None:
