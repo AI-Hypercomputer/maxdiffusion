@@ -1255,6 +1255,8 @@ class LTX2Pipeline:
           noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
           noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
           # Audio guidance
+          # Replicate noise_pred_audio to avoid cross-device communication during CFG
+          noise_pred_audio = jax.device_put(noise_pred_audio, NamedSharding(self.mesh, P()))
           noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
           noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
 
