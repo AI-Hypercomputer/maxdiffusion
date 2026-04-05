@@ -159,7 +159,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         eps=norm_eps,
         dtype=dtype,
         mesh=mesh,
-        attention_kernel=self.attention_kernel,
+        attention_kernel="dot_product",
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
     )
@@ -212,7 +212,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         eps=norm_eps,
         dtype=dtype,
         mesh=mesh,
-        attention_kernel=self.attention_kernel,
+        attention_kernel="dot_product",
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
     )
@@ -239,7 +239,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         eps=norm_eps,
         dtype=dtype,
         mesh=mesh,
-        attention_kernel=self.attention_kernel,
+        attention_kernel="dot_product",
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
     )
@@ -265,7 +265,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         eps=norm_eps,
         dtype=dtype,
         mesh=mesh,
-        attention_kernel=self.attention_kernel,
+        attention_kernel="dot_product",
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
     )
