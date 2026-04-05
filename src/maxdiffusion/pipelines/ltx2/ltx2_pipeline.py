@@ -1255,8 +1255,7 @@ class LTX2Pipeline:
           noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
           noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
           # Audio guidance
-          # Replicate noise_pred_audio to avoid cross-device communication during CFG
-          noise_pred_audio = jax.device_put(noise_pred_audio, NamedSharding(self.mesh, P()))
+
           noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
           noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
 
@@ -1279,15 +1278,13 @@ class LTX2Pipeline:
           latents_jax = latents_step
           audio_latents_jax = audio_latents_step
 
-        # Replicate audio latents to avoid sharding accumulation issues
-        audio_latents_jax = jax.device_put(audio_latents_jax, NamedSharding(self.mesh, P()))
+
 
     # 8. Decode Latents
     if guidance_scale > 1.0:
       latents_jax = latents_jax[batch_size:]
       audio_latents_jax = audio_latents_jax[batch_size:]
-      # Replicate audio latents to all devices to avoid sharding issues on decoding
-      audio_latents_jax = jax.device_put(audio_latents_jax, NamedSharding(self.mesh, P()))
+
 
     # Unpack and Denormalize Video
     latents = self._unpack_latents(
