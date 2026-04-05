@@ -1281,6 +1281,8 @@ class LTX2Pipeline:
     if guidance_scale > 1.0:
       latents_jax = latents_jax[batch_size:]
       audio_latents_jax = audio_latents_jax[batch_size:]
+      # Replicate audio latents to all devices to avoid sharding issues on decoding
+      audio_latents_jax = jax.device_put(audio_latents_jax, NamedSharding(self.mesh, P()))
 
     # Unpack and Denormalize Video
     latents = self._unpack_latents(
