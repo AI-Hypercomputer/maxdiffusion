@@ -192,5 +192,6 @@ gha-creds-*.json
 
 #jax cache
 .jax_cache/
+.mplconfig/
 
 .tpu_logs/
