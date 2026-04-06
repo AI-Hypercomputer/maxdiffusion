@@ -275,9 +275,8 @@ class WanPipeline:
           subfolder="vae",
           rngs=rngs,
           mesh=mesh,
-          dtype=config.activations_dtype,
-          weights_dtype=config.weights_dtype,
-          precision=get_precision(config),
+          dtype=jnp.float32,
+          weights_dtype=jnp.float32,
       )
       return wan_vae
 

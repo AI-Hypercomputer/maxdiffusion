@@ -17,19 +17,6 @@ from PIL import Image
 jax.config.update("jax_use_shardy_partitioner", True)
 
 
-def _prepare_wan_animate_config():
-  """Apply animate-specific config workarounds before pipeline creation."""
-  # The animate transformer loader currently mismatches scanned-layer parameter
-  # structures from the Diffusers checkpoint, so force the non-scanned layout.
-  if pyconfig._config.keys.get("scan_layers", False):  # pylint: disable=protected-access
-    max_logging.log("Wan animate currently requires scan_layers=False; overriding config for this run.")
-    pyconfig._config.keys["scan_layers"] = False  # pylint: disable=protected-access
-  # TODO: Move the broader scheduler/config alignment with Diffusers into a separate CL.
-  if pyconfig._config.keys.get("flow_shift", None) == 3.0:  # pylint: disable=protected-access
-    max_logging.log("Wan animate defaults to flow_shift=5.0 in Diffusers; overriding inherited 3.0 for this run.")
-    pyconfig._config.keys["flow_shift"] = 5.0  # pylint: disable=protected-access
-
-
 def _get_animate_inference_settings(config):
   """Resolve animate-specific inference settings with upstream defaults."""
   return {
@@ -235,7 +222,6 @@ def run(config):
 
 def main(argv) -> None:
   pyconfig.initialize(argv)
-  _prepare_wan_animate_config()
   try:
     flax.config.update("flax_always_shard_variable", False)
   except LookupError:

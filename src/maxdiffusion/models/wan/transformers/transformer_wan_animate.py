@@ -717,6 +717,8 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.inject_face_latents_blocks = inject_face_latents_blocks
     self.motion_encoder_batch_size = motion_encoder_batch_size
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
+    self.names_which_can_be_saved = names_which_can_be_saved
+    self.names_which_can_be_offloaded = names_which_can_be_offloaded
 
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
 
@@ -781,9 +783,10 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         weights_dtype=weights_dtype,
     )
 
-    blocks = []
-    for _ in range(num_layers):
-      block = WanTransformerBlock(
+    @nnx.split_rngs(splits=num_layers)
+    @nnx.vmap(in_axes=0, out_axes=0, transform_metadata={nnx.PARTITION_NAME: "layers_per_stage"})
+    def init_block(rngs):
+      return WanTransformerBlock(
           rngs=rngs,
           dim=inner_dim,
           ffn_dim=ffn_dim,
@@ -800,13 +803,42 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           weights_dtype=weights_dtype,
           precision=precision,
           attention=attention,
+          dropout=dropout,
+          mask_padding_tokens=mask_padding_tokens,
           enable_jax_named_scopes=enable_jax_named_scopes,
       )
-      blocks.append(block)
-    self.blocks = nnx.List(blocks)
+
+    if scan_layers:
+      self.blocks = init_block(rngs)
+    else:
+      blocks = []
+      for _ in range(num_layers):
+        block = WanTransformerBlock(
+            rngs=rngs,
+            dim=inner_dim,
+            ffn_dim=ffn_dim,
+            num_heads=num_attention_heads,
+            qk_norm=qk_norm,
+            cross_attn_norm=cross_attn_norm,
+            eps=eps,
+            added_kv_proj_dim=added_kv_proj_dim,
+            image_seq_len=image_seq_len,
+            flash_min_seq_length=flash_min_seq_length,
+            flash_block_sizes=flash_block_sizes,
+            mesh=mesh,
+            dtype=dtype,
+            weights_dtype=weights_dtype,
+            precision=precision,
+            attention=attention,
+            dropout=dropout,
+            mask_padding_tokens=mask_padding_tokens,
+            enable_jax_named_scopes=enable_jax_named_scopes,
+        )
+        blocks.append(block)
+      self.blocks = nnx.List(blocks)
 
     face_adapters = []
-    num_face_adapters = num_layers // inject_face_latents_blocks
+    num_face_adapters = math.ceil(num_layers / inject_face_latents_blocks)
     for _ in range(num_face_adapters):
       fa = FlaxWanAnimateFaceBlockCrossAttention(
           rngs=rngs,
@@ -841,6 +873,17 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def conditional_named_scope(self, name: str):
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
+
+  def _apply_face_adapter(self, hidden_states: jax.Array, motion_vec: Optional[jax.Array], block_idx) -> jax.Array:
+    if motion_vec is None or len(self.face_adapter) == 0:
+      return hidden_states
+
+    adapter_idx = block_idx // self.inject_face_latents_blocks
+    adapter_branches = tuple(
+        (lambda current_hidden_states, adapter=adapter: current_hidden_states + adapter(current_hidden_states, motion_vec))
+        for adapter in self.face_adapter
+    )
+    return jax.lax.switch(adapter_idx, adapter_branches, hidden_states)
 
   @jax.named_scope("WanAnimateTransformer3DModel")
   def __call__(
@@ -899,7 +942,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         timestep_proj,
         encoder_hidden_states,
         encoder_hidden_states_image,
-        _,
+        encoder_attention_mask,
     ) = self.condition_embedder(timestep, encoder_hidden_states, encoder_hidden_states_image)
     timestep_proj = timestep_proj.reshape(batch_size, 6, -1)
 
@@ -958,21 +1001,61 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     motion_vec = jnp.concatenate([pad_face, motion_vec], axis=1)
 
     # 5. Transformer Blocks
-    for block_idx, block in enumerate(self.blocks):
-      hidden_states = block(
-          hidden_states,
-          encoder_hidden_states,
-          timestep_proj,
-          rotary_emb,
-          deterministic,
-          rngs,
-      )
+    if self.scan_layers:
 
-      # Face adapter integration: apply after every inject_face_latents_blocks-th block
-      if motion_vec is not None and block_idx % self.inject_face_latents_blocks == 0:
-        face_adapter_block_idx = block_idx // self.inject_face_latents_blocks
-        face_adapter_output = self.face_adapter[face_adapter_block_idx](hidden_states, motion_vec)
-        hidden_states = hidden_states + face_adapter_output
+      def scan_fn(carry, block_idx, block):
+        hidden_states_carry, rngs_carry = carry
+        hidden_states = block(
+            hidden_states_carry,
+            encoder_hidden_states,
+            timestep_proj,
+            rotary_emb,
+            deterministic,
+            rngs_carry,
+            encoder_attention_mask=encoder_attention_mask,
+        )
+
+        hidden_states = jax.lax.cond(
+            block_idx % self.inject_face_latents_blocks == 0,
+            lambda current_hidden_states: self._apply_face_adapter(current_hidden_states, motion_vec, block_idx),
+            lambda current_hidden_states: current_hidden_states,
+            hidden_states,
+        )
+        return (hidden_states, rngs_carry), None
+
+      rematted_block_forward = self.gradient_checkpoint.apply(
+          scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+      )
+      initial_carry = (hidden_states, rngs)
+      final_carry, _ = nnx.scan(
+          rematted_block_forward,
+          length=self.num_layers,
+          in_axes=(nnx.Carry, 0, 0),
+          out_axes=(nnx.Carry, 0),
+      )(initial_carry, jnp.arange(self.num_layers), self.blocks)
+      hidden_states, _ = final_carry
+    else:
+      for block_idx, block in enumerate(self.blocks):
+
+        def layer_forward(hidden_states):
+          hidden_states = block(
+              hidden_states,
+              encoder_hidden_states,
+              timestep_proj,
+              rotary_emb,
+              deterministic,
+              rngs,
+              encoder_attention_mask=encoder_attention_mask,
+          )
+
+          if motion_vec is not None and block_idx % self.inject_face_latents_blocks == 0:
+            hidden_states = self._apply_face_adapter(hidden_states, motion_vec, block_idx)
+          return hidden_states
+
+        rematted_layer_forward = self.gradient_checkpoint.apply(
+            layer_forward, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+        )
+        hidden_states = rematted_layer_forward(hidden_states)
 
     # 6. Output Norm & Projection
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)

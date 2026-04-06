@@ -49,7 +49,6 @@ from diffusers.models.transformers.transformer_wan_animate import (
 
 from .. import pyconfig
 from ..max_utils import create_device_mesh
-from ..models.modeling_flax_pytorch_utils import rename_key
 from ..models.wan.transformers.transformer_wan_animate import (
     FlaxFusedLeakyReLU,
     FlaxMotionConv2d,
@@ -61,10 +60,8 @@ from ..models.wan.transformers.transformer_wan_animate import (
     NNXWanAnimateTransformer3DModel,
 )
 from ..models.wan.wan_utils import (
-    _is_motion_encoder_custom_weight,
-    _normalize_animate_list_key,
-    _tuple_str_to_int,
-    get_key_and_value,
+    _rename_wan_animate_pt_tuple_key,
+    get_wan_animate_key_and_value,
 )
 
 
@@ -143,7 +140,7 @@ def copy_face_block_cross_attention_params(max_module, hf_module):
   max_module.norm_k.scale[...] = jnp.asarray(to_numpy(hf_module.norm_k.weight))
 
 
-def map_hf_wan_animate_state_to_local(max_model, hf_model, num_layers):
+def map_hf_wan_animate_state_to_local(max_model, hf_model, num_layers, scan_layers=False):
   state = nnx.state(max_model)
   flat_vars = dict(nnx.to_flat_state(state))
   random_flax_state_dict = {
@@ -155,54 +152,16 @@ def map_hf_wan_animate_state_to_local(max_model, hf_model, num_layers):
     if "norm_added_q" in pt_key:
       continue
 
-    renamed_pt_key = rename_key(pt_key)
-    is_motion_custom_weight = _is_motion_encoder_custom_weight(pt_key)
-
-    if "condition_embedder" in renamed_pt_key:
-      renamed_pt_key = renamed_pt_key.replace("time_embedding_0", "time_embedder.linear_1")
-      renamed_pt_key = renamed_pt_key.replace("time_embedding_2", "time_embedder.linear_2")
-      renamed_pt_key = renamed_pt_key.replace("time_projection_1", "time_proj")
-      renamed_pt_key = renamed_pt_key.replace("text_embedding_0", "text_embedder.linear_1")
-      renamed_pt_key = renamed_pt_key.replace("text_embedding_2", "text_embedder.linear_2")
-
-    if "image_embedder" in renamed_pt_key:
-      if "net.0.proj" in renamed_pt_key:
-        renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
-      elif "net_0.proj" in renamed_pt_key:
-        renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
-      if "net.2" in renamed_pt_key:
-        renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
-      renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
-      if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
-        renamed_pt_key = renamed_pt_key.replace("weight", "scale")
-        renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
-
-    renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
-    renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
-    renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
-    renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
-    renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
-    renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
-    renamed_pt_key = renamed_pt_key.replace(".activation.bias", ".act_fn.bias")
-
-    if is_motion_custom_weight and renamed_pt_key.endswith(".kernel"):
-      renamed_pt_key = renamed_pt_key[:-7] + ".weight"
-
-    pt_tuple_key = tuple(renamed_pt_key.split("."))
-
-    if is_motion_custom_weight:
-      flax_key = _normalize_animate_list_key(_tuple_str_to_int(pt_tuple_key))
-      flax_tensor = jnp.asarray(to_numpy(tensor))
-    else:
-      flax_key, flax_tensor = get_key_and_value(
-          pt_tuple_key,
-          to_numpy(tensor),
-          flax_state_dict,
-          random_flax_state_dict,
-          False,
-          num_layers,
-      )
-      flax_key = _normalize_animate_list_key(flax_key)
+    pt_tuple_key, is_motion_custom_weight = _rename_wan_animate_pt_tuple_key(pt_key)
+    flax_key, flax_tensor = get_wan_animate_key_and_value(
+        pt_tuple_key,
+        jnp.asarray(to_numpy(tensor)),
+        flax_state_dict,
+        random_flax_state_dict,
+        scan_layers,
+        is_motion_custom_weight=is_motion_custom_weight,
+        num_layers=num_layers,
+    )
 
     flax_state_dict[flax_key] = jnp.asarray(flax_tensor)
 
@@ -365,10 +324,85 @@ class WanAnimateModuleParityTest(unittest.TestCase):
 
     with self.mesh, nn_partitioning.axis_rules(self.logical_axis_rules):
       max_model = NNXWanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=False, mesh=self.mesh, **cfg)
-      missing_keys, flax_state_dict = map_hf_wan_animate_state_to_local(max_model, hf_model, num_layers=cfg["num_layers"])
+      missing_keys, flax_state_dict = map_hf_wan_animate_state_to_local(
+          max_model, hf_model, num_layers=cfg["num_layers"], scan_layers=False
+      )
 
     self.assertFalse(missing_keys, msg=f"Unmapped animate parameters: {missing_keys}")
     self.assertGreater(len(flax_state_dict), 0)
+
+  def test_wan_animate_transformer_weight_mapping_covers_all_local_params_scanned(self):
+    cfg = {
+        "patch_size": (1, 2, 2),
+        "num_attention_heads": 2,
+        "attention_head_dim": 4,
+        "in_channels": 12,
+        "latent_channels": 4,
+        "out_channels": 4,
+        "text_dim": 8,
+        "freq_dim": 8,
+        "ffn_dim": 16,
+        "num_layers": 1,
+        "cross_attn_norm": True,
+        "qk_norm": "rms_norm_across_heads",
+        "eps": 1e-6,
+        "image_dim": 4,
+        "added_kv_proj_dim": None,
+        "rope_max_seq_len": 32,
+        "motion_encoder_channel_sizes": {"4": 8, "8": 8, "16": 8},
+        "motion_encoder_size": 4,
+        "motion_style_dim": 8,
+        "motion_dim": 4,
+        "motion_encoder_dim": 8,
+        "face_encoder_hidden_dim": 8,
+        "face_encoder_num_heads": 2,
+        "inject_face_latents_blocks": 1,
+        "motion_encoder_batch_size": 2,
+    }
+    hf_model = HFWanAnimateTransformer3DModel(**cfg).eval()
+
+    with self.mesh, nn_partitioning.axis_rules(self.logical_axis_rules):
+      max_model = NNXWanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=True, mesh=self.mesh, **cfg)
+      missing_keys, flax_state_dict = map_hf_wan_animate_state_to_local(
+          max_model, hf_model, num_layers=cfg["num_layers"], scan_layers=True
+      )
+
+    self.assertFalse(missing_keys, msg=f"Unmapped animate parameters for scanned model: {missing_keys}")
+    self.assertGreater(len(flax_state_dict), 0)
+
+  def test_wan_animate_transformer_block_mapping_supports_scan_layers_toggle(self):
+    tensor = jnp.arange(12, dtype=jnp.float32).reshape(3, 4)
+    pt_tuple_key = ("blocks", "1", "attn1", "to_q", "weight")
+
+    unscanned_shapes = {
+        ("blocks", "1", "attn1", "query", "kernel"): jnp.zeros((4, 3), dtype=jnp.float32),
+    }
+    flax_key, flax_tensor = get_wan_animate_key_and_value(
+        pt_tuple_key,
+        tensor,
+        {},
+        unscanned_shapes,
+        False,
+        num_layers=2,
+    )
+    self.assertEqual(flax_key, ("blocks", 1, "attn1", "query", "kernel"))
+    np.testing.assert_array_equal(np.asarray(flax_tensor), np.asarray(tensor.T))
+
+    scanned_shapes = {
+        ("blocks", "attn1", "query", "kernel"): jnp.zeros((2, 4, 3), dtype=jnp.float32),
+    }
+    flax_key, flax_tensor = get_wan_animate_key_and_value(
+        pt_tuple_key,
+        tensor,
+        {},
+        scanned_shapes,
+        True,
+        num_layers=2,
+    )
+    self.assertEqual(flax_key, ("blocks", "attn1", "query", "kernel"))
+    expected = np.zeros((2, 4, 3), dtype=np.float32)
+    expected[1] = np.asarray(tensor.T)
+    np.testing.assert_array_equal(np.asarray(flax_tensor), expected)
 
   def test_wan_animate_transformer_forward_parity(self):
     cfg = {
@@ -402,8 +436,75 @@ class WanAnimateModuleParityTest(unittest.TestCase):
 
     with self.mesh, nn_partitioning.axis_rules(self.logical_axis_rules):
       max_model = NNXWanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=False, mesh=self.mesh, **cfg)
-      missing_keys, _ = map_hf_wan_animate_state_to_local(max_model, hf_model, num_layers=cfg["num_layers"])
+      missing_keys, _ = map_hf_wan_animate_state_to_local(
+          max_model, hf_model, num_layers=cfg["num_layers"], scan_layers=False
+      )
       self.assertFalse(missing_keys, msg=f"Unmapped animate parameters: {missing_keys}")
+
+      hidden_states = torch.randn(1, 12, 3, 4, 4)
+      pose_hidden_states = torch.randn(1, 4, 2, 4, 4)
+      encoder_hidden_states = torch.randn(1, 5, 8)
+      encoder_hidden_states_image = torch.randn(1, 3, 4)
+      face_pixel_values = torch.randn(1, 3, 2, 4, 4)
+      timestep = torch.tensor([7], dtype=torch.long)
+
+      with torch.no_grad():
+        expected = hf_model(
+            hidden_states=hidden_states,
+            timestep=timestep,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_hidden_states_image=encoder_hidden_states_image,
+            pose_hidden_states=pose_hidden_states,
+            face_pixel_values=face_pixel_values,
+        ).sample
+
+      actual = max_model(
+          hidden_states=jnp.asarray(to_numpy(hidden_states)),
+          timestep=jnp.asarray(to_numpy(timestep)),
+          encoder_hidden_states=jnp.asarray(to_numpy(encoder_hidden_states)),
+          encoder_hidden_states_image=jnp.asarray(to_numpy(encoder_hidden_states_image)),
+          pose_hidden_states=jnp.asarray(to_numpy(pose_hidden_states)),
+          face_pixel_values=jnp.asarray(to_numpy(face_pixel_values)),
+      )["sample"]
+
+    assert_allclose(self, actual, expected, atol=5e-5, rtol=1e-5)
+
+  def test_wan_animate_transformer_forward_parity_scanned(self):
+    cfg = {
+        "patch_size": (1, 2, 2),
+        "num_attention_heads": 2,
+        "attention_head_dim": 4,
+        "in_channels": 12,
+        "latent_channels": 4,
+        "out_channels": 4,
+        "text_dim": 8,
+        "freq_dim": 8,
+        "ffn_dim": 16,
+        "num_layers": 1,
+        "cross_attn_norm": True,
+        "qk_norm": "rms_norm_across_heads",
+        "eps": 1e-6,
+        "image_dim": 4,
+        "added_kv_proj_dim": None,
+        "rope_max_seq_len": 32,
+        "motion_encoder_channel_sizes": {"4": 8, "8": 8, "16": 8},
+        "motion_encoder_size": 4,
+        "motion_style_dim": 8,
+        "motion_dim": 4,
+        "motion_encoder_dim": 8,
+        "face_encoder_hidden_dim": 8,
+        "face_encoder_num_heads": 2,
+        "inject_face_latents_blocks": 1,
+        "motion_encoder_batch_size": 2,
+    }
+    hf_model = HFWanAnimateTransformer3DModel(**cfg).eval()
+
+    with self.mesh, nn_partitioning.axis_rules(self.logical_axis_rules):
+      max_model = NNXWanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=True, mesh=self.mesh, **cfg)
+      missing_keys, _ = map_hf_wan_animate_state_to_local(
+          max_model, hf_model, num_layers=cfg["num_layers"], scan_layers=True
+      )
+      self.assertFalse(missing_keys, msg=f"Unmapped animate parameters for scanned model: {missing_keys}")
 
       hidden_states = torch.randn(1, 12, 3, 4, 4)
       pose_hidden_states = torch.randn(1, 4, 2, 4, 4)

@@ -89,24 +89,92 @@ def rename_for_custom_trasformer(key):
 
 
 def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers=40):
+  block_index = None
   if scan_layers:
-    if "blocks" in pt_tuple_key:
-      new_key = ("blocks",) + pt_tuple_key[2:]
+    if len(pt_tuple_key) >= 2 and pt_tuple_key[0] == "blocks":
       block_index = int(pt_tuple_key[1])
-      pt_tuple_key = new_key
+      pt_tuple_key = ("blocks",) + pt_tuple_key[2:]
 
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
 
   flax_key = rename_for_nnx(flax_key)
   flax_key = _tuple_str_to_int(flax_key)
 
-  if scan_layers:
-    if "blocks" in flax_key:
-      if flax_key in flax_state_dict:
-        new_tensor = flax_state_dict[flax_key]
-      else:
-        new_tensor = jnp.zeros((num_layers,) + flax_tensor.shape)
-      flax_tensor = new_tensor.at[block_index].set(flax_tensor)
+  if scan_layers and block_index is not None:
+    if flax_key in flax_state_dict:
+      new_tensor = flax_state_dict[flax_key]
+    else:
+      new_tensor = jnp.zeros((num_layers,) + flax_tensor.shape, dtype=flax_tensor.dtype)
+    flax_tensor = new_tensor.at[block_index].set(flax_tensor)
+  return flax_key, flax_tensor
+
+
+def _build_random_flax_state_dict(eval_shapes):
+  flattened_dict = flatten_dict(eval_shapes)
+  random_flax_state_dict = {}
+  for key, value in flattened_dict.items():
+    random_flax_state_dict[tuple(str(item) for item in key)] = value
+  return random_flax_state_dict
+
+
+def _rename_common_wan_transformer_key(renamed_pt_key: str) -> str:
+  if "condition_embedder" in renamed_pt_key:
+    renamed_pt_key = renamed_pt_key.replace("time_embedding_0", "time_embedder.linear_1")
+    renamed_pt_key = renamed_pt_key.replace("time_embedding_2", "time_embedder.linear_2")
+    renamed_pt_key = renamed_pt_key.replace("time_projection_1", "time_proj")
+    renamed_pt_key = renamed_pt_key.replace("text_embedding_0", "text_embedder.linear_1")
+    renamed_pt_key = renamed_pt_key.replace("text_embedding_2", "text_embedder.linear_2")
+
+  if "image_embedder" in renamed_pt_key:
+    if "net.0.proj" in renamed_pt_key:
+      renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
+    elif "net_0.proj" in renamed_pt_key:
+      renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
+    if "net.2" in renamed_pt_key:
+      renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
+    renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
+    if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
+      renamed_pt_key = renamed_pt_key.replace("weight", "scale")
+      renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
+
+  renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
+  renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
+  renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
+  renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
+  renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
+  renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
+
+  return renamed_pt_key
+
+
+def _rename_wan_animate_pt_tuple_key(pt_key: str):
+  renamed_pt_key = _rename_common_wan_transformer_key(rename_key(pt_key))
+  is_motion_custom_weight = _is_motion_encoder_custom_weight(pt_key)
+
+  renamed_pt_key = renamed_pt_key.replace(".activation.bias", ".act_fn.bias")
+  if is_motion_custom_weight and renamed_pt_key.endswith(".kernel"):
+    renamed_pt_key = renamed_pt_key[:-7] + ".weight"
+
+  return tuple(renamed_pt_key.split(".")), is_motion_custom_weight
+
+
+def get_wan_animate_key_and_value(
+    pt_tuple_key,
+    tensor,
+    flax_state_dict,
+    random_flax_state_dict,
+    scan_layers,
+    is_motion_custom_weight=False,
+    num_layers=40,
+):
+  if is_motion_custom_weight:
+    flax_key = _normalize_animate_list_key(_tuple_str_to_int(pt_tuple_key))
+    return flax_key, tensor
+
+  flax_key, flax_tensor = get_key_and_value(
+      pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
+  )
+  flax_key = _normalize_animate_list_key(flax_key)
   return flax_key, flax_tensor
 
 
@@ -264,45 +332,15 @@ def load_base_wan_transformer(
             tensors[k] = torch2jax(f.get_tensor(k))
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
-    flattened_dict = flatten_dict(eval_shapes)
     # turn all block numbers to strings just for matching weights.
     # Later they will be turned back to ints.
-    random_flax_state_dict = {}
-    for key in flattened_dict:
-      string_tuple = tuple([str(item) for item in key])
-      random_flax_state_dict[string_tuple] = flattened_dict[key]
-    del flattened_dict
+    random_flax_state_dict = _build_random_flax_state_dict(eval_shapes)
     for pt_key, tensor in tensors.items():
       # The diffusers implementation explicitly describes this key in keys to be ignored.
       if "norm_added_q" in pt_key:
         continue
       renamed_pt_key = rename_key(pt_key)
-
-      if "condition_embedder" in renamed_pt_key:
-        renamed_pt_key = renamed_pt_key.replace("time_embedding_0", "time_embedder.linear_1")
-        renamed_pt_key = renamed_pt_key.replace("time_embedding_2", "time_embedder.linear_2")
-        renamed_pt_key = renamed_pt_key.replace("time_projection_1", "time_proj")
-        renamed_pt_key = renamed_pt_key.replace("text_embedding_0", "text_embedder.linear_1")
-        renamed_pt_key = renamed_pt_key.replace("text_embedding_2", "text_embedder.linear_2")
-
-      if "image_embedder" in renamed_pt_key:
-        if "net.0.proj" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
-        elif "net_0.proj" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
-        if "net.2" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
-        renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
-        if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("weight", "scale")
-          renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
-
-      renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
-      renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
-      renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
-      renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
-      renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
-      renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
+      renamed_pt_key = _rename_common_wan_transformer_key(renamed_pt_key)
       pt_tuple_key = tuple(renamed_pt_key.split("."))
       flax_key, flax_tensor = get_key_and_value(
           pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
@@ -385,69 +423,22 @@ def load_wan_animate_transformer(
 
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
-    flattened_dict = flatten_dict(eval_shapes)
-    random_flax_state_dict = {}
-    for key in flattened_dict:
-      string_tuple = tuple([str(item) for item in key])
-      random_flax_state_dict[string_tuple] = flattened_dict[key]
-    del flattened_dict
+    random_flax_state_dict = _build_random_flax_state_dict(eval_shapes)
 
     for pt_key, tensor in tensors.items():
       if "norm_added_q" in pt_key:
         continue
 
-      renamed_pt_key = rename_key(pt_key)
-      is_motion_custom_weight = _is_motion_encoder_custom_weight(pt_key)
-
-      # --- Standard WAN transformer renames (shared with base transformer) ---
-      if "condition_embedder" in renamed_pt_key:
-        renamed_pt_key = renamed_pt_key.replace("time_embedding_0", "time_embedder.linear_1")
-        renamed_pt_key = renamed_pt_key.replace("time_embedding_2", "time_embedder.linear_2")
-        renamed_pt_key = renamed_pt_key.replace("time_projection_1", "time_proj")
-        renamed_pt_key = renamed_pt_key.replace("text_embedding_0", "text_embedder.linear_1")
-        renamed_pt_key = renamed_pt_key.replace("text_embedding_2", "text_embedder.linear_2")
-
-      if "image_embedder" in renamed_pt_key:
-        if "net.0.proj" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("net.0.proj", "net_0")
-        elif "net_0.proj" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("net_0.proj", "net_0")
-        if "net.2" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("net.2", "net_2")
-        renamed_pt_key = renamed_pt_key.replace("norm1", "norm1.layer_norm")
-        if "norm1" in renamed_pt_key or "norm2" in renamed_pt_key:
-          renamed_pt_key = renamed_pt_key.replace("weight", "scale")
-          renamed_pt_key = renamed_pt_key.replace("kernel", "scale")
-
-      renamed_pt_key = renamed_pt_key.replace("blocks_", "blocks.")
-      renamed_pt_key = renamed_pt_key.replace(".scale_shift_table", ".adaln_scale_shift_table")
-      renamed_pt_key = renamed_pt_key.replace("to_out_0", "proj_attn")
-      renamed_pt_key = renamed_pt_key.replace("ffn.net_2", "ffn.proj_out")
-      renamed_pt_key = renamed_pt_key.replace("ffn.net_0", "ffn.act_fn")
-      renamed_pt_key = renamed_pt_key.replace("norm2", "norm2.layer_norm")
-
-      # --- Animate-specific renames ---
-      # FusedLeakyReLU bias: HuggingFace stores it under "activation.bias",
-      # JAX stores it under "act_fn.bias" within FlaxMotionConv2d/FlaxMotionLinear.
-      renamed_pt_key = renamed_pt_key.replace(".activation.bias", ".act_fn.bias")
-      if is_motion_custom_weight and renamed_pt_key.endswith(".kernel"):
-        renamed_pt_key = renamed_pt_key[:-7] + ".weight"
-
-      # face_adapter cross-attention: norm_q/norm_k scale renaming
-      # (rename_for_nnx handles norm_k/norm_q -> scale in get_key_and_value)
-
-      pt_tuple_key = tuple(renamed_pt_key.split("."))
-
-      # FlaxMotionConv2d and FlaxMotionLinear store weights as nnx.Param in PyTorch
-      # OIHW / (out, in) format — do NOT rename weight→kernel or transpose.
-      if is_motion_custom_weight:
-        flax_key = _normalize_animate_list_key(_tuple_str_to_int(pt_tuple_key))
-        flax_tensor = tensor
-      else:
-        flax_key, flax_tensor = get_key_and_value(
-            pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
-        )
-        flax_key = _normalize_animate_list_key(flax_key)
+      pt_tuple_key, is_motion_custom_weight = _rename_wan_animate_pt_tuple_key(pt_key)
+      flax_key, flax_tensor = get_wan_animate_key_and_value(
+          pt_tuple_key,
+          tensor,
+          flax_state_dict,
+          random_flax_state_dict,
+          scan_layers,
+          is_motion_custom_weight=is_motion_custom_weight,
+          num_layers=num_layers,
+      )
 
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 
