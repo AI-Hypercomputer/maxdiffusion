@@ -275,8 +275,9 @@ class WanPipeline:
           subfolder="vae",
           rngs=rngs,
           mesh=mesh,
-          dtype=jnp.float32,
-          weights_dtype=jnp.float32,
+          dtype=config.activations_dtype,
+          weights_dtype=config.weights_dtype,
+          precision=get_precision(config),
       )
       return wan_vae
 
@@ -296,8 +297,7 @@ class WanPipeline:
     # This helps with loading sharded weights directly into the accelerators without fist copying them
     # all to one device and then distributing them, thus using low HBM memory.
     params = load_wan_vae(config.pretrained_model_name_or_path, params, "cpu")
-    # Keep the WAN VAE fully in fp32, mirroring the "upcast VAE" stability path.
-    params = jax.tree_util.tree_map(lambda x: x.astype(jnp.float32), params)
+    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
     for path, val in flax.traverse_util.flatten_dict(params).items():
       sharding = logical_state_sharding[path].value
       if config.replicate_vae:
@@ -606,9 +606,13 @@ class WanPipeline:
       components["tokenizer"] = cls.load_tokenizer(config=config)
       components["text_encoder"] = cls.load_text_encoder(config=config)
       components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
-      if i2v:
+      if cls._needs_image_encoder(config, i2v=i2v):
         components["image_processor"], components["image_encoder"] = cls.load_image_encoder(config)
     return components
+
+  @classmethod
+  def _needs_image_encoder(cls, config: HyperParameters, i2v: bool = False) -> bool:
+    return i2v and config.model_name == "wan2.1"
 
   @abstractmethod
   def _get_num_channel_latents(self) -> int:

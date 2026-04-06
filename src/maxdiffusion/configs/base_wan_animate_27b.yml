@@ -317,11 +317,11 @@ fps: 24
 save_final_checkpoint: False
 
 # Wan Animate local-input overrides (used by generate_wan_animate.py)
-# These sample assets live under examples/wan_animate/sample_inputs/.
+# These sample assets live under assets/wan_animate/.
 mode: "animate"
-reference_image_path: "examples/wan_animate/sample_inputs/process_results/src_ref.png"
-pose_video_path: "examples/wan_animate/sample_inputs/process_results/src_pose.mp4"
-face_video_path: "examples/wan_animate/sample_inputs/process_results/src_face.mp4"
+reference_image_path: "assets/wan_animate/src_ref.png"
+pose_video_path: "assets/wan_animate/src_pose.mp4"
+face_video_path: "assets/wan_animate/src_face.mp4"
 background_video_path: ""
 mask_video_path: ""
 segment_frame_length: 77

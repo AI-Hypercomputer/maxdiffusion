@@ -42,7 +42,7 @@ from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from jax.sharding import NamedSharding, PartitionSpec as P
 from maxdiffusion import max_logging
-from maxdiffusion.image_processor import PipelineImageInput
+from maxdiffusion.image_processor import PipelineImageInput, VaeImageProcessor
 from maxdiffusion.max_utils import device_put_replicated, get_flash_block_sizes, get_precision
 from maxdiffusion.video_processor import VideoProcessor
 
@@ -51,7 +51,6 @@ from ...models.wan.transformers.transformer_wan_animate import NNXWanAnimateTran
 from ...models.wan.wan_utils import load_wan_animate_transformer
 from ...pyconfig import HyperParameters
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
-from .image_processor import WanAnimateImageProcessor
 from .wan_pipeline import WanPipeline, cast_with_exclusion
 
 
@@ -234,10 +233,11 @@ class WanAnimatePipeline(WanPipeline):
     super().__init__(config=config, **kwargs)
     self.transformer = transformer
     spatial_patch_size = self.transformer.config.patch_size[-2:] if self.transformer is not None else (2, 2)
-    self.ref_image_processor = WanAnimateImageProcessor(
+    self.ref_image_processor = VaeImageProcessor(
         vae_scale_factor=self.vae_scale_factor_spatial,
         spatial_patch_size=spatial_patch_size,
         resample="bilinear",
+        resize_mode="fill",
         fill_color=0,
     )
     self.video_processor_for_mask = VideoProcessor(
@@ -245,6 +245,10 @@ class WanAnimatePipeline(WanPipeline):
         do_normalize=False,
         do_convert_grayscale=True,
     )
+
+  @classmethod
+  def _needs_image_encoder(cls, config: HyperParameters, i2v: bool = False) -> bool:
+    return True
 
   @classmethod
   def load_animate_transformer(
@@ -274,8 +278,7 @@ class WanAnimatePipeline(WanPipeline):
       vae_only: bool = False,
       load_transformer: bool = True,
   ) -> Tuple["WanAnimatePipeline", Optional[NNXWanAnimateTransformer3DModel]]:
-    # Animate always needs the CLIP image encoder (same as I2V 2.1).
-    common_components = cls._create_common_components(config, vae_only, i2v=True)
+    common_components = cls._create_common_components(config, vae_only)
     transformer = None
     if not vae_only and load_transformer:
       transformer = cls.load_animate_transformer(
@@ -833,7 +836,7 @@ class WanAnimatePipeline(WanPipeline):
     image_embeds = image_embeds.astype(transformer_dtype)
 
     # ---- 3. VAE-encode reference image ----
-    # Use WanAnimateImageProcessor so the character is letterboxed (not cropped).
+    # Use VaeImageProcessor with resize_mode="fill" so the character is letterboxed instead of cropped.
     image_tensor = self.ref_image_processor.preprocess(image, height=height, width=width)
     image_tensor = jnp.array(image_tensor.cpu().numpy())
     if image_tensor.ndim == 3:

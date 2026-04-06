@@ -41,8 +41,8 @@ from diffusers.pipelines.wan.pipeline_wan_animate import WanAnimatePipeline as H
 from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
 from diffusers.video_processor import VideoProcessor as HFVideoProcessor
 
+from ..image_processor import VaeImageProcessor as MaxVaeImageProcessor
 from ..pipelines.wan.wan_pipeline import WanPipeline as MaxWanPipeline
-from ..pipelines.wan.image_processor import WanAnimateImageProcessor as MaxWanAnimateImageProcessor
 from ..pipelines.wan.wan_pipeline_animate import (
     WanAnimatePipeline as MaxWanAnimatePipeline,
     animate_transformer_forward_pass,
@@ -478,7 +478,12 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
 
   def test_reference_image_processor_matches_diffusers_fill_resize(self):
     image = PIL.Image.fromarray(np.arange(6 * 10 * 3, dtype=np.uint8).reshape(6, 10, 3))
-    max_processor = MaxWanAnimateImageProcessor(vae_scale_factor=8, spatial_patch_size=(2, 2), fill_color=0)
+    max_processor = MaxVaeImageProcessor(
+        vae_scale_factor=8,
+        spatial_patch_size=(2, 2),
+        resize_mode="fill",
+        fill_color=0,
+    )
     hf_processor = HFWanAnimateImageProcessor(vae_scale_factor=8, spatial_patch_size=(2, 2), fill_color=0)
 
     max_image = max_processor.preprocess(image, height=16, width=16)
