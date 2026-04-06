@@ -48,7 +48,7 @@ WAN_ANIMATE_MOTION_ENCODER_CHANNEL_SIZES = {
 }
 
 
-class FlaxFusedLeakyReLU(nnx.Module):
+class FusedLeakyReLU(nnx.Module):
   """
   Fused LeakyRelu with scale factor and channel-wise bias.
   """
@@ -84,7 +84,7 @@ class FlaxFusedLeakyReLU(nnx.Module):
     return x
 
 
-class FlaxMotionConv2d(nnx.Module):
+class MotionConv2d(nnx.Module):
   """2-D convolution with EqualizedLR scaling and optional FusedLeakyReLU.
 
   Weights are stored in PyTorch OIHW format (out, in, k, k) as raw nnx.Param
@@ -148,7 +148,7 @@ class FlaxMotionConv2d(nnx.Module):
       self.bias = None
 
     if self.use_activation:
-      self.act_fn = FlaxFusedLeakyReLU(
+      self.act_fn = FusedLeakyReLU(
           rngs=rngs, bias_channels=out_channels, dtype=dtype, weights_dtype=weights_dtype
       )
     else:
@@ -205,11 +205,11 @@ class FlaxMotionConv2d(nnx.Module):
     return x
 
 
-class FlaxMotionLinear(nnx.Module):
+class MotionLinear(nnx.Module):
   """Equalized-LR linear layer with optional FusedLeakyReLU.
 
   Weights are stored in PyTorch (out, in) format as raw nnx.Param — same
-  reason as FlaxMotionConv2d.  No sharding annotations needed (small layer).
+  reason as MotionConv2d.  No sharding annotations needed (small layer).
   """
 
   def __init__(
@@ -238,7 +238,7 @@ class FlaxMotionLinear(nnx.Module):
       self.bias = None
 
     if self.use_activation:
-      self.act_fn = FlaxFusedLeakyReLU(rngs=rngs, bias_channels=out_dim, dtype=dtype, weights_dtype=weights_dtype)
+      self.act_fn = FusedLeakyReLU(rngs=rngs, bias_channels=out_dim, dtype=dtype, weights_dtype=weights_dtype)
     else:
       self.act_fn = None
 
@@ -258,7 +258,7 @@ class FlaxMotionLinear(nnx.Module):
     return out
 
 
-class FlaxMotionEncoderResBlock(nnx.Module):
+class MotionEncoderResBlock(nnx.Module):
 
   def __init__(
       self,
@@ -276,7 +276,7 @@ class FlaxMotionEncoderResBlock(nnx.Module):
     self.dtype = dtype
 
     # 3 X 3 Conv + fused leaky ReLU
-    self.conv1 = FlaxMotionConv2d(
+    self.conv1 = MotionConv2d(
         rngs,
         in_channels,
         in_channels,
@@ -289,7 +289,7 @@ class FlaxMotionEncoderResBlock(nnx.Module):
     )
 
     # 3 X 3 Conv + downsample 2x + fused leaky ReLU
-    self.conv2 = FlaxMotionConv2d(
+    self.conv2 = MotionConv2d(
         rngs,
         in_channels,
         out_channels,
@@ -303,7 +303,7 @@ class FlaxMotionEncoderResBlock(nnx.Module):
     )
 
     # 1 X 1 Conv + downsample 2x in skip connection
-    self.conv_skip = FlaxMotionConv2d(
+    self.conv_skip = MotionConv2d(
         rngs,
         in_channels,
         out_channels,
@@ -327,7 +327,7 @@ class FlaxMotionEncoderResBlock(nnx.Module):
     return x_out
 
 
-class FlaxWanAnimateMotionEncoder(nnx.Module):
+class WanAnimateMotionEncoder(nnx.Module):
   """Encodes a face video frame into a motion vector.
 
   All weights in this network are small (the largest is 32×512→16) so
@@ -353,7 +353,7 @@ class FlaxWanAnimateMotionEncoder(nnx.Module):
     if channels is None:
       channels = WAN_ANIMATE_MOTION_ENCODER_CHANNEL_SIZES
 
-    self.conv_in = FlaxMotionConv2d(
+    self.conv_in = MotionConv2d(
         rngs, 3, channels[str(size)], 1, use_activation=True, dtype=dtype, weights_dtype=weights_dtype
     )
 
@@ -363,12 +363,12 @@ class FlaxWanAnimateMotionEncoder(nnx.Module):
     for i in range(log_size, 2, -1):
       out_channels = channels[str(2 ** (i - 1))]
       res_blocks.append(
-          FlaxMotionEncoderResBlock(rngs, in_channels, out_channels, dtype=dtype, weights_dtype=weights_dtype)
+          MotionEncoderResBlock(rngs, in_channels, out_channels, dtype=dtype, weights_dtype=weights_dtype)
       )
       in_channels = out_channels
     self.res_blocks = nnx.List(res_blocks)
 
-    self.conv_out = FlaxMotionConv2d(
+    self.conv_out = MotionConv2d(
         rngs,
         in_channels,
         style_dim,
@@ -382,9 +382,9 @@ class FlaxWanAnimateMotionEncoder(nnx.Module):
 
     linears = []
     for _ in range(motion_blocks - 1):
-      linears.append(FlaxMotionLinear(rngs, style_dim, style_dim, dtype=dtype, weights_dtype=weights_dtype))
+      linears.append(MotionLinear(rngs, style_dim, style_dim, dtype=dtype, weights_dtype=weights_dtype))
 
-    linears.append(FlaxMotionLinear(rngs, style_dim, motion_dim, dtype=dtype, weights_dtype=weights_dtype))
+    linears.append(MotionLinear(rngs, style_dim, motion_dim, dtype=dtype, weights_dtype=weights_dtype))
     self.motion_network = nnx.List(linears)
 
     key = rngs.params()
@@ -417,7 +417,7 @@ class FlaxWanAnimateMotionEncoder(nnx.Module):
     return motion_vec.astype(original_dtype)
 
 
-class FlaxWanAnimateFaceEncoder(nnx.Module):
+class WanAnimateFaceEncoder(nnx.Module):
 
   def __init__(
       self,
@@ -544,7 +544,7 @@ class FlaxWanAnimateFaceEncoder(nnx.Module):
     return x
 
 
-class FlaxWanAnimateFaceBlockCrossAttention(nnx.Module):
+class WanAnimateFaceBlockCrossAttention(nnx.Module):
 
   def __init__(
       self,
@@ -763,7 +763,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         weights_dtype=weights_dtype,
     )
 
-    self.motion_encoder = FlaxWanAnimateMotionEncoder(
+    self.motion_encoder = WanAnimateMotionEncoder(
         rngs=rngs,
         size=motion_encoder_size,
         style_dim=motion_style_dim,
@@ -773,7 +773,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         dtype=dtype,
         weights_dtype=weights_dtype,
     )
-    self.face_encoder = FlaxWanAnimateFaceEncoder(
+    self.face_encoder = WanAnimateFaceEncoder(
         rngs=rngs,
         in_dim=motion_encoder_dim,
         out_dim=inner_dim,
@@ -840,7 +840,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     face_adapters = []
     num_face_adapters = math.ceil(num_layers / inject_face_latents_blocks)
     for _ in range(num_face_adapters):
-      fa = FlaxWanAnimateFaceBlockCrossAttention(
+      fa = WanAnimateFaceBlockCrossAttention(
           rngs=rngs,
           dim=inner_dim,
           heads=num_attention_heads,
@@ -1081,3 +1081,4 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if not return_dict:
       return (hidden_states,)
     return {"sample": hidden_states}
+

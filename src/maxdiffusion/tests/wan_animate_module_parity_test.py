@@ -47,14 +47,14 @@ from diffusers.models.transformers.transformer_wan_animate import (
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import create_device_mesh
 from maxdiffusion.models.wan.transformers.transformer_wan_animate import (
-    FlaxFusedLeakyReLU,
-    FlaxMotionConv2d,
-    FlaxMotionEncoderResBlock,
-    FlaxMotionLinear,
-    FlaxWanAnimateFaceBlockCrossAttention,
-    FlaxWanAnimateFaceEncoder,
-    FlaxWanAnimateMotionEncoder,
+    FusedLeakyReLU,
+    MotionConv2d,
+    MotionEncoderResBlock,
+    MotionLinear,
     NNXWanAnimateTransformer3DModel,
+    WanAnimateFaceBlockCrossAttention,
+    WanAnimateFaceEncoder,
+    WanAnimateMotionEncoder,
 )
 from maxdiffusion.models.wan.wan_utils import (
     _rename_wan_animate_pt_tuple_key,
@@ -189,7 +189,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
 
   def test_fused_leaky_relu_parity(self):
     hf_module = HFFusedLeakyReLU(bias_channels=3).eval()
-    max_module = FlaxFusedLeakyReLU(rngs=self.rngs, bias_channels=3)
+    max_module = FusedLeakyReLU(rngs=self.rngs, bias_channels=3)
     copy_fused_leaky_relu_params(max_module, hf_module)
 
     inputs = torch.randn(2, 3, 4, 5)
@@ -200,7 +200,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
 
   def test_motion_conv2d_parity(self):
     hf_module = HFMotionConv2d(3, 5, kernel_size=3, stride=2, padding=0, blur_kernel=(1, 3, 3, 1)).eval()
-    max_module = FlaxMotionConv2d(
+    max_module = MotionConv2d(
         rngs=self.rngs,
         in_channels=3,
         out_channels=5,
@@ -219,7 +219,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
 
   def test_motion_linear_parity(self):
     hf_module = HFMotionLinear(7, 5, use_activation=True).eval()
-    max_module = FlaxMotionLinear(rngs=self.rngs, in_dim=7, out_dim=5, use_activation=True)
+    max_module = MotionLinear(rngs=self.rngs, in_dim=7, out_dim=5, use_activation=True)
     copy_motion_linear_params(max_module, hf_module)
 
     inputs = torch.randn(4, 7)
@@ -230,7 +230,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
 
   def test_motion_encoder_resblock_parity(self):
     hf_module = HFMotionEncoderResBlock(8, 10).eval()
-    max_module = FlaxMotionEncoderResBlock(rngs=self.rngs, in_channels=8, out_channels=10)
+    max_module = MotionEncoderResBlock(rngs=self.rngs, in_channels=8, out_channels=10)
     copy_motion_encoder_resblock_params(max_module, hf_module)
 
     inputs = torch.randn(2, 8, 8, 8)
@@ -249,7 +249,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
         "channels": {"4": 8, "8": 8, "16": 8},
     }
     hf_module = HFWanAnimateMotionEncoder(**cfg).eval()
-    max_module = FlaxWanAnimateMotionEncoder(rngs=self.rngs, **cfg)
+    max_module = WanAnimateMotionEncoder(rngs=self.rngs, **cfg)
     copy_motion_encoder_params(max_module, hf_module)
 
     inputs = torch.randn(3, 3, 4, 4)
@@ -260,7 +260,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
 
   def test_face_encoder_parity(self):
     hf_module = HFWanAnimateFaceEncoder(in_dim=8, out_dim=12, hidden_dim=16, num_heads=2).eval()
-    max_module = FlaxWanAnimateFaceEncoder(rngs=self.rngs, in_dim=8, out_dim=12, hidden_dim=16, num_heads=2)
+    max_module = WanAnimateFaceEncoder(rngs=self.rngs, in_dim=8, out_dim=12, hidden_dim=16, num_heads=2)
     copy_face_encoder_params(max_module, hf_module)
 
     inputs = torch.randn(2, 7, 8)
@@ -271,7 +271,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
 
   def test_face_block_cross_attention_parity(self):
     hf_module = HFWanAnimateFaceBlockCrossAttention(dim=12, heads=3, dim_head=4, cross_attention_dim_head=4).eval()
-    max_module = FlaxWanAnimateFaceBlockCrossAttention(
+    max_module = WanAnimateFaceBlockCrossAttention(
         rngs=self.rngs,
         dim=12,
         heads=3,
