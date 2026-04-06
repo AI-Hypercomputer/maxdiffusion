@@ -338,18 +338,16 @@ class LTX2VocoderTest(unittest.TestCase):
       pt_val = pt_t.detach().numpy()
       # jax_t is (B,L,C), transpose to (B,C,L) for comparison
       jax_val = np.array(jax_t).transpose(0, 2, 1)
-      stats_list.append(
-          {
-              "Layer": name,
-              "PT Max": f"{pt_val.max():.4f}",
-              "JAX Max": f"{jax_val.max():.4f}",
-              "PT Mean": f"{pt_val.mean():.4f}",
-              "JAX Mean": f"{jax_val.mean():.4f}",
-              "PT Min": f"{pt_val.min():.4f}",
-              "JAX Min": f"{jax_val.min():.4f}",
-              "Diff (L1)": f"{np.abs(pt_val - jax_val).mean():.6f}",
-          }
-      )
+      stats_list.append({
+          "Layer": name,
+          "PT Max": f"{pt_val.max():.4f}",
+          "JAX Max": f"{jax_val.max():.4f}",
+          "PT Mean": f"{pt_val.mean():.4f}",
+          "JAX Mean": f"{jax_val.mean():.4f}",
+          "PT Min": f"{pt_val.min():.4f}",
+          "JAX Min": f"{jax_val.min():.4f}",
+          "Diff (L1)": f"{np.abs(pt_val - jax_val).mean():.6f}",
+      })
 
     add_stat("Conv In", pt_stats["conv_in"], jax_stats["conv_in"])
     for i in range(jax_model.num_upsample_layers):

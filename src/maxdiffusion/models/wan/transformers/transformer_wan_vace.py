@@ -460,13 +460,11 @@ class WanVACEModel(WanModel):
 
     control_hidden_states = self.vace_patch_embedding(control_hidden_states)
     control_hidden_states = jax.lax.collapse(control_hidden_states, 1, -1)
-    control_hidden_states_padding = jnp.zeros(
-        (
-            batch_size,
-            control_hidden_states.shape[1],
-            hidden_states.shape[2] - control_hidden_states.shape[2],
-        )
-    )
+    control_hidden_states_padding = jnp.zeros((
+        batch_size,
+        control_hidden_states.shape[1],
+        hidden_states.shape[2] - control_hidden_states.shape[2],
+    ))
 
     control_hidden_states = jnp.concatenate([control_hidden_states, control_hidden_states_padding], axis=2)
 

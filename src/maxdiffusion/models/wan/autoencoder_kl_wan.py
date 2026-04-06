@@ -1104,7 +1104,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
     self.mesh = mesh
 
-  @nnx.jit
   def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
     feat_cache.init_cache()
     if x.shape[-1] != 3:

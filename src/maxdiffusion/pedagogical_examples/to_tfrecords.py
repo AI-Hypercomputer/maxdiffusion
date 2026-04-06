@@ -54,14 +54,12 @@ from maxdiffusion import (FlaxStableDiffusionPipeline, pyconfig)
 dl_manager = tfds.download.DownloadManager(download_dir="/tmp")
 tmp_dataset = "dataset"
 
-TRANSFORMS = transforms.Compose(
-    [
-        transforms.ToTensor(),
-        transforms.Resize(size=512, interpolation=transforms.InterpolationMode.BICUBIC),
-        transforms.CenterCrop(size=512),
-        transforms.Normalize([0.5], [0.5]),
-    ]
-)
+TRANSFORMS = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Resize(size=512, interpolation=transforms.InterpolationMode.BICUBIC),
+    transforms.CenterCrop(size=512),
+    transforms.Normalize([0.5], [0.5]),
+])
 
 
 def delete_files(path):

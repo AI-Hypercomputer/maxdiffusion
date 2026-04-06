@@ -278,14 +278,12 @@ class CausalMask(_ComputableMask):
     return self.shape == other.shape and self.offset == other.offset and np.array_equal(self.q_sequence, other.q_sequence)
 
   def __hash__(self):
-    return hash(
-        (
-            type(self),
-            self.shape,
-            self.offset,
-            self.q_sequence.tobytes() if self.q_sequence is not None else None,
-        )
-    )
+    return hash((
+        type(self),
+        self.shape,
+        self.offset,
+        self.q_sequence.tobytes() if self.q_sequence is not None else None,
+    ))
 
 
 class ChunkedCausalMask(_ComputableMask):
@@ -340,14 +338,12 @@ class ChunkedCausalMask(_ComputableMask):
     )
 
   def __hash__(self):
-    return hash(
-        (
-            type(self),
-            self.shape,
-            self.chunk_size,
-            self.q_sequence.tobytes() if self.q_sequence is not None else None,
-        )
-    )
+    return hash((
+        type(self),
+        self.shape,
+        self.chunk_size,
+        self.q_sequence.tobytes() if self.q_sequence is not None else None,
+    ))
 
 
 class LocalMask(_ComputableMask):
@@ -419,15 +415,13 @@ class LocalMask(_ComputableMask):
     )
 
   def __hash__(self):
-    return hash(
-        (
-            type(self),
-            self.shape,
-            self.window_size,
-            self.offset,
-            self.q_sequence.tobytes() if self.q_sequence is not None else None,
-        )
-    )
+    return hash((
+        type(self),
+        self.shape,
+        self.window_size,
+        self.offset,
+        self.q_sequence.tobytes() if self.q_sequence is not None else None,
+    ))
 
 
 @dataclasses.dataclass(slots=True)
