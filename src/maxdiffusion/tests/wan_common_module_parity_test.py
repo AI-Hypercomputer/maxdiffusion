@@ -15,26 +15,23 @@ limitations under the License.
 """
 
 import os
-import sys
 import unittest
+from importlib import resources
 
-os.environ.setdefault("JAX_PLATFORMS", "cpu")
+os.environ["JAX_PLATFORMS"] = "cpu"
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
-
-THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", "..", ".."))
-DIFFUSERS_SRC = os.path.join(REPO_ROOT, "diffusers", "src")
-if DIFFUSERS_SRC not in sys.path:
-  sys.path.insert(0, DIFFUSERS_SRC)
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import torch
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from flax.traverse_util import flatten_dict
 from jax.sharding import Mesh
+
+jax.config.update("jax_platforms", "cpu")
 
 from diffusers.models.attention import FeedForward as HFFeedForward
 from diffusers.models.transformers.transformer_wan import (
@@ -45,18 +42,20 @@ from diffusers.models.transformers.transformer_wan import (
     WanTransformerBlock as HFWanTransformerBlock,
 )
 
-from .. import pyconfig
-from ..max_utils import create_device_mesh
-from ..models.embeddings_flax import NNXWanImageEmbedding
-from ..models.modeling_flax_pytorch_utils import rename_key
-from ..models.wan.transformers.transformer_wan import (
+from maxdiffusion import pyconfig
+from maxdiffusion.max_utils import create_device_mesh
+from maxdiffusion.models.embeddings_flax import NNXWanImageEmbedding
+from maxdiffusion.models.modeling_flax_pytorch_utils import rename_key
+from maxdiffusion.models.wan.transformers.transformer_wan import (
     WanFeedForward,
     WanModel,
     WanRotaryPosEmbed,
     WanTimeTextImageEmbedding,
     WanTransformerBlock,
 )
-from ..models.wan.wan_utils import get_key_and_value
+from maxdiffusion.models.wan.wan_utils import get_key_and_value
+
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 
 def to_numpy(array):
@@ -185,17 +184,13 @@ def map_hf_wan_state_to_local(max_model, hf_model, num_layers):
   return missing_keys, flax_state_dict
 
 
+@pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run WAN parity tests on Github Actions")
 class WanCommonModuleParityTest(unittest.TestCase):
 
   @classmethod
   def setUpClass(cls):
-    pyconfig.initialize(
-        [
-            None,
-            os.path.join(REPO_ROOT, "src", "maxdiffusion", "configs", "base_wan_14b.yml"),
-        ],
-        unittest=True,
-    )
+    with resources.as_file(resources.files("maxdiffusion.configs").joinpath("base_wan_14b.yml")) as config_path:
+      pyconfig.initialize([None, os.fspath(config_path)], unittest=True)
     config = pyconfig.config
     cls.logical_axis_rules = config.logical_axis_rules
     cls.mesh = Mesh(create_device_mesh(config), config.mesh_axes)

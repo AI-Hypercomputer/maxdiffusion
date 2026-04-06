@@ -1,5 +1,5 @@
 """
-Copyright 2025 Google LLC
+Copyright 2026 Google LLC
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@ limitations under the License.
 """
 
 import os
-import sys
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -24,31 +23,30 @@ from unittest import mock
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
 
-THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", "..", ".."))
-DIFFUSERS_SRC = os.path.join(REPO_ROOT, "diffusers", "src")
-if DIFFUSERS_SRC not in sys.path:
-  sys.path.insert(0, DIFFUSERS_SRC)
-
+import jax
 import jax.numpy as jnp
 import numpy as np
 import PIL.Image
+import pytest
 import torch
 import torch.nn.functional as F
+from jax.sharding import Mesh
 
 from diffusers.pipelines.wan.image_processor import WanAnimateImageProcessor as HFWanAnimateImageProcessor
 from diffusers.pipelines.wan.pipeline_wan_animate import WanAnimatePipeline as HFWanAnimatePipeline
 from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
 from diffusers.video_processor import VideoProcessor as HFVideoProcessor
 
-from ..image_processor import VaeImageProcessor as MaxVaeImageProcessor
-from ..pipelines.wan.wan_pipeline import WanPipeline as MaxWanPipeline
-from ..pipelines.wan.wan_pipeline_animate import (
+from maxdiffusion.image_processor import VaeImageProcessor as MaxVaeImageProcessor
+from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline as MaxWanPipeline
+from maxdiffusion.pipelines.wan.wan_pipeline_animate import (
     WanAnimatePipeline as MaxWanAnimatePipeline,
     animate_transformer_forward_pass,
 )
-from ..schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
-from ..video_processor import VideoProcessor as MaxVideoProcessor
+from maxdiffusion.schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
+from maxdiffusion.video_processor import VideoProcessor as MaxVideoProcessor
+
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 
 def to_numpy(array):
@@ -131,14 +129,15 @@ class FakeImageProcessor:
     if not isinstance(images, list):
       images = [images]
     pixel_values = []
-    for idx, _ in enumerate(images):
-      base = idx + 1
-      pixel_values.append(
-          torch.tensor(
-              [[[base, base + 1], [base + 2, base + 3]]],
-              dtype=torch.float32,
-          )
-      )
+    for image in images:
+      image_array = np.asarray(image, dtype=np.float32)
+      if image_array.ndim == 2:
+        image_array = image_array[..., None]
+      if image_array.shape[-1] > 1:
+        image_array = image_array.mean(axis=-1, keepdims=True)
+      pixel_value = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0) / 255.0
+      pixel_value = F.interpolate(pixel_value, size=(2, 2), mode="bilinear", align_corners=False)
+      pixel_values.append(pixel_value.squeeze(0))
     return FakeImageBatch(pixel_values=torch.stack(pixel_values))
 
 
@@ -207,9 +206,13 @@ class FakeJaxVAE:
     return (FakeJaxEncodeOutput(latents),)
 
 
+@pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run WAN parity tests on Github Actions")
 class WanAnimateDiffusersParityTest(unittest.TestCase):
 
   def setUp(self):
+    self.np_rng = np.random.default_rng(0)
+    self.torch_generator = torch.Generator().manual_seed(0)
+
     self.max_pipeline = MaxWanAnimatePipeline.__new__(MaxWanAnimatePipeline)
     self.max_pipeline.tokenizer = FakeTokenizer()
     self.max_pipeline.text_encoder = FakeTextEncoder()
@@ -239,6 +242,65 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
         vae_scale_factor=8, do_normalize=False, do_convert_grayscale=True
     )
 
+  def _random_float_array(self, shape, low=-1.0, high=1.0):
+    return self.np_rng.uniform(low, high, size=shape).astype(np.float32)
+
+  def _random_jax_array(self, shape, low=-1.0, high=1.0):
+    return jnp.array(self._random_float_array(shape, low=low, high=high))
+
+  def _random_torch_tensor(self, shape, low=-1.0, high=1.0):
+    tensor = torch.rand(shape, generator=self.torch_generator, dtype=torch.float32)
+    return tensor * (high - low) + low
+
+  def _random_mask_tensor(self, shape, threshold=0.5):
+    return (torch.rand(shape, generator=self.torch_generator, dtype=torch.float32) > threshold).float()
+
+  def _random_rgb_image(self, height, width):
+    pixels = self.np_rng.integers(0, 256, size=(height, width, 3), dtype=np.uint8)
+    return PIL.Image.fromarray(pixels)
+
+  def _random_mask_image(self, height, width):
+    pixels = self.np_rng.integers(0, 256, size=(height, width), dtype=np.uint8)
+    return PIL.Image.fromarray(pixels)
+
+  def _configure_pipeline_for_call_test(self):
+    devices = np.array(jax.devices())
+    self.max_pipeline.mesh = Mesh(devices.reshape((devices.size,)), ("data",))
+    self.max_pipeline.config = SimpleNamespace(
+        logical_axis_rules=(),
+        height=16,
+        width=16,
+        seed=0,
+        global_batch_size_to_train_on=1,
+        per_device_batch_size=1,
+        data_sharding=("data",),
+        activations_dtype=jnp.float32,
+    )
+    self.max_pipeline.ref_image_processor = MaxVaeImageProcessor(
+        vae_scale_factor=8,
+        spatial_patch_size=(2, 2),
+        resize_mode="fill",
+        fill_color=0,
+    )
+    self.max_pipeline.video_processor = MaxVideoProcessor(vae_scale_factor=8)
+    self.max_pipeline.transformer = SimpleNamespace(
+        config=SimpleNamespace(patch_size=(1, 2, 2)),
+        motion_encoder=SimpleNamespace(size=16),
+    )
+
+    class FakeScheduler:
+
+      def set_timesteps(self, state, num_inference_steps, shape):
+        del state, shape
+        return SimpleNamespace(timesteps=jnp.arange(num_inference_steps, 0, -1, dtype=jnp.int32))
+
+      def step(self, state, noise_pred, t, sample, return_dict=False):
+        del t, return_dict
+        return sample - noise_pred * 0.1, state
+
+    self.max_pipeline.scheduler = FakeScheduler()
+    self.max_pipeline.scheduler_state = SimpleNamespace()
+
   def test_encode_prompt_matches_diffusers(self):
     prompt = ["  Hello   world  ", "test &amp; check"]
     negative_prompt = ["bad motion", "low detail"]
@@ -264,7 +326,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_allclose(to_numpy(max_negative), to_numpy(hf_negative), atol=0.0, rtol=0.0)
 
   def test_encode_image_matches_diffusers_call_semantics(self):
-    image = object()
+    image = self._random_rgb_image(17, 19)
 
     max_image = MaxWanPipeline.encode_image(self.max_pipeline, image, num_videos_per_prompt=3)
     hf_image = HFWanAnimatePipeline.encode_image(self.hf_pipeline, image, device=torch.device("cpu")).repeat(3, 1, 1)
@@ -280,7 +342,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     self.assertEqual(max_frames, hf_frames)
 
   def test_prepare_reference_image_latents_matches_diffusers(self):
-    image = torch.arange(1 * 3 * 16 * 16, dtype=torch.float32).reshape(1, 3, 16, 16)
+    image = self._random_torch_tensor((1, 3, 16, 16))
 
     max_latents = MaxWanAnimatePipeline.prepare_reference_image_latents(
         self.max_pipeline, jnp.array(image.numpy()), batch_size=2, dtype=jnp.float32
@@ -292,7 +354,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_allclose(to_numpy(max_latents), hf_channel_first_to_last(hf_latents), atol=0.0, rtol=0.0)
 
   def test_prepare_pose_latents_matches_diffusers(self):
-    pose_video = torch.arange(1 * 3 * 9 * 16 * 16, dtype=torch.float32).reshape(1, 3, 9, 16, 16)
+    pose_video = self._random_torch_tensor((1, 3, 9, 16, 16))
 
     max_latents = MaxWanAnimatePipeline.prepare_pose_latents(
         self.max_pipeline, jnp.array(pose_video.numpy()), batch_size=2, dtype=jnp.float32
@@ -304,7 +366,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_allclose(to_numpy(max_latents), hf_channel_first_to_last(hf_latents), atol=0.0, rtol=0.0)
 
   def test_prepare_segment_latents_matches_diffusers_when_latents_are_provided(self):
-    max_input = jnp.arange(1 * 4 * 2 * 2 * 2, dtype=jnp.float32).reshape(1, 4, 2, 2, 2) / 10.0
+    max_input = self._random_jax_array((1, 4, 2, 2, 2))
     hf_input = torch.tensor(np.transpose(to_numpy(max_input), (0, 4, 1, 2, 3)))
 
     max_latents = MaxWanAnimatePipeline.prepare_segment_latents(
@@ -331,8 +393,43 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
 
     np.testing.assert_allclose(to_numpy(max_latents), hf_channel_first_to_last(hf_latents), atol=0.0, rtol=0.0)
 
+  def test_prepare_segment_latents_samples_expected_shape_dtype_and_values(self):
+    rng = jax.random.key(7)
+
+    actual = MaxWanAnimatePipeline.prepare_segment_latents(
+        self.max_pipeline,
+        batch_size=2,
+        height=16,
+        width=16,
+        segment_frame_length=9,
+        dtype=jnp.bfloat16,
+        rng=rng,
+    )
+    expected = jax.random.normal(rng, shape=(2, 4, 2, 2, 2), dtype=jnp.float32).astype(jnp.bfloat16)
+
+    self.assertEqual(actual.shape, (2, 4, 2, 2, 2))
+    self.assertEqual(actual.dtype, jnp.bfloat16)
+    np.testing.assert_array_equal(to_numpy(actual), to_numpy(expected))
+
+  def test_get_i2v_mask_constructs_expected_temporal_layout(self):
+    mask_pixel_values = jnp.arange(5, dtype=jnp.float32).reshape(1, 1, 5, 1, 1)
+
+    actual = MaxWanAnimatePipeline.get_i2v_mask(
+        self.max_pipeline,
+        batch_size=1,
+        latent_t=2,
+        latent_h=1,
+        latent_w=1,
+        mask_len=1,
+        mask_pixel_values=mask_pixel_values,
+        dtype=jnp.float32,
+    )
+    expected = jnp.array([[[[[1.0, 1.0, 1.0, 1.0]]], [[[1.0, 2.0, 3.0, 4.0]]]]], dtype=jnp.float32)
+
+    np.testing.assert_allclose(to_numpy(actual), to_numpy(expected), atol=0.0, rtol=0.0)
+
   def test_prepare_prev_segment_cond_latents_matches_diffusers_for_animate(self):
-    prev_segment = torch.arange(1 * 3 * 1 * 16 * 16, dtype=torch.float32).reshape(1, 3, 1, 16, 16)
+    prev_segment = self._random_torch_tensor((1, 3, 1, 16, 16))
 
     max_latents = MaxWanAnimatePipeline.prepare_prev_segment_cond_latents(
         self.max_pipeline,
@@ -430,9 +527,9 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     self.assertEqual(call_lengths, [9])
 
   def test_prepare_prev_segment_cond_latents_matches_diffusers_for_replace(self):
-    prev_segment = torch.arange(1 * 3 * 1 * 16 * 16, dtype=torch.float32).reshape(1, 3, 1, 16, 16)
-    background = torch.arange(1 * 3 * 9 * 16 * 16, dtype=torch.float32).reshape(1, 3, 9, 16, 16) / 10.0
-    mask = (torch.arange(1 * 1 * 9 * 16 * 16, dtype=torch.float32).reshape(1, 1, 9, 16, 16) % 3 == 0).float()
+    prev_segment = self._random_torch_tensor((1, 3, 1, 16, 16))
+    background = self._random_torch_tensor((1, 3, 9, 16, 16))
+    mask = self._random_mask_tensor((1, 1, 9, 16, 16))
 
     max_latents = MaxWanAnimatePipeline.prepare_prev_segment_cond_latents(
         self.max_pipeline,
@@ -467,7 +564,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_allclose(to_numpy(max_latents), hf_channel_first_to_last(hf_latents), atol=0.0, rtol=0.0)
 
   def test_resize_mask_to_latent_spatial_matches_torch_nearest(self):
-    mask = (torch.arange(1 * 1 * 9 * 16 * 16, dtype=torch.float32).reshape(1, 1, 9, 16, 16) % 5 == 0).float()
+    mask = self._random_mask_tensor((1, 1, 9, 16, 16))
     hf_mask = mask.permute(0, 2, 1, 3, 4).flatten(0, 1)
     hf_mask = F.interpolate(hf_mask, size=(2, 2), mode="nearest")
     hf_mask = hf_mask.unflatten(0, (1, -1)).permute(0, 2, 1, 3, 4)
@@ -477,7 +574,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_allclose(to_numpy(max_mask), to_numpy(hf_mask), atol=0.0, rtol=0.0)
 
   def test_reference_image_processor_matches_diffusers_fill_resize(self):
-    image = PIL.Image.fromarray(np.arange(6 * 10 * 3, dtype=np.uint8).reshape(6, 10, 3))
+    image = self._random_rgb_image(6, 10)
     max_processor = MaxVaeImageProcessor(
         vae_scale_factor=8,
         spatial_patch_size=(2, 2),
@@ -492,9 +589,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_allclose(to_numpy(max_image), to_numpy(hf_image), atol=0.0, rtol=0.0)
 
   def test_video_processor_matches_diffusers(self):
-    frames = [
-        PIL.Image.fromarray(np.full((9, 13, 3), fill_value=value, dtype=np.uint8)) for value in (16, 96, 224)
-    ]
+    frames = [self._random_rgb_image(9, 13) for _ in range(3)]
     max_processor = MaxVideoProcessor(vae_scale_factor=8)
     hf_processor = HFVideoProcessor(vae_scale_factor=8)
 
@@ -504,9 +599,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_allclose(to_numpy(max_video), to_numpy(hf_video), atol=0.0, rtol=0.0)
 
   def test_mask_video_preprocessing_matches_diffusers(self):
-    masks = [
-        PIL.Image.fromarray(np.full((9, 13), fill_value=value, dtype=np.uint8)) for value in (0, 128, 255)
-    ]
+    masks = [self._random_mask_image(9, 13) for _ in range(3)]
 
     max_mask = self.max_pipeline.video_processor_for_mask.preprocess_video(masks, height=16, width=16)
     hf_mask = self.hf_pipeline.video_processor_for_mask.preprocess_video(masks, height=16, width=16)
@@ -599,13 +692,13 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
         capture["return_dict"] = return_dict
         return (hidden_states[:, :2],)
 
-    latents = jnp.arange(1 * 3 * 2 * 2 * 2, dtype=jnp.float32).reshape(1, 3, 2, 2, 2)
-    reference_latents = latents + 100.0
-    pose_latents = latents + 200.0
-    face_video = jnp.arange(1 * 3 * 9 * 4 * 4, dtype=jnp.float32).reshape(1, 3, 9, 4, 4)
-    timestep = jnp.array([5], dtype=jnp.int32)
-    prompt_embeds = jnp.arange(1 * 4 * 3, dtype=jnp.float32).reshape(1, 4, 3)
-    image_embeds = prompt_embeds + 10.0
+    latents = self._random_jax_array((1, 3, 2, 2, 2))
+    reference_latents = self._random_jax_array((1, 3, 2, 2, 2))
+    pose_latents = self._random_jax_array((1, 3, 2, 2, 2))
+    face_video = self._random_jax_array((1, 3, 9, 4, 4), low=0.0, high=1.0)
+    timestep = jnp.array([7], dtype=jnp.int32)
+    prompt_embeds = self._random_jax_array((1, 4, 3))
+    image_embeds = self._random_jax_array((1, 4, 3))
 
     with mock.patch("maxdiffusion.pipelines.wan.wan_pipeline_animate.nnx.merge", return_value=FakeTransformer()):
       noise_pred = animate_transformer_forward_pass.__wrapped__(
@@ -671,13 +764,13 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     timestep_count = 4
     fake_transformer = FakeDenoiseTransformer()
 
-    max_latents = jnp.arange(1 * 3 * 2 * 2 * 2, dtype=jnp.float32).reshape(1, 3, 2, 2, 2) / 10.0
-    max_reference = max_latents + 10.0
-    max_pose = max_latents + 20.0
-    max_face = jnp.arange(1 * 3 * 9 * 4 * 4, dtype=jnp.float32).reshape(1, 3, 9, 4, 4) / 255.0
-    max_prompt = jnp.arange(1 * 4 * 3, dtype=jnp.float32).reshape(1, 4, 3) / 7.0
-    max_negative = max_prompt - 0.5
-    max_image = max_prompt + 1.0
+    max_latents = self._random_jax_array((1, 3, 2, 2, 2))
+    max_reference = self._random_jax_array((1, 3, 2, 2, 2))
+    max_pose = self._random_jax_array((1, 3, 2, 2, 2))
+    max_face = self._random_jax_array((1, 3, 9, 4, 4), low=0.0, high=1.0)
+    max_prompt = self._random_jax_array((1, 4, 3))
+    max_negative = self._random_jax_array((1, 4, 3))
+    max_image = self._random_jax_array((1, 4, 3))
 
     hf_latents = torch.tensor(np.transpose(to_numpy(max_latents), (0, 4, 1, 2, 3)))
     hf_reference = torch.tensor(np.transpose(to_numpy(max_reference), (0, 4, 1, 2, 3)))
@@ -771,11 +864,11 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_array_equal(to_numpy(max_state.timesteps), to_numpy(hf_scheduler.timesteps))
     np.testing.assert_allclose(to_numpy(max_state.sigmas), to_numpy(hf_scheduler.sigmas), atol=1e-7, rtol=0.0)
 
-    max_sample = jnp.arange(1 * 2 * 3 * 4 * 5, dtype=jnp.float32).reshape(1, 2, 3, 4, 5) / 10.0
+    max_sample = self._random_jax_array((1, 2, 3, 4, 5))
     hf_sample = torch.tensor(to_numpy(max_sample))
 
-    for step_index, timestep in enumerate(to_numpy(hf_scheduler.timesteps[:3])):
-      hf_model_output = torch.full_like(hf_sample, 0.1 * (step_index + 1))
+    for timestep in to_numpy(hf_scheduler.timesteps[:3]):
+      hf_model_output = self._random_torch_tensor(tuple(hf_sample.shape), low=-0.25, high=0.25)
       max_model_output = jnp.array(to_numpy(hf_model_output))
 
       hf_sample = hf_scheduler.step(hf_model_output, int(timestep), hf_sample, return_dict=False)[0]
@@ -784,6 +877,67 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
       )
 
       np.testing.assert_allclose(to_numpy(max_sample), to_numpy(hf_sample), atol=1e-4, rtol=1e-5)
+
+  def test_call_runs_multisegment_pipeline_and_trims_output(self):
+    self._configure_pipeline_for_call_test()
+    image = self._random_rgb_image(16, 16)
+    pose_video = [self._random_rgb_image(16, 16) for _ in range(10)]
+    face_video = [self._random_rgb_image(16, 16) for _ in range(10)]
+    decode_shapes = []
+    denoise_shapes = []
+
+    def fake_denoise(
+        graphdef,
+        sharded_state,
+        rest_of_state,
+        latents,
+        reference_latents,
+        pose_latents,
+        face_video_segment,
+        timestep,
+        encoder_hidden_states,
+        encoder_hidden_states_image,
+        motion_encode_batch_size=None,
+    ):
+      del graphdef, sharded_state, rest_of_state, reference_latents, encoder_hidden_states, encoder_hidden_states_image
+      del motion_encode_batch_size
+      denoise_shapes.append((latents.shape, pose_latents.shape, face_video_segment.shape, timestep.shape))
+      return jnp.ones_like(latents) * 0.25
+
+    def fake_decode(latents_cl):
+      decode_shapes.append(latents_cl.shape)
+      batch, latent_t, latent_h, latent_w, _ = latents_cl.shape
+      pixel_t = (latent_t - 1) * self.max_pipeline.vae_scale_factor_temporal + 1
+      height = latent_h * self.max_pipeline.vae_scale_factor_spatial
+      width = latent_w * self.max_pipeline.vae_scale_factor_spatial
+      return self._random_jax_array((batch, 3, pixel_t, height, width))
+
+    with mock.patch("maxdiffusion.pipelines.wan.wan_pipeline_animate.nnx.split", return_value=(None, None, None)):
+      with mock.patch(
+          "maxdiffusion.pipelines.wan.wan_pipeline_animate.animate_transformer_forward_pass", side_effect=fake_denoise
+      ):
+        with mock.patch.object(self.max_pipeline, "_decode_segment_to_pixels", side_effect=fake_decode):
+          output = self.max_pipeline(
+              image=image,
+              pose_video=pose_video,
+              face_video=face_video,
+              prompt="animate this",
+              negative_prompt=None,
+              height=16,
+              width=16,
+              segment_frame_length=10,
+              num_inference_steps=2,
+              mode="animate",
+              prev_segment_conditioning_frames=1,
+              guidance_scale=1.0,
+              output_type="np",
+          )
+
+    self.assertEqual(output.shape, (1, 10, 16, 16, 3))
+    self.assertEqual(len(decode_shapes), 2)
+    self.assertEqual(decode_shapes[0], (1, 3, 2, 2, 2))
+    self.assertEqual(len(denoise_shapes), 4)
+    self.assertEqual(denoise_shapes[0], ((1, 4, 2, 2, 2), (1, 3, 2, 2, 2), (1, 3, 9, 16, 16), (1,)))
 
 
 if __name__ == "__main__":

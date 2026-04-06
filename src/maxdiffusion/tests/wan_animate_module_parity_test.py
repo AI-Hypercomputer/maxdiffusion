@@ -15,26 +15,23 @@ limitations under the License.
 """
 
 import os
-import sys
 import unittest
+from importlib import resources
 
-os.environ.setdefault("JAX_PLATFORMS", "cpu")
+os.environ["JAX_PLATFORMS"] = "cpu"
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
-
-THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", "..", ".."))
-DIFFUSERS_SRC = os.path.join(REPO_ROOT, "diffusers", "src")
-if DIFFUSERS_SRC not in sys.path:
-  sys.path.insert(0, DIFFUSERS_SRC)
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import torch
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from flax.traverse_util import flatten_dict
 from jax.sharding import Mesh
+
+jax.config.update("jax_platforms", "cpu")
 
 from diffusers.models.transformers.transformer_wan_animate import (
     FusedLeakyReLU as HFFusedLeakyReLU,
@@ -47,9 +44,9 @@ from diffusers.models.transformers.transformer_wan_animate import (
     WanAnimateTransformer3DModel as HFWanAnimateTransformer3DModel,
 )
 
-from .. import pyconfig
-from ..max_utils import create_device_mesh
-from ..models.wan.transformers.transformer_wan_animate import (
+from maxdiffusion import pyconfig
+from maxdiffusion.max_utils import create_device_mesh
+from maxdiffusion.models.wan.transformers.transformer_wan_animate import (
     FlaxFusedLeakyReLU,
     FlaxMotionConv2d,
     FlaxMotionEncoderResBlock,
@@ -59,10 +56,12 @@ from ..models.wan.transformers.transformer_wan_animate import (
     FlaxWanAnimateMotionEncoder,
     NNXWanAnimateTransformer3DModel,
 )
-from ..models.wan.wan_utils import (
+from maxdiffusion.models.wan.wan_utils import (
     _rename_wan_animate_pt_tuple_key,
     get_wan_animate_key_and_value,
 )
+
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 
 def to_numpy(array):
@@ -173,17 +172,13 @@ def map_hf_wan_animate_state_to_local(max_model, hf_model, num_layers, scan_laye
   return missing_keys, flax_state_dict
 
 
+@pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run WAN parity tests on Github Actions")
 class WanAnimateModuleParityTest(unittest.TestCase):
 
   @classmethod
   def setUpClass(cls):
-    pyconfig.initialize(
-        [
-            None,
-            os.path.join(REPO_ROOT, "src", "maxdiffusion", "configs", "base_wan_14b.yml"),
-        ],
-        unittest=True,
-    )
+    with resources.as_file(resources.files("maxdiffusion.configs").joinpath("base_wan_14b.yml")) as config_path:
+      pyconfig.initialize([None, os.fspath(config_path)], unittest=True)
     config = pyconfig.config
     cls.logical_axis_rules = config.logical_axis_rules
     cls.mesh = Mesh(create_device_mesh(config), config.mesh_axes)
