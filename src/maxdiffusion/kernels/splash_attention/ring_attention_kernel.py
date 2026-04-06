@@ -38,6 +38,7 @@ SplashResidualsType = base.SplashResidualsType
 SplashCustomReturnType = base.SplashCustomReturnType
 MaskFunctionType = splash_kernel.MaskFunctionType
 _splash_attention_forward = splash_kernel._splash_attention_forward  # pylint: disable=protected-access
+_splash_attention_forward_ring_raw = splash_kernel._splash_attention_forward_ring_raw  # pylint: disable=protected-access
 _splash_attention_bwd = splash_kernel._splash_attention_bwd  # pylint: disable=protected-access
 
 
@@ -104,8 +105,7 @@ def _ring_attention_forward(
   #             permute_idx 1, offset (0-1) % 4 = 3, etc.
 
   splash_fwd_partial = partial(
-      _splash_attention_forward,
-      save_residuals=True,
+      _splash_attention_forward_ring_raw,
       mask_value=mask_value,
       is_mqa=is_mqa,
       config=config,
@@ -113,6 +113,9 @@ def _ring_attention_forward(
       fwd_mask_sparsity=fwd_mask_sparsity,
       max_logit_value=None,
   )
+
+  exp_fn = jnp.exp2 if config.use_base2_exp else jnp.exp
+  log_fn = jnp.log2 if config.use_base2_exp else jnp.log
   # Initial accumulator values
   o_shape = q.shape
   o_init = jnp.zeros(o_shape, dtype=jnp.float32)
@@ -141,13 +144,12 @@ def _ring_attention_forward(
         segment_ids=segment_ids_current,
         sinks=sinks,
     )
-    lse_curr = stats["logsumexp"]
-    m_curr = stats["max_logits"]
-    l_curr = jnp.exp(lse_curr - m_curr)
-    o_curr = out_curr.astype(jnp.float32) * l_curr[..., None]
+    m_curr = stats["max_logits"].astype(jnp.float32)
+    l_curr = stats["l_linear"].astype(jnp.float32)
+    o_curr = out_curr.astype(jnp.float32)
     m_next = jnp.maximum(m_prev, m_curr)
-    alpha = jnp.exp(m_prev - m_next)
-    beta = jnp.exp(m_curr - m_next)
+    alpha = exp_fn(m_prev - m_next)
+    beta = exp_fn(m_curr - m_next)
     l_next = alpha * l_prev + beta * l_curr
     o_next = alpha[..., None] * o_prev + beta[..., None] * o_curr
     return (m_next, l_next, o_next, k_next, v_next, segment_ids_next), None
@@ -167,7 +169,7 @@ def _ring_attention_forward(
   l_inv = jnp.where(l_final == 0.0, 0.0, 1.0 / l_final)
   out = (o_final * l_inv[..., None]).astype(q.dtype)
   # Final logsumexp for residuals
-  lse = jnp.log(l_final) + m_final
+  lse = log_fn(l_final) + m_final
   lse = jnp.where(l_final == 0.0, mask_value, lse)
 
   return out, (lse, m_final)
@@ -596,6 +598,7 @@ class RingSplashAttentionKernel:
         mask_info_specs,
         mask_info_specs if self.dkv_mask_info is not None else None,
         ring_axis=self.ring_axis,
+        rotate_segment_ids=self.rotate_segment_ids,
         **self.kwargs,
     )
 
@@ -603,6 +606,7 @@ class RingSplashAttentionKernel:
     children = (self.fwd_mask_info, self.dkv_mask_info)
     aux_data = self.kwargs.copy()
     aux_data["ring_axis"] = self.ring_axis
+    aux_data["rotate_segment_ids"] = self.rotate_segment_ids
     return children, aux_data
 
   @classmethod
