@@ -8,6 +8,7 @@ RUN_PREFIX="wananimate-sweep"
 ENABLE_PROFILER="True"
 SKIP_JAX_DISTRIBUTED_SYSTEM="True"
 NUM_FRAMES_OVERRIDE=""
+PER_DEVICE_BATCH_SIZE="1"
 DRY_RUN=0
 declare -a SCENARIOS=()
 declare -a EXTRA_OVERRIDES=()
@@ -38,6 +39,8 @@ Options:
   --output-root <path>       Root folder for the sweep session
   --run-prefix <prefix>      Prefix used in run names and session directory
   --num-frames <int>         Override num_frames for all runs
+  --per-device-batch-size <n>
+                             Override per_device_batch_size for all runs
   --scenario <spec>          Add a scenario; may be repeated
   --extra-override <k=v>     Extra config override; may be repeated
   --no-profiler              Disable profiler for all runs
@@ -72,6 +75,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --num-frames)
       NUM_FRAMES_OVERRIDE="${2:-}"
+      shift 2
+      ;;
+    --per-device-batch-size)
+      PER_DEVICE_BATCH_SIZE="${2:-}"
       shift 2
       ;;
     --scenario)
@@ -124,6 +131,30 @@ if [[ ! -x "${VENV_PATH}/bin/python" ]]; then
   exit 1
 fi
 
+DEVICE_COUNT="$("${VENV_PATH}/bin/python" - <<'PY'
+import jax
+print(jax.device_count())
+PY
+)"
+
+if [[ -z "${DEVICE_COUNT}" ]]; then
+  echo "Unable to determine JAX device count from ${VENV_PATH}/bin/python" >&2
+  exit 1
+fi
+
+GLOBAL_BATCH_SIZE="$("${VENV_PATH}/bin/python" - <<PY
+per_device_batch_size = float("${PER_DEVICE_BATCH_SIZE}")
+device_count = int("${DEVICE_COUNT}")
+global_batch_size = per_device_batch_size * device_count
+if not global_batch_size.is_integer():
+    raise SystemExit(
+        f"per_device_batch_size={per_device_batch_size} with device_count={device_count} "
+        f"does not produce a whole-number global batch size"
+    )
+print(int(global_batch_size))
+PY
+)"
+
 SESSION_ID="$(date -u +%Y%m%d-%H%M%S)"
 SESSION_ROOT="${OUTPUT_ROOT%/}/${RUN_PREFIX}-${SESSION_ID}"
 LOG_DIR="${SESSION_ROOT}/logs"
@@ -149,6 +180,9 @@ echo "Sweep session root: ${SESSION_ROOT}"
 echo "Summary file: ${SUMMARY_TSV}"
 echo "Commands file: ${COMMANDS_SH}"
 echo "TensorBoard root: ${SESSION_ROOT}"
+echo "Detected JAX devices: ${DEVICE_COUNT}"
+echo "per_device_batch_size: ${PER_DEVICE_BATCH_SIZE}"
+echo "Global batch size: ${GLOBAL_BATCH_SIZE}"
 echo
 
 for scenario_spec in "${SCENARIOS[@]}"; do
@@ -159,9 +193,23 @@ for scenario_spec in "${SCENARIOS[@]}"; do
     exit 1
   fi
 
+  scenario_device_product=$((data_parallelism * fsdp_parallelism * context_parallelism * tensor_parallelism))
+  if [[ "${scenario_device_product}" -ne "${DEVICE_COUNT}" ]]; then
+    echo "Invalid scenario ${scenario_name}: data*fsdp*context*tensor=${scenario_device_product}, expected ${DEVICE_COUNT}" >&2
+    exit 1
+  fi
+
+  batch_shard_count=$((data_parallelism * fsdp_parallelism))
+  if (( GLOBAL_BATCH_SIZE % batch_shard_count != 0 )); then
+    echo "Invalid scenario ${scenario_name}: global batch size ${GLOBAL_BATCH_SIZE} is not divisible by data*fsdp=${batch_shard_count}" >&2
+    echo "Set --per-device-batch-size so global_batch_size=device_count*per_device_batch_size is divisible by data*fsdp." >&2
+    exit 1
+  fi
+
   run_name="${RUN_PREFIX}-${scenario_name}"
-  run_output_dir="${SESSION_ROOT}/artifacts"
-  run_tensorboard_dir="${run_output_dir}/${run_name}/tensorboard"
+  artifacts_root="${SESSION_ROOT}/artifacts"
+  run_output_dir="${artifacts_root}/${run_name}"
+  run_tensorboard_dir="${run_output_dir}/tensorboard"
   log_file="${LOG_DIR}/${run_name}.log"
 
   cmd=(
@@ -172,6 +220,7 @@ for scenario_spec in "${SCENARIOS[@]}"; do
     "output_dir=${run_output_dir}"
     "enable_profiler=${ENABLE_PROFILER}"
     "skip_jax_distributed_system=${SKIP_JAX_DISTRIBUTED_SYSTEM}"
+    "per_device_batch_size=${PER_DEVICE_BATCH_SIZE}"
     "ici_data_parallelism=${data_parallelism}"
     "ici_fsdp_parallelism=${fsdp_parallelism}"
     "ici_context_parallelism=${context_parallelism}"
@@ -193,7 +242,8 @@ for scenario_spec in "${SCENARIOS[@]}"; do
   echo "Scenario: ${scenario_name}"
   echo "Run name: ${run_name}"
   echo "Parallelism: data=${data_parallelism}, fsdp=${fsdp_parallelism}, context=${context_parallelism}, tensor=${tensor_parallelism}"
-  echo "Output dir: ${run_output_dir}/${run_name}"
+  echo "Batching: per_device=${PER_DEVICE_BATCH_SIZE}, global=${GLOBAL_BATCH_SIZE}, data*fsdp=${batch_shard_count}"
+  echo "Output dir: ${run_output_dir}"
   echo "TensorBoard dir: ${run_tensorboard_dir}"
   echo "Log file: ${log_file}"
   echo "========================================================================"
@@ -207,7 +257,7 @@ for scenario_spec in "${SCENARIOS[@]}"; do
       "${run_name}" \
       "DRY_RUN" \
       "0" \
-      "${run_output_dir}/${run_name}" \
+      "${run_output_dir}" \
       "${run_tensorboard_dir}" \
       "${log_file}" >> "${SUMMARY_TSV}"
     continue
@@ -238,7 +288,7 @@ for scenario_spec in "${SCENARIOS[@]}"; do
     "${run_name}" \
     "${status}" \
     "${duration}" \
-    "${run_output_dir}/${run_name}" \
+    "${run_output_dir}" \
     "${run_tensorboard_dir}" \
     "${log_file}" >> "${SUMMARY_TSV}"
 
@@ -251,4 +301,4 @@ echo "Sweep complete."
 echo "Summary: ${SUMMARY_TSV}"
 echo "Commands: ${COMMANDS_SH}"
 echo "To inspect traces tomorrow:"
-echo "  tensorboard --logdir=${SESSION_ROOT}/artifacts"
+echo "  tensorboard --logdir=${artifacts_root:-${SESSION_ROOT}/artifacts}"

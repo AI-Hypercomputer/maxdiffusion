@@ -964,7 +964,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("embed",),
+            ("heads",),
         ),
     )
 
@@ -978,7 +978,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("embed",),
+            ("heads",),
         ),
     )
 
@@ -992,7 +992,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("embed",),
+            ("heads",),
         ),
     )
 
@@ -1006,7 +1006,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("heads",),
+            ("embed",),
         ),
     )
 
@@ -1317,11 +1317,12 @@ class FlaxFluxAttention(nn.Module):
         precision=self.precision,
     )
 
+    proj_attn_kernel_axes = ("heads", "embed")
     self.proj_attn = nn.Dense(
         self.query_dim,
-        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes),
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), proj_attn_kernel_axes),
         use_bias=True,
-        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("embed",)),
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         name="i_proj",
@@ -1330,9 +1331,9 @@ class FlaxFluxAttention(nn.Module):
 
     self.encoder_proj_attn = nn.Dense(
         self.query_dim,
-        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes),
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), proj_attn_kernel_axes),
         use_bias=True,
-        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("embed",)),
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         name="e_proj",
