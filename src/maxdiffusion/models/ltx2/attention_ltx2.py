@@ -347,6 +347,7 @@ class LTX2Attention(nnx.Module):
       attention_kernel: str = "flash",
       rope_type: str = "interleaved",
       flash_block_sizes: BlockSizes = None,
+      flash_min_seq_length: int = 4096,
   ):
     self.heads = heads
     self.rope_type = rope_type
@@ -434,6 +435,7 @@ class LTX2Attention(nnx.Module):
         axis_names_q=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_Q_LENGTH, common_types.D_KV),
         axis_names_kv=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_KV_LENGTH, common_types.D_KV),
         flash_block_sizes=flash_block_sizes,
+        flash_min_seq_length=flash_min_seq_length,
     )
 
   def __call__(

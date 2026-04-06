@@ -107,6 +107,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       names_which_can_be_offloaded: list = [],
       attention_kernel: str = "flash",
       flash_block_sizes: BlockSizes = None,
+      flash_min_seq_length: int = 4096,
   ):
     self.dim = dim
     self.norm_eps = norm_eps
@@ -137,6 +138,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
+        flash_min_seq_length=flash_min_seq_length,
     )
 
     self.audio_norm1 = nnx.RMSNorm(
@@ -159,9 +161,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
         eps=norm_eps,
         dtype=dtype,
         mesh=mesh,
-        attention_kernel="dot_product",
+        attention_kernel=self.attention_kernel,
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
+        flash_min_seq_length=flash_min_seq_length,
     )
 
     # 2. Prompt Cross-Attention
@@ -212,9 +215,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
         eps=norm_eps,
         dtype=dtype,
         mesh=mesh,
-        attention_kernel="dot_product",
+        attention_kernel=self.attention_kernel,
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
+        flash_min_seq_length=flash_min_seq_length,
     )
 
     # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
@@ -242,6 +246,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
+        flash_min_seq_length=0,
     )
 
     self.video_to_audio_norm = nnx.RMSNorm(
@@ -268,6 +273,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_kernel="dot_product",
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
+        flash_min_seq_length=flash_min_seq_length,
     )
 
     # 4. Feed Forward
@@ -476,26 +482,28 @@ class LTX2VideoTransformerBlock(nnx.Module):
     mod_norm_hidden_states = norm_hidden_states * (1 + video_a2v_ca_scale) + video_a2v_ca_shift
     mod_norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_a2v_ca_scale) + audio_a2v_ca_shift
 
-    a2v_attn_hidden_states = self.audio_to_video_attn(
-        mod_norm_hidden_states,
-        encoder_hidden_states=mod_norm_audio_hidden_states,
-        rotary_emb=ca_video_rotary_emb,
-        k_rotary_emb=ca_audio_rotary_emb,
-        attention_mask=a2v_cross_attention_mask,
-    )
+    with jax.named_scope("Audio-to-Video Cross-Attention"):
+      a2v_attn_hidden_states = self.audio_to_video_attn(
+          mod_norm_hidden_states,
+          encoder_hidden_states=mod_norm_audio_hidden_states,
+          rotary_emb=ca_video_rotary_emb,
+          k_rotary_emb=ca_audio_rotary_emb,
+          attention_mask=a2v_cross_attention_mask,
+      )
     hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
 
     # Video-to-Audio Cross Attention: Q: Audio; K,V: Video
     mod_norm_hidden_states_v2a = norm_hidden_states * (1 + video_v2a_ca_scale) + video_v2a_ca_shift
     mod_norm_audio_hidden_states_v2a = norm_audio_hidden_states * (1 + audio_v2a_ca_scale) + audio_v2a_ca_shift
 
-    v2a_attn_hidden_states = self.video_to_audio_attn(
-        mod_norm_audio_hidden_states_v2a,
-        encoder_hidden_states=mod_norm_hidden_states_v2a,
-        rotary_emb=ca_audio_rotary_emb,
-        k_rotary_emb=ca_video_rotary_emb,
-        attention_mask=v2a_cross_attention_mask,
-    )
+    with jax.named_scope("Video-to-Audio Cross-Attention"):
+      v2a_attn_hidden_states = self.video_to_audio_attn(
+          mod_norm_audio_hidden_states_v2a,
+          encoder_hidden_states=mod_norm_hidden_states_v2a,
+          rotary_emb=ca_audio_rotary_emb,
+          k_rotary_emb=ca_video_rotary_emb,
+          attention_mask=v2a_cross_attention_mask,
+      )
     audio_hidden_states = audio_hidden_states + v2a_gate * v2a_attn_hidden_states
 
     # 4. Feedforward
@@ -565,6 +573,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       attention_kernel: str = "flash",
       qk_norm: str = "rms_norm_across_heads",
       flash_block_sizes: BlockSizes = None,
+      flash_min_seq_length: int = 4096,
       **kwargs,
   ):
     self.in_channels = in_channels
@@ -611,6 +620,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.names_which_can_be_offloaded = names_which_can_be_offloaded
     self.scan_layers = scan_layers
     self.attention_kernel = attention_kernel
+    self.flash_min_seq_length = flash_min_seq_length
 
     _out_channels = self.out_channels or self.in_channels
     _audio_out_channels = self.audio_out_channels or self.audio_in_channels
@@ -804,6 +814,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           names_which_can_be_offloaded=self.names_which_can_be_offloaded,
           attention_kernel=self.attention_kernel,
           flash_block_sizes=flash_block_sizes,
+          flash_min_seq_length=self.flash_min_seq_length,
       )
 
     if self.scan_layers:
@@ -836,6 +847,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             names_which_can_be_offloaded=self.names_which_can_be_offloaded,
             attention_kernel=self.attention_kernel,
             flash_block_sizes=flash_block_sizes,
+            flash_min_seq_length=self.flash_min_seq_length,
         )
         blocks.append(block)
       self.transformer_blocks = nnx.List(blocks)
