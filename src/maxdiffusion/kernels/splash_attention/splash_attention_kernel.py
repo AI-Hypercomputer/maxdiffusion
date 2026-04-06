@@ -895,9 +895,7 @@ def _splash_attention_forward_ring_raw(
     num_kv_heads = k.shape[0]
 
   if len(k.shape) != expected_kv_rank:
-    raise ValueError(
-        f"Expected {expected_kv_rank}-dim 'key' tensor for MQA. Instead got a {len(k.shape)}-dim one."
-    )
+    raise ValueError(f"Expected {expected_kv_rank}-dim 'key' tensor for MQA. Instead got a {len(k.shape)}-dim one.")
 
   if k.shape[-1] != head_dim_qk:
     raise ValueError(f"Expected 'key' head dimension to be: {head_dim_qk}. Instead got: {k.shape[-1]}.")
@@ -1054,10 +1052,13 @@ def _splash_attention_forward_ring_raw(
       pl.BlockSpec((None, bq, NUM_LANES), logsumexp_index_map),
   ]
 
-  kernel_name = f"{get_kernel_name(is_mqa=is_mqa, save_residuals=True, is_segmented=segment_ids is not None, phase='fwd')}_ring_raw"
+  kernel_name = (
+      f"{get_kernel_name(is_mqa=is_mqa, save_residuals=True, is_segmented=segment_ids is not None, phase='fwd')}_ring_raw"
+  )
   metadata = {"xprof_metadata": json.dumps(dataclasses.asdict(config))}
 
   vmem_inputs = [q, k, v, q_segment_ids, kv_segment_ids, mask_info.partial_mask_blocks]
+
   def _fwd_cost_estimate(
       q: jax.Array,
       k: jax.Array,

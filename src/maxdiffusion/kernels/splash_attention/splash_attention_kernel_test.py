@@ -290,7 +290,14 @@ def _generate_inputs(
     is_mqa: bool,
     is_segmented: bool,
     use_sinks: bool = False,
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array | None, splash.SegmentIds | None, jax.Array,]:
+) -> tuple[
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array | None,
+    splash.SegmentIds | None,
+    jax.Array,
+]:
   seed = data.draw(seed_strategy())
   key = random.key(seed)
   k1, k2, k3, k_sinks, k_do = random.split(key, 5)

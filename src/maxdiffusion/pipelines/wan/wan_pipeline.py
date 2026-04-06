@@ -42,7 +42,14 @@ import re
 import torch
 import qwix
 from transformers import CLIPImageProcessor
-from transformers.models.clip.modeling_flax_clip import FlaxCLIPVisionModel
+
+try:
+  from transformers.models.clip.modeling_flax_clip import FlaxCLIPVisionModel
+except ModuleNotFoundError:
+  try:
+    from transformers import FlaxCLIPVisionModel
+  except ImportError:
+    FlaxCLIPVisionModel = None
 import PIL
 
 

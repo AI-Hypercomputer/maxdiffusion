@@ -262,8 +262,7 @@ class CommonSchedulerState:
     elif config.beta_schedule == "scaled_linear":
       # this schedule is very specific to the latent diffusion model.
       betas = (
-          jnp.linspace(config.beta_start**0.5, config.beta_end**0.5, config.num_train_timesteps, dtype=scheduler.dtype)
-          ** 2
+          jnp.linspace(config.beta_start**0.5, config.beta_end**0.5, config.num_train_timesteps, dtype=scheduler.dtype) ** 2
       )
     elif config.beta_schedule == "squaredcos_cap_v2":
       # Glide cosine schedule

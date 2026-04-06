@@ -136,11 +136,13 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     if self.config.use_beta_sigmas and not is_scipy_available():
       raise ImportError("Make sure to install scipy if you want to use beta sigmas.")
     if (
-        sum([
-            self.config.use_beta_sigmas,
-            self.config.use_exponential_sigmas,
-            self.config.use_karras_sigmas,
-        ])
+        sum(
+            [
+                self.config.use_beta_sigmas,
+                self.config.use_exponential_sigmas,
+                self.config.use_karras_sigmas,
+            ]
+        )
         > 1
     ):
       raise ValueError(

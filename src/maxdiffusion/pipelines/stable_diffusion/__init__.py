@@ -85,11 +85,13 @@ except OptionalDependencyNotAvailable:
       StableDiffusionPix2PixZeroPipeline,
   )
 
-  _dummy_objects.update({
-      "StableDiffusionDepth2ImgPipeline": StableDiffusionDepth2ImgPipeline,
-      "StableDiffusionDiffEditPipeline": StableDiffusionDiffEditPipeline,
-      "StableDiffusionPix2PixZeroPipeline": StableDiffusionPix2PixZeroPipeline,
-  })
+  _dummy_objects.update(
+      {
+          "StableDiffusionDepth2ImgPipeline": StableDiffusionDepth2ImgPipeline,
+          "StableDiffusionDiffEditPipeline": StableDiffusionDiffEditPipeline,
+          "StableDiffusionPix2PixZeroPipeline": StableDiffusionPix2PixZeroPipeline,
+      }
+  )
 else:
   _import_structure["pipeline_stable_diffusion_depth2img"] = ["StableDiffusionDepth2ImgPipeline"]
   _import_structure["pipeline_stable_diffusion_diffedit"] = ["StableDiffusionDiffEditPipeline"]

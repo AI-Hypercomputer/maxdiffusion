@@ -446,10 +446,12 @@ def _process_mask(
   # Partial blocks are deduplicated and stored in unique_chunks to save memory.
   for coords in np.ndindex((q_blocks_count, kv_blocks_count)):
     (q_idx, kv_idx) = coords
-    chunk = mask[(
-        slice(q_idx * q_block_size, (q_idx + 1) * q_block_size),
-        slice(kv_idx * kv_block_size, (kv_idx + 1) * kv_block_size),
-    )]
+    chunk = mask[
+        (
+            slice(q_idx * q_block_size, (q_idx + 1) * q_block_size),
+            slice(kv_idx * kv_block_size, (kv_idx + 1) * kv_block_size),
+        )
+    ]
     if chunk.any():
       if chunk.all():
         state_grid[q_idx, kv_idx] = 2

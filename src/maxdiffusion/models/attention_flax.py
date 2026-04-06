@@ -962,12 +962,6 @@ class FlaxWanAttention(nnx.Module):
       mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
       enable_jax_named_scopes: bool = False,
-      added_kv_proj_dim: Optional[int] = None,
-      image_seq_len: Optional[int] = None,
-  ):
-    if attention_kernel == "cudnn_flash_te":
-      raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
-
       added_kv_proj_dim: Optional[int] = None,  # New for I2V
       image_seq_len: Optional[int] = None,  # New for I2V
   ):

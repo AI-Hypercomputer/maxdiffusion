@@ -79,11 +79,8 @@ class WanPipelineI2V_2_2(WanPipeline):
         scheduler_state=common_components["scheduler_state"],
         devices_array=common_components["devices_array"],
         mesh=common_components["mesh"],
-<<<<<<< HEAD
         vae_mesh=common_components["vae_mesh"],
         vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
-=======
->>>>>>> origin/main
         config=config,
     )
     return pipeline, low_noise_transformer, high_noise_transformer
@@ -172,15 +169,11 @@ class WanPipelineI2V_2_2(WanPipeline):
       output_type: Optional[str] = "np",
       rng: Optional[jax.Array] = None,
       use_cfg_cache: bool = False,
-<<<<<<< HEAD
-  ):
-=======
       use_sen_cache: bool = False,
   ):
     if use_cfg_cache and use_sen_cache:
       raise ValueError("use_cfg_cache and use_sen_cache are mutually exclusive. Enable only one.")
 
->>>>>>> origin/main
     if use_cfg_cache and (guidance_scale_low <= 1.0 or guidance_scale_high <= 1.0):
       raise ValueError(
           f"use_cfg_cache=True requires both guidance_scale_low > 1.0 and guidance_scale_high > 1.0 "
@@ -188,8 +181,6 @@ class WanPipelineI2V_2_2(WanPipeline):
           "CFG cache accelerates classifier-free guidance, which must be enabled for both transformer phases."
       )
 
-<<<<<<< HEAD
-=======
     if use_sen_cache and (guidance_scale_low <= 1.0 or guidance_scale_high <= 1.0):
       raise ValueError(
           f"use_sen_cache=True requires both guidance_scale_low > 1.0 and guidance_scale_high > 1.0 "
@@ -197,7 +188,6 @@ class WanPipelineI2V_2_2(WanPipeline):
           "SenCache requires classifier-free guidance to be enabled for both transformer phases."
       )
 
->>>>>>> origin/main
     height = height or self.config.height
     width = width or self.config.width
     num_frames = num_frames or self.config.num_frames
@@ -287,10 +277,7 @@ class WanPipelineI2V_2_2(WanPipeline):
         scheduler=self.scheduler,
         image_embeds=image_embeds,
         use_cfg_cache=use_cfg_cache,
-<<<<<<< HEAD
-=======
         use_sen_cache=use_sen_cache,
->>>>>>> origin/main
         height=height,
     )
 
@@ -335,17 +322,12 @@ def run_inference_2_2_i2v(
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
     use_cfg_cache: bool = False,
-<<<<<<< HEAD
-=======
     use_sen_cache: bool = False,
->>>>>>> origin/main
     height: int = 480,
 ):
   do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
   bsz = latents.shape[0]
 
-<<<<<<< HEAD
-=======
   # ── SenCache path (arXiv:2602.24208) ──
   if use_sen_cache and do_classifier_free_guidance:
     timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
@@ -462,7 +444,6 @@ def run_inference_2_2_i2v(
     )
     return latents
 
->>>>>>> origin/main
   # ── CFG cache path ──
   if use_cfg_cache and do_classifier_free_guidance:
     timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)

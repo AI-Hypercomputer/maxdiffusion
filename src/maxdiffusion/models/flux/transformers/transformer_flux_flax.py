@@ -202,27 +202,29 @@ class FluxTransformerBlock(nn.Module):
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
     )
-    self.img_mlp = nn.Sequential([
-        nn.Dense(
-            int(self.dim * self.mlp_ratio),
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-        nn.gelu,
-        nn.Dense(
-            self.dim,
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-    ])
+    self.img_mlp = nn.Sequential(
+        [
+            nn.Dense(
+                int(self.dim * self.mlp_ratio),
+                use_bias=True,
+                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision,
+            ),
+            nn.gelu,
+            nn.Dense(
+                self.dim,
+                use_bias=True,
+                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision,
+            ),
+        ]
+    )
 
     self.txt_norm2 = nn.LayerNorm(
         use_bias=False,
@@ -231,27 +233,29 @@ class FluxTransformerBlock(nn.Module):
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
     )
-    self.txt_mlp = nn.Sequential([
-        nn.Dense(
-            int(self.dim * self.mlp_ratio),
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-        nn.gelu,
-        nn.Dense(
-            self.dim,
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-    ])
+    self.txt_mlp = nn.Sequential(
+        [
+            nn.Dense(
+                int(self.dim * self.mlp_ratio),
+                use_bias=True,
+                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision,
+            ),
+            nn.gelu,
+            nn.Dense(
+                self.dim,
+                use_bias=True,
+                kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+                bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+                dtype=self.dtype,
+                param_dtype=self.weights_dtype,
+                precision=self.precision,
+            ),
+        ]
+    )
 
     # let chunk size default to None
     self._chunk_size = None

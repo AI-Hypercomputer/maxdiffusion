@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
+
 from typing import Optional, Tuple, Any, Dict
 import jax
 import jax.numpy as jnp
@@ -561,10 +562,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       scan_layers: bool = True,
       attention_kernel: str = "flash",
       qk_norm: str = "rms_norm_across_heads",
-<<<<<<< HEAD
-=======
       flash_block_sizes: BlockSizes = None,
->>>>>>> origin/main
       **kwargs,
   ):
     self.in_channels = in_channels

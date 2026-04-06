@@ -312,16 +312,18 @@ class LTX2AttentionTest(unittest.TestCase):
       else:
         pt_val = pt_t
       jax_val = np.array(jax_t, dtype=np.float32)
-      stats.append({
-          "Layer": name,
-          "PT Max": f"{pt_val.max():.4f}",
-          "JAX Max": f"{jax_val.max():.4f}",
-          "PT Mean": f"{pt_val.mean():.4f}",
-          "JAX Mean": f"{jax_val.mean():.4f}",
-          "PT Min": f"{pt_val.min():.4f}",
-          "JAX Min": f"{jax_val.min():.4f}",
-          "Diff (L1)": f"{np.abs(pt_val - jax_val).mean():.6f}",
-      })
+      stats.append(
+          {
+              "Layer": name,
+              "PT Max": f"{pt_val.max():.4f}",
+              "JAX Max": f"{jax_val.max():.4f}",
+              "PT Mean": f"{pt_val.mean():.4f}",
+              "JAX Mean": f"{jax_val.mean():.4f}",
+              "PT Min": f"{pt_val.min():.4f}",
+              "JAX Min": f"{jax_val.min():.4f}",
+              "Diff (L1)": f"{np.abs(pt_val - jax_val).mean():.6f}",
+          }
+      )
 
     add_stat("Query Proj", pt_q, jax_q)
     add_stat("Key Proj", pt_k, jax_k)
