@@ -79,8 +79,11 @@ class WanPipelineI2V_2_2(WanPipeline):
         scheduler_state=common_components["scheduler_state"],
         devices_array=common_components["devices_array"],
         mesh=common_components["mesh"],
+<<<<<<< HEAD
         vae_mesh=common_components["vae_mesh"],
         vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
+=======
+>>>>>>> origin/main
         config=config,
     )
     return pipeline, low_noise_transformer, high_noise_transformer
@@ -169,7 +172,15 @@ class WanPipelineI2V_2_2(WanPipeline):
       output_type: Optional[str] = "np",
       rng: Optional[jax.Array] = None,
       use_cfg_cache: bool = False,
+<<<<<<< HEAD
   ):
+=======
+      use_sen_cache: bool = False,
+  ):
+    if use_cfg_cache and use_sen_cache:
+      raise ValueError("use_cfg_cache and use_sen_cache are mutually exclusive. Enable only one.")
+
+>>>>>>> origin/main
     if use_cfg_cache and (guidance_scale_low <= 1.0 or guidance_scale_high <= 1.0):
       raise ValueError(
           f"use_cfg_cache=True requires both guidance_scale_low > 1.0 and guidance_scale_high > 1.0 "
@@ -177,6 +188,16 @@ class WanPipelineI2V_2_2(WanPipeline):
           "CFG cache accelerates classifier-free guidance, which must be enabled for both transformer phases."
       )
 
+<<<<<<< HEAD
+=======
+    if use_sen_cache and (guidance_scale_low <= 1.0 or guidance_scale_high <= 1.0):
+      raise ValueError(
+          f"use_sen_cache=True requires both guidance_scale_low > 1.0 and guidance_scale_high > 1.0 "
+          f"(got {guidance_scale_low}, {guidance_scale_high}). "
+          "SenCache requires classifier-free guidance to be enabled for both transformer phases."
+      )
+
+>>>>>>> origin/main
     height = height or self.config.height
     width = width or self.config.width
     num_frames = num_frames or self.config.num_frames
@@ -266,6 +287,10 @@ class WanPipelineI2V_2_2(WanPipeline):
         scheduler=self.scheduler,
         image_embeds=image_embeds,
         use_cfg_cache=use_cfg_cache,
+<<<<<<< HEAD
+=======
+        use_sen_cache=use_sen_cache,
+>>>>>>> origin/main
         height=height,
     )
 
@@ -310,11 +335,134 @@ def run_inference_2_2_i2v(
     scheduler: FlaxUniPCMultistepScheduler,
     scheduler_state,
     use_cfg_cache: bool = False,
+<<<<<<< HEAD
+=======
+    use_sen_cache: bool = False,
+>>>>>>> origin/main
     height: int = 480,
 ):
   do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
   bsz = latents.shape[0]
 
+<<<<<<< HEAD
+=======
+  # ── SenCache path (arXiv:2602.24208) ──
+  if use_sen_cache and do_classifier_free_guidance:
+    timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
+    step_uses_high = [bool(timesteps_np[s] >= boundary) for s in range(num_inference_steps)]
+
+    # SenCache hyperparameters
+    sen_epsilon = 0.1
+    max_reuse = 3
+    warmup_steps = 1
+    nocache_start_ratio = 0.3
+    nocache_end_ratio = 0.1
+    alpha_x, alpha_t = 1.0, 1.0
+
+    nocache_start = int(num_inference_steps * nocache_start_ratio)
+    nocache_end_begin = int(num_inference_steps * (1.0 - nocache_end_ratio))
+    num_train_timesteps = float(scheduler.config.num_train_timesteps)
+
+    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+    if image_embeds is not None:
+      image_embeds_combined = jnp.concatenate([image_embeds, image_embeds], axis=0)
+    else:
+      image_embeds_combined = None
+    condition_doubled = jnp.concatenate([condition] * 2)
+
+    # SenCache state
+    ref_noise_pred = None
+    ref_latent = None
+    ref_timestep = 0.0
+    accum_dx = 0.0
+    accum_dt = 0.0
+    reuse_count = 0
+    cache_count = 0
+
+    for step in range(num_inference_steps):
+      t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+      t_float = float(timesteps_np[step]) / num_train_timesteps
+
+      if step_uses_high[step]:
+        graphdef, state, rest = high_noise_graphdef, high_noise_state, high_noise_rest
+        guidance_scale = guidance_scale_high
+      else:
+        graphdef, state, rest = low_noise_graphdef, low_noise_state, low_noise_rest
+        guidance_scale = guidance_scale_low
+
+      is_boundary = step > 0 and step_uses_high[step] != step_uses_high[step - 1]
+      force_compute = (
+          step < warmup_steps or step < nocache_start or step >= nocache_end_begin or is_boundary or ref_noise_pred is None
+      )
+
+      if force_compute:
+        latents_doubled = jnp.concatenate([latents, latents], axis=0)
+        latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=-1)
+        latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
+        timestep = jnp.broadcast_to(t, bsz * 2)
+        noise_pred, _, _ = transformer_forward_pass_full_cfg(
+            graphdef,
+            state,
+            rest,
+            latent_model_input,
+            timestep,
+            prompt_embeds_combined,
+            guidance_scale=guidance_scale,
+            encoder_hidden_states_image=image_embeds_combined,
+        )
+        noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+        ref_noise_pred = noise_pred
+        ref_latent = latents
+        ref_timestep = t_float
+        accum_dx = 0.0
+        accum_dt = 0.0
+        reuse_count = 0
+        latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+        continue
+
+      dx_norm = float(jnp.sqrt(jnp.mean((latents - ref_latent) ** 2)))
+      dt = abs(t_float - ref_timestep)
+      accum_dx += dx_norm
+      accum_dt += dt
+
+      score = alpha_x * accum_dx + alpha_t * accum_dt
+
+      if score <= sen_epsilon and reuse_count < max_reuse:
+        noise_pred = ref_noise_pred
+        reuse_count += 1
+        cache_count += 1
+      else:
+        latents_doubled = jnp.concatenate([latents, latents], axis=0)
+        latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=-1)
+        latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
+        timestep = jnp.broadcast_to(t, bsz * 2)
+        noise_pred, _, _ = transformer_forward_pass_full_cfg(
+            graphdef,
+            state,
+            rest,
+            latent_model_input,
+            timestep,
+            prompt_embeds_combined,
+            guidance_scale=guidance_scale,
+            encoder_hidden_states_image=image_embeds_combined,
+        )
+        noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+        ref_noise_pred = noise_pred
+        ref_latent = latents
+        ref_timestep = t_float
+        accum_dx = 0.0
+        accum_dt = 0.0
+        reuse_count = 0
+
+      latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+
+    print(
+        f"[SenCache] Cached {cache_count}/{num_inference_steps} steps "
+        f"({100*cache_count/num_inference_steps:.1f}% cache ratio)"
+    )
+    return latents
+
+>>>>>>> origin/main
   # ── CFG cache path ──
   if use_cfg_cache and do_classifier_free_guidance:
     timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)

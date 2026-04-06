@@ -13,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
-
 from typing import Optional, Tuple, Any, Dict
 import jax
 import jax.numpy as jnp
@@ -25,6 +24,7 @@ from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
 from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSizeEmbeddings, NNXPixArtAlphaTextProjection
 from maxdiffusion.models.gradient_checkpoint import GradientCheckpointType
 from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
+from maxdiffusion.common_types import BlockSizes
 
 
 class LTX2AdaLayerNormSingle(nnx.Module):
@@ -106,6 +106,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       names_which_can_be_saved: list = [],
       names_which_can_be_offloaded: list = [],
       attention_kernel: str = "flash",
+      flash_block_sizes: BlockSizes = None,
   ):
     self.dim = dim
     self.norm_eps = norm_eps
@@ -135,6 +136,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         mesh=mesh,
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
+        flash_block_sizes=flash_block_sizes,
     )
 
     self.audio_norm1 = nnx.RMSNorm(
@@ -159,6 +161,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         mesh=mesh,
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
+        flash_block_sizes=flash_block_sizes,
     )
 
     # 2. Prompt Cross-Attention
@@ -185,6 +188,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         mesh=mesh,
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
+        flash_block_sizes=flash_block_sizes,
     )
 
     self.audio_norm2 = nnx.RMSNorm(
@@ -210,6 +214,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         mesh=mesh,
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
+        flash_block_sizes=flash_block_sizes,
     )
 
     # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
@@ -236,6 +241,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         mesh=mesh,
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
+        flash_block_sizes=flash_block_sizes,
     )
 
     self.video_to_audio_norm = nnx.RMSNorm(
@@ -261,6 +267,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         mesh=mesh,
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
+        flash_block_sizes=flash_block_sizes,
     )
 
     # 4. Feed Forward
@@ -554,6 +561,10 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       scan_layers: bool = True,
       attention_kernel: str = "flash",
       qk_norm: str = "rms_norm_across_heads",
+<<<<<<< HEAD
+=======
+      flash_block_sizes: BlockSizes = None,
+>>>>>>> origin/main
       **kwargs,
   ):
     self.in_channels = in_channels
@@ -792,6 +803,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           names_which_can_be_saved=self.names_which_can_be_saved,
           names_which_can_be_offloaded=self.names_which_can_be_offloaded,
           attention_kernel=self.attention_kernel,
+          flash_block_sizes=flash_block_sizes,
       )
 
     if self.scan_layers:
@@ -823,6 +835,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             names_which_can_be_saved=self.names_which_can_be_saved,
             names_which_can_be_offloaded=self.names_which_can_be_offloaded,
             attention_kernel=self.attention_kernel,
+            flash_block_sizes=flash_block_sizes,
         )
         blocks.append(block)
       self.transformer_blocks = nnx.List(blocks)

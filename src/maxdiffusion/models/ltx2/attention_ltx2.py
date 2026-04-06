@@ -23,6 +23,10 @@ from ..attention_flax import NNXAttentionOp
 Array = common_types.Array
 Mesh = common_types.Mesh
 DType = common_types.DType
+<<<<<<< HEAD
+=======
+BlockSizes = common_types.BlockSizes
+>>>>>>> origin/main
 
 
 def apply_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
@@ -345,6 +349,10 @@ class LTX2Attention(nnx.Module):
       dtype: DType = jnp.float32,
       attention_kernel: str = "flash",
       rope_type: str = "interleaved",
+<<<<<<< HEAD
+=======
+      flash_block_sizes: BlockSizes = None,
+>>>>>>> origin/main
   ):
     self.heads = heads
     self.rope_type = rope_type
@@ -431,6 +439,10 @@ class LTX2Attention(nnx.Module):
         dtype=dtype,
         axis_names_q=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_Q_LENGTH, common_types.D_KV),
         axis_names_kv=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_KV_LENGTH, common_types.D_KV),
+<<<<<<< HEAD
+=======
+        flash_block_sizes=flash_block_sizes,
+>>>>>>> origin/main
     )
 
   def __call__(
@@ -478,7 +490,11 @@ class LTX2Attention(nnx.Module):
 
     # 4. Attention
     # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
+<<<<<<< HEAD
     attn_output = self.attention_op.apply_attention(query=query, key=key, value=value)
+=======
+    attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
+>>>>>>> origin/main
 
     # 7. Output Projection
     hidden_states = self.to_out(attn_output)

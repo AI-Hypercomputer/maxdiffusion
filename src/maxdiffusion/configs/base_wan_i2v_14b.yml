@@ -286,8 +286,10 @@ num_frames: 81
 guidance_scale: 5.0
 flow_shift: 5.0
 
-# Diffusion CFG cache (FasterCache-style, WAN 2.1 T2V only)
+# Diffusion CFG cache (FasterCache-style)
 use_cfg_cache: False
+# SenCache: Sensitivity-Aware Caching (arXiv:2602.24208)
+use_sen_cache: False
 use_magcache: False
 magcache_thresh: 0.12
 magcache_K: 2

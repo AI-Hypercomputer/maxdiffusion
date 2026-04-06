@@ -22,12 +22,10 @@ import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 from jax import tree_util
 from flax import nnx
-
-# Absolute imports based on maxdiffusion root structure
-from maxdiffusion.configuration_utils import ConfigMixin
-from maxdiffusion.models.modeling_flax_utils import FlaxModelMixin, get_activation
-from maxdiffusion import common_types
-from maxdiffusion.models.vae_flax import (
+from ...configuration_utils import ConfigMixin
+from ..modeling_flax_utils import FlaxModelMixin, get_activation
+from ... import common_types
+from ..vae_flax import (
     FlaxAutoencoderKLOutput,
     FlaxDiagonalGaussianDistribution,
     FlaxDecoderOutput,
@@ -73,7 +71,7 @@ class WanCausalConv3d(nnx.Module):
 
   def __init__(
       self,
-      rngs: nnx.Rngs,
+      rngs: nnx.Rngs,  # rngs are required for initializing parameters,
       in_channels: int,
       out_channels: int,
       kernel_size: Union[int, Tuple[int, int, int]],
@@ -761,6 +759,7 @@ class WanEncoder3d(nnx.Module):
         precision=precision,
     )
 
+  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -909,6 +908,7 @@ class WanDecoder3d(nnx.Module):
         precision=precision,
     )
 
+  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -950,9 +950,10 @@ class AutoencoderKLWanCache:
   def __init__(self, module):
     self.module = module
 
-    def _count_conv3d(m):
+    def _count_conv3d(module):
       count = 0
-      for _, value in nnx.graph.iter_graph([m]):
+      node_types = nnx.graph.iter_graph([module])
+      for _, value in node_types:
         if isinstance(value, WanCausalConv3d):
           count += 1
       return count
@@ -962,7 +963,9 @@ class AutoencoderKLWanCache:
     self.init_cache()
 
   def init_cache(self):
+    """Resets cache dictionaries and indices"""
     self._feat_map = (None,) * self._conv_num
+    # cache encode
     self._enc_feat_map = (None,) * self._enc_conv_num
 
 
@@ -973,10 +976,17 @@ def _wan_cache_flatten(cache):
 def _wan_cache_unflatten(aux, children):
   conv_num, enc_conv_num = aux
   feat_map, enc_feat_map = children
+  # Create a dummy object or one without module reference for JIT internal use
+  # We can't easily reconstruct 'module' but we don't need it for init_cache anymore
+  # if we store counts in aux.
+  # However, __init__ expects module.
+  # We will bypass __init__ for unflattening.
   obj = AutoencoderKLWanCache.__new__(AutoencoderKLWanCache)
-  obj._conv_num, obj._enc_conv_num = conv_num, enc_conv_num
-  obj._feat_map, obj._enc_feat_map = feat_map, enc_feat_map
-  obj.module = None
+  obj._conv_num = conv_num
+  obj._enc_conv_num = enc_conv_num
+  obj._feat_map = feat_map
+  obj._enc_feat_map = enc_feat_map
+  obj.module = None  # module is not needed inside the trace for the cache logic now
   return obj
 
 
@@ -1166,7 +1176,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
-  @nnx.jit
   def _decode(
       self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:

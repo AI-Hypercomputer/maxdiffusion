@@ -18,11 +18,11 @@ modified_only_fixup:
 # Update src/maxdiffusion/dependency_versions_table.py
 
 deps_table_update:
-	@python setup.py deps_table_update
+	@python utils/update_dependency_table.py
 
 deps_table_check_updated:
 	@md5sum src/maxdiffusion/dependency_versions_table.py > md5sum.saved
-	@python setup.py deps_table_update
+	@python utils/update_dependency_table.py
 	@md5sum -c --quiet md5sum.saved || (printf "\nError: the version dependency table is outdated.\nPlease run 'make fixup' or 'make style' and commit the changes.\n\n" && exit 1)
 	@rm md5sum.saved
 

@@ -103,8 +103,11 @@ def _reshape_data_from_cudnn_flash(tensor):
 
 def _reshape_data_for_cudnn_flash(tensor, heads):
   # reshapes from [b, s, h * d] to [b, s, h, d] (input format to flash format)
-  batch, seq, heads_and_dim_head = tensor.shape
-  tensor = tensor.reshape(batch, seq, heads, heads_and_dim_head // heads)
+  if len(tensor.shape) == 3:
+    batch, seq, dim_head = tensor.shape
+    tensor = tensor.reshape(batch, seq, heads, dim_head // heads)
+  else:
+    tensor = jnp.transpose(tensor, (0, 2, 1, 3))
   return tensor
 
 
@@ -151,7 +154,7 @@ def _unflatten_heads(tensor, heads):
   return tensor
 
 
-def _reshape_data_for_flash(tensor, heads):
+def _reshape_data_for_flash(tensor, heads, num_context_shards=1):
   """
   Reshapes tensors for pallas flash attention adding padding to both seq_len and head_dim.
   Pads seq_len to a multiple of flash_block_size, and ensures the resulting number of
@@ -159,7 +162,19 @@ def _reshape_data_for_flash(tensor, heads):
   """
   if tensor.ndim != 4:
     tensor = _unflatten_heads(tensor, heads)
-  return tensor
+
+  org_seq_len = tensor.shape[2]
+
+  # Pad sequence dimension so it is evenly divisible by the context mesh axis,
+  # which shard_map requires.
+  if num_context_shards <= 1:
+    return tensor, org_seq_len
+  rem = org_seq_len % num_context_shards
+  if rem == 0:
+    return tensor, org_seq_len
+  pad_width = [(0, 0)] * tensor.ndim
+  pad_width[2] = (0, num_context_shards - rem)
+  return jnp.pad(tensor, pad_width), org_seq_len
 
 
 def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
@@ -168,7 +183,7 @@ def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
   Pads seq_len to a multiple of flash_block_size, and ensures the resulting number of
   blocks is divisible by the number of shards.
   """
-  tensor = _reshape_data_for_flash(tensor, heads)
+  tensor, _ = _reshape_data_for_flash(tensor, heads)
 
   # Pad head_dim to 128 if less than that.
   kv_size = tensor.shape[-1]
@@ -251,6 +266,7 @@ def _tpu_flash_attention(
     attention_kernel: str = "flash",
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
+    attention_mask: jax.Array = None,
 ) -> jax.Array:
   """TPU Flash Attention"""
 
@@ -281,9 +297,10 @@ def _tpu_flash_attention(
         use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
     )
   num_context_shards = mesh.shape["context"]
-  query = _reshape_data_for_flash(query, heads)
-  key = _reshape_data_for_flash(key, heads)
-  value = _reshape_data_for_flash(value, heads)
+  query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
+  key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
+  value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
+
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
 
@@ -328,6 +345,24 @@ def _tpu_flash_attention(
     kv_padded_len = key.shape[2]
     kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+
+    # If attention_mask is provided, apply it to kv_segment_ids
+    if attention_mask is not None:
+      mask_len = min(key_seq_len, attention_mask.shape[1])
+      kv_mask_for_batch = attention_mask[0, :mask_len]  # (mask_len,)
+      # If key_seq_len > mask_len, pad the mask with 1s (assume remaining tokens are valid)
+      if key_seq_len > mask_len:
+        extra_valid = jnp.ones((key_seq_len - mask_len,), dtype=jnp.int32)
+        kv_mask_for_batch = jnp.concatenate([kv_mask_for_batch, extra_valid], axis=0)  # (key_seq_len,)
+      # Pad to kv_padded_len
+      if kv_padded_len > key_seq_len:
+        padding = jnp.zeros((kv_padded_len - key_seq_len,), dtype=jnp.int32)
+        kv_mask_padded = jnp.concatenate([kv_mask_for_batch, padding], axis=0)  # (kv_padded_len,)
+      else:
+        kv_mask_padded = kv_mask_for_batch
+      # Both are (kv_padded_len,) - element-wise multiplication
+      kv_segment_ids = (kv_segment_ids * kv_mask_padded).astype(jnp.int32)
+
     segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
@@ -411,7 +446,6 @@ def _tpu_flash_attention(
         attention_output = o_final / l_final[..., None]
       else:
         raise ValueError("ring attention requires context > 1")
-
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
   devices_in_data_context = mesh.shape["data"] * mesh.shape["context"]
@@ -423,6 +457,8 @@ def _tpu_flash_attention(
         f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
     )
   x = wrap_flash_attention(query, key, value)
+  # Trim back to original sequence length after context-axis padding.
+  x = x[:, :, :orig_q_seq_len, :]
   x = _reshape_heads_to_head_dim(x)
 
   return x
@@ -512,24 +548,12 @@ def _cudnn_flash_attention(query: Array, key: Array, value: Array, heads: int, m
   key = _reshape_data_for_cudnn_flash(key, heads)
   value = _reshape_data_for_cudnn_flash(value, heads)
 
-  cudnn_flash_axis_names = (BATCH, LENGTH, HEAD, D_KV)
-  axis_names = nn.logical_to_mesh_axes(cudnn_flash_axis_names)
+  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD, D_KV))
+  query = jax.lax.with_sharding_constraint(query, axis_names)
+  key = jax.lax.with_sharding_constraint(key, axis_names)
+  value = jax.lax.with_sharding_constraint(value, axis_names)
 
-  query = nn.with_logical_constraint(query, axis_names)
-  key = nn.with_logical_constraint(key, axis_names)
-  value = nn.with_logical_constraint(value, axis_names)
-
-  @functools.partial(
-      shard_map.shard_map,
-      mesh=mesh,
-      in_specs=(axis_names, axis_names, axis_names),
-      out_specs=axis_names,
-      check_rep=False,
-  )
-  def wrap_flash_attention(query, key, value):
-    return jax.vmap(dpa_layer)(query, key, value, mask=None)
-
-  out = wrap_flash_attention(query, key, value)
+  out = dpa_layer(query, key, value, mask=None)
   return _reshape_data_from_cudnn_flash(out)
 
 
@@ -553,6 +577,7 @@ def _apply_attention(
     dpa_layer: Callable,
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
+    attention_mask: Array = None,
 ):
   """Routes to different attention kernels."""
   _check_attention_inputs(query, key, value)
@@ -599,7 +624,6 @@ def _apply_attention(
         dtype,
         attention_kernel,
         mask_padding_tokens=mask_padding_tokens,
-        residual_checkpoint_name=residual_checkpoint_name,
     )
   elif attention_kernel == "cudnn_flash_te":
     return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
@@ -711,6 +735,7 @@ def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
   return xq_out.reshape(*xq.shape).astype(xq.dtype), xk_out.reshape(*xk.shape).astype(xk.dtype)
 
 
+# New Class for Wan I2V
 class NNXSimpleFeedForward(nnx.Module):
 
   def __init__(
@@ -781,7 +806,25 @@ class NNXAttentionOp(nnx.Module):
   ):
     self.dpa_layer = None
     if attention_kernel == "cudnn_flash_te":
-      raise NotImplementedError(f"{self} has not been tested with {attention_kernel}")
+      from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
+
+      jax.config.update("jax_use_shardy_partitioner", False)
+
+      dpa_layer = DotProductAttention(
+          head_dim=dim_head,
+          num_attention_heads=heads,
+          num_gqa_groups=heads,
+          attn_mask_type="no_mask",  # 'no_mask', 'padding', 'causal', or 'padding_causal'
+          attn_bias_type="NO_BIAS",  # 'no_bias', 'pre_scale_bias' or 'post_scale_bias'
+          # attention_dropout=self.dropout_rate,
+          dropout_rng_name="aqt",
+          dtype=dtype,
+          qkv_layout="BSHD_BSHD_BSHD",  # 'BS3HD', 'BSHD_BS2HD' or 'BSHD_BSHD_BSHD'
+          scale_factor=scale,
+          transpose_batch_sequence=False,
+      )
+      variables = {}
+      self.dpa_layer = functools.partial(dpa_layer.apply, variables)
 
     self.mesh = mesh
     self.scale = scale
@@ -800,7 +843,7 @@ class NNXAttentionOp(nnx.Module):
     self.mask_padding_tokens = mask_padding_tokens
     self.residual_checkpoint_name = residual_checkpoint_name
 
-  def apply_attention(self, query: Array, key: Array, value: Array):
+  def apply_attention(self, query: Array, key: Array, value: Array, attention_mask: Array = None):
     return _apply_attention(
         query=query,
         key=key,
@@ -821,6 +864,7 @@ class NNXAttentionOp(nnx.Module):
         dpa_layer=self.dpa_layer,
         mask_padding_tokens=self.mask_padding_tokens,
         residual_checkpoint_name=self.residual_checkpoint_name,
+        attention_mask=attention_mask,
     )
 
 
@@ -845,7 +889,9 @@ class AttentionOp(nn.Module):
     if self.attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
 
-      self.dpa_layer = DotProductAttention(
+      jax.config.update("jax_use_shardy_partitioner", False)
+
+      dpa_layer = DotProductAttention(
           head_dim=self.dim_head,
           num_attention_heads=self.heads,
           num_gqa_groups=self.heads,
@@ -859,8 +905,10 @@ class AttentionOp(nn.Module):
           scale_factor=self.scale,
           transpose_batch_sequence=False,
       )
+      variables = {}
+      self.dpa_layer = functools.partial(dpa_layer.apply, variables)
 
-  def apply_attention(self, query: Array, key: Array, value: Array):
+  def apply_attention(self, query: Array, key: Array, value: Array, attention_mask: Array = None):
     return _apply_attention(
         query=query,
         key=key,
@@ -879,6 +927,7 @@ class AttentionOp(nn.Module):
         axis_names_kv=self.axis_names_kv,
         flash_block_sizes=self.flash_block_sizes,
         dpa_layer=self.dpa_layer,
+        attention_mask=attention_mask,
     )
 
 
@@ -919,6 +968,9 @@ class FlaxWanAttention(nnx.Module):
     if attention_kernel == "cudnn_flash_te":
       raise NotImplementedError(f"Wan 2.1 has not been tested with {attention_kernel}")
 
+      added_kv_proj_dim: Optional[int] = None,  # New for I2V
+      image_seq_len: Optional[int] = None,  # New for I2V
+  ):
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
     self.dim_head = dim_head
@@ -940,6 +992,9 @@ class FlaxWanAttention(nnx.Module):
       axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
     if attention_kernel == "tokamax_ring" and not is_self_attention:
       attention_kernel = "tokamax_flash"  # do not use ring attention for cross attention
+    self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
+    self.image_seq_len = image_seq_len  # New for I2V
+
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
         attention_kernel=attention_kernel,
@@ -1020,7 +1075,7 @@ class FlaxWanAttention(nnx.Module):
         ),
     )
 
-    self.drop_out = nnx.Dropout(dropout)
+    self.drop_out = nnx.Dropout(dropout, deterministic=False)
 
     self.norm_q = nnx.data(None)
     self.norm_k = nnx.data(None)
@@ -1046,6 +1101,47 @@ class FlaxWanAttention(nnx.Module):
               ("norm",),
           ),
           param_dtype=weights_dtype,
+      )
+
+    # New layers for I2V image conditioning
+    self.add_k_proj = nnx.data(None)
+    self.add_v_proj = nnx.data(None)
+    self.norm_added_k = nnx.data(None)
+    if self.added_kv_proj_dim is not None:
+      self.add_k_proj = nnx.Linear(
+          self.added_kv_proj_dim,
+          self.inner_dim,
+          rngs=rngs,
+          dtype=dtype,
+          param_dtype=weights_dtype,
+          precision=precision,
+          bias_init=nnx.with_partitioning(
+              nnx.initializers.zeros,
+              ("embed",),
+          ),
+      )
+      self.add_v_proj = nnx.Linear(
+          self.added_kv_proj_dim,
+          self.inner_dim,
+          rngs=rngs,
+          dtype=dtype,
+          param_dtype=weights_dtype,
+          precision=precision,
+          bias_init=nnx.with_partitioning(
+              nnx.initializers.zeros,
+              ("embed",),
+          ),
+      )
+      self.norm_added_k = nnx.RMSNorm(
+          num_features=self.inner_dim,
+          rngs=rngs,
+          epsilon=eps,
+          dtype=dtype,
+          param_dtype=weights_dtype,
+          scale_init=nnx.with_partitioning(
+              nnx.initializers.ones,
+              ("norm",),
+          ),
       )
 
   def _apply_rope(self, xq: jax.Array, xk: jax.Array, freqs_cis: jax.Array) -> Tuple[jax.Array, jax.Array]:
@@ -1091,45 +1187,126 @@ class FlaxWanAttention(nnx.Module):
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
     dtype = hidden_states.dtype
+    is_self_attention = encoder_hidden_states is None
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
 
-    with jax.named_scope("query_proj"):
-      query_proj = self.query(hidden_states)
-    with jax.named_scope("key_proj"):
-      key_proj = self.key(encoder_hidden_states)
-    with jax.named_scope("value_proj"):
-      value_proj = self.value(encoder_hidden_states)
+    is_i2v_cross_attention = self.added_kv_proj_dim is not None and not is_self_attention
 
-    if self.qk_norm:
-      with self.conditional_named_scope("attn_q_norm"):
-        query_proj = self.norm_q(query_proj)
-      with self.conditional_named_scope("attn_k_norm"):
-        key_proj = self.norm_k(key_proj)
+    if not is_i2v_cross_attention:
+      with jax.named_scope("query_proj"):
+        query_proj = self.query(hidden_states)
+      with jax.named_scope("key_proj"):
+        key_proj = self.key(encoder_hidden_states)
+      with jax.named_scope("value_proj"):
+        value_proj = self.value(encoder_hidden_states)
 
-    if rotary_emb is not None:
-      with self.conditional_named_scope("attn_rope"):
-        axis_names_rope = nn.logical_to_mesh_axes((None, None, LENGTH, None))
-        rotary_emb = jax.lax.with_sharding_constraint(rotary_emb, axis_names_rope)
-        query_proj = _unflatten_heads(query_proj, self.heads)
-        key_proj = _unflatten_heads(key_proj, self.heads)
-        value_proj = _unflatten_heads(value_proj, self.heads)
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_q_norm"):
+          query_proj = self.norm_q(query_proj)
+        with self.conditional_named_scope("attn_k_norm"):
+          key_proj = self.norm_k(key_proj)
 
-        # Enforce sequence parallelism on the new axis 2 (LENGTH) before doing the ROPE math
-        axis_names_qkv = nn.logical_to_mesh_axes((BATCH, HEAD, LENGTH, D_KV))
-        query_proj = jax.lax.with_sharding_constraint(query_proj, axis_names_qkv)
-        key_proj = jax.lax.with_sharding_constraint(key_proj, axis_names_qkv)
-        value_proj = jax.lax.with_sharding_constraint(value_proj, axis_names_qkv)
+      if rotary_emb is not None:
+        with self.conditional_named_scope("attn_rope"):
+          query_proj = _unflatten_heads(query_proj, self.heads)
+          key_proj = _unflatten_heads(key_proj, self.heads)
+          value_proj = _unflatten_heads(value_proj, self.heads)
+          # output of _unflatten_heads Batch, heads, seq_len, head_dim
+          query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
-        # output of _unflatten_heads Batch, heads, seq_len, head_dim
-        query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
+      query_proj = checkpoint_name(query_proj, "query_proj")
+      key_proj = checkpoint_name(key_proj, "key_proj")
+      value_proj = checkpoint_name(value_proj, "value_proj")
 
-    query_proj = checkpoint_name(query_proj, "query_proj")
-    key_proj = checkpoint_name(key_proj, "key_proj")
-    value_proj = checkpoint_name(value_proj, "value_proj")
+      with jax.named_scope("apply_attention"):
+        attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
-    with jax.named_scope("apply_attention"):
-      attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+    else:
+      # NEW PATH for I2V CROSS-ATTENTION
+      with self.conditional_named_scope("proj_query"):
+        query_proj_raw = self.query(hidden_states)
+
+      # Image embeddings are padded to multiples of 128 for TPU flash attention
+      # Calculate the padded length to correctly split image and text embeddings
+      if self.added_kv_proj_dim is not None:
+        alignment = 128
+        if self.image_seq_len is not None:
+          image_seq_len_actual = self.image_seq_len
+        else:
+          image_seq_len_actual = 257
+        padded_img_len = ((image_seq_len_actual + alignment - 1) // alignment) * alignment  # 257 -> 384
+
+        if encoder_attention_mask is None:
+          padded_img_len = image_seq_len_actual
+
+        encoder_hidden_states_img = encoder_hidden_states[:, :padded_img_len, :]
+        encoder_hidden_states_text = encoder_hidden_states[:, padded_img_len:, :]
+
+        # Use the passed encoder_attention_mask (created in embeddings_flax.py) if using Flash Attention
+        # It contains the image mask: [1]*257 + [0]*127 for 257 real image tokens padded to 384
+        if encoder_attention_mask is not None:
+          encoder_attention_mask_img = encoder_attention_mask[:, :padded_img_len]
+        else:
+          # Fallback: no mask means treat all as valid (for dot product attention)
+          encoder_attention_mask_img = None
+      else:
+        # If no image_seq_len is specified, treat all as text
+        encoder_hidden_states_img = None
+        encoder_hidden_states_text = encoder_hidden_states
+        encoder_attention_mask_img = None
+
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_q_norm"):
+          query_proj_text = self.norm_q(query_proj_raw)
+      else:
+        query_proj_text = query_proj_raw
+
+      # Text K/V
+      with self.conditional_named_scope("proj_key"):
+        key_proj_text = self.key(encoder_hidden_states_text)
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_k_norm"):
+          key_proj_text = self.norm_k(key_proj_text)
+      with self.conditional_named_scope("proj_value"):
+        value_proj_text = self.value(encoder_hidden_states_text)
+
+      # Image K/V (only if image embeddings are present)
+      if encoder_hidden_states_img is not None:
+        with self.conditional_named_scope("add_proj_k"):
+          key_proj_img = self.add_k_proj(encoder_hidden_states_img)
+        with self.conditional_named_scope("norm_add_k"):
+          key_proj_img = self.norm_added_k(key_proj_img)
+        with self.conditional_named_scope("add_proj_v"):
+          value_proj_img = self.add_v_proj(encoder_hidden_states_img)
+        query_proj_img = query_proj_raw
+        # Check norm_added_k too
+        # Checkpointing
+        query_proj_text = checkpoint_name(query_proj_text, "query_proj")
+        key_proj_text = checkpoint_name(key_proj_text, "key_proj_text")
+        value_proj_text = checkpoint_name(value_proj_text, "value_proj_text")
+        key_proj_img = checkpoint_name(key_proj_img, "key_proj_img")
+        value_proj_img = checkpoint_name(value_proj_img, "value_proj_img")
+        query_proj_img = checkpoint_name(query_proj_img, "query_proj_img")
+
+        # Attention - tensors are (B, S, D)
+        with self.conditional_named_scope("cross_attn_text_apply"):
+          attn_output_text = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
+        with self.conditional_named_scope("cross_attn_img_apply"):
+          # Pass encoder_attention_mask_img for image cross-attention to mask padded tokens
+          attn_output_img = self.attention_op.apply_attention(
+              query_proj_img, key_proj_img, value_proj_img, attention_mask=encoder_attention_mask_img
+          )
+
+        attn_output = attn_output_text + attn_output_img
+      else:
+        # No image embeddings, only text cross-attention
+        query_proj_text = checkpoint_name(query_proj_text, "query_proj")
+        key_proj_text = checkpoint_name(key_proj_text, "key_proj_text")
+        value_proj_text = checkpoint_name(value_proj_text, "value_proj_text")
+
+        with self.conditional_named_scope("cross_attn_text_apply"):
+          attn_output = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")

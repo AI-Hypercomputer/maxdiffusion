@@ -58,6 +58,16 @@ data_sharding: ['data', 'fsdp', 'context', 'tensor']
 
 dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
 dcn_fsdp_parallelism: -1
+
+flash_block_sizes: {
+  block_q: 2048,
+  block_kv: 2048,
+  block_kv_compute: 1024,
+  block_q_dkv: 2048,
+  block_kv_dkv: 2048,
+  block_kv_dkv_compute: 2048,
+  use_fused_bwd_kernel: True,
+}
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
@@ -80,7 +90,7 @@ dataset_name: ''
 train_split: 'train'
 dataset_type: 'tfrecord'
 cache_latents_text_encoder_outputs: True
-per_device_batch_size: 0.125
+per_device_batch_size: 1.0
 compile_topology_num_slices: -1 
 quantization_local_shard_count: -1
 use_qwix_quantization: False
