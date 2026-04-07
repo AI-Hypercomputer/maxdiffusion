@@ -378,6 +378,7 @@ class LTX2AttentionTest(unittest.TestCase):
 
     jax_model.attention_op.attention_kernel = "flash"
     jax_model.attention_op.mesh = mesh
+    jax_model.attention_op.flash_min_seq_length = 0
 
     mask_pattern_np = np.random.randint(0, 2, (self.B, S_flash)).astype(np.float32)
     pt_mask_additive = torch.from_numpy((1.0 - mask_pattern_np) * -1e9)[:, None, None, :]
