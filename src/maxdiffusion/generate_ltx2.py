@@ -25,6 +25,7 @@ from google.cloud import storage
 from google.api_core.exceptions import GoogleAPIError
 import flax
 from maxdiffusion.utils.export_utils import export_to_video_with_audio
+from maxdiffusion.loaders.ltx2_lora_nnx_loader import LTX2NNXLoraLoader
 
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
@@ -117,6 +118,31 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   if pipeline is None:
     checkpoint_loader = LTX2Checkpointer(config=config)
     pipeline, _, _ = checkpoint_loader.load_checkpoint()
+
+    # If LoRA is specified, inject layers and load weights.
+    if (
+        getattr(config, "enable_lora", False)
+        and hasattr(config, "lora_config")
+        and config.lora_config
+        and config.lora_config.get("lora_model_name_or_path")
+    ):
+      lora_loader = LTX2NNXLoraLoader()
+      lora_config = config.lora_config
+      paths = lora_config["lora_model_name_or_path"]
+      weights = lora_config.get("weight_name", [None] * len(paths))
+      scales = lora_config.get("scale", [1.0] * len(paths))
+      ranks = lora_config.get("rank", [64] * len(paths))
+
+      for i in range(len(paths)):
+        pipeline = lora_loader.load_lora_weights(
+            pipeline,
+            paths[i],
+            transformer_weight_name=weights[i],
+            rank=ranks[i],
+            scale=scales[i],
+            scan_layers=config.scan_layers,
+            dtype=config.weights_dtype,
+        )
 
   pipeline.enable_vae_slicing()
   pipeline.enable_vae_tiling()

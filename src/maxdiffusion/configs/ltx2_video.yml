@@ -68,6 +68,7 @@ flash_block_sizes: {
   block_kv_dkv_compute: 2048,
   use_fused_bwd_kernel: True,
 }
+flash_min_seq_length: 4096
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
@@ -102,3 +103,23 @@ jit_initializers: True
 enable_single_replica_ckpt_restoring: False
 seed: 0
 audio_format: "s16"
+
+# LoRA parameters
+enable_lora: False
+
+# Distilled LoRA
+# lora_config: {
+#   lora_model_name_or_path: ["Lightricks/LTX-2"],
+#   weight_name: ["ltx-2-19b-distilled-lora-384.safetensors"],
+#   adapter_name: ["distilled-lora-384"],
+#   rank: [384]
+# }
+
+# Standard LoRA
+lora_config: {
+  lora_model_name_or_path: ["Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-In"],
+  weight_name: ["ltx-2-19b-lora-camera-control-dolly-in.safetensors"],
+  adapter_name: ["camera-control-dolly-in"],
+  rank: [32]
+}
+

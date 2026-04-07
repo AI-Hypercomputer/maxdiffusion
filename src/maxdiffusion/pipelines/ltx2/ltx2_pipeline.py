@@ -125,6 +125,7 @@ def create_sharded_logical_transformer(
   ltx2_config["attention_kernel"] = config.attention
   ltx2_config["precision"] = get_precision(config)
   ltx2_config["flash_block_sizes"] = get_flash_block_sizes(config)
+  ltx2_config["flash_min_seq_length"] = getattr(config, "flash_min_seq_length", 4096)
   ltx2_config["remat_policy"] = config.remat_policy
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
@@ -1231,15 +1232,31 @@ class LTX2Pipeline:
           connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
       )
 
-      for i, t in enumerate(timesteps):
+      timesteps_jax = jnp.array(timesteps, dtype=jnp.float32)
+      for i, t_val in enumerate(timesteps):
+        t = timesteps_jax[i]
+
+        # Isolate input sharding to scan_layers=False to avoid affecting the standard path
+        latents_jax_sharded = latents_jax
+        audio_latents_jax_sharded = audio_latents_jax
+        video_embeds_sharded = video_embeds
+        audio_embeds_sharded = audio_embeds
+
+        if not self.transformer.scan_layers:
+          activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+          latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax, activation_axis_names)
+          audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax, activation_axis_names)
+          video_embeds_sharded = jax.lax.with_sharding_constraint(video_embeds, activation_axis_names)
+          audio_embeds_sharded = jax.lax.with_sharding_constraint(audio_embeds, activation_axis_names)
+
         noise_pred, noise_pred_audio = transformer_forward_pass(
             graphdef,
             state,
-            latents_jax,
-            audio_latents_jax,
+            latents_jax_sharded,
+            audio_latents_jax_sharded,
             t,
-            video_embeds,
-            audio_embeds,
+            video_embeds_sharded,
+            audio_embeds_sharded,
             new_attention_mask,
             new_attention_mask,
             guidance_scale > 1.0,
@@ -1316,6 +1333,21 @@ class LTX2Pipeline:
 
     if output_type == "latent":
       return LTX2PipelineOutput(frames=latents, audio=audio_latents)
+
+    # Force latents and VAE weights to be fully replicated using with_sharding_constraint, this speeds up single video latency ~3x
+    try:
+      mesh = latents.sharding.mesh
+      replicated_sharding = NamedSharding(mesh, P())
+      latents = jax.lax.with_sharding_constraint(latents, replicated_sharding)
+
+      # Replicate VAE weights
+      graphdef, state = nnx.split(self.vae)
+      state = jax.tree_util.tree_map(
+          lambda x: jax.lax.with_sharding_constraint(x, replicated_sharding) if isinstance(x, jax.Array) else x, state
+      )
+      self.vae = nnx.merge(graphdef, state)
+    except Exception as e:
+      max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
 
     if getattr(self.vae.config, "timestep_conditioning", False):
       noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
