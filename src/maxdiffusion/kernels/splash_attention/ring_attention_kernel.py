@@ -119,7 +119,7 @@ def _ring_attention_forward(
   # Initial accumulator values
   o_shape = q.shape
   o_init = jnp.zeros(o_shape, dtype=jnp.float32)
-  l_init = jnp.zeros((o_shape[0], o_shape[1]), jnp.float32)
+  l_init = jnp.zeros((o_shape[0], o_shape[1], splash_kernel.NUM_LANES), jnp.float32)
   m_init = jnp.full_like(l_init, mask_value, dtype=jnp.float32)
 
   def body(carry, i: int) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, SegmentIds | None], None]:
@@ -143,15 +143,21 @@ def _ring_attention_forward(
         v_current,
         segment_ids=segment_ids_current,
         sinks=sinks,
+        m_init=m_prev,
+        l_init=l_prev,
+        o_init=o_prev
     )
-    m_curr = stats["max_logits"].astype(jnp.float32)
-    l_curr = stats["l_linear"].astype(jnp.float32)
-    o_curr = out_curr.astype(jnp.float32)
-    m_next = jnp.maximum(m_prev, m_curr)
-    alpha = exp_fn(m_prev - m_next)
-    beta = exp_fn(m_curr - m_next)
-    l_next = alpha * l_prev + beta * l_curr
-    o_next = alpha[..., None] * o_prev + beta[..., None] * o_curr
+    m_next = stats["max_logits"].astype(jnp.float32)
+    l_next = stats["l_linear"].astype(jnp.float32)
+    o_next = out_curr.astype(jnp.float32)
+    # m_curr = stats["max_logits"].astype(jnp.float32)
+    # l_curr = stats["l_linear"].astype(jnp.float32)
+    # o_curr = out_curr.astype(jnp.float32)
+    # m_next = jnp.maximum(m_prev, m_curr)
+    # alpha = exp_fn(m_prev - m_next)
+    # beta = exp_fn(m_curr - m_next)
+    # l_next = alpha * l_prev + beta * l_curr
+    # o_next = alpha[..., None] * o_prev + beta[..., None] * o_curr
     return (m_next, l_next, o_next, k_next, v_next, segment_ids_next), None
 
   # Use lax.scan to get the final carry AND the collected sequence of (k,v)
@@ -165,12 +171,25 @@ def _ring_attention_forward(
       unroll=True,
   )  # type: ignore[arg-type]
   # Final normalization
-  assert l_final.dtype == jnp.float32
-  l_inv = jnp.where(l_final == 0.0, 0.0, 1.0 / l_final)
+  # assert l_final.dtype == jnp.float32
+  # l_inv = jnp.where(l_final == 0.0, 0.0, 1.0 / l_final)
+  # out = (o_final * l_inv[..., None]).astype(q.dtype)
+  # # Final logsumexp for residuals
+  # lse = log_fn(l_final) + m_final
+  # lse = jnp.where(l_final == 0.0, mask_value, lse)
+  # Final normalization (Slice off NUM_LANES down to 2D)
+  l_final_2d = l_final[..., 0]
+  m_final_2d = m_final[..., 0]
+
+  assert l_final_2d.dtype == jnp.float32
+  l_inv = jnp.where(l_final_2d == 0.0, 0.0, 1.0 / l_final_2d)
   out = (o_final * l_inv[..., None]).astype(q.dtype)
+  
   # Final logsumexp for residuals
-  lse = log_fn(l_final) + m_final
-  lse = jnp.where(l_final == 0.0, mask_value, lse)
+  lse = log_fn(l_final_2d) + m_final_2d
+  lse = jnp.where(l_final_2d == 0.0, mask_value, lse)
+
+  
 
   return out, (lse, m_final)
 
