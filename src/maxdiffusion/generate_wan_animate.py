@@ -40,60 +40,65 @@ def run(config):
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
   load_start = time.perf_counter()
-  pipeline = WanAnimatePipeline.from_pretrained(config)
+  with jax.profiler.TraceAnnotation("wan_animate_load_pipeline"):
+    pipeline = WanAnimatePipeline.from_pretrained(config)
   load_time = time.perf_counter() - load_start
   max_logging.log(f"load_time: {load_time:.1f}s")
 
   # Setup inputs
-  reference_image_path = getattr(config, "reference_image_path", "")
-  if reference_image_path:
-    image = load_image(reference_image_path)
-    reference_image_source = reference_image_path
-  else:
-    image_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/astronaut.jpg"
-    image = load_image(image_url)
-    reference_image_source = image_url
+  with jax.profiler.TraceAnnotation("wan_animate_prepare_inputs"):
+    reference_image_path = getattr(config, "reference_image_path", "")
+    if reference_image_path:
+      image = load_image(reference_image_path)
+      reference_image_source = reference_image_path
+    else:
+      image_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/astronaut.jpg"
+      image = load_image(image_url)
+      reference_image_source = image_url
 
-  mode = getattr(config, "mode", "animate")
-  pose_video_path = getattr(config, "pose_video_path", "")
-  face_video_path = getattr(config, "face_video_path", "")
-  background_video_path = getattr(config, "background_video_path", "")
-  mask_video_path = getattr(config, "mask_video_path", "")
+    mode = getattr(config, "mode", "animate")
+    pose_video_path = getattr(config, "pose_video_path", "")
+    face_video_path = getattr(config, "face_video_path", "")
+    background_video_path = getattr(config, "background_video_path", "")
+    mask_video_path = getattr(config, "mask_video_path", "")
 
-  num_frames = config.num_frames
-  height = config.height
-  width = config.width
+    num_frames = config.num_frames
+    height = config.height
+    width = config.width
 
-  # face_video needs to match motion_encoder_size (probably 224x224 or 256x256)
-  motion_encoder_size = pipeline.transformer.config.motion_encoder_size
+    # face_video needs to match motion_encoder_size (probably 224x224 or 256x256)
+    motion_encoder_size = pipeline.transformer.config.motion_encoder_size
 
-  if pose_video_path and face_video_path:
-    max_logging.log(
-        f"Loading preprocessed videos from disk. pose_video={pose_video_path}, face_video={face_video_path}"
-    )
-    pose_video = load_video(pose_video_path)
-    face_video = load_video(face_video_path)
-    num_frames = min(num_frames, len(pose_video), len(face_video))
-    if num_frames == 0:
-      raise ValueError("Loaded empty pose/face video. Check preprocessing outputs.")
-    pose_video = pose_video[:num_frames]
-    face_video = face_video[:num_frames]
-  else:
-    # Fallback path used for quick smoke tests only.
-    max_logging.log(
-        "No pose/face video paths provided; generating dummy videos for a smoke test only. "
-        "For real outputs provide preprocessed pose_video_path and face_video_path."
-    )
-    pose_video = [Image.fromarray(np.zeros((height, width, 3), dtype=np.uint8)) for _ in range(num_frames)]
-    face_video = [Image.fromarray(np.zeros((motion_encoder_size, motion_encoder_size, 3), dtype=np.uint8)) for _ in range(num_frames)]
+    if pose_video_path and face_video_path:
+      max_logging.log(
+          f"Loading preprocessed videos from disk. pose_video={pose_video_path}, face_video={face_video_path}"
+      )
+      pose_video = load_video(pose_video_path)
+      face_video = load_video(face_video_path)
+      num_frames = min(num_frames, len(pose_video), len(face_video))
+      if num_frames == 0:
+        raise ValueError("Loaded empty pose/face video. Check preprocessing outputs.")
+      pose_video = pose_video[:num_frames]
+      face_video = face_video[:num_frames]
+    else:
+      # Fallback path used for quick smoke tests only.
+      max_logging.log(
+          "No pose/face video paths provided; generating dummy videos for a smoke test only. "
+          "For real outputs provide preprocessed pose_video_path and face_video_path."
+      )
+      pose_video = [Image.fromarray(np.zeros((height, width, 3), dtype=np.uint8)) for _ in range(num_frames)]
+      face_video = [
+          Image.fromarray(np.zeros((motion_encoder_size, motion_encoder_size, 3), dtype=np.uint8))
+          for _ in range(num_frames)
+      ]
 
-  background_video = None
-  mask_video = None
-  if mode == "replace":
-    if not background_video_path or not mask_video_path:
-      raise ValueError("Replace mode requires both `background_video_path` and `mask_video_path`.")
-    background_video = load_video(background_video_path)[:num_frames]
-    mask_video = load_video(mask_video_path)[:num_frames]
+    background_video = None
+    mask_video = None
+    if mode == "replace":
+      if not background_video_path or not mask_video_path:
+        raise ValueError("Replace mode requires both `background_video_path` and `mask_video_path`.")
+      background_video = load_video(background_video_path)[:num_frames]
+      mask_video = load_video(mask_video_path)[:num_frames]
 
   max_logging.log(
       "Wan animate inputs: reference_image=%s, image_size=%s, pose_video_path=%s, face_video_path=%s, %s, %s"
@@ -138,64 +143,8 @@ def run(config):
   s0 = time.perf_counter()
   
   # First pass (compile)
-  videos = pipeline(
-      image=image,
-      pose_video=pose_video,
-      face_video=face_video,
-      background_video=background_video,
-      mask_video=mask_video,
-      prompt=prompt,
-      negative_prompt=negative_prompt,
-      height=height,
-      width=width,
-      segment_frame_length=animate_settings["segment_frame_length"],
-      prev_segment_conditioning_frames=animate_settings["prev_segment_conditioning_frames"],
-      motion_encode_batch_size=animate_settings["motion_encode_batch_size"],
-      guidance_scale=animate_settings["guidance_scale"],
-      num_inference_steps=config.num_inference_steps,
-      mode=mode,
-  )
-  
-  compile_time = time.perf_counter() - s0
-  max_logging.log(f"compile_time: {compile_time}")
-  if writer and jax.process_index() == 0:
-    writer.add_scalar("inference/compile_time", compile_time, global_step=0)
-
-  s0 = time.perf_counter()
-  videos = pipeline(
-      image=image,
-      pose_video=pose_video,
-      face_video=face_video,
-      background_video=background_video,
-      mask_video=mask_video,
-      prompt=prompt,
-      negative_prompt=negative_prompt,
-      height=height,
-      width=width,
-      segment_frame_length=animate_settings["segment_frame_length"],
-      prev_segment_conditioning_frames=animate_settings["prev_segment_conditioning_frames"],
-      motion_encode_batch_size=animate_settings["motion_encode_batch_size"],
-      guidance_scale=animate_settings["guidance_scale"],
-      num_inference_steps=config.num_inference_steps,
-      mode=mode,
-  )
-  
-  generation_time = time.perf_counter() - s0
-  max_logging.log(f"generation_time: {generation_time}")
-  if writer and jax.process_index() == 0:
-    writer.add_scalar("inference/generation_time", generation_time, global_step=0)
-
-  filename_prefix = "animate_"
-  os.makedirs(config.output_dir, exist_ok=True)
-  for i in range(len(videos)):
-    video_path = os.path.join(config.output_dir, f"{filename_prefix}wan_output_{config.seed}_{i}.mp4")
-    export_to_video(videos[i], video_path, fps=config.fps)
-    max_logging.log(f"Saved video to {video_path}")
-
-  if getattr(config, "enable_profiler", False):
-    s0 = time.perf_counter()
-    max_utils.activate_profiler(config)
-    _ = pipeline(
+  with jax.profiler.TraceAnnotation("wan_animate_compile_pass"):
+    videos = pipeline(
         image=image,
         pose_video=pose_video,
         face_video=face_video,
@@ -212,6 +161,65 @@ def run(config):
         num_inference_steps=config.num_inference_steps,
         mode=mode,
     )
+  
+  compile_time = time.perf_counter() - s0
+  max_logging.log(f"compile_time: {compile_time}")
+  if writer and jax.process_index() == 0:
+    writer.add_scalar("inference/compile_time", compile_time, global_step=0)
+
+  s0 = time.perf_counter()
+  with jax.profiler.TraceAnnotation("wan_animate_generation_pass"):
+    videos = pipeline(
+        image=image,
+        pose_video=pose_video,
+        face_video=face_video,
+        background_video=background_video,
+        mask_video=mask_video,
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        height=height,
+        width=width,
+        segment_frame_length=animate_settings["segment_frame_length"],
+        prev_segment_conditioning_frames=animate_settings["prev_segment_conditioning_frames"],
+        motion_encode_batch_size=animate_settings["motion_encode_batch_size"],
+        guidance_scale=animate_settings["guidance_scale"],
+        num_inference_steps=config.num_inference_steps,
+        mode=mode,
+    )
+  
+  generation_time = time.perf_counter() - s0
+  max_logging.log(f"generation_time: {generation_time}")
+  if writer and jax.process_index() == 0:
+    writer.add_scalar("inference/generation_time", generation_time, global_step=0)
+
+  filename_prefix = "animate_"
+  os.makedirs(config.output_dir, exist_ok=True)
+  for i in range(len(videos)):
+    video_path = os.path.join(config.output_dir, f"{filename_prefix}wan_output_{config.seed}_{i}.mp4")
+    export_to_video(videos[i], video_path, fps=config.fps)
+    max_logging.log(f"Saved video to {video_path}")
+
+  if getattr(config, "enable_profiler", False):
+    s0 = time.perf_counter()
+    max_utils.activate_profiler(config)
+    with jax.profiler.TraceAnnotation("wan_animate_profiled_pass"):
+      _ = pipeline(
+          image=image,
+          pose_video=pose_video,
+          face_video=face_video,
+          background_video=background_video,
+          mask_video=mask_video,
+          prompt=prompt,
+          negative_prompt=negative_prompt,
+          height=height,
+          width=width,
+          segment_frame_length=animate_settings["segment_frame_length"],
+          prev_segment_conditioning_frames=animate_settings["prev_segment_conditioning_frames"],
+          motion_encode_batch_size=animate_settings["motion_encode_batch_size"],
+          guidance_scale=animate_settings["guidance_scale"],
+          num_inference_steps=config.num_inference_steps,
+          mode=mode,
+      )
     max_utils.deactivate_profiler(config)
     generation_time_with_profiler = time.perf_counter() - s0
     max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")

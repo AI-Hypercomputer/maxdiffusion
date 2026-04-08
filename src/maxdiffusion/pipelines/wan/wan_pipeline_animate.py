@@ -123,6 +123,20 @@ def create_sharded_animate_transformer(
         subfolder=subfolder,
     )
 
+  flat_params = flax.traverse_util.flatten_dict(params)
+  q_value = None
+  for q_key in (("motion_encoder", "motion_synthesis_q"), ("motion_encoder", "motion_synthesis_q", "value")):
+    if q_key in flat_params:
+      q_value = flat_params[q_key]
+      break
+  if q_value is None:
+    raise ValueError(
+        "Animate transformer params are missing `motion_synthesis_q`. "
+        "Use the animate diffusers loader or regenerate the checkpoint with the cached motion basis."
+    )
+  if np.prod(getattr(q_value, "shape", ())) == 0:
+    raise ValueError("Animate transformer `motion_synthesis_q` is empty.")
+
   params = jax.tree_util.tree_map_with_path(
       lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
   )
@@ -177,27 +191,30 @@ def animate_transformer_forward_pass(
   # latents:           (B, T+1, H, W, z_dim)
   # reference_latents: (B, T+1, H, W, z_dim+4)
   # → (B, T+1, H, W, 2*z_dim+4 = 36)
-  latent_model_input = jnp.concatenate([latents, reference_latents], axis=-1)
-  # Transpose to channel-first for the transformer: (B, 36, T+1, H, W)
-  latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3)).astype(encoder_hidden_states.dtype)
+  with jax.named_scope("animate_transformer_inputs"):
+    latent_model_input = jnp.concatenate([latents, reference_latents], axis=-1)
+    # Transpose to channel-first for the transformer: (B, 36, T+1, H, W)
+    latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3)).astype(encoder_hidden_states.dtype)
 
-  # Pose latents channel-first: (B, z_dim, T_lat, H_lat, W_lat)
-  pose_latents_cf = jnp.transpose(pose_latents, (0, 4, 1, 2, 3)).astype(encoder_hidden_states.dtype)
+    # Pose latents channel-first: (B, z_dim, T_lat, H_lat, W_lat)
+    pose_latents_cf = jnp.transpose(pose_latents, (0, 4, 1, 2, 3)).astype(encoder_hidden_states.dtype)
 
-  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  output = wan_transformer(
-      hidden_states=latent_model_input,
-      timestep=timestep,
-      encoder_hidden_states=encoder_hidden_states,
-      encoder_hidden_states_image=encoder_hidden_states_image,
-      pose_hidden_states=pose_latents_cf,
-      face_pixel_values=face_video_segment,
-      motion_encode_batch_size=motion_encode_batch_size,
-      return_dict=False,
-  )
+  with jax.named_scope("animate_transformer_call"):
+    wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+    output = wan_transformer(
+        hidden_states=latent_model_input,
+        timestep=timestep,
+        encoder_hidden_states=encoder_hidden_states,
+        encoder_hidden_states_image=encoder_hidden_states_image,
+        pose_hidden_states=pose_latents_cf,
+        face_pixel_values=face_video_segment,
+        motion_encode_batch_size=motion_encode_batch_size,
+        return_dict=False,
+    )
 
-  # Transpose back to channel-last: (B, T+1, H, W, z_dim)
-  noise_pred = jnp.transpose(output[0], (0, 2, 3, 4, 1))
+  with jax.named_scope("animate_transformer_outputs"):
+    # Transpose back to channel-last: (B, T+1, H, W, z_dim)
+    noise_pred = jnp.transpose(output[0], (0, 2, 3, 4, 1))
   return noise_pred
 
 
@@ -470,8 +487,11 @@ class WanAnimatePipeline(WanPipeline):
     else:
       mask_lat_size = mask_pixel_values.astype(dtype)
 
-    # Set the first mask_len pixel frames to 1 (conditioned).
-    mask_lat_size = mask_lat_size.at[:, :, :mask_len, :, :].set(1.0)
+    # Keep the update shape-stable so segment 0 (mask_len=0) and later segments
+    # (mask_len=1/5) share the same JAX cache key.
+    conditioned_prefix = (jnp.arange(pixel_frames, dtype=jnp.int32) < jnp.asarray(mask_len, dtype=jnp.int32))
+    conditioned_prefix = conditioned_prefix.astype(dtype)[None, None, :, None, None]
+    mask_lat_size = jnp.maximum(mask_lat_size, conditioned_prefix)
 
     # Repeat the first frame vae_scale times so total frames = latent_t * vae_scale.
     first_frame = mask_lat_size[:, :, 0:1, :, :]  # (B, 1, 1, H, W)
@@ -816,14 +836,19 @@ class WanAnimatePipeline(WanPipeline):
     num_segments = num_target_frames // effective_segment_length
 
     # ---- 1. Encode prompts ----
-    prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        num_videos_per_prompt=num_videos_per_prompt,
-        max_sequence_length=max_sequence_length,
-        prompt_embeds=prompt_embeds,
-        negative_prompt_embeds=negative_prompt_embeds,
-    )
+    with jax.profiler.TraceAnnotation(
+        "wan_animate_encode_prompt",
+        batch_size=batch_size,
+        cfg=int(do_classifier_free_guidance),
+    ):
+      prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+          prompt=prompt,
+          negative_prompt=negative_prompt,
+          num_videos_per_prompt=num_videos_per_prompt,
+          max_sequence_length=max_sequence_length,
+          prompt_embeds=prompt_embeds,
+          negative_prompt_embeds=negative_prompt_embeds,
+      )
     transformer_dtype = self.config.activations_dtype
     latent_dtype = jnp.float32
     prompt_embeds = prompt_embeds.astype(transformer_dtype)
@@ -832,7 +857,8 @@ class WanAnimatePipeline(WanPipeline):
 
     # ---- 2. Encode reference image with CLIP ----
     if image_embeds is None:
-      image_embeds = self.encode_image(image, num_videos_per_prompt=effective_batch_size)
+      with jax.profiler.TraceAnnotation("wan_animate_encode_image", effective_batch_size=effective_batch_size):
+        image_embeds = self.encode_image(image, num_videos_per_prompt=effective_batch_size)
     image_embeds = image_embeds.astype(transformer_dtype)
 
     # ---- 3. VAE-encode reference image ----
@@ -844,9 +870,10 @@ class WanAnimatePipeline(WanPipeline):
     if effective_batch_size > 1 and image_tensor.shape[0] == 1:
       image_tensor = jnp.broadcast_to(image_tensor, (effective_batch_size,) + image_tensor.shape[1:])
 
-    reference_image_latents = self.prepare_reference_image_latents(
-        image_tensor, effective_batch_size, transformer_dtype
-    )  # (B, 1, H_lat, W_lat, z_dim+vae_scale)
+    with jax.profiler.TraceAnnotation("wan_animate_prepare_reference_latents", height=height, width=width):
+      reference_image_latents = self.prepare_reference_image_latents(
+          image_tensor, effective_batch_size, transformer_dtype
+      )  # (B, 1, H_lat, W_lat, z_dim+vae_scale)
 
     # ---- 4. Preprocess conditioning videos ----
     pose_video = self.pad_video_frames(pose_video, num_target_frames)
@@ -925,93 +952,105 @@ class WanAnimatePipeline(WanPipeline):
         prev_cond_video = out_frames_cf[:, :, -prev_segment_conditioning_frames:]
 
       # Encode pose and prepare prev-seg conditioning.
-      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-        pose_latents = self.prepare_pose_latents(pose_seg, effective_batch_size, transformer_dtype)
-
-      bg_seg = None
-      mask_seg = None
-      if mode == "replace":
-        bg_seg = background_video_tensor[:, :, start:end]
-        mask_seg = mask_video_tensor[:, :, start:end]
-        if effective_batch_size > 1:
-          bg_seg = jnp.broadcast_to(bg_seg, (effective_batch_size,) + bg_seg.shape[1:])
-          mask_seg = jnp.broadcast_to(mask_seg, (effective_batch_size,) + mask_seg.shape[1:])
-
-      prev_seg_cond_latents = self.prepare_prev_segment_cond_latents(
-          prev_segment_cond_video=prev_cond_video,
-          background_video=bg_seg,
-          mask_video=mask_seg,
-          batch_size=effective_batch_size,
-          segment_frame_length=segment_frame_length,
+      with jax.profiler.TraceAnnotation(
+          "wan_animate_segment",
+          segment=_seg,
           start_frame=start,
-          height=height,
-          width=width,
-          prev_segment_cond_frames=prev_segment_conditioning_frames,
-          task=mode,
-          dtype=transformer_dtype,
-      )  # (B, T_lat, H_lat, W_lat, z_dim+vae_scale)
+          end_frame=end,
+          mode=mode,
+      ):
+        with jax.profiler.TraceAnnotation("wan_animate_prepare_pose_latents", segment=_seg):
+          with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+            pose_latents = self.prepare_pose_latents(pose_seg, effective_batch_size, transformer_dtype)
 
-      # Combine reference (1 frame) + prev-seg conditioning (T_lat frames).
-      reference_latents = jnp.concatenate(
-          [reference_image_latents, prev_seg_cond_latents], axis=1
-      )  # (B, T_lat+1, H_lat, W_lat, z_dim+vae_scale)
+        bg_seg = None
+        mask_seg = None
+        if mode == "replace":
+          bg_seg = background_video_tensor[:, :, start:end]
+          mask_seg = mask_video_tensor[:, :, start:end]
+          if effective_batch_size > 1:
+            bg_seg = jnp.broadcast_to(bg_seg, (effective_batch_size,) + bg_seg.shape[1:])
+            mask_seg = jnp.broadcast_to(mask_seg, (effective_batch_size,) + mask_seg.shape[1:])
 
-      # Set up scheduler timesteps for this segment.
-      scheduler_state = self.scheduler.set_timesteps(
-          self.scheduler_state, num_inference_steps=num_inference_steps, shape=seg_latents.shape
-      )
+        with jax.profiler.TraceAnnotation("wan_animate_prepare_prev_segment_cond_latents", segment=_seg):
+          prev_seg_cond_latents = self.prepare_prev_segment_cond_latents(
+              prev_segment_cond_video=prev_cond_video,
+              background_video=bg_seg,
+              mask_video=mask_seg,
+              batch_size=effective_batch_size,
+              segment_frame_length=segment_frame_length,
+              start_frame=start,
+              height=height,
+              width=width,
+              prev_segment_cond_frames=prev_segment_conditioning_frames,
+              task=mode,
+              dtype=transformer_dtype,
+          )  # (B, T_lat, H_lat, W_lat, z_dim+vae_scale)
 
-      seg_latents = jax.device_put(seg_latents, data_sharding)
-      reference_latents = jax.device_put(reference_latents, data_sharding)
-      pose_latents = jax.device_put(pose_latents, data_sharding)
-      face_seg = jax.device_put(face_seg, data_sharding)
+        # Combine reference (1 frame) + prev-seg conditioning (T_lat frames).
+        reference_latents = jnp.concatenate(
+            [reference_image_latents, prev_seg_cond_latents], axis=1
+        )  # (B, T_lat+1, H_lat, W_lat, z_dim+vae_scale)
 
-      # Denoising loop.
-      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-        for step in range(num_inference_steps):
-          t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
-          timestep = jnp.broadcast_to(t, (seg_latents.shape[0],))
+        # Set up scheduler timesteps for this segment.
+        scheduler_state = self.scheduler.set_timesteps(
+            self.scheduler_state, num_inference_steps=num_inference_steps, shape=seg_latents.shape
+        )
 
-          noise_pred = animate_transformer_forward_pass(
-              graphdef,
-              state,
-              rest_of_state,
-              seg_latents,
-              reference_latents,
-              pose_latents,
-              face_seg,
-              timestep,
-              prompt_embeds,
-              image_embeds,
-              motion_encode_batch_size=motion_encode_batch_size,
-          )
+        seg_latents = jax.device_put(seg_latents, data_sharding)
+        reference_latents = jax.device_put(reference_latents, data_sharding)
+        pose_latents = jax.device_put(pose_latents, data_sharding)
+        face_seg = jax.device_put(face_seg, data_sharding)
 
-          if do_classifier_free_guidance:
-            # Blank face pixels (all -1) for the unconditional pass.
-            face_seg_uncond = face_seg * 0 - 1
-            noise_uncond = animate_transformer_forward_pass(
-                graphdef,
-                state,
-                rest_of_state,
-                seg_latents,
-                reference_latents,
-                pose_latents,
-                face_seg_uncond,
-                timestep,
-                negative_prompt_embeds,
-                image_embeds,
-                motion_encode_batch_size=motion_encode_batch_size,
-            )
-            noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+        # Denoising loop.
+        with jax.profiler.TraceAnnotation("wan_animate_denoise_segment", segment=_seg, num_steps=num_inference_steps):
+          with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+            for step in range(num_inference_steps):
+              t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+              timestep = jnp.broadcast_to(t, (seg_latents.shape[0],))
+              with jax.profiler.TraceAnnotation("wan_animate_denoise_step", segment=_seg, step=step):
+                noise_pred = animate_transformer_forward_pass(
+                    graphdef,
+                    state,
+                    rest_of_state,
+                    seg_latents,
+                    reference_latents,
+                    pose_latents,
+                    face_seg,
+                    timestep,
+                    prompt_embeds,
+                    image_embeds,
+                    motion_encode_batch_size=motion_encode_batch_size,
+                )
 
-          noise_pred = noise_pred.astype(seg_latents.dtype)
-          seg_latents, scheduler_state = self.scheduler.step(
-              scheduler_state, noise_pred, t, seg_latents, return_dict=False
-          )
+                if do_classifier_free_guidance:
+                  # Blank face pixels (all -1) for the unconditional pass.
+                  face_seg_uncond = face_seg * 0 - 1
+                  with jax.profiler.TraceAnnotation("wan_animate_denoise_step_cfg_uncond", segment=_seg, step=step):
+                    noise_uncond = animate_transformer_forward_pass(
+                        graphdef,
+                        state,
+                        rest_of_state,
+                        seg_latents,
+                        reference_latents,
+                        pose_latents,
+                        face_seg_uncond,
+                        timestep,
+                        negative_prompt_embeds,
+                        image_embeds,
+                        motion_encode_batch_size=motion_encode_batch_size,
+                    )
+                  noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
 
-        # Decode this segment (skip reference frame at index 0).
-        out_frames_cf = self._decode_segment_to_pixels(seg_latents[:, 1:, :, :, :])
-        # (B, C, T_pixel, H, W) channel-first in [-1, 1]
+                noise_pred = noise_pred.astype(seg_latents.dtype)
+                seg_latents, scheduler_state = self.scheduler.step(
+                    scheduler_state, noise_pred, t, seg_latents, return_dict=False
+                )
+
+            with jax.profiler.TraceAnnotation("wan_animate_decode_segment", segment=_seg):
+              # Decode this segment (skip reference frame at index 0).
+              out_frames_cf = self._decode_segment_to_pixels(seg_latents[:, 1:, :, :, :])
+              # (B, C, T_pixel, H, W) channel-first in [-1, 1]
 
       if start > 0:
         # Drop overlap frames used for conditioning.

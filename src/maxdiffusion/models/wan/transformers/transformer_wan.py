@@ -28,7 +28,6 @@ from ...modeling_flax_utils import FlaxModelMixin, get_activation
 from ....configuration_utils import ConfigMixin, register_to_config
 from ...embeddings_flax import (
     NNXWanImageEmbedding,
-    get_1d_rotary_pos_embed,
     NNXFlaxTimesteps,
     NNXTimestepEmbedding,
     NNXPixArtAlphaTextProjection,
@@ -40,24 +39,31 @@ from ...gradient_checkpoint import GradientCheckpointType
 BlockSizes = common_types.BlockSizes
 
 
-def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
+
+def _to_static_complex_table(array: np.ndarray) -> tuple[tuple[complex, ...], ...]:
+  return tuple(tuple(row) for row in array.tolist())
+
+
+def _precompute_rope_freqs_numpy(max_seq_len: int, theta: float, attention_head_dim: int):
+  """Compute RoPE frequency tables as static-friendly Python tuples.
+
+  Uses numpy (not JAX) so it can run safely at module init time, then converts
+  each 2D table into nested Python complex tuples because nnx.static(...)
+  rejects numpy/jax arrays as data leaves.
+  """
   h_dim = w_dim = 2 * (attention_head_dim // 6)
   t_dim = attention_head_dim - h_dim - w_dim
-  freqs = []
+  parts = []
   for dim in [t_dim, h_dim, w_dim]:
-    freq = get_1d_rotary_pos_embed(dim, max_seq_len, theta, freqs_dtype=jnp.float32, use_real=False)
-    freqs.append(freq)
-  freqs = jnp.concatenate(freqs, axis=1)
+    freq = 1.0 / (theta ** (np.arange(0, dim, 2, dtype=np.float32)[: dim // 2] / dim))
+    pos = np.arange(max_seq_len, dtype=np.float32)
+    parts.append(np.exp(1j * np.outer(pos, freq)).astype(np.complex64))
+  freqs = np.concatenate(parts, axis=1)
   t_size = attention_head_dim // 2 - 2 * (attention_head_dim // 6)
   hw_size = attention_head_dim // 6
-
-  dims = [t_size, hw_size, hw_size]
-
-  # Calculate split indices as a static list of integers
-  cumulative_sizes = np.cumsum(dims)
-  split_indices = cumulative_sizes[:-1].tolist()
-  freqs_split = jnp.split(freqs, split_indices, axis=1)
-  return freqs_split
+  split_indices = np.cumsum([t_size, hw_size, hw_size])[:-1].tolist()
+  f_t, f_h, f_w = np.split(freqs, split_indices, axis=1)
+  return _to_static_complex_table(f_t), _to_static_complex_table(f_h), _to_static_complex_table(f_w)
 
 
 class WanRotaryPosEmbed(nnx.Module):
@@ -67,13 +73,18 @@ class WanRotaryPosEmbed(nnx.Module):
     self.patch_size = patch_size
     self.max_seq_len = max_seq_len
     self.theta = theta
+    # Precompute at init; depends only on static config, never on inputs.
+    f_t, f_h, f_w = _precompute_rope_freqs_numpy(max_seq_len, theta, attention_head_dim)
+    self._freq_t = nnx.static(f_t)
+    self._freq_h = nnx.static(f_h)
+    self._freq_w = nnx.static(f_w)
 
   def __call__(self, hidden_states: jax.Array) -> jax.Array:
     _, num_frames, height, width, _ = hidden_states.shape
     p_t, p_h, p_w = self.patch_size
     ppf, pph, ppw = num_frames // p_t, height // p_h, width // p_w
 
-    freqs_split = get_frequencies(self.max_seq_len, self.theta, self.attention_head_dim)
+    freqs_split = tuple(jnp.asarray(freq, dtype=jnp.complex64) for freq in (self._freq_t, self._freq_h, self._freq_w))
 
     freqs_f = jnp.expand_dims(jnp.expand_dims(freqs_split[0][:ppf], axis=1), axis=1)
     freqs_f = jnp.broadcast_to(freqs_f, (ppf, pph, ppw, freqs_split[0].shape[-1]))
@@ -583,6 +594,121 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     """Return a JAX named scope if enabled, otherwise a null context."""
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
 
+  def named_method(self, name: str, method):
+    return jax.named_call(method, name=name) if self.enable_jax_named_scopes else method
+
+  def _embed_inputs(self, hidden_states: jax.Array) -> tuple[jax.Array, jax.Array]:
+    hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
+    with self.conditional_named_scope("rotary_embedding"):
+      rotary_emb = self.rope(hidden_states)
+    with self.conditional_named_scope("patch_embedding"):
+      hidden_states = self.patch_embedding(hidden_states)
+      hidden_states = jax.lax.collapse(hidden_states, 1, -1)
+    return hidden_states, rotary_emb
+
+  def _encode_conditioning(
+      self,
+      timestep: jax.Array,
+      encoder_hidden_states: jax.Array,
+      encoder_hidden_states_image: Optional[jax.Array],
+      hidden_dtype: jnp.dtype,
+  ) -> tuple[jax.Array, jax.Array, jax.Array, Optional[jax.Array]]:
+    (
+        temb,
+        timestep_proj,
+        encoder_hidden_states,
+        encoder_hidden_states_image,
+        encoder_attention_mask,
+    ) = self.condition_embedder(timestep, encoder_hidden_states, encoder_hidden_states_image)
+    timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
+
+    if encoder_hidden_states_image is not None:
+      encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states], axis=1)
+      if encoder_attention_mask is not None:
+        text_mask = jnp.ones(
+            (encoder_hidden_states.shape[0], encoder_hidden_states.shape[1] - encoder_hidden_states_image.shape[1]),
+            dtype=jnp.int32,
+        )
+        encoder_attention_mask = jnp.concatenate([encoder_attention_mask, text_mask], axis=1)
+      encoder_hidden_states = encoder_hidden_states.astype(hidden_dtype)
+
+    return temb, timestep_proj, encoder_hidden_states, encoder_attention_mask
+
+  def _run_scanned_blocks(
+      self,
+      hidden_states: jax.Array,
+      encoder_hidden_states: jax.Array,
+      timestep_proj: jax.Array,
+      rotary_emb: jax.Array,
+      encoder_attention_mask: Optional[jax.Array],
+      deterministic: bool,
+      rngs: nnx.Rngs,
+  ) -> jax.Array:
+    def scan_fn(carry, block):
+      hidden_states_carry, rngs_carry = carry
+      hidden_states = block(
+          hidden_states_carry,
+          encoder_hidden_states,
+          timestep_proj,
+          rotary_emb,
+          deterministic,
+          rngs_carry,
+          encoder_attention_mask,
+      )
+      new_carry = (hidden_states, rngs_carry)
+      return new_carry, None
+
+    rematted_block_forward = self.gradient_checkpoint.apply(
+        scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+    )
+    initial_carry = (hidden_states, rngs)
+    final_carry, _ = nnx.scan(
+        rematted_block_forward,
+        length=self.num_layers,
+        in_axes=(nnx.Carry, 0),
+        out_axes=(nnx.Carry, 0),
+    )(initial_carry, self.blocks)
+
+    hidden_states, _ = final_carry
+    return hidden_states
+
+  def _run_unscanned_blocks(
+      self,
+      hidden_states: jax.Array,
+      encoder_hidden_states: jax.Array,
+      timestep_proj: jax.Array,
+      rotary_emb: jax.Array,
+      encoder_attention_mask: Optional[jax.Array],
+      deterministic: bool,
+      rngs: nnx.Rngs,
+  ) -> jax.Array:
+    for block_idx, block in enumerate(self.blocks):
+
+      def layer_forward(hidden_states):
+        return block(
+            hidden_states,
+            encoder_hidden_states,
+            timestep_proj,
+            rotary_emb,
+            deterministic,
+            rngs,
+            encoder_attention_mask=encoder_attention_mask,
+        )
+
+      rematted_layer_forward = self.gradient_checkpoint.apply(
+          layer_forward, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+      )
+      hidden_states = self.named_method(f"layer_{block_idx:02d}", rematted_layer_forward)(hidden_states)
+
+    return hidden_states
+
+  def _project_output(self, hidden_states: jax.Array, temb: jax.Array) -> jax.Array:
+    shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
+    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
+    with jax.named_scope("proj_out"):
+      hidden_states = self.proj_out(hidden_states)
+    return hidden_states
+
   @jax.named_scope("WanModel")
   def __call__(
       self,
@@ -602,83 +728,33 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     post_patch_height = height // p_h
     post_patch_width = width // p_w
 
-    hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
-    with self.conditional_named_scope("rotary_embedding"):
-      rotary_emb = self.rope(hidden_states)
-    with self.conditional_named_scope("patch_embedding"):
-      hidden_states = self.patch_embedding(hidden_states)
-      hidden_states = jax.lax.collapse(hidden_states, 1, -1)
-    with self.conditional_named_scope("condition_embedder"):
-      (
-          temb,
-          timestep_proj,
-          encoder_hidden_states,
-          encoder_hidden_states_image,
-          encoder_attention_mask,
-      ) = self.condition_embedder(timestep, encoder_hidden_states, encoder_hidden_states_image)
-    timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
-
-    if encoder_hidden_states_image is not None:
-      encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states], axis=1)
-      if encoder_attention_mask is not None:
-        text_mask = jnp.ones(
-            (encoder_hidden_states.shape[0], encoder_hidden_states.shape[1] - encoder_hidden_states_image.shape[1]),
-            dtype=jnp.int32,
-        )
-        encoder_attention_mask = jnp.concatenate([encoder_attention_mask, text_mask], axis=1)
-      encoder_hidden_states = encoder_hidden_states.astype(hidden_states.dtype)
+    hidden_states, rotary_emb = self.named_method("embed_inputs", self._embed_inputs)(hidden_states)
+    temb, timestep_proj, encoder_hidden_states, encoder_attention_mask = self.named_method(
+        "condition_embedder", self._encode_conditioning
+    )(timestep, encoder_hidden_states, encoder_hidden_states_image, hidden_states.dtype)
 
     if self.scan_layers:
-
-      def scan_fn(carry, block):
-        hidden_states_carry, rngs_carry = carry
-        hidden_states = block(
-            hidden_states_carry,
-            encoder_hidden_states,
-            timestep_proj,
-            rotary_emb,
-            deterministic,
-            rngs_carry,
-            encoder_attention_mask,
-        )
-        new_carry = (hidden_states, rngs_carry)
-        return new_carry, None
-
-      rematted_block_forward = self.gradient_checkpoint.apply(
-          scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+      hidden_states = self.named_method("transformer_blocks_scanned", self._run_scanned_blocks)(
+          hidden_states,
+          encoder_hidden_states,
+          timestep_proj,
+          rotary_emb,
+          encoder_attention_mask,
+          deterministic,
+          rngs,
       )
-      initial_carry = (hidden_states, rngs)
-      final_carry, _ = nnx.scan(
-          rematted_block_forward,
-          length=self.num_layers,
-          in_axes=(nnx.Carry, 0),
-          out_axes=(nnx.Carry, 0),
-      )(initial_carry, self.blocks)
-
-      hidden_states, _ = final_carry
     else:
-      for block in self.blocks:
+      hidden_states = self.named_method("transformer_blocks_unscanned", self._run_unscanned_blocks)(
+          hidden_states,
+          encoder_hidden_states,
+          timestep_proj,
+          rotary_emb,
+          encoder_attention_mask,
+          deterministic,
+          rngs,
+      )
 
-        def layer_forward(hidden_states):
-          return block(
-              hidden_states,
-              encoder_hidden_states,
-              timestep_proj,
-              rotary_emb,
-              deterministic,
-              rngs,
-              encoder_attention_mask=encoder_attention_mask,
-          )
-
-        rematted_layer_forward = self.gradient_checkpoint.apply(
-            layer_forward, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
-        )
-        hidden_states = rematted_layer_forward(hidden_states)
-
-    shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
-    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
-    with jax.named_scope("proj_out"):
-      hidden_states = self.proj_out(hidden_states)
+    hidden_states = self.named_method("project_output", self._project_output)(hidden_states, temb)
 
     hidden_states = hidden_states.reshape(
         batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1

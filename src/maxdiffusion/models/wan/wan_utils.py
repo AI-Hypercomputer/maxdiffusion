@@ -347,6 +347,15 @@ def load_base_wan_transformer(
       )
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 
+    # Derive motion_synthesis_q = Q from QR(motion_synthesis_weight).
+    # This avoids recomputing QR inside every JIT-compiled forward pass.
+    weight_key = ("motion_encoder", "motion_synthesis_weight")
+    q_key = ("motion_encoder", "motion_synthesis_q")
+    if weight_key in flax_state_dict and q_key not in flax_state_dict:
+      w = flax_state_dict[weight_key].astype(jnp.float32) + 1e-8
+      Q, _ = jnp.linalg.qr(w)
+      flax_state_dict[q_key] = jax.device_put(Q, device=cpu)
+
     validate_flax_state_dict(eval_shapes, flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)
     del tensors
@@ -441,6 +450,15 @@ def load_wan_animate_transformer(
       )
 
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+
+    # Derive motion_synthesis_q = Q from QR(motion_synthesis_weight).
+    # The animate checkpoint does not contain this cached basis directly.
+    weight_key = ("motion_encoder", "motion_synthesis_weight")
+    q_key = ("motion_encoder", "motion_synthesis_q")
+    if weight_key in flax_state_dict and q_key not in flax_state_dict:
+      w = flax_state_dict[weight_key].astype(jnp.float32) + 1e-8
+      Q, _ = jnp.linalg.qr(w)
+      flax_state_dict[q_key] = jax.device_put(Q, device=cpu)
 
     validate_flax_state_dict(eval_shapes, flax_state_dict)
     flax_state_dict = unflatten_dict(flax_state_dict)

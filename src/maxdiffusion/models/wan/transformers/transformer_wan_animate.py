@@ -389,6 +389,35 @@ class WanAnimateMotionEncoder(nnx.Module):
 
     key = rngs.params()
     self.motion_synthesis_weight = nnx.Param(jax.random.normal(key, (out_dim, motion_dim), dtype=weights_dtype))
+    # `motion_synthesis_q` caches the orthonormal basis Q obtained by QR-decomposing
+    # `motion_synthesis_weight`.  Storing Q as a separate Param means the forward
+    # pass never recomputes QR (an O(mn²) op) inside the JIT-compiled graph.
+    #
+    # Lifecycle:
+    #   - Inference:  `load_wan_animate_transformer` in wan_utils.py fills this
+    #                 from the loaded checkpoint weight (see the Q-derivation block
+    #                 near the end of that function).
+    #   - Training:   The optimizer updates `motion_synthesis_weight` but leaves
+    #                 `motion_synthesis_q` unchanged (it has no gradient path).
+    #                 Call `update_motion_synthesis_q()` once after each optimizer
+    #                 step to keep Q consistent with the updated weight.
+    self.motion_synthesis_q = nnx.Param(jnp.zeros((out_dim, motion_dim), dtype=weights_dtype))
+
+  def update_motion_synthesis_q(self) -> None:
+    """Recompute and store Q = QR(motion_synthesis_weight)[0].
+
+    Must be called after each optimizer step during training so that
+    `motion_synthesis_q` stays consistent with the updated weight.
+    This is a no-op at inference time (the weight loader handles it).
+
+    Example training loop usage::
+
+        optimizer.update(grads)
+        model.motion_encoder.update_motion_synthesis_q()
+    """
+    w = (self.motion_synthesis_weight.value + 1e-8).astype(jnp.float32)
+    Q, _ = jnp.linalg.qr(w)
+    self.motion_synthesis_q.value = Q.astype(self.motion_synthesis_weight.value.dtype)
 
   def __call__(self, face_image: jax.Array, channel_dim: int = 1) -> jax.Array:
     if face_image.shape[-2] != self.size or face_image.shape[-1] != self.size:
@@ -404,16 +433,10 @@ class WanAnimateMotionEncoder(nnx.Module):
     for linear_layer in self.motion_network:
       motion_feat = linear_layer(motion_feat, channel_dim=channel_dim)
 
-    weight = self.motion_synthesis_weight[...] + 1e-8
-
     original_dtype = motion_feat.dtype
     motion_feat_fp32 = motion_feat.astype(jnp.float32)
-    weight_fp32 = weight.astype(jnp.float32)
-
-    Q, _ = jnp.linalg.qr(weight_fp32)
-
+    Q = self.motion_synthesis_q[...].astype(jnp.float32)
     motion_vec = jnp.matmul(motion_feat_fp32, jnp.transpose(Q, (1, 0)))
-
     return motion_vec.astype(original_dtype)
 
 
@@ -874,6 +897,201 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
   def conditional_named_scope(self, name: str):
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
 
+  def named_method(self, name: str, method):
+    return jax.named_call(method, name=name) if self.enable_jax_named_scopes else method
+
+  def _embed_inputs(self, hidden_states: jax.Array, pose_hidden_states: jax.Array) -> tuple[jax.Array, jax.Array]:
+    batch_size = hidden_states.shape[0]
+
+    hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
+    with self.conditional_named_scope("rotary_embedding"):
+      rotary_emb = self.rope(hidden_states)
+    with self.conditional_named_scope("patch_embedding"):
+      hidden_states = self.patch_embedding(hidden_states)
+
+    pose_hidden_states = jnp.transpose(pose_hidden_states, (0, 2, 3, 4, 1))
+    with self.conditional_named_scope("pose_patch_embedding"):
+      pose_hidden_states = self.pose_patch_embedding(pose_hidden_states)
+      pose_pad = jnp.zeros(
+          (
+              batch_size,
+              1,
+              pose_hidden_states.shape[2],
+              pose_hidden_states.shape[3],
+              pose_hidden_states.shape[4],
+          ),
+          dtype=hidden_states.dtype,
+      )
+      pose_pad = jnp.concatenate([pose_pad, pose_hidden_states], axis=1)
+      hidden_states = hidden_states + pose_pad
+
+    hidden_states = jnp.reshape(hidden_states, (batch_size, -1, hidden_states.shape[-1]))
+    return hidden_states, rotary_emb
+
+  def _encode_conditioning(
+      self,
+      timestep: jax.Array,
+      encoder_hidden_states: jax.Array,
+      encoder_hidden_states_image: Optional[jax.Array],
+      batch_size: int,
+  ) -> tuple[jax.Array, jax.Array, jax.Array, Optional[jax.Array]]:
+    (
+        temb,
+        timestep_proj,
+        encoder_hidden_states,
+        encoder_hidden_states_image,
+        encoder_attention_mask,
+    ) = self.condition_embedder(timestep, encoder_hidden_states, encoder_hidden_states_image)
+    timestep_proj = timestep_proj.reshape(batch_size, 6, -1)
+
+    if encoder_hidden_states_image is not None:
+      encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states], axis=1)
+
+    return temb, timestep_proj, encoder_hidden_states, encoder_attention_mask
+
+  def _encode_motion(
+      self,
+      face_pixel_values: jax.Array,
+      batch_size: int,
+      motion_encode_batch_size: Optional[int],
+  ) -> jax.Array:
+    _, face_channels, num_face_frames, face_height, face_width = face_pixel_values.shape
+
+    face_pixel_values = jnp.transpose(face_pixel_values, (0, 2, 1, 3, 4))
+    face_pixel_values = jnp.reshape(face_pixel_values, (-1, face_channels, face_height, face_width))
+
+    total_face_frames = face_pixel_values.shape[0]
+    motion_encode_batch_size = motion_encode_batch_size or self.motion_encoder_batch_size
+
+    pad_len = (motion_encode_batch_size - (total_face_frames % motion_encode_batch_size)) % motion_encode_batch_size
+    if pad_len > 0:
+      pad_tensor = jnp.zeros(
+          (pad_len, face_channels, face_height, face_width),
+          dtype=face_pixel_values.dtype,
+      )
+      face_pixel_values = jnp.concatenate([face_pixel_values, pad_tensor], axis=0)
+
+    num_chunks = face_pixel_values.shape[0] // motion_encode_batch_size
+    face_chunks = jnp.reshape(
+        face_pixel_values,
+        (
+            num_chunks,
+            motion_encode_batch_size,
+            face_channels,
+            face_height,
+            face_width,
+        ),
+    )
+
+    def encode_chunk_fn(carry, chunk):
+      encoded_chunk = self.motion_encoder(chunk)
+      return carry, encoded_chunk
+
+    with self.conditional_named_scope("motion_encoder"):
+      _, motion_vec_chunks = jax.lax.scan(encode_chunk_fn, None, face_chunks)
+      motion_vec = jnp.reshape(motion_vec_chunks, (-1, motion_vec_chunks.shape[-1]))
+
+      if pad_len > 0:
+        motion_vec = motion_vec[:-pad_len]
+
+      motion_vec = jnp.reshape(motion_vec, (batch_size, num_face_frames, -1))
+
+    with self.conditional_named_scope("face_encoder"):
+      motion_vec = self.face_encoder(motion_vec)
+      pad_face = jnp.zeros_like(motion_vec[:, :1])
+      motion_vec = jnp.concatenate([pad_face, motion_vec], axis=1)
+
+    return motion_vec
+
+  def _run_scanned_blocks(
+      self,
+      hidden_states: jax.Array,
+      encoder_hidden_states: jax.Array,
+      timestep_proj: jax.Array,
+      rotary_emb: jax.Array,
+      encoder_attention_mask: Optional[jax.Array],
+      motion_vec: Optional[jax.Array],
+      deterministic: bool,
+      rngs: nnx.Rngs,
+  ) -> jax.Array:
+    def scan_fn(carry, block_idx, block):
+      hidden_states_carry, rngs_carry = carry
+      hidden_states = block(
+          hidden_states_carry,
+          encoder_hidden_states,
+          timestep_proj,
+          rotary_emb,
+          deterministic,
+          rngs_carry,
+          encoder_attention_mask=encoder_attention_mask,
+      )
+
+      hidden_states = jax.lax.cond(
+          block_idx % self.inject_face_latents_blocks == 0,
+          lambda current_hidden_states: self._apply_face_adapter(current_hidden_states, motion_vec, block_idx),
+          lambda current_hidden_states: current_hidden_states,
+          hidden_states,
+      )
+      return (hidden_states, rngs_carry), None
+
+    rematted_block_forward = self.gradient_checkpoint.apply(
+        scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+    )
+    initial_carry = (hidden_states, rngs)
+    final_carry, _ = nnx.scan(
+        rematted_block_forward,
+        length=self.num_layers,
+        in_axes=(nnx.Carry, 0, 0),
+        out_axes=(nnx.Carry, 0),
+    )(initial_carry, jnp.arange(self.num_layers), self.blocks)
+    hidden_states, _ = final_carry
+    return hidden_states
+
+  def _run_unscanned_blocks(
+      self,
+      hidden_states: jax.Array,
+      encoder_hidden_states: jax.Array,
+      timestep_proj: jax.Array,
+      rotary_emb: jax.Array,
+      encoder_attention_mask: Optional[jax.Array],
+      motion_vec: Optional[jax.Array],
+      deterministic: bool,
+      rngs: nnx.Rngs,
+  ) -> jax.Array:
+    for block_idx, block in enumerate(self.blocks):
+
+      def layer_forward(hidden_states):
+        hidden_states = block(
+            hidden_states,
+            encoder_hidden_states,
+            timestep_proj,
+            rotary_emb,
+            deterministic,
+            rngs,
+            encoder_attention_mask=encoder_attention_mask,
+        )
+
+        if motion_vec is not None and block_idx % self.inject_face_latents_blocks == 0:
+          hidden_states = self._apply_face_adapter(hidden_states, motion_vec, block_idx)
+        return hidden_states
+
+      rematted_layer_forward = self.gradient_checkpoint.apply(
+          layer_forward,
+          self.names_which_can_be_saved,
+          self.names_which_can_be_offloaded,
+          prevent_cse=not self.scan_layers,
+      )
+      hidden_states = self.named_method(f"layer_{block_idx:02d}", rematted_layer_forward)(hidden_states)
+
+    return hidden_states
+
+  def _project_output(self, hidden_states: jax.Array, temb: jax.Array) -> jax.Array:
+    shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
+    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
+    with self.conditional_named_scope("proj_out"):
+      hidden_states = self.proj_out(hidden_states)
+    return hidden_states
+
   def _apply_face_adapter(self, hidden_states: jax.Array, motion_vec: Optional[jax.Array], block_idx) -> jax.Array:
     if motion_vec is None or len(self.face_adapter) == 0:
       return hidden_states
@@ -883,7 +1101,8 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         (lambda current_hidden_states, adapter=adapter: current_hidden_states + adapter(current_hidden_states, motion_vec))
         for adapter in self.face_adapter
     )
-    return jax.lax.switch(adapter_idx, adapter_branches, hidden_states)
+    with self.conditional_named_scope("face_adapter"):
+      return jax.lax.switch(adapter_idx, adapter_branches, hidden_states)
 
   @jax.named_scope("WanAnimateTransformer3DModel")
   def __call__(
@@ -914,153 +1133,38 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     post_patch_height = height // p_h
     post_patch_width = width // p_w
 
-    # 1 & 2. Rotary Position & Patch Embedding
-    hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
-    rotary_emb = self.rope(hidden_states)
-    hidden_states = self.patch_embedding(hidden_states)
-
-    pose_hidden_states = jnp.transpose(pose_hidden_states, (0, 2, 3, 4, 1))
-    pose_hidden_states = self.pose_patch_embedding(pose_hidden_states)
-    pose_pad = jnp.zeros(
-        (
-            batch_size,
-            1,
-            pose_hidden_states.shape[2],
-            pose_hidden_states.shape[3],
-            pose_hidden_states.shape[4],
-        ),
-        dtype=hidden_states.dtype,
-    )
-    pose_pad = jnp.concatenate([pose_pad, pose_hidden_states], axis=1)
-    hidden_states = hidden_states + pose_pad
-
-    hidden_states = jnp.reshape(hidden_states, (batch_size, -1, hidden_states.shape[-1]))
-
-    # 3. Condition Embeddings
-    (
-        temb,
-        timestep_proj,
-        encoder_hidden_states,
-        encoder_hidden_states_image,
-        encoder_attention_mask,
-    ) = self.condition_embedder(timestep, encoder_hidden_states, encoder_hidden_states_image)
-    timestep_proj = timestep_proj.reshape(batch_size, 6, -1)
-
-    if encoder_hidden_states_image is not None:
-      encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states], axis=1)
-
-    # 4. Batched Face & Motion Encoding
-    _, face_channels, num_face_frames, face_height, face_width = face_pixel_values.shape
-
-    # Rearrange from (B, C, T, H, W) to (B*T, C, H, W)
-    face_pixel_values = jnp.transpose(face_pixel_values, (0, 2, 1, 3, 4))
-    face_pixel_values = jnp.reshape(face_pixel_values, (-1, face_channels, face_height, face_width))
-
-    total_face_frames = face_pixel_values.shape[0]
-    motion_encode_batch_size = motion_encode_batch_size or self.motion_encoder_batch_size
-
-    # Pad sequence if it doesn't divide evenly by encode_bs
-    pad_len = (motion_encode_batch_size - (total_face_frames % motion_encode_batch_size)) % motion_encode_batch_size
-    if pad_len > 0:
-      pad_tensor = jnp.zeros(
-          (pad_len, face_channels, face_height, face_width),
-          dtype=face_pixel_values.dtype,
-      )
-      face_pixel_values = jnp.concatenate([face_pixel_values, pad_tensor], axis=0)
-
-    # Reshape into chunks for scan
-    num_chunks = face_pixel_values.shape[0] // motion_encode_batch_size
-    face_chunks = jnp.reshape(
-        face_pixel_values,
-        (
-            num_chunks,
-            motion_encode_batch_size,
-            face_channels,
-            face_height,
-            face_width,
-        ),
+    hidden_states, rotary_emb = self.named_method("embed_inputs", self._embed_inputs)(hidden_states, pose_hidden_states)
+    temb, timestep_proj, encoder_hidden_states, encoder_attention_mask = self.named_method(
+        "condition_embedder", self._encode_conditioning
+    )(timestep, encoder_hidden_states, encoder_hidden_states_image, batch_size)
+    motion_vec = self.named_method("motion_conditioning", self._encode_motion)(
+        face_pixel_values, batch_size, motion_encode_batch_size
     )
 
-    # Use jax.lax.scan to iterate over chunks to save memory
-    def encode_chunk_fn(carry, chunk):
-      encoded_chunk = self.motion_encoder(chunk)
-      return carry, encoded_chunk
-
-    _, motion_vec_chunks = jax.lax.scan(encode_chunk_fn, None, face_chunks)
-    motion_vec = jnp.reshape(motion_vec_chunks, (-1, motion_vec_chunks.shape[-1]))
-
-    # Remove padding if added
-    if pad_len > 0:
-      motion_vec = motion_vec[:-pad_len]
-
-    motion_vec = jnp.reshape(motion_vec, (batch_size, num_face_frames, -1))
-
-    # Apply face encoder
-    motion_vec = self.face_encoder(motion_vec)
-    pad_face = jnp.zeros_like(motion_vec[:, :1])
-    motion_vec = jnp.concatenate([pad_face, motion_vec], axis=1)
-
-    # 5. Transformer Blocks
     if self.scan_layers:
-
-      def scan_fn(carry, block_idx, block):
-        hidden_states_carry, rngs_carry = carry
-        hidden_states = block(
-            hidden_states_carry,
-            encoder_hidden_states,
-            timestep_proj,
-            rotary_emb,
-            deterministic,
-            rngs_carry,
-            encoder_attention_mask=encoder_attention_mask,
-        )
-
-        hidden_states = jax.lax.cond(
-            block_idx % self.inject_face_latents_blocks == 0,
-            lambda current_hidden_states: self._apply_face_adapter(current_hidden_states, motion_vec, block_idx),
-            lambda current_hidden_states: current_hidden_states,
-            hidden_states,
-        )
-        return (hidden_states, rngs_carry), None
-
-      rematted_block_forward = self.gradient_checkpoint.apply(
-          scan_fn, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
+      hidden_states = self.named_method("transformer_blocks_scanned", self._run_scanned_blocks)(
+          hidden_states,
+          encoder_hidden_states,
+          timestep_proj,
+          rotary_emb,
+          encoder_attention_mask,
+          motion_vec,
+          deterministic,
+          rngs,
       )
-      initial_carry = (hidden_states, rngs)
-      final_carry, _ = nnx.scan(
-          rematted_block_forward,
-          length=self.num_layers,
-          in_axes=(nnx.Carry, 0, 0),
-          out_axes=(nnx.Carry, 0),
-      )(initial_carry, jnp.arange(self.num_layers), self.blocks)
-      hidden_states, _ = final_carry
     else:
-      for block_idx, block in enumerate(self.blocks):
+      hidden_states = self.named_method("transformer_blocks_unscanned", self._run_unscanned_blocks)(
+          hidden_states,
+          encoder_hidden_states,
+          timestep_proj,
+          rotary_emb,
+          encoder_attention_mask,
+          motion_vec,
+          deterministic,
+          rngs,
+      )
 
-        def layer_forward(hidden_states):
-          hidden_states = block(
-              hidden_states,
-              encoder_hidden_states,
-              timestep_proj,
-              rotary_emb,
-              deterministic,
-              rngs,
-              encoder_attention_mask=encoder_attention_mask,
-          )
-
-          if motion_vec is not None and block_idx % self.inject_face_latents_blocks == 0:
-            hidden_states = self._apply_face_adapter(hidden_states, motion_vec, block_idx)
-          return hidden_states
-
-        rematted_layer_forward = self.gradient_checkpoint.apply(
-            layer_forward, self.names_which_can_be_saved, self.names_which_can_be_offloaded, prevent_cse=not self.scan_layers
-        )
-        hidden_states = rematted_layer_forward(hidden_states)
-
-    # 6. Output Norm & Projection
-    shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
-    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
-    hidden_states = self.proj_out(hidden_states)
+    hidden_states = self.named_method("project_output", self._project_output)(hidden_states, temb)
 
     hidden_states = jnp.reshape(
         hidden_states,
@@ -1081,4 +1185,3 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if not return_dict:
       return (hidden_states,)
     return {"sample": hidden_states}
-
