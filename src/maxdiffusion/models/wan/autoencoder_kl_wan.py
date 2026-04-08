@@ -66,6 +66,21 @@ class RepSentinel:
 tree_util.register_pytree_node(RepSentinel, lambda x: ((), None), lambda _, __: RepSentinel())
 
 
+def _get_conv_out_kernel_sharding(
+    mesh: Optional[jax.sharding.Mesh],
+    out_channels: int,
+) -> tuple[None | str, ...]:
+  """Shard Wan conv output channels across FSDP when divisible."""
+  kernel_sharding = (None, None, None, None, None)
+  if mesh is None or "fsdp" not in mesh.axis_names:
+    return kernel_sharding
+
+  num_fsdp_axis_devices = mesh.shape["fsdp"]
+  if num_fsdp_axis_devices > 1 and out_channels % num_fsdp_axis_devices == 0:
+    return (None, None, None, None, "conv_out")
+  return kernel_sharding
+
+
 class WanCausalConv3d(nnx.Module):
 
   def __init__(
@@ -98,11 +113,7 @@ class WanCausalConv3d(nnx.Module):
     self._depth_padding_before = self._causal_padding[1][0]  # 2 * padding_tuple[0]
 
     self.mesh = mesh
-    # Set sharding dynamically based on out_channels.
-    num_context_axis_devices = mesh.shape["context"]
-    kernel_sharding = (None, None, None, None, None)
-    if out_channels % num_context_axis_devices == 0:
-      kernel_sharding = (None, None, None, None, "conv_out")
+    kernel_sharding = _get_conv_out_kernel_sharding(mesh, out_channels)
 
     self.conv = nnx.Conv(
         in_features=in_channels,

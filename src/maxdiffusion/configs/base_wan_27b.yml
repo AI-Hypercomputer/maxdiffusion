@@ -60,7 +60,7 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring
+attention: 'flash' # Supported attention: dot_product, flash, ulysses, ulysses_fsdp, cudnn_flash_te, ring
 flash_min_seq_length: 4096
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
 # Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
@@ -154,19 +154,19 @@ mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 # conv_in : conv.shape[2] weight
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
-                      ['batch', ['data', 'fsdp']],
-                      ['activation_batch', ['data', 'fsdp']],
+                      ['batch', 'data'],
+                      ['activation_batch', 'data'],
                       ['activation_self_attn_heads', ['context', 'tensor']], 
                       ['activation_cross_attn_q_length', ['context', 'tensor']],
                       ['activation_length', 'context'],
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
-                      ['embed', ['context', 'fsdp']],
+                      ['embed', 'fsdp'],
                       ['heads', 'tensor'],
                       ['norm', 'tensor'],
-                      ['conv_batch', ['data', 'context', 'fsdp']],
+                      ['conv_batch', 'data'],
                       ['out_channels', 'tensor'],
-                      ['conv_out', 'context'],
+                      ['conv_out', 'fsdp'],
                     ]
 data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 

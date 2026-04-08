@@ -51,6 +51,21 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class WanTransformerTest(unittest.TestCase):
 
+  @staticmethod
+  def _normalize_axis_rules(rules):
+    normalized_rules = set()
+    for rule in rules:
+      axis_name, axis_spec = rule
+      if isinstance(axis_spec, list):
+        axis_spec = tuple(axis_spec)
+      normalized_rules.add((axis_name, axis_spec))
+    return normalized_rules
+
+  @staticmethod
+  def _resolve_mesh_axis(logical_axis_rules, axis_name):
+    with nn_partitioning.axis_rules(logical_axis_rules):
+      return nn_partitioning.logical_to_mesh_axes((axis_name,))[0]
+
   def setUp(self):
     WanTransformerTest.dummy_data = {}
     pyconfig.initialize(
@@ -64,6 +79,67 @@ class WanTransformerTest(unittest.TestCase):
     self.config = config
     devices_array = create_device_mesh(config)
     self.mesh = Mesh(devices_array, config.mesh_axes)
+
+  def test_wan_fsdp_axis_rules(self):
+    logical_axis_rules = self._normalize_axis_rules(self.config.logical_axis_rules)
+    assert ("batch", "data") in logical_axis_rules
+    assert ("activation_batch", "data") in logical_axis_rules
+    assert ("embed", "fsdp") in logical_axis_rules
+    assert ("conv_batch", "data") in logical_axis_rules
+    assert ("conv_out", "fsdp") in logical_axis_rules
+
+  def test_wan_animate_fsdp_axis_rules(self):
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_animate_27b.yml"),
+        ],
+        unittest=True,
+    )
+    logical_axis_rules = self._normalize_axis_rules(pyconfig.config.logical_axis_rules)
+    assert ("batch", "data") in logical_axis_rules
+    assert ("activation_batch", "data") in logical_axis_rules
+    assert ("embed", "fsdp") in logical_axis_rules
+    assert ("conv_batch", "data") in logical_axis_rules
+    assert ("conv_out", "fsdp") in logical_axis_rules
+
+  def test_wan_animate_ulysses_fsdp_axis_rules(self):
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_animate_27b.yml"),
+            "attention=ulysses_fsdp",
+            "ici_fsdp_parallelism=-1",
+            "ici_context_parallelism=1",
+        ],
+        unittest=True,
+    )
+    logical_axis_rules = pyconfig.config.logical_axis_rules
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_kv_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_self_attn_q_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_self_attn_kv_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_cross_attn_q_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_cross_attn_kv_length") == "fsdp"
+
+  def test_wan_ulysses_fsdp_axis_rules(self):
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            "attention=ulysses_fsdp",
+            "ici_fsdp_parallelism=-1",
+            "ici_context_parallelism=1",
+        ],
+        unittest=True,
+    )
+    logical_axis_rules = pyconfig.config.logical_axis_rules
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_kv_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_self_attn_q_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_self_attn_kv_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_cross_attn_q_length") == "fsdp"
+    assert self._resolve_mesh_axis(logical_axis_rules, "activation_cross_attn_kv_length") == "fsdp"
 
   def test_rotary_pos_embed(self):
     batch_size = 1
@@ -193,9 +269,13 @@ class WanTransformerTest(unittest.TestCase):
     assert dummy_output.shape == dummy_hidden_states.shape
 
   def test_wan_attention(self):
-    for attention_kernel in ["flash", "tokamax_flash"]:
+    for attention_kernel in ["flash", "ulysses", "ulysses_fsdp", "tokamax_flash"]:
+      config_overrides = []
+      if attention_kernel == "ulysses_fsdp":
+        config_overrides.extend(["ici_fsdp_parallelism=-1", "ici_context_parallelism=1"])
       pyconfig.initialize(
-          [None, os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"), f"attention={attention_kernel}"], unittest=True
+          [None, os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"), f"attention={attention_kernel}", *config_overrides],
+          unittest=True,
       )
       config = pyconfig.config
       batch_size = 1

@@ -43,6 +43,7 @@ from ..models.wan.autoencoder_kl_wan import (
     ZeroPaddedConv2D,
     WanAttentionBlock,
     AutoencoderKLWanCache,
+    _get_conv_out_kernel_sharding,
 )
 from ..models.wan.wan_utils import load_wan_vae
 from ..utils import load_video
@@ -321,6 +322,24 @@ class WanVaeTest(unittest.TestCase):
       dummy_larger_cache = jnp.zeros((batch_size, larger_cache_depth, in_height, in_width, in_channels))
       output_with_larger_cache = causal_conv_layer(dummy_input, cache_x=dummy_larger_cache)
       assert output_with_larger_cache.shape == (1, 10, 32, 32, 16)
+
+  def test_3d_conv_sharding_prefers_fsdp(self):
+    pyconfig.initialize(
+        [
+            None,
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            "ici_fsdp_parallelism=-1",
+            "ici_context_parallelism=1",
+        ],
+        unittest=True,
+    )
+    config = pyconfig.config
+    devices_array = create_device_mesh(config)
+    mesh = Mesh(devices_array, config.mesh_axes)
+    assert mesh.shape["fsdp"] > 1
+    assert mesh.shape["context"] == 1
+    assert _get_conv_out_kernel_sharding(mesh, out_channels=16) == (None, None, None, None, "conv_out")
+    assert _get_conv_out_kernel_sharding(mesh, out_channels=15) == (None, None, None, None, None)
 
   def test_wan_residual(self):
     key = jax.random.key(0)
