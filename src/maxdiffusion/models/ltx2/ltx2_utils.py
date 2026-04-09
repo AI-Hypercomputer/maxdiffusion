@@ -328,7 +328,7 @@ def load_vae_weights(
 
       flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
       flax_key = _tuple_str_to_int(flax_key)
-      max_logging.log(f"Mapped key: {pt_key} -> {flax_key}")
+
 
       if resnet_index is not None:
         str_flax_key = tuple([str(x) for x in flax_key])

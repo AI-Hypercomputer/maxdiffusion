@@ -307,7 +307,7 @@ class LTX2Pipeline:
   def load_text_encoder(cls, config: HyperParameters):
     max_logging.log("Loading Gemma3 Text Encoder...")
     text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
-        config.pretrained_model_name_or_path,
+        "Lightricks/LTX-2",
         subfolder="text_encoder",
         torch_dtype=torch.bfloat16,
     )
