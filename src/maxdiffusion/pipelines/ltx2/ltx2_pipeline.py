@@ -588,7 +588,8 @@ class LTX2Pipeline:
     state = dict(nnx.to_flat_state(state))
  
     filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
-    params = load_vocoder_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="vocoder", filename=filename)
+    subfolder = "" if getattr(config, "model_name", "") == "ltx2.3" else "vocoder"
+    params = load_vocoder_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder=subfolder, filename=filename)
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
