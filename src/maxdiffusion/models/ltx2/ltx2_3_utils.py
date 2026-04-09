@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 from flax.traverse_util import unflatten_dict, flatten_dict
-from maxdiffusion.utils import max_logging
+from maxdiffusion import max_logging
 from maxdiffusion.models.flax_pytorch_utils import (
     load_sharded_checkpoint,
     validate_flax_state_dict,
