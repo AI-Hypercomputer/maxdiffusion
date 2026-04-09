@@ -333,7 +333,7 @@ class LTX2Pipeline:
             }
         )
       connectors = LTX2AudioVideoGemmaTextEncoder.from_config(
-          config.pretrained_model_name_or_path,
+          "Lightricks/LTX-2",
           subfolder="connectors",
           rngs=rngs,
           mesh=mesh,
