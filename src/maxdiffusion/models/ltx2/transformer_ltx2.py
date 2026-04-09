@@ -21,7 +21,7 @@ import flax.linen as nn
 
 from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
-from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSizeEmbeddings, NNXPixArtAlphaTextProjection
+from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSizeEmbeddings, NNXPixArtAlphaTextProjection, NNXCombinedTimestepTextProjEmbeddings
 from maxdiffusion.models.gradient_checkpoint import GradientCheckpointType
 from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
 from maxdiffusion.common_types import BlockSizes
@@ -692,20 +692,38 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     )
 
     # 2. Prompt embeddings
-    self.caption_projection = NNXPixArtAlphaTextProjection(
-        rngs=rngs,
-        in_features=self.caption_channels,
-        hidden_size=inner_dim,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-    )
-    self.audio_caption_projection = NNXPixArtAlphaTextProjection(
-        rngs=rngs,
-        in_features=self.caption_channels,
-        hidden_size=audio_inner_dim,
-        dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
-    )
+    if self.cross_attn_mod:
+      self.caption_projection = NNXCombinedTimestepTextProjEmbeddings(
+          rngs=rngs,
+          in_features=self.caption_channels,
+          hidden_size=inner_dim,
+          embedding_dim=inner_dim,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+      )
+      self.audio_caption_projection = NNXCombinedTimestepTextProjEmbeddings(
+          rngs=rngs,
+          in_features=self.caption_channels,
+          hidden_size=audio_inner_dim,
+          embedding_dim=audio_inner_dim,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+      )
+    else:
+      self.caption_projection = NNXPixArtAlphaTextProjection(
+          rngs=rngs,
+          in_features=self.caption_channels,
+          hidden_size=inner_dim,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+      )
+      self.audio_caption_projection = NNXPixArtAlphaTextProjection(
+          rngs=rngs,
+          in_features=self.caption_channels,
+          hidden_size=audio_inner_dim,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+      )
     # 3. Timestep Modulation Params and Embedding
     num_mod_params = 9 if self.cross_attn_mod else 6
     self.time_embed = LTX2AdaLayerNormSingle(
