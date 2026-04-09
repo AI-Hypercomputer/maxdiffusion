@@ -541,6 +541,8 @@ class LTX2Pipeline:
         # Manually construct for LTX-2.3 to support BWE and avoid TypeError
         base_vocoder = Vocoder(
             upsample_initial_channel=1536,
+            upsample_rates=(5, 2, 2, 2, 2, 2),
+            upsample_kernel_sizes=(11, 4, 4, 4, 4, 4),
             rngs=rngs,
             dtype=jnp.float32,
         )
