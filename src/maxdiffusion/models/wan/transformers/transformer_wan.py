@@ -249,7 +249,7 @@ class WanFeedForward(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                 "mlp",
+                "mlp",
                 "embed",
             ),
         ),
