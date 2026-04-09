@@ -16,9 +16,7 @@ from .ltx2_utils import (
 LTX_2_3_CONNECTORS_KEYS_RENAME_DICT = {
     "model.diffusion_model.": "",
     "connectors.": "",
-    "video_embeddings_connector": "video_connector",
-    "audio_embeddings_connector": "audio_connector",
-    "transformer_1d_blocks": "transformer_blocks",
+    "transformer_1d_blocks": "stacked_blocks",
     "text_embedding_projection.audio_aggregate_embed": "audio_text_proj_in",
     "text_embedding_projection.video_aggregate_embed": "video_text_proj_in",
     "q_norm": "norm_q",
