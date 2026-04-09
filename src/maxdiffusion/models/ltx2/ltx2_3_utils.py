@@ -48,7 +48,6 @@ def load_connectors_weights(
     filename: str = None,
 ):
   device = jax.local_devices(backend=device)[0]
-  max_logging.log(f"Load and port {pretrained_model_name_or_path} Connectors on {device}")
 
   with jax.default_device(device):
     tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
