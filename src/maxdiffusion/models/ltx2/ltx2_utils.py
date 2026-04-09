@@ -505,14 +505,17 @@ def load_audio_vae_weights(
     device: str,
     hf_download: bool = True,
     subfolder: str = "audio_vae",
+    filename: str = None,
 ):
-  tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
+  tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
   flax_state_dict = {}
   cpu = jax.local_devices(backend="cpu")[0]
 
   flattened_eval = flatten_dict(eval_shapes)
 
   for pt_key, tensor in tensors.items():
+    if filename and not pt_key.startswith("audio_vae."):
+      continue
     key = rename_for_ltx2_audio_vae(pt_key)
 
     if key.endswith(".kernel") and tensor.ndim == 4:

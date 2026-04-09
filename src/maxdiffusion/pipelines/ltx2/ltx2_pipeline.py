@@ -464,8 +464,9 @@ class LTX2Pipeline:
     max_logging.log("Loading Audio VAE...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
+      vae_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
       audio_vae = FlaxAutoencoderKLLTX2Audio.from_config(
-          config.pretrained_model_name_or_path,
+          vae_repo,
           subfolder="audio_vae",
           rngs=rngs,
           mesh=mesh,
@@ -485,7 +486,10 @@ class LTX2Pipeline:
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
 
-    params = load_audio_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="audio_vae")
+    if getattr(config, "model_name", "") == "ltx2.3":
+      params = load_audio_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="", filename="ltx-2.3-22b-dev.safetensors")
+    else:
+      params = load_audio_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="audio_vae")
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
