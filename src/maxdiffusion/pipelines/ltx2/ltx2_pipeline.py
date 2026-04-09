@@ -124,8 +124,8 @@ def create_sharded_logical_transformer(
         "audio_attention_head_dim": 64,
         "audio_cross_attention_dim": 4096,
         "num_layers": 48,
-        "caption_channels": 8192,
-        "audio_caption_channels": 4096,
+        "caption_channels": 4096,
+        "audio_caption_channels": 2048,
     }
   else:
     ltx2_config = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
