@@ -21,6 +21,17 @@ LTX_2_3_CONNECTORS_KEYS_RENAME_DICT = {
     "text_embedding_projection.video_aggregate_embed": "video_text_proj_in",
     "q_norm": "norm_q",
     "k_norm": "norm_k",
+    "norm_q.weight": "norm_q.scale",
+    "norm_k.weight": "norm_k.scale",
+    "to_q.weight": "to_q.kernel",
+    "to_k.weight": "to_k.kernel",
+    "to_v.weight": "to_v.kernel",
+    "to_out.0.weight": "to_out.kernel",
+    "to_out.0.bias": "to_out.bias",
+    "ff.net.0.proj.weight": "ff.net_0.kernel",
+    "ff.net.0.proj.bias": "ff.net_0.bias",
+    "ff.net.2.weight": "ff.net_2.kernel",
+    "ff.net.2.bias": "ff.net_2.bias",
 }
 
 def load_connectors_weights(
