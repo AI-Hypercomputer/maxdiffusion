@@ -220,13 +220,14 @@ def load_transformer_weights(
     num_layers: int = 48,
     scan_layers: bool = True,
     subfolder: str = "transformer",
+    filename: str = None,
 ):
   device = jax.local_devices(backend=device)[0]
   max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device}")
 
   with jax.default_device(device):
     # Support sharded loading
-    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
 
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]

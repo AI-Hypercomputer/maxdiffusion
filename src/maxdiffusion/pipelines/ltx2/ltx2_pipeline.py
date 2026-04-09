@@ -168,12 +168,15 @@ def create_sharded_logical_transformer(
     else:
       params = restored_checkpoint["ltx2_state"]
   else:
+    filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
+    subfolder = "" if getattr(config, "model_name", "") == "ltx2.3" else subfolder
     params = load_transformer_weights(
         config.pretrained_model_name_or_path,
         params,  # eval_shapes
         "cpu",
         scan_layers=getattr(config, "scan_layers", True),
         subfolder=subfolder,
+        filename=filename,
     )
 
   params = jax.tree_util.tree_map_with_path(
