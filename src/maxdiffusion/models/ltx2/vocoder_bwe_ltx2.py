@@ -489,7 +489,7 @@ class _STFTFn(nnx.Module):
     w_transposed = jnp.transpose(self.forward_basis.value, (2, 1, 0)) # (O, I, K)
     
     spec = jax.lax.conv_general_dilated(
-        lhs=y_transposed,
+        lhs=y_transposed.astype(w_transposed.dtype),
         rhs=w_transposed,
         window_strides=(self.hop_length,),
         padding="VALID",
