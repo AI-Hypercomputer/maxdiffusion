@@ -503,9 +503,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
       latent_t = (video.shape[2] - 1) // self.max_pipeline.vae_scale_factor_temporal + 1
       latent_h = video.shape[3] // self.max_pipeline.vae_scale_factor_spatial
       latent_w = video.shape[4] // self.max_pipeline.vae_scale_factor_spatial
-      return jnp.zeros(
-          (video.shape[0], latent_t, latent_h, latent_w, self.max_pipeline.vae.z_dim), dtype=jnp.float32
-      )
+      return jnp.zeros((video.shape[0], latent_t, latent_h, latent_w, self.max_pipeline.vae.z_dim), dtype=jnp.float32)
 
     self.max_pipeline._encode_video_to_latents = fake_encode
 
@@ -722,9 +720,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_allclose(to_numpy(capture["pose_hidden_states"]), to_numpy(expected_pose), atol=0.0, rtol=0.0)
     np.testing.assert_allclose(to_numpy(capture["face_pixel_values"]), to_numpy(face_video), atol=0.0, rtol=0.0)
     np.testing.assert_allclose(to_numpy(capture["encoder_hidden_states"]), to_numpy(prompt_embeds), atol=0.0, rtol=0.0)
-    np.testing.assert_allclose(
-        to_numpy(capture["encoder_hidden_states_image"]), to_numpy(image_embeds), atol=0.0, rtol=0.0
-    )
+    np.testing.assert_allclose(to_numpy(capture["encoder_hidden_states_image"]), to_numpy(image_embeds), atol=0.0, rtol=0.0)
     self.assertEqual(capture["motion_encode_batch_size"], 7)
     self.assertFalse(capture["return_dict"])
     np.testing.assert_allclose(to_numpy(noise_pred), to_numpy(latents), atol=0.0, rtol=0.0)
@@ -872,9 +868,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
       max_model_output = jnp.array(to_numpy(hf_model_output))
 
       hf_sample = hf_scheduler.step(hf_model_output, int(timestep), hf_sample, return_dict=False)[0]
-      max_sample, max_state = max_scheduler.step(
-          max_state, max_model_output, int(timestep), max_sample, return_dict=False
-      )
+      max_sample, max_state = max_scheduler.step(max_state, max_model_output, int(timestep), max_sample, return_dict=False)
 
       np.testing.assert_allclose(to_numpy(max_sample), to_numpy(hf_sample), atol=1e-4, rtol=1e-5)
 

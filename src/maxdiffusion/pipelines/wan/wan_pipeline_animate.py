@@ -610,9 +610,7 @@ class WanAnimatePipeline(WanPipeline):
       remaining_frames = segment_frame_length - prev_segment_cond_frames
       remaining = jnp.zeros((batch_size, 3, remaining_frames, height, width), dtype=vae_dtype)
 
-    full_cond_video = jnp.concatenate(
-        [prev_segment_cond_video.astype(vae_dtype), remaining], axis=2
-    )  # (B, C, T_seg, H, W)
+    full_cond_video = jnp.concatenate([prev_segment_cond_video.astype(vae_dtype), remaining], axis=2)  # (B, C, T_seg, H, W)
 
     cond_latents = self._encode_video_to_latents(full_cond_video, dtype)
     # (B, T_lat, H_lat, W_lat, z_dim)
@@ -785,9 +783,7 @@ class WanAnimatePipeline(WanPipeline):
           f"`segment_frame_length - 1` must be divisible by {self.vae_scale_factor_temporal}. "
           f"Rounding {segment_frame_length}."
       )
-      segment_frame_length = (
-          segment_frame_length // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
-      )
+      segment_frame_length = segment_frame_length // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
     segment_frame_length = max(segment_frame_length, 1)
 
     do_classifier_free_guidance = guidance_scale > 1.0
@@ -994,9 +990,7 @@ class WanAnimatePipeline(WanPipeline):
             noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
 
           noise_pred = noise_pred.astype(seg_latents.dtype)
-          seg_latents, scheduler_state = self.scheduler.step(
-              scheduler_state, noise_pred, t, seg_latents, return_dict=False
-          )
+          seg_latents, scheduler_state = self.scheduler.step(scheduler_state, noise_pred, t, seg_latents, return_dict=False)
 
         # Decode this segment (skip reference frame at index 0).
         out_frames_cf = self._decode_segment_to_pixels(seg_latents[:, 1:, :, :, :])

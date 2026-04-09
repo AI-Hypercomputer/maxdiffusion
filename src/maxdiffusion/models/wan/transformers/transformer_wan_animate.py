@@ -735,38 +735,32 @@ class WanAnimateFaceBlockCrossAttention(nnx.Module):
     # frame-wise reshape so each query batch element still corresponds to a full frame.
     query = jax.lax.with_sharding_constraint(
         query,
-        nn.logical_to_mesh_axes(
-            (
-                common_types.BATCH,
-                None,
-                common_types.CROSS_ATTN_HEAD,
-                common_types.D_KV,
-            )
-        ),
+        nn.logical_to_mesh_axes((
+            common_types.BATCH,
+            None,
+            common_types.CROSS_ATTN_HEAD,
+            common_types.D_KV,
+        )),
     )
     key = jax.lax.with_sharding_constraint(
         key,
-        nn.logical_to_mesh_axes(
-            (
-                common_types.BATCH,
-                None,
-                None,
-                common_types.CROSS_ATTN_HEAD,
-                common_types.D_KV,
-            )
-        ),
+        nn.logical_to_mesh_axes((
+            common_types.BATCH,
+            None,
+            None,
+            common_types.CROSS_ATTN_HEAD,
+            common_types.D_KV,
+        )),
     )
     value = jax.lax.with_sharding_constraint(
         value,
-        nn.logical_to_mesh_axes(
-            (
-                common_types.BATCH,
-                None,
-                None,
-                common_types.CROSS_ATTN_HEAD,
-                common_types.D_KV,
-            )
-        ),
+        nn.logical_to_mesh_axes((
+            common_types.BATCH,
+            None,
+            None,
+            common_types.CROSS_ATTN_HEAD,
+            common_types.D_KV,
+        )),
     )
 
     query_S = query.shape[1]
@@ -803,13 +797,11 @@ class WanAnimateFaceBlockCrossAttention(nnx.Module):
     hidden_states = self.to_out(attn_output)
     hidden_states = jax.lax.with_sharding_constraint(
         hidden_states,
-        nn.logical_to_mesh_axes(
-            (
-                common_types.BATCH,
-                common_types.LENGTH,
-                common_types.EMBED,
-            )
-        ),
+        nn.logical_to_mesh_axes((
+            common_types.BATCH,
+            common_types.LENGTH,
+            common_types.EMBED,
+        )),
     )
 
     if attention_mask is not None:
