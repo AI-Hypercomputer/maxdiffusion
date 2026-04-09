@@ -298,7 +298,7 @@ class LTX2Pipeline:
   def load_tokenizer(cls, config: HyperParameters):
     max_logging.log("Loading Gemma Tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(
-        config.pretrained_model_name_or_path,
+        "Lightricks/LTX-2",
         subfolder="tokenizer",
     )
     return tokenizer
