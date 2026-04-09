@@ -276,7 +276,7 @@ def load_vae_weights(
     for pt_key, tensor in tensors.items():
       # Filter keys for combined checkpoint to avoid noise and memory overhead
       if filename == "ltx-2.3-22b-dev.safetensors":
-        if not (pt_key.startswith("vae.") or pt_key.startswith("audio_vae.")):
+        if not pt_key.startswith("vae."):
           continue
 
       # latents_mean and latents_std are nnx.Params and will be loaded correctly.
@@ -289,8 +289,9 @@ def load_vae_weights(
       renamed_pt_key = renamed_pt_key.replace("nin_shortcut", "conv_shortcut")
 
       pt_tuple_key = tuple(renamed_pt_key.split("."))
-      if needs_vae_prefix and pt_tuple_key[0] != "vae":
-        pt_tuple_key = ("vae",) + pt_tuple_key
+      # Remove 'vae' prefix to match model structure which expects 'encoder'/'decoder' directly
+      if pt_tuple_key[0] == "vae":
+        pt_tuple_key = pt_tuple_key[1:]
 
       pt_list = []
       resnet_index = None
