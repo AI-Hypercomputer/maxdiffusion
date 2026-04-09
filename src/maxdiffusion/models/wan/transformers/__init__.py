@@ -14,4 +14,4 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from .transformer_wan_animate import NNXWanAnimateTransformer3DModel
+from .transformer_wan_animate import WanAnimateTransformer3DModel

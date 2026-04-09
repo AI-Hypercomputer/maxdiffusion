@@ -46,7 +46,7 @@ from maxdiffusion.image_processor import PipelineImageInput, VaeImageProcessor
 from maxdiffusion.max_utils import device_put_replicated, get_flash_block_sizes, get_precision
 from maxdiffusion.video_processor import VideoProcessor
 
-from ...models.wan.transformers.transformer_wan_animate import NNXWanAnimateTransformer3DModel
+from ...models.wan.transformers.transformer_wan_animate import WanAnimateTransformer3DModel
 from ...models.wan.wan_utils import load_wan_animate_transformer
 from ...pyconfig import HyperParameters
 from .wan_pipeline import WanPipeline, cast_with_exclusion
@@ -59,22 +59,22 @@ def create_sharded_animate_transformer(
     config: HyperParameters,
     restored_checkpoint=None,
     subfolder: str = "transformer",
-) -> NNXWanAnimateTransformer3DModel:
-  """Creates a sharded NNXWanAnimateTransformer3DModel on device.
+) -> WanAnimateTransformer3DModel:
+  """Creates a sharded WanAnimateTransformer3DModel on device.
 
   Follows the same pattern as create_sharded_logical_transformer in
-  wan_pipeline.py but uses NNXWanAnimateTransformer3DModel and the
+  wan_pipeline.py but uses WanAnimateTransformer3DModel and the
   animate-specific weight loader.
   """
 
   def _create_model(rngs: nnx.Rngs, wan_config: dict):
-    return NNXWanAnimateTransformer3DModel(**wan_config, rngs=rngs)
+    return WanAnimateTransformer3DModel(**wan_config, rngs=rngs)
 
   # 1. Load config.
   if restored_checkpoint:
     wan_config = restored_checkpoint["wan_config"]
   else:
-    wan_config = NNXWanAnimateTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
+    wan_config = WanAnimateTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
 
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
@@ -215,7 +215,7 @@ class WanAnimatePipeline(WanPipeline):
 
   Args:
     config: HyperParameters configuration.
-    transformer: NNXWanAnimateTransformer3DModel instance (may be None for
+    transformer: WanAnimateTransformer3DModel instance (may be None for
       VAE-only mode).
     **kwargs: Passed to WanPipeline.__init__ (tokenizer, text_encoder, vae, etc.)
   """
@@ -223,7 +223,7 @@ class WanAnimatePipeline(WanPipeline):
   def __init__(
       self,
       config: HyperParameters,
-      transformer: Optional[NNXWanAnimateTransformer3DModel],
+      transformer: Optional[WanAnimateTransformer3DModel],
       **kwargs,
   ):
     super().__init__(config=config, **kwargs)
@@ -255,7 +255,7 @@ class WanAnimatePipeline(WanPipeline):
       config: HyperParameters,
       restored_checkpoint=None,
       subfolder: str = "transformer",
-  ) -> NNXWanAnimateTransformer3DModel:
+  ) -> WanAnimateTransformer3DModel:
     with mesh:
       return create_sharded_animate_transformer(
           devices_array=devices_array,
@@ -273,7 +273,7 @@ class WanAnimatePipeline(WanPipeline):
       restored_checkpoint=None,
       vae_only: bool = False,
       load_transformer: bool = True,
-  ) -> Tuple["WanAnimatePipeline", Optional[NNXWanAnimateTransformer3DModel]]:
+  ) -> Tuple["WanAnimatePipeline", Optional[WanAnimateTransformer3DModel]]:
     common_components = cls._create_common_components(config, vae_only)
     transformer = None
     if not vae_only and load_transformer:

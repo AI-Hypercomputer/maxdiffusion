@@ -819,8 +819,8 @@ class WanAnimateFaceBlockCrossAttention(nnx.Module):
     return hidden_states
 
 
-class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
-  """NNX Wan Animate transformer with pose and face conditioning."""
+class WanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
+  """Wan Animate transformer with pose and face conditioning."""
 
   @register_to_config
   def __init__(
@@ -1055,7 +1055,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
   def init_weights(self, rng: jax.Array, eval_only: bool = False) -> Dict[str, Any]:
     """NNX modules initialize parameters eagerly during construction."""
     del rng, eval_only
-    raise NotImplementedError("NNXWanAnimateTransformer3DModel initializes weights during construction.")
+    raise NotImplementedError("WanAnimateTransformer3DModel initializes weights during construction.")
 
   def _apply_face_adapter(self, hidden_states: jax.Array, motion_vec: Optional[jax.Array], block_idx) -> jax.Array:
     """Inject face-conditioning latents at the configured adapter blocks."""

@@ -608,54 +608,54 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
 
   def test_check_inputs_matches_diffusers_validation(self):
     invalid_calls = [
-        dict(
-            prompt="prompt",
-            negative_prompt=None,
-            image=PIL.Image.new("RGB", (16, 16)),
-            pose_video=[PIL.Image.new("RGB", (16, 16))],
-            face_video=[PIL.Image.new("RGB", (16, 16))],
-            background_video=None,
-            mask_video=None,
-            height=16,
-            width=16,
-            prompt_embeds=jnp.zeros((1, 1, 1)),
-            negative_prompt_embeds=None,
-            image_embeds=None,
-            mode="animate",
-            prev_segment_conditioning_frames=1,
-        ),
-        dict(
-            prompt="prompt",
-            negative_prompt=None,
-            image=PIL.Image.new("RGB", (16, 16)),
-            pose_video=[PIL.Image.new("RGB", (16, 16))],
-            face_video=[PIL.Image.new("RGB", (16, 16))],
-            background_video=None,
-            mask_video=None,
-            height=18,
-            width=16,
-            prompt_embeds=None,
-            negative_prompt_embeds=None,
-            image_embeds=None,
-            mode="animate",
-            prev_segment_conditioning_frames=1,
-        ),
-        dict(
-            prompt="prompt",
-            negative_prompt=None,
-            image=PIL.Image.new("RGB", (16, 16)),
-            pose_video=[PIL.Image.new("RGB", (16, 16))],
-            face_video=[PIL.Image.new("RGB", (16, 16))],
-            background_video=None,
-            mask_video=None,
-            height=16,
-            width=16,
-            prompt_embeds=None,
-            negative_prompt_embeds=None,
-            image_embeds=None,
-            mode="replace",
-            prev_segment_conditioning_frames=3,
-        ),
+        {
+            "prompt": "prompt",
+            "negative_prompt": None,
+            "image": PIL.Image.new("RGB", (16, 16)),
+            "pose_video": [PIL.Image.new("RGB", (16, 16))],
+            "face_video": [PIL.Image.new("RGB", (16, 16))],
+            "background_video": None,
+            "mask_video": None,
+            "height": 16,
+            "width": 16,
+            "prompt_embeds": jnp.zeros((1, 1, 1)),
+            "negative_prompt_embeds": None,
+            "image_embeds": None,
+            "mode": "animate",
+            "prev_segment_conditioning_frames": 1,
+        },
+        {
+            "prompt": "prompt",
+            "negative_prompt": None,
+            "image": PIL.Image.new("RGB", (16, 16)),
+            "pose_video": [PIL.Image.new("RGB", (16, 16))],
+            "face_video": [PIL.Image.new("RGB", (16, 16))],
+            "background_video": None,
+            "mask_video": None,
+            "height": 18,
+            "width": 16,
+            "prompt_embeds": None,
+            "negative_prompt_embeds": None,
+            "image_embeds": None,
+            "mode": "animate",
+            "prev_segment_conditioning_frames": 1,
+        },
+        {
+            "prompt": "prompt",
+            "negative_prompt": None,
+            "image": PIL.Image.new("RGB", (16, 16)),
+            "pose_video": [PIL.Image.new("RGB", (16, 16))],
+            "face_video": [PIL.Image.new("RGB", (16, 16))],
+            "background_video": None,
+            "mask_video": None,
+            "height": 16,
+            "width": 16,
+            "prompt_embeds": None,
+            "negative_prompt_embeds": None,
+            "image_embeds": None,
+            "mode": "replace",
+            "prev_segment_conditioning_frames": 3,
+        },
     ]
 
     for kwargs in invalid_calls:
@@ -780,7 +780,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     hf_negative = torch.tensor(to_numpy(max_negative))
     hf_image = torch.tensor(to_numpy(max_image))
 
-    scheduler_config = dict(prediction_type="flow_prediction", use_flow_sigmas=True, flow_shift=5.0)
+    scheduler_config = {"prediction_type": "flow_prediction", "use_flow_sigmas": True, "flow_shift": 5.0}
     max_scheduler = FlaxUniPCMultistepScheduler(**scheduler_config)
     max_state = max_scheduler.create_state()
     max_state = max_scheduler.set_timesteps(max_state, num_inference_steps=timestep_count, shape=max_latents.shape)
@@ -852,7 +852,7 @@ class WanAnimateDiffusersParityTest(unittest.TestCase):
     np.testing.assert_allclose(to_numpy(max_next), hf_channel_first_to_last(hf_next), atol=1e-5, rtol=1e-5)
 
   def test_flax_unipc_flow_sigmas_match_diffusers(self):
-    scheduler_config = dict(prediction_type="flow_prediction", use_flow_sigmas=True, flow_shift=5.0)
+    scheduler_config = {"prediction_type": "flow_prediction", "use_flow_sigmas": True, "flow_shift": 5.0}
 
     max_scheduler = FlaxUniPCMultistepScheduler(**scheduler_config)
     max_state = max_scheduler.create_state()

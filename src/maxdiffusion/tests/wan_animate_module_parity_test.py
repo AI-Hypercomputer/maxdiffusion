@@ -51,7 +51,7 @@ from maxdiffusion.models.wan.transformers.transformer_wan_animate import (
     MotionConv2d,
     MotionEncoderResBlock,
     MotionLinear,
-    NNXWanAnimateTransformer3DModel,
+    WanAnimateTransformer3DModel,
     WanAnimateFaceBlockCrossAttention,
     WanAnimateFaceEncoder,
     WanAnimateMotionEncoder,
@@ -320,7 +320,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
     hf_model = HFWanAnimateTransformer3DModel(**cfg).eval()
 
     with self.mesh, nn_partitioning.axis_rules(self.logical_axis_rules):
-      max_model = NNXWanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=False, mesh=self.mesh, **cfg)
+      max_model = WanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=False, mesh=self.mesh, **cfg)
       missing_keys, flax_state_dict = map_hf_wan_animate_state_to_local(
           max_model, hf_model, num_layers=cfg["num_layers"], scan_layers=False
       )
@@ -359,7 +359,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
     hf_model = HFWanAnimateTransformer3DModel(**cfg).eval()
 
     with self.mesh, nn_partitioning.axis_rules(self.logical_axis_rules):
-      max_model = NNXWanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=True, mesh=self.mesh, **cfg)
+      max_model = WanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=True, mesh=self.mesh, **cfg)
       missing_keys, flax_state_dict = map_hf_wan_animate_state_to_local(
           max_model, hf_model, num_layers=cfg["num_layers"], scan_layers=True
       )
@@ -432,7 +432,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
     hf_model = HFWanAnimateTransformer3DModel(**cfg).eval()
 
     with self.mesh, nn_partitioning.axis_rules(self.logical_axis_rules):
-      max_model = NNXWanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=False, mesh=self.mesh, **cfg)
+      max_model = WanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=False, mesh=self.mesh, **cfg)
       missing_keys, _ = map_hf_wan_animate_state_to_local(
           max_model, hf_model, num_layers=cfg["num_layers"], scan_layers=False
       )
@@ -497,7 +497,7 @@ class WanAnimateModuleParityTest(unittest.TestCase):
     hf_model = HFWanAnimateTransformer3DModel(**cfg).eval()
 
     with self.mesh, nn_partitioning.axis_rules(self.logical_axis_rules):
-      max_model = NNXWanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=True, mesh=self.mesh, **cfg)
+      max_model = WanAnimateTransformer3DModel(rngs=self.rngs, scan_layers=True, mesh=self.mesh, **cfg)
       missing_keys, _ = map_hf_wan_animate_state_to_local(
           max_model, hf_model, num_layers=cfg["num_layers"], scan_layers=True
       )
