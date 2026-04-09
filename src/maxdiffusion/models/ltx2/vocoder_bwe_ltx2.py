@@ -92,11 +92,7 @@ class SnakeBeta(nnx.Module):
 # ---------------------------------------------------------------------------
 
 def _sinc(x: np.ndarray) -> np.ndarray:
-  return np.where(
-      x == 0,
-      1.0,
-      np.sin(np.pi * x) / (np.pi * x),
-  )
+  return np.sinc(x)
 
 def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int) -> np.ndarray:
   even = kernel_size % 2 == 0
