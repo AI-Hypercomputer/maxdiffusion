@@ -104,17 +104,21 @@ class LTX2GemmaFeatureExtractor(nnx.Module):
       rngs: nnx.Rngs = None,
       per_modality_projections: bool = False,
       use_bias: bool = False,
+      video_output_dim: Optional[int] = None,
+      audio_output_dim: Optional[int] = None,
   ):
     """
     Args:
         input_dim: Dimension of flattened hidden states (Gemma dim * Num layers).
-        output_dim: Target dimension for diffusion conditioning.
+        output_dim: Target dimension for diffusion conditioning (fallback).
     """
     self.per_modality_projections = per_modality_projections
     
     if per_modality_projections:
-      self.video_linear = nnx.Linear(input_dim, output_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
-      self.audio_linear = nnx.Linear(input_dim, output_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
+      v_dim = video_output_dim if video_output_dim is not None else output_dim
+      a_dim = audio_output_dim if audio_output_dim is not None else output_dim
+      self.video_linear = nnx.Linear(input_dim, v_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
+      self.audio_linear = nnx.Linear(input_dim, a_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
     else:
       self.linear = nnx.Linear(input_dim, output_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
 

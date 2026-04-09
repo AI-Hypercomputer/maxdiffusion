@@ -496,6 +496,9 @@ def rename_for_ltx2_audio_vae(key):
   if "upsample.conv.bias" in key:
     key = key.replace("upsample.conv.bias", "upsample.conv.conv.bias")
 
+  key = key.replace("per_channel_statistics.mean-of-means", "latents_mean")
+  key = key.replace("per_channel_statistics.std-of-means", "latents_std")
+
   return key
 
 

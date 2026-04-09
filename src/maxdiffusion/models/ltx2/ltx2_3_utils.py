@@ -17,8 +17,10 @@ LTX_2_3_CONNECTORS_KEYS_RENAME_DICT = {
     "model.diffusion_model.": "",
     "connectors.": "",
     "transformer_1d_blocks": "stacked_blocks",
-    "text_embedding_projection.audio_aggregate_embed": "audio_text_proj_in",
-    "text_embedding_projection.video_aggregate_embed": "video_text_proj_in",
+    "text_embedding_projection.audio_aggregate_embed.weight": "feature_extractor.audio_linear.kernel",
+    "text_embedding_projection.audio_aggregate_embed.bias": "feature_extractor.audio_linear.bias",
+    "text_embedding_projection.video_aggregate_embed.weight": "feature_extractor.video_linear.kernel",
+    "text_embedding_projection.video_aggregate_embed.bias": "feature_extractor.video_linear.bias",
     "q_norm": "norm_q",
     "k_norm": "norm_k",
     "norm_q.weight": "norm_q.scale",
@@ -91,6 +93,10 @@ def load_connectors_weights(
           
         accumulated_stacked[base_key][layer_idx] = tensor
       else:
+        # Transpose projection kernels in feature extractor
+        if "feature_extractor" in segments and segments[-1] == "kernel":
+          tensor = jnp.transpose(tensor, (1, 0))
+          
         flax_key = _tuple_str_to_int(segments)
         flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 

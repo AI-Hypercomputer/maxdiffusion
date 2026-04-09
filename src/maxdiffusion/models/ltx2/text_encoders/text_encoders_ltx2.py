@@ -65,7 +65,8 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       audio_gated_attn: bool = False,
       **kwargs,
   ):
-    input_dim = caption_channels * text_proj_in_factor
+    gemma_dim = 3840 if video_caption_channels is not None else caption_channels
+    input_dim = gemma_dim * text_proj_in_factor
 
     v_dim = video_caption_channels if video_caption_channels is not None else caption_channels
     a_dim = audio_caption_channels if audio_caption_channels is not None else caption_channels
@@ -79,6 +80,8 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         rngs=rngs,
         per_modality_projections=per_modality_projections,
         use_bias=proj_bias,
+        video_output_dim=v_dim,
+        audio_output_dim=a_dim,
     )
 
     # Two independent connectors
