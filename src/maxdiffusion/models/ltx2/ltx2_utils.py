@@ -24,6 +24,7 @@ from huggingface_hub.utils import EntryNotFoundError
 from safetensors import safe_open
 from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
+from .ltx2_3_utils import LTX_2_3_VIDEO_VAE_RENAME_DICT
 
 
 LTX_2_0_VIDEO_VAE_RENAME_DICT = {
@@ -54,12 +55,7 @@ LTX_2_0_VIDEO_VAE_RENAME_DICT = {
     "per_channel_statistics.std-of-means": "latents_std",
 }
 
-LTX_2_3_VIDEO_VAE_RENAME_DICT = {
-    **LTX_2_0_VIDEO_VAE_RENAME_DICT,
-    # Decoder extra blocks
-    "up_blocks.7": "up_blocks.3.upsamplers.0",
-    "up_blocks.8": "up_blocks.3",
-}
+
 
 
 def _tuple_str_to_int(in_tuple):
@@ -532,3 +528,6 @@ def load_audio_vae_weights(
 
   validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
   return unflatten_dict(flax_state_dict)
+
+
+
