@@ -238,6 +238,11 @@ def load_transformer_weights(
       random_flax_state_dict[tuple(str(item) for item in key)] = flattened_dict[key]
 
     for pt_key, tensor in tensors.items():
+      if filename == "ltx-2.3-22b-dev.safetensors":
+        if not pt_key.startswith("model.diffusion_model."):
+          continue
+        pt_key = pt_key.replace("model.diffusion_model.", "")
+
       renamed_pt_key = rename_key(pt_key)
       renamed_pt_key = rename_for_ltx2_transformer(renamed_pt_key)
 
