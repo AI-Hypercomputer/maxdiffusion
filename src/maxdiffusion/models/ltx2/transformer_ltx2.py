@@ -615,6 +615,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       flash_min_seq_length: int = 4096,
       gated_attn: bool = False,
       cross_attn_mod: bool = False,
+      use_prompt_embeddings: bool = True,
       **kwargs,
   ):
     self.in_channels = in_channels
@@ -649,6 +650,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.attention_out_bias = attention_out_bias
     self.rope_theta = rope_theta
     self.rope_double_precision = rope_double_precision
+    self.use_prompt_embeddings = use_prompt_embeddings
     self.causal_offset = causal_offset
     self.timestep_scale_multiplier = timestep_scale_multiplier
     self.cross_attn_timestep_scale_multiplier = cross_attn_timestep_scale_multiplier
@@ -694,38 +696,42 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     )
 
     # 2. Prompt embeddings
-    if self.cross_attn_mod:
-      self.caption_projection = NNXCombinedTimestepTextProjEmbeddings(
-          rngs=rngs,
-          in_features=self.caption_channels,
-          hidden_size=self.cross_attention_dim,
-          embedding_dim=self.cross_attention_dim,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-      )
-      self.audio_caption_projection = NNXCombinedTimestepTextProjEmbeddings(
-          rngs=rngs,
-          in_features=self.audio_caption_channels,
-          hidden_size=self.audio_cross_attention_dim,
-          embedding_dim=self.audio_cross_attention_dim,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-      )
+    if self.use_prompt_embeddings:
+      if self.cross_attn_mod:
+        self.caption_projection = NNXCombinedTimestepTextProjEmbeddings(
+            rngs=rngs,
+            in_features=self.caption_channels,
+            hidden_size=self.cross_attention_dim,
+            embedding_dim=self.cross_attention_dim,
+            dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
+        )
+        self.audio_caption_projection = NNXCombinedTimestepTextProjEmbeddings(
+            rngs=rngs,
+            in_features=self.audio_caption_channels,
+            hidden_size=self.audio_cross_attention_dim,
+            embedding_dim=self.audio_cross_attention_dim,
+            dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
+        )
+      else:
+        self.caption_projection = NNXPixArtAlphaTextProjection(
+            rngs=rngs,
+            in_features=self.caption_channels,
+            hidden_size=inner_dim,
+            dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
+        )
+        self.audio_caption_projection = NNXPixArtAlphaTextProjection(
+            rngs=rngs,
+            in_features=self.audio_caption_channels,
+            hidden_size=audio_inner_dim,
+            dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
+        )
     else:
-      self.caption_projection = NNXPixArtAlphaTextProjection(
-          rngs=rngs,
-          in_features=self.caption_channels,
-          hidden_size=inner_dim,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-      )
-      self.audio_caption_projection = NNXPixArtAlphaTextProjection(
-          rngs=rngs,
-          in_features=self.audio_caption_channels,
-          hidden_size=audio_inner_dim,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-      )
+      self.caption_projection = None
+      self.audio_caption_projection = None
     # 3. Timestep Modulation Params and Embedding
     num_mod_params = 9 if self.cross_attn_mod else 6
     self.time_embed = LTX2AdaLayerNormSingle(
@@ -1050,11 +1056,14 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       audio_cross_attn_v2a_gate = audio_cross_attn_v2a_gate.reshape(batch_size, -1, audio_cross_attn_v2a_gate.shape[-1])
 
       # 4. Prepare prompt embeddings
-      encoder_hidden_states = self.caption_projection(encoder_hidden_states, timestep)
-      encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
+      if self.use_prompt_embeddings:
+        encoder_hidden_states = self.caption_projection(encoder_hidden_states, timestep)
+        encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
 
-      audio_encoder_hidden_states = self.audio_caption_projection(audio_encoder_hidden_states, audio_timestep if audio_timestep is not None else timestep)
-      audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
+        audio_encoder_hidden_states = self.audio_caption_projection(
+            audio_encoder_hidden_states, audio_timestep if audio_timestep is not None else timestep
+        )
+        audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
 
     # 5. Run transformer blocks
     def scan_fn(carry, block):
