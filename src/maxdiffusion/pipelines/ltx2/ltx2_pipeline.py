@@ -34,7 +34,7 @@ from ...schedulers import FlaxFlowMatchScheduler
 from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder
-from ...models.ltx2.vocoder_bwe_ltx2 import LTX2VocoderWithBWE
+from ...models.ltx2.vocoder_bwe_ltx2 import LTX2VocoderWithBWE, Vocoder, MelSTFT
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
 from ...models.ltx2.ltx2_3_utils import load_connectors_weights
 from ...models.ltx2.ltx2_utils import (
@@ -537,20 +537,43 @@ class LTX2Pipeline:
     max_logging.log("Loading Vocoder...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      vocoder_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
       if getattr(config, "model_name", "") == "ltx2.3":
-        vocoder_class = LTX2VocoderWithBWE
+        # Manually construct for LTX-2.3 to support BWE and avoid TypeError
+        base_vocoder = Vocoder(
+            upsample_initial_channel=1536,
+            rngs=rngs,
+            dtype=jnp.float32,
+        )
+        bwe_generator = Vocoder(
+            upsample_initial_channel=512,
+            rngs=rngs,
+            dtype=jnp.float32,
+        )
+        mel_stft = MelSTFT(
+            filter_length=512,
+            hop_length=80,
+            win_length=512,
+            n_mel_channels=64,
+            rngs=rngs,
+        )
+        vocoder = LTX2VocoderWithBWE(
+            vocoder=base_vocoder,
+            bwe_generator=bwe_generator,
+            mel_stft=mel_stft,
+            input_sampling_rate=16000,
+            output_sampling_rate=48000,
+            hop_length=80,
+            rngs=rngs,
+        )
       else:
-        vocoder_class = LTX2Vocoder
-        
-      vocoder = vocoder_class.from_config(
-          vocoder_repo,
-          subfolder="vocoder",
-          rngs=rngs,
-          mesh=mesh,
-          dtype=jnp.float32,
-          weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
-      )
+        vocoder = LTX2Vocoder.from_config(
+            config.pretrained_model_name_or_path,
+            subfolder="vocoder",
+            rngs=rngs,
+            mesh=mesh,
+            dtype=jnp.float32,
+            weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+        )
       return vocoder
  
     p_model_factory = partial(create_model, config=config)
