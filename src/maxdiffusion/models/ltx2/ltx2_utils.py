@@ -259,6 +259,8 @@ def load_vae_weights(
     for key in flattened_eval:
       random_flax_state_dict[tuple(str(item) for item in key)] = flattened_eval[key]
 
+    needs_vae_prefix = any(key[0] == "vae" for key in random_flax_state_dict)
+
     for pt_key, tensor in tensors.items():
       # latents_mean and latents_std are nnx.Params and will be loaded correctly.
       new_key = pt_key
@@ -270,6 +272,8 @@ def load_vae_weights(
       renamed_pt_key = renamed_pt_key.replace("nin_shortcut", "conv_shortcut")
 
       pt_tuple_key = tuple(renamed_pt_key.split("."))
+      if needs_vae_prefix and pt_tuple_key[0] != "vae":
+        pt_tuple_key = ("vae",) + pt_tuple_key
 
       pt_list = []
       resnet_index = None
