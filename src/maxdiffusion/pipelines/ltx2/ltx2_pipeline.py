@@ -546,6 +546,7 @@ class LTX2Pipeline:
         )
         bwe_generator = Vocoder(
             upsample_initial_channel=512,
+            upsample_kernel_sizes=[12, 11, 4, 4, 4],
             rngs=rngs,
             dtype=jnp.float32,
         )

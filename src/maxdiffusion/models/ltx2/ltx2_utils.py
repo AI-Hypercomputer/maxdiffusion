@@ -382,6 +382,8 @@ def load_vocoder_weights(
     if filename and pt_key.startswith("vocoder."):
       pt_key = pt_key[len("vocoder."):]
     key = rename_for_ltx2_vocoder(pt_key)
+    if filename == "ltx-2.3-22b-dev.safetensors":
+      key = key.replace("resblocks_", "resnets.")
     parts = key.split(".")
 
     if parts[-1] == "weight":
@@ -398,6 +400,9 @@ def load_vocoder_weights(
         tensor = tensor.transpose(2, 0, 1)[::-1, :, :]
       else:
         tensor = tensor.transpose(2, 1, 0)
+    
+    if "mel_stft" in flax_key and ("forward_basis" in flax_key or "inverse_basis" in flax_key):
+      tensor = tensor.transpose(2, 1, 0)
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 
