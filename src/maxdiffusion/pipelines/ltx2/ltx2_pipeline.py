@@ -379,11 +379,15 @@ class LTX2Pipeline:
     logical_state_spec = nnx.get_partition_spec(state)
     logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
     logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
-    params = state.to_pure_dict()
-    state = dict(nnx.to_flat_state(state))
-
     filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
-    params = load_connectors_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="", filename=filename)
+    params = load_connectors_weights(
+        config.pretrained_model_name_or_path,
+        params,
+        "cpu",
+        subfolder="",
+        filename=filename,
+        is_ltx2_3=(getattr(config, "model_name", "") == "ltx2.3"),
+    )
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 

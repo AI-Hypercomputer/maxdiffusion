@@ -73,69 +73,135 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     self.per_modality_projections = per_modality_projections
 
-    self.feature_extractor = LTX2GemmaFeatureExtractor(
-        input_dim=input_dim,
-        output_dim=caption_channels,
-        dtype=dtype,
-        rngs=rngs,
-        per_modality_projections=per_modality_projections,
-        use_bias=proj_bias,
-        video_output_dim=v_dim,
-        audio_output_dim=a_dim,
-    )
+    if per_modality_projections:
+      self.video_text_proj_in = nnx.Linear(
+          in_features=input_dim, out_features=v_dim, use_bias=proj_bias, rngs=rngs
+      )
+      self.audio_text_proj_in = nnx.Linear(
+          in_features=input_dim, out_features=a_dim, use_bias=proj_bias, rngs=rngs
+      )
 
-    # Two independent connectors
-    self.video_embeddings_connector = Embeddings1DConnector(
-        input_dim=v_dim,
-        heads=video_connector_num_attention_heads,
-        head_dim=video_connector_attention_head_dim,
-        layers=video_connector_num_layers,
-        num_learnable_registers=video_connector_num_learnable_registers,
-        rope_type=rope_type,
-        theta=rope_theta,
-        base_seq_len=connector_rope_base_seq_len,
-        double_precision=rope_double_precision,
-        attention_kernel=attention_kernel,
-        mesh=mesh,
-        rngs=rngs,
-        gated_attn=video_gated_attn,
-    )
+      self.video_connector = Embeddings1DConnector(
+          input_dim=v_dim,
+          heads=video_connector_num_attention_heads,
+          head_dim=video_connector_attention_head_dim,
+          layers=video_connector_num_layers,
+          num_learnable_registers=video_connector_num_learnable_registers,
+          rope_type=rope_type,
+          theta=rope_theta,
+          base_seq_len=connector_rope_base_seq_len,
+          double_precision=rope_double_precision,
+          attention_kernel=attention_kernel,
+          mesh=mesh,
+          rngs=rngs,
+          gated_attn=video_gated_attn,
+      )
+      self.audio_connector = Embeddings1DConnector(
+          input_dim=a_dim,
+          heads=audio_connector_num_attention_heads,
+          head_dim=audio_connector_attention_head_dim,
+          layers=audio_connector_num_layers,
+          num_learnable_registers=audio_connector_num_learnable_registers,
+          rope_type=rope_type,
+          theta=rope_theta,
+          base_seq_len=connector_rope_base_seq_len,
+          double_precision=rope_double_precision,
+          attention_kernel=attention_kernel,
+          mesh=mesh,
+          rngs=rngs,
+          gated_attn=audio_gated_attn,
+      )
+    else:
+      self.feature_extractor = LTX2GemmaFeatureExtractor(
+          input_dim=input_dim,
+          output_dim=caption_channels,
+          dtype=dtype,
+          rngs=rngs,
+          per_modality_projections=per_modality_projections,
+          use_bias=proj_bias,
+          video_output_dim=v_dim,
+          audio_output_dim=a_dim,
+      )
 
-    self.audio_embeddings_connector = Embeddings1DConnector(
-        input_dim=a_dim,
-        heads=audio_connector_num_attention_heads,
-        head_dim=audio_connector_attention_head_dim,
-        layers=audio_connector_num_layers,
-        num_learnable_registers=audio_connector_num_learnable_registers,
-        rope_type=rope_type,
-        theta=rope_theta,
-        base_seq_len=connector_rope_base_seq_len,
-        double_precision=rope_double_precision,
-        attention_kernel=attention_kernel,
-        mesh=mesh,
-        rngs=rngs,
-        gated_attn=audio_gated_attn,
-    )
+      # Two independent connectors
+      self.video_embeddings_connector = Embeddings1DConnector(
+          input_dim=v_dim,
+          heads=video_connector_num_attention_heads,
+          head_dim=video_connector_attention_head_dim,
+          layers=video_connector_num_layers,
+          num_learnable_registers=video_connector_num_learnable_registers,
+          rope_type=rope_type,
+          theta=rope_theta,
+          base_seq_len=connector_rope_base_seq_len,
+          double_precision=rope_double_precision,
+          attention_kernel=attention_kernel,
+          mesh=mesh,
+          rngs=rngs,
+          gated_attn=video_gated_attn,
+      )
+      self.audio_embeddings_connector = Embeddings1DConnector(
+          input_dim=a_dim,
+          heads=audio_connector_num_attention_heads,
+          head_dim=audio_connector_attention_head_dim,
+          layers=audio_connector_num_layers,
+          num_learnable_registers=audio_connector_num_learnable_registers,
+          rope_type=rope_type,
+          theta=rope_theta,
+          base_seq_len=connector_rope_base_seq_len,
+          double_precision=rope_double_precision,
+          attention_kernel=attention_kernel,
+          mesh=mesh,
+          rngs=rngs,
+          gated_attn=audio_gated_attn,
+      )
 
   def __call__(
       self,
       hidden_states: Union[Tuple[Array, ...], List[Array]],
       attention_mask: Array,
-  ) -> Tuple[Array, Array]:
+  ) -> Tuple[Array, Array, Array]:
     """
     Returns:
         (video_embeds, audio_embeds, new_attention_mask)
     """
     with jax.named_scope("Text Encoder Forward"):
-      # 1. Shared Feature Extraction
-      features = self.feature_extractor(hidden_states, attention_mask)
-
-      # 2. Parallel Connection
       if self.per_modality_projections:
-        video_features, audio_features = features
-        video_embeds, new_attention_mask = self.video_embeddings_connector(video_features, attention_mask)
-        audio_embeds, _ = self.audio_embeddings_connector(audio_features, attention_mask)
+        # 1. Stack Hidden States if needed
+        if isinstance(hidden_states, (tuple, list)):
+          x = jnp.stack(hidden_states, axis=-1)
+        else:
+          x = hidden_states
+
+        b, l, d, k = x.shape
+        
+        # 2. Per-token RMS norm
+        variance = jnp.mean(x**2, axis=2, keepdims=True)
+        norm_text_encoder_hidden_states = x * jax.lax.rsqrt(variance + 1e-6)
+
+        norm_text_encoder_hidden_states = norm_text_encoder_hidden_states.reshape(b, l, -1)
+
+        bool_mask = (attention_mask > 0.5).astype(jnp.float32)[..., None]
+        norm_text_encoder_hidden_states = norm_text_encoder_hidden_states * bool_mask
+
+        # 3. Rescale norms
+        # Using self.caption_channels if available, or fallback to config or 3840
+        cap_channels = getattr(self, "caption_channels", getattr(self.config, "caption_channels", 3840))
+        
+        video_scale_factor = jnp.sqrt(self.video_connector.dim / cap_channels)
+        video_norm_text_emb = norm_text_encoder_hidden_states * video_scale_factor
+        audio_scale_factor = jnp.sqrt(self.audio_connector.dim / cap_channels)
+        audio_norm_text_emb = norm_text_encoder_hidden_states * audio_scale_factor
+
+        video_text_emb_proj = self.video_text_proj_in(video_norm_text_emb)
+        audio_text_emb_proj = self.audio_text_proj_in(audio_norm_text_emb)
+
+        video_embeds, new_attention_mask = self.video_connector(video_text_emb_proj, attention_mask)
+        audio_embeds, _ = self.audio_connector(audio_text_emb_proj, attention_mask)
       else:
+        # 1. Shared Feature Extraction
+        features = self.feature_extractor(hidden_states, attention_mask)
+
+        # 2. Parallel Connection
         video_embeds, new_attention_mask = self.video_embeddings_connector(features, attention_mask)
         audio_embeds, _ = self.audio_embeddings_connector(features, attention_mask)
 

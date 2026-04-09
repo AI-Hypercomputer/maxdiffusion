@@ -39,6 +39,9 @@ LTX_2_3_CONNECTORS_KEYS_RENAME_DICT = {
     "audio_linear.bias": "audio_text_proj_in.bias",
     "video_linear.weight": "video_text_proj_in.kernel",
     "video_linear.bias": "video_text_proj_in.bias",
+}
+
+LTX_2_3_ONLY_RENAME_DICT = {
     "video_embeddings_connector": "video_connector",
     "audio_embeddings_connector": "audio_connector",
 }
@@ -50,6 +53,7 @@ def load_connectors_weights(
     hf_download: bool = True,
     subfolder: str = "",
     filename: str = None,
+    is_ltx2_3: bool = False,
 ):
   device = jax.local_devices(backend=device)[0]
 
@@ -68,6 +72,10 @@ def load_connectors_weights(
       flax_key_str = pt_key
       for replace_key, rename_to in LTX_2_3_CONNECTORS_KEYS_RENAME_DICT.items():
         flax_key_str = flax_key_str.replace(replace_key, rename_to)
+
+      if is_ltx2_3:
+        for replace_key, rename_to in LTX_2_3_ONLY_RENAME_DICT.items():
+          flax_key_str = flax_key_str.replace(replace_key, rename_to)
 
       segments = flax_key_str.split(".")
       
