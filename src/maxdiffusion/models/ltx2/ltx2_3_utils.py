@@ -59,7 +59,7 @@ def load_connectors_weights(
     accumulated_stacked = {}
 
     for pt_key, tensor in tensors.items():
-      if not any(x in pt_key for x in ["connectors.", "video_embeddings_connector", "audio_embeddings_connector"]):
+      if not any(x in pt_key for x in ["connectors.", "video_embeddings_connector", "audio_embeddings_connector", "text_embedding_projection"]):
         continue
 
       flax_key_str = pt_key
