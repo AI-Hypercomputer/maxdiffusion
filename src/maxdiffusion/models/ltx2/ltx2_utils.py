@@ -107,6 +107,8 @@ def rename_for_ltx2_transformer(key):
   # Handle substrings before they are replaced by shorter patterns below
   key = key.replace("audio_prompt_adaln_single", "audio_prompt_adaln")
   key = key.replace("prompt_adaln_single", "prompt_adaln")
+  key = key.replace("audio_prompt_scale_shift_table", "audio_scale_shift_table")
+  key = key.replace("prompt_scale_shift_table", "scale_shift_table")
 
   if "prompt_adaln" in key:
     key = key.replace("prompt_adaln", "caption_projection")
@@ -141,6 +143,12 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
         pt_tuple_key = ("transformer_blocks", str(block_index)) + pt_tuple_key[1:]
 
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
+  
+  # Transpose back caption projections for LTX-2.3 as they are already in JAX format or shouldn't be transposed
+  if "caption_projection" in flax_key or "audio_caption_projection" in flax_key:
+    if "kernel" in flax_key and flax_tensor.ndim == 2:
+      flax_tensor = flax_tensor.T
+
   flax_key_str = [str(k) for k in flax_key]
 
   if "scale_shift_table" in flax_key_str:
