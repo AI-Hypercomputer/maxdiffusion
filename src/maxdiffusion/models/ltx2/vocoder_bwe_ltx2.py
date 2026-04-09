@@ -218,12 +218,20 @@ class UpSample1d(nnx.Module):
     w_transposed = jnp.transpose(self.filter_weight, (2, 1, 0)) # (C, 1, K)
     w_flipped = w_transposed[..., ::-1]
     
+    # Manual dilation to match PyTorch ConvTranspose1d behavior
+    b, c, t = x_transposed.shape
+    x_dilated = jnp.zeros((b, c, (t - 1) * self.ratio + 1), dtype=x.dtype)
+    x_dilated = x_dilated.at[:, :, ::self.ratio].set(x_transposed)
+    
+    # Pad with 2 * (K - 1) zeros on the right to match PyTorch output length
+    pad_len = 2 * (self.kernel_size - 1)
+    x_dilated = jnp.pad(x_dilated, ((0, 0), (0, 0), (0, pad_len)))
+    
     out = jax.lax.conv_general_dilated(
-        lhs=x_transposed,
+        lhs=x_dilated,
         rhs=w_flipped,
         window_strides=(1,),
         padding=((0, 0),),
-        lhs_dilation=(self.ratio,),
         feature_group_count=self.channels,
         dimension_numbers=jax.lax.ConvDimensionNumbers(
             lhs_spec=(0, 1, 2), # N, C, W
