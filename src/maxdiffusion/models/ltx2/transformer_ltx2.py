@@ -699,7 +699,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           rngs=rngs,
           in_features=self.caption_channels,
           hidden_size=self.cross_attention_dim,
-          embedding_dim=inner_dim,
+          embedding_dim=self.cross_attention_dim,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
       )
@@ -707,7 +707,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           rngs=rngs,
           in_features=self.audio_caption_channels,
           hidden_size=self.audio_cross_attention_dim,
-          embedding_dim=audio_inner_dim,
+          embedding_dim=self.audio_cross_attention_dim,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
       )
