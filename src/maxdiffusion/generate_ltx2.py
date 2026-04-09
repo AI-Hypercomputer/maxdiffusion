@@ -82,7 +82,6 @@ jax.config.update("jax_use_shardy_partitioner", True)
 
 
 def call_pipeline(config, pipeline, prompt, negative_prompt):
-  # Set default generation arguments
   generator = jax.random.key(config.seed) if hasattr(config, "seed") else jax.random.key(0)
   guidance_scale = config.guidance_scale if hasattr(config, "guidance_scale") else 3.0
 
@@ -100,6 +99,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
       decode_noise_scale=getattr(config, "decode_noise_scale", None),
       max_sequence_length=getattr(config, "max_sequence_length", 1024),
       dtype=jnp.bfloat16 if getattr(config, "activations_dtype", "bfloat16") == "bfloat16" else jnp.float32,
+      output_type=getattr(config, "upsampler_output_type", "pil"),
   )
   return out
 
@@ -115,9 +115,11 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     else:
       max_logging.log("Could not retrieve Git commit hash.")
 
+  checkpoint_loader = LTX2Checkpointer(config=config)
   if pipeline is None:
-    checkpoint_loader = LTX2Checkpointer(config=config)
-    pipeline, _, _ = checkpoint_loader.load_checkpoint()
+    # Use the config flag to determine if the upsampler should be loaded
+    run_latent_upsampler = getattr(config, "run_latent_upsampler", False)
+    pipeline, _, _ = checkpoint_loader.load_checkpoint(load_upsampler=run_latent_upsampler)
 
     # If LoRA is specified, inject layers and load weights.
     if (
@@ -161,6 +163,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   )
 
   out = call_pipeline(config, pipeline, prompt, negative_prompt)
+
   # out should have .frames and .audio
   videos = out.frames if hasattr(out, "frames") else out[0]
   audios = out.audio if hasattr(out, "audio") else None
@@ -169,6 +172,8 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log(f"model name: {getattr(config, 'model_name', 'ltx-video')}")
   max_logging.log(f"model path: {config.pretrained_model_name_or_path}")
   max_logging.log(f"model type: {getattr(config, 'model_type', 'T2V')}")
+  if getattr(config, "run_latent_upsampler", False):
+    max_logging.log(f"upsampler model path: {config.upsampler_model_path}")
   max_logging.log(f"hardware: {jax.devices()[0].platform}")
   max_logging.log(f"number of devices: {jax.device_count()}")
   max_logging.log(f"per_device_batch_size: {config.per_device_batch_size}")

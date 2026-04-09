@@ -41,7 +41,7 @@ class LTX2CheckpointerTest(unittest.TestCase):
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=None)
 
     mock_manager.latest_step.assert_called_once()
-    mock_ltx2_pipeline.from_pretrained.assert_called_once_with(self.config, False, True)
+    mock_ltx2_pipeline.from_pretrained.assert_called_once_with(self.config, False, True, False)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertIsNone(step)
@@ -71,7 +71,7 @@ class LTX2CheckpointerTest(unittest.TestCase):
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
-    mock_ltx2_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value, False, True)
+    mock_ltx2_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value, False, True, False)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertEqual(step, 1)
@@ -101,7 +101,7 @@ class LTX2CheckpointerTest(unittest.TestCase):
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
-    mock_ltx2_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value, False, True)
+    mock_ltx2_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value, False, True, False)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.001)

@@ -123,3 +123,12 @@ lora_config: {
   rank: [32]
 }
 
+# LTX-2 Latent Upsampler
+run_latent_upsampler: False
+upsampler_model_path: "Lightricks/LTX-2"
+upsampler_spatial_patch_size: 1
+upsampler_temporal_patch_size: 1
+upsampler_adain_factor: 0.0
+upsampler_tone_map_compression_ratio: 0.0
+upsampler_rational_spatial_scale: 2.0
+upsampler_output_type: "pil"
