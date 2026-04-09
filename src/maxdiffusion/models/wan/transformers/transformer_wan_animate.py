@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+# pylint: disable=too-many-positional-arguments
+
 from typing import Tuple, Optional, Dict, Union, Any
 import contextlib
 import math
@@ -64,6 +66,7 @@ class FusedLeakyReLU(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
   ):
+    del rngs
     self.negative_slope = negative_slope
     self.scale = scale
     self.channels = bias_channels
@@ -279,6 +282,7 @@ class MotionLinear(nnx.Module):
 
 
 class MotionEncoderResBlock(nnx.Module):
+  """Residual block used inside the Wan Animate motion encoder."""
 
   def __init__(
       self,
@@ -450,6 +454,7 @@ class WanAnimateMotionEncoder(nnx.Module):
 
 
 class WanAnimateFaceEncoder(nnx.Module):
+  """Encodes per-frame motion vectors into face-conditioning latents."""
 
   def __init__(
       self,
@@ -577,6 +582,7 @@ class WanAnimateFaceEncoder(nnx.Module):
 
 
 class WanAnimateFaceBlockCrossAttention(nnx.Module):
+  """Cross-attention block that injects per-frame face latents into video tokens."""
 
   def __init__(
       self,
@@ -700,10 +706,18 @@ class WanAnimateFaceBlockCrossAttention(nnx.Module):
       encoder_hidden_states: jax.Array,
       attention_mask: Optional[jax.Array] = None,
   ) -> jax.Array:
+    hidden_states = jax.lax.with_sharding_constraint(
+        hidden_states,
+        nn.logical_to_mesh_axes((common_types.BATCH, common_types.LENGTH, common_types.HEAD)),
+    )
+    encoder_hidden_states = jax.lax.with_sharding_constraint(
+        encoder_hidden_states,
+        nn.logical_to_mesh_axes((common_types.BATCH, None, None, common_types.HEAD)),
+    )
     hidden_states = self.pre_norm_q(hidden_states)
     encoder_hidden_states = self.pre_norm_kv(encoder_hidden_states)
 
-    B, T, N, _ = encoder_hidden_states.shape
+    B, T, _, _ = encoder_hidden_states.shape
 
     query = self.to_q(hidden_states)
     key = self.to_k(encoder_hidden_states)
@@ -721,32 +735,38 @@ class WanAnimateFaceBlockCrossAttention(nnx.Module):
     # frame-wise reshape so each query batch element still corresponds to a full frame.
     query = jax.lax.with_sharding_constraint(
         query,
-        nn.logical_to_mesh_axes((
-            common_types.BATCH,
-            None,
-            common_types.CROSS_ATTN_HEAD,
-            common_types.D_KV,
-        )),
+        nn.logical_to_mesh_axes(
+            (
+                common_types.BATCH,
+                None,
+                common_types.CROSS_ATTN_HEAD,
+                common_types.D_KV,
+            )
+        ),
     )
     key = jax.lax.with_sharding_constraint(
         key,
-        nn.logical_to_mesh_axes((
-            common_types.BATCH,
-            None,
-            None,
-            common_types.CROSS_ATTN_HEAD,
-            common_types.D_KV,
-        )),
+        nn.logical_to_mesh_axes(
+            (
+                common_types.BATCH,
+                None,
+                None,
+                common_types.CROSS_ATTN_HEAD,
+                common_types.D_KV,
+            )
+        ),
     )
     value = jax.lax.with_sharding_constraint(
         value,
-        nn.logical_to_mesh_axes((
-            common_types.BATCH,
-            None,
-            None,
-            common_types.CROSS_ATTN_HEAD,
-            common_types.D_KV,
-        )),
+        nn.logical_to_mesh_axes(
+            (
+                common_types.BATCH,
+                None,
+                None,
+                common_types.CROSS_ATTN_HEAD,
+                common_types.D_KV,
+            )
+        ),
     )
 
     query_S = query.shape[1]
@@ -764,27 +784,15 @@ class WanAnimateFaceBlockCrossAttention(nnx.Module):
 
     query = jax.lax.with_sharding_constraint(
         query,
-        nn.logical_to_mesh_axes((
-            common_types.BATCH,
-            common_types.LENGTH,
-            common_types.HEAD,
-        )),
+        nn.logical_to_mesh_axes((common_types.BATCH, common_types.CROSS_ATTN_Q_LENGTH, common_types.HEAD)),
     )
     key = jax.lax.with_sharding_constraint(
         key,
-        nn.logical_to_mesh_axes((
-            common_types.BATCH,
-            common_types.LENGTH,
-            common_types.HEAD,
-        )),
+        nn.logical_to_mesh_axes((common_types.BATCH, common_types.CROSS_ATTN_KV_LENGTH, common_types.HEAD)),
     )
     value = jax.lax.with_sharding_constraint(
         value,
-        nn.logical_to_mesh_axes((
-            common_types.BATCH,
-            common_types.LENGTH,
-            common_types.HEAD,
-        )),
+        nn.logical_to_mesh_axes((common_types.BATCH, common_types.CROSS_ATTN_KV_LENGTH, common_types.HEAD)),
     )
 
     attn_output = self.attention_op.apply_attention(query, key, value)
@@ -795,11 +803,13 @@ class WanAnimateFaceBlockCrossAttention(nnx.Module):
     hidden_states = self.to_out(attn_output)
     hidden_states = jax.lax.with_sharding_constraint(
         hidden_states,
-        nn.logical_to_mesh_axes((
-            common_types.BATCH,
-            common_types.LENGTH,
-            common_types.EMBED,
-        )),
+        nn.logical_to_mesh_axes(
+            (
+                common_types.BATCH,
+                common_types.LENGTH,
+                common_types.EMBED,
+            )
+        ),
     )
 
     if attention_mask is not None:
@@ -810,6 +820,7 @@ class WanAnimateFaceBlockCrossAttention(nnx.Module):
 
 
 class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
+  """NNX Wan Animate transformer with pose and face conditioning."""
 
   @register_to_config
   def __init__(
@@ -844,8 +855,8 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       attention: str = "dot_product",
       face_attention: Optional[str] = None,
       remat_policy: str = "None",
-      names_which_can_be_saved: list = [],
-      names_which_can_be_offloaded: list = [],
+      names_which_can_be_saved: Optional[list] = None,
+      names_which_can_be_offloaded: Optional[list] = None,
       mask_padding_tokens: bool = True,
       scan_layers: bool = True,
       enable_jax_named_scopes: bool = False,
@@ -863,6 +874,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or latent_channels
 
+    self.model_type = model_type
     self.num_layers = num_layers
     self.scan_layers = scan_layers
     self.enable_jax_named_scopes = enable_jax_named_scopes
@@ -870,8 +882,8 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.inject_face_latents_blocks = inject_face_latents_blocks
     self.motion_encoder_batch_size = motion_encoder_batch_size
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
-    self.names_which_can_be_saved = names_which_can_be_saved
-    self.names_which_can_be_offloaded = names_which_can_be_offloaded
+    self.names_which_can_be_saved = names_which_can_be_saved or []
+    self.names_which_can_be_offloaded = names_which_can_be_offloaded or []
 
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
 
@@ -1037,9 +1049,16 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
   def conditional_named_scope(self, name: str):
+    """Return a JAX named scope when scope annotations are enabled."""
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
 
+  def init_weights(self, rng: jax.Array, eval_only: bool = False) -> Dict[str, Any]:
+    """NNX modules initialize parameters eagerly during construction."""
+    del rng, eval_only
+    raise NotImplementedError("NNXWanAnimateTransformer3DModel initializes weights during construction.")
+
   def _apply_face_adapter(self, hidden_states: jax.Array, motion_vec: Optional[jax.Array], block_idx) -> jax.Array:
+    """Inject face-conditioning latents at the configured adapter blocks."""
     if motion_vec is None or len(self.face_adapter) == 0:
       return hidden_states
 
@@ -1075,7 +1094,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     # Constrain input to batch-sharded layout before any computation.
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
 
-    batch_size, num_channels, num_frames, height, width = hidden_states.shape
+    batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.patch_size
     post_patch_num_frames = num_frames // p_t
     post_patch_height = height // p_h
@@ -1202,8 +1221,8 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     else:
       for block_idx, block in enumerate(self.blocks):
 
-        def layer_forward(hidden_states):
-          hidden_states = block(
+        def layer_forward(hidden_states, current_block=block, current_block_idx=block_idx):
+          hidden_states = current_block(
               hidden_states,
               encoder_hidden_states,
               timestep_proj,
@@ -1213,8 +1232,8 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
               encoder_attention_mask=encoder_attention_mask,
           )
 
-          if motion_vec is not None and block_idx % self.inject_face_latents_blocks == 0:
-            hidden_states = self._apply_face_adapter(hidden_states, motion_vec, block_idx)
+          if motion_vec is not None and current_block_idx % self.inject_face_latents_blocks == 0:
+            hidden_states = self._apply_face_adapter(hidden_states, motion_vec, current_block_idx)
           return hidden_states
 
         rematted_layer_forward = self.gradient_checkpoint.apply(
@@ -1227,9 +1246,7 @@ class NNXWanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     # 6. Output Norm & Projection
     shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
-    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(
-        hidden_states.dtype
-    )
+    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
     hidden_states = self.proj_out(hidden_states)
 
     hidden_states = jnp.reshape(
