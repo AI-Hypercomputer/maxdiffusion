@@ -93,7 +93,19 @@ def rename_for_ltx2_transformer(key):
   if "to_out_0" in key:
     key = key.replace("to_out_0", "to_out")
 
+  # Add missing mappings
+  key = key.replace("av_ca_video_scale_shift_adaln_single", "av_cross_attn_video_scale_shift")
+  key = key.replace("av_ca_a2v_gate_adaln_single", "av_cross_attn_video_a2v_gate")
+  key = key.replace("av_ca_audio_scale_shift_adaln_single", "av_cross_attn_audio_scale_shift")
+  key = key.replace("av_ca_v2a_gate_adaln_single", "av_cross_attn_audio_v2a_gate")
+  key = key.replace("scale_shift_table_a2v_ca_video", "video_a2v_cross_attn_scale_shift_table")
+  key = key.replace("scale_shift_table_a2v_ca_audio", "audio_a2v_cross_attn_scale_shift_table")
+
   # LTX-2.3 specific mappings
+  # Handle substrings before they are replaced by shorter patterns below
+  key = key.replace("audio_prompt_adaln_single", "audio_prompt_adaln")
+  key = key.replace("prompt_adaln_single", "prompt_adaln")
+
   if "prompt_adaln" in key:
     key = key.replace("prompt_adaln", "caption_projection")
   if "audio_prompt_adaln" in key:
@@ -337,6 +349,8 @@ def rename_for_ltx2_vocoder(key):
   key = key.replace("ups.", "upsamplers.")
   key = key.replace("resblocks", "resnets")
   key = key.replace("conv_post", "conv_out")
+  key = key.replace("conv_pre", "conv_in")
+  key = key.replace("act_post", "act_out")
   
   # LTX-2.3 specific mappings for Vocoder
   if "downsample" in key and "lowpass" not in key:

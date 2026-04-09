@@ -384,9 +384,9 @@ class Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
     )
 
-    self.ups = nnx.List()
+    self.upsamplers = nnx.List()
     for i, (stride, kernel_size) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
-      self.ups.append(
+      self.upsamplers.append(
           nnx.ConvTranspose(
               in_features=upsample_initial_channel // (2**i),
               out_features=upsample_initial_channel // (2 ** (i + 1)),
@@ -398,11 +398,11 @@ class Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
           )
       )
 
-    self.resblocks = nnx.List()
+    self.resnets = nnx.List()
     for i in range(len(upsample_rates)):
       ch = upsample_initial_channel // (2 ** (i + 1))
       for kernel_size, dilations in zip(resblock_kernel_sizes, resblock_dilation_sizes):
-        self.resblocks.append(AMPBlock1(ch, kernel_size, dilations, activation=activation, rngs=rngs))
+        self.resnets.append(AMPBlock1(ch, kernel_size, dilations, activation=activation, rngs=rngs))
 
     final_channels = upsample_initial_channel // (2 ** len(upsample_rates))
     self.act_out = Activation1d(final_channels, SnakeBeta(final_channels, rngs=rngs), rngs=rngs)
@@ -429,14 +429,14 @@ class Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     hidden_states = self.conv_in(hidden_states)
 
     for i in range(self.num_upsamples):
-      hidden_states = self.ups[i](hidden_states)
+      hidden_states = self.upsamplers[i](hidden_states)
       
       start = i * self.num_kernels
       end = (i + 1) * self.num_kernels
 
       res_sum = 0.0
       for j in range(start, end):
-        res_sum = res_sum + self.resblocks[j](hidden_states)
+        res_sum = res_sum + self.resnets[j](hidden_states)
 
       hidden_states = res_sum / self.num_kernels
 
