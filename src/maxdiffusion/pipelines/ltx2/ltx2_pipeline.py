@@ -425,7 +425,9 @@ class LTX2Pipeline:
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
 
-    params = load_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="vae")
+    filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
+    subfolder = "" if getattr(config, "model_name", "") == "ltx2.3" else "vae"
+    params = load_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder=subfolder, filename=filename)
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 

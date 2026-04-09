@@ -110,12 +110,25 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   return flax_key, flax_tensor
 
 
-def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device):
+def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=None):
   """
-  Loads weights from a sharded safetensors checkpoint.
+  Loads weights from a sharded safetensors checkpoint or a single file.
   """
-  index_file = "diffusion_pytorch_model.safetensors.index.json"
   tensors = {}
+  
+  if filename is not None:
+    ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
+    if filename.endswith(".safetensors"):
+      with safe_open(ckpt_path, framework="pt") as f:
+        for k in f.keys():
+          tensors[k] = torch2jax(f.get_tensor(k))
+    else:
+      loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
+      for k, v in loaded_state_dict.items():
+        tensors[k] = torch2jax(v)
+    return tensors
+
+  index_file = "diffusion_pytorch_model.safetensors.index.json"
   try:
     index_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=index_file)
     with open(index_path, "r") as f:
@@ -193,14 +206,14 @@ def load_transformer_weights(
 
 
 def load_vae_weights(
-    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, subfolder: str = "vae"
+    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, subfolder: str = "vae", filename: str = None
 ):
   device = jax.local_devices(backend=device)[0]
 
   max_logging.log(f"Load and port {pretrained_model_name_or_path} VAE on {device}")
 
   with jax.default_device(device):
-    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
 
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
