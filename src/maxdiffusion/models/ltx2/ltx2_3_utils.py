@@ -52,14 +52,19 @@ def load_connectors_weights(
 
       segments = flax_key_str.split(".")
       
-      # Find if there is a layer index (digit)
+      # Only extract digit if it immediately follows 'stacked_blocks'
       layer_idx = None
       base_segments = []
-      for seg in segments:
-        if seg.isdigit():
-          layer_idx = int(seg)
+      i = 0
+      while i < len(segments):
+        seg = segments[i]
+        if seg == "stacked_blocks" and i + 1 < len(segments) and segments[i+1].isdigit():
+          base_segments.append(seg)
+          layer_idx = int(segments[i+1])
+          i += 2
         else:
           base_segments.append(seg)
+          i += 1
           
       if layer_idx is not None:
         base_key = _tuple_str_to_int(base_segments)
