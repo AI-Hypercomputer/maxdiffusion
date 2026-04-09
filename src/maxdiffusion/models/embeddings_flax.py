@@ -489,22 +489,9 @@ class NNXCombinedTimestepTextProjEmbeddings(nnx.Module):
     if out_features is None:
       out_features = hidden_size
 
-    self.linear_1 = nnx.Linear(
+    self.linear = nnx.Linear(
         rngs=rngs,
         in_features=in_features,
-        out_features=hidden_size,
-        use_bias=True,
-        dtype=jnp.float32,
-        param_dtype=weights_dtype,
-        precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", "mlp")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
-    )
-    self.act_1 = get_activation(act_fn)
-
-    self.linear_2 = nnx.Linear(
-        rngs=rngs,
-        in_features=hidden_size,
         out_features=out_features,
         use_bias=True,
         dtype=jnp.float32,
@@ -529,9 +516,7 @@ class NNXCombinedTimestepTextProjEmbeddings(nnx.Module):
     self.emb = EmbWrapper(rngs, embedding_dim, weights_dtype)
 
   def __call__(self, caption, timestep):
-    hidden_states = self.linear_1(caption)
-    hidden_states = self.act_1(hidden_states)
-    hidden_states = self.linear_2(hidden_states)
+    hidden_states = self.linear(caption)
 
     timesteps_proj = self.time_proj(timestep)
     timesteps_emb = self.emb.timestep_embedder(timesteps_proj)
