@@ -40,6 +40,8 @@ def load_connectors_weights(
     cpu = jax.local_devices(backend="cpu")[0]
     flattened_eval = flatten_dict(eval_shapes)
 
+    accumulated_stacked = {}
+
     for pt_key, tensor in tensors.items():
       if not any(x in pt_key for x in ["connectors.", "video_embeddings_connector", "audio_embeddings_connector"]):
         continue
@@ -48,8 +50,35 @@ def load_connectors_weights(
       for replace_key, rename_to in LTX_2_3_CONNECTORS_KEYS_RENAME_DICT.items():
         flax_key_str = flax_key_str.replace(replace_key, rename_to)
 
-      flax_key = _tuple_str_to_int(flax_key_str.split("."))
-      flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
+      segments = flax_key_str.split(".")
+      
+      # Find if there is a layer index (digit)
+      layer_idx = None
+      base_segments = []
+      for seg in segments:
+        if seg.isdigit():
+          layer_idx = int(seg)
+        else:
+          base_segments.append(seg)
+          
+      if layer_idx is not None:
+        base_key = _tuple_str_to_int(base_segments)
+        if base_key not in accumulated_stacked:
+          accumulated_stacked[base_key] = {}
+        accumulated_stacked[base_key][layer_idx] = tensor
+      else:
+        flax_key = _tuple_str_to_int(segments)
+        flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
+
+    # Now stack the accumulated ones
+    for base_key, layers in accumulated_stacked.items():
+      num_layers = max(layers.keys()) + 1
+      if len(layers) != num_layers:
+        raise ValueError(f"Missing layers for {base_key}, got {layers.keys()}")
+        
+      sorted_tensors = [layers[i] for i in range(num_layers)]
+      stacked_tensor = jnp.stack(sorted_tensors, axis=0)
+      flax_state_dict[base_key] = jax.device_put(stacked_tensor, device=cpu)
 
     filtered_eval_shapes = {
         k: v for k, v in flattened_eval.items() if not any("dropout" in str(x) or "rngs" in str(x) for x in k)
