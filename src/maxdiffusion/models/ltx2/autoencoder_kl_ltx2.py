@@ -982,7 +982,7 @@ class LTX2VideoDecoder3d(nnx.Module):
     layers_per_block = tuple(reversed(layers_per_block))
     inject_noise = tuple(reversed(inject_noise))
     upsample_residual = tuple(reversed(upsample_residual))
-    upsample_factor = upsample_factor
+    upsample_factor = tuple(reversed(upsample_factor))
     upsample_type = upsample_type
     output_channel = block_out_channels[0]
 
