@@ -26,6 +26,42 @@ from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
 
 
+LTX_2_0_VIDEO_VAE_RENAME_DICT = {
+    # Encoder
+    "down_blocks.0": "down_blocks.0",
+    "down_blocks.1": "down_blocks.0.downsamplers.0",
+    "down_blocks.2": "down_blocks.1",
+    "down_blocks.3": "down_blocks.1.downsamplers.0",
+    "down_blocks.4": "down_blocks.2",
+    "down_blocks.5": "down_blocks.2.downsamplers.0",
+    "down_blocks.6": "down_blocks.3",
+    "down_blocks.7": "down_blocks.3.downsamplers.0",
+    "down_blocks.8": "mid_block",
+    # Decoder
+    "up_blocks.0": "mid_block",
+    "up_blocks.1": "up_blocks.0.upsamplers.0",
+    "up_blocks.2": "up_blocks.0",
+    "up_blocks.3": "up_blocks.1.upsamplers.0",
+    "up_blocks.4": "up_blocks.1",
+    "up_blocks.5": "up_blocks.2.upsamplers.0",
+    "up_blocks.6": "up_blocks.2",
+    "last_time_embedder": "time_embedder",
+    "last_scale_shift_table": "scale_shift_table",
+    # Common
+    # For all 3D ResNets
+    "res_blocks": "resnets",
+    "per_channel_statistics.mean-of-means": "latents_mean",
+    "per_channel_statistics.std-of-means": "latents_std",
+}
+
+LTX_2_3_VIDEO_VAE_RENAME_DICT = {
+    **LTX_2_0_VIDEO_VAE_RENAME_DICT,
+    # Decoder extra blocks
+    "up_blocks.7": "up_blocks.3.upsamplers.0",
+    "up_blocks.8": "up_blocks.3",
+}
+
+
 def _tuple_str_to_int(in_tuple):
   out_list = []
   for item in in_tuple:
@@ -225,7 +261,12 @@ def load_vae_weights(
 
     for pt_key, tensor in tensors.items():
       # latents_mean and latents_std are nnx.Params and will be loaded correctly.
-      renamed_pt_key = rename_key(pt_key)
+      new_key = pt_key
+      if filename == "ltx-2.3-22b-dev.safetensors":
+        for replace_key, rename_to in LTX_2_3_VIDEO_VAE_RENAME_DICT.items():
+          new_key = new_key.replace(replace_key, rename_to)
+
+      renamed_pt_key = rename_key(new_key)
       renamed_pt_key = renamed_pt_key.replace("nin_shortcut", "conv_shortcut")
 
       pt_tuple_key = tuple(renamed_pt_key.split("."))
