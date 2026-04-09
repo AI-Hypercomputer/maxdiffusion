@@ -382,19 +382,36 @@ class LTX2Pipeline:
             {
                 "block_out_channels": (256, 512, 1024, 1024),
                 "decoder_block_out_channels": (256, 512, 512, 1024),
-                "upsample_residual": False,
-                "upsample_factor": (2, 2, 1, 2),
+                "layers_per_block": (4, 6, 4, 2, 2),
+                "decoder_layers_per_block": (4, 6, 4, 2, 2),
+                "spatio_temporal_scaling": (True, True, True, True),
+                "decoder_spatio_temporal_scaling": (True, True, True, True),
+                "decoder_inject_noise": (False, False, False, False, False),
+                "downsample_type": ("spatial", "temporal", "spatiotemporal", "spatiotemporal"),
                 "upsample_type": ("spatiotemporal", "spatiotemporal", "temporal", "spatial"),
+                "upsample_residual": (False, False, False, False),
+                "upsample_factor": (2, 2, 1, 2),
+                "patch_size": 4,
+                "patch_size_t": 1,
+                "resnet_norm_eps": 1e-6,
+                "encoder_causal": True,
+                "decoder_causal": False,
+                "encoder_spatial_padding_mode": "zeros",
                 "decoder_spatial_padding_mode": "zeros",
             }
         )
-      vae = LTX2VideoAutoencoderKL.from_config(
-          config.pretrained_model_name_or_path,
-          subfolder="vae",
-          rngs=rngs,
-          mesh=mesh,
-          **vae_kwargs,
-      )
+        vae = LTX2VideoAutoencoderKL(
+            rngs=rngs,
+            **vae_kwargs,
+        )
+      else:
+        vae = LTX2VideoAutoencoderKL.from_config(
+            config.pretrained_model_name_or_path,
+            subfolder="vae",
+            rngs=rngs,
+            mesh=mesh,
+            **vae_kwargs,
+        )
       return vae
 
     p_model_factory = partial(create_model, config=config)
