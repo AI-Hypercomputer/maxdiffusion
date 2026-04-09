@@ -113,6 +113,18 @@ def create_sharded_logical_transformer(
   # 1. Load config.
   if restored_checkpoint:
     ltx2_config = restored_checkpoint["ltx2_config"]
+  elif getattr(config, "model_name", "") == "ltx2.3":
+    ltx2_config = {
+        "in_channels": 128,
+        "num_attention_heads": 32,
+        "attention_head_dim": 128,
+        "cross_attention_dim": 4096,
+        "audio_in_channels": 128,
+        "audio_num_attention_heads": 32,
+        "audio_attention_head_dim": 64,
+        "audio_cross_attention_dim": 2048,
+        "num_layers": 48,
+    }
   else:
     ltx2_config = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
 
