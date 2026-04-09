@@ -33,7 +33,8 @@ from ...utils import logging
 from ...schedulers import FlaxFlowMatchScheduler
 from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
-from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder, LTX2VocoderWithBWE
+from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder
+from ...models.ltx2.vocoder_bwe_ltx2 import LTX2VocoderWithBWE
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
 from ...models.ltx2.ltx2_utils import (
     load_transformer_weights,

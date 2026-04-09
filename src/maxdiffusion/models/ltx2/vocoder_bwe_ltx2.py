@@ -534,7 +534,7 @@ class MelSTFT(nnx.Module):
 # Vocoder With BWE
 # ---------------------------------------------------------------------------
 
-class VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
+class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
   @register_to_config
   def __init__(
       self,
