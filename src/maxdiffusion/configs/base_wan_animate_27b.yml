@@ -75,10 +75,13 @@ mask_padding_tokens: True
 attention_sharding_uniform: True 
 dropout: 0.1
 
+# Tuned for 720p (720x1280), 81 frames, CP=8 on Trillium (32MB VMEM):
+#   block_q=2048, block_kv=4096, block_kv_compute=1024
+#   ~31% faster than default (512,512,512): 389s vs 508s at 40 steps
 flash_block_sizes: {
-  "block_q" : 512,
-  "block_kv_compute" : 512,
-  "block_kv" : 512,
+  "block_q" : 2048,
+  "block_kv_compute" : 1024,
+  "block_kv" : 4096,
   "block_q_dkv" : 512,
   "block_kv_dkv" : 512,
   "block_kv_dkv_compute" : 512,
@@ -86,16 +89,16 @@ flash_block_sizes: {
   "block_kv_dq" : 512,
   "use_fused_bwd_kernel": False,
 }
-# Use on v6e
+# Default (480p / training):
 # flash_block_sizes: {
-#   "block_q" : 3024,
-#   "block_kv_compute" : 1024,
-#   "block_kv" : 2048,
-#   "block_q_dkv" : 3024,
-#   "block_kv_dkv" : 2048,
-#   "block_kv_dkv_compute" : 2048,
-#   "block_q_dq" : 3024,
-#   "block_kv_dq" : 2048
+#   "block_q" : 512,
+#   "block_kv_compute" : 512,
+#   "block_kv" : 512,
+#   "block_q_dkv" : 512,
+#   "block_kv_dkv" : 512,
+#   "block_kv_dkv_compute" : 512,
+#   "block_q_dq" : 512,
+#   "block_kv_dq" : 512,
 #   "use_fused_bwd_kernel": False,
 # }
 # GroupNorm groups

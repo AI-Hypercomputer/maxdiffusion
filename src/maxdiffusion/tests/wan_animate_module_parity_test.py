@@ -271,19 +271,21 @@ class WanAnimateModuleParityTest(unittest.TestCase):
 
   def test_face_block_cross_attention_parity(self):
     hf_module = HFWanAnimateFaceBlockCrossAttention(dim=12, heads=3, dim_head=4, cross_attention_dim_head=4).eval()
-    max_module = WanAnimateFaceBlockCrossAttention(
-        rngs=self.rngs,
-        dim=12,
-        heads=3,
-        dim_head=4,
-        cross_attention_dim_head=4,
-    )
-    copy_face_block_cross_attention_params(max_module, hf_module)
-
     hidden_states = torch.randn(2, 8, 12)
     encoder_hidden_states = torch.randn(2, 2, 3, 12)
     expected = hf_module(hidden_states, encoder_hidden_states)
-    actual = max_module(jnp.asarray(to_numpy(hidden_states)), jnp.asarray(to_numpy(encoder_hidden_states)))
+
+    with self.mesh, nn_partitioning.axis_rules(self.logical_axis_rules):
+      max_module = WanAnimateFaceBlockCrossAttention(
+          rngs=self.rngs,
+          dim=12,
+          heads=3,
+          dim_head=4,
+          cross_attention_dim_head=4,
+          mesh=self.mesh,
+      )
+      copy_face_block_cross_attention_params(max_module, hf_module)
+      actual = max_module(jnp.asarray(to_numpy(hidden_states)), jnp.asarray(to_numpy(encoder_hidden_states)))
 
     assert_allclose(self, actual, expected, atol=2e-7, rtol=1e-6)
 

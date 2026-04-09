@@ -46,11 +46,9 @@ from maxdiffusion.image_processor import PipelineImageInput, VaeImageProcessor
 from maxdiffusion.max_utils import device_put_replicated, get_flash_block_sizes, get_precision
 from maxdiffusion.video_processor import VideoProcessor
 
-from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan
 from ...models.wan.transformers.transformer_wan_animate import NNXWanAnimateTransformer3DModel
 from ...models.wan.wan_utils import load_wan_animate_transformer
 from ...pyconfig import HyperParameters
-from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 from .wan_pipeline import WanPipeline, cast_with_exclusion
 
 
@@ -76,9 +74,7 @@ def create_sharded_animate_transformer(
   if restored_checkpoint:
     wan_config = restored_checkpoint["wan_config"]
   else:
-    wan_config = NNXWanAnimateTransformer3DModel.load_config(
-        config.pretrained_model_name_or_path, subfolder=subfolder
-    )
+    wan_config = NNXWanAnimateTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
 
   wan_config["mesh"] = mesh
   wan_config["dtype"] = config.activations_dtype
@@ -605,9 +601,7 @@ class WanAnimatePipeline(WanPipeline):
       if task == "replace" and background_video is not None:
         prev_segment_cond_video = background_video[:, :, :prev_segment_cond_frames]
       else:
-        prev_segment_cond_video = jnp.zeros(
-            (batch_size, 3, prev_segment_cond_frames, height, width), dtype=vae_dtype
-        )
+        prev_segment_cond_video = jnp.zeros((batch_size, 3, prev_segment_cond_frames, height, width), dtype=vae_dtype)
 
     # Build full-length cond video (prev frames + remainder).
     if task == "replace" and background_video is not None:
@@ -856,9 +850,7 @@ class WanAnimatePipeline(WanPipeline):
     pose_video_tensor = jnp.array(pose_video_tensor.cpu().numpy())  # (1, C, T, H, W)
 
     face_size = self.transformer.motion_encoder.size
-    face_video_tensor = self.video_processor.preprocess_video(
-        face_video, height=face_size, width=face_size
-    )
+    face_video_tensor = self.video_processor.preprocess_video(face_video, height=face_size, width=face_size)
     face_video_tensor = jnp.array(face_video_tensor.cpu().numpy())  # (1, C, T, face_size, face_size)
 
     background_video_tensor = None
@@ -869,9 +861,7 @@ class WanAnimatePipeline(WanPipeline):
       background_video = self.pad_video_frames(background_video, num_target_frames)
       mask_video = self.pad_video_frames(mask_video, num_target_frames)
 
-      background_video_tensor = self.video_processor.preprocess_video(
-          background_video, height=height, width=width
-      )
+      background_video_tensor = self.video_processor.preprocess_video(background_video, height=height, width=width)
       background_video_tensor = jnp.array(background_video_tensor.cpu().numpy())
       mask_video_tensor = self.video_processor_for_mask.preprocess_video(mask_video, height=height, width=width)
       mask_video_tensor = jnp.array(mask_video_tensor.cpu().numpy())
@@ -915,7 +905,6 @@ class WanAnimatePipeline(WanPipeline):
       face_seg = face_video_tensor[:, :, start:end]  # (1, C, T_seg, face_size, face_size)
 
       if effective_batch_size > 1:
-        pose_seg = jnp.broadcast_to(pose_seg, (effective_batch_size,) + pose_seg.shape[1:])
         face_seg = jnp.broadcast_to(face_seg, (effective_batch_size,) + face_seg.shape[1:])
       face_seg = face_seg.astype(transformer_dtype)
 
