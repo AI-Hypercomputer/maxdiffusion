@@ -590,6 +590,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       norm_elementwise_affine: bool = False,
       norm_eps: float = 1e-6,
       caption_channels: int = 3840,
+      audio_caption_channels: int = None,
       attention_bias: bool = True,
       attention_out_bias: bool = True,
       rope_theta: float = 10000.0,
@@ -643,6 +644,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.norm_elementwise_affine = norm_elementwise_affine
     self.norm_eps = norm_eps
     self.caption_channels = caption_channels
+    self.audio_caption_channels = audio_caption_channels or caption_channels
     self.attention_bias = attention_bias
     self.attention_out_bias = attention_out_bias
     self.rope_theta = rope_theta
@@ -703,7 +705,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       )
       self.audio_caption_projection = NNXCombinedTimestepTextProjEmbeddings(
           rngs=rngs,
-          in_features=self.caption_channels,
+          in_features=self.audio_caption_channels,
           hidden_size=audio_inner_dim,
           embedding_dim=audio_inner_dim,
           dtype=self.dtype,
@@ -719,7 +721,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       )
       self.audio_caption_projection = NNXPixArtAlphaTextProjection(
           rngs=rngs,
-          in_features=self.caption_channels,
+          in_features=self.audio_caption_channels,
           hidden_size=audio_inner_dim,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,

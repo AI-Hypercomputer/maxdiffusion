@@ -117,6 +117,8 @@ def rename_for_ltx2_transformer(key):
   if "audio_text_proj_in" in key:
     key = key.replace("audio_text_proj_in", "feature_extractor.audio_linear")
 
+  key = key.replace("k_norm", "norm_k")
+  key = key.replace("q_norm", "norm_q")
   key = key.replace("adaln_single", "time_embed")
   return key
 
