@@ -98,6 +98,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
       norm_elementwise_affine: bool = False,
       norm_eps: float = 1e-6,
       rope_type: str = "interleaved",
+      gated_attn: bool = False,
+      cross_attn_mod: bool = False,
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       mesh: jax.sharding.Mesh = None,
@@ -141,6 +143,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        gated_attn=gated_attn,
     )
 
     self.audio_norm1 = nnx.RMSNorm(
@@ -167,6 +170,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        gated_attn=gated_attn,
     )
 
     # 2. Prompt Cross-Attention
@@ -194,6 +198,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
+        gated_attn=gated_attn,
     )
 
     self.audio_norm2 = nnx.RMSNorm(
@@ -221,6 +226,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        gated_attn=gated_attn,
     )
 
     # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
@@ -249,6 +255,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=0,
+        gated_attn=gated_attn,
     )
 
     self.video_to_audio_norm = nnx.RMSNorm(
@@ -276,6 +283,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        gated_attn=gated_attn,
     )
 
     # 4. Feed Forward
@@ -313,12 +321,14 @@ class LTX2VideoTransformerBlock(nnx.Module):
     key = rngs.params()
     k1, k2, k3, k4 = jax.random.split(key, 4)
 
+    self.cross_attn_mod = cross_attn_mod
+    table_size = 9 if cross_attn_mod else 6
     self.scale_shift_table = nnx.Param(
-        jax.random.normal(k1, (6, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
+        jax.random.normal(k1, (table_size, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
         kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
     self.audio_scale_shift_table = nnx.Param(
-        jax.random.normal(k2, (6, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
+        jax.random.normal(k2, (table_size, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
         kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
     self.video_a2v_cross_attn_scale_shift_table = nnx.Param(
@@ -385,6 +395,11 @@ class LTX2VideoTransformerBlock(nnx.Module):
     scale_mlp = ada_values[:, :, 4, :]
     gate_mlp = ada_values[:, :, 5, :]
 
+    if getattr(self, "cross_attn_mod", False):
+      shift_q = ada_values[:, :, 6, :]
+      scale_q = ada_values[:, :, 7, :]
+      gate_q = ada_values[:, :, 8, :]
+
     norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
 
     with jax.named_scope("Video Self-Attention"):
@@ -410,6 +425,11 @@ class LTX2VideoTransformerBlock(nnx.Module):
     audio_scale_mlp = audio_ada_values[:, :, 4, :]
     audio_gate_mlp = audio_ada_values[:, :, 5, :]
 
+    if getattr(self, "cross_attn_mod", False):
+      audio_shift_q = audio_ada_values[:, :, 6, :]
+      audio_scale_q = audio_ada_values[:, :, 7, :]
+      audio_gate_q = audio_ada_values[:, :, 8, :]
+
     norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_msa) + audio_shift_msa
 
     with jax.named_scope("Audio Self-Attention"):
@@ -422,21 +442,35 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
     # 2. Video and Audio Cross-Attention with the text embeddings
     norm_hidden_states = self.norm2(hidden_states)
+    if getattr(self, "cross_attn_mod", False):
+      norm_hidden_states = norm_hidden_states * (1 + scale_q) + shift_q
+
     attn_hidden_states = self.attn2(
         norm_hidden_states,
         encoder_hidden_states=encoder_hidden_states,
         rotary_emb=None,
         attention_mask=encoder_attention_mask,
     )
+    
+    if getattr(self, "cross_attn_mod", False):
+      attn_hidden_states = attn_hidden_states * gate_q
+      
     hidden_states = hidden_states + attn_hidden_states
 
     norm_audio_hidden_states = self.audio_norm2(audio_hidden_states)
+    if getattr(self, "cross_attn_mod", False):
+      norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_q) + audio_shift_q
+
     attn_audio_hidden_states = self.audio_attn2(
         norm_audio_hidden_states,
         encoder_hidden_states=audio_encoder_hidden_states,
         rotary_emb=None,
         attention_mask=audio_encoder_attention_mask,
     )
+    
+    if getattr(self, "cross_attn_mod", False):
+      attn_audio_hidden_states = attn_audio_hidden_states * audio_gate_q
+      
     audio_hidden_states = audio_hidden_states + attn_audio_hidden_states
 
     # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention

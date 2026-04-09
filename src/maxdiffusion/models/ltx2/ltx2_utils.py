@@ -57,6 +57,16 @@ def rename_for_ltx2_transformer(key):
   if "to_out_0" in key:
     key = key.replace("to_out_0", "to_out")
 
+  # LTX-2.3 specific mappings
+  if "prompt_adaln" in key:
+    key = key.replace("prompt_adaln", "caption_projection")
+  if "audio_prompt_adaln" in key:
+    key = key.replace("audio_prompt_adaln", "audio_caption_projection")
+  if "video_text_proj_in" in key:
+    key = key.replace("video_text_proj_in", "feature_extractor.video_linear")
+  if "audio_text_proj_in" in key:
+    key = key.replace("audio_text_proj_in", "feature_extractor.audio_linear")
+
   return key
 
 
@@ -269,6 +279,11 @@ def rename_for_ltx2_vocoder(key):
   key = key.replace("ups.", "upsamplers.")
   key = key.replace("resblocks", "resnets")
   key = key.replace("conv_post", "conv_out")
+  
+  # LTX-2.3 specific mappings for Vocoder
+  if "downsample" in key and "lowpass" not in key:
+    key = key.replace("downsample", "downsample.lowpass")
+    
   return key
 
 

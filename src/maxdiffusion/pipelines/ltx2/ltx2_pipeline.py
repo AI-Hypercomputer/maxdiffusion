@@ -33,7 +33,7 @@ from ...utils import logging
 from ...schedulers import FlaxFlowMatchScheduler
 from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
-from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder
+from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder, LTX2VocoderWithBWE
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
 from ...models.ltx2.ltx2_utils import (
     load_transformer_weights,
@@ -129,6 +129,12 @@ def create_sharded_logical_transformer(
   ltx2_config["remat_policy"] = config.remat_policy
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
+
+  if getattr(config, "model_name", "") == "ltx2.3":
+    ltx2_config["gated_attn"] = True
+    ltx2_config["cross_attn_mod"] = True
+    ltx2_config["perturbed_attn"] = True
+    ltx2_config["use_prompt_embeddings"] = False
 
   # 2. eval_shape
   p_model_factory = partial(create_model, ltx2_config=ltx2_config)
@@ -312,13 +318,25 @@ class LTX2Pipeline:
     max_logging.log("Loading Connectors...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
+      connector_kwargs = {
+          "dtype": jnp.float32,
+          "weights_dtype": config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+      }
+      if getattr(config, "model_name", "") == "ltx2.3":
+        connector_kwargs.update(
+            {
+                "video_connector_num_layers": 8,
+                "video_gated_attn": True,
+                "per_modality_projections": True,
+                "proj_bias": True,
+            }
+        )
       connectors = LTX2AudioVideoGemmaTextEncoder.from_config(
           config.pretrained_model_name_or_path,
           subfolder="connectors",
           rngs=rngs,
           mesh=mesh,
-          dtype=jnp.float32,
-          weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          **connector_kwargs,
       )
       return connectors
 
@@ -354,13 +372,27 @@ class LTX2Pipeline:
     max_logging.log("Loading Video VAE...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
+      vae_kwargs = {
+          "dtype": jnp.float32,
+          "weights_dtype": config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+      }
+      if getattr(config, "model_name", "") == "ltx2.3":
+        vae_kwargs.update(
+            {
+                "block_out_channels": (256, 512, 1024, 1024),
+                "decoder_block_out_channels": (256, 512, 512, 1024),
+                "upsample_residual": False,
+                "upsample_factor": (2, 2, 1, 2),
+                "upsample_type": ("spatiotemporal", "spatiotemporal", "temporal", "spatial"),
+                "decoder_spatial_padding_mode": "zeros",
+            }
+        )
       vae = LTX2VideoAutoencoderKL.from_config(
           config.pretrained_model_name_or_path,
           subfolder="vae",
           rngs=rngs,
           mesh=mesh,
-          dtype=jnp.float32,
-          weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          **vae_kwargs,
       )
       return vae
 
@@ -471,7 +503,12 @@ class LTX2Pipeline:
     max_logging.log("Loading Vocoder...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      vocoder = LTX2Vocoder.from_config(
+      if getattr(config, "model_name", "") == "ltx2.3":
+        vocoder_class = LTX2VocoderWithBWE
+      else:
+        vocoder_class = LTX2Vocoder
+
+      vocoder = vocoder_class.from_config(
           config.pretrained_model_name_or_path,
           subfolder="vocoder",
           rngs=rngs,

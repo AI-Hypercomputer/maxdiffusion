@@ -102,14 +102,21 @@ class LTX2GemmaFeatureExtractor(nnx.Module):
       output_dim: int,
       dtype: DType = jnp.float32,
       rngs: nnx.Rngs = None,
+      per_modality_projections: bool = False,
+      use_bias: bool = False,
   ):
     """
     Args:
         input_dim: Dimension of flattened hidden states (Gemma dim * Num layers).
         output_dim: Target dimension for diffusion conditioning.
     """
-    # LTX-2 uses bias=False for the projection
-    self.linear = nnx.Linear(input_dim, output_dim, use_bias=False, dtype=dtype, rngs=rngs)
+    self.per_modality_projections = per_modality_projections
+    
+    if per_modality_projections:
+      self.video_linear = nnx.Linear(input_dim, output_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
+      self.audio_linear = nnx.Linear(input_dim, output_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
+    else:
+      self.linear = nnx.Linear(input_dim, output_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
 
   def __call__(self, hidden_states: Union[Tuple[Array, ...], Array], attention_mask: Array) -> Array:
     """
@@ -133,4 +140,7 @@ class LTX2GemmaFeatureExtractor(nnx.Module):
     x_norm = _norm_and_concat_padded_batch(x, attention_mask)
 
     # 4. Projection
-    return self.linear(x_norm)
+    if self.per_modality_projections:
+      return self.video_linear(x_norm), self.audio_linear(x_norm)
+    else:
+      return self.linear(x_norm)

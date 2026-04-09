@@ -57,15 +57,23 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
+      per_modality_projections: bool = False,
+      proj_bias: bool = False,
+      video_gated_attn: bool = False,
+      audio_gated_attn: bool = False,
       **kwargs,
   ):
     input_dim = caption_channels * text_proj_in_factor
+
+    self.per_modality_projections = per_modality_projections
 
     self.feature_extractor = LTX2GemmaFeatureExtractor(
         input_dim=input_dim,
         output_dim=caption_channels,
         dtype=dtype,
         rngs=rngs,
+        per_modality_projections=per_modality_projections,
+        use_bias=proj_bias,
     )
 
     # Two independent connectors
@@ -82,6 +90,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         attention_kernel=attention_kernel,
         mesh=mesh,
         rngs=rngs,
+        gated_attn=video_gated_attn,
     )
 
     self.audio_embeddings_connector = Embeddings1DConnector(
@@ -97,6 +106,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         attention_kernel=attention_kernel,
         mesh=mesh,
         rngs=rngs,
+        gated_attn=audio_gated_attn,
     )
 
   def __call__(
@@ -113,7 +123,12 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       features = self.feature_extractor(hidden_states, attention_mask)
 
       # 2. Parallel Connection
-      video_embeds, new_attention_mask = self.video_embeddings_connector(features, attention_mask)
-      audio_embeds, _ = self.audio_embeddings_connector(features, attention_mask)
+      if self.per_modality_projections:
+        video_features, audio_features = features
+        video_embeds, new_attention_mask = self.video_embeddings_connector(video_features, attention_mask)
+        audio_embeds, _ = self.audio_embeddings_connector(audio_features, attention_mask)
+      else:
+        video_embeds, new_attention_mask = self.video_embeddings_connector(features, attention_mask)
+        audio_embeds, _ = self.audio_embeddings_connector(features, attention_mask)
 
       return video_embeds, audio_embeds, new_attention_mask

@@ -37,6 +37,7 @@ class _BasicTransformerBlock1D(nnx.Module):
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
+      gated_attn: bool = False,
   ):
     self.attn1 = LTX2Attention(
         query_dim=dim,
@@ -48,6 +49,7 @@ class _BasicTransformerBlock1D(nnx.Module):
         attention_kernel=attention_kernel,
         mesh=mesh,
         rngs=rngs,
+        gated_attn=gated_attn,
     )
     self.ff = NNXSimpleFeedForward(rngs=rngs, dim=dim, dim_out=dim, activation_fn="gelu_tanh")
     self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=False, rngs=rngs)
@@ -92,6 +94,7 @@ class Embeddings1DConnector(nnx.Module):
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
+      gated_attn: bool = False,
   ):
     self.dim = input_dim
     self.heads = heads
@@ -117,6 +120,7 @@ class Embeddings1DConnector(nnx.Module):
           attention_kernel=attention_kernel,
           mesh=mesh,
           rngs=rngs,
+          gated_attn=gated_attn,
       )
 
     # Call the vmapped constructor
