@@ -104,8 +104,8 @@ def load_connectors_weights(
           
         accumulated_stacked[base_key][layer_idx] = tensor
       else:
-        # Transpose projection kernels in feature extractor
-        if "feature_extractor" in segments and segments[-1] == "kernel":
+        # Transpose projection kernels in feature extractor or new LTX-2.3 projections
+        if any(x in segments for x in ["feature_extractor", "audio_text_proj_in", "video_text_proj_in"]) and segments[-1] == "kernel":
           tensor = jnp.transpose(tensor, (1, 0))
           
         flax_key = _tuple_str_to_int(segments)
