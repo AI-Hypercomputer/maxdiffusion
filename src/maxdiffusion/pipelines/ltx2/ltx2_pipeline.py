@@ -336,6 +336,7 @@ class LTX2Pipeline:
                 "video_connector_attention_head_dim": 128,
                 "audio_connector_attention_head_dim": 64,
                 "video_gated_attn": True,
+                "audio_gated_attn": True,
                 "per_modality_projections": True,
                 "proj_bias": True,
             }

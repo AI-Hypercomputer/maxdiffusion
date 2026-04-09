@@ -81,6 +81,11 @@ def load_connectors_weights(
         base_key = _tuple_str_to_int(base_segments)
         if base_key not in accumulated_stacked:
           accumulated_stacked[base_key] = {}
+        
+        # Transpose FF kernels to match Flax layout (in, out)
+        if "ff" in base_segments and base_segments[-1] == "kernel":
+          tensor = jnp.transpose(tensor, (1, 0))
+          
         accumulated_stacked[base_key][layer_idx] = tensor
       else:
         flax_key = _tuple_str_to_int(segments)
