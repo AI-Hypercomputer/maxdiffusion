@@ -516,6 +516,8 @@ def load_audio_vae_weights(
   for pt_key, tensor in tensors.items():
     if filename and not pt_key.startswith("audio_vae."):
       continue
+    if filename and pt_key.startswith("audio_vae."):
+      pt_key = pt_key[len("audio_vae."):]
     key = rename_for_ltx2_audio_vae(pt_key)
 
     if key.endswith(".kernel") and tensor.ndim == 4:
