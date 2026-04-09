@@ -222,7 +222,7 @@ class UpSample1d(nnx.Module):
         lhs=x_transposed,
         rhs=w_flipped,
         window_strides=(1,),
-        padding="VALID",
+        padding=((0, 0),),
         lhs_dilation=(self.ratio,),
         feature_group_count=self.channels,
         dimension_numbers=jax.lax.ConvDimensionNumbers(
