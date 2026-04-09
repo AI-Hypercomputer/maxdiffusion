@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Tuple, Union, List
+from typing import Optional, Tuple, Union, List
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -39,6 +39,8 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
   def __init__(
       self,
       caption_channels: int = 3840,
+      video_caption_channels: Optional[int] = None,
+      audio_caption_channels: Optional[int] = None,
       text_proj_in_factor: int = 49,
       video_connector_attention_head_dim: int = 128,
       video_connector_num_attention_heads: int = 30,
@@ -65,6 +67,9 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
   ):
     input_dim = caption_channels * text_proj_in_factor
 
+    v_dim = video_caption_channels if video_caption_channels is not None else caption_channels
+    a_dim = audio_caption_channels if audio_caption_channels is not None else caption_channels
+
     self.per_modality_projections = per_modality_projections
 
     self.feature_extractor = LTX2GemmaFeatureExtractor(
@@ -78,7 +83,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     # Two independent connectors
     self.video_embeddings_connector = Embeddings1DConnector(
-        input_dim=caption_channels,
+        input_dim=v_dim,
         heads=video_connector_num_attention_heads,
         head_dim=video_connector_attention_head_dim,
         layers=video_connector_num_layers,
@@ -94,7 +99,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
     self.audio_embeddings_connector = Embeddings1DConnector(
-        input_dim=caption_channels,
+        input_dim=a_dim,
         heads=audio_connector_num_attention_heads,
         head_dim=audio_connector_attention_head_dim,
         layers=audio_connector_num_layers,

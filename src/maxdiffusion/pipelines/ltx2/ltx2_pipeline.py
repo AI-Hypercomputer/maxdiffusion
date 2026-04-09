@@ -329,6 +329,8 @@ class LTX2Pipeline:
                 "video_connector_num_layers": 8,
                 "audio_connector_num_layers": 8,
                 "caption_channels": 2048,
+                "video_caption_channels": 4096,
+                "audio_caption_channels": 2048,
                 "video_connector_num_attention_heads": 32,
                 "audio_connector_num_attention_heads": 32,
                 "video_connector_attention_head_dim": 64,
