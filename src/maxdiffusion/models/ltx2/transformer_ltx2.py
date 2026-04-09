@@ -612,6 +612,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       qk_norm: str = "rms_norm_across_heads",
       flash_block_sizes: BlockSizes = None,
       flash_min_seq_length: int = 4096,
+      gated_attn: bool = False,
+      cross_attn_mod: bool = False,
       **kwargs,
   ):
     self.in_channels = in_channels
@@ -658,6 +660,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.names_which_can_be_offloaded = names_which_can_be_offloaded
     self.scan_layers = scan_layers
     self.attention_kernel = attention_kernel
+    self.gated_attn = gated_attn
+    self.cross_attn_mod = cross_attn_mod
     self.a2v_attention_kernel = a2v_attention_kernel
     self.v2a_attention_kernel = v2a_attention_kernel
     self.flash_min_seq_length = flash_min_seq_length
@@ -845,6 +849,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           norm_elementwise_affine=self.norm_elementwise_affine,
           norm_eps=self.norm_eps,
           rope_type=self.rope_type,
+          gated_attn=self.gated_attn,
+          cross_attn_mod=self.cross_attn_mod,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
           mesh=self.mesh,

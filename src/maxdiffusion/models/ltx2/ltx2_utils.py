@@ -98,6 +98,7 @@ def rename_for_ltx2_transformer(key):
   # Add missing mappings
   key = key.replace("av_ca_video_scale_shift_adaln_single", "av_cross_attn_video_scale_shift")
   key = key.replace("av_ca_a2v_gate_adaln_single", "av_cross_attn_video_a2v_gate")
+  key = key.replace("adaln_single", "time_embed")
   key = key.replace("av_ca_audio_scale_shift_adaln_single", "av_cross_attn_audio_scale_shift")
   key = key.replace("av_ca_v2a_gate_adaln_single", "av_cross_attn_audio_v2a_gate")
   key = key.replace("scale_shift_table_a2v_ca_video", "video_a2v_cross_attn_scale_shift_table")
