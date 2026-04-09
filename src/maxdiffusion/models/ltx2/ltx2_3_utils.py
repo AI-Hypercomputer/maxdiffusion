@@ -32,6 +32,9 @@ LTX_2_3_CONNECTORS_KEYS_RENAME_DICT = {
     "ff.net.0.proj.bias": "ff.net_0.bias",
     "ff.net.2.weight": "ff.net_2.kernel",
     "ff.net.2.bias": "ff.net_2.bias",
+    "to_gate_logits.weight": "to_gate_logits.kernel",
+    "audio_linear.weight": "audio_linear.kernel",
+    "video_linear.weight": "video_linear.kernel",
 }
 
 def load_connectors_weights(
