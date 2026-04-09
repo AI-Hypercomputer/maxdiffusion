@@ -4,11 +4,9 @@ import numpy as np
 from flax import nnx
 from flax.traverse_util import unflatten_dict, flatten_dict
 from maxdiffusion import max_logging
-from ..modeling_flax_pytorch_utils import (
-    load_sharded_checkpoint,
-    validate_flax_state_dict,
-)
-from maxdiffusion.models.ltx2.ltx2_utils import (
+from ..modeling_flax_pytorch_utils import validate_flax_state_dict
+from .ltx2_utils import load_sharded_checkpoint
+from .ltx2_utils import (
     _tuple_str_to_int,
     LTX_2_0_VIDEO_VAE_RENAME_DICT,
 )
