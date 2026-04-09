@@ -322,6 +322,7 @@ def load_vae_weights(
 
       flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
       flax_key = _tuple_str_to_int(flax_key)
+      max_logging.log(f"Mapped VAE key: {pt_key} -> {flax_key}")
 
       if resnet_index is not None:
         str_flax_key = tuple([str(x) for x in flax_key])
@@ -347,7 +348,7 @@ def load_vae_weights(
 
 def rename_for_ltx2_vocoder(key):
   key = key.replace("ups.", "upsamplers.")
-  key = key.replace("resblocks", "resnets")
+  key = key.replace("resblocks.", "resblocks_")
   key = key.replace("conv_post", "conv_out")
   key = key.replace("conv_pre", "conv_in")
   key = key.replace("act_post", "act_out")
@@ -375,6 +376,10 @@ def load_vocoder_weights(
       parts[-1] = "kernel"
 
     flax_key = _tuple_str_to_int(parts)
+
+    # Skip filter keys as they are derived in NNX model
+    if "filter" in flax_key:
+      continue
 
     if flax_key[-1] == "kernel":
       if "upsamplers" in flax_key:
