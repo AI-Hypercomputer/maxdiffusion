@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 import jax.numpy as jnp
 from flax import nnx
 from maxdiffusion import common_types
