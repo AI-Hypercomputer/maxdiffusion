@@ -188,10 +188,14 @@ def create_sharded_logical_transformer(
   for path, val in flax.traverse_util.flatten_dict(params).items():
     if restored_checkpoint:
       path = path[:-1]
+    
+    path_str = tuple(str(k) for k in path)
+    if path not in logical_state_sharding and path_str not in logical_state_sharding:
+      continue
+      
     try:
       sharding = logical_state_sharding[path].value
     except KeyError:
-      path_str = tuple(str(k) for k in path)
       sharding = logical_state_sharding[path_str].value
     state[path].value = device_put_replicated(val, sharding)
   state = nnx.from_flat_state(state)
