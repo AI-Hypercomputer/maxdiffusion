@@ -52,6 +52,7 @@ CONV_OUT = "activation_conv_out_channels"
 WAN2_1 = "wan2.1"
 WAN2_2 = "wan2.2"
 LTX2_VIDEO = "ltx2_video"
+LTX2_3 = "ltx2.3"
 
 WAN_MODEL = WAN2_1
 
