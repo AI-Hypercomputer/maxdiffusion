@@ -907,6 +907,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             norm_elementwise_affine=self.norm_elementwise_affine,
             norm_eps=self.norm_eps,
             rope_type=self.rope_type,
+            gated_attn=self.gated_attn,
+            cross_attn_mod=self.cross_attn_mod,
             dtype=self.dtype,
             weights_dtype=self.weights_dtype,
             mesh=self.mesh,
