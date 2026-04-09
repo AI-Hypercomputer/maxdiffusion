@@ -145,7 +145,7 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
   
   # Transpose back caption projections for LTX-2.3 as they are already in JAX format or shouldn't be transposed
-  if "caption_projection" in flax_key or "audio_caption_projection" in flax_key:
+  if ("caption_projection" in flax_key or "audio_caption_projection" in flax_key) and "timestep_embedder" not in flax_key:
     if "kernel" in flax_key and flax_tensor.ndim == 2:
       flax_tensor = flax_tensor.T
 
