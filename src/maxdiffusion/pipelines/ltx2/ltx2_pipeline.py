@@ -35,12 +35,16 @@ from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
+from ...models.ltx2.latent_upsampler_ltx2 import LTX2LatentUpsamplerModel
 from ...models.ltx2.ltx2_utils import (
     load_transformer_weights,
     load_connector_weights,
     load_vae_weights,
     load_audio_vae_weights,
     load_vocoder_weights,
+    load_upsampler_weights,
+    adain_filter_latent,
+    tone_map_latents,
 )
 from ...models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
 from ...video_processor import VideoProcessor
@@ -219,11 +223,13 @@ class LTX2Pipeline:
       scheduler: FlaxFlowMatchScheduler,
       vae: LTX2VideoAutoencoderKL,
       audio_vae: FlaxAutoencoderKLLTX2Audio,
-      text_encoder: Gemma3ForConditionalGeneration,  # Using PyTorch Gemma3 encoder directly per user request
+      text_encoder: Gemma3ForConditionalGeneration,
       tokenizer: Union[GemmaTokenizer, GemmaTokenizerFast],
       connectors: LTX2AudioVideoGemmaTextEncoder,
       transformer: LTX2VideoTransformer3DModel,
       vocoder: LTX2Vocoder,
+      latent_upsampler: Optional[LTX2LatentUpsamplerModel] = None,
+      latent_upsampler_params: Optional[dict] = None,
   ):
     self.scheduler = scheduler
     self.vae = vae
@@ -233,6 +239,8 @@ class LTX2Pipeline:
     self.tokenizer = tokenizer
     self.connectors = connectors
     self.transformer = transformer
+    self.latent_upsampler = latent_upsampler
+    self.latent_upsampler_params = latent_upsampler_params
 
     # VAE compression ratios
     self.vae_spatial_compression_ratio = getattr(self.vae, "spatial_compression_ratio", 32)
@@ -508,6 +516,50 @@ class LTX2Pipeline:
     return vocoder
 
   @classmethod
+  def load_upsampler(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+    """
+    LTX2LatentUpsamplerModel is a flax.linen.Module, so we do not use nnx.eval_shape or nnx.split.
+    Instead, we return the instantiated Module and the explicitly loaded parameters to be used
+    with `.apply()` during inference.
+    """
+    max_logging.log("Loading Latent Upsampler...")
+
+    # 1. Fetch the dynamic configuration
+    upsampler_config = LTX2LatentUpsamplerModel.load_config(config.upsampler_model_path, subfolder="latent_upsampler")
+
+    if not upsampler_config:
+      max_logging.log("Warning: No upsampler config.json found. Using default dimensions.")
+
+    # 2. Instantiate with config values (using current hardcoded values as fallbacks)
+    upsampler = LTX2LatentUpsamplerModel(
+        in_channels=upsampler_config.get("in_channels", 128),
+        mid_channels=upsampler_config.get("mid_channels", 1024),
+        num_blocks_per_stage=upsampler_config.get("num_blocks_per_stage", 4),
+        dims=upsampler_config.get("dims", 3),
+        spatial_upsample=upsampler_config.get("spatial_upsample", True),
+        temporal_upsample=upsampler_config.get("temporal_upsample", False),
+        # Allow pyconfig (yml) to override the spatial scale, then fallback to model config, then 2.0
+        rational_spatial_scale=getattr(
+            config, "upsampler_rational_spatial_scale", upsampler_config.get("rational_spatial_scale", 2.0)
+        ),
+        rngs=nnx.Rngs(0),
+    )
+
+    # Load weights from disk. Evaluating eval_shapes=None returns the raw checkpoint dict.
+    params = load_upsampler_weights(
+        config.upsampler_model_path, eval_shapes=None, device="cpu", subfolder="latent_upsampler"
+    )
+
+    if hasattr(config, "weights_dtype"):
+      params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+
+    # Replicate the loaded parameters on the TPU mesh
+    sharding = NamedSharding(mesh, P())
+    params = jax.tree_util.tree_map(lambda x: device_put_replicated(x, sharding), params)
+
+    return upsampler, params
+
+  @classmethod
   def load_scheduler(cls, config: HyperParameters):
     max_logging.log("Loading Scheduler...")
     scheduler, _ = FlaxFlowMatchScheduler.from_pretrained(
@@ -547,10 +599,13 @@ class LTX2Pipeline:
     components["audio_vae"] = cls.load_audio_vae(devices_array, mesh, rngs, config)
     components["vocoder"] = cls.load_vocoder(devices_array, mesh, rngs, config)
     components["scheduler"] = cls.load_scheduler(config)
+
     return components
 
   @classmethod
-  def _load_and_init(cls, config: HyperParameters, restored_checkpoint, vae_only=False, load_transformer=True):
+  def _load_and_init(
+      cls, config: HyperParameters, restored_checkpoint, vae_only=False, load_transformer=True, load_upsampler=False
+  ):
     components = cls._create_common_components(config, vae_only)
 
     transformer = None
@@ -564,6 +619,13 @@ class LTX2Pipeline:
           restored_checkpoint=restored_checkpoint,
       )
 
+    latent_upsampler = None
+    latent_upsampler_params = None
+    if load_upsampler:
+      latent_upsampler, latent_upsampler_params = cls.load_upsampler(
+          devices_array=components["devices_array"], mesh=components["mesh"], rngs=components["rngs"], config=config
+      )
+
     pipeline = cls(
         scheduler=components["scheduler"],
         vae=components["vae"],
@@ -573,6 +635,8 @@ class LTX2Pipeline:
         connectors=components["connectors"],
         transformer=transformer,
         vocoder=components["vocoder"],
+        latent_upsampler=latent_upsampler,
+        latent_upsampler_params=latent_upsampler_params,
     )
     pipeline.mesh = components["mesh"]
     pipeline.config = config
@@ -581,13 +645,15 @@ class LTX2Pipeline:
     return pipeline, pipeline.transformer
 
   @classmethod
-  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
-    pipeline, _ = cls._load_and_init(config, None, vae_only, load_transformer)
+  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True, load_upsampler=False):
+    pipeline, _ = cls._load_and_init(config, None, vae_only, load_transformer, load_upsampler)
     return pipeline
 
   @classmethod
-  def from_checkpoint(cls, config: HyperParameters, restored_checkpoint, vae_only=False, load_transformer=True):
-    pipeline, _ = cls._load_and_init(config, restored_checkpoint, vae_only, load_transformer)
+  def from_checkpoint(
+      cls, config: HyperParameters, restored_checkpoint, vae_only=False, load_transformer=True, load_upsampler=False
+  ):
+    pipeline, _ = cls._load_and_init(config, restored_checkpoint, vae_only, load_transformer, load_upsampler)
     return pipeline
 
   @classmethod
@@ -1058,6 +1124,18 @@ class LTX2Pipeline:
     )
     return latents
 
+  @staticmethod
+  @jax.jit
+  def _run_upsampler(graphdef, state, latents_in):
+    model = nnx.merge(graphdef, state)
+    return model(latents_in)
+
+  @staticmethod
+  @jax.jit
+  def _run_connectors(graphdef, state, hidden_states, attention_mask):
+    model = nnx.merge(graphdef, state)
+    return model(hidden_states, attention_mask)
+
   def __call__(
       self,
       prompt: Union[str, List[str]] = None,
@@ -1222,12 +1300,7 @@ class LTX2Pipeline:
     with context_manager, axis_rules_context:
       connectors_graphdef, connectors_state = nnx.split(self.connectors)
 
-      @jax.jit
-      def run_connectors(graphdef, state, hidden_states, attention_mask):
-        model = nnx.merge(graphdef, state)
-        return model(hidden_states, attention_mask)
-
-      video_embeds, audio_embeds, new_attention_mask = run_connectors(
+      video_embeds, audio_embeds, new_attention_mask = self._run_connectors(
           connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
       )
 
@@ -1297,6 +1370,31 @@ class LTX2Pipeline:
 
     # VAE expects channels last (B, T, H, W, C) but unpack returns (B, C, T, H, W)
     latents = latents.transpose(0, 2, 3, 4, 1)
+
+    # =======================================================================
+    # LATENT UPSAMPLER
+    # =======================================================================
+    if getattr(self.config, "run_latent_upsampler", False) and self.latent_upsampler is not None:
+      max_logging.log("🚀 Running Latent Upsampler pass...")
+
+      if self.latent_upsampler_params is not None:
+        nnx.update(self.latent_upsampler, self.latent_upsampler_params)
+        self.latent_upsampler_params = None
+
+      graphdef, state = nnx.split(self.latent_upsampler)
+
+      latents_upsampled = self._run_upsampler(graphdef, state, latents)
+
+      adain_factor = getattr(self.config, "upsampler_adain_factor", 0.0)
+      if adain_factor > 0.0:
+        latents = adain_filter_latent(latents_upsampled, latents, adain_factor)
+      else:
+        latents = latents_upsampled
+
+      tone_map_compression = getattr(self.config, "upsampler_tone_map_compression_ratio", 0.0)
+      if tone_map_compression > 0.0:
+        latents = tone_map_latents(latents, tone_map_compression)
+    # =======================================================================
 
     # Denormalize and Unpack Audio (Order important: Denorm THEN Unpack)
     audio_latents = self._denormalize_audio_latents(
