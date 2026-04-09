@@ -274,6 +274,11 @@ def load_vae_weights(
     needs_vae_prefix = any(key[0] == "vae" for key in random_flax_state_dict)
 
     for pt_key, tensor in tensors.items():
+      # Filter keys for combined checkpoint to avoid noise and memory overhead
+      if filename == "ltx-2.3-22b-dev.safetensors":
+        if not (pt_key.startswith("vae.") or pt_key.startswith("audio_vae.")):
+          continue
+
       # latents_mean and latents_std are nnx.Params and will be loaded correctly.
       new_key = pt_key
       if filename == "ltx-2.3-22b-dev.safetensors":
@@ -295,7 +300,7 @@ def load_vae_weights(
           name = "_".join(part.split("_")[:-1])
           idx = int(part.split("_")[-1])
 
-          if name == "resnets":
+          if name == "resnets" or name == "block":
             pt_list.append("resnets")
             resnet_index = idx
           elif name == "upsamplers":
@@ -322,7 +327,7 @@ def load_vae_weights(
 
       flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
       flax_key = _tuple_str_to_int(flax_key)
-      max_logging.log(f"Mapped VAE key: {pt_key} -> {flax_key}")
+      max_logging.log(f"Mapped key: {pt_key} -> {flax_key}")
 
       if resnet_index is not None:
         str_flax_key = tuple([str(x) for x in flax_key])
