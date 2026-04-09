@@ -327,6 +327,8 @@ class LTX2Pipeline:
         connector_kwargs.update(
             {
                 "video_connector_num_layers": 8,
+                "audio_connector_num_layers": 8,
+                "caption_channels": 2048,
                 "video_gated_attn": True,
                 "per_modality_projections": True,
                 "proj_bias": True,
