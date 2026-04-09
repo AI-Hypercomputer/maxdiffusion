@@ -537,13 +537,14 @@ class LTX2Pipeline:
     max_logging.log("Loading Vocoder...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
+      vocoder_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
       if getattr(config, "model_name", "") == "ltx2.3":
         vocoder_class = LTX2VocoderWithBWE
       else:
         vocoder_class = LTX2Vocoder
-
+        
       vocoder = vocoder_class.from_config(
-          config.pretrained_model_name_or_path,
+          vocoder_repo,
           subfolder="vocoder",
           rngs=rngs,
           mesh=mesh,
@@ -551,19 +552,20 @@ class LTX2Pipeline:
           weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
       )
       return vocoder
-
+ 
     p_model_factory = partial(create_model, config=config)
     vocoder = nnx.eval_shape(p_model_factory, rngs=rngs)
     graphdef, state, rest_of_state = nnx.split(vocoder, nnx.Param, ...)
     rest_of_state = jax.tree_util.tree_map(cls._init_dummy_shape, rest_of_state)
-
+ 
     logical_state_spec = nnx.get_partition_spec(state)
     logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
     logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
-
-    params = load_vocoder_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="vocoder")
+ 
+    filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
+    params = load_vocoder_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="vocoder", filename=filename)
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 

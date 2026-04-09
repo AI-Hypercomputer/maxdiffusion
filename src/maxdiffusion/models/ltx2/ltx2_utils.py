@@ -369,14 +369,18 @@ def rename_for_ltx2_vocoder(key):
 
 
 def load_vocoder_weights(
-    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, subfolder: str = "vocoder"
+    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, subfolder: str = "vocoder", filename: str = None
 ):
-  tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
+  tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
 
   flax_state_dict = {}
   cpu = jax.local_devices(backend="cpu")[0]
 
   for pt_key, tensor in tensors.items():
+    if filename and not pt_key.startswith("vocoder."):
+      continue
+    if filename and pt_key.startswith("vocoder."):
+      pt_key = pt_key[len("vocoder."):]
     key = rename_for_ltx2_vocoder(pt_key)
     parts = key.split(".")
 
