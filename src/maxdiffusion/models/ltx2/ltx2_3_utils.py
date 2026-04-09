@@ -14,6 +14,7 @@ from .ltx2_utils import (
 
 
 LTX_2_3_CONNECTORS_KEYS_RENAME_DICT = {
+    "model.diffusion_model.": "",
     "connectors.": "",
     "video_embeddings_connector": "video_connector",
     "audio_embeddings_connector": "audio_connector",
