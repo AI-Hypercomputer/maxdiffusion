@@ -707,10 +707,11 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         weights_dtype=self.weights_dtype,
     )
     # 3. Timestep Modulation Params and Embedding
+    num_mod_params = 9 if self.cross_attn_mod else 6
     self.time_embed = LTX2AdaLayerNormSingle(
         rngs=rngs,
         embedding_dim=inner_dim,
-        num_mod_params=6,
+        num_mod_params=num_mod_params,
         use_additional_conditions=False,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
@@ -718,7 +719,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.audio_time_embed = LTX2AdaLayerNormSingle(
         rngs=rngs,
         embedding_dim=audio_inner_dim,
-        num_mod_params=6,
+        num_mod_params=num_mod_params,
         use_additional_conditions=False,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
