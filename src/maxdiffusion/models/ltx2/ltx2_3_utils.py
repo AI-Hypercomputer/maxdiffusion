@@ -11,12 +11,7 @@ from .ltx2_utils import (
     LTX_2_0_VIDEO_VAE_RENAME_DICT,
 )
 
-LTX_2_3_VIDEO_VAE_RENAME_DICT = {
-    **LTX_2_0_VIDEO_VAE_RENAME_DICT,
-    # Decoder extra blocks
-    "up_blocks.7": "up_blocks.3.upsamplers.0",
-    "up_blocks.8": "up_blocks.3",
-}
+
 
 LTX_2_3_CONNECTORS_KEYS_RENAME_DICT = {
     "connectors.": "",
