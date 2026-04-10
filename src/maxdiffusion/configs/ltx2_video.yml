@@ -2,6 +2,8 @@
 hardware: 'tpu'
 skip_jax_distributed_system: False
 attention: 'flash'
+a2v_attention_kernel: 'flash'
+v2a_attention_kernel: 'dot_product'
 attention_sharding_uniform: True 
 precision: 'bf16'
 scan_layers: True
@@ -68,6 +70,7 @@ flash_block_sizes: {
   block_kv_dkv_compute: 2048,
   use_fused_bwd_kernel: True,
 }
+flash_min_seq_length: 4096
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
