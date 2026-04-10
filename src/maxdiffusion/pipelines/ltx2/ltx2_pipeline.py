@@ -1679,6 +1679,7 @@ class LTX2Pipeline:
         "latent_width",
         "audio_num_frames",
         "fps",
+        "use_cross_timestep",
     ),
 )
 def transformer_forward_pass(
