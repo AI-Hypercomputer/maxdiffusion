@@ -1379,9 +1379,12 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
     B, T, H, W, C = z.shape
     sample_height = H * self.spatial_compression_ratio
     sample_width = W * self.spatial_compression_ratio
+    print(f"DEBUG: VAE tiled_decode called with hidden shape H={H}, W={W}")
+    print(f"DEBUG: target sample_height={sample_height}, sample_width={sample_width}")
 
     tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
     tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
+    print(f"DEBUG: tile_latent_min_height={tile_latent_min_height}, tile_latent_min_width={tile_latent_min_width}")
     tile_latent_stride_height = self.tile_sample_stride_height // self.spatial_compression_ratio
     tile_latent_stride_width = self.tile_sample_stride_width // self.spatial_compression_ratio
 

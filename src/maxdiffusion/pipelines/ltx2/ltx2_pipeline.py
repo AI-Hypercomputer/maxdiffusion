@@ -469,6 +469,7 @@ class LTX2Pipeline:
             mesh=mesh,
             **vae_kwargs,
         )
+      vae.tile_sample_min_width = 1024
       return vae
 
     p_model_factory = partial(create_model, config=config)
@@ -1724,6 +1725,7 @@ class LTX2Pipeline:
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
     video_np = np.array(video).transpose(0, 4, 1, 2, 3)
     video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
+    print(f"DEBUG: final video shape: {np.array(video).shape}")
 
     # Decode Audio
     audio_latents = audio_latents.astype(self.audio_vae.dtype)
@@ -1739,6 +1741,7 @@ class LTX2Pipeline:
 
     # Convert audio to numpy
     audio = np.array(audio)
+    print(f"DEBUG: final audio shape: {audio.shape}")
 
     return LTX2PipelineOutput(frames=video, audio=audio)
 
