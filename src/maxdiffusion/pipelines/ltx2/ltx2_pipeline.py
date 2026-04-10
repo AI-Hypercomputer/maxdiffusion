@@ -1508,39 +1508,14 @@ class LTX2Pipeline:
             use_cross_timestep=use_cross_timestep,
         )
 
+        do_cfg = guidance_scale > 1.0
         do_stg = stg_scale > 0.0
-
-        if guidance_scale > 1.0 and do_stg:
-          noise_pred_uncond, noise_pred_text, noise_pred_perturb = jnp.split(noise_pred, 3, axis=0)
-          noise_pred = (
-              noise_pred_uncond
-              + guidance_scale * (noise_pred_text - noise_pred_uncond)
-              + stg_scale * (noise_pred_text - noise_pred_perturb)
-          )
-          # Audio guidance
-          noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 3, axis=0)
-          noise_pred_audio = (
-              noise_pred_audio_uncond
-              + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
-              + stg_scale * (noise_pred_audio_text - noise_pred_audio_perturb)
-          )
-        elif guidance_scale > 1.0:
-          noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
-          noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-          # Audio guidance
-          noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
-          noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
-        elif do_stg:
-          noise_pred_text, noise_pred_perturb = jnp.split(noise_pred, 2, axis=0)
-          noise_pred = noise_pred_text + stg_scale * (noise_pred_text - noise_pred_perturb)
-          
-          noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 2, axis=0)
-          noise_pred_audio = noise_pred_audio_text + stg_scale * (noise_pred_audio_text - noise_pred_audio_perturb)
+        sigma_t = sigmas[i]
 
         # Extract latents_step based on stacking strategy
         if do_cfg and do_stg:
-          latents_step = latents_jax[batch_size:2*batch_size]
-          audio_latents_step = audio_latents_jax[batch_size:2*batch_size]
+          latents_step = latents_jax[batch_size : 2 * batch_size]
+          audio_latents_step = audio_latents_jax[batch_size : 2 * batch_size]
         elif do_cfg:
           latents_step = latents_jax[batch_size:]
           audio_latents_step = audio_latents_jax[batch_size:]
@@ -1550,6 +1525,96 @@ class LTX2Pipeline:
         else:
           latents_step = latents_jax
           audio_latents_step = audio_latents_jax
+
+        # Helper to convert velocity to x0
+        def convert_to_x0(lat, vel):
+          return lat - vel * sigma_t
+
+        # Helper to convert x0 back to velocity
+        def convert_to_vel(lat, x0):
+          return (lat - x0) / sigma_t
+
+        if do_cfg and do_stg:
+          noise_pred_uncond, noise_pred_text, noise_pred_perturb = jnp.split(noise_pred, 3, axis=0)
+          
+          # Convert to x0
+          x0_uncond = convert_to_x0(latents_step, noise_pred_uncond)
+          x0_text = convert_to_x0(latents_step, noise_pred_text)
+          x0_perturb = convert_to_x0(latents_step, noise_pred_perturb)
+          
+          # Delta formulation
+          cfg_delta = (guidance_scale - 1) * (x0_text - x0_uncond)
+          stg_delta = stg_scale * (x0_text - x0_perturb)
+          
+          x0_combined = x0_text + cfg_delta + stg_delta
+          
+          # Apply guidance rescale if needed
+          if guidance_rescale > 0:
+            x0_combined = rescale_noise_cfg(x0_combined, x0_text, guidance_rescale=guidance_rescale)
+            
+          # Convert back to velocity
+          noise_pred = convert_to_vel(latents_step, x0_combined)
+
+          # Audio guidance
+          noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 3, axis=0)
+          
+          x0_audio_uncond = convert_to_x0(audio_latents_step, noise_pred_audio_uncond)
+          x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text)
+          x0_audio_perturb = convert_to_x0(audio_latents_step, noise_pred_audio_perturb)
+          
+          cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (x0_audio_text - x0_audio_uncond)
+          stg_audio_delta = (audio_stg_scale if audio_stg_scale is not None else stg_scale) * (x0_audio_text - x0_audio_perturb)
+          
+          x0_audio_combined = x0_audio_text + cfg_audio_delta + stg_audio_delta
+          
+          noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined)
+
+        elif do_cfg:
+          noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
+          
+          x0_uncond = convert_to_x0(latents_step, noise_pred_uncond)
+          x0_text = convert_to_x0(latents_step, noise_pred_text)
+          
+          cfg_delta = (guidance_scale - 1) * (x0_text - x0_uncond)
+          x0_combined = x0_text + cfg_delta
+          
+          if guidance_rescale > 0:
+            x0_combined = rescale_noise_cfg(x0_combined, x0_text, guidance_rescale=guidance_rescale)
+            
+          noise_pred = convert_to_vel(latents_step, x0_combined)
+
+          # Audio guidance
+          noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
+          
+          x0_audio_uncond = convert_to_x0(audio_latents_step, noise_pred_audio_uncond)
+          x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text)
+          
+          cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (x0_audio_text - x0_audio_uncond)
+          x0_audio_combined = x0_audio_text + cfg_audio_delta
+          
+          noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined)
+
+        elif do_stg:
+          noise_pred_text, noise_pred_perturb = jnp.split(noise_pred, 2, axis=0)
+          
+          x0_text = convert_to_x0(latents_step, noise_pred_text)
+          x0_perturb = convert_to_x0(latents_step, noise_pred_perturb)
+          
+          stg_delta = stg_scale * (x0_text - x0_perturb)
+          x0_combined = x0_text + stg_delta
+          
+          noise_pred = convert_to_vel(latents_step, x0_combined)
+
+          # Audio guidance
+          noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 2, axis=0)
+          
+          x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text)
+          x0_audio_perturb = convert_to_x0(audio_latents_step, noise_pred_audio_perturb)
+          
+          stg_audio_delta = (audio_stg_scale if audio_stg_scale is not None else stg_scale) * (x0_audio_text - x0_audio_perturb)
+          x0_audio_combined = x0_audio_text + stg_audio_delta
+          
+          noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined)
 
         # Step
         latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
