@@ -144,16 +144,16 @@ def load_and_segregate_ltx2_3_weights(pretrained_model_name_or_path: str, filena
   }
   
   for pt_key, tensor in tensors.items():
-      if pt_key.startswith("model.diffusion_model."):
-          segregated["transformer"][pt_key.replace("model.diffusion_model.", "")] = tensor
+      if any(x in pt_key for x in ["connectors.", "video_embeddings_connector", "audio_embeddings_connector", "text_embedding_projection"]):
+          segregated["connectors"][pt_key] = tensor
+      elif pt_key.startswith("model.diffusion_model."):
+          segregated["transformer"][pt_key[len("model.diffusion_model."):]] = tensor
       elif pt_key.startswith("audio_vae."):
-          segregated["audio_vae"][pt_key.replace("audio_vae.", "")] = tensor
+          segregated["audio_vae"][pt_key[len("audio_vae."):]] = tensor
       elif pt_key.startswith("vae."):
           segregated["vae"][pt_key] = tensor
       elif pt_key.startswith("vocoder."):
-          segregated["vocoder"][pt_key.replace("vocoder.", "")] = tensor
-      elif any(x in pt_key for x in ["connectors.", "video_embeddings_connector", "audio_embeddings_connector", "text_embedding_projection"]):
-          segregated["connectors"][pt_key] = tensor
+          segregated["vocoder"][pt_key[len("vocoder."):]] = tensor
           
   return segregated
 
