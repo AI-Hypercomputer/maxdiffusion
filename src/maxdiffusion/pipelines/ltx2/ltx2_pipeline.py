@@ -119,7 +119,7 @@ def create_sharded_logical_transformer(
         "in_channels": 128,
         "num_attention_heads": 32,
         "attention_head_dim": 128,
-        "cross_attention_dim": 8192,
+        "cross_attention_dim": 4096,
         "audio_in_channels": 128,
         "audio_num_attention_heads": 32,
         "audio_attention_head_dim": 64,
