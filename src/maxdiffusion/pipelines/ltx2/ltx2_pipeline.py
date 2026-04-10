@@ -132,6 +132,9 @@ def create_sharded_logical_transformer(
   else:
     ltx2_config = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
 
+  # Align RoPE type with connectors
+  ltx2_config["rope_type"] = "split"
+
   if ltx2_config.get("activation_fn") == "gelu-approximate":
     ltx2_config["activation_fn"] = "gelu"
 
@@ -1725,7 +1728,7 @@ class LTX2Pipeline:
     generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
 
     # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
-    generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
+    generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 2, 1)
     audio = self.vocoder(generated_mel_spectrograms)
 
     # Convert audio to numpy
