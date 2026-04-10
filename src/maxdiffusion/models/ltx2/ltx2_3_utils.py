@@ -60,13 +60,13 @@ def rename_for_ltx2_3_transformer(key):
   # Handle substrings before they are replaced by shorter patterns below
   key = key.replace("audio_prompt_adaln_single", "audio_prompt_adaln")
   key = key.replace("prompt_adaln_single", "prompt_adaln")
-  key = key.replace("audio_prompt_scale_shift_table", "audio_scale_shift_table")
-  key = key.replace("prompt_scale_shift_table", "scale_shift_table")
+  # key = key.replace("audio_prompt_scale_shift_table", "audio_scale_shift_table")
+  # key = key.replace("prompt_scale_shift_table", "scale_shift_table")
 
-  if "prompt_adaln" in key:
-    key = key.replace("prompt_adaln", "caption_projection")
-  if "audio_prompt_adaln" in key:
-    key = key.replace("audio_prompt_adaln", "audio_caption_projection")
+  # if "prompt_adaln" in key:
+  #   key = key.replace("prompt_adaln", "caption_projection")
+  # if "audio_prompt_adaln" in key:
+  #   key = key.replace("audio_prompt_adaln", "audio_caption_projection")
   if "video_text_proj_in" in key:
     key = key.replace("video_text_proj_in", "feature_extractor.video_linear")
   if "audio_text_proj_in" in key:
@@ -398,8 +398,6 @@ def load_vocoder_weights_2_3(
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 
-  print(f"DEBUG Vocoder eval_shapes keys: {list(flatten_dict(eval_shapes).keys())[:20]}")
-  print(f"DEBUG Vocoder flax_state_dict keys: {list(flax_state_dict.keys())[:20]}")
   validate_flax_state_dict(eval_shapes, flax_state_dict)
   return unflatten_dict(flax_state_dict)
 
@@ -481,8 +479,6 @@ def load_connectors_weights_2_3(
       stacked_tensor = jnp.stack(sorted_tensors, axis=0)
       flax_state_dict[base_key] = jax.device_put(stacked_tensor, device=cpu)
 
-    print(f"DEBUG Connectors eval_shapes keys: {list(flattened_eval.keys())[:20]}")
-    print(f"DEBUG Connectors flax_state_dict keys: {list(flax_state_dict.keys())[:20]}")
     filtered_eval_shapes = {
         k: v for k, v in flattened_eval.items() if not any("dropout" in str(x) or "rngs" in str(x) for x in k)
     }
