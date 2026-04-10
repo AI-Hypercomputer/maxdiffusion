@@ -168,9 +168,24 @@ def create_sharded_logical_transformer(
   )
   for path, val in flax.traverse_util.flatten_dict(params).items():
     if restored_checkpoint:
-      path = path[:-1]
+      if path[-1] == "value":
+        path = path[:-1]  # remove 'value'
+
+      try:
+        # Convert block indices to integers, as they might have been loaded as strings from the checkpoint.
+        path = path[:1] + (int(path[1]),) + path[2:]
+      except Exception:
+        pass
+
     sharding = logical_state_sharding[path].value
-    state[path].value = device_put_replicated(val, sharding)
+    try:
+      state[path].value = device_put_replicated(val, sharding)
+    except Exception as e:
+      max_logging.log(f"Failed to device_put_replicated {path}: {e}")
+      max_logging.log(f"Trying to use process_allgather for {path}")
+      val_on_host = jax.experimental.multihost_utils.process_allgather(val, tiled=True)
+      state[path].value = device_put_replicated(val_on_host, sharding)
+      del val_on_host
   state = nnx.from_flat_state(state)
 
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
@@ -470,7 +485,6 @@ class WanPipeline:
       negative_prompt_embeds: jax.Array = None,
   ):
     prompt = [prompt] if isinstance(prompt, str) else prompt
-    batch_size = len(prompt)
     if prompt_embeds is None:
       prompt_embeds = self._get_t5_prompt_embeds(
           prompt=prompt,
@@ -480,6 +494,7 @@ class WanPipeline:
       prompt_embeds = jnp.array(prompt_embeds.detach().numpy(), dtype=jnp.float32)
 
     if negative_prompt_embeds is None:
+      batch_size = len(prompt_embeds)
       negative_prompt = negative_prompt or ""
       negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
       negative_prompt_embeds = self._get_t5_prompt_embeds(
