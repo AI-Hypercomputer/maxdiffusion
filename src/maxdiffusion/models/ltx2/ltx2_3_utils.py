@@ -8,7 +8,6 @@ from ..modeling_flax_pytorch_utils import validate_flax_state_dict, rename_key
 from .ltx2_utils import load_sharded_checkpoint
 from .ltx2_utils import (
     _tuple_str_to_int,
-    LTX_2_0_VIDEO_VAE_RENAME_DICT,
     rename_for_ltx2_transformer,
     get_key_and_value,
     rename_for_ltx2_audio_vae,
