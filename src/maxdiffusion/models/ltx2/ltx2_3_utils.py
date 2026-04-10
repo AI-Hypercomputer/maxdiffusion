@@ -481,6 +481,8 @@ def load_connectors_weights_2_3(
       stacked_tensor = jnp.stack(sorted_tensors, axis=0)
       flax_state_dict[base_key] = jax.device_put(stacked_tensor, device=cpu)
 
+    print(f"DEBUG Connectors eval_shapes keys: {list(flattened_eval.keys())[:20]}")
+    print(f"DEBUG Connectors flax_state_dict keys: {list(flax_state_dict.keys())[:20]}")
     filtered_eval_shapes = {
         k: v for k, v in flattened_eval.items() if not any("dropout" in str(x) or "rngs" in str(x) for x in k)
     }
