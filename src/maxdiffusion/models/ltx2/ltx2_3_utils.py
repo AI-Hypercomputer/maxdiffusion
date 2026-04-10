@@ -205,6 +205,11 @@ def load_audio_vae_weights_2_3(
 
   for pt_key, tensor in tensors.items():
     # Keys are already filtered and stripped of "audio_vae." by load_and_segregate
+    if pt_key == "per_channel_statistics.mean-of-means":
+      pt_key = "latents_mean"
+    elif pt_key == "per_channel_statistics.std-of-means":
+      pt_key = "latents_std"
+      
     key = rename_for_ltx2_audio_vae(pt_key)
 
     if key.endswith(".kernel") and tensor.ndim == 4:
