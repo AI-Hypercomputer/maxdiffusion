@@ -259,7 +259,7 @@ def load_vae_weights_2_3(
         name = "_".join(part.split("_")[:-1])
         idx = int(part.split("_")[-1])
 
-        if name == "resnets" or name == "block":
+        if name == "resnets" or name == "block" or name == "res_blocks":
           pt_list.append("resnets")
           resnet_index = idx
         elif name == "upsamplers":
