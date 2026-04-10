@@ -17,6 +17,7 @@ from typing import List, Union, Optional, Tuple
 from functools import partial
 from maxdiffusion.image_processor import PipelineImageInput
 import numpy as np
+import math
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
@@ -41,7 +42,14 @@ import re
 import torch
 import qwix
 from transformers import CLIPImageProcessor
-from transformers.models.clip.modeling_flax_clip import FlaxCLIPVisionModel
+
+try:
+  from transformers.models.clip.modeling_flax_clip import FlaxCLIPVisionModel
+except ModuleNotFoundError:
+  try:
+    from transformers import FlaxCLIPVisionModel
+  except ImportError:
+    FlaxCLIPVisionModel = None
 import PIL
 
 
@@ -219,6 +227,7 @@ class WanPipeline:
       config: HyperParameters,
       image_processor: Optional[CLIPImageProcessor] = None,
       image_encoder: Optional[FlaxCLIPVisionModel] = None,
+      **kwargs,
   ):
     self.tokenizer = tokenizer
     self.text_encoder = text_encoder
@@ -232,6 +241,9 @@ class WanPipeline:
     self.model_name = config.model_name
     self.image_processor = image_processor
     self.image_encoder = image_encoder
+
+    self.vae_mesh = kwargs.get("vae_mesh", mesh)
+    self.vae_logical_axis_rules = kwargs.get("vae_logical_axis_rules", config.logical_axis_rules)
 
     self.vae_scale_factor_temporal = 2 ** sum(self.vae.temperal_downsample) if getattr(self, "vae", None) else 4
     self.vae_scale_factor_spatial = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
@@ -268,7 +280,9 @@ class WanPipeline:
     return image_processor, image_encoder
 
   @classmethod
-  def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
+  def load_vae(
+      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, vae_logical_axis_rules: tuple = None
+  ):
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
       wan_vae = AutoencoderKLWan.from_config(
           config.pretrained_model_name_or_path,
@@ -287,7 +301,8 @@ class WanPipeline:
 
     # 2. retrieve the state shardings, mapping logical names to mesh axis names.
     logical_state_spec = nnx.get_partition_spec(state)
-    logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
+    logical_rules = vae_logical_axis_rules if vae_logical_axis_rules is not None else config.logical_axis_rules
+    logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, logical_rules)
     logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
@@ -569,7 +584,7 @@ class WanPipeline:
 
   def _decode_latents_to_video(self, latents: jax.Array) -> np.ndarray:
     """Decodes latents to video frames and postprocesses."""
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
       video = self.vae.decode(latents, self.vae_cache)[0]
 
     video = jnp.transpose(video, (0, 4, 1, 2, 3))
@@ -581,11 +596,50 @@ class WanPipeline:
   def _create_common_components(cls, config, vae_only=False, i2v=False):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
+
+    vae_spatial = getattr(config, "vae_spatial", -1)
+    total_devices = math.prod(devices_array.shape)
+
+    if vae_spatial <= 0:
+      dp_size = mesh.shape.get("data", 1)
+      if dp_size == -1 or dp_size == 0:
+        dp_size = 1
+      vae_spatial = (2 * total_devices) // dp_size
+
+    assert (
+        total_devices % vae_spatial == 0
+    ), f"total devices ({total_devices}) must be a multiple of vae_spatial ({vae_spatial})"
+
+    flat_devices = devices_array.flatten()
+    vae_devices_array = flat_devices.reshape(total_devices // vae_spatial, vae_spatial)
+
+    vae_mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
+    vae_mesh.vae_spatial_axis_name = "vae_spatial"
+    max_logging.log(
+        f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') to support spatial sharding of {vae_spatial}."
+    )
+
+    # logical axis rules for VAE encoding/decoding
+    vae_logical_axis_rules = (
+        ("activation_batch", "redundant"),
+        ("activation_length", "vae_spatial"),
+        ("activation_heads", None),
+        ("activation_kv_length", None),
+        ("embed", None),
+        ("heads", None),
+        ("norm", None),
+        ("conv_batch", "redundant"),
+        ("out_channels", "vae_spatial"),
+        ("conv_out", "vae_spatial"),
+    )
+
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
 
-    with mesh:
-      wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+    with vae_mesh:
+      wan_vae, vae_cache = cls.load_vae(
+          devices_array=devices_array, mesh=vae_mesh, rngs=rngs, config=config, vae_logical_axis_rules=vae_logical_axis_rules
+      )
 
     components = {
         "vae": wan_vae,
@@ -593,6 +647,8 @@ class WanPipeline:
         "devices_array": devices_array,
         "rngs": rngs,
         "mesh": mesh,
+        "vae_mesh": vae_mesh,
+        "vae_logical_axis_rules": vae_logical_axis_rules,
         "tokenizer": None,
         "text_encoder": None,
         "scheduler": None,

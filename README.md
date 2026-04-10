@@ -572,6 +572,8 @@ To generate images, run the following command:
   * For Wan2.2 T2V, use `base_wan_27b.yml`.
   * For Wan2.2 I2V, use `base_wan_i2v_27b.yml`.
 
+<<<<<<< HEAD
+=======
   ### Caching Mechanisms
 
   Wan 2.x pipelines support several caching strategies to accelerate inference by skipping redundant transformer forward passes. These are **mutually exclusive** — enable only one at a time.
@@ -597,6 +599,7 @@ To generate images, run the following command:
     ...
   ```
 
+>>>>>>> origin/main
   ## Flux
 
   First make sure you have permissions to access the Flux repos in Huggingface.

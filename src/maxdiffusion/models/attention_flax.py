@@ -24,8 +24,9 @@ import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
-from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
-from tokamax._src.ops.experimental.tpu.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
+from maxdiffusion.kernels.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
+from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
+from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from einops import rearrange
 from .. import common_types, max_logging
 
@@ -54,6 +55,31 @@ SELF_ATTN_KV_LENGTH = common_types.SELF_ATTN_KV_LENGTH
 CROSS_ATTN_HEAD = common_types.CROSS_ATTN_HEAD
 CROSS_ATTN_Q_LENGTH = common_types.CROSS_ATTN_Q_LENGTH
 CROSS_ATTN_KV_LENGTH = common_types.CROSS_ATTN_KV_LENGTH
+
+
+def _coerce_tokamax_block_sizes(block_sizes):
+  # Tokamax requires fused bwd; convert if needed.
+  if getattr(block_sizes, "use_fused_bwd_kernel", False):
+    return block_sizes
+
+  # Fall back if some fields are missing.
+  bq = block_sizes.block_q
+  bkv = getattr(block_sizes, "block_kv", bq)
+  bkv_compute = getattr(block_sizes, "block_kv_compute", bkv)
+  bq_dkv = getattr(block_sizes, "block_q_dkv", bq)
+  bkv_dkv = getattr(block_sizes, "block_kv_dkv", bkv)
+  bkv_dkv_compute = getattr(block_sizes, "block_kv_dkv_compute", bkv_compute)
+  return splash_attention_kernel.BlockSizes(
+      block_q=bq,
+      block_kv=bkv,
+      block_kv_compute=bkv_compute,
+      block_q_dkv=bq_dkv,
+      block_kv_dkv=bkv_dkv,
+      block_kv_dkv_compute=bkv_dkv_compute,
+      block_q_dq=None,
+      block_kv_dq=None,
+      use_fused_bwd_kernel=True,
+  )
 
 
 def _maybe_aqt_einsum(quant: Quant):
@@ -250,9 +276,13 @@ def _tpu_flash_attention(
     kv_max_block_size = ((key.shape[1] + 127) // 128) * 128
   else:
     kv_max_block_size = q_max_block_size
+
   # ensure that for cross attention we override the block sizes.
   if flash_block_sizes and key.shape[1] == query.shape[1]:
     block_sizes = flash_block_sizes
+  use_tokamax = attention_kernel in ["tokamax_flash", "tokamax_ring"]
+  if use_tokamax:
+    block_sizes = _coerce_tokamax_block_sizes(flash_block_sizes)
   else:
     block_size_q = flash_block_sizes.block_q if flash_block_sizes else q_max_block_size
     block_sizes = splash_attention_kernel.BlockSizes(
@@ -345,7 +375,19 @@ def _tpu_flash_attention(
           mask=mask,
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
           config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
-          save_residuals=True if attention_kernel == "ring" else False,
+          save_residuals=False,
+      )
+    elif attention_kernel == "tokamax_ring":
+      mask = tokamax_splash_attention_mask.FullMask(
+          _shape=(query.shape[2], key.shape[2]),
+      )
+      splash_kernel = tokamax_ring_attention_kernel.make_ring_attention(
+          mask=mask,
+          is_mqa=False,
+          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          save_residuals=False,
+          ring_axis="context",
+          rotate_segment_ids=False,  # We don't rotate segment ids in tokamax ring attention because our segment ids is for padding each kv shard has same segment ids
       )
     else:
       splash_kernel = splash_attention_kernel.make_splash_mha(
@@ -353,14 +395,15 @@ def _tpu_flash_attention(
           head_shards=1,  # the sizes of the axis is sharding over heads
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
           block_sizes=block_sizes,
-          save_residuals=True if attention_kernel == "ring" else False,
+          save_residuals=True if "ring" in attention_kernel else False,
           residual_checkpoint_name=residual_checkpoint_name,
       )
+
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
 
     if not mask_padding_tokens:
       segment_ids = None
-    if attention_kernel in ["flash", "tokamax_flash"]:
+    if attention_kernel in ["flash", "tokamax_flash", "tokamax_ring"]:
       attention_output = vmapped_splash(query, key, value, segment_ids)
     else:
       if num_context_shards > 1:
@@ -567,9 +610,8 @@ def _apply_attention(
         attention_kernel,
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
-        attention_mask=attention_mask,
     )
-  elif attention_kernel == "ring":
+  elif "ring" in attention_kernel:
     return _tpu_flash_attention(
         query,
         key * scale,
@@ -942,6 +984,8 @@ class FlaxWanAttention(nnx.Module):
     else:
       axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
       axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
+    if attention_kernel == "tokamax_ring" and not is_self_attention:
+      attention_kernel = "tokamax_flash"  # do not use ring attention for cross attention
     self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
     self.image_seq_len = image_seq_len  # New for I2V
 

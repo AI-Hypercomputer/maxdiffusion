@@ -46,7 +46,16 @@ from flax.typing import (
 from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
 from jax.experimental import mesh_utils
-from transformers import (FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel)
+
+try:
+  from transformers import (FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel)
+except ImportError:
+  # For transformers>=5.0, these need different import paths
+  try:
+    from transformers.models.clip.modeling_flax_clip import FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel
+  except ImportError:
+    FlaxCLIPTextModel = None
+    FlaxCLIPTextPreTrainedModel = None
 from flax import struct
 from typing import (
     Callable,
@@ -336,7 +345,10 @@ def init_train_state(model, tx, weights_init_fn, params=None, training=True, eva
   Args: model_params, model, tx, training
   """
   if not params:
-    if isinstance(model, FlaxCLIPTextModel) or isinstance(model, FlaxCLIPTextPreTrainedModel):
+    is_clip_model = False
+    if FlaxCLIPTextModel is not None and FlaxCLIPTextPreTrainedModel is not None:
+      is_clip_model = isinstance(model, FlaxCLIPTextModel) or isinstance(model, FlaxCLIPTextPreTrainedModel)
+    if is_clip_model:
       params = weights_init_fn()
     else:
       params = weights_init_fn(eval_only=eval_only)

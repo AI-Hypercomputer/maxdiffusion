@@ -66,6 +66,28 @@ if [[ ${DEVICE} == "gpu" ]]; then
     export BASEIMAGE=ghcr.io/nvidia/jax:base
   fi
   docker build --network host --build-arg MODE=${MODE} --build-arg JAX_VERSION=$JAX_VERSION --build-arg DEVICE=$DEVICE --build-arg BASEIMAGE=$BASEIMAGE -f ./maxdiffusion_gpu_dependencies.Dockerfile -t ${LOCAL_IMAGE_NAME} .
+<<<<<<< HEAD
+else 
+  if [[ ${MODE} == "stable_stack" || ${MODE} == "jax_ai_image" ]]; then
+    if [[ ! -v BASEIMAGE ]]; then
+      echo "Erroring out because BASEIMAGE is unset, please set it!"
+      exit 1
+    fi
+    docker build --no-cache \
+      --build-arg JAX_AI_IMAGE_BASEIMAGE=${BASEIMAGE} \
+      --build-arg COMMIT_HASH=${COMMIT_HASH} \
+      --network=host \
+      -t ${LOCAL_IMAGE_NAME} \
+      -f maxdiffusion_jax_ai_image_tpu.Dockerfile .
+  else
+    docker build --no-cache \
+      --network=host \
+      --build-arg MODE=${MODE} \
+      --build-arg JAX_VERSION=${JAX_VERSION} \
+      -t ${LOCAL_IMAGE_NAME} \
+      -f maxdiffusion_dependencies.Dockerfile .
+  fi
+=======
 else
   # Default to maxdiffusion_dependencies.Dockerfile for non-GPU builds
   export BASEIMAGE=${BASEIMAGE:-python:3.12-slim-bullseye}
@@ -76,4 +98,5 @@ else
     --build-arg BASEIMAGE=${BASEIMAGE} \
     -t ${LOCAL_IMAGE_NAME} \
     -f maxdiffusion_dependencies.Dockerfile .
+>>>>>>> origin/main
 fi

@@ -1,6 +1,11 @@
+<<<<<<< HEAD
+# Use Python 3.12-slim-bullseye as the base image
+FROM python:3.12-slim-bullseye
+=======
 # Use Python 3.12-slim-bullseye as the base image unless overridden
 ARG BASEIMAGE=python:3.12-slim-bullseye
 FROM $BASEIMAGE
+>>>>>>> origin/main
 
 # Environment variable for no-cache-dir and pip root user warning
 ENV PIP_NO_CACHE_DIR=1
@@ -13,8 +18,13 @@ ENV CLOUD_SDK_VERSION=latest
 # Set DEBIAN_FRONTEND to noninteractive to avoid frontend errors
 ENV DEBIAN_FRONTEND=noninteractive
 
+<<<<<<< HEAD
+# Upgrade pip to the latest version
+RUN python -m pip install --upgrade pip --no-warn-script-location
+=======
 # Upgrade pip to the latest version and install uv
 RUN python -m pip install --upgrade pip uv --no-warn-script-location
+>>>>>>> origin/main
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y apt-utils git curl gnupg procps iproute2 ethtool && rm -rf /var/lib/apt/lists/*
@@ -26,12 +36,26 @@ RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dea
 # Install the Google Cloud SDK
 RUN apt-get update && apt-get install -y google-cloud-sdk && rm -rf /var/lib/apt/lists/*
 
+<<<<<<< HEAD
+# Install cloud-accelerator-diagnostics
+RUN pip install cloud-accelerator-diagnostics
+
+# Install cloud-tpu-diagnostics
+RUN pip install cloud-tpu-diagnostics
+
+# Install gcsfs
+RUN pip install gcsfs
+
+# Install google-cloud-storage
+RUN pip install google-cloud-storage
+=======
 # Install diagnostic and storage dependencies using uv
 RUN python -m uv pip install --system \
     cloud-accelerator-diagnostics \
     cloud-tpu-diagnostics \
     gcsfs \
     google-cloud-storage
+>>>>>>> origin/main
 
 # Args
 ARG MODE
