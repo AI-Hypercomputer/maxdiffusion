@@ -1729,6 +1729,9 @@ class LTX2Pipeline:
     audio_latents = audio_latents.astype(self.audio_vae.dtype)
     generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
     print(f"DEBUG: generated_mel_spectrograms shape: {generated_mel_spectrograms.shape}")
+    print(f"DEBUG: generated_mel_spectrograms min: {generated_mel_spectrograms.min()}")
+    print(f"DEBUG: generated_mel_spectrograms max: {generated_mel_spectrograms.max()}")
+    print(f"DEBUG: generated_mel_spectrograms mean: {generated_mel_spectrograms.mean()}")
 
     # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
     generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
