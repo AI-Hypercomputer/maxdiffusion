@@ -4,13 +4,88 @@ import numpy as np
 from flax import nnx
 from flax.traverse_util import unflatten_dict, flatten_dict
 from maxdiffusion import max_logging
-from ..modeling_flax_pytorch_utils import validate_flax_state_dict
+from ..modeling_flax_pytorch_utils import validate_flax_state_dict, rename_key
 from .ltx2_utils import load_sharded_checkpoint
 from .ltx2_utils import (
     _tuple_str_to_int,
     LTX_2_0_VIDEO_VAE_RENAME_DICT,
+    rename_for_ltx2_transformer,
+    get_key_and_value,
+    rename_for_ltx2_audio_vae,
+    rename_for_ltx2_vocoder,
 )
+def load_ltx2_3_checkpoint(pretrained_model_name_or_path: str, subfolder: str, device: str, filename: str):
+  """Loads weights from a single safetensors file for LTX-2.3."""
+  from huggingface_hub import hf_hub_download
+  from safetensors import safe_open
+  from ..modeling_flax_pytorch_utils import torch2jax
 
+  ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
+  tensors = {}
+  with safe_open(ckpt_path, framework="pt") as f:
+    for k in f.keys():
+      tensors[k] = torch2jax(f.get_tensor(k))
+  return tensorsdef rename_for_ltx2_3_transformer(key):
+  """
+  Renames Diffusers LTX-2.3 keys to MaxDiffusion Flax LTX-2.3 keys.
+  """
+  key = key.replace("patchify_proj", "proj_in")
+  key = key.replace("audio_patchify_proj", "audio_proj_in")
+  key = key.replace("norm_final", "norm_out")
+  if "adaLN_modulation_1" in key:
+    key = key.replace("adaLN_modulation_1", "scale_shift_table")
+
+  if "caption_modulator_1" in key:
+    key = key.replace("caption_modulator_1", "video_a2v_cross_attn_scale_shift_table")
+  if "audio_caption_modulator_1" in key:
+    key = key.replace("audio_caption_modulator_1", "audio_a2v_cross_attn_scale_shift_table")
+  if "audio_norm_final" in key:
+    key = key.replace("audio_norm_final", "audio_norm_out")
+  if ("audio_ff" in key or "ff" in key) and "proj" in key:
+    key = key.replace(".proj", "")
+  if "to_out_0" in key:
+    key = key.replace("to_out_0", "to_out")
+
+  # Add missing mappings
+  key = key.replace("av_ca_video_scale_shift_adaln_single", "av_cross_attn_video_scale_shift")
+  key = key.replace("av_ca_a2v_gate_adaln_single", "av_cross_attn_video_a2v_gate")
+  key = key.replace("av_ca_audio_scale_shift_adaln_single", "av_cross_attn_audio_scale_shift")
+  key = key.replace("av_ca_v2a_gate_adaln_single", "av_cross_attn_audio_v2a_gate")
+  key = key.replace("scale_shift_table_a2v_ca_video", "video_a2v_cross_attn_scale_shift_table")
+  key = key.replace("scale_shift_table_a2v_ca_audio", "audio_a2v_cross_attn_scale_shift_table")
+
+  # LTX-2.3 specific mappings
+  # Handle substrings before they are replaced by shorter patterns below
+  key = key.replace("audio_prompt_adaln_single", "audio_prompt_adaln")
+  key = key.replace("prompt_adaln_single", "prompt_adaln")
+  key = key.replace("audio_prompt_scale_shift_table", "audio_scale_shift_table")
+  key = key.replace("prompt_scale_shift_table", "scale_shift_table")
+
+  if "prompt_adaln" in key:
+    key = key.replace("prompt_adaln", "caption_projection")
+  if "audio_prompt_adaln" in key:
+    key = key.replace("audio_prompt_adaln", "audio_caption_projection")
+  if "video_text_proj_in" in key:
+    key = key.replace("video_text_proj_in", "feature_extractor.video_linear")
+  if "audio_text_proj_in" in key:
+    key = key.replace("audio_text_proj_in", "feature_extractor.audio_linear")
+
+  key = key.replace("k_norm", "norm_k")
+  key = key.replace("q_norm", "norm_q")
+  key = key.replace("adaln_single", "time_embed")
+  return keydef rename_for_ltx2_3_vocoder(key):
+  """Renames Diffusers LTX-2.3 Vocoder keys to MaxDiffusion Flax keys."""
+  key = key.replace("ups.", "upsamplers.")
+  key = key.replace("resblocks.", "resblocks_")
+  key = key.replace("conv_post", "conv_out")
+  key = key.replace("conv_pre", "conv_in")
+  key = key.replace("act_post", "act_out")
+  
+  # LTX-2.3 specific mappings for Vocoder
+  if "downsample" in key and "lowpass" not in key:
+    key = key.replace("downsample", "downsample.lowpass")
+    
+  return key
 
 
 LTX_2_3_CONNECTORS_KEYS_RENAME_DICT = {
@@ -46,7 +121,232 @@ LTX_2_3_ONLY_RENAME_DICT = {
     "audio_embeddings_connector": "audio_connector",
 }
 
-def load_connectors_weights(
+def load_and_segregate_ltx2_3_weights(pretrained_model_name_or_path: str, filename: str = "ltx-2.3-22b-dev.safetensors"):
+  """Loads the full LTX-2.3 file once and splits it into component-specific dictionaries."""
+  tensors = load_ltx2_3_checkpoint(pretrained_model_name_or_path, "", "cpu", filename=filename)
+  
+  segregated = {
+      "transformer": {},
+      "vae": {},
+      "audio_vae": {},
+      "connectors": {},
+      "vocoder": {},
+  }
+  
+  for pt_key, tensor in tensors.items():
+      if pt_key.startswith("model.diffusion_model."):
+          segregated["transformer"][pt_key.replace("model.diffusion_model.", "")] = tensor
+      elif pt_key.startswith("audio_vae."):
+          segregated["audio_vae"][pt_key.replace("audio_vae.", "")] = tensor
+      elif pt_key.startswith("vae."):
+          segregated["vae"][pt_key] = tensor
+      elif pt_key.startswith("vocoder."):
+          segregated["vocoder"][pt_key.replace("vocoder.", "")] = tensor
+      elif any(x in pt_key for x in ["connectors.", "video_embeddings_connector", "audio_embeddings_connector", "text_embedding_projection"]):
+          segregated["connectors"][pt_key] = tensor
+          
+  return segregated
+
+
+def load_transformer_weights_2_3(
+    eval_shapes: dict,
+    device: str,
+    tensors: dict,
+    num_layers: int = 48,
+    scan_layers: bool = True,
+):
+  device = jax.local_devices(backend=device)[0]
+  max_logging.log(f"Load and port LTX-2.3 transformer on {device}")
+
+  with jax.default_device(device):
+    flax_state_dict = {}
+    cpu = jax.local_devices(backend="cpu")[0]
+    flattened_dict = flatten_dict(eval_shapes)
+
+    random_flax_state_dict = {}
+    for key in flattened_dict:
+      random_flax_state_dict[tuple(str(item) for item in key)] = flattened_dict[key]
+
+    for pt_key, tensor in tensors.items():
+      # Keys are already filtered and stripped of "model.diffusion_model." by load_and_segregate
+      if pt_key.startswith("audio_embeddings_connector") or pt_key.startswith("video_embeddings_connector"):
+        continue
+
+      renamed_pt_key = rename_key(pt_key)
+      renamed_pt_key = rename_for_ltx2_3_transformer(renamed_pt_key)
+
+      pt_tuple_key = tuple(renamed_pt_key.split("."))
+
+      flax_key, flax_tensor = get_key_and_value(
+          pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
+      )
+
+      flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+
+    validate_flax_state_dict(eval_shapes, flax_state_dict)
+    flax_state_dict = unflatten_dict(flax_state_dict)
+    jax.clear_caches()
+    return flax_state_dict
+
+
+def load_audio_vae_weights_2_3(
+    eval_shapes: dict,
+    device: str,
+    tensors: dict,
+):
+  flax_state_dict = {}
+  cpu = jax.local_devices(backend="cpu")[0]
+
+  flattened_eval = flatten_dict(eval_shapes)
+
+  for pt_key, tensor in tensors.items():
+    # Keys are already filtered and stripped of "audio_vae." by load_and_segregate
+    key = rename_for_ltx2_audio_vae(pt_key)
+
+    if key.endswith(".kernel") and tensor.ndim == 4:
+      tensor = tensor.transpose(2, 3, 1, 0)
+
+    flax_key = _tuple_str_to_int(key.split("."))
+
+    if "up_stages" in flax_key:
+      up_stages_idx = flax_key.index("up_stages")
+      if up_stages_idx + 1 < len(flax_key) and isinstance(flax_key[up_stages_idx + 1], int):
+        flax_key_list = list(flax_key)
+        flax_key_list[up_stages_idx + 1] = 2 - flax_key[up_stages_idx + 1]
+        flax_key = tuple(flax_key_list)
+
+    flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
+    
+  filtered_eval_shapes = {
+      k: v for k, v in flattened_eval.items() if not any("dropout" in str(x) or "rngs" in str(x) for x in k)
+  }
+
+  validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
+  return unflatten_dict(flax_state_dict)
+
+
+def load_vae_weights_2_3(
+    eval_shapes: dict,
+    device: str,
+    tensors: dict,
+):
+  flax_state_dict = {}
+  cpu = jax.local_devices(backend="cpu")[0]
+  flattened_eval = flatten_dict(eval_shapes)
+
+  random_flax_state_dict = {}
+  for key in flattened_eval:
+    random_flax_state_dict[tuple(str(item) for item in key)] = flattened_eval[key]
+
+  for pt_key, tensor in tensors.items():
+    # Remove 'vae.' prefix if present in safetensors but not in model
+    if pt_key.startswith("vae."):
+      pt_key = pt_key[len("vae."):]
+      
+    renamed_pt_key = pt_key.replace("nin_shortcut", "conv_shortcut")
+
+    pt_tuple_key = tuple(renamed_pt_key.split("."))
+
+    pt_list = []
+    resnet_index = None
+
+    for i, part in enumerate(pt_tuple_key):
+      if "_" in part and part.split("_")[-1].isdigit():
+        name = "_".join(part.split("_")[:-1])
+        idx = int(part.split("_")[-1])
+
+        if name == "resnets" or name == "block":
+          pt_list.append("resnets")
+          resnet_index = idx
+        elif name == "upsamplers":
+          pt_list.append("upsampler")
+        elif name in ["down_blocks", "up_blocks", "downsamplers"]:
+          pt_list.append(name)
+          pt_list.append(str(idx))
+        else:
+          pt_list.append(part)
+      elif part == "upsampler":
+        pt_list.append("upsampler")
+      elif part in ["conv1", "conv2", "conv", "conv_in", "conv_out", "conv_shortcut"]:
+        pt_list.append(part)
+        if (
+            part != "conv"
+            and (i + 1 == len(pt_tuple_key) or pt_tuple_key[i + 1] != "conv")
+            and (len(pt_list) < 2 or pt_list[-2] != "conv")
+        ):
+          pt_list.append("conv")
+      else:
+        pt_list.append(part)
+
+    pt_tuple_key = tuple(pt_list)
+
+    from .ltx2_utils import rename_key_and_reshape_tensor
+    flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
+    
+    flax_key = _tuple_str_to_int(flax_key)
+
+    if resnet_index is not None:
+      str_flax_key = tuple([str(x) for x in flax_key])
+      if str_flax_key in random_flax_state_dict:
+        if flax_key not in flax_state_dict:
+          target_shape = random_flax_state_dict[str_flax_key].shape
+          flax_state_dict[flax_key] = jnp.zeros(target_shape, dtype=flax_tensor.dtype)
+        flax_state_dict[flax_key] = flax_state_dict[flax_key].at[resnet_index].set(flax_tensor)
+      else:
+        flax_state_dict[flax_key] = flax_tensor
+    else:
+      flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+
+  filtered_eval_shapes = {
+      k: v for k, v in flattened_eval.items() if not any("dropout" in str(x) or "rngs" in str(x) for x in k)
+  }
+
+  validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
+  return unflatten_dict(flax_state_dict)
+
+
+def load_vocoder_weights_2_3(
+    eval_shapes: dict,
+    device: str,
+    tensors: dict,
+):
+  flax_state_dict = {}
+  cpu = jax.local_devices(backend="cpu")[0]
+
+  for pt_key, tensor in tensors.items():
+    # Keys are already filtered and stripped of "vocoder." by load_and_segregate
+    key = rename_for_ltx2_3_vocoder(pt_key)
+    
+    # Always apply LTX-2.3 specific replacement
+    key = key.replace("resblocks_", "resnets.")
+    
+    parts = key.split(".")
+
+    if parts[-1] == "weight":
+      parts[-1] = "kernel"
+
+    flax_key = _tuple_str_to_int(parts)
+
+    # Skip filter keys as they are derived in NNX model
+    if "filter" in flax_key:
+      continue
+
+    if flax_key[-1] == "kernel":
+      if "upsamplers" in flax_key:
+        tensor = tensor.transpose(2, 0, 1)[::-1, :, :]
+      else:
+        tensor = tensor.transpose(2, 1, 0)
+    
+    if "mel_stft" in flax_key and ("forward_basis" in flax_key or "inverse_basis" in flax_key):
+      tensor = tensor.transpose(2, 1, 0)
+
+    flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
+
+  validate_flax_state_dict(eval_shapes, flax_state_dict)
+  return unflatten_dict(flax_state_dict)
+
+
+def load_connectors_weights_2_3(
     pretrained_model_name_or_path: str,
     eval_shapes: dict,
     device: str,
@@ -54,11 +354,13 @@ def load_connectors_weights(
     subfolder: str = "",
     filename: str = None,
     is_ltx2_3: bool = False,
+    tensors: dict = None,
 ):
   device = jax.local_devices(backend=device)[0]
 
   with jax.default_device(device):
-    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
+    if tensors is None:
+      tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
     flattened_eval = flatten_dict(eval_shapes)

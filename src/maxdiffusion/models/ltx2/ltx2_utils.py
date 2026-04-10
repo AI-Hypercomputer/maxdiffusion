@@ -26,44 +26,6 @@ from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
 
 
-LTX_2_0_VIDEO_VAE_RENAME_DICT = {
-    # Encoder
-    "down_blocks.0": "down_blocks.0",
-    "down_blocks.1": "down_blocks.0.downsamplers.0",
-    "down_blocks.2": "down_blocks.1",
-    "down_blocks.3": "down_blocks.1.downsamplers.0",
-    "down_blocks.4": "down_blocks.2",
-    "down_blocks.5": "down_blocks.2.downsamplers.0",
-    "down_blocks.6": "down_blocks.3",
-    "down_blocks.7": "down_blocks.3.downsamplers.0",
-    "down_blocks.8": "mid_block",
-    # Decoder
-    "up_blocks.0": "mid_block",
-    "up_blocks.1": "up_blocks.0.upsamplers.0",
-    "up_blocks.2": "up_blocks.0",
-    "up_blocks.3": "up_blocks.1.upsamplers.0",
-    "up_blocks.4": "up_blocks.1",
-    "up_blocks.5": "up_blocks.2.upsamplers.0",
-    "up_blocks.6": "up_blocks.2",
-    "last_time_embedder": "time_embedder",
-    "last_scale_shift_table": "scale_shift_table",
-    # Common
-    # For all 3D ResNets
-    "res_blocks": "resnets",
-    "per_channel_statistics.mean-of-means": "latents_mean",
-    "per_channel_statistics.std-of-means": "latents_std",
-}
-
-LTX_2_3_VIDEO_VAE_RENAME_DICT = {
-    **LTX_2_0_VIDEO_VAE_RENAME_DICT,
-    # Decoder extra blocks
-    "up_blocks.7": "up_blocks.3.upsamplers.0",
-    "up_blocks.8": "up_blocks.3",
-}
-
-
-
-
 def _tuple_str_to_int(in_tuple):
   out_list = []
   for item in in_tuple:
@@ -95,33 +57,6 @@ def rename_for_ltx2_transformer(key):
   if "to_out_0" in key:
     key = key.replace("to_out_0", "to_out")
 
-  # Add missing mappings
-  key = key.replace("av_ca_video_scale_shift_adaln_single", "av_cross_attn_video_scale_shift")
-  key = key.replace("av_ca_a2v_gate_adaln_single", "av_cross_attn_video_a2v_gate")
-  key = key.replace("av_ca_audio_scale_shift_adaln_single", "av_cross_attn_audio_scale_shift")
-  key = key.replace("av_ca_v2a_gate_adaln_single", "av_cross_attn_audio_v2a_gate")
-  key = key.replace("scale_shift_table_a2v_ca_video", "video_a2v_cross_attn_scale_shift_table")
-  key = key.replace("scale_shift_table_a2v_ca_audio", "audio_a2v_cross_attn_scale_shift_table")
-
-  # LTX-2.3 specific mappings
-  # Handle substrings before they are replaced by shorter patterns below
-  key = key.replace("audio_prompt_adaln_single", "audio_prompt_adaln")
-  key = key.replace("prompt_adaln_single", "prompt_adaln")
-  key = key.replace("audio_prompt_scale_shift_table", "audio_scale_shift_table")
-  key = key.replace("prompt_scale_shift_table", "scale_shift_table")
-
-  if "prompt_adaln" in key:
-    key = key.replace("prompt_adaln", "caption_projection")
-  if "audio_prompt_adaln" in key:
-    key = key.replace("audio_prompt_adaln", "audio_caption_projection")
-  if "video_text_proj_in" in key:
-    key = key.replace("video_text_proj_in", "feature_extractor.video_linear")
-  if "audio_text_proj_in" in key:
-    key = key.replace("audio_text_proj_in", "feature_extractor.audio_linear")
-
-  key = key.replace("k_norm", "norm_k")
-  key = key.replace("q_norm", "norm_q")
-  key = key.replace("adaln_single", "time_embed")
   return key
 
 
@@ -143,9 +78,6 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
         pt_tuple_key = ("transformer_blocks", str(block_index)) + pt_tuple_key[1:]
 
   flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
-  
-
-
   flax_key_str = [str(k) for k in flax_key]
 
   if "scale_shift_table" in flax_key_str:
@@ -168,25 +100,12 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   return flax_key, flax_tensor
 
 
-def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=None):
+def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device):
   """
-  Loads weights from a sharded safetensors checkpoint or a single file.
+  Loads weights from a sharded safetensors checkpoint.
   """
-  tensors = {}
-  
-  if filename is not None:
-    ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
-    if filename.endswith(".safetensors"):
-      with safe_open(ckpt_path, framework="pt") as f:
-        for k in f.keys():
-          tensors[k] = torch2jax(f.get_tensor(k))
-    else:
-      loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
-      for k, v in loaded_state_dict.items():
-        tensors[k] = torch2jax(v)
-    return tensors
-
   index_file = "diffusion_pytorch_model.safetensors.index.json"
+  tensors = {}
   try:
     index_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=index_file)
     with open(index_path, "r") as f:
@@ -228,14 +147,13 @@ def load_transformer_weights(
     num_layers: int = 48,
     scan_layers: bool = True,
     subfolder: str = "transformer",
-    filename: str = None,
 ):
   device = jax.local_devices(backend=device)[0]
   max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device}")
 
   with jax.default_device(device):
     # Support sharded loading
-    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
 
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
@@ -246,13 +164,6 @@ def load_transformer_weights(
       random_flax_state_dict[tuple(str(item) for item in key)] = flattened_dict[key]
 
     for pt_key, tensor in tensors.items():
-      if filename == "ltx-2.3-22b-dev.safetensors":
-        if not pt_key.startswith("model.diffusion_model."):
-          continue
-        pt_key = pt_key.replace("model.diffusion_model.", "")
-        if pt_key.startswith("audio_embeddings_connector") or pt_key.startswith("video_embeddings_connector"):
-          continue
-
       renamed_pt_key = rename_key(pt_key)
       renamed_pt_key = rename_for_ltx2_transformer(renamed_pt_key)
 
@@ -272,14 +183,14 @@ def load_transformer_weights(
 
 
 def load_vae_weights(
-    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, subfolder: str = "vae", filename: str = None
+    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, subfolder: str = "vae"
 ):
   device = jax.local_devices(backend=device)[0]
 
   max_logging.log(f"Load and port {pretrained_model_name_or_path} VAE on {device}")
 
   with jax.default_device(device):
-    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
 
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
@@ -289,27 +200,12 @@ def load_vae_weights(
     for key in flattened_eval:
       random_flax_state_dict[tuple(str(item) for item in key)] = flattened_eval[key]
 
-    needs_vae_prefix = any(key[0] == "vae" for key in random_flax_state_dict)
-
     for pt_key, tensor in tensors.items():
-      # Filter keys for combined checkpoint to avoid noise and memory overhead
-      if filename == "ltx-2.3-22b-dev.safetensors":
-        if not pt_key.startswith("vae."):
-          continue
-
       # latents_mean and latents_std are nnx.Params and will be loaded correctly.
-      new_key = pt_key
-      if filename == "ltx-2.3-22b-dev.safetensors":
-        for replace_key, rename_to in LTX_2_3_VIDEO_VAE_RENAME_DICT.items():
-          new_key = new_key.replace(replace_key, rename_to)
-
-      renamed_pt_key = rename_key(new_key)
+      renamed_pt_key = rename_key(pt_key)
       renamed_pt_key = renamed_pt_key.replace("nin_shortcut", "conv_shortcut")
 
       pt_tuple_key = tuple(renamed_pt_key.split("."))
-      # Remove 'vae' prefix to match model structure which expects 'encoder'/'decoder' directly
-      if pt_tuple_key[0] == "vae":
-        pt_tuple_key = pt_tuple_key[1:]
 
       pt_list = []
       resnet_index = None
@@ -319,7 +215,7 @@ def load_vae_weights(
           name = "_".join(part.split("_")[:-1])
           idx = int(part.split("_")[-1])
 
-          if name == "resnets" or name == "block":
+          if name == "resnets":
             pt_list.append("resnets")
             resnet_index = idx
           elif name == "upsamplers":
@@ -347,7 +243,6 @@ def load_vae_weights(
       flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
       flax_key = _tuple_str_to_int(flax_key)
 
-
       if resnet_index is not None:
         str_flax_key = tuple([str(x) for x in flax_key])
         if str_flax_key in random_flax_state_dict:
@@ -372,34 +267,21 @@ def load_vae_weights(
 
 def rename_for_ltx2_vocoder(key):
   key = key.replace("ups.", "upsamplers.")
-  key = key.replace("resblocks.", "resblocks_")
+  key = key.replace("resblocks", "resnets")
   key = key.replace("conv_post", "conv_out")
-  key = key.replace("conv_pre", "conv_in")
-  key = key.replace("act_post", "act_out")
-  
-  # LTX-2.3 specific mappings for Vocoder
-  if "downsample" in key and "lowpass" not in key:
-    key = key.replace("downsample", "downsample.lowpass")
-    
   return key
 
 
 def load_vocoder_weights(
-    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, subfolder: str = "vocoder", filename: str = None
+    pretrained_model_name_or_path: str, eval_shapes: dict, device: str, hf_download: bool = True, subfolder: str = "vocoder"
 ):
-  tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
+  tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
 
   flax_state_dict = {}
   cpu = jax.local_devices(backend="cpu")[0]
 
   for pt_key, tensor in tensors.items():
-    if filename and not pt_key.startswith("vocoder."):
-      continue
-    if filename and pt_key.startswith("vocoder."):
-      pt_key = pt_key[len("vocoder."):]
     key = rename_for_ltx2_vocoder(pt_key)
-    if filename == "ltx-2.3-22b-dev.safetensors":
-      key = key.replace("resblocks_", "resnets.")
     parts = key.split(".")
 
     if parts[-1] == "weight":
@@ -407,18 +289,11 @@ def load_vocoder_weights(
 
     flax_key = _tuple_str_to_int(parts)
 
-    # Skip filter keys as they are derived in NNX model
-    if "filter" in flax_key:
-      continue
-
     if flax_key[-1] == "kernel":
       if "upsamplers" in flax_key:
         tensor = tensor.transpose(2, 0, 1)[::-1, :, :]
       else:
         tensor = tensor.transpose(2, 1, 0)
-    
-    if "mel_stft" in flax_key and ("forward_basis" in flax_key or "inverse_basis" in flax_key):
-      tensor = tensor.transpose(2, 1, 0)
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 
@@ -521,9 +396,6 @@ def rename_for_ltx2_audio_vae(key):
   if "upsample.conv.bias" in key:
     key = key.replace("upsample.conv.bias", "upsample.conv.conv.bias")
 
-  key = key.replace("per_channel_statistics.mean-of-means", "latents_mean")
-  key = key.replace("per_channel_statistics.std-of-means", "latents_std")
-
   return key
 
 
@@ -533,19 +405,14 @@ def load_audio_vae_weights(
     device: str,
     hf_download: bool = True,
     subfolder: str = "audio_vae",
-    filename: str = None,
 ):
-  tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=filename)
+  tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
   flax_state_dict = {}
   cpu = jax.local_devices(backend="cpu")[0]
 
   flattened_eval = flatten_dict(eval_shapes)
 
   for pt_key, tensor in tensors.items():
-    if filename and not pt_key.startswith("audio_vae."):
-      continue
-    if filename and pt_key.startswith("audio_vae."):
-      pt_key = pt_key[len("audio_vae."):]
     key = rename_for_ltx2_audio_vae(pt_key)
 
     if key.endswith(".kernel") and tensor.ndim == 4:
@@ -567,6 +434,3 @@ def load_audio_vae_weights(
 
   validate_flax_state_dict(unflatten_dict(filtered_eval_shapes), flax_state_dict)
   return unflatten_dict(flax_state_dict)
-
-
-
