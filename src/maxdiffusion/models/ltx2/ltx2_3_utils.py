@@ -248,6 +248,7 @@ def load_vae_weights_2_3(
       pt_key = pt_key[len("vae."):]
       
     renamed_pt_key = pt_key.replace("nin_shortcut", "conv_shortcut")
+    renamed_pt_key = rename_key(renamed_pt_key)
 
     pt_tuple_key = tuple(renamed_pt_key.split("."))
 
