@@ -96,6 +96,12 @@ LTX_2_3_CONNECTORS_KEYS_RENAME_DICT = {
     "model.diffusion_model.": "",
     "connectors.": "",
     "transformer_1d_blocks": "stacked_blocks",
+    "video_embeddings_connector": "video_connector",
+    "audio_embeddings_connector": "audio_connector",
+    "ff.net.0.proj.weight": "ff.net_0.kernel",
+    "ff.net.0.proj.bias": "ff.net_0.bias",
+    "ff.net.2.weight": "ff.net_2.kernel",
+    "ff.net.2.bias": "ff.net_2.bias",
     "text_embedding_projection.audio_aggregate_embed.weight": "audio_text_proj_in.kernel",
     "text_embedding_projection.audio_aggregate_embed.bias": "audio_text_proj_in.bias",
     "text_embedding_projection.video_aggregate_embed.weight": "video_text_proj_in.kernel",
@@ -392,6 +398,8 @@ def load_vocoder_weights_2_3(
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 
+  print(f"DEBUG Vocoder eval_shapes keys: {list(flatten_dict(eval_shapes).keys())[:20]}")
+  print(f"DEBUG Vocoder flax_state_dict keys: {list(flax_state_dict.keys())[:20]}")
   validate_flax_state_dict(eval_shapes, flax_state_dict)
   return unflatten_dict(flax_state_dict)
 
