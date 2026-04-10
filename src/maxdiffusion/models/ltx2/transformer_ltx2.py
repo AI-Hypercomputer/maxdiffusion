@@ -1166,7 +1166,6 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
             audio_encoder_attention_mask=audio_encoder_attention_mask,
-            perturbation_mask=mask,
         )
       return (
           hidden_states_out.astype(hidden_states.dtype),
