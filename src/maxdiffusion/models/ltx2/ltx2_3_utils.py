@@ -252,6 +252,41 @@ def load_vae_weights_2_3(
 
     pt_tuple_key = tuple(renamed_pt_key.split("."))
 
+    decoder_mapping = {
+        "up_blocks_0": "mid_block",
+        "up_blocks_1": "up_blocks_0.upsamplers_0",
+        "up_blocks_2": "up_blocks_0",
+        "up_blocks_3": "up_blocks_1.upsamplers_0",
+        "up_blocks_4": "up_blocks_1",
+        "up_blocks_5": "up_blocks_2.upsamplers_0",
+        "up_blocks_6": "up_blocks_2",
+        "up_blocks_7": "up_blocks_3.upsamplers_0",
+        "up_blocks_8": "up_blocks_3",
+    }
+
+    encoder_mapping = {
+        "down_blocks_0": "down_blocks_0",
+        "down_blocks_1": "down_blocks_0.downsamplers_0",
+        "down_blocks_2": "down_blocks_1",
+        "down_blocks_3": "down_blocks_1.downsamplers_0",
+        "down_blocks_4": "down_blocks_2",
+        "down_blocks_5": "down_blocks_2.downsamplers_0",
+        "down_blocks_6": "down_blocks_3",
+        "down_blocks_7": "down_blocks_3.downsamplers_0",
+        "down_blocks_8": "mid_block",
+    }
+
+    mapped_pt_list = []
+    for part in pt_tuple_key:
+      if part in decoder_mapping:
+        mapped_pt_list.extend(decoder_mapping[part].split("."))
+      elif part in encoder_mapping:
+        mapped_pt_list.extend(encoder_mapping[part].split("."))
+      else:
+        mapped_pt_list.append(part)
+    
+    pt_tuple_key = tuple(mapped_pt_list)
+
     pt_list = []
     resnet_index = None
 
