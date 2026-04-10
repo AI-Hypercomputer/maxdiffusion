@@ -76,7 +76,9 @@ def rename_for_ltx2_3_transformer(key):
   key = key.replace("k_norm", "norm_k")
   key = key.replace("q_norm", "norm_q")
   key = key.replace("adaln_single", "time_embed")
-  return keydef rename_for_ltx2_3_vocoder(key):
+  return key
+
+def rename_for_ltx2_3_vocoder(key):
   """Renames Diffusers LTX-2.3 Vocoder keys to MaxDiffusion Flax keys."""
   key = key.replace("ups.", "upsamplers.")
   key = key.replace("resblocks.", "resblocks_")
