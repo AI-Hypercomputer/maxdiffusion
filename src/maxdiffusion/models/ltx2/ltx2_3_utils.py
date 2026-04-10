@@ -369,13 +369,8 @@ def load_vocoder_weights_2_3(
   flax_state_dict = {}
   cpu = jax.local_devices(backend="cpu")[0]
 
-  from flax.traverse_util import flatten_dict
-  flat_eval = flatten_dict(eval_shapes)
-  print("Expected vocoder keys:", [k for k in flat_eval.keys() if "mel_stft" in str(k)])
-
   for pt_key, tensor in tensors.items():
     # Keys are already filtered and stripped of "vocoder." by load_and_segregate
-    print("Processing pt_key:", pt_key)
     key = rename_for_ltx2_3_vocoder(pt_key)
     
     # Always apply LTX-2.3 specific replacement
