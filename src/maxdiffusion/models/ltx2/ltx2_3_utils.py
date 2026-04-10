@@ -247,6 +247,11 @@ def load_vae_weights_2_3(
     if pt_key.startswith("vae."):
       pt_key = pt_key[len("vae."):]
       
+    if pt_key == "per_channel_statistics.mean-of-means":
+      pt_key = "latents_mean"
+    elif pt_key == "per_channel_statistics.std-of-means":
+      pt_key = "latents_std"
+      
     renamed_pt_key = pt_key.replace("nin_shortcut", "conv_shortcut")
     renamed_pt_key = rename_key(renamed_pt_key)
 
