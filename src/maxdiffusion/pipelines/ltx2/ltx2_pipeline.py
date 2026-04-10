@@ -1472,8 +1472,16 @@ class LTX2Pipeline:
           noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 2, axis=0)
           noise_pred_audio = noise_pred_audio_text + self.config.stg_scale * (noise_pred_audio_text - noise_pred_audio_perturb)
 
+        # Extract latents_step based on stacking strategy
+        if do_cfg and do_stg:
+          latents_step = latents_jax[batch_size:2*batch_size]
+          audio_latents_step = audio_latents_jax[batch_size:2*batch_size]
+        elif do_cfg:
           latents_step = latents_jax[batch_size:]
           audio_latents_step = audio_latents_jax[batch_size:]
+        elif do_stg:
+          latents_step = latents_jax[:batch_size]
+          audio_latents_step = audio_latents_jax[:batch_size]
         else:
           latents_step = latents_jax
           audio_latents_step = audio_latents_jax
@@ -1484,7 +1492,11 @@ class LTX2Pipeline:
             scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False
         )
 
-        if guidance_scale > 1.0:
+        # Re-stack based on strategy for next iteration
+        if do_cfg and do_stg:
+          latents_jax = jnp.concatenate([latents_step] * 3, axis=0)
+          audio_latents_jax = jnp.concatenate([audio_latents_step] * 3, axis=0)
+        elif do_cfg or do_stg:
           latents_jax = jnp.concatenate([latents_step] * 2, axis=0)
           audio_latents_jax = jnp.concatenate([audio_latents_step] * 2, axis=0)
         else:
@@ -1492,9 +1504,16 @@ class LTX2Pipeline:
           audio_latents_jax = audio_latents_step
 
     # 8. Decode Latents
-    if guidance_scale > 1.0:
+    # 8. Decode Latents - Extract conditional branch
+    if do_cfg and do_stg:
+      latents_jax = latents_jax[batch_size:2*batch_size]
+      audio_latents_jax = audio_latents_jax[batch_size:2*batch_size]
+    elif do_cfg:
       latents_jax = latents_jax[batch_size:]
       audio_latents_jax = audio_latents_jax[batch_size:]
+    elif do_stg:
+      latents_jax = latents_jax[:batch_size]
+      audio_latents_jax = audio_latents_jax[:batch_size]
 
     # Unpack and Denormalize Video
     latents = self._unpack_latents(
