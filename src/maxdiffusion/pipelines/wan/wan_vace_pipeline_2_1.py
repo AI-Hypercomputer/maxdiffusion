@@ -689,7 +689,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
 @partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
 def transformer_forward_pass(
     graphdef: nnx.graph.GraphDef,
-    sharded_state: nnx.graph.GraphState,
+    sharded_state: nnx.State,
     rest_of_state: Any,
     latents: jax.Array,
     timestep: jax.Array,
