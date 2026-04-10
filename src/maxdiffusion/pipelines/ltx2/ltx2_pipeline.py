@@ -1672,9 +1672,11 @@ class LTX2Pipeline:
     num_mel_bins = self.audio_vae.config.mel_bins if getattr(self, "audio_vae", None) is not None else 64
     latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
 
+    print(f"DEBUG: audio_latents shape before unpack: {audio_latents.shape}")
     audio_latents = self._unpack_audio_latents(
         audio_latents, audio_num_frames, num_mel_bins=latent_mel_bins, num_channels=audio_channels
     )
+    print(f"DEBUG: audio_latents shape after unpack: {audio_latents.shape}")
 
     # Audio VAE expects channels last (B, T, F, C) but unpack returns (B, C, T, F)
     if audio_latents.ndim == 4:
@@ -1726,9 +1728,10 @@ class LTX2Pipeline:
     # Decode Audio
     audio_latents = audio_latents.astype(self.audio_vae.dtype)
     generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
+    print(f"DEBUG: generated_mel_spectrograms shape: {generated_mel_spectrograms.shape}")
 
     # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
-    generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 2, 1)
+    generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
     audio = self.vocoder(generated_mel_spectrograms)
 
     # Convert audio to numpy
