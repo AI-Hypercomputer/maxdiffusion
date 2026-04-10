@@ -125,7 +125,7 @@ def create_sharded_logical_transformer(
         "audio_attention_head_dim": 64,
         "audio_cross_attention_dim": 2048,
         "num_layers": 48,
-        "caption_channels": 4096,
+        "caption_channels": 3840,
         "audio_caption_channels": 2048,
         "use_prompt_embeddings": False,
     }
@@ -365,7 +365,7 @@ class LTX2Pipeline:
             {
                 "video_connector_num_layers": 8,
                 "audio_connector_num_layers": 8,
-                "caption_channels": 2048,
+                "caption_channels": 3840,
                 "video_caption_channels": 4096,
                 "audio_caption_channels": 2048,
                 "video_connector_num_attention_heads": 32,
@@ -1264,6 +1264,11 @@ class LTX2Pipeline:
       timesteps: List[int] = None,
       guidance_scale: float = 3.0,
       guidance_rescale: float = 0.0,
+      stg_scale: float = 0.0,
+      modality_scale: float = 1.0,
+      audio_guidance_scale: Optional[float] = None,
+      audio_stg_scale: Optional[float] = None,
+      audio_modality_scale: Optional[float] = None,
       noise_scale: float = 1.0,
       num_videos_per_prompt: Optional[int] = 1,
       generator: Optional[jax.Array] = None,
@@ -1279,6 +1284,7 @@ class LTX2Pipeline:
       dtype: Optional[jnp.dtype] = None,
       output_type: str = "pil",
       return_dict: bool = True,
+      use_cross_timestep: bool = False,
   ):
     # 1. Check inputs
     self.check_inputs(
@@ -1499,23 +1505,24 @@ class LTX2Pipeline:
             audio_num_frames,
             frame_rate,
             perturbation_mask=perturbation_mask,
+            use_cross_timestep=use_cross_timestep,
         )
 
-        do_stg = getattr(self.config, "stg_scale", 0.0) > 0.0
+        do_stg = stg_scale > 0.0
 
         if guidance_scale > 1.0 and do_stg:
           noise_pred_uncond, noise_pred_text, noise_pred_perturb = jnp.split(noise_pred, 3, axis=0)
           noise_pred = (
               noise_pred_uncond
               + guidance_scale * (noise_pred_text - noise_pred_uncond)
-              + self.config.stg_scale * (noise_pred_text - noise_pred_perturb)
+              + stg_scale * (noise_pred_text - noise_pred_perturb)
           )
           # Audio guidance
           noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 3, axis=0)
           noise_pred_audio = (
               noise_pred_audio_uncond
               + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
-              + self.config.stg_scale * (noise_pred_audio_text - noise_pred_audio_perturb)
+              + stg_scale * (noise_pred_audio_text - noise_pred_audio_perturb)
           )
         elif guidance_scale > 1.0:
           noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
@@ -1525,10 +1532,10 @@ class LTX2Pipeline:
           noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
         elif do_stg:
           noise_pred_text, noise_pred_perturb = jnp.split(noise_pred, 2, axis=0)
-          noise_pred = noise_pred_text + self.config.stg_scale * (noise_pred_text - noise_pred_perturb)
+          noise_pred = noise_pred_text + stg_scale * (noise_pred_text - noise_pred_perturb)
           
           noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 2, axis=0)
-          noise_pred_audio = noise_pred_audio_text + self.config.stg_scale * (noise_pred_audio_text - noise_pred_audio_perturb)
+          noise_pred_audio = noise_pred_audio_text + stg_scale * (noise_pred_audio_text - noise_pred_audio_perturb)
 
         # Extract latents_step based on stacking strategy
         if do_cfg and do_stg:
@@ -1693,6 +1700,8 @@ def transformer_forward_pass(
     fps,
     perturbation_mask=None,
     sigma=None,
+    audio_sigma=None,
+    use_cross_timestep=False,
 ):
   transformer = nnx.merge(graphdef, state)
 
@@ -1704,11 +1713,17 @@ def transformer_forward_pass(
   else:
     sigma = jnp.expand_dims(sigma, 0).repeat(latents.shape[0])
 
+  if audio_sigma is None:
+    audio_sigma = timestep
+  else:
+    audio_sigma = jnp.expand_dims(audio_sigma, 0).repeat(latents.shape[0])
+
   noise_pred, noise_pred_audio = transformer(
       hidden_states=latents,
       encoder_hidden_states=encoder_hidden_states,
       timestep=timestep,
       sigma=sigma,
+      audio_sigma=audio_sigma,
       encoder_attention_mask=encoder_attention_mask,
       num_frames=latent_num_frames,
       height=latent_height,
@@ -1720,6 +1735,7 @@ def transformer_forward_pass(
       audio_num_frames=audio_num_frames,
       return_dict=False,
       perturbation_mask=perturbation_mask,
+      use_cross_timestep=use_cross_timestep,
   )
 
   return noise_pred, noise_pred_audio

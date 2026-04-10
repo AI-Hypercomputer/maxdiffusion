@@ -1027,6 +1027,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       video_coords: Optional[jax.Array] = None,
       audio_coords: Optional[jax.Array] = None,
       attention_kwargs: Optional[Dict[str, Any]] = None,
+      use_cross_timestep: bool = False,
       return_dict: bool = True,
       perturbation_mask: Optional[jax.Array] = None,
   ) -> Any:
@@ -1096,12 +1097,20 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         temb_prompt = None
         temb_prompt_audio = None
 
+      if use_cross_timestep:
+        assert sigma is not None and audio_sigma is not None, "sigma and audio_sigma must be provided when use_cross_timestep is True"
+        video_ca_timestep = audio_sigma.flatten()
+        audio_ca_timestep = sigma.flatten()
+      else:
+        video_ca_timestep = timestep.flatten()
+        audio_ca_timestep = audio_timestep.flatten() if audio_timestep is not None else timestep.flatten()
+
       video_cross_attn_scale_shift, _ = self.av_cross_attn_video_scale_shift(
-          timestep.flatten(),
+          video_ca_timestep,
           hidden_dtype=hidden_states.dtype,
       )
       video_cross_attn_a2v_gate, _ = self.av_cross_attn_video_a2v_gate(
-          timestep.flatten() * timestep_cross_attn_gate_scale_factor,
+          video_ca_timestep * timestep_cross_attn_gate_scale_factor,
           hidden_dtype=hidden_states.dtype,
       )
       video_cross_attn_scale_shift = video_cross_attn_scale_shift.reshape(
@@ -1110,11 +1119,11 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       video_cross_attn_a2v_gate = video_cross_attn_a2v_gate.reshape(batch_size, -1, video_cross_attn_a2v_gate.shape[-1])
 
       audio_cross_attn_scale_shift, _ = self.av_cross_attn_audio_scale_shift(
-          audio_timestep.flatten(),
+          audio_ca_timestep,
           hidden_dtype=audio_hidden_states.dtype,
       )
       audio_cross_attn_v2a_gate, _ = self.av_cross_attn_audio_v2a_gate(
-          audio_timestep.flatten() * timestep_cross_attn_gate_scale_factor,
+          audio_ca_timestep * timestep_cross_attn_gate_scale_factor,
           hidden_dtype=audio_hidden_states.dtype,
       )
       audio_cross_attn_scale_shift = audio_cross_attn_scale_shift.reshape(
