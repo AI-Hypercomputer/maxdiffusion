@@ -15,3 +15,4 @@ limitations under the License.
 """
 
 from .wan_pipeline import WanPipeline
+from .wan_pipeline_animate import WanAnimatePipeline

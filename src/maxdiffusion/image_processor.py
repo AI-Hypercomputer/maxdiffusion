@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import warnings
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -93,8 +93,14 @@ class VaeImageProcessor(ConfigMixin):
           `height` and `width` arguments from [`image_processor.VaeImageProcessor.preprocess`] method.
       vae_scale_factor (`int`, *optional*, defaults to `8`):
           VAE scale factor. If `do_resize` is `True`, the image is automatically resized to multiples of this factor.
+      spatial_patch_size (`Tuple[int, int]`, *optional*, defaults to `(1, 1)`):
+          Additional height/width patch multiple used by models that require image sizes aligned to
+          `vae_scale_factor * spatial_patch_size`.
       resample (`str`, *optional*, defaults to `lanczos`):
           Resampling filter to use when resizing the image.
+      resize_mode (`str`, *optional*, defaults to `"default"`):
+          Resize strategy for PIL images. `"default"` resizes directly to the target size. `"fill"` preserves aspect
+          ratio and letterboxes the image to the target size.
       do_normalize (`bool`, *optional*, defaults to `True`):
           Whether to normalize the image to [-1,1].
       do_binarize (`bool`, *optional*, defaults to `False`):
@@ -103,6 +109,8 @@ class VaeImageProcessor(ConfigMixin):
           Whether to convert the images to RGB format.
       do_convert_grayscale (`bool`, *optional*, defaults to be `False`):
           Whether to convert the images to grayscale format.
+      fill_color (`Union[int, float, Tuple, str]`, *optional*, defaults to `0`):
+          Fill color used when `resize_mode="fill"`.
   """
 
   config_name = CONFIG_NAME
@@ -112,11 +120,14 @@ class VaeImageProcessor(ConfigMixin):
       self,
       do_resize: bool = True,
       vae_scale_factor: int = 8,
+      spatial_patch_size: Tuple[int, int] = (1, 1),
       resample: str = "lanczos",
+      resize_mode: str = "default",
       do_normalize: bool = True,
       do_binarize: bool = False,
       do_convert_rgb: bool = False,
       do_convert_grayscale: bool = False,
+      fill_color: Union[int, float, Tuple, str] = 0,
   ):
     super().__init__()
     if do_convert_rgb and do_convert_grayscale:
@@ -126,6 +137,8 @@ class VaeImageProcessor(ConfigMixin):
           " if you intended to convert the image into grayscale format, please set `do_convert_rgb = False`",
       )
       self.config.do_convert_rgb = False
+    if resize_mode not in {"default", "fill"}:
+      raise ValueError(f"Unsupported resize_mode '{resize_mode}'. Expected one of: 'default', 'fill'.")
 
   @staticmethod
   def numpy_to_pil(images: np.ndarray) -> PIL.Image.Image:
@@ -243,11 +256,34 @@ class VaeImageProcessor(ConfigMixin):
       else:
         width = image.shape[2]
 
-    width, height = (
-        x - x % self.config.vae_scale_factor for x in (width, height)
-    )  # resize to integer multiple of vae_scale_factor
+    mod_h = self.config.vae_scale_factor * self.config.spatial_patch_size[0]
+    mod_w = self.config.vae_scale_factor * self.config.spatial_patch_size[1]
+    width, height = (x - x % mod for x, mod in ((width, mod_w), (height, mod_h)))
 
     return height, width
+
+  def resize_and_fill(
+      self,
+      image: PIL.Image.Image,
+      width: int,
+      height: int,
+  ) -> PIL.Image.Image:
+    """
+    Resize a PIL image to fit within the target size while preserving aspect ratio, then letterbox it.
+    """
+    target_ratio = width / height
+    source_ratio = image.width / image.height
+
+    resized_width = width if target_ratio < source_ratio else image.width * height // image.height
+    resized_height = height if target_ratio >= source_ratio else image.height * width // image.width
+
+    resized = image.resize((resized_width, resized_height), resample=PIL_INTERPOLATION[self.config.resample])
+    canvas = PIL.Image.new("RGB", (width, height), color=self.config.fill_color)
+    canvas.paste(
+        resized,
+        box=(width // 2 - resized_width // 2, height // 2 - resized_height // 2),
+    )
+    return canvas
 
   def resize(
       self,
@@ -259,7 +295,10 @@ class VaeImageProcessor(ConfigMixin):
     Resize image.
     """
     if isinstance(image, PIL.Image.Image):
-      image = image.resize((width, height), resample=PIL_INTERPOLATION[self.config.resample])
+      if self.config.resize_mode == "fill":
+        image = self.resize_and_fill(image, width, height)
+      else:
+        image = image.resize((width, height), resample=PIL_INTERPOLATION[self.config.resample])
     elif isinstance(image, torch.Tensor):
       image = torch.nn.functional.interpolate(
           image,
