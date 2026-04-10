@@ -319,7 +319,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
     )
 
     key = rngs.params()
-    k1, k2, k3, k4 = jax.random.split(key, 4)
+    k1, k2, k3, k4, k5, k6 = jax.random.split(key, 6)
 
     self.cross_attn_mod = cross_attn_mod
     table_size = 9 if cross_attn_mod else 6
@@ -339,6 +339,15 @@ class LTX2VideoTransformerBlock(nnx.Module):
         jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype),
         kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
+    if self.cross_attn_mod:
+      self.prompt_scale_shift_table = nnx.Param(
+          jax.random.normal(k5, (2, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
+          kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+      )
+      self.audio_prompt_scale_shift_table = nnx.Param(
+          jax.random.normal(k6, (2, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
+          kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+      )
 
   def __call__(
       self,
@@ -353,6 +362,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
       temb_ca_audio_scale_shift: jax.Array,
       temb_ca_gate: jax.Array,
       temb_ca_audio_gate: jax.Array,
+      temb_prompt: Optional[jax.Array] = None,
+      temb_prompt_audio: Optional[jax.Array] = None,
       # RoPE
       video_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
       audio_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
@@ -445,6 +456,14 @@ class LTX2VideoTransformerBlock(nnx.Module):
     if getattr(self, "cross_attn_mod", False):
       norm_hidden_states = norm_hidden_states * (1 + scale_q) + shift_q
 
+    if getattr(self, "cross_attn_mod", False) and temb_prompt is not None:
+      prompt_table_reshaped = jnp.expand_dims(self.prompt_scale_shift_table, axis=(0, 1))
+      temb_prompt_reshaped = temb_prompt.reshape(batch_size, 1, 2, -1)
+      prompt_ada_values = prompt_table_reshaped + temb_prompt_reshaped
+      shift_text_kv = prompt_ada_values[:, :, 0, :]
+      scale_text_kv = prompt_ada_values[:, :, 1, :]
+      encoder_hidden_states = encoder_hidden_states * (1 + scale_text_kv) + shift_text_kv
+
     attn_hidden_states = self.attn2(
         norm_hidden_states,
         encoder_hidden_states=encoder_hidden_states,
@@ -460,6 +479,14 @@ class LTX2VideoTransformerBlock(nnx.Module):
     norm_audio_hidden_states = self.audio_norm2(audio_hidden_states)
     if getattr(self, "cross_attn_mod", False):
       norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_q) + audio_shift_q
+
+    if getattr(self, "cross_attn_mod", False) and temb_prompt_audio is not None:
+      audio_prompt_table_reshaped = jnp.expand_dims(self.audio_prompt_scale_shift_table, axis=(0, 1))
+      temb_prompt_audio_reshaped = temb_prompt_audio.reshape(batch_size, 1, 2, -1)
+      audio_prompt_ada_values = audio_prompt_table_reshaped + temb_prompt_audio_reshaped
+      audio_shift_text_kv = audio_prompt_ada_values[:, :, 0, :]
+      audio_scale_text_kv = audio_prompt_ada_values[:, :, 1, :]
+      audio_encoder_hidden_states = audio_encoder_hidden_states * (1 + audio_scale_text_kv) + audio_shift_text_kv
 
     attn_audio_hidden_states = self.audio_attn2(
         norm_audio_hidden_states,
@@ -785,6 +812,25 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         weights_dtype=self.weights_dtype,
     )
 
+    # 3.4. Prompt Scale/Shift Modulation parameters (LTX-2.3)
+    if self.cross_attn_mod:
+      self.prompt_adaln = LTX2AdaLayerNormSingle(
+          rngs=rngs,
+          embedding_dim=inner_dim,
+          num_mod_params=2,
+          use_additional_conditions=False,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+      )
+      self.audio_prompt_adaln = LTX2AdaLayerNormSingle(
+          rngs=rngs,
+          embedding_dim=audio_inner_dim,
+          num_mod_params=2,
+          use_additional_conditions=False,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+      )
+
     # 3. Output Layer Scale/Shift Modulation parameters
     param_rng = rngs.params()
     self.scale_shift_table = nnx.Param(
@@ -969,6 +1015,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       audio_encoder_hidden_states: jax.Array,
       timestep: jax.Array,
       audio_timestep: Optional[jax.Array] = None,
+      sigma: Optional[jax.Array] = None,
+      audio_sigma: Optional[jax.Array] = None,
       encoder_attention_mask: Optional[jax.Array] = None,
       audio_encoder_attention_mask: Optional[jax.Array] = None,
       num_frames: Optional[int] = None,
@@ -1032,6 +1080,22 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       temb_audio = temb_audio.reshape(batch_size, -1, temb_audio.shape[-1])
       audio_embedded_timestep = audio_embedded_timestep.reshape(batch_size, -1, audio_embedded_timestep.shape[-1])
 
+      if self.cross_attn_mod and sigma is not None:
+        audio_sigma = audio_sigma if audio_sigma is not None else sigma
+        temb_prompt, _ = self.prompt_adaln(
+            sigma.flatten(),
+            hidden_dtype=hidden_states.dtype,
+        )
+        temb_prompt_audio, _ = self.audio_prompt_adaln(
+            audio_sigma.flatten(),
+            hidden_dtype=audio_hidden_states.dtype,
+        )
+        temb_prompt = temb_prompt.reshape(batch_size, -1, temb_prompt.shape[-1])
+        temb_prompt_audio = temb_prompt_audio.reshape(batch_size, -1, temb_prompt_audio.shape[-1])
+      else:
+        temb_prompt = None
+        temb_prompt_audio = None
+
       video_cross_attn_scale_shift, _ = self.av_cross_attn_video_scale_shift(
           timestep.flatten(),
           hidden_dtype=hidden_states.dtype,
@@ -1094,6 +1158,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
             temb_ca_gate=video_cross_attn_a2v_gate,
             temb_ca_audio_gate=audio_cross_attn_v2a_gate,
+            temb_prompt=temb_prompt,
+            temb_prompt_audio=temb_prompt_audio,
             video_rotary_emb=video_rotary_emb,
             audio_rotary_emb=audio_rotary_emb,
             ca_video_rotary_emb=video_cross_attn_rotary_emb,
@@ -1135,6 +1201,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
               temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
               temb_ca_gate=video_cross_attn_a2v_gate,
               temb_ca_audio_gate=audio_cross_attn_v2a_gate,
+              temb_prompt=temb_prompt,
+              temb_prompt_audio=temb_prompt_audio,
               video_rotary_emb=video_rotary_emb,
               audio_rotary_emb=audio_rotary_emb,
               ca_video_rotary_emb=video_cross_attn_rotary_emb,

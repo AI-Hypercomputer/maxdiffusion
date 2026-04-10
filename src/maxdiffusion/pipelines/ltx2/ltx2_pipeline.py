@@ -1692,16 +1692,23 @@ def transformer_forward_pass(
     audio_num_frames,
     fps,
     perturbation_mask=None,
+    sigma=None,
 ):
   transformer = nnx.merge(graphdef, state)
 
   # Expand timestep to batch size
   timestep = jnp.expand_dims(timestep, 0).repeat(latents.shape[0])
+  
+  if sigma is None:
+    sigma = timestep
+  else:
+    sigma = jnp.expand_dims(sigma, 0).repeat(latents.shape[0])
 
   noise_pred, noise_pred_audio = transformer(
       hidden_states=latents,
       encoder_hidden_states=encoder_hidden_states,
       timestep=timestep,
+      sigma=sigma,
       encoder_attention_mask=encoder_attention_mask,
       num_frames=latent_num_frames,
       height=latent_height,

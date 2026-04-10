@@ -25,7 +25,10 @@ def load_ltx2_3_checkpoint(pretrained_model_name_or_path: str, subfolder: str, d
   with safe_open(ckpt_path, framework="pt") as f:
     for k in f.keys():
       tensors[k] = torch2jax(f.get_tensor(k))
-  return tensorsdef rename_for_ltx2_3_transformer(key):
+  return tensors
+
+
+def rename_for_ltx2_3_transformer(key):
   """
   Renames Diffusers LTX-2.3 keys to MaxDiffusion Flax LTX-2.3 keys.
   """
