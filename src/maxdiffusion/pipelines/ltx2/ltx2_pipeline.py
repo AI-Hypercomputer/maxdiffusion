@@ -1317,17 +1317,52 @@ class LTX2Pipeline:
     prompt_embeds_jax = prompt_embeds
     prompt_attention_mask_jax = prompt_attention_mask
 
-    if guidance_scale > 1.0:
+    do_cfg = guidance_scale > 1.0
+    do_stg = getattr(self.config, "stg_scale", 0.0) > 0.0
+
+    if do_cfg and do_stg:
+      negative_prompt_embeds_jax = negative_prompt_embeds
+      negative_prompt_attention_mask_jax = negative_prompt_attention_mask
+      
+      if isinstance(prompt_embeds_jax, list):
+        prompt_embeds_jax = [jnp.concatenate([n, p, p], axis=0) for n, p in zip(negative_prompt_embeds_jax, prompt_embeds_jax)]
+      else:
+        prompt_embeds_jax = jnp.concatenate([negative_prompt_embeds_jax, prompt_embeds_jax, prompt_embeds_jax], axis=0)
+        
+      prompt_attention_mask_jax = jnp.concatenate([negative_prompt_attention_mask_jax, prompt_attention_mask_jax, prompt_attention_mask_jax], axis=0)
+      latents_jax = jnp.concatenate([latents_jax] * 3, axis=0)
+      audio_latents_jax = jnp.concatenate([audio_latents_jax] * 3, axis=0)
+      
+      N = latents.shape[0]
+      perturbation_mask = jnp.concatenate([jnp.ones((2 * N, 1, 1), dtype=dtype), jnp.zeros((N, 1, 1), dtype=dtype)], axis=0)
+      
+    elif do_cfg:
       negative_prompt_embeds_jax = negative_prompt_embeds
       negative_prompt_attention_mask_jax = negative_prompt_attention_mask
       if isinstance(prompt_embeds_jax, list):
         prompt_embeds_jax = [jnp.concatenate([n, p], axis=0) for n, p in zip(negative_prompt_embeds_jax, prompt_embeds_jax)]
       else:
         prompt_embeds_jax = jnp.concatenate([negative_prompt_embeds_jax, prompt_embeds_jax], axis=0)
-
+        
       prompt_attention_mask_jax = jnp.concatenate([negative_prompt_attention_mask_jax, prompt_attention_mask_jax], axis=0)
       latents_jax = jnp.concatenate([latents_jax] * 2, axis=0)
       audio_latents_jax = jnp.concatenate([audio_latents_jax] * 2, axis=0)
+      perturbation_mask = None
+      
+    elif do_stg:
+      if isinstance(prompt_embeds_jax, list):
+        prompt_embeds_jax = [jnp.concatenate([p, p], axis=0) for p in prompt_embeds_jax]
+      else:
+        prompt_embeds_jax = jnp.concatenate([prompt_embeds_jax, prompt_embeds_jax], axis=0)
+        
+      prompt_attention_mask_jax = jnp.concatenate([prompt_attention_mask_jax, prompt_attention_mask_jax], axis=0)
+      latents_jax = jnp.concatenate([latents_jax] * 2, axis=0)
+      audio_latents_jax = jnp.concatenate([audio_latents_jax] * 2, axis=0)
+      
+      N = latents.shape[0]
+      perturbation_mask = jnp.concatenate([jnp.ones((N, 1, 1), dtype=dtype), jnp.zeros((N, 1, 1), dtype=dtype)], axis=0)
+    else:
+      perturbation_mask = None
 
     if hasattr(self, "mesh") and self.mesh is not None:
       data_sharding_3d = NamedSharding(self.mesh, P())
@@ -1405,14 +1440,37 @@ class LTX2Pipeline:
             latent_width,
             audio_num_frames,
             frame_rate,
+            perturbation_mask=perturbation_mask,
         )
 
-        if guidance_scale > 1.0:
+        do_stg = getattr(self.config, "stg_scale", 0.0) > 0.0
+
+        if guidance_scale > 1.0 and do_stg:
+          noise_pred_uncond, noise_pred_text, noise_pred_perturb = jnp.split(noise_pred, 3, axis=0)
+          noise_pred = (
+              noise_pred_uncond
+              + guidance_scale * (noise_pred_text - noise_pred_uncond)
+              + self.config.stg_scale * (noise_pred_text - noise_pred_perturb)
+          )
+          # Audio guidance
+          noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 3, axis=0)
+          noise_pred_audio = (
+              noise_pred_audio_uncond
+              + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
+              + self.config.stg_scale * (noise_pred_audio_text - noise_pred_audio_perturb)
+          )
+        elif guidance_scale > 1.0:
           noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
           noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
           # Audio guidance
           noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
           noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
+        elif do_stg:
+          noise_pred_text, noise_pred_perturb = jnp.split(noise_pred, 2, axis=0)
+          noise_pred = noise_pred_text + self.config.stg_scale * (noise_pred_text - noise_pred_perturb)
+          
+          noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 2, axis=0)
+          noise_pred_audio = noise_pred_audio_text + self.config.stg_scale * (noise_pred_audio_text - noise_pred_audio_perturb)
 
           latents_step = latents_jax[batch_size:]
           audio_latents_step = audio_latents_jax[batch_size:]
@@ -1556,6 +1614,7 @@ def transformer_forward_pass(
     latent_width,
     audio_num_frames,
     fps,
+    perturbation_mask=None,
 ):
   transformer = nnx.merge(graphdef, state)
 
@@ -1576,6 +1635,7 @@ def transformer_forward_pass(
       fps=fps,
       audio_num_frames=audio_num_frames,
       return_dict=False,
+      perturbation_mask=perturbation_mask,
   )
 
   return noise_pred, noise_pred_audio

@@ -585,7 +585,6 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     mel_for_bwe = jnp.transpose(mel, (0, 1, 3, 2)) # (B, C, T, F)
     
     residual = self.bwe_generator(mel_for_bwe)
-    skip = self.resampler(x)
     
     # Transpose x to (B, T, C) for resampler?
     # UpSample1d expects (B, T, C).

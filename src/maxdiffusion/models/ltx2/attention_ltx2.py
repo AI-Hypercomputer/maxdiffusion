@@ -460,6 +460,7 @@ class LTX2Attention(nnx.Module):
       attention_mask: Optional[Array] = None,
       rotary_emb: Optional[Tuple[Array, Array]] = None,
       k_rotary_emb: Optional[Tuple[Array, Array]] = None,
+      perturbation_mask: Optional[Array] = None,
   ) -> Array:
     # Determine context (Self or Cross)
     context = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
@@ -502,6 +503,11 @@ class LTX2Attention(nnx.Module):
       # 4. Attention
       # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
       attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
+
+      if perturbation_mask is not None:
+        # value is [B, S, InnerDim]
+        # attn_output is [B, S, InnerDim]
+        attn_output = value + perturbation_mask * (attn_output - value)
 
       if getattr(self, "to_gate_logits", None) is not None:
         gate_logits = self.to_gate_logits(hidden_states)

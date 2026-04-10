@@ -616,8 +616,10 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       gated_attn: bool = False,
       cross_attn_mod: bool = False,
       use_prompt_embeddings: bool = True,
+      spatio_temporal_guidance_blocks: Tuple[int, ...] = (),
       **kwargs,
   ):
+    self.spatio_temporal_guidance_blocks = spatio_temporal_guidance_blocks
     self.in_channels = in_channels
     self.out_channels = out_channels
     self.patch_size = patch_size
@@ -978,6 +980,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       audio_coords: Optional[jax.Array] = None,
       attention_kwargs: Optional[Dict[str, Any]] = None,
       return_dict: bool = True,
+      perturbation_mask: Optional[jax.Array] = None,
   ) -> Any:
     # Determine timestep for audio.
     audio_timestep = audio_timestep if audio_timestep is not None else timestep
@@ -1065,8 +1068,19 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         )
         audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
 
+    # Construct perturbation_mask_per_layer for STG
+    if perturbation_mask is None:
+      perturbation_mask_per_layer = jnp.ones((self.num_layers, batch_size, 1, 1), dtype=self.dtype)
+    else:
+      masks = jnp.ones((self.num_layers, batch_size, 1, 1), dtype=self.dtype)
+      for i in self.spatio_temporal_guidance_blocks:
+        if i < self.num_layers:
+          masks = masks.at[i].set(perturbation_mask)
+      perturbation_mask_per_layer = masks
+
     # 5. Run transformer blocks
-    def scan_fn(carry, block):
+    def scan_fn(carry, block_and_mask):
+      block, mask = block_and_mask
       hidden_states, audio_hidden_states, rngs_carry = carry
       with jax.named_scope("Transformer Layer"):
         hidden_states_out, audio_hidden_states_out = block(
@@ -1086,6 +1100,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
             audio_encoder_attention_mask=audio_encoder_attention_mask,
+            perturbation_mask=mask,
         )
       return (
           hidden_states_out.astype(hidden_states.dtype),
@@ -1105,9 +1120,10 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             in_axes=(nnx.Carry, 0),
             out_axes=(nnx.Carry, 0),
             transform_metadata={nnx.PARTITION_NAME: "layers"},
-        )(carry, self.transformer_blocks)
+        )(carry, (self.transformer_blocks, perturbation_mask_per_layer))
       else:
-        for block in self.transformer_blocks:
+        for i, block in enumerate(self.transformer_blocks):
+          mask = perturbation_mask_per_layer[i] if perturbation_mask_per_layer is not None else None
           hidden_states, audio_hidden_states = block(
               hidden_states=hidden_states,
               audio_hidden_states=audio_hidden_states,
