@@ -364,6 +364,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       temb_ca_audio_gate: jax.Array,
       temb_prompt: Optional[jax.Array] = None,
       temb_prompt_audio: Optional[jax.Array] = None,
+      modality_mask: Optional[jax.Array] = None,
       # RoPE
       video_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
       audio_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
@@ -553,6 +554,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
           k_rotary_emb=ca_audio_rotary_emb,
           attention_mask=a2v_cross_attention_mask,
       )
+    if modality_mask is not None:
+      a2v_attn_hidden_states = a2v_attn_hidden_states * modality_mask
     hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
 
     # Video-to-Audio Cross Attention: Q: Audio; K,V: Video
@@ -567,6 +570,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
           k_rotary_emb=ca_video_rotary_emb,
           attention_mask=v2a_cross_attention_mask,
       )
+    if modality_mask is not None:
+      v2a_attn_hidden_states = v2a_attn_hidden_states * modality_mask
     audio_hidden_states = audio_hidden_states + v2a_gate * v2a_attn_hidden_states
 
     # 4. Feedforward
@@ -1028,6 +1033,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       audio_coords: Optional[jax.Array] = None,
       attention_kwargs: Optional[Dict[str, Any]] = None,
       use_cross_timestep: bool = False,
+      modality_mask: Optional[jax.Array] = None,
       return_dict: bool = True,
       perturbation_mask: Optional[jax.Array] = None,
   ) -> Any:
@@ -1171,10 +1177,14 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             temb_prompt_audio=temb_prompt_audio,
             video_rotary_emb=video_rotary_emb,
             audio_rotary_emb=audio_rotary_emb,
-            ca_video_rotary_emb=video_cross_attn_rotary_emb,
-            ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
-            encoder_attention_mask=encoder_attention_mask,
-            audio_encoder_attention_mask=audio_encoder_attention_mask,
+            ca_video_rotary_emb=ca_video_rotary_emb,
+            ca_audio_rotary_emb=ca_audio_rotary_emb,
+            a2v_cross_attention_mask=a2v_cross_attention_mask,
+            v2a_cross_attention_mask=v2a_cross_attention_mask,
+            attention_mask=mask,
+            attention_kwargs=attention_kwargs,
+            use_cross_timestep=use_cross_timestep,
+            modality_mask=modality_mask,
         )
       return (
           hidden_states_out.astype(hidden_states.dtype),
