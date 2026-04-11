@@ -593,37 +593,14 @@ class LTX2Pipeline:
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
       if getattr(config, "model_name", "") == "ltx2.3":
-        # Manually construct for LTX-2.3 to support BWE and avoid TypeError
-        base_vocoder = Vocoder(
-            upsample_initial_channel=1536,
-            upsample_rates=(5, 2, 2, 2, 2, 2),
-            upsample_kernel_sizes=(11, 4, 4, 4, 4, 4),
-            use_bias_at_final=False,
+        # Force loading normal vocoder from LTX-2 for isolation
+        vocoder = LTX2Vocoder.from_config(
+            "Lightricks/LTX-2",
+            subfolder="vocoder",
             rngs=rngs,
+            mesh=mesh,
             dtype=jnp.float32,
-        )
-        bwe_generator = Vocoder(
-            upsample_initial_channel=512,
-            upsample_kernel_sizes=[12, 11, 4, 4, 4],
-            use_bias_at_final=False,
-            rngs=rngs,
-            dtype=jnp.float32,
-        )
-        mel_stft = MelSTFT(
-            filter_length=512,
-            hop_length=80,
-            win_length=512,
-            n_mel_channels=64,
-            rngs=rngs,
-        )
-        vocoder = LTX2VocoderWithBWE(
-            vocoder=base_vocoder,
-            bwe_generator=bwe_generator,
-            mel_stft=mel_stft,
-            input_sampling_rate=16000,
-            output_sampling_rate=48000,
-            hop_length=80,
-            rngs=rngs,
+            weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
         )
       else:
         vocoder = LTX2Vocoder.from_config(
@@ -1195,7 +1172,9 @@ class LTX2Pipeline:
         # The packing and unpacking mechanisms expect (B, C, T, H, W).
         latents = latents.transpose(0, 4, 1, 2, 3)
 
+        print(f"DEBUG: latents shape before pack (passed in): {latents.shape}")
         latents = self._pack_latents(latents, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size)
+        print(f"DEBUG: latents shape after pack (passed in): {latents.shape}")
       if latents.ndim != 3:
         raise ValueError("Unexpected latents shape")
       latents = self._create_noised_state(latents, noise_scale, generator)
@@ -1211,7 +1190,9 @@ class LTX2Pipeline:
       generator = jax.random.key(seed)
 
     latents = jax.random.normal(generator, shape, dtype=dtype or jnp.float32)
+    print(f"DEBUG: latents shape in prepare_latents before pack: {latents.shape}")
     latents = self._pack_latents(latents, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size)
+    print(f"DEBUG: latents shape in prepare_latents after pack: {latents.shape}")
     return latents
 
   def prepare_audio_latents(
@@ -1327,6 +1308,7 @@ class LTX2Pipeline:
         generator=key_latents,
         latents=latents,
     )
+    print(f"DEBUG: latents shape after prepare_latents: {latents.shape}")
 
     latent_height = height // self.vae_spatial_compression_ratio
     latent_width = width // self.vae_spatial_compression_ratio
