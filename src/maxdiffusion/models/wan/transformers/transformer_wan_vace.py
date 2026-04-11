@@ -21,7 +21,7 @@ import flax.linen as nn
 import jax
 from jax.ad_checkpoint import checkpoint_name
 import jax.numpy as jnp
-from jax.sharding import PartitionSpec
+
 
 from .... import common_types
 from ....configuration_utils import register_to_config
@@ -201,12 +201,12 @@ class WanVACETransformerBlock(nnx.Module):
 
     control_hidden_states = jax.lax.with_sharding_constraint(
         control_hidden_states,
-        PartitionSpec("data", "fsdp", "tensor"),
+        nn.logical_to_mesh_axes(("activation_batch", "activation_length", None)),
     )
     control_hidden_states = checkpoint_name(control_hidden_states, "control_hidden_states")
     encoder_hidden_states = jax.lax.with_sharding_constraint(
         encoder_hidden_states,
-        PartitionSpec("data", "fsdp", None),
+        nn.logical_to_mesh_axes(("activation_batch", "activation_length", None)),
     )
 
     # 1. Self-attention
