@@ -1182,7 +1182,6 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             a2v_cross_attention_mask=encoder_attention_mask,
             v2a_cross_attention_mask=audio_encoder_attention_mask,
             attention_mask=mask,
-            attention_kwargs=attention_kwargs,
             use_cross_timestep=use_cross_timestep,
             modality_mask=modality_mask,
         )
