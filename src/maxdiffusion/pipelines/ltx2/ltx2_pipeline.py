@@ -1548,7 +1548,7 @@ class LTX2Pipeline:
           noise_pred = convert_to_vel(latents_step, x0_combined)
 
           # Audio guidance
-          noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 3, axis=0)
+          noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb, _ = jnp.split(noise_pred_audio, 4, axis=0)
           
           x0_audio_uncond = convert_to_x0(audio_latents_step, noise_pred_audio_uncond)
           x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text)
