@@ -98,6 +98,11 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
       decode_timestep=getattr(config, "decode_timestep", 0.0),
       decode_noise_scale=getattr(config, "decode_noise_scale", None),
       max_sequence_length=getattr(config, "max_sequence_length", 1024),
+      audio_guidance_scale=getattr(config, "audio_guidance_scale", None),
+      stg_scale=getattr(config, "stg_scale", 0.0),
+      audio_stg_scale=getattr(config, "audio_stg_scale", None),
+      modality_scale=getattr(config, "modality_scale", 1.0),
+      audio_modality_scale=getattr(config, "audio_modality_scale", None),
       dtype=jnp.bfloat16 if getattr(config, "activations_dtype", "bfloat16") == "bfloat16" else jnp.float32,
   )
   return out

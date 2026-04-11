@@ -108,7 +108,11 @@ def create_sharded_logical_transformer(
     tensors: dict = None,
 ):
   def create_model(rngs: nnx.Rngs, ltx2_config: dict):
-    transformer = LTX2VideoTransformer3DModel(**ltx2_config, rngs=rngs)
+    transformer = LTX2VideoTransformer3DModel(
+        **ltx2_config,
+        spatio_temporal_guidance_blocks=tuple(getattr(config, "spatio_temporal_guidance_blocks", ())),
+        rngs=rngs
+    )
     return transformer
 
   # 1. Load config.
