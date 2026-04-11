@@ -114,10 +114,15 @@ def transform_images(
   if p_vae_apply:
     tensor_list = np.stack(tensor_list)
     ds_length = tensor_list.shape[0]
-    iters = ds_length // global_batch_size
-    latents_list = []
     local_batch_size = global_batch_size // jax.device_count()
-    for i in range(0, iters * global_batch_size, local_batch_size):
+
+    pad_len = (local_batch_size - (ds_length % local_batch_size)) % local_batch_size
+    if pad_len > 0:
+      pad_tensor = np.zeros((pad_len,) + tensor_list.shape[1:], dtype=tensor_list.dtype)
+      tensor_list = np.concatenate([tensor_list, pad_tensor], axis=0)
+
+    latents_list = []
+    for i in range(0, tensor_list.shape[0], local_batch_size):
       sample_rng, rng = jax.random.split(rng)
       latents = p_vae_apply(tensor_list[i : i + local_batch_size], sample_rng)
       latents_list.append(latents)
@@ -126,14 +131,7 @@ def transform_images(
     b1, b2, c, l1, l2 = latents_list.shape
     latents_list = np.reshape(latents_list, (b1 * b2, c, l1, l2))
 
-    # TODO (Juan Acevedo): do last iteration, its required for the Pyarrow dataset
-    # to not break due to items being fewer than expected. Is there a better way?
-    if tensor_list[i + local_batch_size :].shape[0] != 0:
-      sample_rng, rng = jax.random.split(rng)
-      latents = p_vae_apply(tensor_list[i + local_batch_size :], sample_rng)
-      examples[pixel_ids_key] = np.append(latents_list, latents, axis=0)
-    else:
-      examples[pixel_ids_key] = latents_list
+    examples[pixel_ids_key] = latents_list[:ds_length]
   else:
     examples[pixel_ids_key] = tf.stack(tensor_list)
 

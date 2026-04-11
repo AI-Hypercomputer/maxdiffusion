@@ -51,6 +51,7 @@ class FlaxUpsample2D(nn.Module):
         kernel_init=nn.with_logical_partitioning(
             nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
         ),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("conv_out",)),
         precision=self.precision,
     )
 
@@ -85,6 +86,7 @@ class FlaxDownsample2D(nn.Module):
         kernel_init=nn.with_logical_partitioning(
             nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
         ),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("conv_out",)),
         precision=self.precision,
     )
 
@@ -131,6 +133,7 @@ class FlaxResnetBlock2D(nn.Module):
           kernel_init=nn.with_logical_partitioning(
               nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
           ),
+          bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("conv_out",)),
           precision=self.precision,
       )
     out_channels = self.in_channels if self.out_channels is None else self.out_channels
@@ -144,6 +147,7 @@ class FlaxResnetBlock2D(nn.Module):
         kernel_init=nn.with_logical_partitioning(
             nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
         ),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("conv_out",)),
         precision=self.precision,
     )
 
@@ -159,6 +163,7 @@ class FlaxResnetBlock2D(nn.Module):
         kernel_init=nn.with_logical_partitioning(
             nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
         ),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("conv_out",)),
         precision=self.precision,
     )
 
