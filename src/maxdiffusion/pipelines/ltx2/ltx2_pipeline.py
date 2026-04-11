@@ -625,12 +625,13 @@ class LTX2Pipeline:
     state = dict(nnx.to_flat_state(state))
  
     if tensors is not None and getattr(config, "model_name", "") == "ltx2.3":
-      from maxdiffusion.models.ltx2.ltx2_3_utils import load_vocoder_weights_2_3
-      params = load_vocoder_weights_2_3(params, "cpu", tensors)
+      from maxdiffusion.models.ltx2.ltx2_utils import load_vocoder_weights
+      params = load_vocoder_weights("Lightricks/LTX-2", params, "cpu", subfolder="vocoder")
     else:
       filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
       subfolder = "" if getattr(config, "model_name", "") == "ltx2.3" else "vocoder"
-      params = load_vocoder_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder=subfolder, filename=filename)
+      repo_id = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
+      params = load_vocoder_weights(repo_id, params, "cpu", subfolder=subfolder, filename=filename)
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
