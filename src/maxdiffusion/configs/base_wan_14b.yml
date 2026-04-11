@@ -177,7 +177,7 @@ logical_axis_rules: [
                       ['activation_length', None],
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
-                      ['embed', ['fsdp', 'tensor']],
+                      ['embed', 'fsdp'],
                       ['heads', 'tensor'],
                       ['norm', 'tensor'],
                       ['conv_batch', ['data', 'fsdp']],

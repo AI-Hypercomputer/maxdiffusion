@@ -151,17 +151,17 @@ mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 logical_axis_rules: [
                       ['batch', ['data', 'fsdp']],
                       ['activation_batch', ['data', 'fsdp']],
-                      ['activation_self_attn_heads', ['context', 'tensor']],
-                      ['activation_cross_attn_q_length', ['context', 'tensor']],
-                      ['activation_length', 'context'],
+                      ['activation_self_attn_heads', 'tensor'],
+                      ['activation_cross_attn_q_length', 'tensor'],
+                      ['activation_length', None],
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
-                      ['embed', ['context', 'fsdp']],
+                      ['embed', 'fsdp'],
                       ['heads', 'tensor'],
                       ['norm', 'tensor'],
-                      ['conv_batch', ['data', 'context', 'fsdp']],
+                      ['conv_batch', ['data', 'fsdp']],
                       ['out_channels', 'tensor'],
-                      ['conv_out', 'context'],
+                      ['conv_out', 'tensor'],
                     ]
 data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 
@@ -174,9 +174,9 @@ dcn_fsdp_parallelism: -1
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_fsdp_parallelism: 1
 ici_context_parallelism: 1
-ici_tensor_parallelism: 1
+ici_tensor_parallelism: -1  # recommended ICI axis to be auto-sharded
 
 allow_split_physical_axes: False
 
