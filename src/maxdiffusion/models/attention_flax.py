@@ -717,8 +717,8 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", None)),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
     )
     self.act = get_activation(activation_fn)
     self.net_2 = nnx.Linear(
@@ -729,8 +729,8 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
   def __call__(self, hidden_states: Array) -> Array:
