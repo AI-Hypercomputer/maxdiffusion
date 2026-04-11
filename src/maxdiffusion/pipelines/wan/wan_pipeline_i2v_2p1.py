@@ -15,6 +15,7 @@
 from maxdiffusion import max_logging
 from maxdiffusion.image_processor import PipelineImageInput
 from .wan_pipeline import WanPipeline, transformer_forward_pass, init_magcache, magcache_step
+from ...schedulers.scheduling_unipc_multistep_flax import UniPCMultistepSchedulerState
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
 from ...pyconfig import HyperParameters
@@ -236,6 +237,37 @@ class WanPipelineI2V_2_1(WanPipeline):
     if first_frame_mask is not None:
       first_frame_mask = jax.device_put(first_frame_mask, data_sharding)
 
+    # Use fori_loop path when no caching is enabled for reduced dispatch overhead.
+    use_fori = not use_magcache
+
+    if use_fori:
+      do_cfg = guidance_scale > 1.0
+      p_run_inference = partial(
+          run_inference_fori_2_1_i2v,
+          do_cfg=do_cfg,
+          guidance_scale=guidance_scale,
+          num_inference_steps=num_inference_steps,
+          scheduler=self.scheduler,
+      )
+      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+        latents = p_run_inference(
+            graphdef=graphdef,
+            sharded_state=state,
+            rest_of_state=rest_of_state,
+            latents=latents,
+            condition=condition,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            image_embeds=image_embeds,
+            scheduler_state=scheduler_state,
+        )
+        latents = jnp.transpose(latents, (0, 4, 1, 2, 3))
+        latents = self._denormalize_latents(latents)
+
+      if output_type == "latent":
+        return latents
+      return self._decode_latents_to_video(latents)
+
     p_run_inference = partial(
         run_inference_2_1_i2v,
         graphdef=graphdef,
@@ -267,6 +299,85 @@ class WanPipelineI2V_2_1(WanPipeline):
     if output_type == "latent":
       return latents
     return self._decode_latents_to_video(latents)
+
+
+@partial(jax.jit, static_argnames=("do_cfg", "guidance_scale", "num_inference_steps", "scheduler"))
+def run_inference_fori_2_1_i2v(
+    graphdef,
+    sharded_state,
+    rest_of_state,
+    latents: jnp.array,
+    condition: jnp.array,
+    prompt_embeds: jnp.array,
+    negative_prompt_embeds: jnp.array,
+    image_embeds: jnp.array,
+    scheduler_state: UniPCMultistepSchedulerState,
+    do_cfg: bool,
+    guidance_scale: float,
+    num_inference_steps: int,
+    scheduler: FlaxUniPCMultistepScheduler,
+):
+  """Denoising loop for WAN 2.1 I2V using jax.lax.fori_loop.
+
+  The entire denoising loop runs as a single XLA program, eliminating
+  per-step Python dispatch overhead. I2V-specific: condition is concatenated
+  with latents and image_embeds is passed to the transformer.
+  """
+  bsz = latents.shape[0]
+
+  # Pre-combine embeddings for CFG (static at trace time).
+  if do_cfg:
+    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+    image_embeds_combined = jnp.concatenate([image_embeds, image_embeds], axis=0)
+    condition_combined = jnp.concatenate([condition] * 2)
+  else:
+    prompt_embeds_combined = prompt_embeds
+    image_embeds_combined = image_embeds
+    condition_combined = condition
+
+  # Pre-initialize scheduler state for fori_loop.
+  scheduler_state = scheduler_state.replace(
+      step_index=0,
+      last_sample=jnp.zeros_like(latents),
+      begin_index=0,
+  )
+
+  def body_fn(step, carry):
+    latents, sched_state = carry
+    t = sched_state.timesteps[step]
+
+    wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+
+    if do_cfg:
+      latents_input = jnp.concatenate([latents] * 2)
+      timestep = jnp.broadcast_to(t, (bsz * 2,))
+    else:
+      latents_input = latents
+      timestep = jnp.broadcast_to(t, (bsz,))
+
+    # Concatenate condition and transpose BFHWC -> BCFHW for transformer.
+    latent_model_input = jnp.concatenate([latents_input, condition_combined], axis=-1)
+    latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
+
+    noise_pred = wan_transformer(
+        hidden_states=latent_model_input,
+        timestep=timestep,
+        encoder_hidden_states=prompt_embeds_combined,
+        encoder_hidden_states_image=image_embeds_combined,
+    )
+
+    if do_cfg:
+      noise_cond = noise_pred[:bsz]
+      noise_uncond = noise_pred[bsz:]
+      noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+
+    # Transpose BCFHW -> BFHWC back to latent space.
+    noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+    latents, sched_state = scheduler.step(sched_state, noise_pred, t, latents).to_tuple()
+    return latents, sched_state
+
+  latents, _ = jax.lax.fori_loop(0, num_inference_steps, body_fn, (latents, scheduler_state))
+  return latents
 
 
 def run_inference_2_1_i2v(

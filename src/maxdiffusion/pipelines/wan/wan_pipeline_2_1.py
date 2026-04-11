@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache, init_magcache, magcache_step
+from ...schedulers.scheduling_unipc_multistep_flax import UniPCMultistepSchedulerState
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
@@ -127,6 +128,31 @@ class WanPipeline2_1(WanPipeline):
 
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
 
+    # Use fori_loop path when no caching is enabled for reduced dispatch overhead.
+    use_fori = not use_cfg_cache and not use_magcache
+
+    if use_fori:
+      do_cfg = guidance_scale > 1.0
+      p_run_inference = partial(
+          run_inference_fori_2_1,
+          do_cfg=do_cfg,
+          guidance_scale=guidance_scale,
+          num_inference_steps=num_inference_steps,
+          scheduler=self.scheduler,
+      )
+      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+        latents = p_run_inference(
+            graphdef=graphdef,
+            sharded_state=state,
+            rest_of_state=rest_of_state,
+            latents=latents,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            scheduler_state=scheduler_state,
+        )
+        latents = self._denormalize_latents(latents)
+      return self._decode_latents_to_video(latents)
+
     p_run_inference = partial(
         run_inference_2_1,
         guidance_scale=guidance_scale,
@@ -153,6 +179,77 @@ class WanPipeline2_1(WanPipeline):
       )
       latents = self._denormalize_latents(latents)
     return self._decode_latents_to_video(latents)
+
+
+@partial(jax.jit, static_argnames=("do_cfg", "guidance_scale", "num_inference_steps", "scheduler"))
+def run_inference_fori_2_1(
+    graphdef,
+    sharded_state,
+    rest_of_state,
+    latents: jnp.array,
+    prompt_embeds: jnp.array,
+    negative_prompt_embeds: jnp.array,
+    scheduler_state: UniPCMultistepSchedulerState,
+    do_cfg: bool,
+    guidance_scale: float,
+    num_inference_steps: int,
+    scheduler: FlaxUniPCMultistepScheduler,
+):
+  """Denoising loop for WAN 2.1 T2V using jax.lax.fori_loop.
+
+  The entire denoising loop runs as a single XLA program, eliminating
+  per-step Python dispatch overhead. This path is used when no caching
+  (CFG-Cache, MagCache) is enabled.
+  """
+  bsz = latents.shape[0]
+
+  # Pre-combine embeddings for CFG (static at trace time).
+  if do_cfg:
+    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+  else:
+    prompt_embeds_combined = prompt_embeds
+
+  # Pre-initialize scheduler state with concrete values so the pytree
+  # structure is consistent across all fori_loop iterations.
+  # - step_index: must be int (not None) so scheduler.step skips _init_step_index
+  # - last_sample: must be array (not None) for consistent pytree; the
+  #   corrector is still skipped on step 0 because step_index > 0 is False
+  # - begin_index: set to 0 so it's a concrete int rather than None
+  scheduler_state = scheduler_state.replace(
+      step_index=0,
+      last_sample=jnp.zeros_like(latents),
+      begin_index=0,
+  )
+
+  def body_fn(step, carry):
+    latents, sched_state = carry
+    t = sched_state.timesteps[step]
+
+    wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+
+    if do_cfg:
+      latents_input = jnp.concatenate([latents] * 2)
+      timestep = jnp.broadcast_to(t, (bsz * 2,))
+    else:
+      latents_input = latents
+      timestep = jnp.broadcast_to(t, (bsz,))
+
+    noise_pred = wan_transformer(
+        hidden_states=latents_input,
+        timestep=timestep,
+        encoder_hidden_states=prompt_embeds_combined,
+    )
+
+    if do_cfg:
+      noise_cond = noise_pred[:bsz]
+      noise_uncond = noise_pred[bsz:]
+      noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+
+    latents, sched_state = scheduler.step(sched_state, noise_pred, t, latents).to_tuple()
+    return latents, sched_state
+
+  latents, _ = jax.lax.fori_loop(0, num_inference_steps, body_fn, (latents, scheduler_state))
+  return latents
 
 
 def run_inference_2_1(

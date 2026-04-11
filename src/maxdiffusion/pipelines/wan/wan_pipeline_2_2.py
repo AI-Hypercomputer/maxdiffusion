@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache
+from ...schedulers.scheduling_unipc_multistep_flax import UniPCMultistepSchedulerState
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
@@ -150,6 +151,35 @@ class WanPipeline2_2(WanPipeline):
 
     boundary_timestep = self.boundary_ratio * self.scheduler.config.num_train_timesteps
 
+    # Use fori_loop path when no caching is enabled for reduced dispatch overhead.
+    use_fori = not use_cfg_cache and not use_sen_cache
+
+    if use_fori:
+      do_cfg = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
+      p_run_inference = partial(
+          run_inference_fori_2_2,
+          do_cfg=do_cfg,
+          guidance_scale_low=guidance_scale_low,
+          guidance_scale_high=guidance_scale_high,
+          boundary=boundary_timestep,
+          num_inference_steps=num_inference_steps,
+          scheduler=self.scheduler,
+      )
+      with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+        latents = p_run_inference(
+            graphdef=high_noise_graphdef,
+            low_noise_state=low_noise_state,
+            low_noise_rest=low_noise_rest,
+            high_noise_state=high_noise_state,
+            high_noise_rest=high_noise_rest,
+            latents=latents,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            scheduler_state=scheduler_state,
+        )
+        latents = self._denormalize_latents(latents)
+      return self._decode_latents_to_video(latents)
+
     p_run_inference = partial(
         run_inference_2_2,
         guidance_scale_low=guidance_scale_low,
@@ -177,6 +207,97 @@ class WanPipeline2_2(WanPipeline):
       )
       latents = self._denormalize_latents(latents)
     return self._decode_latents_to_video(latents)
+
+
+@partial(jax.jit, static_argnames=("do_cfg", "guidance_scale_low", "guidance_scale_high", "boundary", "num_inference_steps", "scheduler"))
+def run_inference_fori_2_2(
+    graphdef,
+    low_noise_state,
+    low_noise_rest,
+    high_noise_state,
+    high_noise_rest,
+    latents: jnp.array,
+    prompt_embeds: jnp.array,
+    negative_prompt_embeds: jnp.array,
+    scheduler_state: UniPCMultistepSchedulerState,
+    do_cfg: bool,
+    guidance_scale_low: float,
+    guidance_scale_high: float,
+    boundary: float,
+    num_inference_steps: int,
+    scheduler: FlaxUniPCMultistepScheduler,
+):
+  """Denoising loop for WAN 2.2 T2V using jax.lax.fori_loop.
+
+  The entire denoising loop runs as a single XLA program, eliminating
+  per-step Python dispatch overhead. Dual-transformer selection
+  (high-noise vs low-noise based on boundary timestep) is handled
+  inside the loop using jax.lax.cond.
+
+  Both transformers share the same architecture (identical graphdef),
+  so a single graphdef is used with jax.lax.cond selecting between
+  the two weight states per step.
+  """
+  bsz = latents.shape[0]
+
+  # Pre-combine embeddings for CFG (static at trace time).
+  if do_cfg:
+    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+  else:
+    prompt_embeds_combined = prompt_embeds
+
+  # Pre-initialize scheduler state with concrete values for fori_loop.
+  scheduler_state = scheduler_state.replace(
+      step_index=0,
+      last_sample=jnp.zeros_like(latents),
+      begin_index=0,
+  )
+
+  def body_fn(step, carry):
+    latents, sched_state = carry
+    t = sched_state.timesteps[step]
+    use_high = t >= boundary
+
+    # Select guidance scale based on transformer phase.
+    guidance_scale = jnp.where(use_high, guidance_scale_high, guidance_scale_low)
+
+    if do_cfg:
+      latents_input = jnp.concatenate([latents] * 2)
+      timestep = jnp.broadcast_to(t, (bsz * 2,))
+    else:
+      latents_input = latents
+      timestep = jnp.broadcast_to(t, (bsz,))
+
+    # Select transformer weights via jax.lax.cond.
+    # Both branches trace through the same graphdef with different states.
+    def high_noise_forward():
+      transformer = nnx.merge(graphdef, high_noise_state, high_noise_rest)
+      return transformer(
+          hidden_states=latents_input,
+          timestep=timestep,
+          encoder_hidden_states=prompt_embeds_combined,
+      )
+
+    def low_noise_forward():
+      transformer = nnx.merge(graphdef, low_noise_state, low_noise_rest)
+      return transformer(
+          hidden_states=latents_input,
+          timestep=timestep,
+          encoder_hidden_states=prompt_embeds_combined,
+      )
+
+    noise_pred = jax.lax.cond(use_high, high_noise_forward, low_noise_forward)
+
+    if do_cfg:
+      noise_cond = noise_pred[:bsz]
+      noise_uncond = noise_pred[bsz:]
+      noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+
+    latents, sched_state = scheduler.step(sched_state, noise_pred, t, latents).to_tuple()
+    return latents, sched_state
+
+  latents, _ = jax.lax.fori_loop(0, num_inference_steps, body_fn, (latents, scheduler_state))
+  return latents
 
 
 def run_inference_2_2(
