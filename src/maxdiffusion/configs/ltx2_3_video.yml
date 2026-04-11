@@ -27,12 +27,12 @@ sampler: "from_checkpoint"
 # Generation parameters
 global_batch_size_to_train_on: 1
 num_inference_steps: 40
-guidance_scale: 3.0
-audio_guidance_scale: 7.0
+guidance_scale: 4.0
+audio_guidance_scale: 4.0
 stg_scale: 1.0
 audio_stg_scale: 1.0
-modality_scale: 3.0
-audio_modality_scale: 3.0
+modality_scale: 1.0
+audio_modality_scale: 1.0
 spatio_temporal_guidance_blocks: [28]
 fps: 24
 pipeline_type: multi-scale

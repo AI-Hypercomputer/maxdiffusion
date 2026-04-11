@@ -366,6 +366,7 @@ class LTX2Pipeline:
       connector_kwargs = {
           "dtype": jnp.float32,
           "weights_dtype": config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          "attention_kernel": config.attention if hasattr(config, "attention") else "flash",
       }
       if getattr(config, "model_name", "") == "ltx2.3":
         connector_kwargs.update(
@@ -884,13 +885,10 @@ class LTX2Pipeline:
       text_encoder_hidden_states = text_encoder_outputs.hidden_states
       del text_encoder_outputs  # Free memory
 
-      prompt_embeds_list = []
-      # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
-      for state in text_encoder_hidden_states:
-        state_np = state.cpu().to(torch.float32).numpy()
-        prompt_embeds_list.append(jnp.array(state_np, dtype=jnp.bfloat16))
-
-      prompt_embeds = prompt_embeds_list
+      states_np = [state.cpu().to(torch.float32).numpy() for state in text_encoder_hidden_states]
+      stacked_np = np.stack(states_np, axis=-1)
+      flattened_np = stacked_np.reshape(batch_size, text_input_ids.shape[1], -1)
+      prompt_embeds = jnp.array(flattened_np, dtype=jnp.bfloat16)
       del text_encoder_hidden_states  # Free PyTorch tensor memory
 
       prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bool_)
