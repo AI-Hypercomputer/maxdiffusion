@@ -1133,7 +1133,7 @@ class FlaxWanAttention(nnx.Module):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> jax.Array:
-    axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
+    axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, None))
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
     encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
     dtype = hidden_states.dtype
