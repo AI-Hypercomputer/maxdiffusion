@@ -455,6 +455,8 @@ class LTX2Pipeline:
                 "decoder_causal": False,
                 "encoder_spatial_padding_mode": "zeros",
                 "decoder_spatial_padding_mode": "zeros",
+                "spatial_compression_ratio": 32,
+                "temporal_compression_ratio": 8,
             }
         )
         vae = LTX2VideoAutoencoderKL(
