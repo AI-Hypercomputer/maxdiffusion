@@ -1794,7 +1794,7 @@ def transformer_forward_pass(
     audio_sigma = jnp.expand_dims(audio_sigma, 0).repeat(latents.shape[0])
 
   N = latents.shape[0] // 4
-  modality_mask = jnp.concatenate([jnp.ones((3 * N, 1, 1, 1), dtype=latents.dtype), jnp.zeros((N, 1, 1, 1), dtype=latents.dtype)], axis=0)
+  modality_mask = jnp.concatenate([jnp.ones((3 * N, 1, 1), dtype=latents.dtype), jnp.zeros((N, 1, 1), dtype=latents.dtype)], axis=0)
 
   noise_pred, noise_pred_audio = transformer(
       hidden_states=latents,
