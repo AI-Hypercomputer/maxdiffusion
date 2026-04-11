@@ -6,6 +6,7 @@ __pycache__/
 *$py.class
 # C extensions
 *.so
+Gemini.md
 
 # tests and logs
 tests/fixtures/cached_*_text.txt
