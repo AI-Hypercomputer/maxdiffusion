@@ -469,7 +469,6 @@ class LTX2Pipeline:
             mesh=mesh,
             **vae_kwargs,
         )
-      vae.tile_sample_min_width = 1024
       return vae
 
     p_model_factory = partial(create_model, config=config)
@@ -1717,6 +1716,7 @@ class LTX2Pipeline:
       latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
 
       latents = latents.astype(self.vae.dtype)
+      print(f"DEBUG: latents shape before VAE decode: {latents.shape}")
       video = self.vae.decode(latents, temb=timestep, return_dict=False)[0]
     else:
       latents = latents.astype(self.vae.dtype)
@@ -1742,6 +1742,9 @@ class LTX2Pipeline:
     # Convert audio to numpy
     audio = np.array(audio)
     print(f"DEBUG: final audio shape: {audio.shape}")
+    print(f"DEBUG: audio min: {audio.min()}")
+    print(f"DEBUG: audio max: {audio.max()}")
+    print(f"DEBUG: audio mean: {audio.mean()}")
 
     return LTX2PipelineOutput(frames=video, audio=audio)
 

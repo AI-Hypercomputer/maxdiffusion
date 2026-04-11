@@ -1277,6 +1277,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def blend_v(self, a: jax.Array, b: jax.Array, blend_extent: int) -> jax.Array:
     blend_extent = min(a.shape[2], b.shape[2], blend_extent)
+    print(f"DEBUG: blend_v called with a.shape={a.shape}, b.shape={b.shape}, blend_extent={blend_extent}")
     if blend_extent <= 0:
       return b
 
@@ -1289,6 +1290,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def blend_h(self, a: jax.Array, b: jax.Array, blend_extent: int) -> jax.Array:
     blend_extent = min(a.shape[3], b.shape[3], blend_extent)
+    print(f"DEBUG: blend_h called with a.shape={a.shape}, b.shape={b.shape}, blend_extent={blend_extent}")
     if blend_extent <= 0:
       return b
 
