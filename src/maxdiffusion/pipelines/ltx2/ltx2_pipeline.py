@@ -1431,37 +1431,40 @@ class LTX2Pipeline:
     else:
       perturbation_mask = None
 
-    # CFG / STG / modality stack duplicate batch rows as [uncond, cond, ...]. Guidance mixes rows
-    # (e.g. cond vs STG perturb) that must refer to the same sample. If axis 0 is sharded across
-    # data parallel mesh, those rows land on different chips and guidance is wrong — video can
-    # still look plausible while audio (tighter cross-modal coupling) goes silent or garbage.
+    # Stacked CFG/STG duplicates batch axis 0 (uncond/cond/STG/...). Guidance splits and combines
+    # rows that must refer to the same sample. Shard only seq/embed axes — keep batch axis
+    # replicated (None) — not full P() replication (which OOMs), unlike sharding batch on `data`.
+    stacked_guidance_batch = latents_jax.shape[0] > batch_size
+
     if hasattr(self, "mesh") and self.mesh is not None:
-      if do_cfg:
-        rep = NamedSharding(self.mesh, P())
+      data_sharding_3d = NamedSharding(self.mesh, P())
+      data_sharding_2d = NamedSharding(self.mesh, P())
+      if hasattr(self, "config") and getattr(self.config, "data_sharding", None):
+        ds = tuple(self.config.data_sharding)
+        if len(ds) >= 3:
+          if stacked_guidance_batch:
+            data_sharding_3d = NamedSharding(self.mesh, P(None, ds[1], ds[2]))
+            data_sharding_2d = NamedSharding(self.mesh, P(None, ds[1]))
+          else:
+            data_sharding_3d = NamedSharding(self.mesh, P(*ds[:3]))
+            data_sharding_2d = NamedSharding(self.mesh, P(*ds[:2]))
+      if stacked_guidance_batch:
         max_logging.log(
-            "LTX2: replicating stacked-batch activations on all devices (required for CFG/STG; "
-            "data-parallel sharding of batch breaks cross-row guidance)."
+            "LTX2: stacked guidance — batch dim 0 is not partitioned (replicated); "
+            "seq/embed use data_sharding so CFG/STG row pairs stay co-located without full P()."
         )
-        if isinstance(prompt_embeds_jax, list):
-          prompt_embeds_jax = [jax.device_put(x, rep) for x in prompt_embeds_jax]
-        else:
-          prompt_embeds_jax = jax.device_put(prompt_embeds_jax, rep)
-        prompt_attention_mask_jax = jax.device_put(prompt_attention_mask_jax, rep)
-        latents_jax = jax.device_put(latents_jax, rep)
-        audio_latents_jax = jax.device_put(audio_latents_jax, rep)
-        if perturbation_mask is not None:
-          perturbation_mask = jax.device_put(perturbation_mask, rep)
+      if isinstance(prompt_embeds_jax, list):
+        prompt_embeds_jax = [jax.device_put(x, data_sharding_3d) for x in prompt_embeds_jax]
       else:
-        data_sharding_3d = NamedSharding(self.mesh, P())
-        data_sharding_2d = NamedSharding(self.mesh, P())
-        if hasattr(self, "config") and hasattr(self.config, "data_sharding"):
-          data_sharding_3d = NamedSharding(self.mesh, P(*self.config.data_sharding[:3]))
-          data_sharding_2d = NamedSharding(self.mesh, P(*self.config.data_sharding[:2]))
-        if isinstance(prompt_embeds_jax, list):
-          prompt_embeds_jax = [jax.device_put(x, data_sharding_3d) for x in prompt_embeds_jax]
-        else:
-          prompt_embeds_jax = jax.device_put(prompt_embeds_jax, data_sharding_3d)
-        prompt_attention_mask_jax = jax.device_put(prompt_attention_mask_jax, data_sharding_2d)
+        prompt_embeds_jax = jax.device_put(prompt_embeds_jax, data_sharding_3d)
+      prompt_attention_mask_jax = jax.device_put(prompt_attention_mask_jax, data_sharding_2d)
+      if stacked_guidance_batch:
+        latents_jax = jax.device_put(latents_jax, data_sharding_3d)
+        audio_latents_jax = jax.device_put(audio_latents_jax, data_sharding_3d)
+        if perturbation_mask is not None:
+          perturbation_mask = jax.device_put(
+              perturbation_mask, NamedSharding(self.mesh, P(None, None, None))
+          )
 
     # GraphDef and State
     graphdef, state = nnx.split(self.transformer)
@@ -1491,24 +1494,23 @@ class LTX2Pipeline:
       video_embeds_sharded = video_embeds
       audio_embeds_sharded = audio_embeds
 
-      if hasattr(self, "mesh") and self.mesh is not None and do_cfg:
-        rep = NamedSharding(self.mesh, P())
-        video_embeds_sharded = jax.device_put(video_embeds_sharded, rep)
-        audio_embeds_sharded = jax.device_put(audio_embeds_sharded, rep)
-        new_attention_mask = jax.device_put(new_attention_mask, rep)
+      if hasattr(self, "mesh") and self.mesh is not None and stacked_guidance_batch:
+        video_embeds_sharded = jax.device_put(video_embeds_sharded, data_sharding_3d)
+        audio_embeds_sharded = jax.device_put(audio_embeds_sharded, data_sharding_3d)
+        new_attention_mask = jax.device_put(new_attention_mask, data_sharding_2d)
 
-      if not self.transformer.scan_layers and not do_cfg:
+      if (
+          not self.transformer.scan_layers
+          and not stacked_guidance_batch
+          and hasattr(self, "mesh")
+          and self.mesh is not None
+      ):
         activation_axes = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
         spec = NamedSharding(self.mesh, P(*activation_axes))
         video_embeds_sharded = jax.device_put(video_embeds_sharded, spec)
         audio_embeds_sharded = jax.device_put(audio_embeds_sharded, spec)
 
       timesteps_jax = jnp.array(timesteps, dtype=jnp.float32)
-      guidance_rep = (
-          NamedSharding(self.mesh, P())
-          if (do_cfg and hasattr(self, "mesh") and self.mesh is not None)
-          else None
-      )
 
       for i in range(len(timesteps_jax)):
         t = timesteps_jax[i]
@@ -1517,7 +1519,12 @@ class LTX2Pipeline:
         latents_jax_sharded = latents_jax
         audio_latents_jax_sharded = audio_latents_jax
 
-        if not self.transformer.scan_layers and not do_cfg:
+        if (
+            not self.transformer.scan_layers
+            and not stacked_guidance_batch
+            and hasattr(self, "mesh")
+            and self.mesh is not None
+        ):
           activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
           latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax, activation_axis_names)
           audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax, activation_axis_names)
@@ -1543,13 +1550,11 @@ class LTX2Pipeline:
             use_cross_timestep=use_cross_timestep,
         )
 
-        if guidance_rep is not None:
-          noise_pred = jax.device_put(noise_pred, guidance_rep)
-          noise_pred_audio = jax.device_put(noise_pred_audio, guidance_rep)
-
         do_cfg = guidance_scale > 1.0
         do_stg = stg_scale > 0.0
-        sigma_t = sigmas[i]
+        # Match diffusers: use scheduler sigmas after set_timesteps_ltx2 (dynamic shift), not the
+        # pre-shift `sigmas` passed into retrieve_timesteps.
+        sigma_t = scheduler_state.sigmas[i]
 
         # Extract latents_step based on stacking strategy
         if do_cfg and do_stg:
