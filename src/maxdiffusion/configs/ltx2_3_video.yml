@@ -24,15 +24,18 @@ save_config_to_gcs: False
 max_sequence_length: 1024
 sampler: "from_checkpoint"
 
-# Generation parameters
+# Generation parameters (aligned with Diffusers LTX-2.3 docs: use_cross_timestep, modality + audio CFG)
 global_batch_size_to_train_on: 1
-num_inference_steps: 40
-guidance_scale: 4.0
-audio_guidance_scale: 4.0
+num_inference_steps: 30
+guidance_scale: 3.0
+guidance_rescale: 0.7
+audio_guidance_scale: 7.0
+audio_guidance_rescale: 0.7
 stg_scale: 1.0
 audio_stg_scale: 1.0
-modality_scale: 1.0
-audio_modality_scale: 1.0
+modality_scale: 3.0
+audio_modality_scale: 3.0
+use_cross_timestep: true
 spatio_temporal_guidance_blocks: [28]
 fps: 24
 pipeline_type: multi-scale
@@ -42,9 +45,9 @@ height: 512
 width: 768
 decode_timestep: 0.05
 decode_noise_scale: 0.025
+noise_scale: 0.0
 num_frames: 121
 quantization: "int8"
-seed: 10
 #parallelism
 mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 logical_axis_rules: [
@@ -109,5 +112,5 @@ bwd_quantization_calibration_method: "absmax"
 qwix_module_path: ".*"
 jit_initializers: True 
 enable_single_replica_ckpt_restoring: False
-seed: 0
+seed: 10
 audio_format: "s16"

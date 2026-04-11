@@ -1257,6 +1257,7 @@ class LTX2Pipeline:
       stg_scale: float = 0.0,
       modality_scale: float = 1.0,
       audio_guidance_scale: Optional[float] = None,
+      audio_guidance_rescale: Optional[float] = None,
       audio_stg_scale: Optional[float] = None,
       audio_modality_scale: Optional[float] = None,
       noise_scale: float = 1.0,
@@ -1274,11 +1275,18 @@ class LTX2Pipeline:
       dtype: Optional[jnp.dtype] = None,
       output_type: str = "pil",
       return_dict: bool = True,
-      use_cross_timestep: bool = False,
+      use_cross_timestep: Optional[bool] = None,
   ):
     # 1. Check inputs
     self.check_inputs(
         prompt, height, width, prompt_embeds, negative_prompt_embeds, prompt_attention_mask, negative_prompt_attention_mask
+    )
+
+    if use_cross_timestep is None:
+      use_cross_timestep = getattr(self.config, "model_name", "") == "ltx2.3"
+
+    audio_guidance_rescale = (
+        audio_guidance_rescale if audio_guidance_rescale is not None else guidance_rescale
     )
 
     # 2. Encode inputs (Text)
@@ -1343,18 +1351,22 @@ class LTX2Pipeline:
         latents=audio_latents,
     )
 
-    # 5. Prepare Timesteps
+    # 5. Prepare Timesteps (match diffusers LTX2: shift uses scheduler config bounds, not latent token count)
     sigmas = jnp.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
 
-    video_sequence_length = (num_frames - 1) // self.vae_temporal_compression_ratio + 1
-    video_sequence_length *= (height // self.vae_spatial_compression_ratio) * (width // self.vae_spatial_compression_ratio)
+    sched_cfg = self.scheduler.config
+
+    def _sched_cfg_get(key: str, default):
+      if hasattr(sched_cfg, "get"):
+        return sched_cfg.get(key, default)
+      return getattr(sched_cfg, key, default)
 
     mu = calculate_shift(
-        video_sequence_length,
-        self.scheduler.config.get("base_image_seq_len", 1024),
-        self.scheduler.config.get("max_image_seq_len", 4096),
-        self.scheduler.config.get("base_shift", 0.95),
-        self.scheduler.config.get("max_shift", 2.05),
+        _sched_cfg_get("max_image_seq_len", 4096),
+        _sched_cfg_get("base_image_seq_len", 1024),
+        _sched_cfg_get("max_image_seq_len", 4096),
+        _sched_cfg_get("base_shift", 0.95),
+        _sched_cfg_get("max_shift", 2.05),
     )
 
     scheduler_state = retrieve_timesteps(
@@ -1373,7 +1385,7 @@ class LTX2Pipeline:
     prompt_attention_mask_jax = prompt_attention_mask
 
     do_cfg = guidance_scale > 1.0
-    do_stg = getattr(self.config, "stg_scale", 0.0) > 0.0
+    do_stg = stg_scale > 0.0
 
     if do_cfg and do_stg:
       negative_prompt_embeds_jax = negative_prompt_embeds
@@ -1561,7 +1573,12 @@ class LTX2Pipeline:
           audio_modality_delta = (audio_modality_scale - 1 if audio_modality_scale is not None else modality_scale - 1) * (x0_audio_text - x0_audio_isolated)
           
           x0_audio_combined = x0_audio_text + cfg_audio_delta + stg_audio_delta + audio_modality_delta
-          
+
+          if audio_guidance_rescale > 0:
+            x0_audio_combined = rescale_noise_cfg(
+                x0_audio_combined, x0_audio_text, guidance_rescale=audio_guidance_rescale
+            )
+
           noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined)
 
         elif do_cfg:
@@ -1586,7 +1603,12 @@ class LTX2Pipeline:
           
           cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (x0_audio_text - x0_audio_uncond)
           x0_audio_combined = x0_audio_text + cfg_audio_delta
-          
+
+          if audio_guidance_rescale > 0:
+            x0_audio_combined = rescale_noise_cfg(
+                x0_audio_combined, x0_audio_text, guidance_rescale=audio_guidance_rescale
+            )
+
           noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined)
 
         elif do_stg:
@@ -1791,8 +1813,14 @@ def transformer_forward_pass(
   else:
     audio_sigma = jnp.expand_dims(audio_sigma, 0).repeat(latents.shape[0])
 
-  N = latents.shape[0] // 4
-  modality_mask = jnp.concatenate([jnp.ones((3 * N, 1, 1), dtype=latents.dtype), jnp.zeros((N, 1, 1), dtype=latents.dtype)], axis=0)
+  b = latents.shape[0]
+  if b % 4 == 0 and b > 0:
+    n = b // 4
+    modality_mask = jnp.concatenate(
+        [jnp.ones((3 * n, 1, 1), dtype=latents.dtype), jnp.zeros((n, 1, 1), dtype=latents.dtype)], axis=0
+    )
+  else:
+    modality_mask = jnp.ones((b, 1, 1), dtype=latents.dtype)
 
   noise_pred, noise_pred_audio = transformer(
       hidden_states=latents,

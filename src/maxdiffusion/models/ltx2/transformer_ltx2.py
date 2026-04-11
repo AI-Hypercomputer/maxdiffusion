@@ -112,11 +112,13 @@ class LTX2VideoTransformerBlock(nnx.Module):
       v2a_attention_kernel: str = "dot_product",
       flash_block_sizes: BlockSizes = None,
       flash_min_seq_length: int = 4096,
+      perturbed_attn: bool = False,
   ):
     self.dim = dim
     self.norm_eps = norm_eps
     self.norm_elementwise_affine = norm_elementwise_affine
     self.attention_kernel = attention_kernel
+    self.perturbed_attn = perturbed_attn
 
     # 1. Self-Attention (video and audio)
     self.norm1 = nnx.RMSNorm(
@@ -370,11 +372,11 @@ class LTX2VideoTransformerBlock(nnx.Module):
       audio_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
       ca_video_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
       ca_audio_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
-      attention_mask: Optional[jax.Array] = None,
       encoder_attention_mask: Optional[jax.Array] = None,
       audio_encoder_attention_mask: Optional[jax.Array] = None,
       a2v_cross_attention_mask: Optional[jax.Array] = None,
       v2a_cross_attention_mask: Optional[jax.Array] = None,
+      perturbation_mask: Optional[jax.Array] = None,
   ) -> Tuple[jax.Array, jax.Array]:
     batch_size = hidden_states.shape[0]
 
@@ -419,6 +421,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
           hidden_states=norm_hidden_states,
           encoder_hidden_states=None,
           rotary_emb=video_rotary_emb,
+          perturbation_mask=perturbation_mask if self.perturbed_attn else None,
       )
     hidden_states = hidden_states + attn_hidden_states * gate_msa
 
@@ -449,6 +452,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
           hidden_states=norm_audio_hidden_states,
           encoder_hidden_states=None,
           rotary_emb=audio_rotary_emb,
+          perturbation_mask=perturbation_mask if self.perturbed_attn else None,
       )
     audio_hidden_states = audio_hidden_states + attn_audio_hidden_states * audio_gate_msa
 
@@ -648,6 +652,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       gated_attn: bool = False,
       cross_attn_mod: bool = False,
       use_prompt_embeddings: bool = True,
+      perturbed_attn: bool = False,
       spatio_temporal_guidance_blocks: Tuple[int, ...] = (),
       **kwargs,
   ):
@@ -700,6 +705,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.attention_kernel = attention_kernel
     self.gated_attn = gated_attn
     self.cross_attn_mod = cross_attn_mod
+    self.perturbed_attn = perturbed_attn
     self.a2v_attention_kernel = a2v_attention_kernel
     self.v2a_attention_kernel = v2a_attention_kernel
     self.flash_min_seq_length = flash_min_seq_length
@@ -943,6 +949,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           v2a_attention_kernel=self.v2a_attention_kernel,
           flash_block_sizes=flash_block_sizes,
           flash_min_seq_length=self.flash_min_seq_length,
+          perturbed_attn=self.perturbed_attn,
       )
 
     if self.scan_layers:
@@ -980,6 +987,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             v2a_attention_kernel=self.v2a_attention_kernel,
             flash_block_sizes=flash_block_sizes,
             flash_min_seq_length=self.flash_min_seq_length,
+            perturbed_attn=self.perturbed_attn,
         )
         blocks.append(block)
       self.transformer_blocks = nnx.List(blocks)
@@ -1181,7 +1189,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
             a2v_cross_attention_mask=encoder_attention_mask,
             v2a_cross_attention_mask=audio_encoder_attention_mask,
-            attention_mask=mask,
+            perturbation_mask=mask,
             modality_mask=modality_mask,
         )
       return (
@@ -1225,6 +1233,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
               ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
               encoder_attention_mask=encoder_attention_mask,
               audio_encoder_attention_mask=audio_encoder_attention_mask,
+              a2v_cross_attention_mask=encoder_attention_mask,
+              v2a_cross_attention_mask=audio_encoder_attention_mask,
+              perturbation_mask=mask,
           )
 
     # 6. Output layers
