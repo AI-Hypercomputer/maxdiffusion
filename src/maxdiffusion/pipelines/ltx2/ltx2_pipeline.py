@@ -1381,16 +1381,16 @@ class LTX2Pipeline:
       negative_prompt_attention_mask_jax = negative_prompt_attention_mask
       
       if isinstance(prompt_embeds_jax, list):
-        prompt_embeds_jax = [jnp.concatenate([n, p, p, p], axis=0) for n, p in zip(negative_prompt_embeds_jax, prompt_embeds_jax)]
+        prompt_embeds_jax = [jnp.concatenate([n, p, p], axis=0) for n, p in zip(negative_prompt_embeds_jax, prompt_embeds_jax)]
       else:
-        prompt_embeds_jax = jnp.concatenate([negative_prompt_embeds_jax, prompt_embeds_jax, prompt_embeds_jax, prompt_embeds_jax], axis=0)
+        prompt_embeds_jax = jnp.concatenate([negative_prompt_embeds_jax, prompt_embeds_jax, prompt_embeds_jax], axis=0)
         
-      prompt_attention_mask_jax = jnp.concatenate([negative_prompt_attention_mask_jax, prompt_attention_mask_jax, prompt_attention_mask_jax, prompt_attention_mask_jax], axis=0)
-      latents_jax = jnp.concatenate([latents_jax] * 4, axis=0)
-      audio_latents_jax = jnp.concatenate([audio_latents_jax] * 4, axis=0)
+      prompt_attention_mask_jax = jnp.concatenate([negative_prompt_attention_mask_jax, prompt_attention_mask_jax, prompt_attention_mask_jax], axis=0)
+      latents_jax = jnp.concatenate([latents_jax] * 3, axis=0)
+      audio_latents_jax = jnp.concatenate([audio_latents_jax] * 3, axis=0)
       
       N = latents.shape[0]
-      perturbation_mask = jnp.concatenate([jnp.ones((2 * N, 1, 1), dtype=dtype), jnp.zeros((N, 1, 1), dtype=dtype), jnp.ones((N, 1, 1), dtype=dtype)], axis=0)
+      perturbation_mask = jnp.concatenate([jnp.ones((2 * N, 1, 1), dtype=dtype), jnp.zeros((N, 1, 1), dtype=dtype)], axis=0)
       
     elif do_cfg:
       negative_prompt_embeds_jax = negative_prompt_embeds
@@ -1527,7 +1527,7 @@ class LTX2Pipeline:
           return (lat - x0) / sigma_t
 
         if do_cfg and do_stg:
-          noise_pred_uncond, noise_pred_text, noise_pred_perturb, _ = jnp.split(noise_pred, 4, axis=0)
+          noise_pred_uncond, noise_pred_text, noise_pred_perturb = jnp.split(noise_pred, 3, axis=0)
           
           # Convert to x0
           x0_uncond = convert_to_x0(latents_step, noise_pred_uncond)
@@ -1548,7 +1548,7 @@ class LTX2Pipeline:
           noise_pred = convert_to_vel(latents_step, x0_combined)
 
           # Audio guidance
-          noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb, _ = jnp.split(noise_pred_audio, 4, axis=0)
+          noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb = jnp.split(noise_pred_audio, 3, axis=0)
           
           x0_audio_uncond = convert_to_x0(audio_latents_step, noise_pred_audio_uncond)
           x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text)
