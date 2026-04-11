@@ -383,6 +383,7 @@ class LTX2Pipeline:
                 "audio_gated_attn": True,
                 "per_modality_projections": True,
                 "proj_bias": True,
+                "rope_type": "split",
             }
         )
       connectors = LTX2AudioVideoGemmaTextEncoder.from_config(
