@@ -1621,8 +1621,8 @@ class LTX2Pipeline:
 
         # Re-stack based on strategy for next iteration
         if do_cfg and do_stg:
-          latents_jax = jnp.concatenate([latents_step] * 3, axis=0)
-          audio_latents_jax = jnp.concatenate([audio_latents_step] * 3, axis=0)
+          latents_jax = jnp.concatenate([latents_step] * 4, axis=0)
+          audio_latents_jax = jnp.concatenate([audio_latents_step] * 4, axis=0)
         elif do_cfg or do_stg:
           latents_jax = jnp.concatenate([latents_step] * 2, axis=0)
           audio_latents_jax = jnp.concatenate([audio_latents_step] * 2, axis=0)
