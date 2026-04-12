@@ -131,7 +131,7 @@ def create_sharded_logical_transformer(
         "num_layers": 48,
         "caption_channels": 3840,
         "audio_caption_channels": 2048,
-        "use_prompt_embeddings": False,
+        "use_prompt_embeddings": True,
         "gated_attn": False,
         "cross_attn_mod": True,
         "audio_gated_attn": False,
@@ -162,7 +162,7 @@ def create_sharded_logical_transformer(
     ltx2_config["gated_attn"] = False
     ltx2_config["cross_attn_mod"] = True
     ltx2_config["perturbed_attn"] = True
-    ltx2_config["use_prompt_embeddings"] = False
+    ltx2_config["use_prompt_embeddings"] = True
 
   # 2. eval_shape
   p_model_factory = partial(create_model, ltx2_config=ltx2_config)
