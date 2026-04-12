@@ -521,7 +521,7 @@ class NNXCombinedTimestepTextProjEmbeddings(nnx.Module):
     timesteps_proj = self.time_proj(timestep)
     timesteps_emb = self.emb.timestep_embedder(timesteps_proj)
 
-    return hidden_states + timesteps_emb
+    return hidden_states + timesteps_emb[:, None, :]
 
 
 class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
