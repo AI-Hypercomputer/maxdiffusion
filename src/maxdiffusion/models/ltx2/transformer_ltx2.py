@@ -257,7 +257,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=0,
-        gated_attn=self.cross_attn_mod,
+        gated_attn=cross_attn_mod,
     )
 
     self.video_to_audio_norm = nnx.RMSNorm(
@@ -285,7 +285,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
-        gated_attn=self.cross_attn_mod,
+        gated_attn=cross_attn_mod,
     )
 
     # 4. Feed Forward
