@@ -437,8 +437,6 @@ class LTX2Attention(nnx.Module):
           rngs=rngs,
           dtype=dtype,
       )
-    else:
-      self.to_gate_logits = None
 
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
