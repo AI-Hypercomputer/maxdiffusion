@@ -132,9 +132,9 @@ def create_sharded_logical_transformer(
         "caption_channels": 4096,
         "audio_caption_channels": 2048,
         "use_prompt_embeddings": True,
-        "gated_attn": False,
+        "gated_attn": True,
         "cross_attn_mod": True,
-        "audio_gated_attn": False,
+        "audio_gated_attn": True,
         "audio_cross_attn_mod": True,
     }
   else:
