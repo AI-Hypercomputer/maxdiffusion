@@ -46,7 +46,7 @@ logical_axis_rules: [
                       ['activation_batch', ['data', 'fsdp']],
                       ['activation_self_attn_heads', 'tensor'],
                       ['activation_cross_attn_q_length', 'tensor'],
-                      ['activation_length', None],
+                      ['activation_length', null],
                       ['activation_heads', 'tensor'],
                       ['mlp','tensor'],
                       ['embed', 'fsdp'],
