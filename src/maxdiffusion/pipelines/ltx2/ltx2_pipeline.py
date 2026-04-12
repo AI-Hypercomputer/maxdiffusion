@@ -132,6 +132,10 @@ def create_sharded_logical_transformer(
         "caption_channels": 3840,
         "audio_caption_channels": 2048,
         "use_prompt_embeddings": False,
+        "gated_attn": True,
+        "cross_attn_mod": True,
+        "audio_gated_attn": True,
+        "audio_cross_attn_mod": True,
     }
   else:
     ltx2_config = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
