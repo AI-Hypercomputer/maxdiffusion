@@ -100,8 +100,9 @@ class WanCausalConv3d(nnx.Module):
     self.mesh = mesh
     # Set sharding dynamically based on out_channels.
     num_context_axis_devices = mesh.shape["context"]
+    tensor_axis_size = mesh.shape.get("tensor", 1)
     kernel_sharding = (None, None, None, None, None)
-    if out_channels % num_context_axis_devices == 0:
+    if out_channels % num_context_axis_devices == 0 and out_channels % tensor_axis_size == 0:
       kernel_sharding = (None, None, None, None, "conv_out")
 
     self.conv = nnx.Conv(
