@@ -1807,14 +1807,12 @@ def transformer_forward_pass(
   else:
     audio_sigma = jnp.expand_dims(audio_sigma, 0).repeat(latents.shape[0])
 
-  b = latents.shape[0]
-  if is_cfg_stg_mode:
-    n = b // 4
-    modality_mask = jnp.concatenate(
-        [jnp.ones((3 * n, 1, 1), dtype=latents.dtype), jnp.zeros((n, 1, 1), dtype=latents.dtype)], axis=0
-    )
-  else:
-    modality_mask = jnp.ones((b, 1, 1), dtype=latents.dtype)
+  n = b // 4
+  stg_mask = jnp.concatenate(
+      [jnp.ones((b - n, 1, 1), dtype=latents.dtype), jnp.zeros((n, 1, 1), dtype=latents.dtype)], axis=0
+  )
+  ones_mask = jnp.ones((b, 1, 1), dtype=latents.dtype)
+  modality_mask = jnp.where(is_cfg_stg_mode, stg_mask, ones_mask)
 
   noise_pred, noise_pred_audio = transformer(
       hidden_states=latents,
