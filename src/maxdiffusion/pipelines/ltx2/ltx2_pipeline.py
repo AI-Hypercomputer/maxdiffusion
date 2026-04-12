@@ -1497,6 +1497,7 @@ class LTX2Pipeline:
             frame_rate,
             perturbation_mask=perturbation_mask,
             use_cross_timestep=use_cross_timestep,
+            is_cfg_stg_mode=do_cfg and do_stg,
         )
 
         do_cfg = guidance_scale > 1.0
@@ -1785,6 +1786,7 @@ def transformer_forward_pass(
     sigma=None,
     audio_sigma=None,
     use_cross_timestep=False,
+    is_cfg_stg_mode: bool = False,
 ):
   transformer = nnx.merge(graphdef, state)
 
@@ -1802,7 +1804,7 @@ def transformer_forward_pass(
     audio_sigma = jnp.expand_dims(audio_sigma, 0).repeat(latents.shape[0])
 
   b = latents.shape[0]
-  if b % 4 == 0 and b > 0:
+  if is_cfg_stg_mode:
     n = b // 4
     modality_mask = jnp.concatenate(
         [jnp.ones((3 * n, 1, 1), dtype=latents.dtype), jnp.zeros((n, 1, 1), dtype=latents.dtype)], axis=0
