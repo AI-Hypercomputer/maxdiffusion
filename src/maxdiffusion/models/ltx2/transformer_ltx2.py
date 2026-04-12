@@ -737,17 +737,23 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
     # 2. Prompt embeddings
     if self.use_prompt_embeddings:
-      self.caption_projection = NNXPixArtAlphaTextProjection(
+      self.caption_projection = None
+      self.audio_caption_projection = None
+      self.cross_attn_mod = True  # Force True for LTX-2.3 prompt modulation
+      
+      self.prompt_adaln = LTX2AdaLayerNormSingle(
           rngs=rngs,
-          in_features=self.caption_channels,
-          hidden_size=inner_dim,
+          embedding_dim=inner_dim,
+          num_mod_params=2,
+          use_additional_conditions=False,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
       )
-      self.audio_caption_projection = NNXPixArtAlphaTextProjection(
+      self.audio_prompt_adaln = LTX2AdaLayerNormSingle(
           rngs=rngs,
-          in_features=self.audio_caption_channels,
-          hidden_size=audio_inner_dim,
+          embedding_dim=audio_inner_dim,
+          num_mod_params=2,
+          use_additional_conditions=False,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
       )
@@ -1077,7 +1083,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       temb_audio = temb_audio.reshape(batch_size, -1, temb_audio.shape[-1])
       audio_embedded_timestep = audio_embedded_timestep.reshape(batch_size, -1, audio_embedded_timestep.shape[-1])
 
-      if self.cross_attn_mod and sigma is not None:
+      if self.use_prompt_embeddings and sigma is not None:
         audio_sigma = audio_sigma if audio_sigma is not None else sigma
         temb_prompt, _ = self.prompt_adaln(
             sigma.flatten(),
