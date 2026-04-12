@@ -111,7 +111,6 @@ def create_sharded_logical_transformer(
     transformer = LTX2VideoTransformer3DModel(
         **ltx2_config,
         spatio_temporal_guidance_blocks=tuple(getattr(config, "spatio_temporal_guidance_blocks", ())),
-        perturbed_attn=getattr(config, "model_name", "") == "ltx2.3",
         rngs=rngs
     )
     return transformer
