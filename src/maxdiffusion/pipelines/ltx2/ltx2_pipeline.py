@@ -1189,9 +1189,7 @@ class LTX2Pipeline:
       generator = jax.random.key(seed)
 
     latents = jax.random.normal(generator, shape, dtype=dtype or jnp.float32)
-    print(f"DEBUG: latents shape in prepare_latents before pack: {latents.shape}")
     latents = self._pack_latents(latents, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size)
-    print(f"DEBUG: latents shape in prepare_latents after pack: {latents.shape}")
     return latents
 
   def prepare_audio_latents(
@@ -1733,15 +1731,10 @@ class LTX2Pipeline:
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
     video_np = np.array(video).transpose(0, 4, 1, 2, 3)
     video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
-    print(f"DEBUG: final video shape: {np.array(video).shape}")
 
     # Decode Audio
     audio_latents = audio_latents.astype(self.audio_vae.dtype)
     generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
-    print(f"DEBUG: generated_mel_spectrograms shape: {generated_mel_spectrograms.shape}")
-    print(f"DEBUG: generated_mel_spectrograms min: {generated_mel_spectrograms.min()}")
-    print(f"DEBUG: generated_mel_spectrograms max: {generated_mel_spectrograms.max()}")
-    print(f"DEBUG: generated_mel_spectrograms mean: {generated_mel_spectrograms.mean()}")
 
     # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
     generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
@@ -1749,10 +1742,6 @@ class LTX2Pipeline:
 
     # Convert audio to numpy
     audio = np.array(audio)
-    print(f"DEBUG: final audio shape: {audio.shape}")
-    print(f"DEBUG: audio min: {audio.min()}")
-    print(f"DEBUG: audio max: {audio.max()}")
-    print(f"DEBUG: audio mean: {audio.mean()}")
 
     return LTX2PipelineOutput(frames=video, audio=audio)
 

@@ -1277,7 +1277,6 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def blend_v(self, a: jax.Array, b: jax.Array, blend_extent: int) -> jax.Array:
     blend_extent = min(a.shape[2], b.shape[2], blend_extent)
-    print(f"DEBUG: blend_v called with a.shape={a.shape}, b.shape={b.shape}, blend_extent={blend_extent}")
     if blend_extent <= 0:
       return b
 
@@ -1290,7 +1289,6 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
 
   def blend_h(self, a: jax.Array, b: jax.Array, blend_extent: int) -> jax.Array:
     blend_extent = min(a.shape[3], b.shape[3], blend_extent)
-    print(f"DEBUG: blend_h called with a.shape={a.shape}, b.shape={b.shape}, blend_extent={blend_extent}")
     if blend_extent <= 0:
       return b
 
@@ -1381,12 +1379,9 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
     B, T, H, W, C = z.shape
     sample_height = H * self.spatial_compression_ratio
     sample_width = W * self.spatial_compression_ratio
-    print(f"DEBUG: VAE tiled_decode called with hidden shape H={H}, W={W}")
-    print(f"DEBUG: target sample_height={sample_height}, sample_width={sample_width}")
 
     tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
     tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
-    print(f"DEBUG: tile_latent_min_height={tile_latent_min_height}, tile_latent_min_width={tile_latent_min_width}")
     tile_latent_stride_height = self.tile_sample_stride_height // self.spatial_compression_ratio
     tile_latent_stride_width = self.tile_sample_stride_width // self.spatial_compression_ratio
 

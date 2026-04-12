@@ -737,6 +737,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
     # 2. Prompt embeddings
     if self.use_prompt_embeddings:
+      print("DEBUG: Initializing caption projection (LTX-2.0 path)")
       self.caption_projection = NNXPixArtAlphaTextProjection(
           rngs=rngs,
           in_features=self.caption_channels,
@@ -756,6 +757,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       self.audio_caption_projection = None
       
     if self.cross_attn_mod:
+      print("DEBUG: Initializing prompt_adaln (LTX-2.3 path)")
       self.prompt_adaln = LTX2AdaLayerNormSingle(
           rngs=rngs,
           embedding_dim=inner_dim,
@@ -1096,6 +1098,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       audio_embedded_timestep = audio_embedded_timestep.reshape(batch_size, -1, audio_embedded_timestep.shape[-1])
 
       if self.cross_attn_mod and sigma is not None:
+        print("DEBUG: Executing prompt_adaln (LTX-2.3 path)")
         audio_sigma = audio_sigma if audio_sigma is not None else sigma
         temb_prompt, _ = self.prompt_adaln(
             sigma.flatten(),
@@ -1112,6 +1115,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         temb_prompt_audio = None
 
       if use_cross_timestep:
+        print("DEBUG: Using cross timestep (LTX-2.3 path)")
         assert sigma is not None and audio_sigma is not None, "sigma and audio_sigma must be provided when use_cross_timestep is True"
         video_ca_timestep = audio_sigma.flatten()
         audio_ca_timestep = sigma.flatten()

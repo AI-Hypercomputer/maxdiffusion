@@ -349,7 +349,6 @@ class LTX2Attention(nnx.Module):
       rope_type: str = "interleaved",
       flash_block_sizes: BlockSizes = None,
       flash_min_seq_length: int = 4096,
-      gated_attn: bool = False,
   ):
     self.heads = heads
     self.rope_type = rope_type
@@ -427,17 +426,6 @@ class LTX2Attention(nnx.Module):
     else:
       self.dropout_layer = None
 
-    if gated_attn:
-      self.to_gate_logits = nnx.Linear(
-          query_dim,
-          heads,
-          use_bias=True,
-          kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
-          bias_init=nnx.with_partitioning(nnx.initializers.zeros_init(), ("heads",)),
-          rngs=rngs,
-          dtype=dtype,
-      )
-
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
         attention_kernel=attention_kernel,
@@ -458,7 +446,6 @@ class LTX2Attention(nnx.Module):
       attention_mask: Optional[Array] = None,
       rotary_emb: Optional[Tuple[Array, Array]] = None,
       k_rotary_emb: Optional[Tuple[Array, Array]] = None,
-      perturbation_mask: Optional[Array] = None,
   ) -> Array:
     # Determine context (Self or Cross)
     context = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
@@ -501,21 +488,6 @@ class LTX2Attention(nnx.Module):
       # 4. Attention
       # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
       attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
-
-      if perturbation_mask is not None:
-        print("DEBUG: Applying perturbation mask")
-        # value is [B, S, InnerDim]
-        # attn_output is [B, S, InnerDim]
-        attn_output = value + perturbation_mask * (attn_output - value)
-
-      if getattr(self, "to_gate_logits", None) is not None:
-        print("DEBUG: Applying gated attention")
-        gate_logits = self.to_gate_logits(hidden_states)
-        b, s, _ = attn_output.shape
-        attn_output = attn_output.reshape(b, s, self.heads, self.dim_head)
-        gates = 2.0 * jax.nn.sigmoid(gate_logits)
-        attn_output = attn_output * jnp.expand_dims(gates, axis=-1)
-        attn_output = attn_output.reshape(b, s, -1)
 
       # 7. Output Projection
       hidden_states = self.to_out(attn_output)
