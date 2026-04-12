@@ -644,8 +644,9 @@ class LTX2Pipeline:
   @classmethod
   def load_scheduler(cls, config: HyperParameters):
     max_logging.log("Loading Scheduler...")
+    scheduler_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
     scheduler, _ = FlaxFlowMatchScheduler.from_pretrained(
-        "Lightricks/LTX-2",
+        scheduler_repo,
         subfolder="scheduler",
     )
     return scheduler
