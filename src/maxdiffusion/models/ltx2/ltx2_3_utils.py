@@ -63,10 +63,10 @@ def rename_for_ltx2_3_transformer(key):
   # key = key.replace("audio_prompt_scale_shift_table", "audio_scale_shift_table")
   # key = key.replace("prompt_scale_shift_table", "scale_shift_table")
 
-  # if "prompt_adaln" in key:
-  #   key = key.replace("prompt_adaln", "caption_projection")
-  # if "audio_prompt_adaln" in key:
-  #   key = key.replace("audio_prompt_adaln", "audio_caption_projection")
+  if "prompt_adaln" in key:
+    key = key.replace("prompt_adaln", "caption_projection")
+  if "audio_prompt_adaln" in key:
+    key = key.replace("audio_prompt_adaln", "audio_caption_projection")
   if "video_text_proj_in" in key:
     key = key.replace("video_text_proj_in", "feature_extractor.video_linear")
   if "audio_text_proj_in" in key:

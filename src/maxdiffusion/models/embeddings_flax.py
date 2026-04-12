@@ -473,56 +473,6 @@ class CombinedTimestepTextProjEmbeddings(nn.Module):
     conditioning = timestep_emb + pooled_projections
     return conditioning
 
-class NNXCombinedTimestepTextProjEmbeddings(nnx.Module):
-  def __init__(
-      self,
-      rngs: nnx.Rngs,
-      in_features: int,
-      hidden_size: int,
-      embedding_dim: int,
-      out_features: int = None,
-      act_fn: str = "gelu_tanh",
-      dtype: jnp.dtype = jnp.float32,
-      weights_dtype: jnp.dtype = jnp.float32,
-      precision: jax.lax.Precision = None,
-  ):
-    if out_features is None:
-      out_features = hidden_size
-
-    self.linear = nnx.Linear(
-        rngs=rngs,
-        in_features=in_features,
-        out_features=out_features,
-        use_bias=True,
-        dtype=jnp.float32,
-        param_dtype=weights_dtype,
-        precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("mlp", "embed")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
-    )
-
-    self.time_proj = NNXTimesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
-
-    class EmbWrapper(nnx.Module):
-      def __init__(self, rngs: nnx.Rngs, embedding_dim: int, weights_dtype: jnp.dtype):
-        self.timestep_embedder = NNXTimestepEmbedding(
-            rngs=rngs,
-            in_channels=256,
-            time_embed_dim=embedding_dim,
-            dtype=jnp.float32,
-            weights_dtype=weights_dtype,
-        )
-
-    self.emb = EmbWrapper(rngs, embedding_dim, weights_dtype)
-
-  def __call__(self, caption, timestep):
-    hidden_states = self.linear(caption)
-
-    timesteps_proj = self.time_proj(timestep)
-    timesteps_emb = self.emb.timestep_embedder(timesteps_proj)
-
-    return hidden_states + timesteps_emb[:, None, :]
-
 
 class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
   embedding_dim: int
