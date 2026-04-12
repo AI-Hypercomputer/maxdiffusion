@@ -145,7 +145,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
-        gated_attn=False,
+        gated_attn=gated_attn,
     )
 
     self.audio_norm1 = nnx.RMSNorm(
@@ -172,7 +172,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
-        gated_attn=False,
+        gated_attn=gated_attn,
     )
 
     # 2. Prompt Cross-Attention
@@ -200,7 +200,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
-        gated_attn=False,
+        gated_attn=gated_attn,
     )
 
     self.audio_norm2 = nnx.RMSNorm(
@@ -228,7 +228,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
-        gated_attn=False,
+        gated_attn=gated_attn,
     )
 
     # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
