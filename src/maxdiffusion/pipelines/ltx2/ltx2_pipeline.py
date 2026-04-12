@@ -386,8 +386,9 @@ class LTX2Pipeline:
                 "rope_type": "split",
             }
         )
+      connector_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
       connectors = LTX2AudioVideoGemmaTextEncoder.from_config(
-          "Lightricks/LTX-2",
+          connector_repo,
           subfolder="connectors",
           rngs=rngs,
           mesh=mesh,
@@ -439,6 +440,7 @@ class LTX2Pipeline:
           "dtype": jnp.float32,
           "weights_dtype": config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
       }
+      vae_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
       if getattr(config, "model_name", "") == "ltx2.3":
         vae_kwargs.update(
             {
@@ -464,18 +466,13 @@ class LTX2Pipeline:
                 "temporal_compression_ratio": 8,
             }
         )
-        vae = LTX2VideoAutoencoderKL(
-            rngs=rngs,
-            **vae_kwargs,
-        )
-      else:
-        vae = LTX2VideoAutoencoderKL.from_config(
-            config.pretrained_model_name_or_path,
-            subfolder="vae",
-            rngs=rngs,
-            mesh=mesh,
-            **vae_kwargs,
-        )
+      vae = LTX2VideoAutoencoderKL.from_config(
+          vae_repo,
+          subfolder="vae",
+          rngs=rngs,
+          mesh=mesh,
+          **vae_kwargs,
+      )
       return vae
 
     p_model_factory = partial(create_model, config=config)
