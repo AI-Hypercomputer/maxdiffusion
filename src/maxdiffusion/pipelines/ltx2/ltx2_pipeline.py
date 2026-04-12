@@ -596,25 +596,15 @@ class LTX2Pipeline:
     max_logging.log("Loading Vocoder...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      if getattr(config, "model_name", "") == "ltx2.3":
-        # Force loading normal vocoder from LTX-2 for isolation
-        vocoder = LTX2Vocoder.from_config(
-            "Lightricks/LTX-2",
-            subfolder="vocoder",
-            rngs=rngs,
-            mesh=mesh,
-            dtype=jnp.float32,
-            weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
-        )
-      else:
-        vocoder = LTX2Vocoder.from_config(
-            config.pretrained_model_name_or_path,
-            subfolder="vocoder",
-            rngs=rngs,
-            mesh=mesh,
-            dtype=jnp.float32,
-            weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
-        )
+      vocoder_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
+      vocoder = LTX2Vocoder.from_config(
+          vocoder_repo,
+          subfolder="vocoder",
+          rngs=rngs,
+          mesh=mesh,
+          dtype=jnp.float32,
+          weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+      )
       return vocoder
  
     p_model_factory = partial(create_model, config=config)
