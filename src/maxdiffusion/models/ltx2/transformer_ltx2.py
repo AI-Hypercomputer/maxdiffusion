@@ -1095,7 +1095,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       temb_audio = temb_audio.reshape(batch_size, -1, temb_audio.shape[-1])
       audio_embedded_timestep = audio_embedded_timestep.reshape(batch_size, -1, audio_embedded_timestep.shape[-1])
 
-      if self.use_prompt_embeddings and sigma is not None:
+      if self.cross_attn_mod and sigma is not None:
         audio_sigma = audio_sigma if audio_sigma is not None else sigma
         temb_prompt, _ = self.prompt_adaln(
             sigma.flatten(),
