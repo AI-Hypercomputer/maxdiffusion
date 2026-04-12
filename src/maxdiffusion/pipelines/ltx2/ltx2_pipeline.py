@@ -1377,8 +1377,10 @@ class LTX2Pipeline:
 
     do_cfg = guidance_scale > 1.0
     do_stg = stg_scale > 0.0
+    print(f"DEBUG: do_cfg={do_cfg}, do_stg={do_stg}, guidance_scale={guidance_scale}, stg_scale={stg_scale}")
 
     if do_cfg and do_stg:
+      print("DEBUG: Pipeline: Branching into do_cfg AND do_stg")
       negative_prompt_embeds_jax = negative_prompt_embeds
       negative_prompt_attention_mask_jax = negative_prompt_attention_mask
       
@@ -1395,6 +1397,7 @@ class LTX2Pipeline:
       perturbation_mask = jnp.concatenate([jnp.ones((2 * N, 1, 1), dtype=dtype), jnp.zeros((N, 1, 1), dtype=dtype), jnp.ones((N, 1, 1), dtype=dtype)], axis=0)
       
     elif do_cfg:
+      print("DEBUG: Pipeline: Branching into do_cfg only")
       negative_prompt_embeds_jax = negative_prompt_embeds
       negative_prompt_attention_mask_jax = negative_prompt_attention_mask
       if isinstance(prompt_embeds_jax, list):
@@ -1408,6 +1411,7 @@ class LTX2Pipeline:
       perturbation_mask = None
       
     elif do_stg:
+      print("DEBUG: Pipeline: Branching into do_stg only")
       if isinstance(prompt_embeds_jax, list):
         prompt_embeds_jax = [jnp.concatenate([p, p], axis=0) for p in prompt_embeds_jax]
       else:
@@ -1420,6 +1424,7 @@ class LTX2Pipeline:
       N = latents.shape[0]
       perturbation_mask = jnp.concatenate([jnp.ones((N, 1, 1), dtype=dtype), jnp.zeros((N, 1, 1), dtype=dtype)], axis=0)
     else:
+      print("DEBUG: Pipeline: No guidance branch (Standard path)")
       perturbation_mask = None
 
     if hasattr(self, "mesh") and self.mesh is not None:
