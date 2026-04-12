@@ -53,7 +53,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       connector_rope_base_seq_len: int = 4096,
       rope_double_precision: bool = True,
       rope_theta: float = 10000.0,
-      rope_type: str = "split",
+      rope_type: str = "interleaved",
       causal_temporal_positioning: bool = False,
       dtype: DType = jnp.float32,
       attention_kernel: str = "flash",
