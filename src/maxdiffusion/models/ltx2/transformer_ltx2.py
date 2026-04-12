@@ -21,7 +21,7 @@ import flax.linen as nn
 
 from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
 from maxdiffusion.models.attention_flax import NNXSimpleFeedForward
-from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSizeEmbeddings, NNXPixArtAlphaTextProjection, NNXCombinedTimestepTextProjEmbeddings
+from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSizeEmbeddings, NNXPixArtAlphaTextProjection
 from maxdiffusion.models.gradient_checkpoint import GradientCheckpointType
 from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
 from maxdiffusion.common_types import BlockSizes
