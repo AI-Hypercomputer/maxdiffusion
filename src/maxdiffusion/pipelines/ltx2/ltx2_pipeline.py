@@ -1807,6 +1807,7 @@ def transformer_forward_pass(
   else:
     audio_sigma = jnp.expand_dims(audio_sigma, 0).repeat(latents.shape[0])
 
+  b = latents.shape[0]
   n = b // 4
   stg_mask = jnp.concatenate(
       [jnp.ones((b - n, 1, 1), dtype=latents.dtype), jnp.zeros((n, 1, 1), dtype=latents.dtype)], axis=0
