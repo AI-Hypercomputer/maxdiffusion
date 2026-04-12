@@ -132,9 +132,9 @@ def create_sharded_logical_transformer(
         "caption_channels": 3840,
         "audio_caption_channels": 2048,
         "use_prompt_embeddings": False,
-        "gated_attn": True,
+        "gated_attn": False,
         "cross_attn_mod": True,
-        "audio_gated_attn": True,
+        "audio_gated_attn": False,
         "audio_cross_attn_mod": True,
     }
   else:
@@ -159,7 +159,7 @@ def create_sharded_logical_transformer(
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
 
   if getattr(config, "model_name", "") == "ltx2.3":
-    ltx2_config["gated_attn"] = True
+    ltx2_config["gated_attn"] = False
     ltx2_config["cross_attn_mod"] = True
     ltx2_config["perturbed_attn"] = True
     ltx2_config["use_prompt_embeddings"] = False

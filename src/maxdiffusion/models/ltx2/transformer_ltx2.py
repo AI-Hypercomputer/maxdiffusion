@@ -145,7 +145,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
-        gated_attn=gated_attn,
+        gated_attn=False,
     )
 
     self.audio_norm1 = nnx.RMSNorm(
@@ -172,7 +172,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
-        gated_attn=gated_attn,
+        gated_attn=False,
     )
 
     # 2. Prompt Cross-Attention
@@ -200,7 +200,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
-        gated_attn=gated_attn,
+        gated_attn=False,
     )
 
     self.audio_norm2 = nnx.RMSNorm(
@@ -228,7 +228,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
-        gated_attn=gated_attn,
+        gated_attn=False,
     )
 
     # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
@@ -257,7 +257,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=0,
-        gated_attn=gated_attn,
+        gated_attn=self.cross_attn_mod,
     )
 
     self.video_to_audio_norm = nnx.RMSNorm(
@@ -285,7 +285,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
-        gated_attn=gated_attn,
+        gated_attn=self.cross_attn_mod,
     )
 
     # 4. Feed Forward
@@ -1145,14 +1145,17 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       )
       audio_cross_attn_v2a_gate = audio_cross_attn_v2a_gate.reshape(batch_size, -1, audio_cross_attn_v2a_gate.shape[-1])
 
-      # 4. Prepare prompt embeddings
       if self.use_prompt_embeddings:
-        encoder_hidden_states = self.caption_projection(encoder_hidden_states, timestep)
-        encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
+        if self.cross_attn_mod:
+          encoder_hidden_states = self.caption_projection(encoder_hidden_states, timestep)
+          audio_encoder_hidden_states = self.audio_caption_projection(
+              audio_encoder_hidden_states, audio_timestep if audio_timestep is not None else timestep
+          )
+        else:
+          encoder_hidden_states = self.caption_projection(encoder_hidden_states)
+          audio_encoder_hidden_states = self.audio_caption_projection(audio_encoder_hidden_states)
 
-        audio_encoder_hidden_states = self.audio_caption_projection(
-            audio_encoder_hidden_states, audio_timestep if audio_timestep is not None else timestep
-        )
+        encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
         audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
 
     # Construct perturbation_mask_per_layer for STG
