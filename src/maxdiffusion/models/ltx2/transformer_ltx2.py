@@ -737,10 +737,25 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
     # 2. Prompt embeddings
     if self.use_prompt_embeddings:
+      self.caption_projection = NNXPixArtAlphaTextProjection(
+          rngs=rngs,
+          in_features=self.caption_channels,
+          hidden_size=inner_dim,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+      )
+      self.audio_caption_projection = NNXPixArtAlphaTextProjection(
+          rngs=rngs,
+          in_features=self.caption_channels,
+          hidden_size=audio_inner_dim,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+      )
+    else:
       self.caption_projection = None
       self.audio_caption_projection = None
-      self.cross_attn_mod = True  # Force True for LTX-2.3 prompt modulation
       
+    if self.cross_attn_mod:
       self.prompt_adaln = LTX2AdaLayerNormSingle(
           rngs=rngs,
           embedding_dim=inner_dim,
@@ -757,9 +772,6 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
       )
-    else:
-      self.caption_projection = None
-      self.audio_caption_projection = None
     # 3. Timestep Modulation Params and Embedding
     num_mod_params = 9 if self.cross_attn_mod else 6
     self.time_embed = LTX2AdaLayerNormSingle(

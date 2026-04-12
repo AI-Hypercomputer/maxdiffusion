@@ -157,12 +157,13 @@ def create_sharded_logical_transformer(
   ltx2_config["remat_policy"] = config.remat_policy
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
+  ltx2_config["use_prompt_embeddings"] = True
 
   if getattr(config, "model_name", "") == "ltx2.3":
     ltx2_config["gated_attn"] = True
     ltx2_config["cross_attn_mod"] = True
     ltx2_config["perturbed_attn"] = True
-    ltx2_config["use_prompt_embeddings"] = True
+    ltx2_config["use_prompt_embeddings"] = False
 
   # 2. eval_shape
   p_model_factory = partial(create_model, ltx2_config=ltx2_config)
