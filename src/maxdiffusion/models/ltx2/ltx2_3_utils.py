@@ -186,17 +186,11 @@ def load_transformer_weights_2_3(
       renamed_pt_key = rename_key(pt_key)
       renamed_pt_key = rename_for_ltx2_3_transformer(renamed_pt_key)
 
-      if "to_gate_logits" in pt_key:
-        print(f"pt_key: {pt_key} -> renamed_pt_key: {renamed_pt_key}")
-
       pt_tuple_key = tuple(renamed_pt_key.split("."))
 
       flax_key, flax_tensor = get_key_and_value(
           pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
       )
-
-      if "to_gate_logits" in pt_key:
-        print(f"flax_key: {flax_key}")
 
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 

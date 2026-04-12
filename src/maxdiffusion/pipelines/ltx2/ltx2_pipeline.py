@@ -159,7 +159,7 @@ def create_sharded_logical_transformer(
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
 
   if getattr(config, "model_name", "") == "ltx2.3":
-    ltx2_config["gated_attn"] = False
+    ltx2_config["gated_attn"] = True
     ltx2_config["cross_attn_mod"] = True
     ltx2_config["perturbed_attn"] = True
     ltx2_config["use_prompt_embeddings"] = True
