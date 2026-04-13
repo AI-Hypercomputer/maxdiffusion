@@ -1534,6 +1534,11 @@ class LTX2Pipeline:
         def convert_to_vel(lat, x0):
           return (lat - x0) / sigma_t
 
+        # Replicate latents across devices to avoid sharding mismatch during eager split
+        replicated_sharding = NamedSharding(self.mesh, P())
+        noise_pred = jax.device_put(noise_pred, replicated_sharding)
+        noise_pred_audio = jax.device_put(noise_pred_audio, replicated_sharding)
+
         if do_cfg and do_stg:
           noise_pred_uncond, noise_pred_text, noise_pred_perturb, noise_pred_isolated = jnp.split(noise_pred, 4, axis=0)
           
