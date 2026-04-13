@@ -36,12 +36,12 @@ from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder
 from ...models.ltx2.vocoder_bwe_ltx2 import LTX2VocoderWithBWE, Vocoder, MelSTFT
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
-from ...models.ltx2.ltx2_3_utils import load_connectors_weights_2_3, load_vae_weights_2_3
 from ...models.ltx2.ltx2_utils import (
     load_transformer_weights,
     load_vae_weights,
     load_audio_vae_weights,
     load_vocoder_weights,
+    load_connector_weights,
 )
 from ...models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
 from ...video_processor import VideoProcessor
@@ -364,40 +364,17 @@ class LTX2Pipeline:
     return text_encoder
 
   @classmethod
-  def load_connectors(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, tensors: dict = None):
+  def load_connectors(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     max_logging.log("Loading Connectors...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      connector_kwargs = {
-          "dtype": jnp.float32,
-          "weights_dtype": config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
-      }
-      if getattr(config, "model_name", "") == "ltx2.3":
-        connector_kwargs.update(
-            {
-                "video_connector_num_layers": 8,
-                "audio_connector_num_layers": 8,
-                "caption_channels": 3840,
-                "video_caption_channels": 4096,
-                "audio_caption_channels": 2048,
-                "video_connector_num_attention_heads": 32,
-                "audio_connector_num_attention_heads": 32,
-                "video_connector_attention_head_dim": 128,
-                "audio_connector_attention_head_dim": 64,
-                "video_gated_attn": True,
-                "audio_gated_attn": True,
-                "per_modality_projections": True,
-                "proj_bias": True,
-                "rope_type": "split",
-            }
-        )
-      connector_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
       connectors = LTX2AudioVideoGemmaTextEncoder.from_config(
-          connector_repo,
+          config.pretrained_model_name_or_path,
           subfolder="connectors",
           rngs=rngs,
           mesh=mesh,
-          **connector_kwargs,
+          dtype=jnp.float32,
+          weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
       )
       return connectors
 
@@ -411,16 +388,8 @@ class LTX2Pipeline:
     logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
-    filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
-    params = load_connectors_weights_2_3(
-        config.pretrained_model_name_or_path,
-        params,
-        "cpu",
-        subfolder="",
-        filename=filename,
-        is_ltx2_3=(getattr(config, "model_name", "") == "ltx2.3"),
-        tensors=tensors,
-    )
+
+    params = load_connector_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="connectors")
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
@@ -437,46 +406,17 @@ class LTX2Pipeline:
     return connectors
 
   @classmethod
-  def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, tensors: dict = None):
+  def load_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     max_logging.log("Loading Video VAE...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      vae_kwargs = {
-          "dtype": jnp.float32,
-          "weights_dtype": config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
-      }
-      vae_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
-      if getattr(config, "model_name", "") == "ltx2.3":
-        vae_kwargs.update(
-            {
-                "block_out_channels": (256, 512, 1024, 1024),
-                "decoder_block_out_channels": (256, 512, 512, 1024),
-                "layers_per_block": (4, 6, 4, 2, 2),
-                "decoder_layers_per_block": (4, 6, 4, 2, 2),
-                "spatio_temporal_scaling": (True, True, True, True),
-                "decoder_spatio_temporal_scaling": (True, True, True, True),
-                "decoder_inject_noise": (False, False, False, False, False),
-                "downsample_type": ("spatial", "temporal", "spatiotemporal", "spatiotemporal"),
-                "upsample_type": ("spatiotemporal", "spatiotemporal", "temporal", "spatial"),
-                "upsample_residual": (False, False, False, False),
-                "upsample_factor": (2, 2, 1, 2),
-                "patch_size": 4,
-                "patch_size_t": 1,
-                "resnet_norm_eps": 1e-6,
-                "encoder_causal": True,
-                "decoder_causal": False,
-                "encoder_spatial_padding_mode": "zeros",
-                "decoder_spatial_padding_mode": "zeros",
-                "spatial_compression_ratio": 32,
-                "temporal_compression_ratio": 8,
-            }
-        )
       vae = LTX2VideoAutoencoderKL.from_config(
-          vae_repo,
+          config.pretrained_model_name_or_path,
           subfolder="vae",
           rngs=rngs,
           mesh=mesh,
-          **vae_kwargs,
+          dtype=jnp.float32,
+          weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
       )
       return vae
 
@@ -491,12 +431,7 @@ class LTX2Pipeline:
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
 
-    if getattr(config, "model_name", "") == "ltx2.3":
-      params = load_vae_weights_2_3(params, "cpu", tensors)
-    else:
-      filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
-      subfolder = "" if getattr(config, "model_name", "") == "ltx2.3" else "vae"
-      params = load_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder=subfolder, filename=filename)
+    params = load_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="vae")
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
@@ -519,13 +454,12 @@ class LTX2Pipeline:
     return vae
 
   @classmethod
-  def load_audio_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, tensors: dict = None):
+  def load_audio_vae(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     max_logging.log("Loading Audio VAE...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      vae_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
       audio_vae = FlaxAutoencoderKLLTX2Audio.from_config(
-          vae_repo,
+          config.pretrained_model_name_or_path,
           subfolder="audio_vae",
           rngs=rngs,
           mesh=mesh,
@@ -545,13 +479,7 @@ class LTX2Pipeline:
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
 
-    if tensors is not None and getattr(config, "model_name", "") == "ltx2.3":
-      from maxdiffusion.models.ltx2.ltx2_3_utils import load_audio_vae_weights_2_3
-      params = load_audio_vae_weights_2_3(params, "cpu", tensors)
-    elif getattr(config, "model_name", "") == "ltx2.3":
-      params = load_audio_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="", filename="ltx-2.3-22b-dev.safetensors")
-    else:
-      params = load_audio_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="audio_vae")
+    params = load_audio_vae_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="audio_vae")
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
@@ -582,7 +510,6 @@ class LTX2Pipeline:
       config: HyperParameters,
       restored_checkpoint=None,
       subfolder="transformer",
-      tensors: dict = None,
   ):
     with mesh:
       transformer = create_sharded_logical_transformer(
@@ -592,18 +519,16 @@ class LTX2Pipeline:
           config=config,
           restored_checkpoint=restored_checkpoint,
           subfolder=subfolder,
-          tensors=tensors,
       )
     return transformer
 
   @classmethod
-  def load_vocoder(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, tensors: dict = None):
+  def load_vocoder(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     max_logging.log("Loading Vocoder...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      vocoder_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
       vocoder = LTX2Vocoder.from_config(
-          vocoder_repo,
+          "Lightricks/LTX-2",
           subfolder="vocoder",
           rngs=rngs,
           mesh=mesh,
@@ -611,26 +536,19 @@ class LTX2Pipeline:
           weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
       )
       return vocoder
- 
+
     p_model_factory = partial(create_model, config=config)
     vocoder = nnx.eval_shape(p_model_factory, rngs=rngs)
     graphdef, state, rest_of_state = nnx.split(vocoder, nnx.Param, ...)
     rest_of_state = jax.tree_util.tree_map(cls._init_dummy_shape, rest_of_state)
- 
+
     logical_state_spec = nnx.get_partition_spec(state)
     logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, mesh, config.logical_axis_rules)
     logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
- 
-    if tensors is not None and getattr(config, "model_name", "") == "ltx2.3":
-      from maxdiffusion.models.ltx2.ltx2_utils import load_vocoder_weights
-      params = load_vocoder_weights("Lightricks/LTX-2", params, "cpu", subfolder="vocoder")
-    else:
-      filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
-      subfolder = "" if getattr(config, "model_name", "") == "ltx2.3" else "vocoder"
-      repo_id = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path
-      params = load_vocoder_weights(repo_id, params, "cpu", subfolder=subfolder, filename=filename)
+
+    params = load_vocoder_weights("Lightricks/LTX-2", params, "cpu", subfolder="vocoder")
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
@@ -657,7 +575,7 @@ class LTX2Pipeline:
     return scheduler
 
   @classmethod
-  def _create_common_components(cls, config: HyperParameters, vae_only=False, segregated_weights=None):
+  def _create_common_components(cls, config: HyperParameters, vae_only=False):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
     rng = jax.random.key(config.seed)
@@ -668,7 +586,6 @@ class LTX2Pipeline:
         mesh,
         rngs,
         config,
-        tensors=segregated_weights.get("vae") if segregated_weights else None
     )
 
     components = {
@@ -694,37 +611,25 @@ class LTX2Pipeline:
         mesh,
         rngs,
         config,
-        tensors=segregated_weights.get("connectors") if segregated_weights else None
     )
     components["audio_vae"] = cls.load_audio_vae(
         devices_array,
         mesh,
         rngs,
         config,
-        tensors=segregated_weights.get("audio_vae") if segregated_weights else None
     )
     components["vocoder"] = cls.load_vocoder(
         devices_array,
         mesh,
         rngs,
         config,
-        tensors=segregated_weights.get("vocoder") if segregated_weights else None
     )
     components["scheduler"] = cls.load_scheduler(config)
     return components
 
   @classmethod
   def _load_and_init(cls, config: HyperParameters, restored_checkpoint, vae_only=False, load_transformer=True):
-    segregated_weights = None
-    if getattr(config, "model_name", "") == "ltx2.3":
-      from maxdiffusion.models.ltx2.ltx2_3_utils import load_and_segregate_ltx2_3_weights
-      max_logging.log("Loading consolidated LTX-2.3 weights...")
-      segregated_weights = load_and_segregate_ltx2_3_weights(
-          config.pretrained_model_name_or_path,
-          filename="ltx-2.3-22b-dev.safetensors"
-      )
-
-    components = cls._create_common_components(config, vae_only, segregated_weights=segregated_weights)
+    components = cls._create_common_components(config, vae_only)
 
     transformer = None
     if load_transformer:
@@ -735,7 +640,6 @@ class LTX2Pipeline:
           rngs=components["rngs"],
           config=config,
           restored_checkpoint=restored_checkpoint,
-          tensors=segregated_weights.get("transformer") if segregated_weights else None,
       )
 
     pipeline = cls(
