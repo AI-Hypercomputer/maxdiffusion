@@ -176,6 +176,12 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         
         # 2. Per-token RMS norm
         variance = jnp.mean(x**2, axis=2, keepdims=True)
+        
+        # Debug prints
+        print(f"DEBUG - x shape: {x.shape}")
+        jax.debug.print("DEBUG - x min: {min}, max: {max}, mean: {mean}", min=jnp.min(x), max=jnp.max(x), mean=jnp.mean(x))
+        jax.debug.print("DEBUG - variance min: {min}, max: {max}", min=jnp.min(variance), max=jnp.max(variance))
+
         norm_text_encoder_hidden_states = x * jax.lax.rsqrt(variance + 1e-6)
 
         norm_text_encoder_hidden_states = norm_text_encoder_hidden_states.reshape(b, l, -1)
