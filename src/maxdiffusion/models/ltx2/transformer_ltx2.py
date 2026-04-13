@@ -388,7 +388,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
     if encoder_hidden_states is not None:
       encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
     if audio_encoder_hidden_states is not None:
-      audio_encoder_hidden_states = jax.lax.with_sharding_constraint(audio_encoder_hidden_states, axis_names)
+      audio_encoder_hidden_states = jax.lax.with_sharding_constraint(audio_encoder_hidden_states, axis_names_audio)
 
     # 1. Video and Audio Self-Attention
     norm_hidden_states = self.norm1(hidden_states)
