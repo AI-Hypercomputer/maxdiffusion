@@ -186,6 +186,9 @@ def load_transformer_weights_2_3(
       renamed_pt_key = rename_key(pt_key)
       renamed_pt_key = rename_for_ltx2_3_transformer(renamed_pt_key)
 
+      if "prompt_scale_shift_table" in renamed_pt_key:
+        print(f"DEBUG Weight: {renamed_pt_key} shape: {tensor.shape} min: {jnp.min(tensor)} max: {jnp.max(tensor)}")
+
       pt_tuple_key = tuple(renamed_pt_key.split("."))
 
       flax_key, flax_tensor = get_key_and_value(
