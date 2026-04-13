@@ -81,7 +81,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
           in_features=input_dim, out_features=a_dim, use_bias=proj_bias, rngs=rngs
       )
 
-      self.video_connector = Embeddings1DConnector(
+      self.video_embeddings_connector = Embeddings1DConnector(
           input_dim=v_dim,
           heads=video_connector_num_attention_heads,
           head_dim=video_connector_attention_head_dim,
@@ -96,7 +96,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
           rngs=rngs,
           gated_attn=video_gated_attn,
       )
-      self.audio_connector = Embeddings1DConnector(
+      self.audio_embeddings_connector = Embeddings1DConnector(
           input_dim=a_dim,
           heads=audio_connector_num_attention_heads,
           head_dim=audio_connector_attention_head_dim,
@@ -193,16 +193,16 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         # Using self.caption_channels if available, or fallback to config or 3840
         cap_channels = getattr(self, "caption_channels", getattr(self.config, "caption_channels", 3840))
         
-        video_scale_factor = jnp.sqrt(self.video_connector.dim / cap_channels)
+        video_scale_factor = jnp.sqrt(self.video_embeddings_connector.dim / cap_channels)
         video_norm_text_emb = norm_text_encoder_hidden_states * video_scale_factor
-        audio_scale_factor = jnp.sqrt(self.audio_connector.dim / cap_channels)
+        audio_scale_factor = jnp.sqrt(self.audio_embeddings_connector.dim / cap_channels)
         audio_norm_text_emb = norm_text_encoder_hidden_states * audio_scale_factor
 
         video_text_emb_proj = self.video_text_proj_in(video_norm_text_emb)
         audio_text_emb_proj = self.audio_text_proj_in(audio_norm_text_emb)
 
-        video_embeds, new_attention_mask = self.video_connector(video_text_emb_proj, attention_mask)
-        audio_embeds, _ = self.audio_connector(audio_text_emb_proj, attention_mask)
+        video_embeds, new_attention_mask = self.video_embeddings_connector(video_text_emb_proj, attention_mask)
+        audio_embeds, _ = self.audio_embeddings_connector(audio_text_emb_proj, attention_mask)
       else:
         # 1. Shared Feature Extraction
         features = self.feature_extractor(hidden_states, attention_mask)
