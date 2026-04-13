@@ -40,6 +40,11 @@ def rename_for_ltx2_transformer(key):
   """
   Renames Diffusers LTX-2 keys to MaxDiffusion Flax LTX-2 keys.
   """
+  if "caption_proj" in key and "caption_projection" not in key:
+      key = key.replace("caption_proj", "caption_projection")
+  if "audio_caption_proj" in key and "audio_caption_projection" not in key:
+      key = key.replace("audio_caption_proj", "audio_caption_projection")
+
   key = key.replace("patchify_proj", "proj_in")
   key = key.replace("audio_patchify_proj", "audio_proj_in")
   key = key.replace("norm_final", "norm_out")
