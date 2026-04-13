@@ -141,7 +141,7 @@ def create_sharded_logical_transformer(
     ltx2_config = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
 
   # Align RoPE type with connectors
-  ltx2_config["rope_type"] = "interleaved"
+  ltx2_config["rope_type"] = "split"
 
   if ltx2_config.get("activation_fn") == "gelu-approximate":
     ltx2_config["activation_fn"] = "gelu"
@@ -388,7 +388,7 @@ class LTX2Pipeline:
                 "audio_gated_attn": True,
                 "per_modality_projections": True,
                 "proj_bias": True,
-                "rope_type": "interleaved",
+                "rope_type": "split",
             }
         )
       connector_repo = "Lightricks/LTX-2" if getattr(config, "model_name", "") == "ltx2.3" else config.pretrained_model_name_or_path

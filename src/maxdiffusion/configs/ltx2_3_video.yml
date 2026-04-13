@@ -31,8 +31,8 @@ guidance_scale: 3.0
 guidance_rescale: 0.7
 audio_guidance_scale: 7.0
 audio_guidance_rescale: 0.7
-stg_scale: 1.0
-audio_stg_scale: 1.0
+stg_scale: 0.0
+audio_stg_scale: 0.0
 modality_scale: 1.0
 audio_modality_scale: 1.0
 use_cross_timestep: true
