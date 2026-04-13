@@ -305,6 +305,8 @@ def rename_for_ltx2_connector(key):
   key = key.replace("video_connector", "video_embeddings_connector")
   key = key.replace("audio_connector", "audio_embeddings_connector")
   key = key.replace("text_proj_in", "feature_extractor.linear")
+  key = key.replace("audio_feature_extractor.linear", "audio_text_proj_in")
+  key = key.replace("video_feature_extractor.linear", "video_text_proj_in")
 
   if "transformer_blocks" in key:
     key = key.replace("transformer_blocks", "stacked_blocks")
