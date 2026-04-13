@@ -703,3 +703,98 @@ def translate_wan_nnx_path_to_diffusers_lora(nnx_path_str, scan_layers=False):
         return f"diffusion_model.blocks.{idx}.{suffix_map[inner_suffix]}"
 
   return None
+
+
+def translate_ltx2_nnx_path_to_diffusers_lora(nnx_path_str, scan_layers=False):
+  """
+  Translates LTX2 NNX path to Diffusers/LoRA keys.
+  """
+  # --- 2. Map NNX Suffixes to LoRA Suffixes ---
+  suffix_map = {
+      # Self Attention (attn1)
+      "attn1.to_q": "attn1.to_q",
+      "attn1.to_k": "attn1.to_k",
+      "attn1.to_v": "attn1.to_v",
+      "attn1.to_out": "attn1.to_out.0",
+      # Audio Self Attention (audio_attn1)
+      "audio_attn1.to_q": "audio_attn1.to_q",
+      "audio_attn1.to_k": "audio_attn1.to_k",
+      "audio_attn1.to_v": "audio_attn1.to_v",
+      "audio_attn1.to_out": "audio_attn1.to_out.0",
+      # Audio Cross Attention (audio_attn2)
+      "audio_attn2.to_q": "audio_attn2.to_q",
+      "audio_attn2.to_k": "audio_attn2.to_k",
+      "audio_attn2.to_v": "audio_attn2.to_v",
+      "audio_attn2.to_out": "audio_attn2.to_out.0",
+      # Cross Attention (attn2)
+      "attn2.to_q": "attn2.to_q",
+      "attn2.to_k": "attn2.to_k",
+      "attn2.to_v": "attn2.to_v",
+      "attn2.to_out": "attn2.to_out.0",
+      # Audio to Video Cross Attention
+      "audio_to_video_attn.to_q": "audio_to_video_attn.to_q",
+      "audio_to_video_attn.to_k": "audio_to_video_attn.to_k",
+      "audio_to_video_attn.to_v": "audio_to_video_attn.to_v",
+      "audio_to_video_attn.to_out": "audio_to_video_attn.to_out.0",
+      # Video to Audio Cross Attention
+      "video_to_audio_attn.to_q": "video_to_audio_attn.to_q",
+      "video_to_audio_attn.to_k": "video_to_audio_attn.to_k",
+      "video_to_audio_attn.to_v": "video_to_audio_attn.to_v",
+      "video_to_audio_attn.to_out": "video_to_audio_attn.to_out.0",
+      # Feed Forward
+      "ff.net_0": "ff.net.0.proj",
+      "ff.net_2": "ff.net.2",
+      # Audio Feed Forward
+      "audio_ff.net_0": "audio_ff.net.0.proj",
+      "audio_ff.net_2": "audio_ff.net.2",
+  }
+
+  # --- 3. Translation Logic ---
+  global_map = {
+      "proj_in": "diffusion_model.patchify_proj",
+      "audio_proj_in": "diffusion_model.audio_patchify_proj",
+      "proj_out": "diffusion_model.proj_out",
+      "audio_proj_out": "diffusion_model.audio_proj_out",
+      "time_embed.linear": "diffusion_model.adaln_single.linear",
+      "audio_time_embed.linear": "diffusion_model.audio_adaln_single.linear",
+      "av_cross_attn_video_a2v_gate.linear": "diffusion_model.av_ca_a2v_gate_adaln_single.linear",
+      "av_cross_attn_audio_v2a_gate.linear": "diffusion_model.av_ca_v2a_gate_adaln_single.linear",
+      "av_cross_attn_audio_scale_shift.linear": "diffusion_model.av_ca_audio_scale_shift_adaln_single.linear",
+      "av_cross_attn_video_scale_shift.linear": "diffusion_model.av_ca_video_scale_shift_adaln_single.linear",
+      # Nested conditioning layers
+      "time_embed.emb.timestep_embedder.linear_1": "diffusion_model.adaln_single.emb.timestep_embedder.linear_1",
+      "time_embed.emb.timestep_embedder.linear_2": "diffusion_model.adaln_single.emb.timestep_embedder.linear_2",
+      "audio_time_embed.emb.timestep_embedder.linear_1": "diffusion_model.audio_adaln_single.emb.timestep_embedder.linear_1",
+      "audio_time_embed.emb.timestep_embedder.linear_2": "diffusion_model.audio_adaln_single.emb.timestep_embedder.linear_2",
+      "av_cross_attn_video_scale_shift.emb.timestep_embedder.linear_1": "diffusion_model.av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_1",
+      "av_cross_attn_video_scale_shift.emb.timestep_embedder.linear_2": "diffusion_model.av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_2",
+      "av_cross_attn_audio_scale_shift.emb.timestep_embedder.linear_1": "diffusion_model.av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_1",
+      "av_cross_attn_audio_scale_shift.emb.timestep_embedder.linear_2": "diffusion_model.av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_2",
+      "av_cross_attn_video_a2v_gate.emb.timestep_embedder.linear_1": "diffusion_model.av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_1",
+      "av_cross_attn_video_a2v_gate.emb.timestep_embedder.linear_2": "diffusion_model.av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_2",
+      "av_cross_attn_audio_v2a_gate.emb.timestep_embedder.linear_1": "diffusion_model.av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_1",
+      "av_cross_attn_audio_v2a_gate.emb.timestep_embedder.linear_2": "diffusion_model.av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_2",
+      "caption_projection.linear_1": "diffusion_model.caption_projection.linear_1",
+      "caption_projection.linear_2": "diffusion_model.caption_projection.linear_2",
+      "audio_caption_projection.linear_1": "diffusion_model.audio_caption_projection.linear_1",
+      "audio_caption_projection.linear_2": "diffusion_model.audio_caption_projection.linear_2",
+      # Connectors
+      "feature_extractor.linear": "text_embedding_projection.aggregate_embed",
+  }
+
+  if nnx_path_str in global_map:
+    return global_map[nnx_path_str]
+
+  if scan_layers:
+    if nnx_path_str.startswith("transformer_blocks."):
+      inner_suffix = nnx_path_str[len("transformer_blocks.") :]
+      if inner_suffix in suffix_map:
+        return f"diffusion_model.transformer_blocks.{{}}.{suffix_map[inner_suffix]}"
+  else:
+    m = re.match(r"^transformer_blocks\.(\d+)\.(.+)$", nnx_path_str)
+    if m:
+      idx, inner_suffix = m.group(1), m.group(2)
+      if inner_suffix in suffix_map:
+        return f"diffusion_model.transformer_blocks.{idx}.{suffix_map[inner_suffix]}"
+
+  return None
