@@ -202,7 +202,6 @@ def create_sharded_logical_transformer(
           "cpu",
           scan_layers=getattr(config, "scan_layers", True),
           subfolder=subfolder,
-          filename=filename,
       )
 
   params = jax.tree_util.tree_map_with_path(
