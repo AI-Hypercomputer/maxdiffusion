@@ -140,9 +140,6 @@ def create_sharded_logical_transformer(
   else:
     ltx2_config = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
 
-  # Align RoPE type with connectors
-  ltx2_config["rope_type"] = "split"
-
   if ltx2_config.get("activation_fn") == "gelu-approximate":
     ltx2_config["activation_fn"] = "gelu"
 
@@ -157,13 +154,6 @@ def create_sharded_logical_transformer(
   ltx2_config["remat_policy"] = config.remat_policy
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
-  ltx2_config["use_prompt_embeddings"] = True
-
-  if getattr(config, "model_name", "") == "ltx2.3":
-    ltx2_config["gated_attn"] = True
-    ltx2_config["cross_attn_mod"] = True
-    ltx2_config["perturbed_attn"] = True
-    ltx2_config["use_prompt_embeddings"] = False
 
   # 2. eval_shape
   p_model_factory = partial(create_model, ltx2_config=ltx2_config)
@@ -184,25 +174,13 @@ def create_sharded_logical_transformer(
     else:
       params = restored_checkpoint["ltx2_state"]
   else:
-    filename = "ltx-2.3-22b-dev.safetensors" if getattr(config, "model_name", "") == "ltx2.3" else None
-    subfolder = "" if getattr(config, "model_name", "") == "ltx2.3" else subfolder
-    
-    if tensors is not None and getattr(config, "model_name", "") == "ltx2.3":
-      from maxdiffusion.models.ltx2.ltx2_3_utils import load_transformer_weights_2_3
-      params = load_transformer_weights_2_3(
-          params,  # eval_shapes
-          "cpu",
-          tensors,
-          scan_layers=getattr(config, "scan_layers", True),
-      )
-    else:
-      params = load_transformer_weights(
-          config.pretrained_model_name_or_path,
-          params,  # eval_shapes
-          "cpu",
-          scan_layers=getattr(config, "scan_layers", True),
-          subfolder=subfolder,
-      )
+    params = load_transformer_weights(
+        config.pretrained_model_name_or_path,
+        params,  # eval_shapes
+        "cpu",
+        scan_layers=getattr(config, "scan_layers", True),
+        subfolder=subfolder,
+    )
 
   params = jax.tree_util.tree_map_with_path(
       lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
