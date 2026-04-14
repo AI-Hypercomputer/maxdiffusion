@@ -18,7 +18,7 @@ from typing import Sequence
 
 import jax
 from absl import app
-from maxdiffusion import (max_logging, pyconfig)
+from maxdiffusion import (max_logging, pyconfig, max_utils)
 
 from maxdiffusion.train_utils import (
     validate_train_config,
@@ -38,6 +38,7 @@ def main(argv: Sequence[str]) -> None:
   config = pyconfig.config
   validate_train_config(config)
   max_logging.log(f"Found {jax.device_count()} devices.")
+  max_utils.ensure_machinelearning_job_runs(pyconfig.config)
   train(config)
 
 

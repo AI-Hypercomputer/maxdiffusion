@@ -301,3 +301,8 @@ use_qwix_quantization: False
 compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
 
 save_final_checkpoint: False
+
+# ML Diagnostics settings
+enable_ml_diagnostics: False
+profiler_gcs_path: ""
+enable_ondemand_xprof: False

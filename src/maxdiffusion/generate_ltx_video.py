@@ -20,7 +20,7 @@ from typing import Sequence, List, Optional, Union
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXVideoPipeline
 from maxdiffusion.pipelines.ltx_video.ltx_video_pipeline import LTXMultiScalePipeline, ConditioningItem
 import maxdiffusion.pipelines.ltx_video.crf_compressor as crf_compressor
-from maxdiffusion import pyconfig, max_logging
+from maxdiffusion import pyconfig, max_logging, max_utils
 from maxdiffusion.train_utils import transformer_engine_context
 import torchvision.transforms.functional as TVF
 import imageio
@@ -264,6 +264,7 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
+  max_utils.ensure_machinelearning_job_runs(pyconfig.config)
   run(pyconfig.config)
 
 

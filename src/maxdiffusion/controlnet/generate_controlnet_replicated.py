@@ -22,7 +22,7 @@ import numpy as np
 import jax.numpy as jnp
 from flax.jax_utils import replicate
 from flax.training.common_utils import shard
-from maxdiffusion import pyconfig
+from maxdiffusion import pyconfig, max_utils
 from maxdiffusion.utils import load_image
 from maxdiffusion import FlaxStableDiffusionControlNetPipeline, FlaxControlNetModel
 
@@ -76,6 +76,7 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
+  max_utils.ensure_machinelearning_job_runs(pyconfig.config)
   run(pyconfig.config)
 
 

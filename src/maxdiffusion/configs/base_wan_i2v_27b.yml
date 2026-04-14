@@ -368,3 +368,8 @@ enable_ssim: False
 # I2V Input Image
 # URL or local path to the conditioning image
 image_url: "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/astronaut.jpg"
+
+# ML Diagnostics settings
+enable_ml_diagnostics: False
+profiler_gcs_path: ""
+enable_ondemand_xprof: False

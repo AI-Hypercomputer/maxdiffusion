@@ -773,3 +773,5 @@ This script will automatically format your code with `pyink` and help you identi
 
 The full suite of -end-to end tests is in `tests` and `src/maxdiffusion/tests`. We run them with a nightly cadance.
 
+## Profiling
+To learn how to enable ML Diagnostics and XProf profiling for your runs, please see our [ML Diagnostics Guide](docs/profiling.md).

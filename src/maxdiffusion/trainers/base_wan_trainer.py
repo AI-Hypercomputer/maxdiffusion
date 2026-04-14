@@ -82,6 +82,7 @@ def print_ssim(pretrained_video_path, posttrained_video_path):
 
 
 class BaseWanTrainer(abc.ABC):
+  _profiler: max_utils.Profiler | None = None
 
   def __init__(self, config):
     if config.train_text_encoder:
@@ -305,7 +306,7 @@ class BaseWanTrainer(abc.ABC):
     local_metrics_file = open(self.config.metrics_file, "a", encoding="utf8") if self.config.metrics_file else None
     running_gcs_metrics = [] if self.config.gcs_metrics else None
     first_profiling_step = self.config.skip_first_n_steps_for_profiler
-    if self.config.enable_profiler and first_profiling_step >= self.config.max_train_steps:
+    if max_utils.profiler_enabled(self.config) and first_profiling_step >= self.config.max_train_steps:
       raise ValueError("Profiling requested but initial profiling step set past training final step")
     last_profiling_step = np.clip(
         first_profiling_step + self.config.profiler_steps - 1, first_profiling_step, self.config.max_train_steps - 1
@@ -319,20 +320,24 @@ class BaseWanTrainer(abc.ABC):
 
     with ThreadPoolExecutor(max_workers=1) as executor:
       for step in np.arange(start_step, self.config.max_train_steps):
-        if self.config.enable_profiler and step == first_profiling_step:
-          max_utils.activate_profiler(self.config)
+        if max_utils.profiler_enabled(self.config) and step == first_profiling_step:
+          self._profiler = max_utils.Profiler(self.config)
+          self._profiler.start()
         start_step_time = datetime.datetime.now()
 
         next_batch_future = executor.submit(load_next_batch, train_data_iterator, example_batch, self.config)
-        with jax.profiler.StepTraceAnnotation("train", step_num=step), pipeline.mesh, nn_partitioning.axis_rules(
-            self.config.logical_axis_rules
+        with (
+            jax.profiler.StepTraceAnnotation("train", step_num=step),
+            pipeline.mesh,
+            nn_partitioning.axis_rules(self.config.logical_axis_rules),
         ):
           state, scheduler_state, train_metric, rng = p_train_step(state, example_batch, rng, scheduler_state)
           train_metric["scalar"]["learning/loss"].block_until_ready()
         last_step_completion = datetime.datetime.now()
 
-        if self.config.enable_profiler and step == last_profiling_step:
-          max_utils.deactivate_profiler(self.config)
+        if max_utils.profiler_enabled(self.config) and step == last_profiling_step:
+          if self._profiler:
+            self._profiler.stop()
 
         train_utils.record_scalar_metrics(
             train_metric, last_step_completion - start_step_time, per_device_tflops, learning_rate_scheduler(step)

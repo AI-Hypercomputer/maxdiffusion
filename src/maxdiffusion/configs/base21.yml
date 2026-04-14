@@ -248,3 +248,8 @@ quantization: ''
 quantization_local_shard_count: -1
 compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
 use_qwix_quantization: False 
+
+# ML Diagnostics settings
+enable_ml_diagnostics: False
+profiler_gcs_path: ""
+enable_ondemand_xprof: False

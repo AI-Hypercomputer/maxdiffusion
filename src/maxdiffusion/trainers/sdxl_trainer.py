@@ -232,7 +232,7 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     example_batch = None
 
     first_profiling_step = self.config.skip_first_n_steps_for_profiler
-    if self.config.enable_profiler and first_profiling_step >= self.config.max_train_steps:
+    if max_utils.profiler_enabled(self.config) and first_profiling_step >= self.config.max_train_steps:
       raise ValueError("Profiling requested but initial profiling step set past training final step")
     last_profiling_step = np.clip(
         first_profiling_step + self.config.profiler_steps - 1, first_profiling_step, self.config.max_train_steps - 1
@@ -242,8 +242,9 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
     example_batch = load_next_batch(data_iterator, None, self.config)
     with ThreadPoolExecutor(max_workers=1) as executor:
       for step in np.arange(start_step, self.config.max_train_steps):
-        if self.config.enable_profiler and step == first_profiling_step:
-          max_utils.activate_profiler(self.config)
+        if max_utils.profiler_enabled(self.config) and step == first_profiling_step:
+          self._profiler = max_utils.Profiler(self.config)
+          self._profiler.start()
 
         next_batch_future = executor.submit(load_next_batch, data_iterator, example_batch, self.config)
         start_step_time = datetime.datetime.now()
@@ -271,8 +272,9 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
           train_states["text_encoder_2_state"] = text_encoder_2_state
           self.save_checkpoint(step, pipeline, params, train_states)
 
-        if self.config.enable_profiler and step == last_profiling_step:
-          max_utils.deactivate_profiler(self.config)
+        if max_utils.profiler_enabled(self.config) and step == last_profiling_step:
+          if self._profiler is not None:
+            self._profiler.stop()
 
     if self.config.write_metrics:
       write_metrics(
