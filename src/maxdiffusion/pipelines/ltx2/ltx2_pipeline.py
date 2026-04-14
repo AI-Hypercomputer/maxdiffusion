@@ -976,6 +976,12 @@ class LTX2Pipeline:
       latents = latents.transpose(0, 2, 1, 3)
     return latents
 
+  @staticmethod
+  @jax.jit
+  def run_connectors(graphdef, state, hidden_states, attention_mask):
+    model = nnx.merge(graphdef, state)
+    return model(hidden_states, attention_mask)
+
   def prepare_latents(
       self,
       batch_size: int = 1,
@@ -1223,13 +1229,7 @@ class LTX2Pipeline:
     with context_manager, axis_rules_context:
       connectors_graphdef, connectors_state = nnx.split(self.connectors)
 
-      @staticmethod
-      @jax.jit
-      def run_connectors(graphdef, state, hidden_states, attention_mask):
-        model = nnx.merge(graphdef, state)
-        return model(hidden_states, attention_mask)
-
-      video_embeds, audio_embeds, new_attention_mask = run_connectors(
+      video_embeds, audio_embeds, new_attention_mask = self.run_connectors(
           connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
       )
 
