@@ -29,8 +29,8 @@ BlockSizes = common_types.BlockSizes
 
 def apply_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
   """
-  Applies Interleaved RoPE to input x by computing rotation directly on slices.
-  Avoids creating the full `x_rotated` intermediate tensor.
+  Applies Interleaved RoPE to input x.
+  Logic matches LTX-2 PyTorch: pairs neighbors [-x2, x1].
 
   Args:
       x: Input tensor [..., D]
@@ -38,21 +38,20 @@ def apply_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
   """
   cos, sin = freqs
 
-  # Slice even and odd indices (No copy, just metadata views)
-  x_even = x[..., 0::2]
-  x_odd = x[..., 1::2]
+  # 1. Reshape to pair neighbors: [..., D] -> [..., D//2, 2]
+  # This corresponds to "rearrange(..., (d r) -> ... d r, r=2)"
+  x_reshaped = x.reshape(*x.shape[:-1], -1, 2)
 
-  cos_even = cos[..., 0::2]
-  sin_even = sin[..., 0::2]
-  cos_odd = cos[..., 1::2]
-  sin_odd = sin[..., 1::2]
+  # 2. Split into components
+  # x_real = x[..., 0], x_imag = x[..., 1]
+  x_real, x_imag = x_reshaped[..., 0], x_reshaped[..., 1]
 
-  # Direct math (Fuses perfectly on TPU)
-  out_even = x_even.astype(jnp.float32) * cos_even - x_odd.astype(jnp.float32) * sin_even
-  out_odd = x_odd.astype(jnp.float32) * cos_odd + x_even.astype(jnp.float32) * sin_odd
+  # 3. Rotate [-x2, x1]
+  # Corresponds to "stack((-t2, t1))"
+  x_rotated = jnp.stack([-x_imag, x_real], axis=-1).reshape(*x.shape)
 
-  # Interleave the results back
-  out = jnp.stack([out_even, out_odd], axis=-1).reshape(*x.shape)
+  # 4. Apply frequencies (Float32 for stability)
+  out = x.astype(jnp.float32) * cos + x_rotated.astype(jnp.float32) * sin
 
   return out.astype(x.dtype)
 
