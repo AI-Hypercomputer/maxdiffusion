@@ -1223,6 +1223,7 @@ class LTX2Pipeline:
     with context_manager, axis_rules_context:
       connectors_graphdef, connectors_state = nnx.split(self.connectors)
 
+      @staticmethod
       @jax.jit
       def run_connectors(graphdef, state, hidden_states, attention_mask):
         model = nnx.merge(graphdef, state)
