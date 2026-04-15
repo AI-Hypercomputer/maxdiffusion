@@ -632,32 +632,53 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
   def __call__(self, mel_spec: Array) -> Array:
+    print(f"=== BWE Vocoder Debug ===")
+    print(f"Input mel_spec - shape: {mel_spec.shape}, min: {mel_spec.min()}, max: {mel_spec.max()}")
+    
     x = self.vocoder(mel_spec)
+    print(f"Base vocoder output (x) - shape: {x.shape}, min: {x.min()}, max: {x.max()}")
+    
     x = jnp.transpose(x, (0, 2, 1))
     batch_size, num_samples, num_channels = x.shape
+    print(f"Transposed x - shape: {x.shape}")
 
     remainder = num_samples % self.hop_length
     if remainder != 0:
       x = jnp.pad(x, ((0, 0), (0, self.hop_length - remainder), (0, 0)))
+      print(f"Padded x - shape: {x.shape}")
 
     x_flattened = x.transpose(0, 2, 1).reshape(-1, x.shape[1], 1)
+    print(f"x_flattened - shape: {x_flattened.shape}")
+    
     log_mel, _, _, _ = self.mel_stft(x_flattened)
+    print(f"MelSTFT output (log_mel) before reshape - shape: {log_mel.shape}, min: {log_mel.min()}, max: {log_mel.max()}")
+    
     log_mel = log_mel.reshape(batch_size, num_channels, -1, log_mel.shape[-1])
+    print(f"Reshaped log_mel - shape: {log_mel.shape}")
     
     residual = self.bwe_generator(log_mel, time_last=False)
+    print(f"BWE generator output (residual) - shape: {residual.shape}, min: {residual.min()}, max: {residual.max()}")
     
     skip = self.resampler(x)
+    print(f"Resampler output (skip) - shape: {skip.shape}, min: {skip.min()}, max: {skip.max()}")
+    
     residual = jnp.transpose(residual, (0, 2, 1))
     
     if residual.shape[1] < skip.shape[1]:
       residual = jnp.pad(residual, ((0, 0), (0, skip.shape[1] - residual.shape[1]), (0, 0)), mode='edge')
     elif residual.shape[1] > skip.shape[1]:
       residual = residual[:, :skip.shape[1], :]
+    print(f"Matched residual - shape: {residual.shape}")
       
-    waveform = jnp.clip(residual + skip, -1, 1)
+    raw_waveform = residual + skip
+    print(f"Raw waveform (residual + skip) - min: {raw_waveform.min()}, max: {raw_waveform.max()}")
+    
+    waveform = jnp.clip(raw_waveform, -1, 1)
     
     output_samples = num_samples * self.output_sampling_rate // self.input_sampling_rate
     waveform = waveform[:, :output_samples, :]
     waveform = jnp.transpose(waveform, (0, 2, 1))
+    print(f"Final waveform - shape: {waveform.shape}, min: {waveform.min()}, max: {waveform.max()}")
+    print(f"=========================")
     
     return waveform
