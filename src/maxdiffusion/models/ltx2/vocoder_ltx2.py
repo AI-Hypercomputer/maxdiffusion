@@ -161,6 +161,7 @@ class UpSample1d(nnx.Module):
         dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
+    jax.debug.print("UpSample1d after conv - min: {min}, max: {max}", min=x_upsampled.min(), max=x_upsampled.max())
     
     x_upsampled = x_upsampled * self.ratio
     return x_upsampled[:, self.pad_left : -self.pad_right, :]
@@ -207,6 +208,8 @@ class SnakeBeta(nnx.Module):
     alpha = jnp.expand_dims(alpha, axis=0)
     amplitude = jnp.expand_dims(amplitude, axis=0)
     
+    jax.debug.print("SnakeBeta alpha - min: {min}, max: {max}", min=alpha.min(), max=alpha.max())
+    jax.debug.print("SnakeBeta amplitude - min: {min}, max: {max}", min=amplitude.min(), max=amplitude.max())
     hidden_states = hidden_states + (1.0 / (amplitude + self.eps)) * jnp.sin(hidden_states * alpha) ** 2
     return hidden_states
 
@@ -223,8 +226,11 @@ class AntiAliasAct1d(nnx.Module):
     self.downsample = DownSample1d(ratio=ratio, kernel_size=kernel_size)
 
   def __call__(self, x: Array) -> Array:
+    jax.debug.print("AntiAliasAct1d input - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.upsample(x)
+    jax.debug.print("AntiAliasAct1d after upsample - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.act(x)
+    jax.debug.print("AntiAliasAct1d after act - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.downsample(x)
     return x
 
@@ -443,21 +449,17 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     
     if not time_last:
       hidden_states = jnp.transpose(hidden_states, (0, 1, 3, 2))
-      print(f"Transposed hidden_states - shape: {hidden_states.shape}")
 
     batch, channels, mel_bins, time = hidden_states.shape
     hidden_states = hidden_states.reshape(batch, channels * mel_bins, time)
     hidden_states = jnp.transpose(hidden_states, (0, 2, 1))
-    print(f"Prepared hidden_states for conv_in - shape: {hidden_states.shape}")
 
     hidden_states = self.conv_in(hidden_states)
-    print(f"After conv_in - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
 
     for i in range(self.num_upsample_layers):
       if self.act_fn == "leaky_relu":
         hidden_states = jax.nn.leaky_relu(hidden_states, negative_slope=self.negative_slope)
       hidden_states = self.upsamplers[i](hidden_states)
-      print(f"After upsampler {i} - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
 
       start = i * self.resnets_per_upsample
       end = (i + 1) * self.resnets_per_upsample
@@ -467,7 +469,6 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         res_sum = res_sum + self.resnets[j](hidden_states)
 
       hidden_states = res_sum / self.resnets_per_upsample
-      print(f"After resnets level {i} - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
 
     hidden_states = self.act_out(hidden_states)
     jax.debug.print("After act_out - min: {min}, max: {max}", min=hidden_states.min(), max=hidden_states.max())
