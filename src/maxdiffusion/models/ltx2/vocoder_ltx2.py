@@ -438,19 +438,26 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
   def __call__(self, hidden_states: Array, time_last: bool = False) -> Array:
+    print(f"--- LTX2Vocoder Internal Debug ---")
+    print(f"Input hidden_states - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
+    
     if not time_last:
       hidden_states = jnp.transpose(hidden_states, (0, 1, 3, 2))
+      print(f"Transposed hidden_states - shape: {hidden_states.shape}")
 
     batch, channels, mel_bins, time = hidden_states.shape
     hidden_states = hidden_states.reshape(batch, channels * mel_bins, time)
     hidden_states = jnp.transpose(hidden_states, (0, 2, 1))
+    print(f"Prepared hidden_states for conv_in - shape: {hidden_states.shape}")
 
     hidden_states = self.conv_in(hidden_states)
+    print(f"After conv_in - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
 
     for i in range(self.num_upsample_layers):
       if self.act_fn == "leaky_relu":
         hidden_states = jax.nn.leaky_relu(hidden_states, negative_slope=self.negative_slope)
       hidden_states = self.upsamplers[i](hidden_states)
+      print(f"After upsampler {i} - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
 
       start = i * self.resnets_per_upsample
       end = (i + 1) * self.resnets_per_upsample
@@ -460,9 +467,11 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         res_sum = res_sum + self.resnets[j](hidden_states)
 
       hidden_states = res_sum / self.resnets_per_upsample
+      print(f"After resnets level {i} - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
 
     hidden_states = self.act_out(hidden_states)
     hidden_states = self.conv_out(hidden_states)
+    print(f"After conv_out - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
     
     if self.final_act_fn == "tanh":
       hidden_states = jnp.tanh(hidden_states)
@@ -470,6 +479,8 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       hidden_states = jnp.clip(hidden_states, -1, 1)
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 1))
+    print(f"Final LTX2Vocoder output - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
+    print(f"-----------------------------------")
     return hidden_states
 
 
