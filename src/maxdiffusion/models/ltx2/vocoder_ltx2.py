@@ -314,6 +314,12 @@ class ResBlock(nnx.Module):
       xt = conv1(xt)
       xt = act2(xt)
       xt = conv2(xt)
+      
+      if xt.shape[1] < x.shape[1]:
+        xt = jnp.pad(xt, ((0, 0), (0, x.shape[1] - xt.shape[1]), (0, 0)), mode='edge')
+      elif xt.shape[1] > x.shape[1]:
+        xt = xt[:, :x.shape[1], :]
+        
       x = x + xt
     return x
 
