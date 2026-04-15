@@ -769,6 +769,8 @@ class LTX2Pipeline:
 
       text_encoder_hidden_states = text_encoder_outputs.hidden_states
       del text_encoder_outputs  # Free memory
+      max_logging.log(f"[LTX2 XPROF] Text Encoder (Gemma) produced {len(text_encoder_hidden_states)} layers.")
+      max_logging.log(f"[LTX2 XPROF] Shape of first layer hidden states: {text_encoder_hidden_states[0].shape}")
 
       prompt_embeds_list = []
       # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
@@ -780,6 +782,7 @@ class LTX2Pipeline:
       del text_encoder_hidden_states  # Free PyTorch tensor memory
 
       prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bool_)
+      max_logging.log(f"[LTX2 XPROF] Prompt embeds produced. Number of layers/states: {len(prompt_embeds)}, shape of first: {prompt_embeds[0].shape}")
     else:
       raise ValueError("`text_encoder` is required to encode prompts.")
 
@@ -1308,6 +1311,7 @@ class LTX2Pipeline:
     with context_manager, axis_rules_context:
       connectors_graphdef, connectors_state = nnx.split(self.connectors)
 
+      max_logging.log(f"[LTX2 XPROF] Running connectors with prompt_embeds shape: {prompt_embeds_jax.shape if not isinstance(prompt_embeds_jax, list) else len(prompt_embeds_jax)}")
       video_embeds, audio_embeds, new_attention_mask = self._run_connectors(
           connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
       )
