@@ -15,7 +15,7 @@ limitations under the License.
 """
 
 import math
-from typing import Sequence
+from typing import Optional, Sequence
 
 import jax
 import jax.numpy as jnp
