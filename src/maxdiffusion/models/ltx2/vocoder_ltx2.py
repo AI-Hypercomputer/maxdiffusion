@@ -100,7 +100,7 @@ class DownSample1d(nnx.Module):
         filter_expanded,
         window_strides=(self.ratio,),
         padding="VALID",
-        dimension_numbers=('NLC', 'WIO', 'NLC'),
+        dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
     return x_filtered
@@ -156,7 +156,7 @@ class UpSample1d(nnx.Module):
         window_strides=(1,),
         padding="VALID",
         lhs_dilation=(self.ratio,),
-        dimension_numbers=('NLC', 'WIO', 'NLC'),
+        dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
     
@@ -486,7 +486,7 @@ class CausalSTFT(nnx.Module):
         self.forward_basis.value,
         window_strides=(self.hop_length,),
         padding="VALID",
-        dimension_numbers=('NLC', 'WIO', 'NLC'),
+        dimension_numbers=('NLC', 'LIO', 'NLC'),
     )
 
     n_freqs = spec.shape[-1] // 2
