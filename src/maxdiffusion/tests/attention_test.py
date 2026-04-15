@@ -20,7 +20,8 @@ from absl.testing import absltest
 import jax
 from jax.sharding import Mesh
 import jax.numpy as jnp
-from ..models.attention_flax import FlaxAttention
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
+from ..models.attention_flax import FlaxAttention, _select_flash_block_sizes
 from .. import max_utils
 from .. import pyconfig
 
@@ -91,6 +92,59 @@ class AttentionTest(unittest.TestCase):
     diff_norm = jnp.linalg.norm(dot_attention_out - splash_attention_out)
 
     assert diff_norm < 1.0
+
+  def test_cross_attention_overrides_configured_flash_block_sizes(self):
+    query = jnp.zeros((1, 1024, 256), dtype=jnp.bfloat16)
+    key = jnp.zeros((1, 257, 256), dtype=jnp.bfloat16)
+    configured_block_sizes = splash_attention_kernel.BlockSizes(
+        block_q=384,
+        block_kv_compute=192,
+        block_kv=320,
+        block_q_dkv=256,
+        block_kv_dkv=288,
+        block_kv_dkv_compute=160,
+        block_q_dq=128,
+        block_kv_dq=96,
+        use_fused_bwd_kernel=False,
+    )
+
+    block_sizes = _select_flash_block_sizes(
+        query=query,
+        key=key,
+        flash_block_sizes=configured_block_sizes,
+        dtype=jnp.bfloat16,
+        attention_kernel="flash",
+    )
+
+    assert block_sizes.block_q == configured_block_sizes.block_q
+    assert block_sizes.block_q_dkv == configured_block_sizes.block_q
+    assert block_sizes.block_q_dq == configured_block_sizes.block_q
+    assert block_sizes.block_kv_compute == 257
+    assert block_sizes.block_kv == 257
+    assert block_sizes.block_kv_dkv == 257
+    assert block_sizes.block_kv_dkv_compute == 384
+    assert block_sizes.block_kv_dq == 384
+
+  def test_default_flash_block_sizes_use_sequence_axis_for_3d_inputs(self):
+    query = jnp.zeros((1, 128, 4096), dtype=jnp.bfloat16)
+    key = jnp.zeros((1, 257, 4096), dtype=jnp.bfloat16)
+
+    block_sizes = _select_flash_block_sizes(
+        query=query,
+        key=key,
+        flash_block_sizes=None,
+        dtype=jnp.bfloat16,
+        attention_kernel="flash",
+    )
+
+    assert block_sizes.block_q == 1024
+    assert block_sizes.block_kv_compute == 257
+    assert block_sizes.block_kv == 257
+    assert block_sizes.block_q_dkv == 1024
+    assert block_sizes.block_kv_dkv == 257
+    assert block_sizes.block_kv_dkv_compute == 128
+    assert block_sizes.block_q_dq == 1024
+    assert block_sizes.block_kv_dq == 128
 
 
 if __name__ == "__main__":

@@ -190,6 +190,49 @@ def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
   return tensor, kv_size, seq_len
 
 
+def _flash_sequence_length(tensor: Array) -> int:
+  if tensor.ndim == 3:
+    return tensor.shape[1]
+  if tensor.ndim == 4:
+    return tensor.shape[2]
+  raise ValueError(f"Flash attention expects rank-3 or rank-4 inputs, got rank {tensor.ndim}.")
+
+
+def _select_flash_block_sizes(
+    query: Array,
+    key: Array,
+    flash_block_sizes: BlockSizes,
+    dtype: jnp.dtype,
+    attention_kernel: str,
+) -> BlockSizes:
+  query_seq_len = _flash_sequence_length(query)
+  key_seq_len = _flash_sequence_length(key)
+
+  q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  if key_seq_len != query_seq_len:
+    kv_max_block_size = ((key_seq_len + 127) // 128) * 128
+  else:
+    kv_max_block_size = q_max_block_size
+
+  # Keep configured block sizes for self-attention, but let
+  # cross-attention derive safe KV-aware sizes when q_len != kv_len.
+  if flash_block_sizes and key_seq_len == query_seq_len:
+    return flash_block_sizes
+
+  block_size_q = flash_block_sizes.block_q if flash_block_sizes else q_max_block_size
+  return splash_attention_kernel.BlockSizes(
+      block_q=block_size_q,
+      block_kv_compute=min(kv_max_block_size, key_seq_len),
+      block_kv=min(kv_max_block_size, key_seq_len),
+      block_q_dkv=block_size_q,
+      block_kv_dkv=min(kv_max_block_size, key_seq_len),
+      block_kv_dkv_compute=min(kv_max_block_size, query_seq_len),
+      block_q_dq=None if attention_kernel == "tokamax_flash" else block_size_q,
+      block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query_seq_len),
+      use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
+  )
+
+
 def convert_to_tokamax_splash_config(
     block_sizes: BlockSizes,
     q_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
@@ -244,28 +287,7 @@ def _tpu_flash_attention(
 ) -> jax.Array:
   """TPU Flash Attention"""
 
-  q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
-  # This is the case for cross-attn.
-  if key.shape[1] != query.shape[1]:
-    kv_max_block_size = ((key.shape[1] + 127) // 128) * 128
-  else:
-    kv_max_block_size = q_max_block_size
-  # ensure that for cross attention we override the block sizes.
-  if flash_block_sizes and key.shape[1] == query.shape[1]:
-    block_sizes = flash_block_sizes
-  else:
-    block_size_q = flash_block_sizes.block_q if flash_block_sizes else q_max_block_size
-    block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=block_size_q,
-        block_kv_compute=min(kv_max_block_size, key.shape[2]),
-        block_kv=min(kv_max_block_size, key.shape[2]),
-        block_q_dkv=block_size_q,
-        block_kv_dkv=min(kv_max_block_size, key.shape[2]),
-        block_kv_dkv_compute=min(kv_max_block_size, query.shape[2]),
-        block_q_dq=None if attention_kernel == "tokamax_flash" else block_size_q,
-        block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
-        use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
-    )
+  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, attention_kernel)
   num_context_shards = mesh.shape["context"]
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
@@ -717,8 +739,8 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", None)),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
     )
     self.act = get_activation(activation_fn)
     self.net_2 = nnx.Linear(
@@ -729,8 +751,8 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
     )
 
   def __call__(self, hidden_states: Array) -> Array:
@@ -979,7 +1001,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("embed",),
+            ("heads",),
         ),
     )
 
@@ -993,7 +1015,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("embed",),
+            ("heads",),
         ),
     )
 
@@ -1007,7 +1029,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("embed",),
+            ("heads",),
         ),
     )
 
@@ -1021,7 +1043,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("heads",),
+            ("embed",),
         ),
     )
 
@@ -1333,11 +1355,13 @@ class FlaxFluxAttention(nn.Module):
         precision=self.precision,
     )
 
+    proj_attn_kernel_axes = ("heads", "embed")
+
     self.proj_attn = nn.Dense(
         self.query_dim,
-        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes),
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), proj_attn_kernel_axes),
         use_bias=True,
-        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("embed",)),
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         name="i_proj",
@@ -1346,9 +1370,9 @@ class FlaxFluxAttention(nn.Module):
 
     self.encoder_proj_attn = nn.Dense(
         self.query_dim,
-        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes),
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), proj_attn_kernel_axes),
         use_bias=True,
-        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("embed",)),
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         name="e_proj",
