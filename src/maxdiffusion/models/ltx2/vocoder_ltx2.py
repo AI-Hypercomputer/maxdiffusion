@@ -86,6 +86,7 @@ class DownSample1d(nnx.Module):
     cutoff = 0.5 / ratio
     half_width = 0.6 / ratio
     low_pass_filter = kaiser_sinc_filter1d(cutoff, half_width, self.kernel_size)
+    print(f"DownSample1d filter - min: {low_pass_filter.min()}, max: {low_pass_filter.max()}")
     self.filter = jnp.expand_dims(low_pass_filter, axis=(1, 2))
 
   def __call__(self, x: Array) -> Array:
@@ -104,6 +105,7 @@ class DownSample1d(nnx.Module):
         dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
+    jax.debug.print("DownSample1d after conv - min: {min}, max: {max}", min=x_filtered.min(), max=x_filtered.max())
     return x_filtered
 
 
@@ -143,6 +145,7 @@ class UpSample1d(nnx.Module):
           half_width=0.6 / ratio,
           kernel_size=self.kernel_size,
       )
+      print(f"UpSample1d filter - min: {sinc_filter.min()}, max: {sinc_filter.max()}")
       self.filter = sinc_filter.reshape(-1, 1, 1)
 
   def __call__(self, x: Array) -> Array:
@@ -168,6 +171,7 @@ class UpSample1d(nnx.Module):
         dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
+    jax.debug.print("UpSample1d after conv - min: {min}, max: {max}", min=x_upsampled.min(), max=x_upsampled.max())
     
     x_upsampled = x_upsampled * self.ratio
     return x_upsampled[:, self.pad_left : -self.pad_right, :]
@@ -230,9 +234,13 @@ class AntiAliasAct1d(nnx.Module):
     self.downsample = DownSample1d(ratio=ratio, kernel_size=kernel_size)
 
   def __call__(self, x: Array) -> Array:
+    jax.debug.print("AntiAliasAct1d input - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.upsample(x)
+    jax.debug.print("AntiAliasAct1d after upsample - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.act(x)
+    jax.debug.print("AntiAliasAct1d after act - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.downsample(x)
+    jax.debug.print("AntiAliasAct1d after downsample - min: {min}, max: {max}", min=x.min(), max=x.max())
     return x
 
 
