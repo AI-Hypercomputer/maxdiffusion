@@ -648,6 +648,12 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     
     skip = self.resampler(x)
     residual = jnp.transpose(residual, (0, 2, 1))
+    
+    if residual.shape[1] < skip.shape[1]:
+      residual = jnp.pad(residual, ((0, 0), (0, skip.shape[1] - residual.shape[1]), (0, 0)), mode='edge')
+    elif residual.shape[1] > skip.shape[1]:
+      residual = residual[:, :skip.shape[1], :]
+      
     waveform = jnp.clip(residual + skip, -1, 1)
     
     output_samples = num_samples * self.output_sampling_rate // self.input_sampling_rate
