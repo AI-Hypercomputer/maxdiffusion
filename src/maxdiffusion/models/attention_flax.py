@@ -15,7 +15,7 @@
 import contextlib
 import functools
 import math
-from typing import Optional, Callable, Tuple
+from typing import Optional, Callable, Tuple, Dict
 import flax.linen as nn
 from flax import nnx
 import jax
@@ -1132,6 +1132,7 @@ class FlaxWanAttention(nnx.Module):
       encoder_attention_mask: Optional[jax.Array] = None,
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
+      cached_kv: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
   ) -> jax.Array:
     axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
@@ -1146,16 +1147,22 @@ class FlaxWanAttention(nnx.Module):
     if not is_i2v_cross_attention:
       with jax.named_scope("query_proj"):
         query_proj = self.query(hidden_states)
-      with jax.named_scope("key_proj"):
-        key_proj = self.key(encoder_hidden_states)
-      with jax.named_scope("value_proj"):
-        value_proj = self.value(encoder_hidden_states)
-
+      
       if self.qk_norm:
         with self.conditional_named_scope("attn_q_norm"):
           query_proj = self.norm_q(query_proj)
-        with self.conditional_named_scope("attn_k_norm"):
-          key_proj = self.norm_k(key_proj)
+
+      if not is_self_attention and cached_kv is not None and "text" in cached_kv:
+        key_proj, value_proj = cached_kv["text"]
+      else:
+        with jax.named_scope("key_proj"):
+          key_proj = self.key(encoder_hidden_states)
+        with jax.named_scope("value_proj"):
+          value_proj = self.value(encoder_hidden_states)
+
+        if self.qk_norm:
+          with self.conditional_named_scope("attn_k_norm"):
+            key_proj = self.norm_k(key_proj)
 
       if rotary_emb is not None:
         with self.conditional_named_scope("attn_rope"):
@@ -1213,22 +1220,29 @@ class FlaxWanAttention(nnx.Module):
         query_proj_text = query_proj_raw
 
       # Text K/V
-      with self.conditional_named_scope("proj_key"):
-        key_proj_text = self.key(encoder_hidden_states_text)
-      if self.qk_norm:
-        with self.conditional_named_scope("attn_k_norm"):
-          key_proj_text = self.norm_k(key_proj_text)
-      with self.conditional_named_scope("proj_value"):
-        value_proj_text = self.value(encoder_hidden_states_text)
+      if cached_kv is not None and "text" in cached_kv:
+        key_proj_text, value_proj_text = cached_kv["text"]
+      else:
+        with self.conditional_named_scope("proj_key"):
+          key_proj_text = self.key(encoder_hidden_states_text)
+        if self.qk_norm:
+          with self.conditional_named_scope("attn_k_norm"):
+            key_proj_text = self.norm_k(key_proj_text)
+        with self.conditional_named_scope("proj_value"):
+          value_proj_text = self.value(encoder_hidden_states_text)
 
       # Image K/V (only if image embeddings are present)
       if encoder_hidden_states_img is not None:
-        with self.conditional_named_scope("add_proj_k"):
-          key_proj_img = self.add_k_proj(encoder_hidden_states_img)
-        with self.conditional_named_scope("norm_add_k"):
-          key_proj_img = self.norm_added_k(key_proj_img)
-        with self.conditional_named_scope("add_proj_v"):
-          value_proj_img = self.add_v_proj(encoder_hidden_states_img)
+        if cached_kv is not None and "image" in cached_kv:
+          key_proj_img, value_proj_img = cached_kv["image"]
+        else:
+          with self.conditional_named_scope("add_proj_k"):
+            key_proj_img = self.add_k_proj(encoder_hidden_states_img)
+          with self.conditional_named_scope("norm_add_k"):
+            key_proj_img = self.norm_added_k(key_proj_img)
+          with self.conditional_named_scope("add_proj_v"):
+            value_proj_img = self.add_v_proj(encoder_hidden_states_img)
+            
         query_proj_img = query_proj_raw
         # Check norm_added_k too
         # Checkpointing
@@ -1266,6 +1280,64 @@ class FlaxWanAttention(nnx.Module):
       if self.drop_out.rate > 0:
         hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     return hidden_states
+
+  def compute_kv(
+      self,
+      encoder_hidden_states: jax.Array,
+      encoder_attention_mask: Optional[jax.Array] = None,
+  ) -> Dict[str, Tuple[jax.Array, jax.Array]]:
+    is_i2v_cross_attention = self.added_kv_proj_dim is not None
+
+    if not is_i2v_cross_attention:
+      with jax.named_scope("key_proj"):
+        key_proj = self.key(encoder_hidden_states)
+      with jax.named_scope("value_proj"):
+        value_proj = self.value(encoder_hidden_states)
+
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_k_norm"):
+          key_proj = self.norm_k(key_proj)
+          
+      return {"text": (key_proj, value_proj)}
+    else:
+      # Image embeddings are padded to multiples of 128 for TPU flash attention
+      alignment = 128
+      if self.image_seq_len is not None:
+        image_seq_len_actual = self.image_seq_len
+      else:
+        image_seq_len_actual = 257
+      padded_img_len = ((image_seq_len_actual + alignment - 1) // alignment) * alignment  # 257 -> 384
+
+      if encoder_attention_mask is None:
+        padded_img_len = image_seq_len_actual
+
+      encoder_hidden_states_img = encoder_hidden_states[:, :padded_img_len, :]
+      encoder_hidden_states_text = encoder_hidden_states[:, padded_img_len:, :]
+
+      # Text K/V
+      with self.conditional_named_scope("proj_key"):
+        key_proj_text = self.key(encoder_hidden_states_text)
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_k_norm"):
+          key_proj_text = self.norm_k(key_proj_text)
+      with self.conditional_named_scope("proj_value"):
+        value_proj_text = self.value(encoder_hidden_states_text)
+
+      # Image K/V (only if image embeddings are present)
+      if encoder_hidden_states_img is not None:
+        with self.conditional_named_scope("add_proj_k"):
+          key_proj_img = self.add_k_proj(encoder_hidden_states_img)
+        with self.conditional_named_scope("norm_add_k"):
+          key_proj_img = self.norm_added_k(key_proj_img)
+        with self.conditional_named_scope("add_proj_v"):
+          value_proj_img = self.add_v_proj(encoder_hidden_states_img)
+          
+        return {
+            "text": (key_proj_text, value_proj_text),
+            "image": (key_proj_img, value_proj_img)
+        }
+      else:
+        return {"text": (key_proj_text, value_proj_text)}
 
 
 class FlaxFluxAttention(nn.Module):

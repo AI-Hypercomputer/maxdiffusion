@@ -303,6 +303,7 @@ boundary_ratio: 0.875
 
 # Diffusion CFG cache (FasterCache-style)
 use_cfg_cache: False
+use_kv_cache: False
 # SenCache: Sensitivity-Aware Caching (arXiv:2602.24208)
 use_sen_cache: False
 

@@ -779,6 +779,9 @@ def transformer_forward_pass(
     skip_blocks=None,
     cached_residual=None,
     return_residual=False,
+    kv_cache=None,
+    rotary_emb=None,
+    encoder_attention_mask=None,
 ):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   outputs = wan_transformer(
@@ -789,6 +792,9 @@ def transformer_forward_pass(
       skip_blocks=skip_blocks,
       cached_residual=cached_residual,
       return_residual=return_residual,
+      kv_cache=kv_cache,
+      rotary_emb=rotary_emb,
+      encoder_attention_mask=encoder_attention_mask,
   )
 
   if return_residual:
@@ -819,6 +825,9 @@ def transformer_forward_pass_full_cfg(
     prompt_embeds_combined: jnp.array,
     guidance_scale: float,
     encoder_hidden_states_image=None,
+    kv_cache=None,
+    rotary_emb=None,
+    encoder_attention_mask=None,
 ):
   """Full CFG forward pass.
 
@@ -837,6 +846,9 @@ def transformer_forward_pass_full_cfg(
       skip_blocks=False,
       cached_residual=None,
       return_residual=False,
+      kv_cache=kv_cache,
+      rotary_emb=rotary_emb,
+      encoder_attention_mask=encoder_attention_mask,
   )
   noise_cond = noise_pred[:bsz]
   noise_uncond = noise_pred[bsz:]
@@ -858,6 +870,9 @@ def transformer_forward_pass_cfg_cache(
     w1: float = 1.0,
     w2: float = 1.0,
     encoder_hidden_states_image=None,
+    kv_cache=None,
+    rotary_emb=None,
+    encoder_attention_mask=None,
 ):
   """CFG-Cache forward pass with FFT frequency-domain compensation.
 
@@ -883,6 +898,9 @@ def transformer_forward_pass_cfg_cache(
       timestep=timestep_cond,
       encoder_hidden_states=prompt_cond_embeds,
       encoder_hidden_states_image=encoder_hidden_states_image,
+      kv_cache=kv_cache,
+      rotary_emb=rotary_emb,
+      encoder_attention_mask=encoder_attention_mask,
   )
 
   # FFT over spatial dims (H, W) — last 2 dims of [B, C, F, H, W]

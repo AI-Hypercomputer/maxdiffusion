@@ -1,4 +1,4 @@
-﻿# Copyright 2023 Google LLC
+# Copyright 2023 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -286,6 +286,7 @@ flow_shift: 3.0
 
 # Diffusion CFG cache (FasterCache-style, WAN 2.1 T2V only)
 use_cfg_cache: False
+use_kv_cache: False
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0

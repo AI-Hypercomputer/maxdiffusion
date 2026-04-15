@@ -153,6 +153,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       magcache_thresh: Optional[float] = None,
       magcache_K: Optional[int] = None,
       retention_ratio: Optional[float] = None,
+      use_kv_cache: bool = False,
   ):
     config = getattr(self, "config", None)
     if magcache_thresh is None:
@@ -250,6 +251,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         retention_ratio=retention_ratio,
         height=height,
         mag_ratios_base=self.config.mag_ratios_base_720p if height >= 720 else self.config.mag_ratios_base_480p,
+        use_kv_cache=use_kv_cache,
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -288,6 +290,7 @@ def run_inference_2_1_i2v(
     retention_ratio: float = 0.2,
     height: int = 480,
     mag_ratios_base: Optional[List[float]] = None,
+    use_kv_cache: bool = False,
 ):
   do_cfg = guidance_scale > 1.0
 
@@ -306,6 +309,18 @@ def run_inference_2_1_i2v(
     prompt_embeds_combined = prompt_embeds
     image_embeds_combined = image_embeds
     condition_combined = condition
+
+  transformer_obj = nnx.merge(graphdef, sharded_state, rest_of_state)
+  
+  # Compute RoPE once as it only depends on shape
+  dummy_hidden_states = jnp.zeros((latents.shape[0], latents.shape[2], latents.shape[3], latents.shape[4], latents.shape[1]))
+  rotary_emb = transformer_obj.rope(dummy_hidden_states)
+  
+  kv_cache = None
+  encoder_attention_mask = None
+
+  if use_kv_cache:
+    kv_cache, encoder_attention_mask = transformer_obj.compute_kv_cache(prompt_embeds_combined, image_embeds_combined)
 
   for step in range(num_inference_steps):
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
@@ -337,6 +352,9 @@ def run_inference_2_1_i2v(
         skip_blocks=bool(skip_blocks) if use_magcache and do_cfg else None,
         cached_residual=cached_residual if use_magcache and do_cfg else None,
         return_residual=True if use_magcache and do_cfg else False,
+        kv_cache=kv_cache,
+        rotary_emb=rotary_emb,
+        encoder_attention_mask=encoder_attention_mask,
     )
     if use_magcache and do_cfg:
       noise_pred, _, residual_x_cur = outputs

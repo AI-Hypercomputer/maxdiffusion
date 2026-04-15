@@ -95,6 +95,7 @@ class WanPipeline2_1(WanPipeline):
       magcache_thresh: Optional[float] = None,
       magcache_K: Optional[int] = None,
       retention_ratio: Optional[float] = None,
+      use_kv_cache: bool = False,
   ):
     config = getattr(self, "config", None)
     if magcache_thresh is None:
@@ -140,6 +141,7 @@ class WanPipeline2_1(WanPipeline):
         retention_ratio=retention_ratio,
         height=height,
         mag_ratios_base=getattr(config, "mag_ratios_base", None),
+        use_kv_cache=use_kv_cache,
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -173,6 +175,7 @@ def run_inference_2_1(
     retention_ratio: float = 0.2,
     height: int = 480,
     mag_ratios_base: Optional[List[float]] = None,
+    use_kv_cache: bool = False,
 ):
   """Denoising loop for WAN 2.1 T2V with FasterCache CFG-Cache.
 
@@ -244,6 +247,18 @@ def run_inference_2_1(
   cached_noise_cond = None
   cached_noise_uncond = None
 
+  transformer_obj = nnx.merge(graphdef, sharded_state, rest_of_state)
+  
+  # Compute RoPE once as it only depends on shape
+  dummy_hidden_states = jnp.zeros((latents.shape[0], latents.shape[2], latents.shape[3], latents.shape[4], latents.shape[1]))
+  rotary_emb = transformer_obj.rope(dummy_hidden_states)
+  
+  kv_cache = None
+  encoder_attention_mask = None
+
+  if use_kv_cache:
+    kv_cache, encoder_attention_mask = transformer_obj.compute_kv_cache(prompt_embeds_combined if do_cfg else prompt_cond_embeds)
+
   if use_magcache and do_cfg:
     magcache_init = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base)
     accumulated_state = magcache_init[:6]
@@ -273,6 +288,9 @@ def run_inference_2_1(
           skip_blocks=bool(skip_blocks),
           cached_residual=cached_residual,
           return_residual=True,
+          kv_cache=kv_cache,
+          rotary_emb=rotary_emb,
+          encoder_attention_mask=encoder_attention_mask,
       )
 
       if not skip_blocks:
@@ -284,6 +302,8 @@ def run_inference_2_1(
       if is_cache_step:
         w1, w2 = step_w1w2[step]
         timestep = jnp.broadcast_to(t, bsz)
+        kv_cache_cond = jax.tree_map(lambda x: x[:, :bsz], kv_cache) if kv_cache is not None else None
+        encoder_attention_mask_cond = encoder_attention_mask[:bsz] if encoder_attention_mask is not None else None
         noise_pred, cached_noise_cond = transformer_forward_pass_cfg_cache(
             graphdef,
             sharded_state,
@@ -296,6 +316,9 @@ def run_inference_2_1(
             guidance_scale=guidance_scale,
             w1=jnp.float32(w1),
             w2=jnp.float32(w2),
+            kv_cache=kv_cache_cond,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=encoder_attention_mask_cond,
         )
 
       elif do_cfg:
@@ -309,6 +332,9 @@ def run_inference_2_1(
             timestep,
             prompt_embeds_combined,
             guidance_scale=guidance_scale,
+            kv_cache=kv_cache,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=encoder_attention_mask,
         )
 
       else:
@@ -322,6 +348,9 @@ def run_inference_2_1(
             prompt_cond_embeds,
             do_classifier_free_guidance=False,
             guidance_scale=guidance_scale,
+            kv_cache=kv_cache,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=encoder_attention_mask,
         )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
