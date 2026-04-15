@@ -637,7 +637,7 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     if remainder != 0:
       x = jnp.pad(x, ((0, 0), (0, self.hop_length - remainder), (0, 0)))
 
-    x_flattened = x.transpose(0, 2, 1).reshape(-1, num_samples, 1)
+    x_flattened = x.transpose(0, 2, 1).reshape(-1, x.shape[1], 1)
     log_mel, _, _, _ = self.mel_stft(x_flattened)
     log_mel = log_mel.reshape(batch_size, num_channels, -1, log_mel.shape[-1])
     
