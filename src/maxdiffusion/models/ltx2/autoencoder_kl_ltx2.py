@@ -1075,7 +1075,7 @@ class LTX2VideoDecoder3d(nnx.Module):
       causal: bool = False,
       deterministic: bool = True,
   ) -> jax.Array:
-    print(f"[LTX2 XPROF Tracing] Decoder __call__ input shape: {sample.shape}")
+    print(f"[LTX2 XPROF Tracing] Video Decoder __call__ input shape: {sample.shape}")
     if self.timestep_scale_multiplier is not None and temb is not None:
       temb = temb * self.timestep_scale_multiplier.value
 
@@ -1587,7 +1587,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
       generator: Optional[jax.Array] = None,
       causal: Optional[bool] = None,
   ) -> Union[FlaxDecoderOutput, Tuple[jax.Array]]:
-    print(f"[LTX2 XPROF Tracing] VAE decode input shape: {latents.shape}")
+    print(f"[LTX2 XPROF Tracing] Video VAE decode input shape: {latents.shape}")
     causal = self.decoder_causal if causal is None else causal
     key = generator
 

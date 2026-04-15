@@ -935,6 +935,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     print(f"[LTX2 XPROF Tracing]   hidden_states shape: {hidden_states.shape}")
     print(f"[LTX2 XPROF Tracing]   audio_hidden_states shape: {audio_hidden_states.shape}")
     print(f"[LTX2 XPROF Tracing]   encoder_hidden_states shape: {encoder_hidden_states.shape}")
+    print(f"[LTX2 XPROF Tracing]   audio_encoder_hidden_states shape: {audio_encoder_hidden_states.shape}")
 
     # 1. Prepare RoPE positional embeddings
     with jax.named_scope("RoPE Preparation"):

@@ -1482,6 +1482,7 @@ class LTX2Pipeline:
     # Post-process video (converts to numpy/PIL)
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
     video_np = np.array(video).transpose(0, 4, 1, 2, 3)
+    max_logging.log(f"[LTX2 XPROF] Produced video shape (B, C, T, H, W): {video_np.shape}")
     video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
 
     # Decode Audio
@@ -1494,6 +1495,7 @@ class LTX2Pipeline:
 
     # Convert audio to numpy
     audio = np.array(audio)
+    max_logging.log(f"[LTX2 XPROF] Produced audio shape: {audio.shape}")
 
     return LTX2PipelineOutput(frames=video, audio=audio)
 
@@ -1531,6 +1533,7 @@ def transformer_forward_pass(
   print(f"[LTX2 XPROF Tracing] latents shape: {latents.shape}")
   print(f"[LTX2 XPROF Tracing] audio_latents shape: {audio_latents.shape}")
   print(f"[LTX2 XPROF Tracing] encoder_hidden_states shape: {encoder_hidden_states.shape}")
+  print(f"[LTX2 XPROF Tracing] audio_encoder_hidden_states shape: {audio_encoder_hidden_states.shape}")
 
   transformer = nnx.merge(graphdef, state)
 
