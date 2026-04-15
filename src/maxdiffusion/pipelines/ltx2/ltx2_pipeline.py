@@ -34,7 +34,7 @@ from ...schedulers import FlaxFlowMatchScheduler
 from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder
-from ...models.ltx2.vocoder_bwe_ltx2 import LTX2VocoderWithBWE, Vocoder, MelSTFT
+from ...models.ltx2.vocoder_ltx2 import LTX2VocoderWithBWE
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
 from ...models.ltx2.ltx2_utils import (
     load_transformer_weights,
@@ -485,14 +485,27 @@ class LTX2Pipeline:
     max_logging.log("Loading Vocoder...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      vocoder = LTX2Vocoder.from_config(
-          "Lightricks/LTX-2",
-          subfolder="vocoder",
-          rngs=rngs,
-          mesh=mesh,
-          dtype=jnp.float32,
-          weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
-      )
+      is_ltx2_3 = getattr(config, "model_name", "") == "ltx2.3"
+      repo = config.pretrained_model_name_or_path if hasattr(config, "pretrained_model_name_or_path") else "Lightricks/LTX-2"
+      
+      if is_ltx2_3:
+        vocoder = LTX2VocoderWithBWE.from_config(
+            repo,
+            subfolder="vocoder",
+            rngs=rngs,
+            mesh=mesh,
+            dtype=jnp.float32,
+            weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+        )
+      else:
+        vocoder = LTX2Vocoder.from_config(
+            repo,
+            subfolder="vocoder",
+            rngs=rngs,
+            mesh=mesh,
+            dtype=jnp.float32,
+            weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+        )
       return vocoder
 
     p_model_factory = partial(create_model, config=config)
@@ -506,7 +519,9 @@ class LTX2Pipeline:
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
 
-    params = load_vocoder_weights("Lightricks/LTX-2", params, "cpu", subfolder="vocoder")
+    repo = config.pretrained_model_name_or_path if hasattr(config, "pretrained_model_name_or_path") else "Lightricks/LTX-2"
+    params = load_vocoder_weights(repo, params, "cpu", subfolder="vocoder")
+    
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 

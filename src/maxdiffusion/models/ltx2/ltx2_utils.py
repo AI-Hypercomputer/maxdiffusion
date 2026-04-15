@@ -294,11 +294,21 @@ def load_vocoder_weights(
 
     flax_key = _tuple_str_to_int(parts)
 
+    # Skip filter keys as they are derived in NNX model
+    if "filter" in flax_key:
+      continue
+
     if flax_key[-1] == "kernel":
       if "upsamplers" in flax_key:
-        tensor = tensor.transpose(2, 0, 1)[::-1, :, :]
+        if "2.3" in pretrained_model_name_or_path:
+          tensor = tensor.transpose(2, 0, 1)
+        else:
+          tensor = tensor.transpose(2, 0, 1)[::-1, :, :]
       else:
         tensor = tensor.transpose(2, 1, 0)
+        
+    if "mel_stft" in flax_key and ("forward_basis" in flax_key or "inverse_basis" in flax_key):
+      tensor = tensor.transpose(2, 1, 0)
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 
