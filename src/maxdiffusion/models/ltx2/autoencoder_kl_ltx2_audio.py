@@ -562,6 +562,7 @@ class FlaxLTX2AudioEncoder(nnx.Module):
       self.conv_out = nnx.Conv(block_in, z_channels, kernel_size=(3, 3), padding="SAME", dtype=dtype, rngs=rngs)
 
   def __call__(self, x, train: bool = False):
+    print(f"[LTX2 XPROF Tracing] Audio Encoder __call__ input shape: {x.shape}")
     h = self.conv_in(x)
 
     for stage in self.down_stages:
@@ -702,6 +703,7 @@ class FlaxLTX2AudioDecoder(nnx.Module):
       self.conv_out = nnx.Conv(block_in, self.output_channels, kernel_size=(3, 3), padding="SAME", dtype=dtype, rngs=rngs)
 
   def __call__(self, z, target_frames=None, target_mel_bins=None, train: bool = False):
+    print(f"[LTX2 XPROF Tracing] Audio Decoder __call__ input shape: {z.shape}")
     h = self.conv_in(z)
 
     h = self.mid_block1(h, train=train)
@@ -825,6 +827,7 @@ class FlaxAutoencoderKLLTX2Audio(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.latents_std = nnx.Param(jnp.ones((base_channels,), dtype=dtype))
 
   def encode(self, x: jnp.ndarray, return_dict: bool = True, train: bool = False):
+    print(f"[LTX2 XPROF Tracing] Audio VAE encode input shape: {x.shape}")
     h = self.encoder(x, train=train)
     posterior = FlaxDiagonalGaussianDistribution(h)
 
@@ -833,6 +836,7 @@ class FlaxAutoencoderKLLTX2Audio(nnx.Module, FlaxModelMixin, ConfigMixin):
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
   def decode(self, z: jnp.ndarray, return_dict: bool = True, train: bool = False):
+    print(f"[LTX2 XPROF Tracing] Audio VAE decode input shape: {z.shape}")
     batch, time, freq, channels = z.shape
     target_frames = time * self.latent_downsample_factor
     if self.causality_axis is not None and self.causality_axis != "none":

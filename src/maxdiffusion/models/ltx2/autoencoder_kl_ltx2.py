@@ -901,6 +901,7 @@ class LTX2VideoEncoder3d(nnx.Module):
       causal: bool = True,
       deterministic: bool = True,
   ) -> jax.Array:
+    print(f"[LTX2 XPROF Tracing] Encoder __call__ input shape: {sample.shape}")
     # JAX: (B, T, H, W, C)
     B, T, H, W, C = sample.shape
     p = self.patch_size
@@ -1074,6 +1075,7 @@ class LTX2VideoDecoder3d(nnx.Module):
       causal: bool = False,
       deterministic: bool = True,
   ) -> jax.Array:
+    print(f"[LTX2 XPROF Tracing] Decoder __call__ input shape: {sample.shape}")
     if self.timestep_scale_multiplier is not None and temb is not None:
       temb = temb * self.timestep_scale_multiplier.value
 
@@ -1556,6 +1558,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
       key: Optional[jax.Array] = None,
       causal: Optional[bool] = None,
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[jax.Array]]:
+    print(f"[LTX2 XPROF Tracing] VAE encode input shape: {sample.shape}")
     causal = self.encoder_causal if causal is None else causal
 
     if self.use_slicing and sample.shape[0] > 1:
@@ -1584,6 +1587,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
       generator: Optional[jax.Array] = None,
       causal: Optional[bool] = None,
   ) -> Union[FlaxDecoderOutput, Tuple[jax.Array]]:
+    print(f"[LTX2 XPROF Tracing] VAE decode input shape: {latents.shape}")
     causal = self.decoder_causal if causal is None else causal
     key = generator
 

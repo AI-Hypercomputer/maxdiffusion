@@ -354,6 +354,9 @@ class LTX2VideoTransformerBlock(nnx.Module):
       a2v_cross_attention_mask: Optional[jax.Array] = None,
       v2a_cross_attention_mask: Optional[jax.Array] = None,
   ) -> Tuple[jax.Array, jax.Array]:
+    print(f"[LTX2 XPROF Tracing] Block __call__ inputs:")
+    print(f"[LTX2 XPROF Tracing]   hidden_states shape: {hidden_states.shape}")
+    print(f"[LTX2 XPROF Tracing]   audio_hidden_states shape: {audio_hidden_states.shape}")
     batch_size = hidden_states.shape[0]
 
     axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
@@ -632,6 +635,10 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     _audio_out_channels = self.audio_out_channels or self.audio_in_channels
     inner_dim = self.num_attention_heads * self.attention_head_dim
     audio_inner_dim = self.audio_num_attention_heads * self.audio_attention_head_dim
+
+    print(f"[LTX2 XPROF Config] num_layers: {self.num_layers}")
+    print(f"[LTX2 XPROF Config] Video: inner_dim={inner_dim}, num_heads={self.num_attention_heads}, head_dim={self.attention_head_dim}")
+    print(f"[LTX2 XPROF Config] Audio: audio_inner_dim={audio_inner_dim}, num_heads={self.audio_num_attention_heads}, head_dim={self.audio_attention_head_dim}")
 
     # 1. Patchification input projections
     self.proj_in = nnx.Linear(
@@ -923,6 +930,11 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         audio_encoder_attention_mask = jnp.expand_dims(audio_encoder_attention_mask, axis=1)
 
     batch_size = hidden_states.shape[0]
+
+    print(f"[LTX2 XPROF Tracing] Model __call__ inputs:")
+    print(f"[LTX2 XPROF Tracing]   hidden_states shape: {hidden_states.shape}")
+    print(f"[LTX2 XPROF Tracing]   audio_hidden_states shape: {audio_hidden_states.shape}")
+    print(f"[LTX2 XPROF Tracing]   encoder_hidden_states shape: {encoder_hidden_states.shape}")
 
     # 1. Prepare RoPE positional embeddings
     with jax.named_scope("RoPE Preparation"):

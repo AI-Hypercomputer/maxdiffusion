@@ -1209,6 +1209,9 @@ class LTX2Pipeline:
     latent_width = width // self.vae_spatial_compression_ratio
     latent_num_frames = (num_frames - 1) // self.vae_temporal_compression_ratio + 1
 
+    max_logging.log(f"[LTX2 XPROF] Input dimensions: height={height}, width={width}, num_frames={num_frames}")
+    max_logging.log(f"[LTX2 XPROF] Video Latent dimensions: height={latent_height}, width={latent_width}, num_frames={latent_num_frames}")
+
     # 4. Prepare Audio Latents
     audio_channels = (
         self.audio_vae.config.latent_channels
@@ -1221,6 +1224,8 @@ class LTX2Pipeline:
         self.audio_sampling_rate / self.audio_hop_length / float(self.audio_vae_temporal_compression_ratio)
     )
     audio_num_frames = round(duration_s * audio_latents_per_second)
+
+    max_logging.log(f"[LTX2 XPROF] Audio Latent dimensions: channels={audio_channels}, num_frames={audio_num_frames}")
 
     audio_latents = self.prepare_audio_latents(
         batch_size=batch_size,
@@ -1237,6 +1242,8 @@ class LTX2Pipeline:
 
     video_sequence_length = (num_frames - 1) // self.vae_temporal_compression_ratio + 1
     video_sequence_length *= (height // self.vae_spatial_compression_ratio) * (width // self.vae_spatial_compression_ratio)
+
+    max_logging.log(f"[LTX2 XPROF] Video Sequence Length: {video_sequence_length}")
 
     mu = calculate_shift(
         video_sequence_length,
@@ -1521,6 +1528,10 @@ def transformer_forward_pass(
     audio_num_frames,
     fps,
 ):
+  print(f"[LTX2 XPROF Tracing] latents shape: {latents.shape}")
+  print(f"[LTX2 XPROF Tracing] audio_latents shape: {audio_latents.shape}")
+  print(f"[LTX2 XPROF Tracing] encoder_hidden_states shape: {encoder_hidden_states.shape}")
+
   transformer = nnx.merge(graphdef, state)
 
   # Expand timestep to batch size
