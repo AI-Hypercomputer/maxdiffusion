@@ -168,7 +168,6 @@ class UpSample1d(nnx.Module):
         dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
-    jax.debug.print("UpSample1d after conv - min: {min}, max: {max}", min=x_upsampled.min(), max=x_upsampled.max())
     
     x_upsampled = x_upsampled * self.ratio
     return x_upsampled[:, self.pad_left : -self.pad_right, :]
@@ -215,8 +214,6 @@ class SnakeBeta(nnx.Module):
     alpha = jnp.expand_dims(alpha, axis=0)
     amplitude = jnp.expand_dims(amplitude, axis=0)
     
-    jax.debug.print("SnakeBeta alpha - min: {min}, max: {max}", min=alpha.min(), max=alpha.max())
-    jax.debug.print("SnakeBeta amplitude - min: {min}, max: {max}", min=amplitude.min(), max=amplitude.max())
     hidden_states = hidden_states + (1.0 / (amplitude + self.eps)) * jnp.sin(hidden_states * alpha) ** 2
     return hidden_states
 
@@ -233,11 +230,8 @@ class AntiAliasAct1d(nnx.Module):
     self.downsample = DownSample1d(ratio=ratio, kernel_size=kernel_size)
 
   def __call__(self, x: Array) -> Array:
-    jax.debug.print("AntiAliasAct1d input - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.upsample(x)
-    jax.debug.print("AntiAliasAct1d after upsample - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.act(x)
-    jax.debug.print("AntiAliasAct1d after act - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.downsample(x)
     return x
 
