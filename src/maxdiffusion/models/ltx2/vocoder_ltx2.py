@@ -147,17 +147,24 @@ class UpSample1d(nnx.Module):
 
   def __call__(self, x: Array) -> Array:
     num_channels = x.shape[-1]
-    x = jnp.pad(x, ((0, 0), (self.pad, self.pad), (0, 0)), mode='edge')
+    batch, length, channels = x.shape
+    
+    # Interleave zeros (manual upsampling)
+    x_expanded = jnp.zeros((batch, length * self.ratio, channels), dtype=x.dtype)
+    x_expanded = x_expanded.at[:, ::self.ratio, :].set(x)
+    
+    # Pad the expanded signal
+    pad_len = self.pad * self.ratio
+    x_padded = jnp.pad(x_expanded, ((0, 0), (pad_len, pad_len), (0, 0)), mode='edge')
     
     filter_expanded = jnp.repeat(self.filter, num_channels, axis=2)
     filter_expanded = filter_expanded.astype(x.dtype)
     
     x_upsampled = jax.lax.conv_general_dilated(
-        x,
+        x_padded,
         filter_expanded,
         window_strides=(1,),
         padding=((0, 0),),
-        lhs_dilation=(self.ratio,),
         dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
