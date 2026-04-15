@@ -94,6 +94,7 @@ class DownSample1d(nnx.Module):
       x = jnp.pad(x, ((0, 0), (self.pad_left, self.pad_right), (0, 0)), mode='edge')
       
     filter_expanded = jnp.repeat(self.filter, num_channels, axis=2)
+    filter_expanded = filter_expanded.astype(x.dtype)
     
     x_filtered = jax.lax.conv_general_dilated(
         x,
@@ -149,6 +150,7 @@ class UpSample1d(nnx.Module):
     x = jnp.pad(x, ((0, 0), (self.pad, self.pad), (0, 0)), mode='edge')
     
     filter_expanded = jnp.repeat(self.filter, num_channels, axis=2)
+    filter_expanded = filter_expanded.astype(x.dtype)
     
     x_upsampled = jax.lax.conv_general_dilated(
         x,
@@ -486,6 +488,7 @@ class CausalSTFT(nnx.Module):
 
     left_pad = max(0, self.window_length - self.hop_length)
     waveform = jnp.pad(waveform, ((0, 0), (left_pad, 0), (0, 0)))
+    waveform = waveform.astype(self.forward_basis.value.dtype)
 
     spec = jax.lax.conv_general_dilated(
         waveform,
