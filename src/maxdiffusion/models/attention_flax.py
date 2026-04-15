@@ -1179,7 +1179,7 @@ class FlaxWanAttention(nnx.Module):
       value_proj = checkpoint_name(value_proj, "value_proj")
 
       with jax.named_scope("apply_attention"):
-        attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+        attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj, attention_mask=encoder_attention_mask)
 
     else:
       # NEW PATH for I2V CROSS-ATTENTION
@@ -1206,9 +1206,11 @@ class FlaxWanAttention(nnx.Module):
         # It contains the image mask: [1]*257 + [0]*127 for 257 real image tokens padded to 384
         if encoder_attention_mask is not None:
           encoder_attention_mask_img = encoder_attention_mask[:, :padded_img_len]
+          encoder_attention_mask_text = encoder_attention_mask[:, padded_img_len:]
         else:
           # Fallback: no mask means treat all as valid (for dot product attention)
           encoder_attention_mask_img = None
+          encoder_attention_mask_text = None
       else:
         # If no image_seq_len is specified, treat all as text
         encoder_hidden_states_img = None
@@ -1257,7 +1259,7 @@ class FlaxWanAttention(nnx.Module):
 
         # Attention - tensors are (B, S, D)
         with self.conditional_named_scope("cross_attn_text_apply"):
-          attn_output_text = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
+          attn_output_text = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text, attention_mask=encoder_attention_mask_text)
         with self.conditional_named_scope("cross_attn_img_apply"):
           # Pass encoder_attention_mask_img for image cross-attention to mask padded tokens
           attn_output_img = self.attention_op.apply_attention(
@@ -1272,7 +1274,7 @@ class FlaxWanAttention(nnx.Module):
         value_proj_text = checkpoint_name(value_proj_text, "value_proj_text")
 
         with self.conditional_named_scope("cross_attn_text_apply"):
-          attn_output = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
+          attn_output = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text, attention_mask=encoder_attention_mask)
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")

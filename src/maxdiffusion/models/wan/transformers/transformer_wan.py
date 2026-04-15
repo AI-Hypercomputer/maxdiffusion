@@ -606,6 +606,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       encoder_hidden_states: jax.Array,
       encoder_hidden_states_image: Optional[jax.Array] = None,
       timestep: Optional[jax.Array] = None,
+      text_mask: Optional[jax.Array] = None,
   ) -> Tuple[Dict[str, Tuple[jax.Array, jax.Array]], Optional[jax.Array]]:
     if timestep is None:
       batch_size = encoder_hidden_states.shape[0]
@@ -623,11 +624,15 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if encoder_hidden_states_image is not None:
       encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states], axis=1)
       if encoder_attention_mask is not None:
-        text_mask = jnp.ones(
-            (encoder_hidden_states.shape[0], encoder_hidden_states.shape[1] - encoder_hidden_states_image.shape[1]),
-            dtype=jnp.int32,
-        )
+        if text_mask is None:
+          text_mask = jnp.ones(
+              (encoder_hidden_states.shape[0], encoder_hidden_states.shape[1] - encoder_hidden_states_image.shape[1]),
+              dtype=jnp.int32,
+          )
         encoder_attention_mask = jnp.concatenate([encoder_attention_mask, text_mask], axis=1)
+    else:
+      if encoder_attention_mask is None:
+        encoder_attention_mask = text_mask
 
     if self.scan_layers:
       @nnx.vmap(in_axes=(0, None, None), out_axes=0, transform_metadata={nnx.PARTITION_NAME: "layers_per_stage"})
@@ -665,6 +670,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       kv_cache: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
       rotary_emb: Optional[jax.Array] = None,
       encoder_attention_mask: Optional[jax.Array] = None,
+      text_mask: Optional[jax.Array] = None,
   ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], Dict[str, jax.Array]]:
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
@@ -694,14 +700,17 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       encoder_attention_mask = encoder_attention_mask
     else:
       encoder_attention_mask = encoder_attention_mask_out
+      if encoder_attention_mask is None:
+        encoder_attention_mask = text_mask
 
     if encoder_hidden_states_image is not None:
       encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states_out], axis=1)
       if kv_cache is None and encoder_attention_mask is not None:
-        text_mask = jnp.ones(
-            (encoder_hidden_states.shape[0], encoder_hidden_states.shape[1] - encoder_hidden_states_image.shape[1]),
-            dtype=jnp.int32,
-        )
+        if text_mask is None:
+          text_mask = jnp.ones(
+              (encoder_hidden_states.shape[0], encoder_hidden_states.shape[1] - encoder_hidden_states_image.shape[1]),
+              dtype=jnp.int32,
+          )
         encoder_attention_mask = jnp.concatenate([encoder_attention_mask, text_mask], axis=1)
       encoder_hidden_states = encoder_hidden_states.astype(hidden_states.dtype)
     else:

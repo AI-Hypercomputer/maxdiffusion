@@ -473,7 +473,11 @@ class WanPipeline:
     prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
     prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
 
-    return prompt_embeds
+    mask = mask.repeat(1, num_videos_per_prompt)
+    mask = mask.view(batch_size * num_videos_per_prompt, seq_len)
+    mask = jnp.array(mask.detach().numpy(), dtype=jnp.int32)
+
+    return prompt_embeds, mask
 
   def encode_prompt(
       self,
@@ -483,28 +487,36 @@ class WanPipeline:
       max_sequence_length: int = 226,
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
+      prompt_mask: jax.Array = None,
+      negative_prompt_mask: jax.Array = None,
   ):
     prompt = [prompt] if isinstance(prompt, str) else prompt
     if prompt_embeds is None:
-      prompt_embeds = self._get_t5_prompt_embeds(
+      prompt_embeds, prompt_mask = self._get_t5_prompt_embeds(
           prompt=prompt,
           num_videos_per_prompt=num_videos_per_prompt,
           max_sequence_length=max_sequence_length,
       )
       prompt_embeds = jnp.array(prompt_embeds.detach().numpy(), dtype=jnp.float32)
+    else:
+      if prompt_mask is None:
+        prompt_mask = jnp.ones((prompt_embeds.shape[0], prompt_embeds.shape[1]), dtype=jnp.int32)
 
     if negative_prompt_embeds is None:
       batch_size = len(prompt_embeds)
       negative_prompt = negative_prompt or ""
       negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-      negative_prompt_embeds = self._get_t5_prompt_embeds(
+      negative_prompt_embeds, negative_prompt_mask = self._get_t5_prompt_embeds(
           prompt=negative_prompt,
           num_videos_per_prompt=num_videos_per_prompt,
           max_sequence_length=max_sequence_length,
       )
       negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().numpy(), dtype=jnp.float32)
+    else:
+      if negative_prompt_mask is None:
+        negative_prompt_mask = jnp.ones((negative_prompt_embeds.shape[0], negative_prompt_embeds.shape[1]), dtype=jnp.int32)
 
-    return prompt_embeds, negative_prompt_embeds
+    return prompt_embeds, prompt_mask, negative_prompt_embeds, negative_prompt_mask
 
   def prepare_latents(
       self,
@@ -647,7 +659,7 @@ class WanPipeline:
     effective_batch_size = batch_size * num_videos_per_prompt
 
     # 1. Encode Prompts
-    prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+    prompt_embeds, prompt_mask, negative_prompt_embeds, negative_prompt_mask = self.encode_prompt(
         prompt=prompt,
         negative_prompt=negative_prompt,
         num_videos_per_prompt=num_videos_per_prompt,
@@ -691,8 +703,10 @@ class WanPipeline:
     prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
     negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
     image_embeds = jax.device_put(image_embeds, data_sharding)
+    prompt_mask = jax.device_put(prompt_mask, data_sharding)
+    negative_prompt_mask = jax.device_put(negative_prompt_mask, data_sharding)
 
-    return prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size
+    return prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size, prompt_mask, negative_prompt_mask
 
   def _prepare_model_inputs(
       self,
@@ -724,7 +738,7 @@ class WanPipeline:
       batch_size = len(prompt)
 
       with jax.named_scope("Encode-Prompt"):
-        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+        prompt_embeds, prompt_mask, negative_prompt_embeds, negative_prompt_mask = self.encode_prompt(
             prompt=prompt,
             negative_prompt=negative_prompt,
             max_sequence_length=max_sequence_length,
@@ -752,12 +766,14 @@ class WanPipeline:
       latents = jax.device_put(latents, data_sharding)
       prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
       negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
+      prompt_mask = jax.device_put(prompt_mask, data_sharding)
+      negative_prompt_mask = jax.device_put(negative_prompt_mask, data_sharding)
 
       scheduler_state = self.scheduler.set_timesteps(
           self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
       )
 
-      return latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames
+      return latents, prompt_embeds, negative_prompt_embeds, prompt_mask, negative_prompt_mask, scheduler_state, num_frames
 
   @abstractmethod
   def __call__(self, **kwargs):
@@ -782,6 +798,7 @@ def transformer_forward_pass(
     kv_cache=None,
     rotary_emb=None,
     encoder_attention_mask=None,
+    text_mask=None,
 ):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   outputs = wan_transformer(
@@ -795,6 +812,7 @@ def transformer_forward_pass(
       kv_cache=kv_cache,
       rotary_emb=rotary_emb,
       encoder_attention_mask=encoder_attention_mask,
+      text_mask=text_mask,
   )
 
   if return_residual:
@@ -828,6 +846,7 @@ def transformer_forward_pass_full_cfg(
     kv_cache=None,
     rotary_emb=None,
     encoder_attention_mask=None,
+    text_mask=None,
 ):
   """Full CFG forward pass.
 
@@ -849,6 +868,7 @@ def transformer_forward_pass_full_cfg(
       kv_cache=kv_cache,
       rotary_emb=rotary_emb,
       encoder_attention_mask=encoder_attention_mask,
+      text_mask=text_mask,
   )
   noise_cond = noise_pred[:bsz]
   noise_uncond = noise_pred[bsz:]
@@ -873,6 +893,7 @@ def transformer_forward_pass_cfg_cache(
     kv_cache=None,
     rotary_emb=None,
     encoder_attention_mask=None,
+    text_mask=None,
 ):
   """CFG-Cache forward pass with FFT frequency-domain compensation.
 
@@ -901,6 +922,7 @@ def transformer_forward_pass_cfg_cache(
       kv_cache=kv_cache,
       rotary_emb=rotary_emb,
       encoder_attention_mask=encoder_attention_mask,
+      text_mask=text_mask,
   )
 
   # FFT over spatial dims (H, W) — last 2 dims of [B, C, F, H, W]

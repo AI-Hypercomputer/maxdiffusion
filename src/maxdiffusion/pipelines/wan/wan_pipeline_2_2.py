@@ -131,7 +131,7 @@ class WanPipeline2_2(WanPipeline):
           "SenCache requires classifier-free guidance to be enabled for both transformer phases."
       )
 
-    latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
+    latents, prompt_embeds, negative_prompt_embeds, prompt_mask, negative_prompt_mask, scheduler_state, num_frames = self._prepare_model_inputs(
         prompt,
         negative_prompt,
         height,
@@ -176,6 +176,8 @@ class WanPipeline2_2(WanPipeline):
           latents=latents,
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds,
+          prompt_mask=prompt_mask,
+          negative_prompt_mask=negative_prompt_mask,
       )
       latents = self._denormalize_latents(latents)
     return self._decode_latents_to_video(latents)
@@ -191,6 +193,8 @@ def run_inference_2_2(
     latents: jnp.array,
     prompt_embeds: jnp.array,
     negative_prompt_embeds: jnp.array,
+    prompt_mask: jnp.array,
+    negative_prompt_mask: jnp.array,
     guidance_scale_low: float,
     guidance_scale_high: float,
     boundary: int,
@@ -223,6 +227,9 @@ def run_inference_2_2(
   prompt_embeds_combined = (
       jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0) if do_classifier_free_guidance else prompt_embeds
   )
+  prompt_mask_combined = (
+      jnp.concatenate([prompt_mask, negative_prompt_mask], axis=0) if do_classifier_free_guidance else prompt_mask
+  )
 
   low_transformer = nnx.merge(low_noise_graphdef, low_noise_state, low_noise_rest)
   
@@ -236,10 +243,13 @@ def run_inference_2_2(
   encoder_attention_mask_high = None
 
   if use_kv_cache:
-    kv_cache_low, encoder_attention_mask_low = low_transformer.compute_kv_cache(prompt_embeds_combined)
+    kv_cache_low, encoder_attention_mask_low = low_transformer.compute_kv_cache(prompt_embeds_combined, text_mask=prompt_mask_combined)
     
     high_transformer = nnx.merge(high_noise_graphdef, high_noise_state, high_noise_rest)
-    kv_cache_high, encoder_attention_mask_high = high_transformer.compute_kv_cache(prompt_embeds_combined)
+    kv_cache_high, encoder_attention_mask_high = high_transformer.compute_kv_cache(prompt_embeds_combined, text_mask=prompt_mask_combined)
+  else:
+    encoder_attention_mask_low = prompt_mask_combined
+    encoder_attention_mask_high = prompt_mask_combined
 
   # ── SenCache path (arXiv:2602.24208) ──
   if use_sen_cache and do_classifier_free_guidance:

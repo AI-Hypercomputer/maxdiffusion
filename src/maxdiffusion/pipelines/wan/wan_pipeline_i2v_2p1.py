@@ -177,7 +177,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       max_logging.log(f"Adjusted num_frames to: {num_frames}")
     num_frames = max(num_frames, 1)
 
-    prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size = self._prepare_model_inputs_i2v(
+    prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size, prompt_mask, negative_prompt_mask = self._prepare_model_inputs_i2v(
         prompt,
         image,
         negative_prompt,
@@ -234,6 +234,8 @@ class WanPipelineI2V_2_1(WanPipeline):
     prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
     negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
     image_embeds = jax.device_put(image_embeds, data_sharding)
+    prompt_mask = jax.device_put(prompt_mask, data_sharding)
+    negative_prompt_mask = jax.device_put(negative_prompt_mask, data_sharding)
     if first_frame_mask is not None:
       first_frame_mask = jax.device_put(first_frame_mask, data_sharding)
 
@@ -261,6 +263,8 @@ class WanPipelineI2V_2_1(WanPipeline):
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds,
           image_embeds=image_embeds,
+          prompt_mask=prompt_mask,
+          negative_prompt_mask=negative_prompt_mask,
           scheduler_state=scheduler_state,
       )
       latents = jnp.transpose(latents, (0, 4, 1, 2, 3))
@@ -280,6 +284,8 @@ def run_inference_2_1_i2v(
     prompt_embeds: jnp.array,
     negative_prompt_embeds: jnp.array,
     image_embeds: jnp.array,
+    prompt_mask: jnp.array,
+    negative_prompt_mask: jnp.array,
     guidance_scale: float,
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
@@ -305,10 +311,12 @@ def run_inference_2_1_i2v(
     prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
     image_embeds_combined = jnp.concatenate([image_embeds, image_embeds], axis=0)
     condition_combined = jnp.concatenate([condition] * 2)
+    prompt_mask_combined = jnp.concatenate([prompt_mask, negative_prompt_mask], axis=0)
   else:
     prompt_embeds_combined = prompt_embeds
     image_embeds_combined = image_embeds
     condition_combined = condition
+    prompt_mask_combined = prompt_mask
 
   transformer_obj = nnx.merge(graphdef, sharded_state, rest_of_state)
   
@@ -320,7 +328,7 @@ def run_inference_2_1_i2v(
   encoder_attention_mask = None
 
   if use_kv_cache:
-    kv_cache, encoder_attention_mask = transformer_obj.compute_kv_cache(prompt_embeds_combined, image_embeds_combined)
+    kv_cache, encoder_attention_mask = transformer_obj.compute_kv_cache(prompt_embeds_combined, image_embeds_combined, text_mask=prompt_mask_combined)
 
   for step in range(num_inference_steps):
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
@@ -355,6 +363,7 @@ def run_inference_2_1_i2v(
         kv_cache=kv_cache,
         rotary_emb=rotary_emb,
         encoder_attention_mask=encoder_attention_mask,
+        text_mask=prompt_mask_combined,
     )
     if use_magcache and do_cfg:
       noise_pred, _, residual_x_cur = outputs

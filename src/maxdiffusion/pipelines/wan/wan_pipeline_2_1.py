@@ -111,7 +111,7 @@ class WanPipeline2_1(WanPipeline):
           "CFG cache accelerates classifier-free guidance, which is disabled when guidance_scale <= 1.0."
       )
 
-    latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
+    latents, prompt_embeds, negative_prompt_embeds, prompt_mask, negative_prompt_mask, scheduler_state, num_frames = self._prepare_model_inputs(
         prompt,
         negative_prompt,
         height,
@@ -152,6 +152,8 @@ class WanPipeline2_1(WanPipeline):
           latents=latents,
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds,
+          prompt_mask=prompt_mask,
+          negative_prompt_mask=negative_prompt_mask,
       )
       latents = self._denormalize_latents(latents)
     return self._decode_latents_to_video(latents)
@@ -164,6 +166,8 @@ def run_inference_2_1(
     latents: jnp.array,
     prompt_embeds: jnp.array,
     negative_prompt_embeds: jnp.array,
+    prompt_mask: jnp.array,
+    negative_prompt_mask: jnp.array,
     guidance_scale: float,
     num_inference_steps: int,
     scheduler: FlaxUniPCMultistepScheduler,
@@ -216,8 +220,12 @@ def run_inference_2_1(
   # Pre-split embeds once, outside the loop.
   prompt_cond_embeds = prompt_embeds
   prompt_embeds_combined = None
+  prompt_mask_combined = None
   if do_cfg:
     prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+    prompt_mask_combined = jnp.concatenate([prompt_mask, negative_prompt_mask], axis=0)
+  else:
+    prompt_mask_combined = prompt_mask
 
   # Pre-compute cache schedule and phase-dependent weights.
   # t₀ = midpoint step; before t₀ boost low-freq, after boost high-freq.
@@ -257,7 +265,9 @@ def run_inference_2_1(
   encoder_attention_mask = None
 
   if use_kv_cache:
-    kv_cache, encoder_attention_mask = transformer_obj.compute_kv_cache(prompt_embeds_combined if do_cfg else prompt_cond_embeds)
+    kv_cache, encoder_attention_mask = transformer_obj.compute_kv_cache(prompt_embeds_combined if do_cfg else prompt_cond_embeds, text_mask=prompt_mask_combined)
+  else:
+    encoder_attention_mask = prompt_mask_combined
 
   if use_magcache and do_cfg:
     magcache_init = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base)
