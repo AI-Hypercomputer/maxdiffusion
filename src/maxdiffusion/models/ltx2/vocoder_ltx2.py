@@ -470,10 +470,10 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       print(f"After resnets level {i} - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
 
     hidden_states = self.act_out(hidden_states)
-    print(f"After act_out - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
+    jax.debug.print("After act_out - min: {min}, max: {max}", min=hidden_states.min(), max=hidden_states.max())
     print(f"conv_out kernel - min: {self.conv_out.kernel.value.min()}, max: {self.conv_out.kernel.value.max()}")
     hidden_states = self.conv_out(hidden_states)
-    print(f"After conv_out - shape: {hidden_states.shape}, min: {hidden_states.min()}, max: {hidden_states.max()}")
+    jax.debug.print("After conv_out - min: {min}, max: {max}", min=hidden_states.min(), max=hidden_states.max())
     
     if self.final_act_fn == "tanh":
       hidden_states = jnp.tanh(hidden_states)
