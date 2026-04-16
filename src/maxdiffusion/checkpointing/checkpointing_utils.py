@@ -17,11 +17,12 @@ limitations under the License.
 
 """Create an Orbax CheckpointManager with specified (Async or not) Checkpointer."""
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 import jax
 import numpy as np
 import os
 import orbax.checkpoint
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from maxdiffusion import max_logging
 from etils import epath
 from flax.training import train_state
@@ -58,10 +59,17 @@ def create_orbax_checkpoint_manager(
   max_logging.log(f"checkpoint dir: {checkpoint_dir}")
   p = epath.Path(checkpoint_dir)
 
+  item_handlers = None
   if checkpoint_type == FLUX_CHECKPOINT:
     item_names = ("flux_state", "flux_config", "vae_state", "vae_config", "scheduler", "scheduler_config")
   elif checkpoint_type == WAN_CHECKPOINT:
     item_names = ("low_noise_transformer_state", "high_noise_transformer_state", "wan_state", "wan_config")
+    item_handlers = {
+        "wan_config": ocp.JsonCheckpointHandler(),
+        "wan_state": ocp.StandardCheckpointHandler(),
+        "low_noise_transformer_state": ocp.StandardCheckpointHandler(),
+        "high_noise_transformer_state": ocp.StandardCheckpointHandler(),
+    }
   else:
     item_names = (
         "unet_config",
@@ -89,6 +97,7 @@ def create_orbax_checkpoint_manager(
       options=CheckpointManagerOptions(
           create=True, save_interval_steps=save_interval_steps, enable_async_checkpointing=use_async
       ),
+      item_handlers=item_handlers,
       logger=orbax_logger,
   )
 
@@ -255,3 +264,38 @@ def load_state_if_possible(
     except:
       max_logging.log(f"could not load {checkpoint_item} from orbax")
       return None
+
+
+def get_cpu_mesh_and_sharding() -> Tuple[Mesh, NamedSharding]:
+  """Creates a JAX mesh using CPU devices and a fully replicated sharding.
+
+  This is useful for checkpointing when the full model state needs to be
+  loaded onto a single device or when restoring on a different topology.
+
+  Returns:
+    A tuple containing the CPU mesh and the replicated NamedSharding.
+  """
+  cpu_devices = np.array(jax.devices(backend="cpu"))
+  mesh = Mesh(cpu_devices, axis_names=("data",))
+  replicated_sharding = NamedSharding(mesh, P())
+  return mesh, replicated_sharding
+
+
+def add_sharding_to_struct(leaf_struct: Any, sharding: jax.sharding.Sharding) -> Any:
+  """Manually constructs jax.ShapeDtypeStruct with a specific sharding.
+
+  This avoids device mesh validation (as in ocp.utils.to_shape_dtype_struct)
+  allowing for sharding with a different mesh than the one used during
+  saving.
+
+  Args:
+    leaf_struct: A leaf of a pytree.
+    sharding: The sharding to apply to the leaf.
+
+  Returns:
+    A jax.ShapeDtypeStruct if leaf_struct has shape and dtype attributes,
+    otherwise returns leaf_struct.
+  """
+  if hasattr(leaf_struct, "shape") and hasattr(leaf_struct, "dtype"):
+    return jax.ShapeDtypeStruct(shape=leaf_struct.shape, dtype=leaf_struct.dtype, sharding=sharding)
+  return leaf_struct

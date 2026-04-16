@@ -71,7 +71,7 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
-    mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
+    mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
     mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
@@ -101,7 +101,7 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
-    mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
+    mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
     mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
@@ -164,7 +164,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
-    mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
+    mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
     mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
@@ -197,7 +197,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
-    mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
+    mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
     mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
@@ -231,7 +231,7 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
-    mock_manager.restore.assert_called_once_with(directory=unittest.mock.ANY, step=1, args=unittest.mock.ANY)
+    mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
     mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
