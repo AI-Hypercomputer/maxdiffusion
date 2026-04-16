@@ -100,14 +100,13 @@ class DownSample1d(nnx.Module):
     self.use_padding = use_padding
     self.padding_mode = padding_mode
 
-    cutoff = 0.5 / ratio
-    half_width = 0.6 / ratio
-    low_pass_filter = kaiser_sinc_filter1d(cutoff, half_width, self.kernel_size)
-    print(f"DownSample1d filter - min: {low_pass_filter.min()}, max: {low_pass_filter.max()}")
-    self.filter = jnp.expand_dims(low_pass_filter, axis=(1, 2))
-
   def __call__(self, x: Array) -> Array:
     num_channels = x.shape[-1]
+    
+    cutoff = 0.5 / self.ratio
+    half_width = 0.6 / self.ratio
+    low_pass_filter = kaiser_sinc_filter1d(cutoff, half_width, self.kernel_size)
+    filter = jnp.expand_dims(low_pass_filter, axis=(1, 2))
     if self.use_padding:
       x = jnp.pad(x, ((0, 0), (self.pad_left, self.pad_right), (0, 0)), mode='edge')
       
@@ -137,6 +136,8 @@ class UpSample1d(nnx.Module):
     self.ratio = ratio
     self.padding_mode = padding_mode
 
+    self.window_type = window_type
+
     if window_type == "hann":
       rolloff = 0.99
       lowpass_filter_width = 6
@@ -145,30 +146,33 @@ class UpSample1d(nnx.Module):
       self.pad = width
       self.pad_left = 2 * width * ratio
       self.pad_right = self.kernel_size - ratio
-
-      time_axis = (jnp.arange(self.kernel_size) / ratio - width) * rolloff
-      time_clamped = jnp.clip(time_axis, -lowpass_filter_width, lowpass_filter_width)
-      window = jnp.cos(time_clamped * math.pi / lowpass_filter_width / 2) ** 2
-      sinc_filter = jnp.sinc(time_axis) * window * rolloff / ratio
-      self.filter = sinc_filter.reshape(-1, 1, 1)
     else:
       self.kernel_size = int(6 * ratio // 2) * 2 if kernel_size is None else kernel_size
       self.pad = self.kernel_size // ratio - 1
       self.pad_left = self.pad * self.ratio + (self.kernel_size - self.ratio) // 2
       self.pad_right = self.pad * self.ratio + (self.kernel_size - self.ratio + 1) // 2
 
-      sinc_filter = kaiser_sinc_filter1d(
-          cutoff=0.5 / ratio,
-          half_width=0.6 / ratio,
-          kernel_size=self.kernel_size,
-      )
-      print(f"UpSample1d filter - min: {sinc_filter.min()}, max: {sinc_filter.max()}")
-      self.filter = sinc_filter.reshape(-1, 1, 1)
-
   def __call__(self, x: Array) -> Array:
     num_channels = x.shape[-1]
     batch, length, channels = x.shape
     
+    if self.window_type == "hann":
+      rolloff = 0.99
+      lowpass_filter_width = 6
+      width = math.ceil(lowpass_filter_width / rolloff)
+      time_axis = (jnp.arange(self.kernel_size) / self.ratio - width) * rolloff
+      time_clamped = jnp.clip(time_axis, -lowpass_filter_width, lowpass_filter_width)
+      window = jnp.cos(time_clamped * math.pi / lowpass_filter_width / 2) ** 2
+      sinc_filter = jnp.sinc(time_axis) * window * rolloff / self.ratio
+      filter = sinc_filter.reshape(-1, 1, 1)
+    else:
+      sinc_filter = kaiser_sinc_filter1d(
+          cutoff=0.5 / self.ratio,
+          half_width=0.6 / self.ratio,
+          kernel_size=self.kernel_size,
+      )
+      filter = sinc_filter.reshape(-1, 1, 1)
+      
     # Interleave zeros (manual upsampling)
     x_expanded = jnp.zeros((batch, length * self.ratio, channels), dtype=x.dtype)
     x_expanded = x_expanded.at[:, ::self.ratio, :].set(x)
@@ -177,7 +181,7 @@ class UpSample1d(nnx.Module):
     pad_len = self.pad * self.ratio
     x_padded = jnp.pad(x_expanded, ((0, 0), (pad_len, pad_len), (0, 0)), mode='edge')
     
-    filter_expanded = jnp.repeat(self.filter, num_channels, axis=2)
+    filter_expanded = jnp.repeat(filter, num_channels, axis=2)
     filter_expanded = filter_expanded.astype(x.dtype)
     
     x_upsampled = jax.lax.conv_general_dilated(
