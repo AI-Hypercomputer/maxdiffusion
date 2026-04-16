@@ -152,16 +152,24 @@ class UpSample1d(nnx.Module):
     num_channels = x.shape[-1]
     batch, length, channels = x.shape
     
+    jax.debug.print("UpSample1d input - min: {min}, max: {max}", min=x.min(), max=x.max())
+    
     # Interleave zeros (manual upsampling)
     x_expanded = jnp.zeros((batch, length * self.ratio, channels), dtype=x.dtype)
     x_expanded = x_expanded.at[:, ::self.ratio, :].set(x)
+    
+    jax.debug.print("UpSample1d after interleave - min: {min}, max: {max}", min=x_expanded.min(), max=x_expanded.max())
     
     # Pad the expanded signal
     pad_len = self.pad * self.ratio
     x_padded = jnp.pad(x_expanded, ((0, 0), (pad_len, pad_len), (0, 0)), mode='edge')
     
+    jax.debug.print("UpSample1d after pad - min: {min}, max: {max}", min=x_padded.min(), max=x_padded.max())
+    
     filter_expanded = jnp.repeat(self.filter, num_channels, axis=2)
     filter_expanded = filter_expanded.astype(x.dtype)
+    
+    jax.debug.print("UpSample1d filter applied - min: {min}, max: {max}", min=filter_expanded.min(), max=filter_expanded.max())
     
     x_upsampled = jax.lax.conv_general_dilated(
         x_padded,
