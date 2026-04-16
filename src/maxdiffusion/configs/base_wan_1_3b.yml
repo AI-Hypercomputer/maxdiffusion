@@ -60,7 +60,7 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring
+attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring, ulysses
 flash_min_seq_length: 0
 
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
