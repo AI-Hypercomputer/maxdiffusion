@@ -193,11 +193,11 @@ class ApproximateGELU(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "mlp",
                 "embed",
+                "mlp",
             ),
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
     )
 
   def __call__(self, x: jax.Array) -> jax.Array:
@@ -249,8 +249,8 @@ class WanFeedForward(nnx.Module):
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
             (
-                "embed",
                 "mlp",
+                "embed",
             ),
         ),
     )
