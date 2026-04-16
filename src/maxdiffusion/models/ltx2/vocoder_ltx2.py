@@ -110,7 +110,7 @@ class DownSample1d(nnx.Module):
     if self.use_padding:
       x = jnp.pad(x, ((0, 0), (self.pad_left, self.pad_right), (0, 0)), mode='edge')
       
-    filter_expanded = jnp.repeat(self.filter, num_channels, axis=2)
+    filter_expanded = jnp.repeat(filter, num_channels, axis=2)
     filter_expanded = filter_expanded.astype(x.dtype)
     
     x_filtered = jax.lax.conv_general_dilated(
