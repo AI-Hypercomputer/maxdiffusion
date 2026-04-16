@@ -368,3 +368,8 @@ enable_generate_video_for_eval: False # This will increase the used TPU memory.
 eval_max_number_of_samples_in_bucket: 60 # The number of samples per bucket for evaluation. This is calculated by num_eval_samples / len(timesteps_list).
 
 enable_ssim: False
+
+# ML Diagnostics settings
+enable_ml_diagnostics: False
+profiler_gcs_path: ""
+enable_ondemand_xprof: False

@@ -67,6 +67,7 @@ class PromptDataset(Dataset):
 
 
 class DreamboothTrainer(BaseStableDiffusionTrainer):
+  _profiler: max_utils.Profiler | None = None
 
   def __init__(self, config):
     BaseStableDiffusionTrainer.__init__(self, config, STABLE_DIFFUSION_CHECKPOINT)
@@ -203,7 +204,7 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
     example_batch = None
 
     first_profiling_step = self.config.skip_first_n_steps_for_profiler
-    if self.config.enable_profiler and first_profiling_step >= self.config.max_train_steps:
+    if max_utils.profiler_enabled(self.config) and first_profiling_step >= self.config.max_train_steps:
       raise ValueError("Profiling requested but initial profiling step set past training final step")
     last_profiling_step = np.clip(
         first_profiling_step + self.config.profiler_steps - 1, first_profiling_step, self.config.max_train_steps - 1
@@ -227,9 +228,11 @@ class DreamboothTrainer(BaseStableDiffusionTrainer):
         train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
       last_step_completion = new_time
       if step == first_profiling_step:
-        max_utils.activate_profiler(self.config)
+        self._profiler = max_utils.Profiler(self.config)
+        self._profiler.start()
       if step == last_profiling_step:
-        max_utils.deactivate_profiler(self.config)
+        if self._profiler is not None:
+          self._profiler.stop()
 
       if step != 0 and self.config.checkpoint_every != -1 and samples_count % self.config.checkpoint_every == 0:
         train_states["unet_state"] = unet_state

@@ -79,6 +79,11 @@ ici_context_parallelism: -1 # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 enable_profiler: False
 
+# ML Diagnostics settings
+enable_ml_diagnostics: True
+profiler_gcs_path: "gs://mehdy/profiler/ml_diagnostics"
+enable_ondemand_xprof: True
+
 replicate_vae: False
 
 allow_split_physical_axes: False

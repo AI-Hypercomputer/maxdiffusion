@@ -21,6 +21,7 @@ from absl import app
 from maxdiffusion import (
     max_logging,
     pyconfig,
+    max_utils,
 )
 from maxdiffusion.train_utils import transformer_engine_context
 
@@ -38,6 +39,7 @@ def train(config):
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
   config = pyconfig.config
+  max_utils.ensure_machinelearning_job_runs(pyconfig.config)
   validate_train_config(config)
   max_logging.log(f"Found {jax.device_count()} devices.")
   train(config)
