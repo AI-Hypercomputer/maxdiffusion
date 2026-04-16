@@ -33,13 +33,24 @@ def kaiser_window(n: int, beta: float) -> Array:
   alpha = (n - 1) / 2.0
   time = jnp.arange(n)
   term = beta * jnp.sqrt(1 - ((time - alpha) / alpha) ** 2)
-  return jss.i0(term) / jss.i0(beta)
+  jax.debug.print("kaiser_window term - min: {min}, max: {max}", min=term.min(), max=term.max())
+  
+  i0_term = jss.i0(term)
+  i0_beta = jss.i0(beta)
+  jax.debug.print("kaiser_window i0_term - min: {min}, max: {max}", min=i0_term.min(), max=i0_term.max())
+  jax.debug.print("kaiser_window i0_beta: {val}", val=i0_beta)
+  
+  res = i0_term / i0_beta
+  return res
 
 def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int) -> Array:
   """Creates a Kaiser sinc kernel for low-pass filtering."""
   delta_f = 4 * half_width
   half_size = kernel_size // 2
   amplitude = 2.285 * (half_size - 1) * math.pi * delta_f + 7.95
+  
+  print(f"kaiser_sinc_filter1d amplitude: {amplitude}")
+  
   if amplitude > 50.0:
     beta = 0.1102 * (amplitude - 8.7)
   elif amplitude >= 21.0:
@@ -47,7 +58,10 @@ def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int) -> 
   else:
     beta = 0.0
 
+  print(f"kaiser_sinc_filter1d beta: {beta}")
+
   window = kaiser_window(kernel_size, beta)
+  jax.debug.print("kaiser_sinc_filter1d window - min: {min}, max: {max}", min=window.min(), max=window.max())
 
   even = kernel_size % 2 == 0
   time = jnp.arange(-half_size, half_size) + 0.5 if even else jnp.arange(kernel_size) - half_size
@@ -61,7 +75,10 @@ def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int) -> 
         jnp.ones_like(time),
         jnp.sin(math.pi * time) / math.pi / time,
     )
+    jax.debug.print("kaiser_sinc_filter1d sinc - min: {min}, max: {max}", min=sinc.min(), max=sinc.max())
+    
     filter = 2 * cutoff * window * sinc
+    jax.debug.print("kaiser_sinc_filter1d before norm - min: {min}, max: {max}, sum: {sum}", min=filter.min(), max=filter.max(), sum=filter.sum())
     filter = filter / filter.sum()
   return filter
 
@@ -152,24 +169,16 @@ class UpSample1d(nnx.Module):
     num_channels = x.shape[-1]
     batch, length, channels = x.shape
     
-    jax.debug.print("UpSample1d input - min: {min}, max: {max}", min=x.min(), max=x.max())
-    
     # Interleave zeros (manual upsampling)
     x_expanded = jnp.zeros((batch, length * self.ratio, channels), dtype=x.dtype)
     x_expanded = x_expanded.at[:, ::self.ratio, :].set(x)
-    
-    jax.debug.print("UpSample1d after interleave - min: {min}, max: {max}", min=x_expanded.min(), max=x_expanded.max())
     
     # Pad the expanded signal
     pad_len = self.pad * self.ratio
     x_padded = jnp.pad(x_expanded, ((0, 0), (pad_len, pad_len), (0, 0)), mode='edge')
     
-    jax.debug.print("UpSample1d after pad - min: {min}, max: {max}", min=x_padded.min(), max=x_padded.max())
-    
     filter_expanded = jnp.repeat(self.filter, num_channels, axis=2)
     filter_expanded = filter_expanded.astype(x.dtype)
-    
-    jax.debug.print("UpSample1d filter applied - min: {min}, max: {max}", min=filter_expanded.min(), max=filter_expanded.max())
     
     x_upsampled = jax.lax.conv_general_dilated(
         x_padded,
@@ -179,7 +188,6 @@ class UpSample1d(nnx.Module):
         dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
-    jax.debug.print("UpSample1d after conv - min: {min}, max: {max}", min=x_upsampled.min(), max=x_upsampled.max())
     
     x_upsampled = x_upsampled * self.ratio
     return x_upsampled[:, self.pad_left : -self.pad_right, :]
@@ -242,13 +250,9 @@ class AntiAliasAct1d(nnx.Module):
     self.downsample = DownSample1d(ratio=ratio, kernel_size=kernel_size)
 
   def __call__(self, x: Array) -> Array:
-    jax.debug.print("AntiAliasAct1d input - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.upsample(x)
-    jax.debug.print("AntiAliasAct1d after upsample - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.act(x)
-    jax.debug.print("AntiAliasAct1d after act - min: {min}, max: {max}", min=x.min(), max=x.max())
     x = self.downsample(x)
-    jax.debug.print("AntiAliasAct1d after downsample - min: {min}, max: {max}", min=x.min(), max=x.max())
     return x
 
 
