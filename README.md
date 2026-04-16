@@ -535,6 +535,12 @@ To generate images, run the following command:
 
   Supports both Text2Vid and Img2Vid pipelines.
 
+  **Note**: The product of per_device_batch_size and num_devices must be equal to a whole number.
+
+  The below command uses 4 devices and a per_device_batch_size=0.25. Thus, 4 * 0.25 = 1. This will generate a single video. Setting per_device_batch_size to 0.5, will generate 2 videos and so on.
+
+  If using 8 devices, then per_device_batch_size=0.125 will generate 1 video, per_device_batch_size=0.25 generates 2 videos.
+
   The following command will run Wan2.1 T2V:
 
   ```bash
@@ -553,7 +559,7 @@ To generate images, run the following command:
   width=1280 \
   height=720 \
   jax_cache_dir=gs://jfacevedo-maxdiffusion/jax_cache/ \
-  per_device_batch_size=.125 \
+  per_device_batch_size=.0.25 \
   ici_data_parallelism=2 \
   ici_context_parallelism=2 \
   flow_shift=5.0 \
