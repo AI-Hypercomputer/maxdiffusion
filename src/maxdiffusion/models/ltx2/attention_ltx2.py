@@ -358,7 +358,7 @@ class LTX2Attention(nnx.Module):
 
     # 1. Define Partitioned Initializers (Logical Axes)
     # Q, K, V kernels: [in_features (embed), out_features (heads)]
-    qkv_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads"))
+    qkv_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), (None, "heads"))
     # Q, K, V biases: [out_features (heads)]
     qkv_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("heads",))
 
