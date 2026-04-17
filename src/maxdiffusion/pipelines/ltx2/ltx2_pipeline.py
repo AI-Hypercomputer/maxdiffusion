@@ -1365,7 +1365,7 @@ class LTX2Pipeline:
           batch_size,
           self.transformer.scan_layers,
           self.scheduler.step,
-          tuple(self.config.logical_axis_rules),
+          tuple(tuple(rule) if isinstance(rule, list) else rule for rule in self.config.logical_axis_rules),
       )
 
     # 8. Decode Latents
