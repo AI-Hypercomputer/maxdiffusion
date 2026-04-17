@@ -1577,10 +1577,9 @@ def run_diffusion_loop(
     scheduler_step,
     logical_axis_rules,
 ):
-    transformer = nnx.merge(graphdef, state)
-
     def scan_body(carry, t):
         latents, audio_latents, s_state = carry
+        transformer = nnx.merge(graphdef, state)
 
         with nn_partitioning.axis_rules(logical_axis_rules):
             latents_sharded = latents
