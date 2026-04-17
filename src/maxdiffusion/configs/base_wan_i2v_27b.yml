@@ -164,6 +164,19 @@ logical_axis_rules: [
                       ['out_channels', 'tensor'],
                       ['conv_out', 'context'],
                     ]
+vae_logical_axis_rules: [
+                          ['activation_batch', 'redundant'],
+                          ['activation_length', 'vae_spatial'],
+                          ['activation_heads', null],
+                          ['activation_kv_length', null],
+                          ['embed', null],
+                          ['heads', null],
+                          ['norm', null],
+                          ['conv_batch', 'redundant'],
+                          ['out_channels', 'vae_spatial'],
+                          ['conv_out', 'vae_spatial'],
+                          ['conv_in', 'vae_spatial'],
+                        ]
 data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 
 # One axis for each parallelism type may hold a placeholder (-1)

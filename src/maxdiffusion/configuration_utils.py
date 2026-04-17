@@ -394,7 +394,7 @@ class ConfigMixin:
             proxies=proxies,
             resume_download=resume_download,
             local_files_only=local_files_only,
-            use_auth_token=use_auth_token,
+            token=use_auth_token,
             user_agent=user_agent,
             subfolder=subfolder,
             revision=revision,
