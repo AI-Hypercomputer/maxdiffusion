@@ -16,9 +16,8 @@ limitations under the License.
 import json
 from typing import Optional, Tuple
 import jax
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from maxdiffusion.checkpointing.checkpointing_utils import add_sharding_to_struct, get_cpu_mesh_and_sharding
 from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
-import numpy as np
 import orbax.checkpoint as ocp
 from .. import max_logging
 from ..pipelines.wan.wan_vace_pipeline_2_1 import VaceWanPipeline2_1
@@ -35,18 +34,9 @@ class WanVaceCheckpointer2_1(WanCheckpointer):
         return None, None
     max_logging.log(f"Loading WAN checkpoint from step {step}")
 
-    cpu_devices = np.array(jax.devices(backend="cpu"))
-    mesh = Mesh(cpu_devices, axis_names=("data",))
-    replicated_sharding = NamedSharding(mesh, P())
-
+    mesh, replicated_sharding = get_cpu_mesh_and_sharding()
     metadatas = self.checkpoint_manager.item_metadata(step)
     state = metadatas.wan_state
-
-    def add_sharding_to_struct(leaf_struct, sharding):
-      struct = ocp.utils.to_shape_dtype_struct(leaf_struct)
-      if hasattr(struct, "shape") and hasattr(struct, "dtype"):
-        return jax.ShapeDtypeStruct(shape=struct.shape, dtype=struct.dtype, sharding=sharding)
-      return struct
 
     target_shardings = jax.tree_util.tree_map(lambda x: replicated_sharding, state)
 

@@ -16,11 +16,9 @@ limitations under the License.
 
 import json
 from typing import Optional, Tuple
-from etils import epath
 import jax
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from maxdiffusion.checkpointing.checkpointing_utils import add_sharding_to_struct, get_cpu_mesh_and_sharding
 from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
-import numpy as np
 import orbax.checkpoint as ocp
 from .. import max_logging
 from ..pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
@@ -37,38 +35,21 @@ class WanCheckpointer2_1(WanCheckpointer):
         return None, None
     max_logging.log(f"Loading WAN checkpoint from step {step}")
 
-    cpu_devices = np.array(jax.devices(backend="cpu"))
-    mesh = Mesh(cpu_devices, axis_names=("data",))
-    replicated_sharding = NamedSharding(mesh, P())
-
+    mesh, replicated_sharding = get_cpu_mesh_and_sharding()
     metadatas = self.checkpoint_manager.item_metadata(step)
     state = metadatas.wan_state
-
-    def add_sharding_to_struct(leaf_struct, sharding):
-      struct = ocp.utils.to_shape_dtype_struct(leaf_struct)
-      if hasattr(struct, "shape") and hasattr(struct, "dtype"):
-        return jax.ShapeDtypeStruct(shape=struct.shape, dtype=struct.dtype, sharding=sharding)
-      return struct
 
     target_shardings = jax.tree_util.tree_map(lambda x: replicated_sharding, state)
 
     with mesh:
       abstract_train_state_with_sharding = jax.tree_util.tree_map(add_sharding_to_struct, state, target_shardings)
 
-    params_restore = ocp.args.PyTreeRestore(
-        restore_args=jax.tree.map(
-            lambda _: ocp.RestoreArgs(restore_type=jax.Array),
-            abstract_train_state_with_sharding,
-        )
-    )
-
     max_logging.log("Restoring WAN checkpoint")
     restored_checkpoint = self.checkpoint_manager.restore(
-        directory=epath.Path(self.config.checkpoint_dir),
         step=step,
         args=ocp.args.Composite(
-            wan_state=params_restore,
             wan_config=ocp.args.JsonRestore(),
+            wan_state=ocp.args.StandardRestore(abstract_train_state_with_sharding),
         ),
     )
     max_logging.log(f"restored checkpoint {restored_checkpoint.keys()}")
@@ -106,7 +87,7 @@ class WanCheckpointer2_1(WanCheckpointer):
         "wan_config": ocp.args.JsonSave(config_to_json(pipeline.transformer)),
     }
 
-    items["wan_state"] = ocp.args.PyTreeSave(train_states)
+    items["wan_state"] = ocp.args.StandardSave(train_states)
 
     # Save the checkpoint
     self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))
