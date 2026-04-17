@@ -30,7 +30,7 @@ from chex import Array
 from flax.linen import partitioning as nn_partitioning
 from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
 
-from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging
+from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging, max_utils
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
 from maxdiffusion.max_utils import (
     device_put_replicated,
@@ -571,6 +571,7 @@ def run(config):
 
 def main(argv: Sequence[str]) -> None:
   pyconfig.initialize(argv)
+  max_utils.ensure_machinelearning_job_runs(pyconfig.config)
   run(pyconfig.config)
 
 

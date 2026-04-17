@@ -181,3 +181,6 @@ wandb
 # Gemini CLI
 .gemini/
 gha-creds-*.json
+
+# JAX cache
+.jax_cache/

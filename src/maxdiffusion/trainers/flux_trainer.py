@@ -49,6 +49,7 @@ from ..schedulers import (FlaxEulerDiscreteScheduler)
 
 
 class FluxTrainer(FluxCheckpointer):
+  _profiler: max_utils.Profiler | None = None
 
   def __init__(self, config):
     FluxCheckpointer.__init__(self, config, FLUX_CHECKPOINT)
@@ -345,7 +346,7 @@ class FluxTrainer(FluxCheckpointer):
     example_batch = None
 
     first_profiling_step = self.config.skip_first_n_steps_for_profiler
-    if self.config.enable_profiler and first_profiling_step >= self.config.max_train_steps:
+    if max_utils.profiler_enabled(self.config) and first_profiling_step >= self.config.max_train_steps:
       raise ValueError("Profiling requested but initial profiling step set past training final step")
     last_profiling_step = np.clip(
         first_profiling_step + self.config.profiler_steps - 1, first_profiling_step, self.config.max_train_steps - 1
@@ -354,8 +355,9 @@ class FluxTrainer(FluxCheckpointer):
     _, train_rngs = jax.random.split(self.rng)
     times = []
     for step in np.arange(start_step, self.config.max_train_steps):
-      if self.config.enable_profiler and step == first_profiling_step:
-        max_utils.activate_profiler(self.config)
+      if max_utils.profiler_enabled(self.config) and step == first_profiling_step:
+        self._profiler = max_utils.Profiler(self.config)
+        self._profiler.start()
 
       example_batch = load_next_batch(data_iterator, example_batch, self.config)
       example_batch = {key: jnp.asarray(value, dtype=self.config.activations_dtype) for key, value in example_batch.items()}
@@ -384,8 +386,9 @@ class FluxTrainer(FluxCheckpointer):
         train_states[FLUX_STATE_KEY] = flux_state
         self.save_checkpoint(step, pipeline, train_states)
 
-      if self.config.enable_profiler and step == last_profiling_step:
-        max_utils.deactivate_profiler(self.config)
+      if max_utils.profiler_enabled(self.config) and step == last_profiling_step:
+        if self._profiler is not None:
+          self._profiler.stop()
 
     train_states[FLUX_STATE_KEY] = flux_state
     if len(times) > 0:

@@ -190,6 +190,49 @@ def _pad_data_for_flash(tensor, heads, flash_block_size, num_shards: int = 1):
   return tensor, kv_size, seq_len
 
 
+def _flash_sequence_length(tensor: Array) -> int:
+  if tensor.ndim == 3:
+    return tensor.shape[1]
+  if tensor.ndim == 4:
+    return tensor.shape[2]
+  raise ValueError(f"Flash attention expects rank-3 or rank-4 inputs, got rank {tensor.ndim}.")
+
+
+def _select_flash_block_sizes(
+    query: Array,
+    key: Array,
+    flash_block_sizes: BlockSizes,
+    dtype: jnp.dtype,
+    attention_kernel: str,
+) -> BlockSizes:
+  query_seq_len = _flash_sequence_length(query)
+  key_seq_len = _flash_sequence_length(key)
+
+  q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
+  if key_seq_len != query_seq_len:
+    kv_max_block_size = ((key_seq_len + 127) // 128) * 128
+  else:
+    kv_max_block_size = q_max_block_size
+
+  # Keep configured block sizes for self-attention, but let
+  # cross-attention derive safe KV-aware sizes when q_len != kv_len.
+  if flash_block_sizes and key_seq_len == query_seq_len:
+    return flash_block_sizes
+
+  block_size_q = flash_block_sizes.block_q if flash_block_sizes else q_max_block_size
+  return splash_attention_kernel.BlockSizes(
+      block_q=block_size_q,
+      block_kv_compute=min(kv_max_block_size, key_seq_len),
+      block_kv=min(kv_max_block_size, key_seq_len),
+      block_q_dkv=block_size_q,
+      block_kv_dkv=min(kv_max_block_size, key_seq_len),
+      block_kv_dkv_compute=min(kv_max_block_size, query_seq_len),
+      block_q_dq=None if attention_kernel == "tokamax_flash" else block_size_q,
+      block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query_seq_len),
+      use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
+  )
+
+
 def convert_to_tokamax_splash_config(
     block_sizes: BlockSizes,
     q_layout: tokamax_splash_attention_kernel.QKVLayout = tokamax_splash_attention_kernel.QKVLayout.HEAD_DIM_MINOR,
@@ -244,28 +287,7 @@ def _tpu_flash_attention(
 ) -> jax.Array:
   """TPU Flash Attention"""
 
-  q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
-  # This is the case for cross-attn.
-  if key.shape[1] != query.shape[1]:
-    kv_max_block_size = ((key.shape[1] + 127) // 128) * 128
-  else:
-    kv_max_block_size = q_max_block_size
-  # ensure that for cross attention we override the block sizes.
-  if flash_block_sizes and key.shape[1] == query.shape[1]:
-    block_sizes = flash_block_sizes
-  else:
-    block_size_q = flash_block_sizes.block_q if flash_block_sizes else q_max_block_size
-    block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=block_size_q,
-        block_kv_compute=min(kv_max_block_size, key.shape[2]),
-        block_kv=min(kv_max_block_size, key.shape[2]),
-        block_q_dkv=block_size_q,
-        block_kv_dkv=min(kv_max_block_size, key.shape[2]),
-        block_kv_dkv_compute=min(kv_max_block_size, query.shape[2]),
-        block_q_dq=None if attention_kernel == "tokamax_flash" else block_size_q,
-        block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query.shape[2]),
-        use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
-    )
+  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, attention_kernel)
   num_context_shards = mesh.shape["context"]
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
@@ -421,6 +443,144 @@ def _tpu_flash_attention(
   return x
 
 
+# ---------------------------------------------------------------------------
+# Ulysses sequence-parallel attention
+# ---------------------------------------------------------------------------
+
+
+def _ulysses_attention(
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    heads: int,
+    mesh: Mesh,
+    axis_names_q: AxisNames,
+    axis_names_kv: AxisNames,
+    flash_block_sizes: BlockSizes,
+    dtype: jnp.dtype = jnp.float32,
+    mask_padding_tokens: bool = True,
+    residual_checkpoint_name: str | None = None,
+    attention_mask: jax.Array = None,
+) -> jax.Array:
+  """Ulysses sequence-parallel attention.
+
+  Tensors arrive sequence-sharded on the context axis.  Inside a shard_map the
+  all-to-all collectives trade sequence shards for head shards, run local
+  splash attention on the full sequence with a subset of heads, then all-to-all
+  back.
+  """
+  axis_name = "context"
+  num_shards = mesh.shape[axis_name]
+
+  # Reshape to [b, h, s, d] and pad sequence for even context-axis splitting.
+  query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_shards)
+  key, _ = _reshape_data_for_flash(key, heads, num_shards)
+  value, _ = _reshape_data_for_flash(value, heads, num_shards)
+  num_heads = query.shape[1]
+  # Ulysses only redistributes existing heads across the context mesh; unlike
+  # the earlier draft, we fail fast instead of padding synthetic heads.
+  if num_heads % num_shards != 0:
+    raise ValueError(
+        "Ulysses attention requires the number of heads to be divisible by the context shard count, "
+        f"got heads={num_heads} and context_shards={num_shards}."
+    )
+  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, "flash")
+
+  q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
+  kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+
+  @functools.partial(
+      jax.shard_map,
+      mesh=mesh,
+      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
+      out_specs=q_axis_names,
+      check_vma=False,
+  )
+  def wrap_ulysses_attention(query, key, value):
+    # Swap sharding modes: each device gives up a slice of sequence and gathers
+    # a slice of heads, so the local splash kernel sees the full sequence.
+    query = jax.lax.all_to_all(query, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+    key = jax.lax.all_to_all(key, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+    value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+
+    # Run the same local splash kernel as standard TPU flash attention, but now
+    # on full-sequence / fewer-heads tensors produced by the all-to-all above.
+    uses_fused_kernel = block_sizes.use_fused_bwd_kernel
+    block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv)
+    block_kv_sizes = (block_sizes.block_kv, block_sizes.block_kv_dkv)
+    if uses_fused_kernel:
+      block_q_sizes += (block_sizes.block_q_dkv,)
+      block_kv_sizes += (block_sizes.block_kv_dkv,)
+    else:
+      block_q_sizes += (block_sizes.block_q_dq,)
+      block_kv_sizes += (block_sizes.block_kv_dq,)
+
+    block_q = max(*block_q_sizes)
+    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_q)
+    block_kv = max(*block_kv_sizes)
+    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
+    value, _, _ = _pad_data_for_flash(value, heads, block_kv)
+
+    mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
+    multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+
+    q_padded_len = query.shape[2]
+    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
+    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
+
+    kv_padded_len = key.shape[2]
+    kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
+    kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+
+    # Reuse the standard flash-attention masking convention by zeroing invalid
+    # KV positions in the segment ids passed down to splash.
+    if attention_mask is not None:
+      mask_len = min(key_seq_len, attention_mask.shape[1])
+      kv_mask_for_batch = attention_mask[0, :mask_len]
+      if key_seq_len > mask_len:
+        extra_valid = jnp.ones((key_seq_len - mask_len,), dtype=jnp.int32)
+        kv_mask_for_batch = jnp.concatenate([kv_mask_for_batch, extra_valid], axis=0)
+      if kv_padded_len > key_seq_len:
+        padding = jnp.zeros((kv_padded_len - key_seq_len,), dtype=jnp.int32)
+        kv_mask_padded = jnp.concatenate([kv_mask_for_batch, padding], axis=0)
+      else:
+        kv_mask_padded = kv_mask_for_batch
+      kv_segment_ids = (kv_segment_ids * kv_mask_padded).astype(jnp.int32)
+
+    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
+    if not mask_padding_tokens:
+      segment_ids = None
+
+    splash_kernel = splash_attention_kernel.make_splash_mha(
+        mask=multi_head_mask,
+        head_shards=1,
+        q_seq_shards=1,
+        block_sizes=block_sizes,
+        save_residuals=False,
+        residual_checkpoint_name=residual_checkpoint_name,
+    )
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
+    attention_output = vmapped_splash(query, key, value, segment_ids)
+    attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
+
+    # Restore the original layout expected by the rest of the model:
+    # head-sharded / full-sequence -> sequence-sharded / full-heads.
+    attention_output = jax.lax.all_to_all(attention_output, axis_name=axis_name, split_axis=2, concat_axis=1, tiled=True)
+    return attention_output
+
+  devices_in_data_context = mesh.shape["data"] * num_shards
+  if not (query.shape[0] / devices_in_data_context).is_integer():
+    max_logging.log(
+        "Warning, batch dimension should be shardable among the devices in data and context"
+        f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
+    )
+  x = wrap_ulysses_attention(query, key, value)
+  x = x[:, :, :orig_q_seq_len, :]
+  x = _reshape_heads_to_head_dim(x)
+
+  return x
+
+
 def _apply_attention_dot(
     query: Array,
     key: Array,
@@ -541,7 +701,7 @@ def _apply_attention(
   seq_len_idx = 1
   if query.ndim == 4:
     seq_len_idx = 2
-  if attention_kernel in ["flash", "tokamax_flash"]:
+  if attention_kernel in ["flash", "tokamax_flash", "ulysses"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -552,6 +712,21 @@ def _apply_attention(
   if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
     return _apply_attention_dot(
         query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
+    )
+  elif attention_kernel == "ulysses":
+    return _ulysses_attention(
+        query,
+        key * scale,
+        value,
+        heads,
+        mesh,
+        axis_names_q,
+        axis_names_kv,
+        flash_block_sizes,
+        dtype,
+        mask_padding_tokens=mask_padding_tokens,
+        residual_checkpoint_name=residual_checkpoint_name,
+        attention_mask=attention_mask,
     )
   elif attention_kernel in ["flash", "tokamax_flash"]:
     return _tpu_flash_attention(
@@ -979,7 +1154,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("embed",),
+            ("heads",),
         ),
     )
 
@@ -993,7 +1168,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("embed",),
+            ("heads",),
         ),
     )
 
@@ -1007,7 +1182,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("embed",),
+            ("heads",),
         ),
     )
 
@@ -1021,7 +1196,7 @@ class FlaxWanAttention(nnx.Module):
         precision=precision,
         bias_init=nnx.with_partitioning(
             nnx.initializers.zeros,
-            ("heads",),
+            ("embed",),
         ),
     )
 
@@ -1333,11 +1508,13 @@ class FlaxFluxAttention(nn.Module):
         precision=self.precision,
     )
 
+    proj_attn_kernel_axes = ("heads", "embed")
+
     self.proj_attn = nn.Dense(
         self.query_dim,
-        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes),
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), proj_attn_kernel_axes),
         use_bias=True,
-        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("embed",)),
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         name="i_proj",
@@ -1346,9 +1523,9 @@ class FlaxFluxAttention(nn.Module):
 
     self.encoder_proj_attn = nn.Dense(
         self.query_dim,
-        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), kernel_axes),
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), proj_attn_kernel_axes),
         use_bias=True,
-        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("heads",)),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("embed",)),
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         name="e_proj",

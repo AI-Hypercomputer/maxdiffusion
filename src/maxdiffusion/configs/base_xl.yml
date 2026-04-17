@@ -205,6 +205,9 @@ adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradient
 adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradients.
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 1.e-2 # AdamW Weight decay
+opt_enable_grad_clipping: False
+max_grad_value: 1.0
+opt_enable_grad_global_norm_clipping: False
 max_grad_norm: 1.0
 
 enable_profiler: False
@@ -261,3 +264,8 @@ quantization: ''
 quantization_local_shard_count: -1
 use_qwix_quantization: False 
 compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
+
+# ML Diagnostics settings
+enable_ml_diagnostics: False
+profiler_gcs_path: ""
+enable_ondemand_xprof: False

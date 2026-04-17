@@ -303,10 +303,9 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   )
 
   s0 = time.perf_counter()
-  if config.enable_profiler:
-    max_utils.activate_profiler(config)
-    videos = call_pipeline(config, pipeline, prompt, negative_prompt)
-    max_utils.deactivate_profiler(config)
+  if max_utils.profiler_enabled(config):
+    with max_utils.Profiler(config):
+      videos = call_pipeline(config, pipeline, prompt, negative_prompt)
     generation_time_with_profiler = time.perf_counter() - s0
     max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
     if writer and jax.process_index() == 0:
@@ -322,6 +321,7 @@ def main(argv: Sequence[str]) -> None:
     flax.config.update("flax_always_shard_variable", False)
   except LookupError:
     pass
+  max_utils.ensure_machinelearning_job_runs(pyconfig.config)
   run(pyconfig.config, commit_hash=commit_hash)
 
 

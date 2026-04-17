@@ -24,6 +24,8 @@ from typing import Dict, Callable
 import json
 import yaml
 import os
+import typing
+import logging
 from pathlib import Path
 import subprocess
 import numpy as np
@@ -35,7 +37,6 @@ import optax
 from maxdiffusion import max_logging
 from maxdiffusion.checkpointing import checkpointing_utils
 from maxdiffusion.models.attention_flax import AttentionOp
-from flax import linen as nn
 import flax.linen as nn
 import flax.linen.module as module_lib
 from flax.linen.summary import _process_inputs
@@ -58,11 +59,18 @@ from typing import (
 from flax import core
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
+try:
+  from google_cloud_mldiagnostics import machinelearning_run, xprof
+except ImportError:
+  machinelearning_run = None
+  xprof = None
+
 from tensorboardX import writer
 
 from google.cloud import storage
 
 FrozenDict = core.frozen_dict.FrozenDict
+_ml_run = None
 
 
 class InferenceState(struct.PyTreeNode):
@@ -71,19 +79,82 @@ class InferenceState(struct.PyTreeNode):
   params: FrozenDict[str, Any] | None = struct.field(pytree_node=True)
 
 
+def _jax_profiler_enabled(config):
+  return "enable_profiler" in config.get_keys() and config.enable_profiler and jax.process_index() == 0
+
+
+def _ml_diagnostics_profiler_enabled(config):
+  return "enable_ml_diagnostics" in config.get_keys() and config.enable_ml_diagnostics and jax.process_index() == 0
+
+
+def profiler_enabled(config):
+  return _jax_profiler_enabled(config) or _ml_diagnostics_profiler_enabled(config)
+
+
+def ensure_machinelearning_job_runs(config):
+  """Ensures that a MachineLearningJobRun is active, and if not creates one."""
+  global _ml_run
+
+  if _ml_run is not None or not _ml_diagnostics_profiler_enabled(config) or machinelearning_run is None:
+    return
+
+  logging.getLogger("google_cloud_mldiagnostics").setLevel(logging.WARNING)
+
+  _ml_run = machinelearning_run(
+      name=config.run_name,
+      gcs_path=config.profiler_gcs_path,
+      configs=config.get_keys(),
+      on_demand_xprof=config.enable_ondemand_xprof,
+  )
+
+
 def l2norm_pytree(x):
   """L2 norm of a pytree of arrays."""
   return jax.tree_util.tree_reduce(lambda x, y: x + jax.numpy.sum(y**2), x, initializer=0.0) ** 0.5
 
 
-def activate_profiler(config):
-  if jax.process_index() == 0 and config.enable_profiler:
-    jax.profiler.start_trace(config.tensorboard_dir)
+class Profiler:
+  mld_xprof: typing.Any = None
 
+  def __init__(self, config, session_name=None):
+    self.config = config
+    self.session_name = session_name
 
-def deactivate_profiler(config):
-  if jax.process_index() == 0 and config.enable_profiler:
-    jax.profiler.stop_trace()
+  def start(self):
+    if _jax_profiler_enabled(self.config) and _ml_diagnostics_profiler_enabled(self.config):
+      max_logging.log(
+          "Warning: Both ML Diagnostics profiler and JAX profiler are enabled. "
+          "This may cause increased overhead and duplicate profiling data. It "
+          "is recommended to enable only one profiler at a time for accurate "
+          "performance analysis."
+      )
+
+    if _ml_diagnostics_profiler_enabled(self.config) and xprof is not None:
+      ensure_machinelearning_job_runs(self.config)
+      self.mld_xprof = xprof()
+      self.mld_xprof.start(self.session_name)
+
+    if _jax_profiler_enabled(self.config):
+      log_dir = self.config.tensorboard_dir
+      if self.session_name:
+        log_dir = os.path.join(log_dir, self.session_name)
+      jax.profiler.start_trace(log_dir)
+
+  def stop(self):
+    if _ml_diagnostics_profiler_enabled(self.config) and xprof is not None:
+      ensure_machinelearning_job_runs(self.config)
+      if self.mld_xprof is not None:
+        self.mld_xprof.stop()
+
+    if _jax_profiler_enabled(self.config):
+      jax.profiler.stop_trace()
+
+  def __enter__(self):
+    self.start()
+    return self
+
+  def __exit__(self, exc_type, exc_val, exc_tb):
+    self.stop()
 
 
 def initialize_summary_writer(config):
@@ -483,13 +554,19 @@ def create_learning_rate_schedule(learning_rate, learning_rate_schedule_steps, w
 
 
 def create_optimizer(config, learning_rate_scheduler):
-  return optax.adamw(
+  opt = optax.adamw(
       learning_rate=learning_rate_scheduler,
       b1=config.adam_b1,
       b2=config.adam_b2,
       eps=config.adam_eps,
       weight_decay=config.adam_weight_decay,
   )
+  if config.opt_enable_grad_global_norm_clipping:
+    opt = optax.chain(optax.clip_by_global_norm(config.max_grad_norm), opt)
+
+  if config.opt_enable_grad_clipping:
+    opt = optax.chain(optax.clip(config.max_grad_value), opt)
+  return opt
 
 
 def get_precision(config):

@@ -60,7 +60,7 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring
+attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring, ulysses
 flash_min_seq_length: 4096
 dropout: 0.0
 
@@ -264,6 +264,9 @@ adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradient
 adam_b2: 0.999 # Exponential decay rate to track the second moment of past gradients.
 adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
 adam_weight_decay: 0.0 # AdamW Weight decay
+opt_enable_grad_clipping: False
+max_grad_value: 1.0
+opt_enable_grad_global_norm_clipping: False
 max_grad_norm: 1.0
 
 enable_profiler: False
@@ -365,3 +368,8 @@ enable_ssim: False
 # I2V Input Image
 # URL or local path to the conditioning image
 image_url: "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/astronaut.jpg"
+
+# ML Diagnostics settings
+enable_ml_diagnostics: False
+profiler_gcs_path: ""
+enable_ondemand_xprof: False
