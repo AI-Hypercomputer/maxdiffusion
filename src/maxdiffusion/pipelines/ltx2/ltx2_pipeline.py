@@ -1577,9 +1577,10 @@ def run_diffusion_loop(
     scheduler_step,
     logical_axis_rules,
 ):
-    def scan_body(carry, t):
+    transformer = nnx.merge(graphdef, state)
+
+    def scan_body(carry, t, model):
         latents, audio_latents, s_state = carry
-        transformer = nnx.merge(graphdef, state)
 
         with nn_partitioning.axis_rules(logical_axis_rules):
             latents_sharded = latents
@@ -1599,7 +1600,7 @@ def run_diffusion_loop(
             # Expand timestep to batch size
             t_expanded = jnp.expand_dims(t, 0).repeat(latents.shape[0])
 
-            noise_pred, noise_pred_audio = transformer(
+            noise_pred, noise_pred_audio = model(
                 hidden_states=latents_sharded,
                 encoder_hidden_states=video_embeds_sharded,
                 timestep=t_expanded,
@@ -1660,8 +1661,8 @@ def run_diffusion_loop(
     # Run scan
     final_carry, _ = nnx.scan(
         scan_body,
-        in_axes=(nnx.Carry, 0),
+        in_axes=(nnx.Carry, 0, None),
         out_axes=(nnx.Carry, 0),
-    )(initial_carry, timesteps_jax)
+    )(initial_carry, timesteps_jax, transformer)
 
     return final_carry[0], final_carry[1]
