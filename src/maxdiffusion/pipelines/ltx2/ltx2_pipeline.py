@@ -1641,9 +1641,12 @@ def run_diffusion_loop(
             latents_step, _ = scheduler_step(
                 s_state, noise_pred, t, latents_step, return_dict=False
             )
+            latents_step = latents_step.astype(latents.dtype)
+
             audio_latents_step, _ = scheduler_step(
                 s_state, noise_pred_audio, t, audio_latents_step, return_dict=False
             )
+            audio_latents_step = audio_latents_step.astype(audio_latents.dtype)
 
             if guidance_scale > 1.0:
                 latents_next = jnp.concatenate([latents_step] * 2, axis=0)
