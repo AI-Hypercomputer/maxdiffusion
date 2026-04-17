@@ -832,14 +832,43 @@ class LTX2Pipeline:
       batch_size = prompt_embeds.shape[0]
 
     if prompt_embeds is None:
-      prompt_embeds, prompt_attention_mask = self._get_gemma_prompt_embeds(
-          prompt=prompt,
-          num_videos_per_prompt=num_videos_per_prompt,
-          max_sequence_length=max_sequence_length,
-          scale_factor=scale_factor,
-          dtype=dtype,
-      )
-
+      if do_classifier_free_guidance and negative_prompt_embeds is None:
+        negative_prompt = negative_prompt or ""
+        negative_prompt = [negative_prompt] * batch_size if isinstance(negative_prompt, str) else negative_prompt
+        
+        if isinstance(prompt, str):
+          prompt = [prompt]
+          
+        combined_prompts = prompt + negative_prompt
+        
+        combined_embeds, combined_mask = self._get_gemma_prompt_embeds(
+            prompt=combined_prompts,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=max_sequence_length,
+            scale_factor=scale_factor,
+            dtype=dtype,
+        )
+        
+        split_idx = batch_size * num_videos_per_prompt
+        
+        if isinstance(combined_embeds, list):
+          prompt_embeds = [state[:split_idx] for state in combined_embeds]
+          negative_prompt_embeds = [state[split_idx:] for state in combined_embeds]
+        else:
+          prompt_embeds = combined_embeds[:split_idx]
+          negative_prompt_embeds = combined_embeds[split_idx:]
+          
+        prompt_attention_mask = combined_mask[:split_idx]
+        negative_prompt_attention_mask = combined_mask[split_idx:]
+      else:
+        prompt_embeds, prompt_attention_mask = self._get_gemma_prompt_embeds(
+            prompt=prompt,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=max_sequence_length,
+            scale_factor=scale_factor,
+            dtype=dtype,
+        )
+        
     if do_classifier_free_guidance and negative_prompt_embeds is None:
       negative_prompt = negative_prompt or ""
       negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
