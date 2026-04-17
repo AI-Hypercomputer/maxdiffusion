@@ -377,9 +377,24 @@ class WanTransformerBlock(nnx.Module):
       encoder_attention_mask: Optional[jax.Array] = None,
   ):
     with self.conditional_named_scope("transformer_block"):
-      shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
-          (self.adaln_scale_shift_table + temb.astype(jnp.float32)), 6, axis=1
-      )
+      # Support both global [B, 6, dim] and per-token [B, seq_len, 6, dim] temb.
+      # Per-token temb is used by TI2V where first-frame tokens have timestep=0.
+      if temb.ndim == 4:  # Per-token: [B, seq_len, 6, dim]
+        adaln = jnp.expand_dims(self.adaln_scale_shift_table, 0)  # [1, 1, 6, dim]
+        combined = adaln + temb.astype(jnp.float32)  # [B, seq_len, 6, dim]
+        parts = jnp.split(combined, 6, axis=2)
+        shift_msa = parts[0].squeeze(2)
+        scale_msa = parts[1].squeeze(2)
+        gate_msa = parts[2].squeeze(2)
+        c_shift_msa = parts[3].squeeze(2)
+        c_scale_msa = parts[4].squeeze(2)
+        c_gate_msa = parts[5].squeeze(2)
+      else:  # Global: [B, 6, dim]
+        shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = jnp.split(
+            (self.adaln_scale_shift_table + temb.astype(jnp.float32)),
+            6,
+            axis=1,
+        )
       axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_heads"))
       hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
       hidden_states = checkpoint_name(hidden_states, "hidden_states")
@@ -612,15 +627,33 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     with self.conditional_named_scope("patch_embedding"):
       hidden_states = self.patch_embedding(hidden_states)
       hidden_states = jax.lax.collapse(hidden_states, 1, -1)
+    per_token_t = timestep.ndim == 2  # [B, seq_len] for TI2V
     with self.conditional_named_scope("condition_embedder"):
-      (
-          temb,
-          timestep_proj,
-          encoder_hidden_states,
-          encoder_hidden_states_image,
-          encoder_attention_mask,
-      ) = self.condition_embedder(timestep, encoder_hidden_states, encoder_hidden_states_image)
-    timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
+      if per_token_t:
+        # Per-token timestep: process time and text embeddings separately.
+        # This matches the official WAN 2.2 TI2V pipeline where first-frame
+        # tokens receive timestep=0 (clean) and other tokens receive timestep=t.
+        bt, sl = timestep.shape
+        t_flat = timestep.reshape(-1)  # [B*seq_len]
+        t_sinusoidal = self.condition_embedder.timesteps_proj(t_flat)  # [B*sl, freq_dim]
+        t_sinusoidal = t_sinusoidal.reshape(bt, sl, -1)  # [B, sl, freq_dim]
+        temb = self.condition_embedder.time_embedder(t_sinusoidal)  # [B, sl, dim]
+        with jax.named_scope("time_proj"):
+          timestep_proj = self.condition_embedder.time_proj(self.condition_embedder.act_fn(temb))  # [B, sl, dim*6]
+        timestep_proj = timestep_proj.reshape(bt, sl, 6, -1)  # [B, sl, 6, dim]
+        # Text processing
+        encoder_hidden_states = self.condition_embedder.text_embedder(encoder_hidden_states)
+        encoder_hidden_states_image = None
+        encoder_attention_mask = None
+      else:
+        (
+            temb,
+            timestep_proj,
+            encoder_hidden_states,
+            encoder_hidden_states_image,
+            encoder_attention_mask,
+        ) = self.condition_embedder(timestep, encoder_hidden_states, encoder_hidden_states_image)
+        timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
 
     if encoder_hidden_states_image is not None:
       encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states], axis=1)
@@ -696,7 +729,14 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     residual_x = hidden_states - hidden_states_before_blocks
 
-    shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
+    if per_token_t:
+      # temb: [B, seq_len, dim] — per-token modulation for final head
+      combined_head = jnp.expand_dims(self.scale_shift_table, 0) + jnp.expand_dims(temb, 2)  # [B, sl, 2, dim]
+      shift, scale = jnp.split(combined_head, 2, axis=2)
+      shift = shift.squeeze(2)  # [B, sl, dim]
+      scale = scale.squeeze(2)  # [B, sl, dim]
+    else:
+      shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
     with jax.named_scope("proj_out"):
       hidden_states = self.proj_out(hidden_states)

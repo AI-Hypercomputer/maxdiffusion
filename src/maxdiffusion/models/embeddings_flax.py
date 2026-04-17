@@ -35,29 +35,28 @@ def get_sinusoidal_embeddings(
   """Returns the positional encoding (same as Tensor2Tensor).
 
   Args:
-      timesteps: a 1-D Tensor of N indices, one per batch element.
+      timesteps: a 1-D or 2-D Tensor of indices.
       These may be fractional.
       embedding_dim: The number of output channels.
       min_timescale: The smallest time unit (should probably be 0.0).
       max_timescale: The largest time unit.
   Returns:
-      a Tensor of timing signals [N, num_channels]
+      a Tensor of timing signals [B, num_channels] or [B, N, num_channels]
   """
-  assert timesteps.ndim == 1, "Timesteps should be a 1d-array"
+  assert timesteps.ndim <= 2, "Timesteps should be a 1d or 2d-array"
   assert embedding_dim % 2 == 0, f"Embedding dimension {embedding_dim} should be even"
   num_timescales = float(embedding_dim // 2)
   log_timescale_increment = math.log(max_timescale / min_timescale) / (num_timescales - freq_shift)
   inv_timescales = min_timescale * jnp.exp(jnp.arange(num_timescales, dtype=jnp.float32) * -log_timescale_increment)
-  emb = jnp.expand_dims(timesteps, 1) * jnp.expand_dims(inv_timescales, 0)
+  emb = jnp.expand_dims(timesteps, -1) * inv_timescales
 
   # scale embeddings
   scaled_time = scale * emb
 
   if flip_sin_to_cos:
-    signal = jnp.concatenate([jnp.cos(scaled_time), jnp.sin(scaled_time)], axis=1)
+    signal = jnp.concatenate([jnp.cos(scaled_time), jnp.sin(scaled_time)], axis=-1)
   else:
-    signal = jnp.concatenate([jnp.sin(scaled_time), jnp.cos(scaled_time)], axis=1)
-  signal = jnp.reshape(signal, [jnp.shape(timesteps)[0], embedding_dim])
+    signal = jnp.concatenate([jnp.sin(scaled_time), jnp.cos(scaled_time)], axis=-1)
   return signal
 
 
