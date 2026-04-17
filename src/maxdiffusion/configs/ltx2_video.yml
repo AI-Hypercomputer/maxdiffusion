@@ -2,7 +2,7 @@
 hardware: 'tpu'
 skip_jax_distributed_system: False
 attention: 'ulysses'
-a2v_attention_kernel: 'ulysses'
+a2v_attention_kernel: 'dot_product'
 v2a_attention_kernel: 'dot_product'
 attention_sharding_uniform: True 
 precision: 'bf16'
