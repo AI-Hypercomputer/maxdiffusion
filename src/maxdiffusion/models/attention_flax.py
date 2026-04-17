@@ -222,13 +222,13 @@ def _select_flash_block_sizes(
   block_size_q = flash_block_sizes.block_q if flash_block_sizes else q_max_block_size
   return splash_attention_kernel.BlockSizes(
       block_q=block_size_q,
-      block_kv_compute=min(kv_max_block_size, key_seq_len),
-      block_kv=min(kv_max_block_size, key_seq_len),
+      block_kv_compute=kv_max_block_size,
+      block_kv=kv_max_block_size,
       block_q_dkv=block_size_q,
-      block_kv_dkv=min(kv_max_block_size, key_seq_len),
-      block_kv_dkv_compute=min(kv_max_block_size, query_seq_len),
+      block_kv_dkv=kv_max_block_size,
+      block_kv_dkv_compute=kv_max_block_size,
       block_q_dq=None if attention_kernel == "tokamax_flash" else block_size_q,
-      block_kv_dq=None if attention_kernel == "tokamax_flash" else min(kv_max_block_size, query_seq_len),
+      block_kv_dq=None if attention_kernel == "tokamax_flash" else kv_max_block_size,
       use_fused_bwd_kernel=True if attention_kernel == "tokamax_flash" else False,
   )
 
