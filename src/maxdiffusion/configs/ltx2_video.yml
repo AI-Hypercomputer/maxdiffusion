@@ -1,7 +1,7 @@
 #hardware
 hardware: 'tpu'
 skip_jax_distributed_system: False
-attention: 'ulysses'
+attention: 'flash'
 a2v_attention_kernel: 'dot_product'
 v2a_attention_kernel: 'dot_product'
 attention_sharding_uniform: True 

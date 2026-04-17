@@ -21,6 +21,7 @@ import numpy as np
 import torch
 import jax
 import jax.numpy as jnp
+import time
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import flax
 import flax.linen as nn
@@ -765,9 +766,11 @@ class LTX2Pipeline:
       prompt_attention_mask = prompt_attention_mask.to(self.text_encoder.device)
 
       with torch.no_grad():
+        t0 = time.time()
         text_encoder_outputs = self.text_encoder(
             input_ids=text_input_ids, attention_mask=prompt_attention_mask, output_hidden_states=True
         )
+        print(f"[Timing] Text Encoder time: {time.time() - t0:.2f}s")
 
       text_encoder_hidden_states = text_encoder_outputs.hidden_states
       del text_encoder_outputs  # Free memory
@@ -1317,8 +1320,10 @@ class LTX2Pipeline:
         audio_embeds_sharded = jax.device_put(audio_embeds, spec)
 
       timesteps_jax = jnp.array(timesteps, dtype=jnp.float32)
+      transformer_start = time.time()
       for i in range(len(timesteps_jax)):
         t = timesteps_jax[i]
+        step_start = time.time()
 
         # Isolate input sharding to scan_layers=False to avoid affecting the standard path
         latents_jax_sharded = latents_jax
@@ -1373,6 +1378,10 @@ class LTX2Pipeline:
         else:
           latents_jax = latents_step
           audio_latents_jax = audio_latents_step
+        
+        print(f"[Timing] Step {i} time: {time.time() - step_start:.2f}s")
+      
+      print(f"[Timing] Transformer loop time: {time.time() - transformer_start:.2f}s")
 
     # 8. Decode Latents
     if guidance_scale > 1.0:
@@ -1470,10 +1479,13 @@ class LTX2Pipeline:
       latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
 
       latents = latents.astype(self.vae.dtype)
+      vae_start = time.time()
       video = self.vae.decode(latents, temb=timestep, return_dict=False)[0]
     else:
       latents = latents.astype(self.vae.dtype)
+      vae_start = time.time()
       video = self.vae.decode(latents, return_dict=False)[0]
+    print(f"[Timing] VAE Decode time: {time.time() - vae_start:.2f}s")
     # Post-process video (converts to numpy/PIL)
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
     video_np = np.array(video).transpose(0, 4, 1, 2, 3)
@@ -1485,7 +1497,9 @@ class LTX2Pipeline:
 
     # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
     generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
+    vocoder_start = time.time()
     audio = self.vocoder(generated_mel_spectrograms)
+    print(f"[Timing] Vocoder time: {time.time() - vocoder_start:.2f}s")
 
     # Convert audio to numpy
     audio = np.array(audio)
