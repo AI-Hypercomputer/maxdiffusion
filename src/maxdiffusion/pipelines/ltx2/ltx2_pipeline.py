@@ -1658,6 +1658,10 @@ def run_diffusion_loop(
     initial_carry = (latents_jax, audio_latents_jax, scheduler_state)
 
     # Run scan
-    final_carry, _ = jax.lax.scan(scan_body, initial_carry, timesteps_jax)
+    final_carry, _ = nnx.scan(
+        scan_body,
+        in_axes=(nnx.Carry, 0),
+        out_axes=(nnx.Carry, 0),
+    )(initial_carry, timesteps_jax)
 
     return final_carry[0], final_carry[1]
