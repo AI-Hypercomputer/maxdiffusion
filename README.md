@@ -578,6 +578,26 @@ To generate images, run the following command:
   * For Wan2.2 T2V, use `base_wan_27b.yml`.
   * For Wan2.2 I2V, use `base_wan_i2v_27b.yml`.
 
+  ### Ulysses Attention
+
+  MaxDiffusion supports Ulysses attention for WAN TPU inference. Enable it by setting `attention="ulysses"`.
+
+  Internally, this follows the Ulysses sequence-parallel attention pattern and trades sequence shards for head shards around the local TPU splash kernel. For background, see [DeepSpeed Ulysses: System Optimizations for Enabling Training of Extreme Long Sequence Transformer Models](https://arxiv.org/abs/2309.14509).
+
+  To enable Ulysses attention, set the corresponding override in your config YAML or pass it as a command-line override:
+
+  ```bash
+  python src/maxdiffusion/generate_wan.py \
+  src/maxdiffusion/configs/base_wan_i2v_27b.yml \
+  attention="ulysses" \
+  ici_context_parallelism=4 \
+  ...
+  ```
+
+  Ulysses requires `ici_context_parallelism` greater than 1, and the number of attention heads must be divisible by the context shard count. `flash_block_sizes` tuning is optional and can still be used for hardware-specific tuning.
+
+  In our Wan2.2 I2V benchmarks at 40 inference steps, 81 frames, and `720x1280` resolution, Ulysses improved inference time by roughly `~10%` compared with flash attention, with about `~20s` lower latency on the v6e-8 and v7x-8 TPU setup.
+
   ### Caching Mechanisms
 
   Wan 2.x pipelines support several caching strategies to accelerate inference by skipping redundant transformer forward passes. These are **mutually exclusive** — enable only one at a time.
