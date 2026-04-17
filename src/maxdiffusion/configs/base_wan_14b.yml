@@ -44,6 +44,7 @@ activations_dtype: 'bfloat16'
 
 # Replicates vae across devices instead of using the model's sharding annotations for sharding.
 replicate_vae: False
+vae_spatial: -1 # default to total_device * 2 // (dp)
 
 # matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
 # Options are "DEFAULT", "HIGH", "HIGHEST"
@@ -60,7 +61,7 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring, ulysses
+attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses
 flash_min_seq_length: 0
 
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
@@ -180,6 +181,19 @@ logical_axis_rules: [
                       ['out_channels', 'tensor'],
                       ['conv_out', 'context'],
                     ]
+vae_logical_axis_rules: [
+                          ['activation_batch', 'redundant'],
+                          ['activation_length', 'vae_spatial'],
+                          ['activation_heads', null],
+                          ['activation_kv_length', null],
+                          ['embed', null],
+                          ['heads', null],
+                          ['norm', null],
+                          ['conv_batch', 'redundant'],
+                          ['out_channels', 'vae_spatial'],
+                          ['conv_out', 'vae_spatial'],
+                          ['conv_in', 'vae_spatial'],
+                        ]
 data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 
 # One axis for each parallelism type may hold a placeholder (-1)
