@@ -165,12 +165,12 @@ class SpatialRationalResampler(nnx.Module):
         in_channels, (num**2) * self.mid_channels, kernel_size=(3, 3), padding=((1, 1), (1, 1)), rngs=rngs
     )
     self.pixel_shuffle = PixelShuffleND(dims=2, upscale_factors=(num, num))
-    self.blur = BlurDownsample(dims=2, stride=den)
+    self.blur_down = BlurDownsample(dims=2, stride=den)
 
   def __call__(self, x: jax.Array) -> jax.Array:
     x = self.conv(x)
     x = self.pixel_shuffle(x)
-    x = self.blur(x)
+    x = self.blur_down(x)
     return x
 
 
