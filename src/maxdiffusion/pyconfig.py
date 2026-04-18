@@ -209,9 +209,11 @@ class _HyperParameters:
     max_utils.write_config_raw_keys_for_gcs(raw_keys)
 
     raw_keys["logical_axis_rules"] = _lists_to_tuples(raw_keys["logical_axis_rules"])
+    if "vae_logical_axis_rules" in raw_keys:
+      raw_keys["vae_logical_axis_rules"] = _lists_to_tuples(raw_keys["vae_logical_axis_rules"])
     # Verify qkv is sharded across sequence.
     attention = raw_keys["attention"]
-    uses_ring_attention = attention == "ring"
+    uses_ring_attention = "ring" in attention
     uses_ulysses_attention = attention == "ulysses"
     uses_uniform_sequence_sharding = raw_keys["attention_sharding_uniform"]
     if uses_ring_attention or uses_ulysses_attention or uses_uniform_sequence_sharding:
@@ -277,6 +279,9 @@ class _HyperParameters:
         raw_keys["global_batch_size_to_load"],
         raw_keys["global_batch_size_to_train_on"],
     ) = _HyperParameters.calculate_global_batch_sizes(raw_keys["per_device_batch_size"])
+
+    if raw_keys.get("vae_spatial", -1) == -1:
+      raw_keys["vae_spatial"] = 1
 
 
 def get_num_slices(raw_keys):
