@@ -19,6 +19,7 @@ from typing import Tuple, List, Sequence, Union, Optional
 import flax
 import jax
 import jax.numpy as jnp
+from jax.sharding import NamedSharding, PartitionSpec as P
 from jax import tree_util
 from flax import nnx
 from ...configuration_utils import ConfigMixin
@@ -84,7 +85,7 @@ class WanCausalConv3d(nnx.Module):
   ):
     self.kernel_size = _canonicalize_tuple(kernel_size, 3, "kernel_size")
     self.stride = _canonicalize_tuple(stride, 3, "stride")
-    padding_tuple = _canonicalize_tuple(padding, 3, "padding")  # (D, H, W) padding amounts
+    padding_tuple = _canonicalize_tuple(padding, 3, "padding")
 
     self._causal_padding = (
         (0, 0),  # Batch dimension - no padding
@@ -93,16 +94,15 @@ class WanCausalConv3d(nnx.Module):
         (padding_tuple[2], padding_tuple[2]),  # Width dimension - symmetric padding
         (0, 0),  # Channel dimension - no padding
     )
-
     # Store the amount of padding needed *before* the depth dimension for caching logic
     self._depth_padding_before = self._causal_padding[1][0]  # 2 * padding_tuple[0]
-
     self.mesh = mesh
-    # Set sharding dynamically based on out_channels.
-    num_context_axis_devices = mesh.shape["context"]
+
+    # Weight sharding (Kernel is sharded along output channels)
+    num_fsdp_devices = mesh.shape["vae_spatial"]
     kernel_sharding = (None, None, None, None, None)
-    if out_channels % num_context_axis_devices == 0:
-      kernel_sharding = (None, None, None, None, "conv_out")
+    if out_channels % num_fsdp_devices == 0:
+      kernel_sharding = (None, None, None, None, "vae_spatial")
 
     self.conv = nnx.Conv(
         in_features=in_channels,
@@ -119,25 +119,26 @@ class WanCausalConv3d(nnx.Module):
     )
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None, idx=-1) -> jax.Array:
-    current_padding = list(self._causal_padding)  # Mutable copy
+    # Sharding Width (index 3)
+    # Spec: (Batch, Time, Height, Width, Channels)
+    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
+    x = jax.lax.with_sharding_constraint(x, spatial_sharding)
+
+    current_padding = list(self._causal_padding)
     padding_needed = self._depth_padding_before
 
     if cache_x is not None and padding_needed > 0:
-      # Ensure cache has same spatial/channel dims, potentially different depth
-      assert cache_x.shape[0] == x.shape[0] and cache_x.shape[2:] == x.shape[2:], "Cache spatial/channel dims mismatch"
+      assert cache_x.shape[0] == x.shape[0] and cache_x.shape[2:] == x.shape[2:]
       cache_len = cache_x.shape[1]
-      x = jnp.concatenate([cache_x, x], axis=1)  # Concat along depth (D)
+      x = jnp.concatenate([cache_x, x], axis=1)
 
       padding_needed -= cache_len
       if padding_needed < 0:
-        # Cache longer than needed padding, trim from start
         x = x[:, -padding_needed:, ...]
-        current_padding[1] = (0, 0)  # No explicit padding needed now
+        current_padding[1] = (0, 0)
       else:
-        # Update depth padding needed
         current_padding[1] = (padding_needed, 0)
 
-    # Apply padding if any dimension requires it
     padding_to_apply = tuple(current_padding)
     if any(p > 0 for dim_pads in padding_to_apply for p in dim_pads):
       x_padded = jnp.pad(x, padding_to_apply, mode="constant", constant_values=0.0)
@@ -760,7 +761,6 @@ class WanEncoder3d(nnx.Module):
         precision=precision,
     )
 
-  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -909,7 +909,6 @@ class WanDecoder3d(nnx.Module):
         precision=precision,
     )
 
-  @nnx.jit(static_argnames="feat_idx")
   def __call__(self, x: jax.Array, feat_cache=None, feat_idx=0):
     if feat_cache is not None:
       idx = feat_idx
@@ -1103,7 +1102,9 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         weights_dtype=weights_dtype,
         precision=precision,
     )
+    self.mesh = mesh
 
+  @nnx.jit
   def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
     feat_cache.init_cache()
     if x.shape[-1] != 3:
@@ -1115,26 +1116,58 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     iter_ = 1 + (t - 1) // 4
     enc_feat_map = feat_cache._enc_feat_map
 
-    for i in range(iter_):
-      enc_conv_idx = 0
-      if i == 0:
-        out, enc_feat_map, enc_conv_idx = self.encoder(x[:, :1, :, :, :], feat_cache=enc_feat_map, feat_idx=enc_conv_idx)
-      else:
-        out_, enc_feat_map, enc_conv_idx = self.encoder(
-            x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :],
-            feat_cache=enc_feat_map,
-            feat_idx=enc_conv_idx,
-        )
-        out = jnp.concatenate([out, out_], axis=1)
+    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
 
-    # Update back to the wrapper object if needed, but for result we use local vars
-    feat_cache._enc_feat_map = enc_feat_map
+    def finalize(out, enc_feat_map):
+      feat_cache._enc_feat_map = enc_feat_map
+      enc = self.quant_conv(out)
+      mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
+      enc = jnp.concatenate([mu, logvar], axis=-1)
+      feat_cache.init_cache()
+      return enc
 
-    enc = self.quant_conv(out)
-    mu, logvar = enc[:, :, :, :, : self.z_dim], enc[:, :, :, :, self.z_dim :]
-    enc = jnp.concatenate([mu, logvar], axis=-1)
-    feat_cache.init_cache()
-    return enc
+    # First iteration (i=0): size 1
+    chunk_0 = x[:, :1, ...]
+    out_0, enc_feat_map, _ = self.encoder(chunk_0, feat_cache=enc_feat_map, feat_idx=0)
+    out_0 = jax.lax.with_sharding_constraint(out_0, spatial_sharding)
+
+    if iter_ <= 1:
+      return finalize(out_0, enc_feat_map)
+
+    CHUNK_SIZE = 4
+    # We must adjust enc_feat_map from None/'Rep'/'zeros' for scan shapes.
+    # By running chunk 1 outside the scan, the PyTree shapes will reach their stable state.
+    chunk_1 = x[:, 1 : (1 + CHUNK_SIZE), ...]
+    out_1, enc_feat_map, _ = self.encoder(chunk_1, feat_cache=enc_feat_map, feat_idx=0)
+    out_1 = jax.lax.with_sharding_constraint(out_1, spatial_sharding)
+
+    if iter_ <= 2:
+      out = jnp.concatenate([out_0, out_1], axis=1)
+      out = jax.lax.with_sharding_constraint(out, spatial_sharding)
+      return finalize(out, enc_feat_map)
+
+    # Prepare the remaining chunks (each size 4) to be scanned over
+    # x_rest shape: (B, (iter_-2)*4, H, W, C)
+    x_rest = x[:, 5:, ...]
+    # Reshape to (iter_-2, B, 4, H, W, C) for jax.lax.scan
+    x_scannable = x_rest.reshape(x_rest.shape[0], iter_ - 2, 4, x_rest.shape[2], x_rest.shape[3], x_rest.shape[4])
+    x_scannable = jnp.transpose(x_scannable, (1, 0, 2, 3, 4, 5))
+
+    def scan_fn(carry, chunk):
+      current_feat_map = carry
+      out_chunk, next_feat_map, _ = self.encoder(chunk, feat_cache=current_feat_map, feat_idx=0)
+      out_chunk = jax.lax.with_sharding_constraint(out_chunk, spatial_sharding)
+      return next_feat_map, out_chunk
+
+    enc_feat_map, out_rest = jax.lax.scan(scan_fn, enc_feat_map, x_scannable)
+    # out_rest shape: (iter_-2, B, T', H, W, C) -> transpose back
+    out_rest = jnp.transpose(out_rest, (1, 0, 2, 3, 4, 5))
+    # reshape to (B, (iter_-2)*T', H, W, C)
+    out_rest = out_rest.reshape(out_rest.shape[0], -1, out_rest.shape[3], out_rest.shape[4], out_rest.shape[5])
+
+    out = jnp.concatenate([out_0, out_1, out_rest], axis=1)
+    out = jax.lax.with_sharding_constraint(out, spatial_sharding)
+    return finalize(out, enc_feat_map)
 
   def encode(
       self, x: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
@@ -1146,6 +1179,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
+  @nnx.jit
   def _decode(
       self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
@@ -1154,14 +1188,59 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     x = self.post_quant_conv(z)
 
     dec_feat_map = feat_cache._feat_map
+    # NamedSharding for the Width axis (axis 3)
+    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
 
-    for i in range(iter_):
-      conv_idx = 0
-      if i == 0:
-        out, dec_feat_map, conv_idx = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=dec_feat_map, feat_idx=conv_idx)
-      else:
-        out_, dec_feat_map, conv_idx = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=dec_feat_map, feat_idx=conv_idx)
-        out = jnp.concatenate([out, out_], axis=1)
+    # First chunk (i=0)
+    chunk_in_0 = jax.lax.with_sharding_constraint(x[:, 0:1, ...], spatial_sharding)
+    out_0, dec_feat_map, _ = self.decoder(chunk_in_0, feat_cache=dec_feat_map, feat_idx=0)
+    out_0 = jax.lax.with_sharding_constraint(out_0, spatial_sharding)
+
+    if iter_ > 1:
+      # Run chunk 1 outside scan to properly form the cache shape
+      chunk_in_1 = jax.lax.with_sharding_constraint(x[:, 1:2, ...], spatial_sharding)
+      out_chunk_1, dec_feat_map, _ = self.decoder(chunk_in_1, feat_cache=dec_feat_map, feat_idx=0)
+      out_chunk_1 = jax.lax.with_sharding_constraint(out_chunk_1, spatial_sharding)
+
+      # Frame re-sync logic for chunk 1
+      fm1, fm2, fm3, fm4 = out_chunk_1[:, 0, ...], out_chunk_1[:, 1, ...], out_chunk_1[:, 2, ...], out_chunk_1[:, 3, ...]
+      axis = 1 if fm1.shape[0] > 1 else 0
+      fm1, fm2, fm3, fm4 = [jnp.expand_dims(f, axis=axis) for f in [fm1, fm2, fm3, fm4]]
+      out_1 = jnp.concatenate([fm1, fm3, fm2, fm4], axis=1)
+
+      out_list = [out_0, out_1]
+
+      if iter_ > 2:
+        x_rest = x[:, 2:, ...]
+        # Reshape for scan: (iter_-2, B, 1, H, W, C)
+        x_scannable = jnp.transpose(x_rest, (1, 0, 2, 3, 4))
+        x_scannable = jnp.expand_dims(x_scannable, axis=2)
+
+        def scan_fn(carry, chunk_in):
+          current_feat_map = carry
+          chunk_in = jax.lax.with_sharding_constraint(chunk_in, spatial_sharding)
+          out_chunk, next_feat_map, _ = self.decoder(chunk_in, feat_cache=current_feat_map, feat_idx=0)
+          out_chunk = jax.lax.with_sharding_constraint(out_chunk, spatial_sharding)
+
+          # Frame re-sync logic
+          fm1, fm2, fm3, fm4 = out_chunk[:, 0, ...], out_chunk[:, 1, ...], out_chunk[:, 2, ...], out_chunk[:, 3, ...]
+          axis = 1 if fm1.shape[0] > 1 else 0
+          fm1, fm2, fm3, fm4 = [jnp.expand_dims(f, axis=axis) for f in [fm1, fm2, fm3, fm4]]
+          new_chunk = jnp.concatenate([fm1, fm3, fm2, fm4], axis=1)
+
+          return next_feat_map, new_chunk
+
+        dec_feat_map, out_rest = jax.lax.scan(scan_fn, dec_feat_map, x_scannable)
+
+        # out_rest is (iter_-2, B, 4, H, W, C) -> transpose back
+        out_rest = jnp.transpose(out_rest, (1, 0, 2, 3, 4, 5))
+        out_rest = out_rest.reshape(out_rest.shape[0], -1, out_rest.shape[3], out_rest.shape[4], out_rest.shape[5])
+        out_list.append(out_rest)
+
+      out = jnp.concatenate(out_list, axis=1)
+      out = jax.lax.with_sharding_constraint(out, spatial_sharding)
+    else:
+      out = out_0
 
     feat_cache._feat_map = dec_feat_map
 

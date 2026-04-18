@@ -17,16 +17,17 @@ limitations under the License.
 import os
 import functools
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import jax
 import jax.numpy as jnp
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
+from flax.linen import logical_to_mesh_sharding
 from jax.sharding import Mesh
 from .. import pyconfig
 from ..max_utils import (
     create_device_mesh,
+    device_put_replicated,
 )
 import numpy as np
 import unittest
@@ -56,7 +57,7 @@ CACHE_T = 2
 flax.config.update("flax_always_shard_variable", False)
 
 
-class TorchWanRMS_norm(nn.Module):
+class TorchWanRMS_norm(torch.nn.Module):
   r"""
   A custom RMS normalization layer.
 
@@ -75,14 +76,14 @@ class TorchWanRMS_norm(nn.Module):
 
     self.channel_first = channel_first
     self.scale = dim**0.5
-    self.gamma = nn.Parameter(torch.ones(shape))
-    self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.0
+    self.gamma = torch.nn.Parameter(torch.ones(shape))
+    self.bias = torch.nn.Parameter(torch.zeros(shape)) if bias else 0.0
 
   def forward(self, x):
     return F.normalize(x, dim=(1 if self.channel_first else -1)) * self.scale * self.gamma + self.bias
 
 
-class TorchWanResample(nn.Module):
+class TorchWanResample(torch.nn.Module):
   r"""
   A custom resampling module for 2D and 3D data.
 
@@ -103,18 +104,18 @@ class TorchWanResample(nn.Module):
 
     # layers
     if mode == "upsample2d":
-      self.resample = nn.Sequential(
-          WanUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"), nn.Conv2d(dim, dim // 2, 3, padding=1)
+      self.resample = torch.nn.Sequential(
+          torch.nn.Upsample(scale_factor=(2.0, 2.0), mode="nearest"), torch.nn.Conv2d(dim, dim // 2, 3, padding=1)
       )
     elif mode == "upsample3d":
-      raise Exception("downsample3d not supported")
+      raise Exception("upsample3d not supported")
 
     elif mode == "downsample2d":
-      self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
+      self.resample = torch.nn.Sequential(torch.nn.ZeroPad2d((0, 1, 0, 1)), torch.nn.Conv2d(dim, dim, 3, stride=(2, 2)))
     elif mode == "downsample3d":
       raise Exception("downsample3d not supported")
     else:
-      self.resample = nn.Identity()
+      self.resample = torch.nn.Identity()
 
   def forward(self, x, feat_cache=None, feat_idx=[0]):
     b, c, t, h, w = x.size()
@@ -217,13 +218,13 @@ class WanVaeTest(unittest.TestCase):
     dim = 96
     kernel_size = 3
     stride = (2, 2)
-    resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, kernel_size, stride=stride))
+    resample = torch.nn.Sequential(torch.nn.ZeroPad2d((0, 1, 0, 1)), torch.nn.Conv2d(dim, dim, kernel_size, stride=stride))
     input_shape = (1, 96, 480, 720)
     input = torch.ones(input_shape)
     output_torch = resample(input)
     assert output_torch.shape == (1, 96, 240, 360)
 
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.mesh, nn_partitioning.axis_rules(self.config.vae_logical_axis_rules):
       model = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(1, 3, 3), stride=(1, 2, 2))
       dummy_input = jnp.ones(input_shape)
       dummy_input = jnp.transpose(dummy_input, (0, 2, 3, 1))
@@ -261,7 +262,7 @@ class WanVaeTest(unittest.TestCase):
     torch_wan_resample = TorchWanResample(dim=dim, mode=mode)
     torch_output = torch_wan_resample(dummy_input)
     assert torch_output.shape == (batch, dim, t, h // 2, w // 2)
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.mesh, nn_partitioning.axis_rules(self.config.vae_logical_axis_rules):
       wan_resample = WanResample(dim, mode=mode, rngs=rngs)
       # channels is always last here
       input_shape = (batch, t, h, w, dim)
@@ -281,7 +282,13 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
+    # Add vae_spatial axis to mesh for VAE operations
+    mesh_axes = list(config.mesh_axes)
+    if "vae_spatial" not in mesh_axes:
+      mesh_axes.append("vae_spatial")
+      # Reshape devices to include vae_spatial (size 1 for test)
+      devices_array = devices_array.reshape(devices_array.shape + (1,))
+    mesh = Mesh(devices_array, mesh_axes)
 
     batch_size = 1
     in_depth, in_height, in_width = 10, 32, 32
@@ -298,7 +305,7 @@ class WanVaeTest(unittest.TestCase):
     dummy_cache = jnp.zeros((batch_size, cache_depth, in_height, in_width, in_channels))
 
     # Instantiate the module
-    with self.mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+    with self.mesh, nn_partitioning.axis_rules(config.vae_logical_axis_rules):
       causal_conv_layer = WanCausalConv3d(
           in_channels=in_channels,
           out_channels=out_channels,
@@ -334,7 +341,13 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
+    # Add vae_spatial axis to mesh for VAE operations
+    mesh_axes = list(config.mesh_axes)
+    if "vae_spatial" not in mesh_axes:
+      mesh_axes.append("vae_spatial")
+      # Reshape devices to include vae_spatial (size 1 for test)
+      devices_array = devices_array.reshape(devices_array.shape + (1,))
+    mesh = Mesh(devices_array, mesh_axes)
     # --- Test Case 1: same in/out dim ---
     in_dim = out_dim = 96
     batch = 1
@@ -344,7 +357,7 @@ class WanVaeTest(unittest.TestCase):
     dim = 96
     input_shape = (batch, t, height, width, dim)
     expected_output_shape = (batch, t, height, width, dim)
-    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+    with mesh, nn_partitioning.axis_rules(config.vae_logical_axis_rules):
       wan_residual_block = WanResidualBlock(in_dim=in_dim, out_dim=out_dim, rngs=rngs, mesh=mesh)
       dummy_input = jnp.ones(input_shape)
       dummy_output, _, _ = wan_residual_block(dummy_input)
@@ -368,7 +381,7 @@ class WanVaeTest(unittest.TestCase):
     height = 60
     width = 90
     input_shape = (batch, t, height, width, dim)
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.mesh, nn_partitioning.axis_rules(self.config.vae_logical_axis_rules):
       wan_attention = WanAttentionBlock(dim=dim, rngs=rngs)
       dummy_input = jnp.ones(input_shape)
       output, _, _ = wan_attention(dummy_input)
@@ -386,14 +399,20 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
+    # Add vae_spatial axis to mesh for VAE operations
+    mesh_axes = list(config.mesh_axes)
+    if "vae_spatial" not in mesh_axes:
+      mesh_axes.append("vae_spatial")
+      # Reshape devices to include vae_spatial (size 1 for test)
+      devices_array = devices_array.reshape(devices_array.shape + (1,))
+    mesh = Mesh(devices_array, mesh_axes)
     batch = 1
     t = 1
     dim = 384
     height = 60
     width = 90
     input_shape = (batch, t, height, width, dim)
-    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+    with mesh, nn_partitioning.axis_rules(config.vae_logical_axis_rules):
       wan_midblock = WanMidBlock(dim=dim, rngs=rngs, mesh=mesh)
       dummy_input = jnp.ones(input_shape)
       output, _, _ = wan_midblock(dummy_input)
@@ -411,14 +430,20 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
+    # Add vae_spatial axis to mesh for VAE operations
+    mesh_axes = list(config.mesh_axes)
+    if "vae_spatial" not in mesh_axes:
+      mesh_axes.append("vae_spatial")
+      # Reshape devices to include vae_spatial (size 1 for test)
+      devices_array = devices_array.reshape(devices_array.shape + (1,))
+    mesh = Mesh(devices_array, mesh_axes)
     dim = 96
     z_dim = 16
     dim_mult = [1, 2, 4, 4]
     num_res_blocks = 2
     attn_scales = []
     temperal_downsample = [False, True, True]
-    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+    with mesh, nn_partitioning.axis_rules(config.vae_logical_axis_rules):
       wan_vae = AutoencoderKLWan(
           rngs=rngs,
           base_dim=dim,
@@ -456,14 +481,20 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
+    # Add vae_spatial axis to mesh for VAE operations
+    mesh_axes = list(config.mesh_axes)
+    if "vae_spatial" not in mesh_axes:
+      mesh_axes.append("vae_spatial")
+      # Reshape devices to include vae_spatial (size 1 for test)
+      devices_array = devices_array.reshape(devices_array.shape + (1,))
+    mesh = Mesh(devices_array, mesh_axes)
     dim = 96
     z_dim = 16
     dim_mult = [1, 2, 4, 4]
     num_res_blocks = 2
     attn_scales = []
     temperal_downsample = [False, True, True]
-    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+    with mesh, nn_partitioning.axis_rules(config.vae_logical_axis_rules):
       wan_vae = AutoencoderKLWan(
           rngs=rngs,
           base_dim=dim,
@@ -502,8 +533,14 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    # Add vae_spatial axis to mesh for VAE operations
+    mesh_axes = list(config.mesh_axes)
+    if "vae_spatial" not in mesh_axes:
+      mesh_axes.append("vae_spatial")
+      # Reshape devices to include vae_spatial (size 1 for test)
+      devices_array = devices_array.reshape(devices_array.shape + (1,))
+    mesh = Mesh(devices_array, mesh_axes)
+    with self.mesh, nn_partitioning.axis_rules(self.config.vae_logical_axis_rules):
       wan_vae = AutoencoderKLWan.from_config(config.pretrained_model_name_or_path, subfolder="vae", rngs=rngs, mesh=mesh)
       vae_cache = AutoencoderKLWanCache(wan_vae)
     video_path = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/hiker.mp4"
@@ -520,7 +557,18 @@ class WanVaeTest(unittest.TestCase):
     # This replaces random params with the model.
     params = load_wan_vae(config.pretrained_model_name_or_path, params, "cpu")
     params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), params)
-    wan_vae = nnx.merge(graphdef, params)
+
+    logical_state_spec = nnx.get_partition_spec(state)
+    logical_state_sharding = logical_to_mesh_sharding(logical_state_spec, mesh, config.vae_logical_axis_rules)
+    logical_state_sharding = dict(nnx.to_flat_state(logical_state_sharding))
+
+    state_flat = dict(nnx.to_flat_state(state))
+    for path, val in flax.traverse_util.flatten_dict(params).items():
+      sharding = logical_state_sharding[path].get_value()
+      state_flat[path][...] = device_put_replicated(val, sharding)
+    state = nnx.from_flat_state(state_flat)
+
+    wan_vae = nnx.merge(graphdef, state)
 
     p_vae_encode = functools.partial(vae_encode, wan_vae=wan_vae, vae_cache=vae_cache, key=key)
     original_video_shape = original_video.shape
