@@ -832,12 +832,12 @@ class LTX2Pipeline:
       if do_classifier_free_guidance and negative_prompt_embeds is None:
         negative_prompt = negative_prompt or ""
         negative_prompt = [negative_prompt] * batch_size if isinstance(negative_prompt, str) else negative_prompt
-        
+
         if isinstance(prompt, str):
           prompt = [prompt]
-          
+
         combined_prompts = prompt + negative_prompt
-        
+
         combined_embeds, combined_mask = self._get_gemma_prompt_embeds(
             prompt=combined_prompts,
             num_videos_per_prompt=num_videos_per_prompt,
@@ -845,16 +845,16 @@ class LTX2Pipeline:
             scale_factor=scale_factor,
             dtype=dtype,
         )
-        
+
         split_idx = batch_size * num_videos_per_prompt
-        
+
         if isinstance(combined_embeds, list):
           prompt_embeds = [state[:split_idx] for state in combined_embeds]
           negative_prompt_embeds = [state[split_idx:] for state in combined_embeds]
         else:
           prompt_embeds = combined_embeds[:split_idx]
           negative_prompt_embeds = combined_embeds[split_idx:]
-          
+
         prompt_attention_mask = combined_mask[:split_idx]
         negative_prompt_attention_mask = combined_mask[split_idx:]
       else:
@@ -865,7 +865,7 @@ class LTX2Pipeline:
             scale_factor=scale_factor,
             dtype=dtype,
         )
-        
+
     if do_classifier_free_guidance and negative_prompt_embeds is None:
       negative_prompt = negative_prompt or ""
       negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
@@ -1577,95 +1577,80 @@ def run_diffusion_loop(
     scheduler_step,
     logical_axis_rules,
 ):
-    transformer = nnx.merge(graphdef, state)
+  transformer = nnx.merge(graphdef, state)
 
-    def scan_body(carry, t, model):
-        latents, audio_latents, s_state = carry
+  def scan_body(carry, t, model):
+    latents, audio_latents, s_state = carry
 
-        with nn_partitioning.axis_rules(logical_axis_rules):
-            latents_sharded = latents
-            audio_latents_sharded = audio_latents
+    with nn_partitioning.axis_rules(logical_axis_rules):
+      latents_sharded = latents
+      audio_latents_sharded = audio_latents
 
-            if not scan_layers:
-                activation_axis_names = nn.logical_to_mesh_axes(
-                    ("activation_batch", "activation_length", "activation_embed")
-                )
-                latents_sharded = jax.lax.with_sharding_constraint(
-                    latents, activation_axis_names
-                )
-                audio_latents_sharded = jax.lax.with_sharding_constraint(
-                    audio_latents, activation_axis_names
-                )
+      if not scan_layers:
+        activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+        latents_sharded = jax.lax.with_sharding_constraint(latents, activation_axis_names)
+        audio_latents_sharded = jax.lax.with_sharding_constraint(audio_latents, activation_axis_names)
 
-            # Expand timestep to batch size
-            t_expanded = jnp.expand_dims(t, 0).repeat(latents.shape[0])
+      # Expand timestep to batch size
+      t_expanded = jnp.expand_dims(t, 0).repeat(latents.shape[0])
 
-            noise_pred, noise_pred_audio = model(
-                hidden_states=latents_sharded,
-                encoder_hidden_states=video_embeds_sharded,
-                timestep=t_expanded,
-                encoder_attention_mask=new_attention_mask,
-                num_frames=latent_num_frames,
-                height=latent_height,
-                width=latent_width,
-                audio_hidden_states=audio_latents_sharded,
-                audio_encoder_hidden_states=audio_embeds_sharded,
-                audio_encoder_attention_mask=new_attention_mask,
-                fps=fps,
-                audio_num_frames=audio_num_frames,
-                return_dict=False,
-            )
+      noise_pred, noise_pred_audio = model(
+          hidden_states=latents_sharded,
+          encoder_hidden_states=video_embeds_sharded,
+          timestep=t_expanded,
+          encoder_attention_mask=new_attention_mask,
+          num_frames=latent_num_frames,
+          height=latent_height,
+          width=latent_width,
+          audio_hidden_states=audio_latents_sharded,
+          audio_encoder_hidden_states=audio_embeds_sharded,
+          audio_encoder_attention_mask=new_attention_mask,
+          fps=fps,
+          audio_num_frames=audio_num_frames,
+          return_dict=False,
+      )
 
-            if guidance_scale > 1.0:
-                noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
-                noise_pred = noise_pred_uncond + guidance_scale * (
-                    noise_pred_text - noise_pred_uncond
-                )
-                # Audio guidance
-                (
-                    noise_pred_audio_uncond,
-                    noise_pred_audio_text,
-                ) = jnp.split(noise_pred_audio, 2, axis=0)
-                noise_pred_audio = (
-                    noise_pred_audio_uncond
-                    + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
-                )
+      if guidance_scale > 1.0:
+        noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
+        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+        # Audio guidance
+        (
+            noise_pred_audio_uncond,
+            noise_pred_audio_text,
+        ) = jnp.split(noise_pred_audio, 2, axis=0)
+        noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
 
-                latents_step = latents[batch_size:]
-                audio_latents_step = audio_latents[batch_size:]
-            else:
-                latents_step = latents
-                audio_latents_step = audio_latents
+        latents_step = latents[batch_size:]
+        audio_latents_step = audio_latents[batch_size:]
+      else:
+        latents_step = latents
+        audio_latents_step = audio_latents
 
-            # Step scheduler
-            latents_step, _ = scheduler_step(
-                s_state, noise_pred, t, latents_step, return_dict=False
-            )
-            latents_step = latents_step.astype(latents.dtype)
+      # Step scheduler
+      latents_step, _ = scheduler_step(s_state, noise_pred, t, latents_step, return_dict=False)
+      latents_step = latents_step.astype(latents.dtype)
 
-            audio_latents_step, _ = scheduler_step(
-                s_state, noise_pred_audio, t, audio_latents_step, return_dict=False
-            )
-            audio_latents_step = audio_latents_step.astype(audio_latents.dtype)
+      audio_latents_step, _ = scheduler_step(s_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
+      audio_latents_step = audio_latents_step.astype(audio_latents.dtype)
 
-            if guidance_scale > 1.0:
-                latents_next = jnp.concatenate([latents_step] * 2, axis=0)
-                audio_latents_next = jnp.concatenate([audio_latents_step] * 2, axis=0)
-            else:
-                latents_next = latents_step
-                audio_latents_next = audio_latents_step
+      if guidance_scale > 1.0:
+        latents_next = jnp.concatenate([latents_step] * 2, axis=0)
+        audio_latents_next = jnp.concatenate([audio_latents_step] * 2, axis=0)
+      else:
+        latents_next = latents_step
+        audio_latents_next = audio_latents_step
 
-            new_carry = (latents_next, audio_latents_next, s_state)
-            return new_carry, None
+      new_carry = (latents_next, audio_latents_next, s_state)
+      return new_carry, None
 
-    # Initial carry
-    initial_carry = (latents_jax, audio_latents_jax, scheduler_state)
+  # Initial carry
+  initial_carry = (latents_jax, audio_latents_jax, scheduler_state)
 
-    # Run scan
-    final_carry, _ = nnx.scan(
-        scan_body,
-        in_axes=(nnx.Carry, 0, None),
-        out_axes=(nnx.Carry, 0),
-    )(initial_carry, timesteps_jax, transformer)
+  # Run scan
+  final_carry, _ = nnx.scan(
+      scan_body,
+      in_axes=(nnx.Carry, 0, None),
+      out_axes=(nnx.Carry, 0),
+  )(initial_carry, timesteps_jax, transformer)
 
-    return final_carry[0], final_carry[1]
+  return final_carry[0], final_carry[1]
