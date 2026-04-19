@@ -1577,6 +1577,8 @@ def run_diffusion_loop(
     scheduler_step,
     logical_axis_rules,
 ):
+  latents_jax = latents_jax.astype(jnp.float32)
+  audio_latents_jax = audio_latents_jax.astype(jnp.float32)
   transformer = nnx.merge(graphdef, state)
 
   def scan_body(carry, t, model):
