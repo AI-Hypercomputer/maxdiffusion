@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2026/04/16`**: Support for Tokamax Ring Attention kernel is now added.
 - **`2026/03/31`**: Wan2.2 SenCache inference is now supported for T2V and I2V (up to 1.4x speedup)
 - **`2026/03/25`**: Wan2.1 and Wan2.2 Magcache inference is now supported
 - **`2026/03/25`**: LTX-2 Video Inference is now supported
@@ -622,6 +623,24 @@ To generate images, run the following command:
     use_cfg_cache=True \
     ...
   ```
+
+### Ring Attention
+We added ring attention support for Wan models. Below are the stats for one `720p` (81 frames) video generation (with CFG DP):
+| Accelerator |  Model | Attention Type | Inference Steps | Sharding | e2e Generation Time |
+| -- | -- | -- | -- | -- | -- | 
+| v7x-8 | WAN 2.1 | Tokamax Flash | 50 | dp2-fsdp1-context4-tp1 | 264.2 |
+| v7x-8 | WAN 2.1 | Tokamax Ring | 50 | dp2-fsdp1-context4-tp1 | **252.4** |
+| v7x-8 | WAN 2.2 | Tokamax Flash | 40 | dp2-fsdp1-context4-tp1 | 212.7 |
+| v7x-8 | WAN 2.2 | Tokamax Ring | 40 | dp2-fsdp1-context4-tp1 | **201.7** |
+
+| Accelerator |  Model | Attention Type | Inference Steps | Sharding | e2e Generation Time |
+| -- | -- | -- | -- | -- | -- | 
+| v7x-16 | WAN 2.1 | Tokamax Flash | 50 | dp2-fsdp1-context8-tp1 | 146.6 |
+| v7x-16 | WAN 2.1 | Tokamax Ring | 50 | dp2-fsdp1-context8-tp1 | **137.2** |
+| v7x-16 | WAN 2.2 | Tokamax Flash | 40 | dp2-fsdp1-context8-tp1 | **117.8** |
+| v7x-16 | WAN 2.2 | Tokamax Ring | 40 | dp2-fsdp1-context8-tp1 | 137.5 |
+
+(* There are some known stability issues for ring attention on 16 TPUs, please use `tokamax_flash` attention instead.)
 
   ## Flux
 
