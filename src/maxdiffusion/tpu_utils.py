@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import jax
+from enum import Enum
 
 
 def print_device_memory_info(devices):
@@ -42,3 +43,23 @@ def print_array_info(array, name):
   for device_idx in num_devices:
     jax.debug.print("shape on device {x} : {y}", x=device_idx, y=array.device_buffers[0].shape)
     jax.debug.print("size on device {x} : {y}", x=device_idx, y=array.device_buffers[device_idx].size / array.size)
+
+
+class TpuType(Enum):
+  TPU_V6_LITE = "v6e"
+  TPU_7X = "v7x"
+  UNKNOWN = "unknown"
+
+
+def get_tpu_type() -> TpuType:
+  """Detects the current TPU hardware generation."""
+  try:
+    device_kind = jax.devices()[0].device_kind
+    if "7x" in device_kind:
+      return TpuType.TPU_7X
+    elif "v6 lite" in device_kind:
+      return TpuType.TPU_V6_LITE
+    else:
+      return TpuType.UNKNOWN
+  except Exception:
+    return TpuType.UNKNOWN

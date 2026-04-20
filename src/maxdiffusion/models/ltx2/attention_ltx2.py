@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jnp
 from ... import common_types
 from ..attention_flax import NNXAttentionOp
+from maxdiffusion.tpu_utils import get_tpu_type, TpuType
 
 Array = common_types.Array
 Mesh = common_types.Mesh
@@ -360,8 +361,8 @@ class LTX2Attention(nnx.Module):
     self.dropout_rate = dropout
 
     # Auto-detect hardware for sharding specs if not overridden
-    device_kind = jax.devices()[0].device_kind
-    is_ironwood = "7x" in device_kind
+    tpu_type = get_tpu_type()
+    is_ironwood = tpu_type == TpuType.TPU_7X
 
     if qkv_sharding_spec is None:
       qkv_sharding_spec = (None, "heads") if is_ironwood else ("embed", "heads")
