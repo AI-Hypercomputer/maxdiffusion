@@ -363,9 +363,9 @@ class LTX2Attention(nnx.Module):
     qkv_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("heads",))
 
     # Out kernel: [in_features (heads), out_features (embed)]
-    out_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed"))
+    out_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", None))
     # Out bias: [out_features (embed)]
-    out_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("embed",))
+    out_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), (None,))
 
     # Norm scales
     norm_scale_init = nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",))
