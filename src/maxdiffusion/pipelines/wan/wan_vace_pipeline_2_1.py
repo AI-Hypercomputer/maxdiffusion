@@ -562,7 +562,6 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       if prompt is not None and isinstance(prompt, str):
         prompt = [prompt]
 
-      batch_size = len(prompt)
       if num_videos_per_prompt != 1:
         raise ValueError("Generating multiple videos per prompt is not yet supported. This may be supported in the future.")
 
@@ -573,6 +572,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds,
       )
+      batch_size = len(prompt_embeds)
 
       transformer_dtype = self.transformer.proj_out.bias.dtype
       vace_layers = self.transformer.config.vace_layers
