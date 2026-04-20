@@ -1373,15 +1373,23 @@ class LTX2Pipeline:
         )
       else:
         # Old Python loop path
-        latents_jax = latents_jax.astype(jnp.float32)
-        audio_latents_jax = audio_latents_jax.astype(jnp.float32)
+        for i in range(len(timesteps_jax)):
+          t = timesteps_jax[i]
 
-        for t in timesteps_jax:
+          # Isolate input sharding to scan_layers=False to avoid affecting the standard path
+          latents_jax_sharded = latents_jax
+          audio_latents_jax_sharded = audio_latents_jax
+
+          if not self.transformer.scan_layers:
+            activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+            latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax, activation_axis_names)
+            audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax, activation_axis_names)
+
           noise_pred, noise_pred_audio = transformer_forward_pass(
               graphdef,
               state,
-              latents_jax,
-              audio_latents_jax,
+              latents_jax_sharded,
+              audio_latents_jax_sharded,
               t,
               video_embeds_sharded,
               audio_embeds_sharded,
@@ -1399,7 +1407,7 @@ class LTX2Pipeline:
           if guidance_scale > 1.0:
             noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
+            # Audio guidance
             noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
             noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
 
@@ -1409,13 +1417,12 @@ class LTX2Pipeline:
             latents_step = latents_jax
             audio_latents_step = audio_latents_jax
 
+          # Step
           latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
-          latents_step = latents_step.astype(jnp.float32)
-
+          
           audio_latents_step, _ = self.scheduler.step(
               scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False
           )
-          audio_latents_step = audio_latents_step.astype(jnp.float32)
 
           if guidance_scale > 1.0:
             latents_jax = jnp.concatenate([latents_step] * 2, axis=0)
