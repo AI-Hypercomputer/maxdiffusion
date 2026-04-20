@@ -2,11 +2,17 @@
 hardware: 'tpu'
 skip_jax_distributed_system: False
 attention: 'flash'
-a2v_attention_kernel: 'flash'
+a2v_attention_kernel: 'dot_product'
 v2a_attention_kernel: 'dot_product'
 attention_sharding_uniform: True 
 precision: 'bf16'
+
+# For scanning transformer layers
 scan_layers: True
+
+# For scanning diffusion loop
+scan_diffusion_loop: True
+
 names_which_can_be_saved: []
 names_which_can_be_offloaded: []
 remat_policy: "NONE"

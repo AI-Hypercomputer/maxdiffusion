@@ -118,9 +118,14 @@ class LTX2PipelineTest(unittest.TestCase):
     with self.assertRaises(ValueError):
       pipeline.check_inputs(prompt="test", height=64, width=63)
 
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.get_tpu_type")
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline._get_gemma_prompt_embeds")
-  def test_encode_prompt(self, list_embed_mock):
+  def test_encode_prompt(self, list_embed_mock, mock_get_tpu_type):
     """Test conditional encoding of positive and negative prompts."""
+    from maxdiffusion.tpu_utils import TpuType
+
+    mock_get_tpu_type.return_value = TpuType.TPU_7X
+
     pipeline = LTX2Pipeline(
         scheduler=MagicMock(),
         vae=MagicMock(),
@@ -132,29 +137,24 @@ class LTX2PipelineTest(unittest.TestCase):
         vocoder=MagicMock(),
     )
 
-    prompt_embeds = jnp.zeros((1, 10, 10))
-    prompt_attention_mask = jnp.ones((1, 10))
-    neg_prompt_embeds = jnp.zeros((1, 10, 10))
-    neg_prompt_attention_mask = jnp.ones((1, 10))
+    combined_embeds = jnp.zeros((2, 10, 10))
+    combined_attention_mask = jnp.ones((2, 10))
 
-    # Mock return values for positive then negative prompt encoding
-    list_embed_mock.side_effect = [
-        (prompt_embeds, prompt_attention_mask),
-        (neg_prompt_embeds, neg_prompt_attention_mask),
-    ]
+    # Mock return value for combined prompt encoding
+    list_embed_mock.return_value = (combined_embeds, combined_attention_mask)
 
     p_e, p_a, n_e, n_a = pipeline.encode_prompt(
         prompt=["A cute cat"], negative_prompt=["ugly"], do_classifier_free_guidance=True
     )
 
     # Check mock calls
-    self.assertEqual(list_embed_mock.call_count, 2)
+    self.assertEqual(list_embed_mock.call_count, 1)
 
     # Check returns
-    np.testing.assert_array_equal(p_e, prompt_embeds)
-    np.testing.assert_array_equal(p_a, prompt_attention_mask)
-    np.testing.assert_array_equal(n_e, neg_prompt_embeds)
-    np.testing.assert_array_equal(n_a, neg_prompt_attention_mask)
+    np.testing.assert_array_equal(p_e, combined_embeds[:1])
+    np.testing.assert_array_equal(p_a, combined_attention_mask[:1])
+    np.testing.assert_array_equal(n_e, combined_embeds[1:])
+    np.testing.assert_array_equal(n_a, combined_attention_mask[1:])
 
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline._get_gemma_prompt_embeds")
   def test_encode_prompt_no_cfg(self, list_embed_mock):

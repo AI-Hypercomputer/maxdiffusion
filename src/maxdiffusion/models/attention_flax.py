@@ -287,11 +287,11 @@ def _tpu_flash_attention(
 ) -> jax.Array:
   """TPU Flash Attention"""
 
-  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, attention_kernel)
   num_context_shards = mesh.shape["context"]
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
   value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
+  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, attention_kernel)
 
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
@@ -892,7 +892,7 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), (None, "mlp")),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
     )
     self.act = get_activation(activation_fn)
@@ -904,8 +904,8 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", None)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
     )
 
   def __call__(self, hidden_states: Array) -> Array:
