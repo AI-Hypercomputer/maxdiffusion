@@ -28,6 +28,7 @@ import flax.traverse_util
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from transformers import AutoTokenizer, GemmaTokenizer, GemmaTokenizerFast, Gemma3ForConditionalGeneration
+from maxdiffusion.tpu_utils import get_tpu_type, TpuType
 import qwix
 from ...utils import logging
 from ...schedulers import FlaxFlowMatchScheduler
@@ -828,36 +829,41 @@ class LTX2Pipeline:
     else:
       batch_size = prompt_embeds.shape[0]
 
-    if prompt_embeds is None:
-      if do_classifier_free_guidance and negative_prompt_embeds is None:
-        negative_prompt = negative_prompt or ""
-        negative_prompt = [negative_prompt] * batch_size if isinstance(negative_prompt, str) else negative_prompt
+    tpu_type = get_tpu_type()
+    # Batching text encoder gives better results on Ironwood (v7x) but poor on Trillium (v6e)
+    use_batched_text_encoder = tpu_type == TpuType.TPU_7X
 
-        if isinstance(prompt, str):
-          prompt = [prompt]
+    if use_batched_text_encoder and prompt_embeds is None and do_classifier_free_guidance and negative_prompt_embeds is None:
+      negative_prompt = negative_prompt or ""
+      negative_prompt = [negative_prompt] * batch_size if isinstance(negative_prompt, str) else negative_prompt
 
-        combined_prompts = prompt + negative_prompt
+      if isinstance(prompt, str):
+        prompt = [prompt]
 
-        combined_embeds, combined_mask = self._get_gemma_prompt_embeds(
-            prompt=combined_prompts,
-            num_videos_per_prompt=num_videos_per_prompt,
-            max_sequence_length=max_sequence_length,
-            scale_factor=scale_factor,
-            dtype=dtype,
-        )
+      combined_prompts = prompt + negative_prompt
 
-        split_idx = batch_size * num_videos_per_prompt
+      combined_embeds, combined_mask = self._get_gemma_prompt_embeds(
+          prompt=combined_prompts,
+          num_videos_per_prompt=num_videos_per_prompt,
+          max_sequence_length=max_sequence_length,
+          scale_factor=scale_factor,
+          dtype=dtype,
+      )
 
-        if isinstance(combined_embeds, list):
-          prompt_embeds = [state[:split_idx] for state in combined_embeds]
-          negative_prompt_embeds = [state[split_idx:] for state in combined_embeds]
-        else:
-          prompt_embeds = combined_embeds[:split_idx]
-          negative_prompt_embeds = combined_embeds[split_idx:]
+      split_idx = batch_size * num_videos_per_prompt
 
-        prompt_attention_mask = combined_mask[:split_idx]
-        negative_prompt_attention_mask = combined_mask[split_idx:]
+      if isinstance(combined_embeds, list):
+        prompt_embeds = [state[:split_idx] for state in combined_embeds]
+        negative_prompt_embeds = [state[split_idx:] for state in combined_embeds]
       else:
+        prompt_embeds = combined_embeds[:split_idx]
+        negative_prompt_embeds = combined_embeds[split_idx:]
+
+      prompt_attention_mask = combined_mask[:split_idx]
+      negative_prompt_attention_mask = combined_mask[split_idx:]
+    else:
+      # Non-batched path (Sequential)
+      if prompt_embeds is None:
         prompt_embeds, prompt_attention_mask = self._get_gemma_prompt_embeds(
             prompt=prompt,
             num_videos_per_prompt=num_videos_per_prompt,
@@ -866,22 +872,22 @@ class LTX2Pipeline:
             dtype=dtype,
         )
 
-    if do_classifier_free_guidance and negative_prompt_embeds is None:
-      negative_prompt = negative_prompt or ""
-      negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+      if do_classifier_free_guidance and negative_prompt_embeds is None:
+        negative_prompt = negative_prompt or ""
+        negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
 
-      if prompt is not None and type(prompt) is not type(negative_prompt):
-        raise TypeError(
-            f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !=" f" {type(prompt)}."
+        if prompt is not None and type(prompt) is not type(negative_prompt):
+          raise TypeError(
+              f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !=" f" {type(prompt)}."
+          )
+
+        negative_prompt_embeds, negative_prompt_attention_mask = self._get_gemma_prompt_embeds(
+            prompt=negative_prompt,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=max_sequence_length,
+            scale_factor=scale_factor,
+            dtype=dtype,
         )
-
-      negative_prompt_embeds, negative_prompt_attention_mask = self._get_gemma_prompt_embeds(
-          prompt=negative_prompt,
-          num_videos_per_prompt=num_videos_per_prompt,
-          max_sequence_length=max_sequence_length,
-          scale_factor=scale_factor,
-          dtype=dtype,
-      )
 
     return prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
 
