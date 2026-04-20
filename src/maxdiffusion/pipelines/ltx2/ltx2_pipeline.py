@@ -1419,7 +1419,7 @@ class LTX2Pipeline:
 
           # Step
           latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
-          
+
           audio_latents_step, _ = self.scheduler.step(
               scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False
           )
