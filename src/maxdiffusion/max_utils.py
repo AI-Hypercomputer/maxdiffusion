@@ -47,7 +47,8 @@ from flax.typing import (
 from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
 from jax.experimental import mesh_utils
-from transformers import (FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel)
+
+from transformers import FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel
 from flax import struct
 from typing import (
     Callable,
@@ -136,8 +137,12 @@ class Profiler:
 
     if _jax_profiler_enabled(self.config):
       log_dir = self.config.tensorboard_dir
+      if log_dir.startswith("gs://"):
+        log_dir = os.path.join("/tmp/profiler_traces", self.config.run_name)
       if self.session_name:
         log_dir = os.path.join(log_dir, self.session_name)
+      os.makedirs(log_dir, exist_ok=True)
+      max_logging.log(f"Starting profiler trace in: {log_dir}")
       jax.profiler.start_trace(log_dir)
 
   def stop(self):
@@ -155,6 +160,24 @@ class Profiler:
 
   def __exit__(self, exc_type, exc_val, exc_tb):
     self.stop()
+
+    trace_dir = self.config.tensorboard_dir
+    if trace_dir.startswith("gs://"):
+      local_dir = os.path.join("/tmp/profiler_traces", self.config.run_name)
+      if os.path.exists(local_dir):
+        max_logging.log(f"Uploading profiler traces from {local_dir} to {trace_dir}...")
+        client = storage.Client()
+        bucket_name, prefix = parse_gcs_bucket_and_prefix(trace_dir)
+        bucket = client.bucket(bucket_name)
+
+        for root, _, files in os.walk(local_dir):
+          for file in files:
+            local_file = os.path.join(root, file)
+            rel_path = os.path.relpath(local_file, local_dir)
+            blob_name = os.path.join(prefix, rel_path)
+            blob = bucket.blob(blob_name)
+            blob.upload_from_filename(local_file)
+            max_logging.log(f"Uploaded {local_file} to gs://{bucket_name}/{blob_name}")
 
 
 def initialize_summary_writer(config):
@@ -407,7 +430,10 @@ def init_train_state(model, tx, weights_init_fn, params=None, training=True, eva
   Args: model_params, model, tx, training
   """
   if not params:
-    if isinstance(model, FlaxCLIPTextModel) or isinstance(model, FlaxCLIPTextPreTrainedModel):
+    is_clip_model = False
+    if FlaxCLIPTextModel is not None and FlaxCLIPTextPreTrainedModel is not None:
+      is_clip_model = isinstance(model, FlaxCLIPTextModel) or isinstance(model, FlaxCLIPTextPreTrainedModel)
+    if is_clip_model:
       params = weights_init_fn()
     else:
       params = weights_init_fn(eval_only=eval_only)

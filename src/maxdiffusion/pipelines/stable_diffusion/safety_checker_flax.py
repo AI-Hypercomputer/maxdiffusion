@@ -19,7 +19,15 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax.core.frozen_dict import FrozenDict
 from transformers import CLIPConfig, FlaxPreTrainedModel
-from transformers.models.clip.modeling_flax_clip import FlaxCLIPVisionModule
+
+try:
+  from transformers.models.clip.modeling_flax_clip import FlaxCLIPVisionModule
+except ModuleNotFoundError:
+  try:
+    from transformers.models.clip.modeling_flax_clip_vision import FlaxCLIPVisionModule
+  except ImportError:
+    # Fallback for different transformers versions
+    FlaxCLIPVisionModule = None
 
 
 def jax_cosine_distance(emb_1, emb_2, eps=1e-12):

@@ -47,6 +47,7 @@ class ProfilerTest(unittest.TestCase):
         enable_ondemand_xprof=True,
         run_name="test_run",
         enable_profiler=False,  # JAX profiler off
+        tensorboard_dir="/tmp/fake_tensorboard",
     )
 
     # 1. Test manual initialization

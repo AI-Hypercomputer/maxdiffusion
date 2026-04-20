@@ -368,7 +368,7 @@ class FlaxDiffusionPipeline(ConfigMixin, PushToHubMixin):
           resume_download=resume_download,
           proxies=proxies,
           local_files_only=local_files_only,
-          use_auth_token=use_auth_token,
+          token=use_auth_token,
           revision=revision,
           allow_patterns=allow_patterns,
           ignore_patterns=ignore_patterns,

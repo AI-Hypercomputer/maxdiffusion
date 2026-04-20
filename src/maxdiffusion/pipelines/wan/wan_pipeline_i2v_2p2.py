@@ -79,6 +79,8 @@ class WanPipelineI2V_2_2(WanPipeline):
         scheduler_state=common_components["scheduler_state"],
         devices_array=common_components["devices_array"],
         mesh=common_components["mesh"],
+        vae_mesh=common_components["vae_mesh"],
+        vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
         config=config,
     )
     return pipeline, low_noise_transformer, high_noise_transformer
