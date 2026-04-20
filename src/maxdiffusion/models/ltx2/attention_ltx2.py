@@ -349,6 +349,9 @@ class LTX2Attention(nnx.Module):
       rope_type: str = "interleaved",
       flash_block_sizes: BlockSizes = None,
       flash_min_seq_length: int = 4096,
+      qkv_sharding_spec: Optional[tuple] = None,
+      out_sharding_spec: Optional[tuple] = None,
+      out_bias_sharding_spec: Optional[tuple] = None,
   ):
     self.heads = heads
     self.rope_type = rope_type
@@ -356,16 +359,27 @@ class LTX2Attention(nnx.Module):
     self.inner_dim = dim_head * heads
     self.dropout_rate = dropout
 
+    # Auto-detect hardware for sharding specs if not overridden
+    device_kind = jax.devices()[0].device_kind
+    is_ironwood = "7x" in device_kind
+
+    if qkv_sharding_spec is None:
+      qkv_sharding_spec = (None, "heads") if is_ironwood else ("embed", "heads")
+    if out_sharding_spec is None:
+      out_sharding_spec = ("heads", None) if is_ironwood else ("heads", "embed")
+    if out_bias_sharding_spec is None:
+      out_bias_sharding_spec = (None,) if is_ironwood else ("embed",)
+
     # 1. Define Partitioned Initializers (Logical Axes)
     # Q, K, V kernels: [in_features (embed), out_features (heads)]
-    qkv_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), (None, "heads"))
+    qkv_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), qkv_sharding_spec)
     # Q, K, V biases: [out_features (heads)]
     qkv_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("heads",))
 
     # Out kernel: [in_features (heads), out_features (embed)]
-    out_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", None))
+    out_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), out_sharding_spec)
     # Out bias: [out_features (embed)]
-    out_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), (None,))
+    out_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), out_bias_sharding_spec)
 
     # Norm scales
     norm_scale_init = nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",))
