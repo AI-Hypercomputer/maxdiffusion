@@ -1346,27 +1346,83 @@ class LTX2Pipeline:
         audio_embeds_sharded = jax.device_put(audio_embeds, spec)
 
       timesteps_jax = jnp.array(timesteps, dtype=jnp.float32)
-      latents_jax, audio_latents_jax = run_diffusion_loop(
-          graphdef,
-          state,
-          scheduler_state,
-          timesteps_jax,
-          latents_jax,
-          audio_latents_jax,
-          video_embeds_sharded,
-          audio_embeds_sharded,
-          new_attention_mask,
-          guidance_scale,
-          latent_num_frames,
-          latent_height,
-          latent_width,
-          audio_num_frames,
-          frame_rate,
-          batch_size,
-          self.transformer.scan_layers,
-          self.scheduler.step,
-          tuple(tuple(rule) if isinstance(rule, list) else rule for rule in self.config.logical_axis_rules),
-      )
+
+      scan_diffusion_loop = getattr(self.config, "scan_diffusion_loop", True)
+
+      if scan_diffusion_loop:
+        latents_jax, audio_latents_jax = run_diffusion_loop(
+            graphdef,
+            state,
+            scheduler_state,
+            timesteps_jax,
+            latents_jax,
+            audio_latents_jax,
+            video_embeds_sharded,
+            audio_embeds_sharded,
+            new_attention_mask,
+            guidance_scale,
+            latent_num_frames,
+            latent_height,
+            latent_width,
+            audio_num_frames,
+            frame_rate,
+            batch_size,
+            self.transformer.scan_layers,
+            self.scheduler.step,
+            tuple(tuple(rule) if isinstance(rule, list) else rule for rule in self.config.logical_axis_rules),
+        )
+      else:
+        # Old Python loop path
+        latents_jax = latents_jax.astype(jnp.float32)
+        audio_latents_jax = audio_latents_jax.astype(jnp.float32)
+
+        for t in timesteps_jax:
+          noise_pred, noise_pred_audio = transformer_forward_pass(
+              graphdef,
+              state,
+              latents_jax,
+              audio_latents_jax,
+              t,
+              video_embeds_sharded,
+              audio_embeds_sharded,
+              new_attention_mask,
+              new_attention_mask,
+              guidance_scale > 1.0,
+              guidance_scale,
+              latent_num_frames,
+              latent_height,
+              latent_width,
+              audio_num_frames,
+              frame_rate,
+          )
+
+          if guidance_scale > 1.0:
+            noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
+            noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
+
+            latents_step = latents_jax[batch_size:]
+            audio_latents_step = audio_latents_jax[batch_size:]
+          else:
+            latents_step = latents_jax
+            audio_latents_step = audio_latents_jax
+
+          latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
+          latents_step = latents_step.astype(jnp.float32)
+
+          audio_latents_step, _ = self.scheduler.step(
+              scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False
+          )
+          audio_latents_step = audio_latents_step.astype(jnp.float32)
+
+          if guidance_scale > 1.0:
+            latents_jax = jnp.concatenate([latents_step] * 2, axis=0)
+            audio_latents_jax = jnp.concatenate([audio_latents_step] * 2, axis=0)
+          else:
+            latents_jax = latents_step
+            audio_latents_jax = audio_latents_step
 
     # 8. Decode Latents
     if guidance_scale > 1.0:
