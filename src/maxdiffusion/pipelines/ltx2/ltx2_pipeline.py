@@ -127,6 +127,8 @@ def create_sharded_logical_transformer(
   ltx2_config["dtype"] = config.activations_dtype
   ltx2_config["weights_dtype"] = config.weights_dtype
   ltx2_config["attention_kernel"] = config.attention
+  ltx2_config["a2v_attention_kernel"] = getattr(config, "a2v_attention_kernel", "flash")
+  ltx2_config["v2a_attention_kernel"] = getattr(config, "v2a_attention_kernel", "dot_product")
   ltx2_config["precision"] = get_precision(config)
   ltx2_config["flash_block_sizes"] = get_flash_block_sizes(config)
   ltx2_config["flash_min_seq_length"] = getattr(config, "flash_min_seq_length", 4096)
