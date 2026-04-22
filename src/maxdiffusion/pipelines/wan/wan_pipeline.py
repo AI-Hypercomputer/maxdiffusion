@@ -67,7 +67,6 @@ def cast_with_exclusion(path, x, dtype_to_cast):
   path_str = ".".join(str(k.key) if isinstance(k, jax.tree_util.DictKey) else str(k) for k in path)
 
   if any(keyword in path_str.lower() for keyword in exclusion_keywords):
-    print("is_norm_path: ", path)
     # Keep LayerNorm/GroupNorm weights and biases in full precision
     return x.astype(jnp.float32)
   else:
@@ -139,6 +138,8 @@ def create_sharded_logical_transformer(
   wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
+  wan_config["use_base2_exp"] = config.use_base2_exp
+  wan_config["use_experimental_scheduler"] = config.use_experimental_scheduler
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.

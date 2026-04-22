@@ -61,6 +61,8 @@ jit_initializers: True
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring, ulysses
+use_base2_exp: True
+use_experimental_scheduler: True
 flash_min_seq_length: 0
 
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
