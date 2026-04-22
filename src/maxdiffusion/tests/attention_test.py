@@ -442,5 +442,79 @@ class AttentionTest(unittest.TestCase):
     self.assertTrue(jnp.array_equal(output, expected))
 
 
+  def test_tokamax_ulysses_attention_matches_tokamax_flash(self):
+    """Tokamax Flash and Tokamax Ulysses should agree when the local splash kernel is shared."""
+    batch = 2
+    length = 6
+    heads = 4
+    head_depth = 3
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    key = query + 100.0
+    value = query + 200.0
+    mesh = self._ulysses_mesh()
+
+    def fake_make_splash_mha(**unused_kwargs):
+      def fake_kernel(q, k, v, segment_ids):
+        del k, segment_ids
+        return q + jnp.mean(v, axis=1, keepdims=True)
+
+      return fake_kernel
+
+    with mock.patch.object(
+        attention_flax.tokamax_splash_attention_kernel,
+        "make_splash_mha",
+        side_effect=fake_make_splash_mha,
+    ):
+      with mesh, nn_partitioning.axis_rules(self._flash_axis_rules()):
+        flash_output = attention_flax._tpu_flash_attention(
+            query,
+            key,
+            value,
+            heads=heads,
+            mesh=mesh,
+            axis_names_q=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_Q_LENGTH,
+                attention_flax.D_KV,
+            ),
+            axis_names_kv=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_KV_LENGTH,
+                attention_flax.D_KV,
+            ),
+            flash_block_sizes=self._ulysses_block_sizes(),
+            dtype=jnp.float32,
+            attention_kernel="tokamax_flash",
+        )
+
+      with mesh, nn_partitioning.axis_rules(self._ulysses_axis_rules()):
+        ulysses_output = attention_flax._ulysses_attention(
+            query,
+            key,
+            value,
+            heads=heads,
+            mesh=mesh,
+            axis_names_q=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_Q_LENGTH,
+                attention_flax.D_KV,
+            ),
+            axis_names_kv=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_KV_LENGTH,
+                attention_flax.D_KV,
+            ),
+            flash_block_sizes=self._ulysses_block_sizes(),
+            dtype=jnp.float32,
+            attention_kernel="tokamax_ulysses",
+        )
+
+    self.assertEqual(flash_output.shape, ulysses_output.shape)
+    self.assertTrue(jnp.array_equal(flash_output, ulysses_output))
+
 if __name__ == "__main__":
   absltest.main()

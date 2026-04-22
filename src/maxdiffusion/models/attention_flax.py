@@ -507,6 +507,7 @@ def _ulysses_attention(
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
     attention_mask: jax.Array = None,
+    attention_kernel: str = "ulysses",
 ) -> jax.Array:
   """Ulysses sequence-parallel attention.
 
@@ -530,7 +531,9 @@ def _ulysses_attention(
         "Ulysses attention requires the number of heads to be divisible by the context shard count, "
         f"got heads={num_heads} and context_shards={num_shards}."
     )
-  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, "flash")
+  
+  inner_kernel = "tokamax_flash" if attention_kernel == "tokamax_ulysses" else "flash"
+  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, inner_kernel)
 
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
@@ -597,14 +600,26 @@ def _ulysses_attention(
     if not mask_padding_tokens:
       segment_ids = None
 
-    splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask,
-        head_shards=1,
-        q_seq_shards=1,
-        block_sizes=block_sizes,
-        save_residuals=False,
-        residual_checkpoint_name=residual_checkpoint_name,
-    )
+    if attention_kernel == "tokamax_ulysses":
+      mask = tokamax_splash_attention_mask.FullMask(
+          _shape=(query.shape[2], key.shape[2]),
+      )
+      splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
+          mask=mask,
+          q_seq_shards=1,
+          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          save_residuals=False,
+      )
+    else:
+      splash_kernel = splash_attention_kernel.make_splash_mha(
+          mask=multi_head_mask,
+          head_shards=1,
+          q_seq_shards=1,
+          block_sizes=block_sizes,
+          save_residuals=False,
+          residual_checkpoint_name=residual_checkpoint_name,
+      )
+      
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
     attention_output = vmapped_splash(query, key, value, segment_ids)
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
@@ -747,7 +762,7 @@ def _apply_attention(
   seq_len_idx = 1
   if query.ndim == 4:
     seq_len_idx = 2
-  if attention_kernel in ["flash", "tokamax_flash", "ulysses"]:
+  if attention_kernel in ["flash", "tokamax_flash", "ulysses", "tokamax_ulysses"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -759,7 +774,7 @@ def _apply_attention(
     return _apply_attention_dot(
         query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
     )
-  elif attention_kernel == "ulysses":
+  elif attention_kernel in ["ulysses", "tokamax_ulysses"]:
     return _ulysses_attention(
         query,
         key * scale,
@@ -773,6 +788,7 @@ def _apply_attention(
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
         attention_mask=attention_mask,
+        attention_kernel=attention_kernel,
     )
   elif attention_kernel in ["flash", "tokamax_flash"]:
     return _tpu_flash_attention(
