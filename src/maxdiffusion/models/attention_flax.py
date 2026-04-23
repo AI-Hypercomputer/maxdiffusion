@@ -301,7 +301,6 @@ def convert_to_tokamax_splash_config(
       dq_reduction_steps=dq_reduction_steps,
   )
 
-
 def _tpu_flash_attention(
     query: jax.Array,
     key: jax.Array,
@@ -317,200 +316,198 @@ def _tpu_flash_attention(
     residual_checkpoint_name: str | None = None,
     attention_mask: jax.Array = None,
 ) -> jax.Array:
-  """TPU Flash Attention"""
+    """Torchax-Style Tensor Parallel TPU Flash Attention"""
 
-  num_context_shards = mesh.shape["context"]
-  query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
-  key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
-  value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
-  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, attention_kernel)
+    # 1. Reshape from (Batch, Seq_Len, Heads*Dim) -> (Batch, Heads, Seq_Len, Dim)
+    # We pass num_context_shards=1 because we hold the full sequence locally.
+    query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards=1)
+    key, _ = _reshape_data_for_flash(key, heads, num_context_shards=1)
+    value, _ = _reshape_data_for_flash(value, heads, num_context_shards=1)
 
-  q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
-  kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
-
-  @functools.partial(
-      shard_map.shard_map,
-      mesh=mesh,
-      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
-      out_specs=q_axis_names,
-      check_rep=False,
-  )
-  def wrap_flash_attention(query, key, value):
-    bq = 2048
-    bkv=2048
-    bkv_compute = 1024
-    bkv_compute_in = 256
-    heads_per_tile = 1  # Matches Torchax default
-    # uses_fused_kernel = block_sizes.use_fused_bwd_kernel
-    # block_q_sizes = (
-    #     block_sizes.block_q,
-    #     block_sizes.block_q_dkv,
-    # )
-    # block_kv_sizes = (
-    #     block_sizes.block_kv,
-    #     block_sizes.block_kv_dkv,
-    # )
-    # if uses_fused_kernel:
-    #   block_q_sizes += (block_sizes.block_q_dkv,)
-    #   block_kv_sizes += (block_sizes.block_kv_dkv,)
-    # else:
-    #   block_q_sizes += (block_sizes.block_q_dq,)
-    #   block_kv_sizes += (block_sizes.block_kv_dq,)
-
-    # block_q = max(*block_q_sizes)
-    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
-
-    #block_kv = max(*block_kv_sizes)
-    key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
-    value, _, _ = _pad_data_for_flash(value, heads, bkv)
-
-    bsizes = custom_splash._BlockSizes(
-          block_q=bq,
-          block_kv=bkv,
-          block_kv_compute=bkv_compute,
+    # 2. Call the built-in Torchax shard_map wrapper! 
+    # This automatically handles the SPMD boundaries, the min() padding logic for 
+    # cross-attention, and the axis swapping.
+    x = custom_splash.tpu_custom_attention(
+        query=query,
+        key=key,
+        value=value,
+        mesh=mesh,
+        # CRITICAL: JAX already scaled `key` by 1/sqrt(d) in the router. 
+        # Passing 1.0 ensures the kernel only applies the log2(e) multiplier to `query`.
+        scale=1.0, 
+        block_q=2048,
+        block_kv=2048,
+        block_kv_compute=1024,
+        block_kv_compute_in=256,
+        heads_per_tile=1
     )
 
-    # mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
-    # multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+    # 3. Trim back to original sequence length
+    x = x[:, :, :orig_q_seq_len, :]
 
-    q_padded_len = query.shape[2]
-    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
-    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
+    # 4. Flatten back to (Batch, Seq_Len, Heads * Head_Dim)
+    x = _reshape_heads_to_head_dim(x)
 
-    kv_padded_len = key.shape[2]
-    kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
-    kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+    return x
 
-    # If attention_mask is provided, apply it to kv_segment_ids
-    # if attention_mask is not None:
-    #   mask_len = min(key_seq_len, attention_mask.shape[1])
-    #   kv_mask_for_batch = attention_mask[0, :mask_len]  # (mask_len,)
-    #   # If key_seq_len > mask_len, pad the mask with 1s (assume remaining tokens are valid)
-    #   if key_seq_len > mask_len:
-    #     extra_valid = jnp.ones((key_seq_len - mask_len,), dtype=jnp.int32)
-    #     kv_mask_for_batch = jnp.concatenate([kv_mask_for_batch, extra_valid], axis=0)  # (key_seq_len,)
-    #   # Pad to kv_padded_len
-    #   if kv_padded_len > key_seq_len:
-    #     padding = jnp.zeros((kv_padded_len - key_seq_len,), dtype=jnp.int32)
-    #     kv_mask_padded = jnp.concatenate([kv_mask_for_batch, padding], axis=0)  # (kv_padded_len,)
-    #   else:
-    #     kv_mask_padded = kv_mask_for_batch
-    #   # Both are (kv_padded_len,) - element-wise multiplication
-    #   kv_segment_ids = (kv_segment_ids * kv_mask_padded).astype(jnp.int32)
 
-    if attention_kernel == "tokamax_ring":
-      #segment_ids = tokamax_splash_base.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
-      pass
-    else:
-      segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
+# def _tpu_flash_attention(
+#     query: jax.Array,
+#     key: jax.Array,
+#     value: jax.Array,
+#     heads: int,
+#     mesh: Mesh,
+#     axis_names_q: AxisNames,
+#     axis_names_kv: AxisNames,
+#     flash_block_sizes: BlockSizes,
+#     dtype: jnp.dtype = jnp.float32,
+#     attention_kernel: str = "flash",
+#     mask_padding_tokens: bool = False,
+#     residual_checkpoint_name: str | None = None,
+#     attention_mask: jax.Array = None,
+# ) -> jax.Array:
+#   """TPU Flash Attention"""
 
-    # make_splash_mha is wrapped around shardmap and seq and head is already
-    # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
-    if attention_kernel == "tokamax_flash":
-      mask = tokamax_splash_attention_mask.FullMask(
-          _shape=(query.shape[2], key.shape[2]),
-      )
-      splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
-          mask=mask,
-          q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
-          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
-          save_residuals=False,
-      )
-    elif attention_kernel == "tokamax_ring":
-      # mask = tokamax_splash_attention_mask.FullMask(
-      #     _shape=(query.shape[2], key.shape[2]),
-      # )
-      # splash_kernel = tokamax_ring_attention_kernel.make_ring_attention(
-      #     mask=mask,
-      #     is_mqa=False,
-      #     config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
-      #     save_residuals=False,
-      #     ring_axis="context",
-      #     rotate_segment_ids=False,  # We don't rotate segment ids in tokamax ring attention because our segment ids is for padding each kv shard has same segment ids
-      # )
-      splash_kernel = custom_splash.make_splash_mha(
-        block_sizes=bsizes,
-        bkv_compute_in=bkv_compute_in,
-        orig_q_seq_len=query_seq_len,
-        orig_kv_seq_len=key_seq_len,
-        heads_per_tile=heads_per_tile
-      )
-    else:
-      splash_kernel = custom_splash
-      splash_kernel = splash_attention_kernel.make_splash_mha(
-          mask=multi_head_mask,
-          head_shards=1,  # the sizes of the axis is sharding over heads
-          q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
-          block_sizes=block_sizes,
-          save_residuals=True if "ring" in attention_kernel else False,
-          residual_checkpoint_name=residual_checkpoint_name,
-      )
+#   num_context_shards = mesh.shape["context"]
+#   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
+#   key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
+#   value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
+#   block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, attention_kernel)
 
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0), out_axes=0)
+#   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
+#   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
 
-    if not mask_padding_tokens:
-      segment_ids = None
-    if attention_kernel in ["flash", "tokamax_flash", "tokamax_ring"]:
-      attention_output = vmapped_splash(query, key, value)
-      if attention_kernel == "tokamax_ring":
-          attention_output = jnp.swapaxes(attention_output, 2, 3)
-    else:
-      if num_context_shards > 1:
-        out, (lse,) = vmapped_splash(query, key, value, segment_ids)
-        m = lse.astype(jnp.float32)
-        l = jnp.exp(lse - m)
-        o = out.astype(jnp.float32) * l[..., None]
+#   @functools.partial(
+#       shard_map.shard_map,
+#       mesh=mesh,
+#       in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
+#       out_specs=q_axis_names,
+#       check_rep=False,
+#   )
+#   def wrap_flash_attention(query, key, value):
+#     bq = 2048
+#     bkv=2048
+#     bkv_compute = 1024
+#     bkv_compute_in = 256
+#     heads_per_tile = 1  # Matches Torchax default
 
-        perm = [(j, (j + 1) % num_context_shards) for j in range(num_context_shards)]
+#     query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
 
-        k1 = jax.lax.ppermute(key, axis_name="context", perm=perm)
-        v1 = jax.lax.ppermute(value, axis_name="context", perm=perm)
+#     #block_kv = max(*block_kv_sizes)
+#     key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
+#     value, _, _ = _pad_data_for_flash(value, heads, bkv)
 
-        def ring_scan_body(carry, _):
-          m, l, o, k_current, v_current = carry
-          k_next = jax.lax.ppermute(k_current, axis_name="context", perm=perm)
-          v_next = jax.lax.ppermute(v_current, axis_name="context", perm=perm)
+#     bsizes = custom_splash._BlockSizes(
+#           block_q=bq,
+#           block_kv=bkv,
+#           block_kv_compute=bkv_compute,
+#     )
 
-          out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
+#     # mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
+#     # multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
 
-          m_chunk = lse_chunk.astype(jnp.float32)
-          m_old = m
-          m = jnp.maximum(m_old, m_chunk)
+#     q_padded_len = query.shape[2]
+#     q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
+#     q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
 
-          exp_m_diff = jnp.exp(m_old - m)
-          exp_m_chunk_diff = jnp.exp(m_chunk - m)
+#     kv_padded_len = key.shape[2]
+#     kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
+#     kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
 
-          l = l * exp_m_diff + jnp.exp(lse_chunk - m)
-          o = o * exp_m_diff[..., None]
-          o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
+#     # make_splash_mha is wrapped around shardmap and seq and head is already
+#     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
+#     if attention_kernel == "tokamax_flash":
+#       mask = tokamax_splash_attention_mask.FullMask(
+#           _shape=(query.shape[2], key.shape[2]),
+#       )
+#       splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
+#           mask=mask,
+#           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
+#           config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+#           save_residuals=False,
+#       )
+#     elif attention_kernel == "tokamax_ring":
+#       splash_kernel = custom_splash.make_splash_mha(
+#         block_sizes=bsizes,
+#         bkv_compute_in=bkv_compute_in,
+#         orig_q_seq_len=query_seq_len,
+#         orig_kv_seq_len=key_seq_len,
+#         heads_per_tile=heads_per_tile
+#       )
+#     else:
+#       splash_kernel = custom_splash.make_splash_mha(
+#         block_sizes=bsizes,
+#         bkv_compute_in=bkv_compute_in,
+#         orig_q_seq_len=query_seq_len,
+#         orig_kv_seq_len=key_seq_len,
+#         heads_per_tile=heads_per_tile
+#       )
 
-          # Return the updated state for the next iteration
-          return (m, l, o, k_next, v_next), None
+#     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0), out_axes=0)
 
-        initial_carry = (m, l, o, k1, v1)
-        (m_final, l_final, o_final, _, _), _ = jax.lax.scan(
-            ring_scan_body, initial_carry, None, length=num_context_shards - 1
-        )
+#     if not mask_padding_tokens:
+#       segment_ids = None
+#     if attention_kernel in ["flash", "tokamax_flash", "tokamax_ring"]:
+#       query_scaled = query * 1.44269504
+#       attention_output = vmapped_splash(query_scaled, key, value)
+#       attention_output = jnp.swapaxes(attention_output, 2, 3)
+#     else:
+#       if num_context_shards > 1:
+#         out, (lse,) = vmapped_splash(query, key, value, segment_ids)
+#         m = lse.astype(jnp.float32)
+#         l = jnp.exp(lse - m)
+#         o = out.astype(jnp.float32) * l[..., None]
 
-        attention_output = o_final / l_final[..., None]
-      else:
-        raise ValueError("ring attention requires context > 1")
-    return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
+#         perm = [(j, (j + 1) % num_context_shards) for j in range(num_context_shards)]
 
-  devices_in_data_context = mesh.shape["data"] * mesh.shape["context"]
-  # This warning might show up when doing model eval for example, when calculating model flops
-  # and that is expected.
-  if not (query.shape[0] / devices_in_data_context).is_integer():
-    max_logging.log(
-        "Warning, batch dimension should be shardable among the devices in data and context"
-        f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
-    )
-  x = wrap_flash_attention(query, key, value)
-  # Trim back to original sequence length after context-axis padding.
-  x = x[:, :, :orig_q_seq_len, :]
-  x = _reshape_heads_to_head_dim(x)
+#         k1 = jax.lax.ppermute(key, axis_name="context", perm=perm)
+#         v1 = jax.lax.ppermute(value, axis_name="context", perm=perm)
 
-  return x
+#         def ring_scan_body(carry, _):
+#           m, l, o, k_current, v_current = carry
+#           k_next = jax.lax.ppermute(k_current, axis_name="context", perm=perm)
+#           v_next = jax.lax.ppermute(v_current, axis_name="context", perm=perm)
+
+#           out_chunk, (lse_chunk,) = vmapped_splash(query, k_current, v_current, segment_ids)
+
+#           m_chunk = lse_chunk.astype(jnp.float32)
+#           m_old = m
+#           m = jnp.maximum(m_old, m_chunk)
+
+#           exp_m_diff = jnp.exp(m_old - m)
+#           exp_m_chunk_diff = jnp.exp(m_chunk - m)
+
+#           l = l * exp_m_diff + jnp.exp(lse_chunk - m)
+#           o = o * exp_m_diff[..., None]
+#           o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
+
+#           # Return the updated state for the next iteration
+#           return (m, l, o, k_next, v_next), None
+
+#         initial_carry = (m, l, o, k1, v1)
+#         (m_final, l_final, o_final, _, _), _ = jax.lax.scan(
+#             ring_scan_body, initial_carry, None, length=num_context_shards - 1
+#         )
+
+#         attention_output = o_final / l_final[..., None]
+#       else:
+#         raise ValueError("ring attention requires context > 1")
+#     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
+
+#   devices_in_data_context = mesh.shape["data"] * mesh.shape["context"]
+#   # This warning might show up when doing model eval for example, when calculating model flops
+#   # and that is expected.
+#   if not (query.shape[0] / devices_in_data_context).is_integer():
+#     max_logging.log(
+#         "Warning, batch dimension should be shardable among the devices in data and context"
+#         f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
+#     )
+#   x = wrap_flash_attention(query, key, value)
+#   # Trim back to original sequence length after context-axis padding.
+#   x = x[:, :, :orig_q_seq_len, :]
+#   x = _reshape_heads_to_head_dim(x)
+
+#   return x
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +551,7 @@ def _ulysses_attention(
         "Ulysses attention requires the number of heads to be divisible by the context shard count, "
         f"got heads={num_heads} and context_shards={num_shards}."
     )
-  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, "flash")
+  
 
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
@@ -573,64 +570,45 @@ def _ulysses_attention(
     key = jax.lax.all_to_all(key, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
     value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
 
+    bq = 2048
+    bkv = 2048
+    bkv_compute = 1024
+    bkv_compute_in = 256
+    heads_per_tile = 1
+
+    query_scaled = query * 1.44269504
+
     # Run the same local splash kernel as standard TPU flash attention, but now
     # on full-sequence / fewer-heads tensors produced by the all-to-all above.
-    uses_fused_kernel = block_sizes.use_fused_bwd_kernel
-    block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv)
-    block_kv_sizes = (block_sizes.block_kv, block_sizes.block_kv_dkv)
-    if uses_fused_kernel:
-      block_q_sizes += (block_sizes.block_q_dkv,)
-      block_kv_sizes += (block_sizes.block_kv_dkv,)
-    else:
-      block_q_sizes += (block_sizes.block_q_dq,)
-      block_kv_sizes += (block_sizes.block_kv_dq,)
+    # uses_fused_kernel = block_sizes.use_fused_bwd_kernel
+    # block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv)
+    # block_kv_sizes = (block_sizes.block_kv, block_sizes.block_kv_dkv)
+    # if uses_fused_kernel:
+    #   block_q_sizes += (block_sizes.block_q_dkv,)
+    #   block_kv_sizes += (block_sizes.block_kv_dkv,)
+    # else:
+    #   block_q_sizes += (block_sizes.block_q_dq,)
+    #   block_kv_sizes += (block_sizes.block_kv_dq,)
 
-    block_q = max(*block_q_sizes)
-    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_q)
-    block_kv = max(*block_kv_sizes)
-    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
-    value, _, _ = _pad_data_for_flash(value, heads, block_kv)
+    # block_q = max(*block_q_sizes)
+    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
+    key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
+    value, _, _ = _pad_data_for_flash(value, heads, bkv)
 
-    mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
-    multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+    bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
 
-    q_padded_len = query.shape[2]
-    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
-    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
-
-    kv_padded_len = key.shape[2]
-    kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
-    kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
-
-    # Reuse the standard flash-attention masking convention by zeroing invalid
-    # KV positions in the segment ids passed down to splash.
-    if attention_mask is not None:
-      mask_len = min(key_seq_len, attention_mask.shape[1])
-      kv_mask_for_batch = attention_mask[0, :mask_len]
-      if key_seq_len > mask_len:
-        extra_valid = jnp.ones((key_seq_len - mask_len,), dtype=jnp.int32)
-        kv_mask_for_batch = jnp.concatenate([kv_mask_for_batch, extra_valid], axis=0)
-      if kv_padded_len > key_seq_len:
-        padding = jnp.zeros((kv_padded_len - key_seq_len,), dtype=jnp.int32)
-        kv_mask_padded = jnp.concatenate([kv_mask_for_batch, padding], axis=0)
-      else:
-        kv_mask_padded = kv_mask_for_batch
-      kv_segment_ids = (kv_segment_ids * kv_mask_padded).astype(jnp.int32)
-
-    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
-    if not mask_padding_tokens:
-      segment_ids = None
-
-    splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask,
-        head_shards=1,
-        q_seq_shards=1,
-        block_sizes=block_sizes,
-        save_residuals=False,
-        residual_checkpoint_name=residual_checkpoint_name,
+    splash_kernel = custom_splash.make_splash_mha(
+        block_sizes=bsizes,
+        bkv_compute_in=bkv_compute_in,
+        orig_q_seq_len=query_seq_len,
+        orig_kv_seq_len=key_seq_len,
+        heads_per_tile=heads_per_tile
     )
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
-    attention_output = vmapped_splash(query, key, value, segment_ids)
+
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
+    attention_output = vmapped_splash(query_scaled, key, value)
+    attention_output = jnp.swapaxes(attention_output, 2, 3)
+
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
     # Restore the original layout expected by the rest of the model:
@@ -650,6 +628,10 @@ def _ulysses_attention(
 
   return x
 
+def torchax_attention(
+  
+):
+  pass
 
 def _apply_attention_dot(
     query: Array,
