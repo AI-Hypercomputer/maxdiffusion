@@ -25,6 +25,8 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
+import numpy as np
+from ... import max_utils
 
 
 class WanPipelineI2V_2_1(WanPipeline):
@@ -252,6 +254,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         retention_ratio=retention_ratio,
         height=height,
         mag_ratios_base=self.config.mag_ratios_base_720p if height >= 720 else self.config.mag_ratios_base_480p,
+        config=self.config,
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -290,6 +293,7 @@ def run_inference_2_1_i2v(
     retention_ratio: float = 0.2,
     height: int = 480,
     mag_ratios_base: Optional[List[float]] = None,
+    config=None,
 ):
   do_cfg = guidance_scale > 1.0
 
@@ -309,7 +313,16 @@ def run_inference_2_1_i2v(
     image_embeds_combined = image_embeds
     condition_combined = condition
 
+  first_profiling_step = config.skip_first_n_steps_for_profiler if config else 0
+  profiler_steps = config.profiler_steps if config else 0
+  last_profiling_step = np.clip(first_profiling_step + profiler_steps - 1, first_profiling_step, num_inference_steps - 1)
+
+  profiler = None
   for step in range(num_inference_steps):
+    if config and max_utils.profiler_enabled(config) and step == first_profiling_step:
+      profiler = max_utils.Profiler(config)
+      profiler.start()
+
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
 
     skip_blocks = False
@@ -349,4 +362,8 @@ def run_inference_2_1_i2v(
 
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents, return_dict=False)
+
+    if config and max_utils.profiler_enabled(config) and step == last_profiling_step:
+      if profiler:
+        profiler.stop()
   return latents
