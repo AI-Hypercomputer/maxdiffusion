@@ -40,6 +40,11 @@ def rename_for_ltx2_transformer(key):
   """
   Renames Diffusers LTX-2 keys to MaxDiffusion Flax LTX-2 keys.
   """
+  if "caption_proj" in key and "caption_projection" not in key:
+      key = key.replace("caption_proj", "caption_projection")
+  if "audio_caption_proj" in key and "audio_caption_projection" not in key:
+      key = key.replace("audio_caption_proj", "audio_caption_projection")
+
   key = key.replace("patchify_proj", "proj_in")
   key = key.replace("audio_patchify_proj", "audio_proj_in")
   key = key.replace("norm_final", "norm_out")
@@ -289,11 +294,21 @@ def load_vocoder_weights(
 
     flax_key = _tuple_str_to_int(parts)
 
+    # Skip filter keys as they are derived in NNX model
+    if "filter" in flax_key:
+      continue
+
     if flax_key[-1] == "kernel":
       if "upsamplers" in flax_key:
-        tensor = tensor.transpose(2, 0, 1)[::-1, :, :]
+        if "2.3" in pretrained_model_name_or_path:
+          tensor = tensor.transpose(2, 0, 1)
+        else:
+          tensor = tensor.transpose(2, 0, 1)[::-1, :, :]
       else:
         tensor = tensor.transpose(2, 1, 0)
+        
+    if "mel_stft" in flax_key and ("forward_basis" in flax_key or "inverse_basis" in flax_key):
+      tensor = tensor.transpose(2, 1, 0)
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 
@@ -305,6 +320,8 @@ def rename_for_ltx2_connector(key):
   key = key.replace("video_connector", "video_embeddings_connector")
   key = key.replace("audio_connector", "audio_embeddings_connector")
   key = key.replace("text_proj_in", "feature_extractor.linear")
+  key = key.replace("audio_feature_extractor.linear", "audio_text_proj_in")
+  key = key.replace("video_feature_extractor.linear", "video_text_proj_in")
 
   if "transformer_blocks" in key:
     key = key.replace("transformer_blocks", "stacked_blocks")
