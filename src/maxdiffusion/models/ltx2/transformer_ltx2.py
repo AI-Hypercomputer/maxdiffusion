@@ -365,6 +365,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
       audio_encoder_attention_mask: Optional[jax.Array] = None,
       a2v_cross_attention_mask: Optional[jax.Array] = None,
       v2a_cross_attention_mask: Optional[jax.Array] = None,
+      use_a2v_cross_attention: bool = True,
+      use_v2a_cross_attention: bool = True,
       perturbation_mask: Optional[jax.Array] = None,
   ) -> Tuple[jax.Array, jax.Array]:
     batch_size = hidden_states.shape[0]
@@ -497,33 +499,35 @@ class LTX2VideoTransformerBlock(nnx.Module):
     mod_norm_hidden_states = norm_hidden_states * (1 + video_a2v_ca_scale) + video_a2v_ca_shift
     mod_norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_a2v_ca_scale) + audio_a2v_ca_shift
 
-    with jax.named_scope("Audio-to-Video Cross-Attention"):
-      a2v_attn_hidden_states = self.audio_to_video_attn(
-          mod_norm_hidden_states,
-          encoder_hidden_states=mod_norm_audio_hidden_states,
-          rotary_emb=ca_video_rotary_emb,
-          k_rotary_emb=ca_audio_rotary_emb,
-          attention_mask=a2v_cross_attention_mask,
-      )
-    
-    if perturbation_mask is not None:
-      a2v_attn_hidden_states = mod_norm_audio_hidden_states + perturbation_mask * (a2v_attn_hidden_states - mod_norm_audio_hidden_states)
+    if use_a2v_cross_attention:
+      with jax.named_scope("Audio-to-Video Cross-Attention"):
+        a2v_attn_hidden_states = self.audio_to_video_attn(
+            mod_norm_hidden_states,
+            encoder_hidden_states=mod_norm_audio_hidden_states,
+            rotary_emb=ca_video_rotary_emb,
+            k_rotary_emb=ca_audio_rotary_emb,
+            attention_mask=a2v_cross_attention_mask,
+        )
       
-    hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
+      if perturbation_mask is not None:
+        a2v_attn_hidden_states = mod_norm_audio_hidden_states + perturbation_mask * (a2v_attn_hidden_states - mod_norm_audio_hidden_states)
+        
+      hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
 
     # Video-to-Audio Cross Attention: Q: Audio; K,V: Video
     mod_norm_hidden_states_v2a = norm_hidden_states * (1 + video_v2a_ca_scale) + video_v2a_ca_shift
     mod_norm_audio_hidden_states_v2a = norm_audio_hidden_states * (1 + audio_v2a_ca_scale) + audio_v2a_ca_shift
 
-    with jax.named_scope("Video-to-Audio Cross-Attention"):
-      v2a_attn_hidden_states = self.video_to_audio_attn(
-          mod_norm_audio_hidden_states_v2a,
-          encoder_hidden_states=mod_norm_hidden_states_v2a,
-          rotary_emb=ca_audio_rotary_emb,
-          k_rotary_emb=ca_video_rotary_emb,
-          attention_mask=v2a_cross_attention_mask,
-      )
-    audio_hidden_states = audio_hidden_states + v2a_gate * v2a_attn_hidden_states
+    if use_v2a_cross_attention:
+      with jax.named_scope("Video-to-Audio Cross-Attention"):
+        v2a_attn_hidden_states = self.video_to_audio_attn(
+            mod_norm_audio_hidden_states_v2a,
+            encoder_hidden_states=mod_norm_hidden_states_v2a,
+            rotary_emb=ca_audio_rotary_emb,
+            k_rotary_emb=ca_video_rotary_emb,
+            attention_mask=v2a_cross_attention_mask,
+        )
+      audio_hidden_states = audio_hidden_states + v2a_gate * v2a_attn_hidden_states
 
     if modality_mask is not None:
       hidden_states = hidden_states * modality_mask
@@ -966,6 +970,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       attention_kwargs: Optional[Dict[str, Any]] = None,
       use_cross_timestep: bool = False,
       modality_mask: Optional[jax.Array] = None,
+      isolate_modalities: bool = False,
       return_dict: bool = True,
       perturbation_mask: Optional[jax.Array] = None,
   ) -> Any:
@@ -1111,6 +1116,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
             a2v_cross_attention_mask=encoder_attention_mask,
             v2a_cross_attention_mask=audio_encoder_attention_mask,
+            use_a2v_cross_attention=not isolate_modalities,
+            use_v2a_cross_attention=not isolate_modalities,
             perturbation_mask=mask,
             modality_mask=modality_mask,
         )
@@ -1157,6 +1164,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
               audio_encoder_attention_mask=audio_encoder_attention_mask,
               a2v_cross_attention_mask=encoder_attention_mask,
               v2a_cross_attention_mask=audio_encoder_attention_mask,
+              use_a2v_cross_attention=not isolate_modalities,
+              use_v2a_cross_attention=not isolate_modalities,
               perturbation_mask=mask,
           )
 
