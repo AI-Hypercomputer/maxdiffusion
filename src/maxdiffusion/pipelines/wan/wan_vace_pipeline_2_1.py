@@ -24,7 +24,6 @@ from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from ...pyconfig import HyperParameters
 from ... import max_logging
-from ... import max_utils
 from ...image_processor import PipelineImageInput
 from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
 from ...models.wan.wan_utils import load_wan_transformer
@@ -81,6 +80,11 @@ def create_sharded_logical_transformer(
   wan_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
   wan_config["flash_min_seq_length"] = config.flash_min_seq_length
   wan_config["dropout"] = config.dropout
+  wan_config["mask_padding_tokens"] = config.mask_padding_tokens
+  wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
+  wan_config["use_base2_exp"] = config.use_base2_exp
+  wan_config["use_experimental_scheduler"] = config.use_experimental_scheduler
+
   wan_config["scan_layers"] = False
 
   # 2. eval_shape - will not use flops or create weights on device
@@ -342,51 +346,33 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       restored_checkpoint=None,
       vae_only=False,
       load_transformer=True,
-      load_common_components=True,
   ):
-    devices_array = max_utils.create_device_mesh(config)
-    mesh = Mesh(devices_array, config.mesh_axes)
-    rng = jax.random.key(config.seed)
-    rngs = nnx.Rngs(rng)
+    common_components = cls._create_common_components(config, vae_only)
     transformer = None
-    tokenizer = None
-    scheduler = None
-    scheduler_state = None
-    text_encoder = None
-    wan_vae = None
-    vae_cache = None
 
     if not vae_only:
       if load_transformer:
-        with mesh:
-          transformer = cls.load_transformer(
-              devices_array=devices_array,
-              mesh=mesh,
-              rngs=rngs,
-              config=config,
-              restored_checkpoint=restored_checkpoint,
-              subfolder="transformer",
-          )
-      if load_common_components:
-        text_encoder = cls.load_text_encoder(config=config)
-        tokenizer = cls.load_tokenizer(config=config)
-
-        scheduler, scheduler_state = cls.load_scheduler(config=config)
-
-    if load_common_components:
-      with mesh:
-        wan_vae, vae_cache = cls.load_vae(devices_array=devices_array, mesh=mesh, rngs=rngs, config=config)
+        transformer = cls.load_transformer(
+            devices_array=common_components["devices_array"],
+            mesh=common_components["mesh"],
+            rngs=common_components["rngs"],
+            config=config,
+            restored_checkpoint=restored_checkpoint,
+            subfolder="transformer",
+        )
 
     pipeline = cls(
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
+        tokenizer=common_components["tokenizer"],
+        text_encoder=common_components["text_encoder"],
         transformer=transformer,
-        vae=wan_vae,
-        vae_cache=vae_cache,
-        scheduler=scheduler,
-        scheduler_state=scheduler_state,
-        devices_array=devices_array,
-        mesh=mesh,
+        vae=common_components["vae"],
+        vae_cache=common_components["vae_cache"],
+        scheduler=common_components["scheduler"],
+        scheduler_state=common_components["scheduler_state"],
+        devices_array=common_components["devices_array"],
+        mesh=common_components["mesh"],
+        vae_mesh=common_components["vae_mesh"],
+        vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
         config=config,
     )
 
@@ -398,9 +384,8 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       config: HyperParameters,
       vae_only=False,
       load_transformer=True,
-      load_common_components=True,
   ):
-    pipeline = cls._load_and_init(config, None, vae_only, load_transformer, load_common_components)
+    pipeline = cls._load_and_init(config, None, vae_only, load_transformer)
     pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, pipeline.mesh)
     return pipeline
 
@@ -411,14 +396,12 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       restored_checkpoint=None,
       vae_only=False,
       load_transformer=True,
-      load_common_components=True,
   ):
     pipeline = cls._load_and_init(
         config,
         restored_checkpoint,
         vae_only,
         load_transformer,
-        load_common_components,
     )
     pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, pipeline.mesh)
     return pipeline
@@ -512,9 +495,9 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       guidance_scale: float = 5.0,
       num_videos_per_prompt: Optional[int] = 1,
       max_sequence_length: int = 512,
-      latents: jax.Array = None,
-      prompt_embeds: jax.Array = None,
-      negative_prompt_embeds: jax.Array = None,
+      latents: jax.Array | None = None,
+      prompt_embeds: jax.Array | None = None,
+      negative_prompt_embeds: jax.Array | None = None,
       vae_only: bool = False,
   ):
     """Runs the VACE model for the given inputs.

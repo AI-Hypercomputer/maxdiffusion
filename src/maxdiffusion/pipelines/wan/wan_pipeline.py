@@ -630,7 +630,6 @@ class WanPipeline:
     vae_devices_array = flat_devices.reshape(total_devices // vae_spatial, vae_spatial)
 
     vae_mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
-    vae_mesh.vae_spatial_axis_name = "vae_spatial"
     max_logging.log(
         f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') to support spatial sharding of {vae_spatial}."
     )
