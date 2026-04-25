@@ -641,6 +641,227 @@ def _ulysses_attention(
   return x
 
 
+# ---------------------------------------------------------------------------
+# 2D Context Parallelism: Ulysses (all-to-all) + Ring (ppermute) combined
+# ---------------------------------------------------------------------------
+
+
+def _2d_context_attention(
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    heads: int,
+    mesh: Mesh,
+    axis_names_q: AxisNames,
+    axis_names_kv: AxisNames,
+    flash_block_sizes: BlockSizes,
+    dtype: jnp.dtype = jnp.float32,
+    ulysses_size: int = 2,
+    ring_size: int = 4,
+    mask_padding_tokens: bool = True,
+    residual_checkpoint_name: str | None = None,
+    attention_mask: jax.Array = None,
+) -> jax.Array:
+  """2D context-parallel attention combining Ulysses and Ring.
+
+  The context mesh axis (of size ulysses_size * ring_size) is logically
+  decomposed into two dimensions:
+    - Ulysses (all-to-all): trades sequence shards for head shards
+    - Ring (ppermute): rotates K/V across devices
+
+  Device layout: context_idx = r * ulysses_size + u, so devices within
+  the same Ulysses group hold adjacent sequence chunks. After all-to-all
+  each device sees a contiguous span of the full sequence.
+  """
+  axis_name = "context"
+  num_context_shards = mesh.shape[axis_name]
+  U = ulysses_size
+  R = ring_size
+
+  assert U * R == num_context_shards, (
+      f"ulysses_size ({U}) * ring_size ({R}) = {U * R} must equal "
+      f"context mesh size ({num_context_shards})"
+  )
+
+  query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
+  key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
+  value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
+  num_heads = query.shape[1]
+
+  if num_heads % U != 0:
+    raise ValueError(
+        f"ulysses_ring attention requires num_heads ({num_heads}) to be "
+        f"divisible by ulysses_size ({U})."
+    )
+
+  # Compute block sizes based on post-Ulysses-all-to-all sequence length (S_padded/R),
+  # not the full sequence. Create a view with the effective per-ring-device shape.
+  effective_seq_len = query.shape[2] // R
+  effective_q = jnp.empty((query.shape[0], num_heads // U, effective_seq_len, query.shape[3]))
+  effective_k = jnp.empty((key.shape[0], num_heads // U, effective_seq_len, key.shape[3]))
+  block_sizes = _select_flash_block_sizes(effective_q, effective_k, flash_block_sizes, dtype, "tokamax_flash")
+
+  q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
+  kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+
+  # Ulysses groups: devices with adjacent sequence chunks that do all-to-all.
+  # Device layout: context_idx = r * U + u
+  # Group r: [r*U, r*U+1, ..., r*U+U-1]  (R groups, each of size U)
+  ulysses_groups = [[r * U + u for u in range(U)] for r in range(R)]
+
+  # Ring groups: devices sharing the same ulysses position that do ppermute.
+  # Group u: [u, U+u, 2U+u, ..., (R-1)*U+u]  (U groups, each of size R)
+  ring_groups = [[r * U + u for r in range(R)] for u in range(U)]
+
+  # Ring permutation: within each ring group, rotate by 1.
+  ring_perm = []
+  for u in range(U):
+    for r in range(R):
+      src = r * U + u
+      dst = ((r + 1) % R) * U + u
+      ring_perm.append((src, dst))
+
+  @functools.partial(
+      shard_map.shard_map,
+      mesh=mesh,
+      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
+      out_specs=q_axis_names,
+      check_rep=False,
+  )
+  def wrap_2d_context_attention(query, key, value):
+    # ---- Step 1: Ulysses all-to-all (seq → heads) ----
+    # Before: each device has [b, H, S/(U*R), d]
+    # After:  each device has [b, H/U, S/R, d]
+    if U > 1:
+      query = jax.lax.all_to_all(
+          query, axis_name=axis_name, split_axis=1, concat_axis=2,
+          tiled=True, axis_index_groups=ulysses_groups,
+      )
+      key = jax.lax.all_to_all(
+          key, axis_name=axis_name, split_axis=1, concat_axis=2,
+          tiled=True, axis_index_groups=ulysses_groups,
+      )
+      value = jax.lax.all_to_all(
+          value, axis_name=axis_name, split_axis=1, concat_axis=2,
+          tiled=True, axis_index_groups=ulysses_groups,
+      )
+
+    # ---- Step 2: Pad for flash attention ----
+    uses_fused_kernel = block_sizes.use_fused_bwd_kernel
+    block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv)
+    block_kv_sizes = (block_sizes.block_kv, block_sizes.block_kv_dkv)
+    if uses_fused_kernel:
+      block_q_sizes += (block_sizes.block_q_dkv,)
+      block_kv_sizes += (block_sizes.block_kv_dkv,)
+    else:
+      block_q_sizes += (block_sizes.block_q_dq,)
+      block_kv_sizes += (block_sizes.block_kv_dq,)
+
+    block_q = max(*block_q_sizes)
+    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_q)
+    block_kv = max(*block_kv_sizes)
+    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
+    value, _, _ = _pad_data_for_flash(value, heads, block_kv)
+
+    # Build masks and segment ids (using tokamax splash attention)
+    mask = tokamax_splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
+
+    q_padded_len = query.shape[2]
+    q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
+    q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
+
+    kv_padded_len = key.shape[2]
+    kv_indices = jax.lax.broadcasted_iota(jnp.int32, (kv_padded_len,), 0)
+    kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
+
+    if attention_mask is not None:
+      mask_len = min(key_seq_len, attention_mask.shape[1])
+      kv_mask_for_batch = attention_mask[0, :mask_len]
+      if key_seq_len > mask_len:
+        extra_valid = jnp.ones((key_seq_len - mask_len,), dtype=jnp.int32)
+        kv_mask_for_batch = jnp.concatenate([kv_mask_for_batch, extra_valid], axis=0)
+      if kv_padded_len > key_seq_len:
+        padding = jnp.zeros((kv_padded_len - key_seq_len,), dtype=jnp.int32)
+        kv_mask_padded = jnp.concatenate([kv_mask_for_batch, padding], axis=0)
+      else:
+        kv_mask_padded = kv_mask_for_batch
+      kv_segment_ids = (kv_segment_ids * kv_mask_padded).astype(jnp.int32)
+
+    segment_ids = tokamax_splash_base.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
+    if not mask_padding_tokens:
+      segment_ids = None
+
+    # ---- Step 3: Ring attention over R devices (tokamax splash kernel) ----
+    splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
+        mask=mask,
+        q_seq_shards=1,
+        config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+        save_residuals=True if R > 1 else False,
+    )
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
+
+    if R > 1:
+      out, stats = vmapped_splash(query, key, value, segment_ids)
+      lse = stats["logsumexp"]
+      m = lse.astype(jnp.float32)
+      l = jnp.exp(lse - m)
+      o = out.astype(jnp.float32) * l[..., None]
+
+      k1 = jax.lax.ppermute(key, axis_name=axis_name, perm=ring_perm)
+      v1 = jax.lax.ppermute(value, axis_name=axis_name, perm=ring_perm)
+
+      def ring_scan_body(carry, _):
+        m, l, o, k_current, v_current = carry
+        k_next = jax.lax.ppermute(k_current, axis_name=axis_name, perm=ring_perm)
+        v_next = jax.lax.ppermute(v_current, axis_name=axis_name, perm=ring_perm)
+
+        out_chunk, stats_chunk = vmapped_splash(query, k_current, v_current, segment_ids)
+        lse_chunk = stats_chunk["logsumexp"]
+
+        m_chunk = lse_chunk.astype(jnp.float32)
+        m_old = m
+        m = jnp.maximum(m_old, m_chunk)
+
+        exp_m_diff = jnp.exp(m_old - m)
+        exp_m_chunk_diff = jnp.exp(m_chunk - m)
+
+        l = l * exp_m_diff + jnp.exp(lse_chunk - m)
+        o = o * exp_m_diff[..., None]
+        o += exp_m_chunk_diff[..., None] * out_chunk.astype(jnp.float32)
+
+        return (m, l, o, k_next, v_next), None
+
+      initial_carry = (m, l, o, k1, v1)
+      (m_final, l_final, o_final, _, _), _ = jax.lax.scan(
+          ring_scan_body, initial_carry, None, length=R - 1
+      )
+      attention_output = o_final / l_final[..., None]
+    else:
+      attention_output = vmapped_splash(query, key, value, segment_ids)
+
+    attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
+
+    # ---- Step 4: Ulysses all-to-all back (heads → seq) ----
+    if U > 1:
+      attention_output = jax.lax.all_to_all(
+          attention_output, axis_name=axis_name, split_axis=2, concat_axis=1,
+          tiled=True, axis_index_groups=ulysses_groups,
+      )
+    return attention_output
+
+  devices_in_data_context = mesh.shape["data"] * num_context_shards
+  if not (query.shape[0] / devices_in_data_context).is_integer():
+    max_logging.log(
+        "Warning, batch dimension should be shardable among the devices in data and context"
+        f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
+    )
+  x = wrap_2d_context_attention(query, key, value)
+  x = x[:, :, :orig_q_seq_len, :]
+  x = _reshape_heads_to_head_dim(x)
+
+  return x
+
+
 def _apply_attention_dot(
     query: Array,
     key: Array,
@@ -755,6 +976,8 @@ def _apply_attention(
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
     attention_mask: Array = None,
+    context_ulysses_parallelism: int = 1,
+    context_ring_parallelism: int = 1,
     use_base2_exp: bool = False,
     use_experimental_scheduler: bool = False,
 ):
@@ -786,6 +1009,23 @@ def _apply_attention(
         axis_names_kv,
         flash_block_sizes,
         dtype,
+        mask_padding_tokens=mask_padding_tokens,
+        residual_checkpoint_name=residual_checkpoint_name,
+        attention_mask=attention_mask,
+    )
+  elif attention_kernel == "ulysses_ring":
+    return _2d_context_attention(
+        query,
+        key * scale,
+        value,
+        heads,
+        mesh,
+        axis_names_q,
+        axis_names_kv,
+        flash_block_sizes,
+        dtype,
+        ulysses_size=context_ulysses_parallelism,
+        ring_size=context_ring_parallelism,
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
         attention_mask=attention_mask,
@@ -1001,6 +1241,8 @@ class NNXAttentionOp(nnx.Module):
       quant: Quant = None,
       mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
+      context_ulysses_parallelism: int = 1,
+      context_ring_parallelism: int = 1,
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
   ):
@@ -1044,6 +1286,8 @@ class NNXAttentionOp(nnx.Module):
     self.quant = quant
     self.mask_padding_tokens = mask_padding_tokens
     self.residual_checkpoint_name = residual_checkpoint_name
+    self.context_ulysses_parallelism = context_ulysses_parallelism
+    self.context_ring_parallelism = context_ring_parallelism
 
   def apply_attention(self, query: Array, key: Array, value: Array, attention_mask: Array = None):
     return _apply_attention(
@@ -1067,6 +1311,8 @@ class NNXAttentionOp(nnx.Module):
         mask_padding_tokens=self.mask_padding_tokens,
         residual_checkpoint_name=self.residual_checkpoint_name,
         attention_mask=attention_mask,
+        context_ulysses_parallelism=self.context_ulysses_parallelism,
+        context_ring_parallelism=self.context_ring_parallelism,
         use_base2_exp=self.use_base2_exp if hasattr(self, "use_base2_exp") else False,
         use_experimental_scheduler=self.use_experimental_scheduler if hasattr(self, "use_experimental_scheduler") else False,
     )
@@ -1172,6 +1418,8 @@ class FlaxWanAttention(nnx.Module):
       enable_jax_named_scopes: bool = False,
       added_kv_proj_dim: Optional[int] = None,  # New for I2V
       image_seq_len: Optional[int] = None,  # New for I2V
+      context_ulysses_parallelism: int = 1,
+      context_ring_parallelism: int = 1,
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
   ):
@@ -1196,6 +1444,8 @@ class FlaxWanAttention(nnx.Module):
       axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
     if attention_kernel == "tokamax_ring" and not is_self_attention:
       attention_kernel = "tokamax_flash"  # do not use ring attention for cross attention
+    if attention_kernel == "ulysses_ring" and not is_self_attention:
+      attention_kernel = "flash"  # fall back to flash for cross attention
     self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
     self.image_seq_len = image_seq_len  # New for I2V
 
@@ -1216,6 +1466,8 @@ class FlaxWanAttention(nnx.Module):
         quant=quant,
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
+        context_ulysses_parallelism=context_ulysses_parallelism,
+        context_ring_parallelism=context_ring_parallelism,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
     )
