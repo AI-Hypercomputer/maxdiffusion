@@ -22,6 +22,8 @@
 # Enable "exit immediately if any command fails" option
 set -e
 export DEBIAN_FRONTEND=noninteractive
+export PIP_INDEX_URL=https://pypi.org/simple
+export UV_INDEX_URL=https://pypi.org/simple
 
 echo "Checking Python version..."
 # This command will fail if the Python version is less than 3.12
@@ -106,8 +108,13 @@ if [[ -n $JAX_VERSION && ! ($MODE == "stable" || -z $MODE) ]]; then
   exit 1
 fi
 
-# Set uv to use system python by default
-export UV_SYSTEM_PYTHON=1
+# Set uv to use system python if not in a virtual environment
+if python3 -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)'; then
+  echo "Virtual environment detected. UV will use it."
+else
+  echo "System Python detected. Setting UV_SYSTEM_PYTHON=1."
+  export UV_SYSTEM_PYTHON=1
+fi
 
 # Install dependencies from requirements.txt first
 python3 -m uv pip install -U --resolution=lowest \
