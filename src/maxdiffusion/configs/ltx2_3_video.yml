@@ -107,6 +107,7 @@ per_device_batch_size: 1.0
 compile_topology_num_slices: -1 
 quantization_local_shard_count: -1
 use_qwix_quantization: False
+enable_lora: False
 weight_quantization_calibration_method: "absmax"
 act_quantization_calibration_method: "absmax"
 bwd_quantization_calibration_method: "absmax"
