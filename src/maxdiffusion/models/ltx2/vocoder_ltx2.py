@@ -448,9 +448,13 @@ class AntiAliasAct1d(nnx.Module):
     self.downsample = DownSample1d(ratio=ratio, kernel_size=kernel_size)
 
   def __call__(self, x: Array) -> Array:
+    max_logging.log(f"[ShapeLog] AntiAlias input: {x.shape}")
     x = self.upsample(x)
+    max_logging.log(f"[ShapeLog] AntiAlias after upsample: {x.shape}")
     x = self.act(x)
+    max_logging.log(f"[ShapeLog] AntiAlias after act: {x.shape}")
     x = self.downsample(x)
+    max_logging.log(f"[ShapeLog] AntiAlias after downsample: {x.shape}")
     return x
 
 
