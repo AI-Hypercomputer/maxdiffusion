@@ -652,7 +652,20 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
 
   def __call__(self, mel_spec: Array) -> Array:
+    cpu = jax.local_devices(backend="cpu")[0]
+    tpu = jax.local_devices(backend="tpu")[0]
+    
+    # 1. Load base vocoder weights to TPU
+    graphdef, state = nnx.split(self.vocoder)
+    state = jax.tree_util.tree_map(lambda x: jax.device_put(x, tpu) if isinstance(x, jax.Array) else x, state)
+    self.vocoder = nnx.merge(graphdef, state)
+    
     x = self.vocoder(mel_spec)
+    
+    # 2. Offload base vocoder weights to CPU
+    graphdef, state = nnx.split(self.vocoder)
+    state = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu) if isinstance(x, jax.Array) else x, state)
+    self.vocoder = nnx.merge(graphdef, state)
     batch_size, num_channels, num_samples = x.shape
 
     hop_length = getattr(self.config, "hop_length", 80)
@@ -665,7 +678,18 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     mel = mel.reshape(batch_size, num_channels, -1)
 
     mel_for_bwe = mel.transpose(0, 1, 3, 2)
+    
+    # 3. Load BWE generator weights to TPU
+    graphdef, state = nnx.split(self.bwe_generator)
+    state = jax.tree_util.tree_map(lambda x: jax.device_put(x, tpu) if isinstance(x, jax.Array) else x, state)
+    self.bwe_generator = nnx.merge(graphdef, state)
+    
     residual = self.bwe_generator(mel_for_bwe)
+    
+    # 4. Offload BWE generator weights to CPU
+    graphdef, state = nnx.split(self.bwe_generator)
+    state = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu) if isinstance(x, jax.Array) else x, state)
+    self.bwe_generator = nnx.merge(graphdef, state)
 
     skip = self.resampler(x)
     waveform = jnp.clip(residual + skip, -1, 1)
