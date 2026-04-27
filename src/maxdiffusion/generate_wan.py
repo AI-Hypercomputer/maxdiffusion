@@ -302,14 +302,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       f"{'=' * 50}"
   )
 
-  s0 = time.perf_counter()
-  if max_utils.profiler_enabled(config):
-    with max_utils.Profiler(config):
-      videos = call_pipeline(config, pipeline, prompt, negative_prompt)
-    generation_time_with_profiler = time.perf_counter() - s0
-    max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
-    if writer and jax.process_index() == 0:
-      writer.add_scalar("inference/generation_time_with_profiler", generation_time_with_profiler, global_step=0)
+  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
 
   return saved_video_path
 

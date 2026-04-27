@@ -23,6 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
+from ... import max_utils
 
 
 class WanPipeline2_2(WanPipeline):
@@ -176,6 +177,7 @@ class WanPipeline2_2(WanPipeline):
           latents=latents,
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds,
+          config=self.config,
       )
       latents = self._denormalize_latents(latents)
     return self._decode_latents_to_video(latents)
@@ -200,6 +202,7 @@ def run_inference_2_2(
     use_cfg_cache: bool = False,
     use_sen_cache: bool = False,
     height: int = 480,
+    config=None,
 ):
   """Denoising loop for WAN 2.2 T2V with optional caching acceleration.
 
@@ -451,7 +454,16 @@ def run_inference_2_2(
       jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0) if do_classifier_free_guidance else prompt_embeds
   )
 
+  first_profiling_step = config.skip_first_n_steps_for_profiler if config else 0
+  profiler_steps = config.profiler_steps if config else 0
+  last_profiling_step = np.clip(first_profiling_step + profiler_steps - 1, first_profiling_step, num_inference_steps - 1)
+
+  profiler = None
   for step in range(num_inference_steps):
+    if config and max_utils.profiler_enabled(config) and step == first_profiling_step:
+      profiler = max_utils.Profiler(config)
+      profiler.start()
+
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
 
     if step_uses_high[step]:
@@ -487,4 +499,8 @@ def run_inference_2_2(
       )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+
+    if config and max_utils.profiler_enabled(config) and step == last_profiling_step:
+      if profiler:
+        profiler.stop()
   return latents

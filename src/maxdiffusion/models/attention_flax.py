@@ -271,8 +271,8 @@ def convert_to_tokamax_splash_config(
     residual_checkpoint_name: str | None = None,
     attn_logits_soft_cap: float | None = None,
     fuse_reciprocal: bool = True,
-    use_base2_exp: bool = True,
-    use_experimental_scheduler: bool = True,
+    use_base2_exp: bool = False,
+    use_experimental_scheduler: bool = False,
     max_logit_const: float | None = None,
     interpret: bool = False,
     dq_reduction_steps: int | None = None,
@@ -316,6 +316,8 @@ def _tpu_flash_attention(
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
     attention_mask: jax.Array = None,
+    use_base2_exp: bool = False,
+    use_experimental_scheduler: bool = False,
 ) -> jax.Array:
   """TPU Flash Attention"""
 
@@ -401,7 +403,12 @@ def _tpu_flash_attention(
       splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
           mask=mask,
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
-          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          config=convert_to_tokamax_splash_config(
+              block_sizes,
+              residual_checkpoint_name=residual_checkpoint_name,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+          ),
           save_residuals=False,
       )
     elif attention_kernel == "tokamax_ring":
@@ -411,7 +418,12 @@ def _tpu_flash_attention(
       splash_kernel = tokamax_ring_attention_kernel.make_ring_attention(
           mask=mask,
           is_mqa=False,
-          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          config=convert_to_tokamax_splash_config(
+              block_sizes,
+              residual_checkpoint_name=residual_checkpoint_name,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+          ),
           save_residuals=False,
           ring_axis="context",
           rotate_segment_ids=False,  # We don't rotate segment ids in tokamax ring attention because our segment ids is for padding each kv shard has same segment ids
@@ -475,13 +487,13 @@ def _tpu_flash_attention(
         raise ValueError("ring attention requires context > 1")
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
-  devices_in_data_context = mesh.shape["data"] * mesh.shape["context"]
+  devices_in_batch_sharding = mesh.shape["data"] * (mesh.shape["fsdp"] if "fsdp" in mesh.shape else 1)
   # This warning might show up when doing model eval for example, when calculating model flops
   # and that is expected.
-  if not (query.shape[0] / devices_in_data_context).is_integer():
+  if not (query.shape[0] / devices_in_batch_sharding).is_integer():
     max_logging.log(
-        "Warning, batch dimension should be shardable among the devices in data and context"
-        f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
+        "Warning, batch dimension should be shardable among the devices in data and fsdp"
+        f" axis, batch dimension: {query.shape[0]}, devices_in_batch_sharding: {devices_in_batch_sharding}"
     )
   x = wrap_flash_attention(query, key, value)
   # Trim back to original sequence length after context-axis padding.
@@ -631,11 +643,11 @@ def _ulysses_attention(
     attention_output = jax.lax.all_to_all(attention_output, axis_name=axis_name, split_axis=2, concat_axis=1, tiled=True)
     return attention_output
 
-  devices_in_data_context = mesh.shape["data"] * num_shards
-  if not (query.shape[0] / devices_in_data_context).is_integer():
+  devices_in_batch_sharding = mesh.shape["data"] * (mesh.shape["fsdp"] if "fsdp" in mesh.shape else 1)
+  if not (query.shape[0] / devices_in_batch_sharding).is_integer():
     max_logging.log(
-        "Warning, batch dimension should be shardable among the devices in data and context"
-        f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
+        "Warning, batch dimension should be shardable among the devices in data and fsdp"
+        f" axis, batch dimension: {query.shape[0]}, devices_in_batch_sharding: {devices_in_batch_sharding}"
     )
   x = wrap_ulysses_attention(query, key, value)
   x = x[:, :, :orig_q_seq_len, :]
@@ -758,6 +770,8 @@ def _apply_attention(
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
     attention_mask: Array = None,
+    use_base2_exp: bool = False,
+    use_experimental_scheduler: bool = False,
 ):
   """Routes to different attention kernels."""
   _check_attention_inputs(query, key, value)
@@ -807,6 +821,8 @@ def _apply_attention(
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
         attention_mask=attention_mask,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
     )
   elif "ring" in attention_kernel:
     return _tpu_flash_attention(
@@ -1001,8 +1017,12 @@ class NNXAttentionOp(nnx.Module):
       quant: Quant = None,
       mask_padding_tokens: bool = True,
       residual_checkpoint_name: str | None = None,
+      use_base2_exp: bool = False,
+      use_experimental_scheduler: bool = False,
   ):
     self.dpa_layer = None
+    self.use_base2_exp = use_base2_exp
+    self.use_experimental_scheduler = use_experimental_scheduler
     if attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
 
@@ -1063,6 +1083,8 @@ class NNXAttentionOp(nnx.Module):
         mask_padding_tokens=self.mask_padding_tokens,
         residual_checkpoint_name=self.residual_checkpoint_name,
         attention_mask=attention_mask,
+        use_base2_exp=self.use_base2_exp if hasattr(self, "use_base2_exp") else False,
+        use_experimental_scheduler=self.use_experimental_scheduler if hasattr(self, "use_experimental_scheduler") else False,
     )
 
 
@@ -1081,6 +1103,8 @@ class AttentionOp(nn.Module):
   flash_block_sizes: BlockSizes = None
   dtype: DType = jnp.float32
   quant: Quant = None
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     self.dpa_layer = None
@@ -1126,6 +1150,8 @@ class AttentionOp(nn.Module):
         flash_block_sizes=self.flash_block_sizes,
         dpa_layer=self.dpa_layer,
         attention_mask=attention_mask,
+        use_base2_exp=self.use_base2_exp,
+        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
 
@@ -1162,6 +1188,8 @@ class FlaxWanAttention(nnx.Module):
       enable_jax_named_scopes: bool = False,
       added_kv_proj_dim: Optional[int] = None,  # New for I2V
       image_seq_len: Optional[int] = None,  # New for I2V
+      use_base2_exp: bool = False,
+      use_experimental_scheduler: bool = False,
   ):
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
@@ -1204,6 +1232,8 @@ class FlaxWanAttention(nnx.Module):
         quant=quant,
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
     )
     # None axes corresponds to the stacked weights across all blocks
     # because of the use of nnx.vmap and nnx.scan.

@@ -22,6 +22,8 @@ from flax.linen import partitioning as nn_partitioning
 import jax
 import jax.numpy as jnp
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
+import numpy as np
+from ... import max_utils
 
 
 class WanPipeline2_1(WanPipeline):
@@ -142,6 +144,7 @@ class WanPipeline2_1(WanPipeline):
         retention_ratio=retention_ratio,
         height=height,
         mag_ratios_base=getattr(config, "mag_ratios_base", None),
+        config=self.config,
     )
 
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -175,6 +178,7 @@ def run_inference_2_1(
     retention_ratio: float = 0.2,
     height: int = 480,
     mag_ratios_base: Optional[List[float]] = None,
+    config=None,
 ):
   """Denoising loop for WAN 2.1 T2V with FasterCache CFG-Cache.
 
@@ -253,7 +257,16 @@ def run_inference_2_1(
     skip_warmup = magcache_init[7]
     mag_ratios = magcache_init[8]
 
+  first_profiling_step = config.skip_first_n_steps_for_profiler if config else 0
+  profiler_steps = config.profiler_steps if config else 0
+  last_profiling_step = np.clip(first_profiling_step + profiler_steps - 1, first_profiling_step, num_inference_steps - 1)
+
+  profiler = None
   for step in range(num_inference_steps):
+    if config and max_utils.profiler_enabled(config) and step == first_profiling_step:
+      profiler = max_utils.Profiler(config)
+      profiler.start()
+
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
 
     if use_magcache and do_cfg:
@@ -327,5 +340,9 @@ def run_inference_2_1(
         )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+
+    if config and max_utils.profiler_enabled(config) and step == last_profiling_step:
+      if profiler:
+        profiler.stop()
 
   return latents

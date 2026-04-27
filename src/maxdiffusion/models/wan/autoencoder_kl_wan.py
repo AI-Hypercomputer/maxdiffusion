@@ -1206,7 +1206,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       fm1, fm2, fm3, fm4 = out_chunk_1[:, 0, ...], out_chunk_1[:, 1, ...], out_chunk_1[:, 2, ...], out_chunk_1[:, 3, ...]
       axis = 1 if fm1.shape[0] > 1 else 0
       fm1, fm2, fm3, fm4 = [jnp.expand_dims(f, axis=axis) for f in [fm1, fm2, fm3, fm4]]
-      out_1 = jnp.concatenate([fm1, fm3, fm2, fm4], axis=1)
+      out_1 = jnp.concatenate([fm1, fm2, fm3, fm4], axis=1)
 
       out_list = [out_0, out_1]
 
@@ -1226,7 +1226,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
           fm1, fm2, fm3, fm4 = out_chunk[:, 0, ...], out_chunk[:, 1, ...], out_chunk[:, 2, ...], out_chunk[:, 3, ...]
           axis = 1 if fm1.shape[0] > 1 else 0
           fm1, fm2, fm3, fm4 = [jnp.expand_dims(f, axis=axis) for f in [fm1, fm2, fm3, fm4]]
-          new_chunk = jnp.concatenate([fm1, fm3, fm2, fm4], axis=1)
+          new_chunk = jnp.concatenate([fm1, fm2, fm3, fm4], axis=1)
 
           return next_feat_map, new_chunk
 
