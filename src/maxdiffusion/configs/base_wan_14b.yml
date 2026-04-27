@@ -61,7 +61,7 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses
+attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_ring
 use_base2_exp: True
 use_experimental_scheduler: True
 flash_min_seq_length: 0
@@ -211,6 +211,12 @@ ici_fsdp_parallelism: 1
 ici_context_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
+# 2D context parallelism: split the context axis into ulysses (all-to-all) and ring (ppermute).
+# Their product must equal the total ici_context_parallelism.
+# Only used when attention: 'ulysses_ring'.
+context_ulysses_parallelism: 1
+context_ring_parallelism: 1
+
 allow_split_physical_axes: False
 
 # Dataset
@@ -226,7 +232,7 @@ dataset_type: 'tfrecord'  # Options: 'tfrecord', 'hf', 'tf', 'grain', 'synthetic
 # 2. Optionally set synthetic_num_samples (null=infinite, or a number like 10000)
 # 3. Optionally override dimensions with synthetic_override_* flags below
 #
-# synthetic_num_samples: null  # null for infinite, or set a number
+synthetic_num_samples: null  # null for infinite, or set a number
 #
 # Optional dimension overrides (comment out to use pipeline/config values):
 # synthetic_override_height: 720

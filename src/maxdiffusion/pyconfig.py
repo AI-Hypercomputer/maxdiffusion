@@ -37,6 +37,7 @@ from maxdiffusion.common_types import (
     RING_ATTENTION_AXIS_RULES,
     SEQUENCE_PARALLEL_AXIS_RULES,
     ULYSSES_ATTENTION_AXIS_RULES,
+    ULYSSES_RING_ATTENTION_AXIS_RULES,
 )
 
 _ALLOWED_MODEL_NAMES = {WAN2_1, WAN2_2, LTX2_VIDEO}
@@ -213,10 +214,23 @@ class _HyperParameters:
       raw_keys["vae_logical_axis_rules"] = _lists_to_tuples(raw_keys["vae_logical_axis_rules"])
     # Verify qkv is sharded across sequence.
     attention = raw_keys["attention"]
-    uses_ring_attention = "ring" in attention
+    uses_ring_attention = "ring" in attention and attention != "ulysses_ring"
     uses_ulysses_attention = attention in ["ulysses", "tokamax_ulysses"]
+    uses_ulysses_ring_attention = attention == "ulysses_ring"
     uses_uniform_sequence_sharding = raw_keys["attention_sharding_uniform"]
-    if uses_ring_attention or uses_ulysses_attention or uses_uniform_sequence_sharding:
+    if uses_ulysses_ring_attention:
+      ulysses_size = raw_keys.get("context_ulysses_parallelism", 1)
+      ring_size = raw_keys.get("context_ring_parallelism", 1)
+      if ulysses_size < 1 or ring_size < 1:
+        raise ValueError(
+            f"ulysses_ring attention requires context_ulysses_parallelism >= 1 and "
+            f"context_ring_parallelism >= 1, got {ulysses_size} and {ring_size}."
+        )
+      max_logging.log(
+          f"2D context parallelism: ulysses_size={ulysses_size}, ring_size={ring_size}, "
+          f"total_context={ulysses_size * ring_size}"
+      )
+    if uses_ring_attention or uses_ulysses_attention or uses_ulysses_ring_attention or uses_uniform_sequence_sharding:
       max_logging.log(
           "Adding sequence sharding to q and kv if not already present because "
           f"{attention=} requires it or attention_sharding_uniform={uses_uniform_sequence_sharding} is set."
@@ -242,6 +256,11 @@ class _HyperParameters:
           if ulysses_attention_axis_rule not in logical_axis_rules:
             max_logging.log(f"Adding ulysses attention axis rule {ulysses_attention_axis_rule}")
             new_rules.append(ulysses_attention_axis_rule)
+      elif uses_ulysses_ring_attention:
+        for ulysses_ring_axis_rule in ULYSSES_RING_ATTENTION_AXIS_RULES:
+          if ulysses_ring_axis_rule not in logical_axis_rules:
+            max_logging.log(f"Adding ulysses_ring attention axis rule {ulysses_ring_axis_rule}")
+            new_rules.append(ulysses_ring_axis_rule)
       else:  # attention=flash but sequence parallel sharding requested for both self and cross attention
         for seq_parallel_axis_rule in SEQUENCE_PARALLEL_AXIS_RULES:
           if seq_parallel_axis_rule not in logical_axis_rules:

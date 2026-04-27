@@ -291,6 +291,8 @@ class WanTransformerBlock(nnx.Module):
       dropout: float = 0.0,
       mask_padding_tokens: bool = True,
       enable_jax_named_scopes: bool = False,
+      context_ulysses_parallelism: int = 1,
+      context_ring_parallelism: int = 1,
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
   ):
@@ -317,6 +319,8 @@ class WanTransformerBlock(nnx.Module):
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="self_attn",
         enable_jax_named_scopes=enable_jax_named_scopes,
+        context_ulysses_parallelism=context_ulysses_parallelism,
+        context_ring_parallelism=context_ring_parallelism,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
     )
@@ -343,6 +347,8 @@ class WanTransformerBlock(nnx.Module):
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="cross_attn",
         enable_jax_named_scopes=enable_jax_named_scopes,
+        context_ulysses_parallelism=context_ulysses_parallelism,
+        context_ring_parallelism=context_ring_parallelism,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
     )
@@ -492,6 +498,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       mask_padding_tokens: bool = True,
       scan_layers: bool = True,
       enable_jax_named_scopes: bool = False,
+      context_ulysses_parallelism: int = 1,
+      context_ring_parallelism: int = 1,
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
   ):
@@ -555,6 +563,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           enable_jax_named_scopes=enable_jax_named_scopes,
           added_kv_proj_dim=added_kv_proj_dim,
           image_seq_len=image_seq_len,
+          context_ulysses_parallelism=context_ulysses_parallelism,
+          context_ring_parallelism=context_ring_parallelism,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
       )
@@ -585,6 +595,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             precision=precision,
             attention=attention,
             enable_jax_named_scopes=enable_jax_named_scopes,
+            context_ulysses_parallelism=context_ulysses_parallelism,
+            context_ring_parallelism=context_ring_parallelism,
         )
         blocks.append(block)
       self.blocks = nnx.data(blocks)

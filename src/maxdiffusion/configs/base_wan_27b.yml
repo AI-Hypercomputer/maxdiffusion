@@ -77,14 +77,14 @@ attention_sharding_uniform: True
 dropout: 0.0
 
 flash_block_sizes: {
-  "block_q" : 512,
-  "block_kv_compute" : 512,
-  "block_kv" : 512,
-  "block_q_dkv" : 512,
-  "block_kv_dkv" : 512,
-  "block_kv_dkv_compute" : 512,
-  "block_q_dq" : 512,
-  "block_kv_dq" : 512,
+  "block_q" : 2048,
+  "block_kv_compute" : 1024,
+  "block_kv" : 2048,
+  "block_q_dkv" : 2048,
+  "block_kv_dkv" : 2048,
+  "block_kv_dkv_compute" : 1024,
+  "block_q_dq" : 2048,
+  "block_kv_dq" : 2048,
   "use_fused_bwd_kernel": False,
 }
 # Use on v6e
@@ -198,6 +198,12 @@ ici_data_parallelism: 1
 ici_fsdp_parallelism: 1
 ici_context_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
+
+# 2D context parallelism: split the context axis into ulysses (all-to-all) and ring (ppermute).
+# Their product must equal the total ici_context_parallelism.
+# Only used when attention: 'ulysses_ring'.
+context_ulysses_parallelism: 1
+context_ring_parallelism: 1
 
 allow_split_physical_axes: False
 

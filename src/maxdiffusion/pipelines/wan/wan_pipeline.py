@@ -138,6 +138,10 @@ def create_sharded_logical_transformer(
   wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
+  if hasattr(config, "context_ulysses_parallelism"):
+    wan_config["context_ulysses_parallelism"] = config.context_ulysses_parallelism
+  if hasattr(config, "context_ring_parallelism"):
+    wan_config["context_ring_parallelism"] = config.context_ring_parallelism
   wan_config["use_base2_exp"] = config.use_base2_exp
   wan_config["use_experimental_scheduler"] = config.use_experimental_scheduler
 
@@ -630,7 +634,6 @@ class WanPipeline:
     vae_devices_array = flat_devices.reshape(total_devices // vae_spatial, vae_spatial)
 
     vae_mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
-    vae_mesh.vae_spatial_axis_name = "vae_spatial"
     max_logging.log(
         f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') to support spatial sharding of {vae_spatial}."
     )

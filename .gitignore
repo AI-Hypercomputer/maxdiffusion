@@ -184,3 +184,4 @@ gha-creds-*.json
 
 # JAX cache
 .jax_cache/
+sdxl-model-finetuned/

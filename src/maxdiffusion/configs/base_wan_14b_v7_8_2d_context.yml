@@ -1,0 +1,275 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ============================================================================
+# WAN 2.1 T2V 14B — 2D Context Parallelism config for TPU v7-8
+# ============================================================================
+# v7-8 has 8 chips with DICE interconnect (6x better connectivity than ICI).
+# 2D context parallelism combines Ulysses (all-to-all) with Ring (ppermute):
+#   - Ulysses benefits from high-bandwidth all-to-all (ideal for DICE)
+#   - Ring reduces ppermute steps from 8 to 4
+#   - ulysses=2, ring=4 is the sweet spot for 8 chips on DICE topology
+# ============================================================================
+
+run_name: ''
+
+metrics_file: ""
+write_metrics: True
+timing_metrics_file: ""
+write_timing_metrics: True
+
+gcs_metrics: False
+save_config_to_gcs: False
+log_period: 100
+
+pretrained_model_name_or_path: 'Wan-AI/Wan2.1-T2V-14B-Diffusers'
+model_name: wan2.1
+model_type: 'T2V'
+
+wan_transformer_pretrained_model_name_or_path: ''
+
+unet_checkpoint: ''
+revision: ''
+weights_dtype: 'bfloat16'
+activations_dtype: 'bfloat16'
+
+replicate_vae: False
+vae_spatial: -1
+
+precision: "DEFAULT"
+scan_layers: True
+jit_initializers: True
+from_pt: True
+split_head_dim: True
+
+# 2D context parallelism: Ulysses + Ring
+attention: 'ulysses_ring'
+flash_min_seq_length: 0
+mask_padding_tokens: True
+attention_sharding_uniform: True
+dropout: 0.0
+
+flash_block_sizes: {
+  "block_q" : 512,
+  "block_kv_compute" : 512,
+  "block_kv" : 512,
+  "block_q_dkv" : 512,
+  "block_kv_dkv" : 512,
+  "block_kv_dkv_compute" : 512,
+  "block_q_dq" : 512,
+  "block_kv_dq" : 512,
+  "use_fused_bwd_kernel": False,
+}
+
+norm_num_groups: 32
+train_text_encoder: False
+text_encoder_learning_rate: 4.25e-6
+snr_gamma: -1.0
+
+timestep_bias: {
+  strategy: "none",
+  multiplier: 1.0,
+  begin: 0,
+  end: 1000,
+  portion: 0.25
+}
+
+diffusion_scheduler_config: {
+  _class_name: 'FlaxEulerDiscreteScheduler',
+  prediction_type: 'epsilon',
+  rescale_zero_terminal_snr: False,
+  timestep_spacing: 'trailing'
+}
+
+base_output_directory: ""
+hardware: 'tpu'
+skip_jax_distributed_system: False
+
+# Parallelism — v7-8 with 8 chips
+mesh_axes: ['data', 'fsdp', 'context', 'tensor']
+
+logical_axis_rules: [
+                      ['batch', ['data', 'fsdp']],
+                      ['activation_batch', ['data', 'fsdp']],
+                      ['activation_self_attn_heads', ['context', 'tensor']],
+                      ['activation_cross_attn_q_length', ['context', 'tensor']],
+                      ['activation_length', 'context'],
+                      ['activation_heads', 'tensor'],
+                      ['mlp','tensor'],
+                      ['embed', ['context', 'fsdp']],
+                      ['heads', 'tensor'],
+                      ['norm', 'tensor'],
+                      ['conv_batch', ['data', 'context', 'fsdp']],
+                      ['out_channels', 'tensor'],
+                      ['conv_out', 'context'],
+                    ]
+vae_logical_axis_rules: [
+                          ['activation_batch', 'redundant'],
+                          ['activation_length', 'vae_spatial'],
+                          ['activation_heads', null],
+                          ['activation_kv_length', null],
+                          ['embed', null],
+                          ['heads', null],
+                          ['norm', null],
+                          ['conv_batch', 'redundant'],
+                          ['out_channels', 'vae_spatial'],
+                          ['conv_out', 'vae_spatial'],
+                          ['conv_in', 'vae_spatial'],
+                        ]
+data_sharding: [['data', 'fsdp', 'context', 'tensor']]
+
+# v7-8: 8 chips, all on ICI/DICE, single slice
+dcn_data_parallelism: 1
+dcn_fsdp_parallelism: 1
+dcn_context_parallelism: 1
+dcn_tensor_parallelism: 1
+ici_data_parallelism: 1
+ici_fsdp_parallelism: 1
+ici_context_parallelism: 8
+ici_tensor_parallelism: 1
+
+# 2D context parallelism decomposition:
+# ulysses=2 (all-to-all over DICE), ring=4 (ppermute with 4 steps)
+# WAN 14B has 40 heads, 40 % 2 = 0 ✓
+context_ulysses_parallelism: 2
+context_ring_parallelism: 4
+
+allow_split_physical_axes: False
+
+dataset_name: 'diffusers/pokemon-gpt4-captions'
+train_split: 'train'
+dataset_type: 'tfrecord'
+
+cache_latents_text_encoder_outputs: True
+dataset_save_location: ''
+load_tfrecord_cached: True
+train_data_dir: ''
+dataset_config_name: ''
+jax_cache_dir: ''
+hf_data_dir: ''
+hf_train_files: ''
+hf_access_token: ''
+image_column: 'image'
+caption_column: 'text'
+resolution: 1024
+center_crop: False
+random_flip: False
+tokenize_captions_num_proc: 4
+transform_images_num_proc: 4
+reuse_example_batch: False
+enable_data_shuffling: True
+
+remat_policy: "NONE"
+names_which_can_be_saved: []
+names_which_can_be_offloaded: []
+
+checkpoint_every: -1
+checkpoint_dir: ""
+enable_single_replica_ckpt_restoring: False
+
+learning_rate: 1.e-5
+scale_lr: False
+max_train_samples: -1
+max_train_steps: 1500
+num_train_epochs: 1
+seed: 0
+output_dir: 'sdxl-model-finetuned'
+per_device_batch_size: 1.0
+global_batch_size: 0
+disable_training_weights: False
+
+tfrecords_dir: ''
+no_records_per_shard: 0
+enable_eval_timesteps: False
+timesteps_list: [125, 250, 375, 500, 625, 750, 875]
+num_eval_samples: 420
+
+warmup_steps_fraction: 0.1
+learning_rate_schedule_steps: -1
+save_optimizer: False
+
+adam_b1: 0.9
+adam_b2: 0.999
+adam_eps: 1.e-8
+adam_weight_decay: 0.0
+opt_enable_grad_clipping: False
+max_grad_value: 1.0
+opt_enable_grad_global_norm_clipping: False
+max_grad_norm: 1.0
+
+enable_profiler: False
+skip_first_n_steps_for_profiler: 5
+profiler_steps: 10
+enable_jax_named_scopes: False
+
+prompt: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
+prompt_2: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
+negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
+do_classifier_free_guidance: True
+height: 480
+width: 832
+num_frames: 81
+guidance_scale: 5.0
+flow_shift: 3.0
+
+use_cfg_cache: False
+use_magcache: False
+magcache_thresh: 0.12
+magcache_K: 2
+retention_ratio: 0.2
+mag_ratios_base: [1.0, 1.0, 1.02504, 1.03017, 1.00025, 1.00251, 0.9985, 0.99962, 0.99779, 0.99771, 0.9966, 0.99658, 0.99482, 0.99476, 0.99467, 0.99451, 0.99664, 0.99656, 0.99434, 0.99431, 0.99533, 0.99545, 0.99468, 0.99465, 0.99438, 0.99434, 0.99516, 0.99517, 0.99384, 0.9938, 0.99404, 0.99401, 0.99517, 0.99516, 0.99409, 0.99408, 0.99428, 0.99426, 0.99347, 0.99343, 0.99418, 0.99416, 0.99271, 0.99269, 0.99313, 0.99311, 0.99215, 0.99215, 0.99218, 0.99215, 0.99216, 0.99217, 0.99163, 0.99161, 0.99138, 0.99135, 0.98982, 0.9898, 0.98996, 0.98995, 0.9887, 0.98866, 0.98772, 0.9877, 0.98767, 0.98765, 0.98573, 0.9857, 0.98501, 0.98498, 0.9838, 0.98376, 0.98177, 0.98173, 0.98037, 0.98035, 0.97678, 0.97677, 0.97546, 0.97543, 0.97184, 0.97183, 0.96711, 0.96708, 0.96349, 0.96345, 0.95629, 0.95625, 0.94926, 0.94929, 0.93964, 0.93961, 0.92511, 0.92504, 0.90693, 0.90678, 0.8796, 0.87945, 0.86111, 0.86189]
+
+guidance_rescale: 0.0
+num_inference_steps: 30
+fps: 16
+save_final_checkpoint: False
+
+lightning_from_pt: True
+lightning_repo: ""
+lightning_ckpt: ""
+
+enable_lora: False
+lora_config: {
+  rank: [64],
+  lora_model_name_or_path: ["lightx2v/Wan2.1-Distill-Loras"],
+  weight_name: ["wan2.1_t2v_14b_lora_rank64_lightx2v_4step.safetensors"],
+  adapter_name: ["wan21-distill-lora"],
+  scale: [1.0],
+  from_pt: []
+}
+
+enable_mllog: False
+
+controlnet_model_name_or_path: 'diffusers/controlnet-canny-sdxl-1.0'
+controlnet_from_pt: True
+controlnet_conditioning_scale: 0.5
+controlnet_image: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/1024px-Google_%22G%22_logo.svg.png'
+quantization: ''
+quantization_local_shard_count: -1
+compile_topology_num_slices: -1
+use_qwix_quantization: False
+weight_quantization_calibration_method: "absmax"
+act_quantization_calibration_method: "absmax"
+bwd_quantization_calibration_method: "absmax"
+qwix_module_path: ".*"
+
+eval_every: -1
+eval_data_dir: ""
+enable_generate_video_for_eval: False
+eval_max_number_of_samples_in_bucket: 60
+
+enable_ssim: False
+enable_ml_diagnostics: False
+profiler_gcs_path: ""
+enable_ondemand_xprof: False
