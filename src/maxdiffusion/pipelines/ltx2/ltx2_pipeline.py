@@ -485,13 +485,12 @@ class LTX2Pipeline:
       config_dict = LTX2Vocoder.load_config(config.pretrained_model_name_or_path, subfolder="vocoder")
       if "bwe_in_channels" in config_dict:
         max_logging.log("Instantiating LTX2VocoderWithBWE for LTX-2.3...")
-        vocoder = LTX2VocoderWithBWE.from_config(
-            config.pretrained_model_name_or_path,
-            subfolder="vocoder",
+        # Remove model_type if present to avoid from_config creating wrong class
+        config_dict.pop("model_type", None)
+        vocoder = LTX2VocoderWithBWE(
+            **config_dict,
             rngs=rngs,
-            mesh=mesh,
             dtype=jnp.float32,
-            weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
         )
       else:
         max_logging.log("Instantiating LTX2Vocoder for LTX-2.0...")
