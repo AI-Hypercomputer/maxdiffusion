@@ -214,7 +214,7 @@ class _HyperParameters:
     # Verify qkv is sharded across sequence.
     attention = raw_keys["attention"]
     uses_ring_attention = "ring" in attention
-    uses_ulysses_attention = attention == "ulysses"
+    uses_ulysses_attention = "ulysses" in attention
     uses_uniform_sequence_sharding = raw_keys["attention_sharding_uniform"]
     if uses_ring_attention or uses_ulysses_attention or uses_uniform_sequence_sharding:
       max_logging.log(
