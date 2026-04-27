@@ -20,6 +20,7 @@ from functools import partial
 import numpy as np
 import torch
 import jax
+import gc
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import flax
@@ -1650,8 +1651,11 @@ class LTX2Pipeline:
       self.vae = nnx.merge(graphdef, state)
     except Exception as e:
       max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
-
-    jax.clear_caches()
+ 
+    # Delete transformer to free weight buffers
+    if hasattr(self, "transformer"):
+      del self.transformer
+      gc.collect()
 
     if getattr(self.vae.config, "timestep_conditioning", False):
       noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
