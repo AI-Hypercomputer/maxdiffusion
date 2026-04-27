@@ -34,7 +34,7 @@ from ...utils import logging
 from ...schedulers import FlaxFlowMatchScheduler
 from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
-from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder
+from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder, LTX2VocoderWithBWE
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
 from ...models.ltx2.latent_upsampler_ltx2 import LTX2LatentUpsamplerModel
 from ...models.ltx2.ltx2_utils import (
@@ -482,14 +482,27 @@ class LTX2Pipeline:
     max_logging.log("Loading Vocoder...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      vocoder = LTX2Vocoder.from_config(
-          config.pretrained_model_name_or_path,
-          subfolder="vocoder",
-          rngs=rngs,
-          mesh=mesh,
-          dtype=jnp.float32,
-          weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
-      )
+      config_dict = LTX2Vocoder.load_config(config.pretrained_model_name_or_path, subfolder="vocoder")
+      if "bwe_in_channels" in config_dict:
+        max_logging.log("Instantiating LTX2VocoderWithBWE for LTX-2.3...")
+        vocoder = LTX2VocoderWithBWE.from_config(
+            config.pretrained_model_name_or_path,
+            subfolder="vocoder",
+            rngs=rngs,
+            mesh=mesh,
+            dtype=jnp.float32,
+            weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+        )
+      else:
+        max_logging.log("Instantiating LTX2Vocoder for LTX-2.0...")
+        vocoder = LTX2Vocoder.from_config(
+            config.pretrained_model_name_or_path,
+            subfolder="vocoder",
+            rngs=rngs,
+            mesh=mesh,
+            dtype=jnp.float32,
+            weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+        )
       return vocoder
 
     p_model_factory = partial(create_model, config=config)
