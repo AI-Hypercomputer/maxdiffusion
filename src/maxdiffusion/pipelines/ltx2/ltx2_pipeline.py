@@ -1771,6 +1771,7 @@ def transformer_forward_pass(
         "scheduler_step",
         "logical_axis_rules",
         "use_cross_timestep",
+        "modality_scale",
     ),
 )
 def run_diffusion_loop(
