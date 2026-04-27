@@ -795,12 +795,16 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
     # 3. Output Layer Scale/Shift Modulation parameters
     param_rng = rngs.params()
+    # LTX 2.3 uses 2 parameters for scale/shift in output layer, LTX2 uses 6.
+    num_scale_shift_params = 2 if gated_attn else 6
+    num_audio_scale_shift_params = 2 if audio_gated_attn else 6
+    
     self.scale_shift_table = nnx.Param(
-        jax.random.normal(param_rng, (6, inner_dim), dtype=self.weights_dtype) / jnp.sqrt(inner_dim),
+        jax.random.normal(param_rng, (num_scale_shift_params, inner_dim), dtype=self.weights_dtype) / jnp.sqrt(inner_dim),
         kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
     )
     self.audio_scale_shift_table = nnx.Param(
-        jax.random.normal(param_rng, (6, audio_inner_dim), dtype=self.weights_dtype) / jnp.sqrt(audio_inner_dim),
+        jax.random.normal(param_rng, (num_audio_scale_shift_params, audio_inner_dim), dtype=self.weights_dtype) / jnp.sqrt(audio_inner_dim),
         kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
     )
 
