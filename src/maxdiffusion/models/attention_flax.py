@@ -31,6 +31,7 @@ from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
 from einops import rearrange
 from .. import common_types, max_logging
 
+from . import custom_splash_attention as custom_splash
 from . import quantizations
 from .modeling_flax_utils import get_activation
 
@@ -641,6 +642,94 @@ def _ulysses_attention(
   return x
 
 
+def _ulysses_custom_attention(
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    heads: int,
+    mesh: Mesh,
+    axis_names_q: AxisNames,
+    axis_names_kv: AxisNames,
+    flash_block_sizes: BlockSizes,
+    dtype: jnp.dtype = jnp.float32,
+    mask_padding_tokens: bool = False,
+    residual_checkpoint_name: str | None = None,
+    attention_mask: jax.Array = None,
+) -> jax.Array:
+  """Ulysses sequence-parallel attention with custom fast kernel."""
+  axis_name = "context"
+  num_shards = mesh.shape[axis_name]
+
+  # Reshape to [b, h, s, d] and pad sequence for even context-axis splitting.
+  query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_shards)
+  key, _ = _reshape_data_for_flash(key, heads, num_shards)
+  value, _ = _reshape_data_for_flash(value, heads, num_shards)
+  num_heads = query.shape[1]
+  if num_heads % num_shards != 0:
+    raise ValueError(
+        "Ulysses attention requires the number of heads to be divisible by the context shard count, "
+        f"got heads={num_heads} and context_shards={num_shards}."
+    )
+
+  q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
+  kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+
+  @functools.partial(
+      jax.shard_map,
+      mesh=mesh,
+      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
+      out_specs=q_axis_names,
+      check_vma=False,
+  )
+  def wrap_ulysses_attention(query, key, value):
+    query = jax.lax.all_to_all(query, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+    key = jax.lax.all_to_all(key, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+    value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+
+    bq = 2048
+    bkv = 2048
+    bkv_compute = 1024
+    bkv_compute_in = 256
+    heads_per_tile = 1
+
+    query_scaled = query * 1.44269504
+
+    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
+    key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
+    value, _, _ = _pad_data_for_flash(value, heads, bkv)
+
+    bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
+
+    splash_kernel = custom_splash.make_splash_mha(
+        block_sizes=bsizes,
+        bkv_compute_in=bkv_compute_in,
+        orig_q_seq_len=query_seq_len,
+        orig_kv_seq_len=key_seq_len,
+        heads_per_tile=heads_per_tile,
+    )
+
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
+    attention_output = vmapped_splash(query_scaled, key, value)
+    attention_output = jnp.swapaxes(attention_output, 2, 3)
+
+    attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
+
+    attention_output = jax.lax.all_to_all(attention_output, axis_name=axis_name, split_axis=2, concat_axis=1, tiled=True)
+    return attention_output
+
+  devices_in_batch_sharding = mesh.shape["data"] * (mesh.shape["fsdp"] if "fsdp" in mesh.shape else 1)
+  if not (query.shape[0] / devices_in_batch_sharding).is_integer():
+    max_logging.log(
+        "Warning, batch dimension should be shardable among the devices in data and fsdp"
+        f" axis, batch dimension: {query.shape[0]}, devices_in_batch_sharding: {devices_in_batch_sharding}"
+    )
+  x = wrap_ulysses_attention(query, key, value)
+  x = x[:, :, :orig_q_seq_len, :]
+  x = _reshape_heads_to_head_dim(x)
+
+  return x
+
+
 def _apply_attention_dot(
     query: Array,
     key: Array,
@@ -763,7 +852,7 @@ def _apply_attention(
   seq_len_idx = 1
   if query.ndim == 4:
     seq_len_idx = 2
-  if attention_kernel in ["flash", "tokamax_flash", "ulysses"]:
+  if attention_kernel in ["flash", "tokamax_flash", "ulysses", "ulysses_custom"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -774,6 +863,21 @@ def _apply_attention(
   if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
     return _apply_attention_dot(
         query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
+    )
+  elif attention_kernel == "ulysses_custom":
+    return _ulysses_custom_attention(
+        query,
+        key * scale,
+        value,
+        heads,
+        mesh,
+        axis_names_q,
+        axis_names_kv,
+        flash_block_sizes,
+        dtype,
+        mask_padding_tokens=mask_padding_tokens,
+        residual_checkpoint_name=residual_checkpoint_name,
+        attention_mask=attention_mask,
     )
   elif attention_kernel == "ulysses":
     return _ulysses_attention(
