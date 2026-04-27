@@ -478,7 +478,7 @@ class SnakeBeta(nnx.Module):
       if use_beta:
         self.beta = nnx.data(init_val)
 
-  def __call__(self, hidden_states: Array, channel_dim: int = 1) -> Array:
+  def __call__(self, hidden_states: Array, channel_dim: int = 2) -> Array:
     broadcast_shape = [1] * hidden_states.ndim
     broadcast_shape[channel_dim] = -1
     
