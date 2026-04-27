@@ -523,8 +523,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
             attention_mask=a2v_cross_attention_mask,
         )
       
-      if perturbation_mask is not None:
-        a2v_attn_hidden_states = mod_norm_audio_hidden_states + perturbation_mask * (a2v_attn_hidden_states - mod_norm_audio_hidden_states)
+
         
       hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
 
