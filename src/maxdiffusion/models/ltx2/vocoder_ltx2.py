@@ -353,9 +353,7 @@ class DownSample1d(nnx.Module):
     self.filter = kaiser_sinc_filter1d(cutoff, half_width, self.kernel_size)
 
   def __call__(self, x: Array) -> Array:
-    # x expected shape: [batch_size, num_channels, hidden_dim]
-    # JAX Conv1d expects [batch, spatial, in_channels]
-    x = jnp.transpose(x, (0, 2, 1))
+    # x expected shape: [batch, spatial, in_channels]
     num_channels = x.shape[-1]
     
     if self.use_padding:
@@ -369,12 +367,12 @@ class DownSample1d(nnx.Module):
         lhs=x,
         rhs=filter_expanded,
         window_strides=(self.ratio,),
-        padding="VALID",
+        padding=[(0, 0)],
         feature_group_count=num_channels,
         dimension_numbers=("NWC", "WIO", "NWC"),
     )
     
-    return jnp.transpose(x_filtered, (0, 2, 1))
+    return x_filtered
 
 
 class UpSample1d(nnx.Module):
