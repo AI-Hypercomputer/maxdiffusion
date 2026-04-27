@@ -190,13 +190,14 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
 
       # ConvTranspose with padding='SAME' matches PyTorch's specific padding logic
       # for these standard HiFi-GAN upsampling configurations.
+      pad_val = (kernel_size - stride) // 2
       self.upsamplers.append(
           nnx.ConvTranspose(
               in_features=input_channels,
               out_features=output_channels,
               kernel_size=(kernel_size,),
               strides=(stride,),
-              padding="SAME",
+              padding=[(pad_val, pad_val)],
               rngs=rngs,
               dtype=self.dtype,
           )
