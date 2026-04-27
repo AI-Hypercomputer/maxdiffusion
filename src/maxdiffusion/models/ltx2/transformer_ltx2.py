@@ -624,9 +624,6 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       qk_norm: str = "rms_norm_across_heads",
       flash_block_sizes: BlockSizes = None,
       flash_min_seq_length: int = 4096,
-      video_gated_attn: bool = False,
-      audio_gated_attn: bool = False,
-      cross_attn_mod: bool = False,
       **kwargs,
   ):
     self.in_channels = in_channels
@@ -676,7 +673,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.a2v_attention_kernel = a2v_attention_kernel
     self.v2a_attention_kernel = v2a_attention_kernel
     self.flash_min_seq_length = flash_min_seq_length
-    self.video_gated_attn = video_gated_attn
+    self.video_gated_attn = gated_attn
     self.audio_gated_attn = audio_gated_attn
     self.cross_attn_mod = cross_attn_mod
 
