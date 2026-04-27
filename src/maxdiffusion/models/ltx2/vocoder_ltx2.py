@@ -18,6 +18,7 @@ import math
 from typing import Sequence, Optional, Tuple
 
 import jax
+from maxdiffusion import max_logging
 import jax.numpy as jnp
 from flax import nnx
 from ... import common_types
