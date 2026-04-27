@@ -423,7 +423,7 @@ class UpSample1d(nnx.Module):
         lhs=x,
         rhs=filter_expanded,
         window_strides=(1,),
-        padding="VALID",
+        padding=[(0, 0)],
         lhs_dilation=(self.ratio,),
         feature_group_count=num_channels,
         dimension_numbers=("NWC", "WIO", "NWC"),
