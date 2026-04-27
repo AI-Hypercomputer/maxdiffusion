@@ -1089,6 +1089,12 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           video_ca_timestep * timestep_cross_attn_gate_scale_factor,
           hidden_dtype=hidden_states.dtype,
       )
+      
+      if video_cross_attn_scale_shift.shape[0] < batch_size:
+        video_cross_attn_scale_shift = jnp.repeat(video_cross_attn_scale_shift, batch_size // video_cross_attn_scale_shift.shape[0], axis=0)
+      if video_cross_attn_a2v_gate.shape[0] < batch_size:
+        video_cross_attn_a2v_gate = jnp.repeat(video_cross_attn_a2v_gate, batch_size // video_cross_attn_a2v_gate.shape[0], axis=0)
+        
       video_cross_attn_scale_shift = video_cross_attn_scale_shift.reshape(
           batch_size, -1, video_cross_attn_scale_shift.shape[-1]
       )
@@ -1102,6 +1108,12 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           audio_ca_timestep * timestep_cross_attn_gate_scale_factor,
           hidden_dtype=audio_hidden_states.dtype,
       )
+      
+      if audio_cross_attn_scale_shift.shape[0] < batch_size:
+        audio_cross_attn_scale_shift = jnp.repeat(audio_cross_attn_scale_shift, batch_size // audio_cross_attn_scale_shift.shape[0], axis=0)
+      if audio_cross_attn_v2a_gate.shape[0] < batch_size:
+        audio_cross_attn_v2a_gate = jnp.repeat(audio_cross_attn_v2a_gate, batch_size // audio_cross_attn_v2a_gate.shape[0], axis=0)
+        
       audio_cross_attn_scale_shift = audio_cross_attn_scale_shift.reshape(
           batch_size, -1, audio_cross_attn_scale_shift.shape[-1]
       )
