@@ -522,6 +522,8 @@ def _ulysses_attention(
     residual_checkpoint_name: str | None = None,
     attention_mask: jax.Array = None,
     attention_kernel: str = "ulysses",
+    use_base2_exp: bool = False,
+    use_experimental_scheduler: bool = False,
 ) -> jax.Array:
   """Ulysses sequence-parallel attention.
 
@@ -621,7 +623,12 @@ def _ulysses_attention(
       splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
           mask=mask,
           q_seq_shards=1,
-          config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+          config=convert_to_tokamax_splash_config(
+              block_sizes,
+              residual_checkpoint_name=residual_checkpoint_name,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+          ),
           save_residuals=False,
       )
     else:
@@ -1035,6 +1042,8 @@ def _apply_attention(
         residual_checkpoint_name=residual_checkpoint_name,
         attention_mask=attention_mask,
         attention_kernel=attention_kernel,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
     )
   elif attention_kernel == "ulysses_ring" or (attention_kernel == "tokamax_ulysses" and context_ulysses_parallelism > 1 and context_ring_parallelism > 1):
     return _2d_context_attention(
