@@ -416,24 +416,19 @@ class UpSample1d(nnx.Module):
   def __call__(self, x: Array) -> Array:
     num_channels = x.shape[-1]
     
-    mode = "constant" if self.padding_mode == "constant" else "edge"
-    x = jnp.pad(x, ((0, 0), (self.pad, self.pad), (0, 0)), mode=mode)
-    
+    # Expand filter for feature group count
     filter_expanded = jnp.expand_dims(self.filter, axis=(1, 2))
     filter_expanded = jnp.tile(filter_expanded, (1, 1, num_channels))
     
-    x_upsampled = jax.lax.conv_general_dilated(
+    x_upsampled = jax.lax.conv_transpose(
         lhs=x,
         rhs=filter_expanded,
-        window_strides=(1,),
-        padding=[(0, 0)],
-        lhs_dilation=(self.ratio,),
-        feature_group_count=num_channels,
+        strides=(self.ratio,),
+        padding=[(self.pad_left, self.pad_right)],
         dimension_numbers=("NWC", "WIO", "NWC"),
+        feature_group_count=num_channels,
     )
-    
-    out = x_upsampled[:, self.pad_left : -self.pad_right, :]
-    return out
+    return x_upsampled
 
 
 class AntiAliasAct1d(nnx.Module):
