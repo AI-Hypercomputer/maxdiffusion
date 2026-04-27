@@ -1651,7 +1651,6 @@ class LTX2Pipeline:
     except Exception as e:
       max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
 
-    import jax
     jax.clear_caches()
 
     if getattr(self.vae.config, "timestep_conditioning", False):
