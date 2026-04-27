@@ -101,6 +101,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       rope_type: str = "interleaved",
       video_gated_attn: bool = False,
       audio_gated_attn: bool = False,
+      cross_attn_mod: bool = False,
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       mesh: jax.sharding.Mesh = None,
@@ -320,14 +321,17 @@ class LTX2VideoTransformerBlock(nnx.Module):
     )
 
     key = rngs.params()
-    k1, k2, k3, k4 = jax.random.split(key, 4)
+    k1, k2, k3, k4, k5, k6 = jax.random.split(key, 6)
 
+    # LTX 2.3 uses 9 parameters for scale/shift in blocks, LTX2 uses 6.
+    num_block_scale_shift_params = 9 if cross_attn_mod else 6
+    
     self.scale_shift_table = nnx.Param(
-        jax.random.normal(k1, (6, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
+        jax.random.normal(k1, (num_block_scale_shift_params, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
         kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
     self.audio_scale_shift_table = nnx.Param(
-        jax.random.normal(k2, (6, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
+        jax.random.normal(k2, (num_block_scale_shift_params, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
         kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
     self.video_a2v_cross_attn_scale_shift_table = nnx.Param(
@@ -338,6 +342,16 @@ class LTX2VideoTransformerBlock(nnx.Module):
         jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype),
         kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
+
+    if cross_attn_mod:
+      self.prompt_scale_shift_table = nnx.Param(
+          jax.random.normal(k5, (2, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
+          kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+      )
+      self.audio_prompt_scale_shift_table = nnx.Param(
+          jax.random.normal(k6, (2, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
+          kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+      )
 
   def __call__(
       self,
@@ -610,6 +624,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       qk_norm: str = "rms_norm_across_heads",
       flash_block_sizes: BlockSizes = None,
       flash_min_seq_length: int = 4096,
+      video_gated_attn: bool = False,
+      audio_gated_attn: bool = False,
+      cross_attn_mod: bool = False,
       **kwargs,
   ):
     self.in_channels = in_channels
@@ -659,6 +676,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.a2v_attention_kernel = a2v_attention_kernel
     self.v2a_attention_kernel = v2a_attention_kernel
     self.flash_min_seq_length = flash_min_seq_length
+    self.video_gated_attn = video_gated_attn
+    self.audio_gated_attn = audio_gated_attn
+    self.cross_attn_mod = cross_attn_mod
 
     _out_channels = self.out_channels or self.in_channels
     _audio_out_channels = self.audio_out_channels or self.audio_in_channels
@@ -881,6 +901,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           v2a_attention_kernel=self.v2a_attention_kernel,
           flash_block_sizes=flash_block_sizes,
           flash_min_seq_length=self.flash_min_seq_length,
+          video_gated_attn=self.video_gated_attn,
+          audio_gated_attn=self.audio_gated_attn,
+          cross_attn_mod=self.cross_attn_mod,
       )
 
     if self.scan_layers:
@@ -916,6 +939,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             v2a_attention_kernel=self.v2a_attention_kernel,
             flash_block_sizes=flash_block_sizes,
             flash_min_seq_length=self.flash_min_seq_length,
+            video_gated_attn=self.video_gated_attn,
+            audio_gated_attn=self.audio_gated_attn,
+            cross_attn_mod=self.cross_attn_mod,
         )
         blocks.append(block)
       self.transformer_blocks = nnx.List(blocks)
