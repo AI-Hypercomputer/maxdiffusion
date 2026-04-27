@@ -1700,6 +1700,7 @@ class LTX2Pipeline:
         "latent_width",
         "audio_num_frames",
         "fps",
+        "use_cross_timestep",
     ),
 )
 def transformer_forward_pass(
@@ -1769,6 +1770,7 @@ def transformer_forward_pass(
         "scan_layers",
         "scheduler_step",
         "logical_axis_rules",
+        "use_cross_timestep",
     ),
 )
 def run_diffusion_loop(
