@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Optional, Tuple, Any, Dict
+from typing import Optional, Tuple, Any, Dict, List
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -998,6 +998,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       use_cross_timestep: bool = False,
       modality_mask: Optional[jax.Array] = None,
       isolate_modalities: bool = False,
+      spatio_temporal_guidance_blocks: Optional[List[int]] = None,
       return_dict: bool = True,
       perturbation_mask: Optional[jax.Array] = None,
   ) -> Any:
