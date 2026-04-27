@@ -416,7 +416,6 @@ class UpSample1d(nnx.Module):
     self.filter = sinc_filter
 
   def __call__(self, x: Array) -> Array:
-    x = jnp.transpose(x, (0, 2, 1))
     num_channels = x.shape[-1]
     
     mode = "constant" if self.padding_mode == "constant" else "edge"
@@ -436,7 +435,7 @@ class UpSample1d(nnx.Module):
     )
     
     out = x_upsampled[:, self.pad_left : -self.pad_right, :]
-    return jnp.transpose(out, (0, 2, 1))
+    return out
 
 
 class AntiAliasAct1d(nnx.Module):
