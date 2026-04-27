@@ -264,7 +264,10 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     for i in range(self.num_upsample_layers):
       if self.act_fn == "leaky_relu":
         hidden_states = jax.nn.leaky_relu(hidden_states, negative_slope=self.negative_slope)
+      
+      max_logging.log(f"[ShapeLog] Layer {i} before upsampler: {hidden_states.shape}")
       hidden_states = self.upsamplers[i](hidden_states)
+      max_logging.log(f"[ShapeLog] Layer {i} after upsampler: {hidden_states.shape}")
 
       # Accumulate ResNet outputs (Memory Optimization)
       start = i * self.resnets_per_upsample
