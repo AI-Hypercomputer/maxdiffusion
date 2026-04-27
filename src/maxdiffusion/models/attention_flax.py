@@ -676,6 +676,8 @@ def _2d_context_attention(
     mask_padding_tokens: bool = True,
     residual_checkpoint_name: str | None = None,
     attention_mask: jax.Array = None,
+    use_base2_exp: bool = False,
+    use_experimental_scheduler: bool = False,
 ) -> jax.Array:
   """2D context-parallel attention combining Ulysses and Ring.
 
@@ -810,7 +812,12 @@ def _2d_context_attention(
     splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
         mask=mask,
         q_seq_shards=1,
-        config=convert_to_tokamax_splash_config(block_sizes, residual_checkpoint_name=residual_checkpoint_name),
+        config=convert_to_tokamax_splash_config(
+            block_sizes,
+            residual_checkpoint_name=residual_checkpoint_name,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+        ),
         save_residuals=True if R > 1 else False,
     )
     vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
@@ -1029,7 +1036,7 @@ def _apply_attention(
         attention_mask=attention_mask,
         attention_kernel=attention_kernel,
     )
-  elif attention_kernel == "ulysses_ring":
+  elif attention_kernel == "ulysses_ring" or (attention_kernel == "tokamax_ulysses" and context_ulysses_parallelism > 1 and context_ring_parallelism > 1):
     return _2d_context_attention(
         query,
         key * scale,
@@ -1045,6 +1052,8 @@ def _apply_attention(
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name=residual_checkpoint_name,
         attention_mask=attention_mask,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
     )
   elif attention_kernel in ["flash", "tokamax_flash"]:
     return _tpu_flash_attention(
