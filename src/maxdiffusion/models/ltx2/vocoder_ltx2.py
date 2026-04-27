@@ -128,7 +128,13 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       upsample_factors: Sequence[int] = (6, 5, 2, 2, 2),
       resnet_kernel_sizes: Sequence[int] = (3, 7, 11),
       resnet_dilations: Sequence[Sequence[int]] = ((1, 3, 5), (1, 3, 5), (1, 3, 5)),
+      act_fn: str = "leaky_relu",
       leaky_relu_negative_slope: float = 0.1,
+      antialias: bool = False,
+      antialias_ratio: int = 2,
+      antialias_kernel_size: int = 12,
+      final_act_fn: Optional[str] = None,
+      final_bias: bool = False,
       # output_sampling_rate is unused in model structure but kept for config compat
       output_sampling_rate: int = 24000,
       *,
@@ -141,6 +147,8 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.total_upsample_factor = math.prod(upsample_factors)
     self.negative_slope = leaky_relu_negative_slope
     self.act_fn = act_fn
+    self.final_act_fn = final_act_fn
+    self.final_bias = final_bias
     self.dtype = dtype
 
     if self.num_upsample_layers != len(upsample_factors):
@@ -219,6 +227,7 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         kernel_size=(7,),
         strides=(1,),
         padding="SAME",
+        use_bias=self.final_bias,
         rngs=rngs,
         dtype=self.dtype,
     )
