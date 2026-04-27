@@ -109,6 +109,7 @@ class ResBlock(nnx.Module):
       self.acts2.append(act)
 
   def __call__(self, x: Array) -> Array:
+    max_logging.log(f"[ShapeLog] ResBlock input shape: {x.shape}")
     for act1, conv1, act2, conv2 in zip(self.acts1, self.convs1, self.acts2, self.convs2):
       xt = act1(x)
       xt = conv1(xt)
