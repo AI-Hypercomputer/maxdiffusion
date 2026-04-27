@@ -1062,6 +1062,11 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             audio_sigma.flatten(),
             hidden_dtype=audio_hidden_states.dtype,
         )
+        if temb_prompt.shape[0] < batch_size:
+          temb_prompt = jnp.repeat(temb_prompt, batch_size // temb_prompt.shape[0], axis=0)
+        if temb_prompt_audio.shape[0] < batch_size:
+          temb_prompt_audio = jnp.repeat(temb_prompt_audio, batch_size // temb_prompt_audio.shape[0], axis=0)
+
         temb_prompt = temb_prompt.reshape(batch_size, -1, temb_prompt.shape[-1])
         temb_prompt_audio = temb_prompt_audio.reshape(batch_size, -1, temb_prompt_audio.shape[-1])
       else:
