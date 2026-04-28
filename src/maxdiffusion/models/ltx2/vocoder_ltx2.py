@@ -522,10 +522,10 @@ class CausalSTFT(nnx.Module):
   def __call__(self, waveform: Array) -> Tuple[Array, Array]:
     max_logging.log(f"[ShapeLog] CausalSTFT input: {waveform.shape}")
     if waveform.ndim == 2:
-      waveform = jnp.expand_dims(waveform, 1)
+      waveform = jnp.expand_dims(waveform, -1)
       
     left_pad = max(0, self.window_length - self.hop_length)
-    waveform = jnp.pad(waveform, ((0, 0), (0, 0), (left_pad, 0)), mode="constant")
+    waveform = jnp.pad(waveform, ((0, 0), (left_pad, 0), (0, 0)), mode="constant")
     
     spec = jax.lax.conv_general_dilated(
         lhs=waveform,
@@ -669,7 +669,7 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
   def __call__(self, mel_spec: Array) -> Array:
     x = self.vocoder(mel_spec)
     
-    batch_size, num_samples, num_channels = x.shape
+    batch_size, num_channels, num_samples = x.shape
 
     hop_length = getattr(self.config, "hop_length", 80)
     remainder = num_samples % hop_length
