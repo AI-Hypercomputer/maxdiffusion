@@ -561,8 +561,8 @@ class MelSTFT(nnx.Module):
 
   def __call__(self, waveform: Array) -> Tuple[Array, Array, Array, Array]:
     magnitude, phase = self.stft_fn(waveform)
-    energy = jnp.linalg.norm(magnitude, axis=1)
-    mel = jnp.matmul(self.mel_basis.value, magnitude)
+    energy = jnp.linalg.norm(magnitude, axis=-1)
+    mel = jnp.matmul(magnitude, self.mel_basis.value.T)
     log_mel = jnp.log(jnp.clip(mel, min=1e-5))
     return log_mel, magnitude, phase, energy
 
@@ -674,10 +674,10 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     hop_length = getattr(self.config, "hop_length", 80)
     remainder = num_samples % hop_length
     if remainder != 0:
-      x = jnp.pad(x, ((0, 0), (0, hop_length - remainder), (0, 0)), mode="constant")
+      x = jnp.pad(x, ((0, 0), (0, 0), (0, hop_length - remainder)), mode="constant")
 
     # Flatten Batch and Channels for STFT
-    x_flattened = x.transpose(0, 2, 1).reshape(-1, x.shape[1], 1)
+    x_flattened = x.reshape(-1, x.shape[-1], 1)
     mel, _, _, _ = self.mel_stft(x_flattened)
     
     # Reshape to 4D [Batch, Channels, MelBins, Time]
@@ -688,12 +688,12 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     residual = self.bwe_generator(mel_for_bwe)
     
 
-    skip = self.resampler(x)
+    skip = self.resampler(x.transpose(0, 2, 1))
+    skip = skip.transpose(0, 2, 1)
     waveform = jnp.clip(residual + skip, -1, 1)
     
-    input_sampling_rate = getattr(self.config, "input_sampling_rate", 16000)
-    output_sampling_rate = getattr(self.config, "output_sampling_rate", 48000)
-    output_samples = num_samples * output_sampling_rate // input_sampling_rate
+    input_sr = getattr(self.config, "input_sampling_rate", 16000)
+    output_sr = getattr(self.config, "output_sampling_rate", 48000)
+    output_samples = num_samples * output_sr // input_sr
     
-    waveform = waveform[..., :output_samples]
-    return waveform
+    return waveform[..., :output_samples]
