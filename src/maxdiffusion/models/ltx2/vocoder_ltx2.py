@@ -109,7 +109,7 @@ class ResBlock(nnx.Module):
       self.acts2.append(act)
 
   def __call__(self, x: Array) -> Array:
-    max_logging.log(f"[ShapeLog] ResBlock input shape: {x.shape}")
+
     for act1, conv1, act2, conv2 in zip(self.acts1, self.convs1, self.acts2, self.convs2):
       xt = act1(x)
       xt = conv1(xt)
@@ -268,9 +268,7 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       if self.act_fn == "leaky_relu":
         hidden_states = jax.nn.leaky_relu(hidden_states, negative_slope=self.negative_slope)
       
-      max_logging.log(f"[ShapeLog] Layer {i} before upsampler: {hidden_states.shape}")
       hidden_states = self.upsamplers[i](hidden_states)
-      max_logging.log(f"[ShapeLog] Layer {i} after upsampler: {hidden_states.shape}")
 
       # Accumulate ResNet outputs (Memory Optimization)
       start = i * self.resnets_per_upsample
@@ -455,18 +453,15 @@ class AntiAliasAct1d(nnx.Module):
 
   def __call__(self, x: Array) -> Array:
     input_len = x.shape[1]
-    max_logging.log(f"[ShapeLog] AntiAlias input: {x.shape}")
     x = self.upsample(x)
-    max_logging.log(f"[ShapeLog] AntiAlias after upsample: {x.shape}")
     x = self.act(x)
-    max_logging.log(f"[ShapeLog] AntiAlias after act: {x.shape}")
     x = self.downsample(x)
     
     # Pad if needed to conserve sequence length
     if x.shape[1] < input_len:
       x = jnp.pad(x, ((0, 0), (0, input_len - x.shape[1]), (0, 0)), mode="edge")
       
-    max_logging.log(f"[ShapeLog] AntiAlias after downsample: {x.shape}")
+
     return x
 
 
@@ -525,6 +520,7 @@ class CausalSTFT(nnx.Module):
     self.inverse_basis = nnx.Param(jnp.zeros((filter_length, 1, n_freqs * 2)))
 
   def __call__(self, waveform: Array) -> Tuple[Array, Array]:
+    max_logging.log(f"[ShapeLog] CausalSTFT input: {waveform.shape}")
     if waveform.ndim == 2:
       waveform = jnp.expand_dims(waveform, 1)
       
