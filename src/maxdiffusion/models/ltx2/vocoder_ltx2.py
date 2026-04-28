@@ -416,18 +416,28 @@ class UpSample1d(nnx.Module):
   def __call__(self, x: Array) -> Array:
     num_channels = x.shape[-1]
     
-    # Expand filter for feature group count
-    filter_expanded = jnp.expand_dims(self.filter, axis=(1, 2))
-    filter_expanded = jnp.tile(filter_expanded, (1, 1, num_channels))
+    # Reshape filter to [K, 1, 1] for WIO layout
+    filter_wio = self.filter.reshape(-1, 1, 1)
     
-    x_upsampled = jax.lax.conv_transpose(
-        lhs=x,
-        rhs=filter_expanded,
-        strides=(self.ratio,),
-        padding=[(self.pad_left, self.pad_right)],
-        dimension_numbers=("NWC", "WIO", "NWC"),
-        feature_group_count=num_channels,
-    )
+    # Stack filter for each channel to enable vmap
+    filter_stacked = jnp.tile(filter_wio[None, :, :, :], (num_channels, 1, 1, 1))
+    
+    # Define single channel conv
+    def single_channel_conv(x_single, filter_single):
+      # x_single has shape [N, W] -> needs to be [N, W, 1] for NWC
+      x_single = jnp.expand_dims(x_single, axis=-1)
+      out = jax.lax.conv_transpose(
+          lhs=x_single,
+          rhs=filter_single,
+          strides=(self.ratio,),
+          padding=[(self.pad_left, self.pad_right)],
+          dimension_numbers=("NWC", "WIO", "NWC"),
+      )
+      return out.squeeze(axis=-1) # remove channels dim to stack in vmap
+      
+    # Vmap over channels dimension (axis 2 in NWC)
+    x_upsampled = jax.vmap(single_channel_conv, in_axes=(2, 0), out_axes=2)(x, filter_stacked)
+    
     return x_upsampled
 
 
