@@ -454,12 +454,18 @@ class AntiAliasAct1d(nnx.Module):
     self.downsample = DownSample1d(ratio=ratio, kernel_size=kernel_size)
 
   def __call__(self, x: Array) -> Array:
+    input_len = x.shape[1]
     max_logging.log(f"[ShapeLog] AntiAlias input: {x.shape}")
     x = self.upsample(x)
     max_logging.log(f"[ShapeLog] AntiAlias after upsample: {x.shape}")
     x = self.act(x)
     max_logging.log(f"[ShapeLog] AntiAlias after act: {x.shape}")
     x = self.downsample(x)
+    
+    # Pad if needed to conserve sequence length
+    if x.shape[1] < input_len:
+      x = jnp.pad(x, ((0, 0), (0, input_len - x.shape[1]), (0, 0)), mode="edge")
+      
     max_logging.log(f"[ShapeLog] AntiAlias after downsample: {x.shape}")
     return x
 
