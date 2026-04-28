@@ -542,17 +542,18 @@ def _ulysses_attention(
     use_experimental_scheduler: bool = False,
     scale: float = 1.0,
 ) -> jax.Array:
-  """Ulysses sequence-parallel attention using sharding constraints.
+  """Ulysses sequence-parallel attention with all-to-all in BSHD format.
 
   Tensors arrive in BSHD format [b, s, h, d] with seq sharded on context axis.
-  Sharding constraints redistribute to heads-on-context, run local splash
-  attention with full sequence and subset of heads, then redistribute back.
+  All-to-all in BSHD trades seq↔heads without a prior transpose, avoiding
+  layout mismatches. Transpose to BHSD happens only after redistribution
+  on the smaller h/CP tensor for the splash kernel.
   """
-  from jax.sharding import PartitionSpec as P, NamedSharding
+  from jax.sharding import PartitionSpec as P
 
-  num_shards = mesh.shape["context"]
+  axis_name = "context"
+  num_shards = mesh.shape[axis_name]
 
-  # Input is [b, s, h, d] — validate heads divisibility
   num_heads = query.shape[2]
   if num_heads % num_shards != 0:
     raise ValueError(
@@ -573,23 +574,25 @@ def _ulysses_attention(
 
   block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, "tokamax_flash")
 
-  # Redistribute: seq→context to heads→context (XLA picks the optimal collective)
-  heads_on_ctx = NamedSharding(mesh, P("data", None, "context", None))
-  query = jax.lax.with_sharding_constraint(query, heads_on_ctx)
-  key = jax.lax.with_sharding_constraint(key, heads_on_ctx)
-  value = jax.lax.with_sharding_constraint(value, heads_on_ctx)
-
-  key = key * scale
-
+  # Single shard_map: all-to-all in BSHD (no prior transpose), then splash
   @functools.partial(
       shard_map.shard_map,
       mesh=mesh,
-      in_specs=(P("data", None, "context", None),) * 3,
-      out_specs=P("data", None, "context", None),
+      in_specs=(P("data", "context", None, None),) * 3,
+      out_specs=P("data", "context", None, None),
       check_rep=False,
   )
   def wrap_ulysses_splash(query, key, value):
-    # Transpose BSHD → BHSD for splash kernel (on local shard: h/CP heads, 4x smaller)
+    # Local: [b/DP, s/CP, h, d] in BSHD — natural layout from projections
+    # All-to-all in BSHD: split heads (axis 2), concat seq (axis 1)
+    # [b/DP, s/CP, h, d] → [b/DP, s_full, h/CP, d]
+    query = jax.lax.all_to_all(query, axis_name=axis_name, split_axis=2, concat_axis=1, tiled=True)
+    key = jax.lax.all_to_all(key, axis_name=axis_name, split_axis=2, concat_axis=1, tiled=True)
+    value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=2, concat_axis=1, tiled=True)
+
+    key = key * scale
+
+    # NOW transpose BSHD → BHSD for splash (on h/CP heads, CP-x smaller)
     query = jnp.transpose(query, (0, 2, 1, 3))
     key = jnp.transpose(key, (0, 2, 1, 3))
     value = jnp.transpose(value, (0, 2, 1, 3))
@@ -652,16 +655,17 @@ def _ulysses_attention(
     attention_output = vmapped_splash(query, key, value, segment_ids)
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
-    # Transpose back BHSD → BSHD
-    return jnp.transpose(attention_output, (0, 2, 1, 3))
+    # Transpose back BHSD → BSHD: [b, h/CP, s, d] → [b, s, h/CP, d]
+    attention_output = jnp.transpose(attention_output, (0, 2, 1, 3))
+
+    # All-to-all back in BSHD: split seq (axis 1), concat heads (axis 2)
+    # [b/DP, s_full, h/CP, d] → [b/DP, s/CP, h, d]
+    attention_output = jax.lax.all_to_all(attention_output, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+    return attention_output
 
   x = wrap_ulysses_splash(query, key, value)
 
-  # Redistribute back: heads→context to seq→context
-  seq_on_ctx = NamedSharding(mesh, P("data", "context", None, None))
-  x = jax.lax.with_sharding_constraint(x, seq_on_ctx)
-
-  # Trim padding and flatten — no transpose needed
+  # Trim padding and flatten
   x = x[:, :orig_q_seq_len, :]
   x = x.reshape(x.shape[0], x.shape[1], -1)
 
@@ -743,7 +747,7 @@ def _2d_context_attention(
   devices_2d = np.array(mesh.devices).reshape(dp_size, num_context_shards).reshape(dp_size, R, U)
   mesh_2d = Mesh(devices_2d, ("data", "ring", "ulysses"))
 
-  # Step 1: Redistribute via sharding constraint on 2D mesh
+  # Redistribute via sharding constraint on 2D mesh
   # seq (axis 1) → ring, heads (axis 2) → ulysses
   # Each device gets: [b/DP, s/R, h/U, d]
   target_sharding = NamedSharding(mesh_2d, P("data", "ring", "ulysses", None))
@@ -756,7 +760,7 @@ def _2d_context_attention(
   # Ring permutation on "ring" axis (size R): rotate by 1
   ring_perm = [(i, (i + 1) % R) for i in range(R)]
 
-  # Step 2: shard_map on 2D mesh for ring ppermute + splash kernel
+  # shard_map on 2D mesh for ring ppermute + splash kernel
   @functools.partial(
       shard_map.shard_map,
       mesh=mesh_2d,
@@ -875,7 +879,7 @@ def _2d_context_attention(
 
   x = wrap_2d_ring_attention(query, key, value)
 
-  # Step 3: Redistribute back to seq-on-context (original mesh)
+  # Redistribute back to seq-on-context (original mesh)
   seq_on_ctx = NamedSharding(mesh, P("data", "context", None, None))
   x = jax.lax.with_sharding_constraint(x, seq_on_ctx)
 

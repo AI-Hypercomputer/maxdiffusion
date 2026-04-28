@@ -61,6 +61,7 @@ run_bench() {
     local ring_par="$4"
     local block_sizes="$5"
     local per_device_bs="$6"
+    local profiler="$7"
     local log_file="${RESULTS_DIR}/${name}.log"
 
     # Skip if already completed successfully
@@ -74,7 +75,7 @@ run_bench() {
     echo "=========================================="
     echo "Running: ${name}"
     echo "  attention=${attention}, per_device_bs=${per_device_bs}"
-    echo "  DP=2, CP=4, U=${ulysses_par}, R=${ring_par}"
+    echo "  DP=2, CP=4, U=${ulysses_par}, R=${ring_par}, profiler=${profiler}"
     echo "=========================================="
 
     if python src/maxdiffusion/generate_wan.py \
@@ -97,7 +98,7 @@ run_bench() {
         num_frames=81 \
         num_inference_steps=40 \
         per_device_batch_size="${per_device_bs}" \
-        enable_profiler=True \
+        enable_profiler="${profiler}" \
         base_output_directory="${RESULTS_DIR}" \
         scan_layers=True \
         use_base2_exp=True \
@@ -145,21 +146,28 @@ for i in "${!GLOBAL_SIZES[@]}"; do
     gbs="${GLOBAL_SIZES[$i]}"
     pbs="${PER_DEVICE_SIZES[$i]}"
 
+    # Only profile GBS=1,2 (already collected); skip profiler for larger batches
+    if [ "${gbs}" -le 2 ]; then
+        prof="True"
+    else
+        prof="False"
+    fi
+
     echo "============================================================"
-    echo "  Global batch size: ${gbs} (per_device: ${pbs})"
+    echo "  Global batch size: ${gbs} (per_device: ${pbs}, profiler: ${prof})"
     echo "============================================================"
 
     # 1. Flash
-    run_bench "flash_gbs${gbs}" "flash" 1 1 "${FLASH_BLOCKS}" "${pbs}"
+    run_bench "flash_gbs${gbs}" "flash" 1 1 "${FLASH_BLOCKS}" "${pbs}" "${prof}"
 
     # 2. Tokamax Ring
-    run_bench "tokamax_ring_gbs${gbs}" "tokamax_ring" 1 1 "${FLASH_BLOCKS}" "${pbs}"
+    run_bench "tokamax_ring_gbs${gbs}" "tokamax_ring" 1 1 "${FLASH_BLOCKS}" "${pbs}" "${prof}"
 
     # 3. Ulysses (with layout hints to avoid relayout)
-    run_bench "ulysses_gbs${gbs}" "ulysses" 1 1 "${FLASH_BLOCKS_ULYSSES}" "${pbs}"
+    run_bench "ulysses_gbs${gbs}" "ulysses" 1 1 "${FLASH_BLOCKS_ULYSSES}" "${pbs}" "${prof}"
 
     # 4. 2D Ulysses+Ring (with layout hints to avoid relayout)
-    run_bench "2d_u2r2_gbs${gbs}" "ulysses_ring" 2 2 "${FLASH_BLOCKS_ULYSSES}" "${pbs}"
+    run_bench "2d_u2r2_gbs${gbs}" "ulysses_ring" 2 2 "${FLASH_BLOCKS_ULYSSES}" "${pbs}" "${prof}"
 done
 
 echo ""
