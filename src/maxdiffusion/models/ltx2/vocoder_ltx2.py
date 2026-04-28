@@ -539,11 +539,13 @@ class CausalSTFT(nnx.Module):
         dimension_numbers=("NWC", "WIO", "NWC"),
     )
     
-    spec = jnp.transpose(spec, (0, 2, 1))
-    n_freqs = spec.shape[1] // 2
-    real, imag = spec[:, :n_freqs], spec[:, n_freqs:]
+    # spec layout is NWC from dimension_numbers=("NWC", "WIO", "NWC")
+    n_freqs = spec.shape[-1] // 2
+    real, imag = spec[..., :n_freqs], spec[..., n_freqs:]
     magnitude = jnp.sqrt(real**2 + imag**2)
     phase = jnp.arctan2(imag, real)
+    
+    # Return magnitude and phase in NWC format directly
     return magnitude, phase
 
 
