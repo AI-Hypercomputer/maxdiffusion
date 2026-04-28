@@ -430,7 +430,7 @@ class UpSample1d(nnx.Module):
           lhs=x_single,
           rhs=filter_single,
           strides=(self.ratio,),
-          padding=[(self.pad_left, self.pad_right)],
+          padding=[(0, 0)],
           dimension_numbers=("NWC", "WIO", "NWC"),
       )
       return out.squeeze(axis=-1) # remove channels dim to stack in vmap
@@ -438,7 +438,8 @@ class UpSample1d(nnx.Module):
     # Vmap over channels dimension (axis 2 in NWC)
     x_upsampled = jax.vmap(single_channel_conv, in_axes=(2, 0), out_axes=2)(x, filter_stacked)
     
-    return x_upsampled
+    out = x_upsampled[:, self.pad_left : -self.pad_right, :]
+    return out
 
 
 class AntiAliasAct1d(nnx.Module):
