@@ -75,16 +75,16 @@ attention_sharding_uniform: True
 
 flash_block_sizes: {}
 # Use the following flash_block_sizes on v6e (Trillium) due to larger vmem.
-# flash_block_sizes: {
-#   "block_q" : 1536,
-#   "block_kv_compute" : 1536,
-#   "block_kv" : 1536,
-#   "block_q_dkv" : 1536,
-#   "block_kv_dkv" : 1536,
-#   "block_kv_dkv_compute" : 1536,
-#   "block_q_dq" : 1536,
-#   "block_kv_dq" : 1536
-# }
+flash_block_sizes: {
+  "block_q" : 1536,
+  "block_kv_compute" : 1536,
+  "block_kv" : 1536,
+  "block_q_dkv" : 1536,
+  "block_kv_dkv" : 1536,
+  "block_kv_dkv_compute" : 1536,
+  "block_q_dq" : 1536,
+  "block_kv_dq" : 1536
+}
 # GroupNorm groups
 norm_num_groups: 32
 
@@ -147,14 +147,19 @@ mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 # conv_in : conv.shape[2] weight
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
-                      ['batch', 'data'],
+                      ['batch', ['data', 'fsdp']],
                       ['activation_batch', ['data','fsdp']],
+                      ['activation_self_attn_heads', ['tensor']],
+                      #['activation_cross_attn_q_length', ['context', 'tensor']],
+                      #['activation_length', 'context'],
+                      ['activation_embed', 'tensor'],
                       ['activation_heads', 'tensor'],
                       ['activation_kv', 'tensor'],
                       ['mlp','tensor'],
-                      ['embed','fsdp'],
+                      #['embed',['context', 'fsdp']],
+                      ['embed', 'fsdp'],
                       ['heads', 'tensor'],
-                      ['conv_batch', ['data','fsdp']],
+                      ['conv_batch', ['data', 'fsdp']],
                       ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
                     ]
@@ -193,6 +198,7 @@ dataset_type: 'tfrecord'  # Options: 'tfrecord', 'hf', 'tf', 'grain', 'synthetic
 # Optional dimension overrides:
 # resolution: 512
 # ==============================================================================
+synthetic_num_samples: 100
 cache_latents_text_encoder_outputs: True
 # cache_latents_text_encoder_outputs only apply to dataset_type="tf",
 # only apply to small dataset that fits in memory

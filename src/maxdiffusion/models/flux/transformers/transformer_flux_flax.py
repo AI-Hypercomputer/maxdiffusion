@@ -398,7 +398,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     single_blocks = []
     for _ in range(self.num_single_layers):
-      single_block = FluxSingleTransformerBlock(
+      single_block = nn.remat(FluxSingleTransformerBlock)(
           dim=self.inner_dim,
           num_attention_heads=self.num_attention_heads,
           attention_head_dim=self.attention_head_dim,
@@ -476,6 +476,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       return_dict: bool = True,
       train: bool = False,
   ):
+    hidden_states = nn.with_logical_constraint(hidden_states, "batch", None, None, None)
     hidden_states = self.img_in(hidden_states)
     timestep = self.timestep_embedding(timestep, 256)
 

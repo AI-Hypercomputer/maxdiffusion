@@ -1544,9 +1544,9 @@ class FlaxFluxAttention(nn.Module):
   mesh: jax.sharding.Mesh = None
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
-  query_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
-  key_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
-  value_axis_names: AxisNames = (BATCH, LENGTH, HEAD)
+  query_axis_names: AxisNames = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_Q_LENGTH, D_KV)
+  key_axis_names: AxisNames = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_KV_LENGTH, D_KV)
+  value_axis_names: AxisNames = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_KV_LENGTH, D_KV)
   out_axis_names: AxisNames = (BATCH, LENGTH, EMBED)
   precision: jax.lax.Precision = None
   qkv_bias: bool = False
