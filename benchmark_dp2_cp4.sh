@@ -7,7 +7,7 @@ set -e
 
 REPO_DIR="/mnt/data/sagarchapara/workspace/maxdiffusion"
 VENV="/mnt/data/sagarchapara/workspace/venv"
-RESULTS_DIR="/mnt/data/sagarchapara/workspace/bench_dp2_cp4"
+RESULTS_DIR="/mnt/data/sagarchapara/workspace/bench_dp2_cp4_no_vae_spatial"
 
 export HF_HOME="/mnt/data/sagarchapara/cache/huggingface"
 export JAX_COMPILATION_CACHE_DIR="/mnt/data/sagarchapara/cache/jax"
@@ -46,12 +46,23 @@ cd "${REPO_DIR}"
 
 mkdir -p "${RESULTS_DIR}"
 
+# Tuned block sizes per attention config (from autotuner, CP=4).
+# Flash/Ring (JAX splash, CP=4): from tokamax_flash_cp4 tuning.
+FLASH_BLOCKS_FLASH='{"block_q":2048,"block_kv_compute":1024,"block_kv":2048,"block_q_dkv":2048,"block_kv_dkv":2048,"block_kv_dkv_compute":512,"block_q_dq":2048,"block_kv_dq":2048,"use_fused_bwd_kernel":false}'
+
+# Ulysses (JAX splash, CP=4): from ulysses_cp8 tuning (closest available).
+FLASH_BLOCKS_ULYSSES='{"block_q":2048,"block_kv_compute":1024,"block_kv":2048,"block_q_dkv":2048,"block_kv_dkv":2048,"block_kv_dkv_compute":1024,"block_q_dq":2048,"block_kv_dq":2048,"use_fused_bwd_kernel":false}'
+
+# 2D ulysses_ring (tokamax splash, CP=4, U=2, R=2): from tokamax_flash_cp4 tuning + layouts.
+FLASH_BLOCKS_2D='{"block_q":2048,"block_kv_compute":1024,"block_kv":2048,"block_q_dkv":2048,"block_kv_dkv":2048,"block_kv_dkv_compute":512,"block_q_dq":2048,"block_kv_dq":2048,"use_fused_bwd_kernel":false,"q_layout":"SEQ_MINOR","k_layout":"SEQ_MINOR","v_layout":"HEAD_DIM_MINOR"}'
+
 run_bench() {
     local name="$1"
     local attention="$2"
     local ulysses_par="$3"
     local ring_par="$4"
     local profiler="$5"
+    local block_sizes="$6"
     local log_file="${RESULTS_DIR}/${name}.log"
 
     sudo rm -f /tmp/libtpu_lockfile 2>/dev/null || true
@@ -60,6 +71,7 @@ run_bench() {
     echo "Running: ${name}"
     echo "  attention=${attention}, DP=2, CP=4, U=${ulysses_par}, R=${ring_par}"
     echo "  profiler=${profiler}"
+    echo "  block_sizes=${block_sizes}"
     echo "=========================================="
 
     python src/maxdiffusion/generate_wan.py \
@@ -76,7 +88,7 @@ run_bench() {
         dcn_tensor_parallelism=1 \
         context_ulysses_parallelism="${ulysses_par}" \
         context_ring_parallelism="${ring_par}" \
-        vae_spatial=8 \
+        vae_spatial=1 \
         height=720 \
         width=1280 \
         num_frames=81 \
@@ -85,7 +97,8 @@ run_bench() {
         enable_profiler="${profiler}" \
         base_output_directory="${RESULTS_DIR}" \
         scan_layers=True \
-        flash_block_sizes='{"block_q":2048,"block_kv_compute":1024,"block_kv":2048,"block_q_dkv":2048,"block_kv_dkv":2048,"block_kv_dkv_compute":1024,"block_q_dq":2048,"block_kv_dq":2048,"use_fused_bwd_kernel":false}' \
+        use_base2_exp=True \
+        flash_block_sizes="${block_sizes}" \
         2>&1 | tee "${log_file}"
 
     # Move generated videos to results dir
@@ -107,22 +120,22 @@ run_bench() {
 echo "============================================================"
 echo "  WAN 2.2 T2V Inference Benchmark (720x1280, 81f, 40 steps)"
 echo "  TPU v7-8 (8 chips), DP=2, CP=4"
-echo "  Flash block sizes: 2048/1024/2048"
+echo "  Per-config tuned block sizes + QKV layouts, base2 exp"
 echo "  XLA optimization flags: ENABLED"
 echo "============================================================"
 echo ""
 
 # 1. Ring+Ulysses (2D) — FIRST
-run_bench "2d_u2_r2" "ulysses_ring" 2 2 True
+run_bench "2d_u2_r2" "ulysses_ring" 2 2 True "${FLASH_BLOCKS_2D}"
 
 # 2. Flash
-run_bench "flash_dp2_cp4" "flash" 1 1 True
+run_bench "flash_dp2_cp4" "flash" 1 1 True "${FLASH_BLOCKS_FLASH}"
 
 # 3. Ring
-run_bench "ring_dp2_cp4" "ring" 1 1 True
+run_bench "ring_dp2_cp4" "ring" 1 1 True "${FLASH_BLOCKS_FLASH}"
 
 # 4. Ulysses
-run_bench "ulysses_dp2_cp4" "ulysses" 1 1 True
+run_bench "ulysses_dp2_cp4" "ulysses" 1 1 True "${FLASH_BLOCKS_ULYSSES}"
 
 echo ""
 echo "============================================================"

@@ -613,6 +613,35 @@ def value_or_none(flash_block_sizes, key):
     return None
 
 
+_LAYOUT_NAMES = {"HEAD_DIM_MINOR": 1, "SEQ_MINOR": 2}
+
+
+class FlashBlockSizesConfig:
+  """Wraps BlockSizes with optional QKV layout info from tuning."""
+
+  def __init__(self, block_sizes, q_layout=1, k_layout=1, v_layout=1):
+    self._block_sizes = block_sizes
+    self.q_layout = q_layout
+    self.k_layout = k_layout
+    self.v_layout = v_layout
+
+  def __getattr__(self, name):
+    return getattr(self._block_sizes, name)
+
+  def __bool__(self):
+    return self._block_sizes is not None
+
+
+def _parse_layout(value, default=1):
+  if value is None:
+    return default
+  if isinstance(value, int):
+    return value
+  if isinstance(value, str):
+    return _LAYOUT_NAMES.get(value, default)
+  return default
+
+
 def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
   flash_block_sizes = None
@@ -628,7 +657,7 @@ def get_flash_block_sizes(config):
           f"block_kv_dq: {user_block_sizes.get('block_kv_dq')},"
           f"use_fused_bwd_kernel: {user_block_sizes.get('use_fused_bwd_kernel')}"
       )
-    flash_block_sizes = splash_attention_kernel.BlockSizes(
+    block_sizes = splash_attention_kernel.BlockSizes(
         block_q=user_block_sizes.get("block_q_dkv", user_block_sizes["block_kv"])
         if attention_is_tokamax
         else user_block_sizes["block_q"],
@@ -641,6 +670,13 @@ def get_flash_block_sizes(config):
         block_kv_dq=None if attention_is_tokamax else value_or_none(user_block_sizes, "block_kv_dq"),
         use_fused_bwd_kernel=True if attention_is_tokamax else value_or_none(user_block_sizes, "use_fused_bwd_kernel"),
     )
+    q_layout = _parse_layout(user_block_sizes.get("q_layout"))
+    k_layout = _parse_layout(user_block_sizes.get("k_layout"))
+    v_layout = _parse_layout(user_block_sizes.get("v_layout"))
+    if q_layout != 1 or k_layout != 1 or v_layout != 1:
+      flash_block_sizes = FlashBlockSizesConfig(block_sizes, q_layout, k_layout, v_layout)
+    else:
+      flash_block_sizes = block_sizes
   return flash_block_sizes
 
 
