@@ -1345,6 +1345,20 @@ class LTX2Pipeline:
         prompt_embeds_jax = jax.device_put(prompt_embeds_jax, data_sharding_3d)
       prompt_attention_mask_jax = jax.device_put(prompt_attention_mask_jax, data_sharding_2d)
 
+    # Reload transformer weights to TPU if they are on CPU
+    if isinstance(prompt_embeds_jax, list):
+      mesh = prompt_embeds_jax[0].sharding.mesh
+    else:
+      mesh = prompt_embeds_jax.sharding.mesh
+      
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+    replicated_sharding = NamedSharding(mesh, P())
+    
+    graphdef, state = nnx.split(self.transformer)
+    state = jax.tree_util.tree_map(lambda x: jax.device_put(x, replicated_sharding) if isinstance(x, jax.Array) else x, state)
+    self.transformer = nnx.merge(graphdef, state)
+    
     # GraphDef and State
     graphdef, state = nnx.split(self.transformer)
 
@@ -1651,11 +1665,13 @@ class LTX2Pipeline:
       self.vae = nnx.merge(graphdef, state)
     except Exception as e:
       max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
- 
-    # Delete transformer to free weight buffers
-    if hasattr(self, "transformer"):
-      del self.transformer
-      gc.collect()
+    # Offload transformer weights to CPU to free HBM for VAE decoding
+    graphdef, state = nnx.split(self.transformer)
+    cpu = jax.local_devices(backend="cpu")[0]
+    state = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu) if isinstance(x, jax.Array) else x, state)
+    self.transformer = nnx.merge(graphdef, state)
+    import gc
+    gc.collect()
 
     if getattr(self.vae.config, "timestep_conditioning", False):
       noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
