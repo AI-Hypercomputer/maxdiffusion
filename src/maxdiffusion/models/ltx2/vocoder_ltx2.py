@@ -535,7 +535,7 @@ class CausalSTFT(nnx.Module):
     
     spec = jax.lax.conv_general_dilated(
         lhs=waveform,
-        rhs=self.forward_basis.value,
+        rhs=self.forward_basis.value.astype(waveform.dtype),
         window_strides=(self.hop_length,),
         padding="VALID",
         dimension_numbers=("NWC", "WIO", "NWC"),
