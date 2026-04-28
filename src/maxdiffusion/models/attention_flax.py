@@ -695,13 +695,14 @@ def _2d_context_attention(
   """2D context-parallel attention combining Ulysses and Ring.
 
   Tensors arrive in BSHD format [b, s, h, d] with seq sharded on context axis.
-  Transpose to BHSD happens only inside shard_map on local shards to avoid
-  sparse-core relayouts from layout mismatches with collectives.
+  A 2D mesh (ring x ulysses) is constructed from the flat context axis so that
+  sharding constraints handle the ulysses redistribution (seq↔heads) without
+  manual all-to-all, and ring ppermute runs inside shard_map.
   """
-  from jax.sharding import PartitionSpec as P
+  from jax.sharding import PartitionSpec as P, NamedSharding
+  import numpy as np
 
-  axis_name = "context"
-  num_context_shards = mesh.shape[axis_name]
+  num_context_shards = mesh.shape["context"]
   U = ulysses_size
   R = ring_size
 
@@ -719,10 +720,10 @@ def _2d_context_attention(
         f"divisible by ulysses_size ({U})."
     )
 
-  # Pad seq (axis 1 in BSHD) for even context splitting
-  rem = orig_q_seq_len % num_context_shards
+  # Pad seq (axis 1) so it's divisible by R (ring devices split seq)
+  rem = orig_q_seq_len % R
   if rem != 0:
-    pad_len = num_context_shards - rem
+    pad_len = R - rem
     pad_width = [(0, 0), (0, pad_len), (0, 0), (0, 0)]
     query = jnp.pad(query, pad_width)
     key = jnp.pad(key, pad_width)
@@ -730,57 +731,46 @@ def _2d_context_attention(
 
   seq_padded = query.shape[1]
 
-  # Block sizes based on post-Ulysses shape: [b, h/U, seq_padded/R, d]
+  # Block sizes based on per-ring-device shape: [b, h/U, seq_padded/R, d]
   effective_seq_len = seq_padded // R
   effective_q = jnp.empty((query.shape[0], num_heads // U, effective_seq_len, query.shape[3]))
   effective_k = jnp.empty((key.shape[0], num_heads // U, effective_seq_len, key.shape[3]))
   block_sizes = _select_flash_block_sizes(effective_q, effective_k, flash_block_sizes, dtype, "tokamax_flash")
 
-  # Ulysses groups: devices with adjacent sequence chunks that do all-to-all.
-  ulysses_groups = [[r * U + u for u in range(U)] for r in range(R)]
+  # Build 2D mesh: reshape flat context axis (CP) into (R, U)
+  # Device layout: context_idx = r * U + u
+  dp_size = mesh.shape["data"]
+  devices_2d = np.array(mesh.devices).reshape(dp_size, num_context_shards).reshape(dp_size, R, U)
+  mesh_2d = Mesh(devices_2d, ("data", "ring", "ulysses"))
 
-  # Ring permutation: within each ring group, rotate by 1.
-  ring_perm = []
-  for u in range(U):
-    for r in range(R):
-      src = r * U + u
-      dst = ((r + 1) % R) * U + u
-      ring_perm.append((src, dst))
+  # Step 1: Redistribute via sharding constraint on 2D mesh
+  # seq (axis 1) → ring, heads (axis 2) → ulysses
+  # Each device gets: [b/DP, s/R, h/U, d]
+  target_sharding = NamedSharding(mesh_2d, P("data", "ring", "ulysses", None))
+  query = jax.lax.with_sharding_constraint(query, target_sharding)
+  key = jax.lax.with_sharding_constraint(key, target_sharding)
+  value = jax.lax.with_sharding_constraint(value, target_sharding)
 
-  # shard_map with BSHD specs: seq on context
+  key = key * scale
+
+  # Ring permutation on "ring" axis (size R): rotate by 1
+  ring_perm = [(i, (i + 1) % R) for i in range(R)]
+
+  # Step 2: shard_map on 2D mesh for ring ppermute + splash kernel
   @functools.partial(
       shard_map.shard_map,
-      mesh=mesh,
-      in_specs=(P("data", "context", None, None),) * 3,
-      out_specs=P("data", "context", None, None),
+      mesh=mesh_2d,
+      in_specs=(P("data", "ring", "ulysses", None),) * 3,
+      out_specs=P("data", "ring", "ulysses", None),
       check_rep=False,
   )
-  def wrap_2d_context_attention(query, key, value):
-    # Local shard: [b/DP, s/CP, h, d] in BSHD
-    # Transpose to BHSD for all-to-all and splash kernel
-    query = jnp.transpose(query, (0, 2, 1, 3))  # → [b/DP, h, s/CP, d]
+  def wrap_2d_ring_attention(query, key, value):
+    # Local: [b/DP, s/R, h/U, d] — transpose to BHSD for splash
+    query = jnp.transpose(query, (0, 2, 1, 3))  # → [b/DP, h/U, s/R, d]
     key = jnp.transpose(key, (0, 2, 1, 3))
     value = jnp.transpose(value, (0, 2, 1, 3))
 
-    # ---- Step 1: Ulysses all-to-all (seq → heads) ----
-    # Before: [b, H, S/CP, d]  After: [b, H/U, S/R, d]
-    if U > 1:
-      query = jax.lax.all_to_all(
-          query, axis_name=axis_name, split_axis=1, concat_axis=2,
-          tiled=True, axis_index_groups=ulysses_groups,
-      )
-      key = jax.lax.all_to_all(
-          key, axis_name=axis_name, split_axis=1, concat_axis=2,
-          tiled=True, axis_index_groups=ulysses_groups,
-      )
-      value = jax.lax.all_to_all(
-          value, axis_name=axis_name, split_axis=1, concat_axis=2,
-          tiled=True, axis_index_groups=ulysses_groups,
-      )
-
-    key = key * scale
-
-    # ---- Step 2: Pad for flash attention ----
+    # Pad for flash attention
     uses_fused_kernel = block_sizes.use_fused_bwd_kernel
     block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv)
     block_kv_sizes = (block_sizes.block_kv, block_sizes.block_kv_dkv)
@@ -825,7 +815,7 @@ def _2d_context_attention(
     if not mask_padding_tokens:
       segment_ids = None
 
-    # ---- Step 3: Ring attention over R devices ----
+    # Ring attention with ppermute on "ring" axis
     splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
         mask=mask,
         q_seq_shards=1,
@@ -846,13 +836,13 @@ def _2d_context_attention(
       l = jnp.exp(lse - m)
       o = out.astype(jnp.float32) * l[..., None]
 
-      k1 = jax.lax.ppermute(key, axis_name=axis_name, perm=ring_perm)
-      v1 = jax.lax.ppermute(value, axis_name=axis_name, perm=ring_perm)
+      k1 = jax.lax.ppermute(key, axis_name="ring", perm=ring_perm)
+      v1 = jax.lax.ppermute(value, axis_name="ring", perm=ring_perm)
 
       def ring_scan_body(carry, _):
         m, l, o, k_current, v_current = carry
-        k_next = jax.lax.ppermute(k_current, axis_name=axis_name, perm=ring_perm)
-        v_next = jax.lax.ppermute(v_current, axis_name=axis_name, perm=ring_perm)
+        k_next = jax.lax.ppermute(k_current, axis_name="ring", perm=ring_perm)
+        v_next = jax.lax.ppermute(v_current, axis_name="ring", perm=ring_perm)
 
         out_chunk, stats_chunk = vmapped_splash(query, k_current, v_current, segment_ids)
         lse_chunk = stats_chunk["logsumexp"]
@@ -880,25 +870,16 @@ def _2d_context_attention(
 
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
-    # ---- Step 4: Ulysses all-to-all back (heads → seq) ----
-    if U > 1:
-      attention_output = jax.lax.all_to_all(
-          attention_output, axis_name=axis_name, split_axis=2, concat_axis=1,
-          tiled=True, axis_index_groups=ulysses_groups,
-      )
-
     # Transpose back BHSD → BSHD
     return jnp.transpose(attention_output, (0, 2, 1, 3))
 
-  devices_in_data_context = mesh.shape["data"] * num_context_shards
-  if not (query.shape[0] / devices_in_data_context).is_integer():
-    max_logging.log(
-        "Warning, batch dimension should be shardable among the devices in data and context"
-        f" axis, batch dimension: {query.shape[0]}, devices_in_data_context: {devices_in_data_context}"
-    )
-  x = wrap_2d_context_attention(query, key, value)
+  x = wrap_2d_ring_attention(query, key, value)
 
-  # Trim padding and flatten — no transpose needed
+  # Step 3: Redistribute back to seq-on-context (original mesh)
+  seq_on_ctx = NamedSharding(mesh, P("data", "context", None, None))
+  x = jax.lax.with_sharding_constraint(x, seq_on_ctx)
+
+  # Trim padding and flatten
   x = x[:, :orig_q_seq_len, :]
   x = x.reshape(x.shape[0], x.shape[1], -1)  # [b, s, h*d]
 
