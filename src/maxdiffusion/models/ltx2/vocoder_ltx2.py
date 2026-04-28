@@ -531,8 +531,6 @@ class CausalSTFT(nnx.Module):
     left_pad = max(0, self.window_length - self.hop_length)
     waveform = jnp.pad(waveform, ((0, 0), (0, 0), (left_pad, 0)), mode="constant")
     
-    waveform = jnp.transpose(waveform, (0, 2, 1))
-    
     spec = jax.lax.conv_general_dilated(
         lhs=waveform,
         rhs=self.forward_basis.value.astype(waveform.dtype),
