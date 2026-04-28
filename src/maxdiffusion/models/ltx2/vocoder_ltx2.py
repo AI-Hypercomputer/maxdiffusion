@@ -673,17 +673,19 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
   def __call__(self, mel_spec: Array) -> Array:
     x = self.vocoder(mel_spec)
     
-    batch_size, num_channels, num_samples = x.shape
+    batch_size, num_samples, num_channels = x.shape
 
     hop_length = getattr(self.config, "hop_length", 80)
     remainder = num_samples % hop_length
     if remainder != 0:
-      x = jnp.pad(x, ((0, 0), (0, 0), (0, hop_length - remainder)), mode="constant")
+      x = jnp.pad(x, ((0, 0), (0, hop_length - remainder), (0, 0)), mode="constant")
 
-    x_flat = x.reshape(-1, x.shape[-1])
-    mel, _, _, _ = self.mel_stft(x_flat)
-    mel = mel.reshape(batch_size, num_channels, -1)
-
+    # Flatten Batch and Channels for STFT
+    x_flattened = x.transpose(0, 2, 1).reshape(-1, x.shape[1], 1)
+    mel, _, _, _ = self.mel_stft(x_flattened)
+    
+    # Reshape to 4D [Batch, Channels, MelBins, Time]
+    mel = mel.reshape(batch_size, num_channels, -1, mel.shape[-1])
     mel_for_bwe = mel.transpose(0, 1, 3, 2)
     
     
