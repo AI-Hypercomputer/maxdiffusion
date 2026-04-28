@@ -689,7 +689,10 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     skip = self.resampler(x.transpose(0, 2, 1))
     skip = skip.transpose(0, 2, 1)
-    waveform = jnp.clip(residual + skip, -1, 1)
+    min_len = min(residual.shape[-1], skip.shape[-1])
+    waveform = jnp.clip(residual[..., :min_len] + skip[..., :min_len], -1, 1)
     
     ratio = self.config.output_sampling_rate // self.config.input_sampling_rate
-    return waveform[..., :num_samples * ratio]
+    target_samples = num_samples * ratio
+    
+    return waveform[..., :target_samples]
