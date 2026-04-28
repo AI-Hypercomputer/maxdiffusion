@@ -681,8 +681,7 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     mel, _, _, _ = self.mel_stft(x_flattened)
     
     # Reshape to 4D [Batch, Channels, MelBins, Time]
-    mel = mel.reshape(batch_size, num_channels, -1, mel.shape[-1])
-    mel_for_bwe = mel.transpose(0, 1, 3, 2)
+    mel_for_bwe = mel.reshape(batch_size, num_channels, -1, mel.shape[-1])
     
     
     residual = self.bwe_generator(mel_for_bwe)
@@ -692,8 +691,5 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     skip = skip.transpose(0, 2, 1)
     waveform = jnp.clip(residual + skip, -1, 1)
     
-    input_sr = getattr(self.config, "input_sampling_rate", 16000)
-    output_sr = getattr(self.config, "output_sampling_rate", 48000)
-    output_samples = num_samples * output_sr // input_sr
-    
-    return waveform[..., :output_samples]
+    ratio = self.config.output_sampling_rate // self.config.input_sampling_rate
+    return waveform[..., :num_samples * ratio]
