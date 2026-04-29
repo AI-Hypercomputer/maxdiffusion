@@ -120,6 +120,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
     self.norm_elementwise_affine = norm_elementwise_affine
     self.attention_kernel = attention_kernel
     self.perturbed_attn = perturbed_attn
+    self.use_audio = audio_dim is not None and audio_dim > 0
 
     # 1. Self-Attention (video and audio)
     self.norm1 = nnx.RMSNorm(
@@ -149,32 +150,33 @@ class LTX2VideoTransformerBlock(nnx.Module):
         gated_attn=gated_attn,
     )
 
-    self.audio_norm1 = nnx.RMSNorm(
-        audio_dim,
-        epsilon=self.norm_eps,
-        use_scale=self.norm_elementwise_affine,
-        rngs=rngs,
-        dtype=jnp.float32,
-        param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
-    )
-    self.audio_attn1 = LTX2Attention(
-        rngs=rngs,
-        query_dim=audio_dim,
-        heads=audio_num_attention_heads,
-        dim_head=audio_attention_head_dim,
-        dropout=0.0,
-        bias=attention_bias,
-        out_bias=attention_out_bias,
-        eps=norm_eps,
-        dtype=dtype,
-        mesh=mesh,
-        attention_kernel=self.attention_kernel,
-        rope_type=rope_type,
-        flash_block_sizes=flash_block_sizes,
-        flash_min_seq_length=flash_min_seq_length,
-        gated_attn=gated_attn,
-    )
+    if self.use_audio:
+      self.audio_norm1 = nnx.RMSNorm(
+          audio_dim,
+          epsilon=self.norm_eps,
+          use_scale=self.norm_elementwise_affine,
+          rngs=rngs,
+          dtype=jnp.float32,
+          param_dtype=jnp.float32,
+          scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+      )
+      self.audio_attn1 = LTX2Attention(
+          rngs=rngs,
+          query_dim=audio_dim,
+          heads=audio_num_attention_heads,
+          dim_head=audio_attention_head_dim,
+          dropout=0.0,
+          bias=attention_bias,
+          out_bias=attention_out_bias,
+          eps=norm_eps,
+          dtype=dtype,
+          mesh=mesh,
+          attention_kernel=self.attention_kernel,
+          rope_type=rope_type,
+          flash_block_sizes=flash_block_sizes,
+          flash_min_seq_length=flash_min_seq_length,
+          gated_attn=gated_attn,
+      )
 
     # 2. Prompt Cross-Attention
     self.norm2 = nnx.RMSNorm(
@@ -204,90 +206,92 @@ class LTX2VideoTransformerBlock(nnx.Module):
         gated_attn=gated_attn,
     )
 
-    self.audio_norm2 = nnx.RMSNorm(
-        audio_dim,
-        epsilon=self.norm_eps,
-        use_scale=self.norm_elementwise_affine,
-        rngs=rngs,
-        dtype=jnp.float32,
-        param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
-    )
-    self.audio_attn2 = LTX2Attention(
-        rngs=rngs,
-        query_dim=audio_dim,
-        context_dim=audio_cross_attention_dim,
-        heads=audio_num_attention_heads,
-        dim_head=audio_attention_head_dim,
-        dropout=0.0,
-        bias=attention_bias,
-        out_bias=attention_out_bias,
-        eps=norm_eps,
-        dtype=dtype,
-        mesh=mesh,
-        attention_kernel=self.attention_kernel,
-        rope_type=rope_type,
-        flash_block_sizes=flash_block_sizes,
-        flash_min_seq_length=flash_min_seq_length,
-        gated_attn=gated_attn,
-    )
+    if self.use_audio:
+      self.audio_norm2 = nnx.RMSNorm(
+          audio_dim,
+          epsilon=self.norm_eps,
+          use_scale=self.norm_elementwise_affine,
+          rngs=rngs,
+          dtype=jnp.float32,
+          param_dtype=jnp.float32,
+          scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+      )
+      self.audio_attn2 = LTX2Attention(
+          rngs=rngs,
+          query_dim=audio_dim,
+          context_dim=audio_cross_attention_dim,
+          heads=audio_num_attention_heads,
+          dim_head=audio_attention_head_dim,
+          dropout=0.0,
+          bias=attention_bias,
+          out_bias=attention_out_bias,
+          eps=norm_eps,
+          dtype=dtype,
+          mesh=mesh,
+          attention_kernel=self.attention_kernel,
+          rope_type=rope_type,
+          flash_block_sizes=flash_block_sizes,
+          flash_min_seq_length=flash_min_seq_length,
+          gated_attn=gated_attn,
+      )
 
     # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
-    self.audio_to_video_norm = nnx.RMSNorm(
-        dim,
-        epsilon=self.norm_eps,
-        use_scale=self.norm_elementwise_affine,
-        rngs=rngs,
-        dtype=jnp.float32,
-        param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
-    )
-    self.audio_to_video_attn = LTX2Attention(
-        rngs=rngs,
-        query_dim=dim,
-        context_dim=audio_dim,
-        heads=audio_num_attention_heads,
-        dim_head=audio_attention_head_dim,
-        dropout=0.0,
-        bias=attention_bias,
-        out_bias=attention_out_bias,
-        eps=norm_eps,
-        dtype=dtype,
-        mesh=mesh,
-        attention_kernel=a2v_attention_kernel,
-        rope_type=rope_type,
-        flash_block_sizes=flash_block_sizes,
-        flash_min_seq_length=0,
-        gated_attn=True,
-    )
+    if self.use_audio:
+      self.audio_to_video_norm = nnx.RMSNorm(
+          dim,
+          epsilon=self.norm_eps,
+          use_scale=self.norm_elementwise_affine,
+          rngs=rngs,
+          dtype=jnp.float32,
+          param_dtype=jnp.float32,
+          scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+      )
+      self.audio_to_video_attn = LTX2Attention(
+          rngs=rngs,
+          query_dim=dim,
+          context_dim=audio_dim,
+          heads=audio_num_attention_heads,
+          dim_head=audio_attention_head_dim,
+          dropout=0.0,
+          bias=attention_bias,
+          out_bias=attention_out_bias,
+          eps=norm_eps,
+          dtype=dtype,
+          mesh=mesh,
+          attention_kernel=a2v_attention_kernel,
+          rope_type=rope_type,
+          flash_block_sizes=flash_block_sizes,
+          flash_min_seq_length=0,
+          gated_attn=True,
+      )
 
-    self.video_to_audio_norm = nnx.RMSNorm(
-        audio_dim,
-        epsilon=self.norm_eps,
-        use_scale=self.norm_elementwise_affine,
-        rngs=rngs,
-        dtype=jnp.float32,
-        param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
-    )
-    self.video_to_audio_attn = LTX2Attention(
-        rngs=rngs,
-        query_dim=audio_dim,
-        context_dim=dim,
-        heads=audio_num_attention_heads,
-        dim_head=audio_attention_head_dim,
-        dropout=0.0,
-        bias=attention_bias,
-        out_bias=attention_out_bias,
-        eps=norm_eps,
-        dtype=dtype,
-        mesh=mesh,
-        attention_kernel=v2a_attention_kernel,
-        rope_type=rope_type,
-        flash_block_sizes=flash_block_sizes,
-        flash_min_seq_length=flash_min_seq_length,
-        gated_attn=True,
-    )
+      self.video_to_audio_norm = nnx.RMSNorm(
+          audio_dim,
+          epsilon=self.norm_eps,
+          use_scale=self.norm_elementwise_affine,
+          rngs=rngs,
+          dtype=jnp.float32,
+          param_dtype=jnp.float32,
+          scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+      )
+      self.video_to_audio_attn = LTX2Attention(
+          rngs=rngs,
+          query_dim=audio_dim,
+          context_dim=dim,
+          heads=audio_num_attention_heads,
+          dim_head=audio_attention_head_dim,
+          dropout=0.0,
+          bias=attention_bias,
+          out_bias=attention_out_bias,
+          eps=norm_eps,
+          dtype=dtype,
+          mesh=mesh,
+          attention_kernel=v2a_attention_kernel,
+          rope_type=rope_type,
+          flash_block_sizes=flash_block_sizes,
+          flash_min_seq_length=flash_min_seq_length,
+          gated_attn=True,
+      )
 
     # 4. Feed Forward
     self.norm3 = nnx.RMSNorm(
@@ -308,18 +312,19 @@ class LTX2VideoTransformerBlock(nnx.Module):
         weights_dtype=weights_dtype,
     )
 
-    self.audio_norm3 = nnx.RMSNorm(
-        audio_dim,
-        epsilon=self.norm_eps,
-        use_scale=self.norm_elementwise_affine,
-        rngs=rngs,
-        dtype=jnp.float32,
-        param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
-    )
-    self.audio_ff = NNXSimpleFeedForward(
-        rngs=rngs, dim=audio_dim, dim_out=audio_dim, activation_fn=activation_fn, dtype=dtype, weights_dtype=weights_dtype
-    )
+    if self.use_audio:
+      self.audio_norm3 = nnx.RMSNorm(
+          audio_dim,
+          epsilon=self.norm_eps,
+          use_scale=self.norm_elementwise_affine,
+          rngs=rngs,
+          dtype=jnp.float32,
+          param_dtype=jnp.float32,
+          scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+      )
+      self.audio_ff = NNXSimpleFeedForward(
+          rngs=rngs, dim=audio_dim, dim_out=audio_dim, activation_fn=activation_fn, dtype=dtype, weights_dtype=weights_dtype
+      )
 
     key = rngs.params()
     k1, k2, k3, k4, k5, k6 = jax.random.split(key, 6)
@@ -332,27 +337,31 @@ class LTX2VideoTransformerBlock(nnx.Module):
         jax.random.normal(k1, (table_size, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
         kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
     )
-    self.audio_scale_shift_table = nnx.Param(
-        jax.random.normal(k2, (table_size, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
-        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
-    )
-    self.video_a2v_cross_attn_scale_shift_table = nnx.Param(
-        jax.random.normal(k3, (5, self.dim), dtype=weights_dtype),
-        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
-    )
-    self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(
-        jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype),
-        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
-    )
+
     if self.cross_attn_mod:
       self.prompt_scale_shift_table = nnx.Param(
           jax.random.normal(k5, (2, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
           kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
       )
-      self.audio_prompt_scale_shift_table = nnx.Param(
-          jax.random.normal(k6, (2, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
+
+    if self.use_audio:
+      self.audio_scale_shift_table = nnx.Param(
+          jax.random.normal(k2, (table_size, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
           kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
       )
+      self.video_a2v_cross_attn_scale_shift_table = nnx.Param(
+          jax.random.normal(k3, (5, self.dim), dtype=weights_dtype),
+          kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+      )
+      self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(
+          jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype),
+          kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+      )
+      if self.cross_attn_mod:
+        self.audio_prompt_scale_shift_table = nnx.Param(
+            jax.random.normal(k6, (2, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
+            kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+        )
 
   def __call__(
       self,
@@ -428,36 +437,37 @@ class LTX2VideoTransformerBlock(nnx.Module):
       )
     hidden_states = hidden_states + attn_hidden_states * gate_msa
 
-    # Calculate Audio AdaLN values
-    norm_audio_hidden_states = self.audio_norm1(audio_hidden_states)
+    if self.use_audio and audio_hidden_states is not None:
+      # Calculate Audio AdaLN values
+      norm_audio_hidden_states = self.audio_norm1(audio_hidden_states)
 
-    num_audio_ada_params = self.audio_scale_shift_table.shape[0]
-    audio_scale_shift_table_reshaped = jnp.expand_dims(self.audio_scale_shift_table, axis=(0, 1))
-    temb_audio_reshaped = temb_audio.reshape(batch_size, 1, num_audio_ada_params, -1)
-    audio_ada_values = audio_scale_shift_table_reshaped + temb_audio_reshaped
+      num_audio_ada_params = self.audio_scale_shift_table.shape[0]
+      audio_scale_shift_table_reshaped = jnp.expand_dims(self.audio_scale_shift_table, axis=(0, 1))
+      temb_audio_reshaped = temb_audio.reshape(batch_size, 1, num_audio_ada_params, -1)
+      audio_ada_values = audio_scale_shift_table_reshaped + temb_audio_reshaped
 
-    audio_shift_msa = audio_ada_values[:, :, 0, :]
-    audio_scale_msa = audio_ada_values[:, :, 1, :]
-    audio_gate_msa = audio_ada_values[:, :, 2, :]
-    audio_shift_mlp = audio_ada_values[:, :, 3, :]
-    audio_scale_mlp = audio_ada_values[:, :, 4, :]
-    audio_gate_mlp = audio_ada_values[:, :, 5, :]
+      audio_shift_msa = audio_ada_values[:, :, 0, :]
+      audio_scale_msa = audio_ada_values[:, :, 1, :]
+      audio_gate_msa = audio_ada_values[:, :, 2, :]
+      audio_shift_mlp = audio_ada_values[:, :, 3, :]
+      audio_scale_mlp = audio_ada_values[:, :, 4, :]
+      audio_gate_mlp = audio_ada_values[:, :, 5, :]
 
-    if getattr(self, "cross_attn_mod", False):
-      audio_shift_q = audio_ada_values[:, :, 6, :]
-      audio_scale_q = audio_ada_values[:, :, 7, :]
-      audio_gate_q = audio_ada_values[:, :, 8, :]
+      if getattr(self, "cross_attn_mod", False):
+        audio_shift_q = audio_ada_values[:, :, 6, :]
+        audio_scale_q = audio_ada_values[:, :, 7, :]
+        audio_gate_q = audio_ada_values[:, :, 8, :]
 
-    norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_msa) + audio_shift_msa
+      norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_msa) + audio_shift_msa
 
-    with jax.named_scope("Audio Self-Attention"):
-      attn_audio_hidden_states = self.audio_attn1(
-          hidden_states=norm_audio_hidden_states,
-          encoder_hidden_states=None,
-          rotary_emb=audio_rotary_emb,
-          perturbation_mask=perturbation_mask if self.perturbed_attn else None,
-      )
-    audio_hidden_states = audio_hidden_states + attn_audio_hidden_states * audio_gate_msa
+      with jax.named_scope("Audio Self-Attention"):
+        attn_audio_hidden_states = self.audio_attn1(
+            hidden_states=norm_audio_hidden_states,
+            encoder_hidden_states=None,
+            rotary_emb=audio_rotary_emb,
+            perturbation_mask=perturbation_mask if self.perturbed_attn else None,
+        )
+      audio_hidden_states = audio_hidden_states + attn_audio_hidden_states * audio_gate_msa
 
     # 2. Video and Audio Cross-Attention with the text embeddings
     norm_hidden_states = self.norm2(hidden_states)
@@ -482,100 +492,99 @@ class LTX2VideoTransformerBlock(nnx.Module):
       attn_hidden_states = attn_hidden_states * gate_q
     hidden_states = hidden_states + attn_hidden_states
 
-    norm_audio_hidden_states = self.audio_norm2(audio_hidden_states)
-    if getattr(self, "cross_attn_mod", False):
-      norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_q) + audio_shift_q
+    if self.use_audio and audio_hidden_states is not None:
+      norm_audio_hidden_states = self.audio_norm2(audio_hidden_states)
+      if getattr(self, "cross_attn_mod", False):
+        norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_q) + audio_shift_q
 
-    if getattr(self, "cross_attn_mod", False) and temb_prompt_audio is not None:
-      audio_prompt_table_reshaped = jnp.expand_dims(self.audio_prompt_scale_shift_table, axis=(0, 1))
-      temb_prompt_audio_reshaped = temb_prompt_audio.reshape(batch_size, 1, 2, -1)
-      audio_prompt_ada_values = audio_prompt_table_reshaped + temb_prompt_audio_reshaped
-      audio_shift_text_kv = audio_prompt_ada_values[:, :, 0, :]
-      audio_scale_text_kv = audio_prompt_ada_values[:, :, 1, :]
-      audio_encoder_hidden_states = audio_encoder_hidden_states * (1 + audio_scale_text_kv) + audio_shift_text_kv
+      if getattr(self, "cross_attn_mod", False) and temb_prompt_audio is not None:
+        audio_prompt_table_reshaped = jnp.expand_dims(self.audio_prompt_scale_shift_table, axis=(0, 1))
+        temb_prompt_audio_reshaped = temb_prompt_audio.reshape(batch_size, 1, 2, -1)
+        audio_prompt_ada_values = audio_prompt_table_reshaped + temb_prompt_audio_reshaped
+        audio_shift_text_kv = audio_prompt_ada_values[:, :, 0, :]
+        audio_scale_text_kv = audio_prompt_ada_values[:, :, 1, :]
+        audio_encoder_hidden_states = audio_encoder_hidden_states * (1 + audio_scale_text_kv) + audio_shift_text_kv
 
-    attn_audio_hidden_states = self.audio_attn2(
-        norm_audio_hidden_states,
-        encoder_hidden_states=audio_encoder_hidden_states,
-        rotary_emb=None,
-        attention_mask=audio_encoder_attention_mask,
-    )
-    if getattr(self, "cross_attn_mod", False):
-      attn_audio_hidden_states = attn_audio_hidden_states * audio_gate_q
-    audio_hidden_states = audio_hidden_states + attn_audio_hidden_states
-
-    # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
-    norm_hidden_states = self.audio_to_video_norm(hidden_states)
-    norm_audio_hidden_states = self.video_to_audio_norm(audio_hidden_states)
-
-    # Calculate Cross-Attention Modulation values
-    # Video
-    video_per_layer_ca_scale_shift = self.video_a2v_cross_attn_scale_shift_table[:4, :]
-    video_per_layer_ca_gate = self.video_a2v_cross_attn_scale_shift_table[4:, :]
-
-    # table: (4, dim) -> (1, 1, 4, dim)
-    video_ca_scale_shift_table = jnp.expand_dims(video_per_layer_ca_scale_shift, axis=(0, 1)) + temb_ca_scale_shift.reshape(
-        batch_size, 1, 4, -1
-    )
-
-    video_a2v_ca_scale = video_ca_scale_shift_table[:, :, 0, :]
-    video_a2v_ca_shift = video_ca_scale_shift_table[:, :, 1, :]
-    video_v2a_ca_scale = video_ca_scale_shift_table[:, :, 2, :]
-    video_v2a_ca_shift = video_ca_scale_shift_table[:, :, 3, :]
-
-    # table: (1, dim) -> (1, 1, 1, dim)
-    a2v_gate = (jnp.expand_dims(video_per_layer_ca_gate, axis=(0, 1)) + temb_ca_gate.reshape(batch_size, 1, 1, -1))[
-        :, :, 0, :
-    ]
-
-    # Audio
-    audio_per_layer_ca_scale_shift = self.audio_a2v_cross_attn_scale_shift_table[:4, :]
-    audio_per_layer_ca_gate = self.audio_a2v_cross_attn_scale_shift_table[4:, :]
-
-    audio_ca_scale_shift_table = jnp.expand_dims(
-        audio_per_layer_ca_scale_shift, axis=(0, 1)
-    ) + temb_ca_audio_scale_shift.reshape(batch_size, 1, 4, -1)
-
-    audio_a2v_ca_scale = audio_ca_scale_shift_table[:, :, 0, :]
-    audio_a2v_ca_shift = audio_ca_scale_shift_table[:, :, 1, :]
-    audio_v2a_ca_scale = audio_ca_scale_shift_table[:, :, 2, :]
-    audio_v2a_ca_shift = audio_ca_scale_shift_table[:, :, 3, :]
-
-    v2a_gate = (jnp.expand_dims(audio_per_layer_ca_gate, axis=(0, 1)) + temb_ca_audio_gate.reshape(batch_size, 1, 1, -1))[
-        :, :, 0, :
-    ]
-
-    # Audio-to-Video Cross Attention: Q: Video; K,V: Audio
-    mod_norm_hidden_states = norm_hidden_states * (1 + video_a2v_ca_scale) + video_a2v_ca_shift
-    mod_norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_a2v_ca_scale) + audio_a2v_ca_shift
-
-    with jax.named_scope("Audio-to-Video Cross-Attention"):
-      a2v_attn_hidden_states = self.audio_to_video_attn(
-          mod_norm_hidden_states,
-          encoder_hidden_states=mod_norm_audio_hidden_states,
-          rotary_emb=ca_video_rotary_emb,
-          k_rotary_emb=ca_audio_rotary_emb,
-          attention_mask=a2v_cross_attention_mask,
+      attn_audio_hidden_states = self.audio_attn2(
+          norm_audio_hidden_states,
+          encoder_hidden_states=audio_encoder_hidden_states,
+          rotary_emb=None,
+          attention_mask=audio_encoder_attention_mask,
       )
-    if modality_mask is not None:
-      a2v_attn_hidden_states = a2v_attn_hidden_states * modality_mask
-    hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
+      if getattr(self, "cross_attn_mod", False):
+        attn_audio_hidden_states = attn_audio_hidden_states * audio_gate_q
+      audio_hidden_states = audio_hidden_states + attn_audio_hidden_states
 
-    # Video-to-Audio Cross Attention: Q: Audio; K,V: Video
-    mod_norm_hidden_states_v2a = norm_hidden_states * (1 + video_v2a_ca_scale) + video_v2a_ca_shift
-    mod_norm_audio_hidden_states_v2a = norm_audio_hidden_states * (1 + audio_v2a_ca_scale) + audio_v2a_ca_shift
+      # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
+      norm_hidden_states = self.audio_to_video_norm(hidden_states)
+      norm_audio_hidden_states = self.video_to_audio_norm(audio_hidden_states)
 
-    with jax.named_scope("Video-to-Audio Cross-Attention"):
-      v2a_attn_hidden_states = self.video_to_audio_attn(
-          mod_norm_audio_hidden_states_v2a,
-          encoder_hidden_states=mod_norm_hidden_states_v2a,
-          rotary_emb=ca_audio_rotary_emb,
-          k_rotary_emb=ca_video_rotary_emb,
-          attention_mask=v2a_cross_attention_mask,
+      # Calculate Cross-Attention Modulation values
+      # Video
+      video_per_layer_ca_scale_shift = self.video_a2v_cross_attn_scale_shift_table[:4, :]
+      video_per_layer_ca_gate = self.video_a2v_cross_attn_scale_shift_table[4:, :]
+
+      video_ca_scale_shift_table = jnp.expand_dims(video_per_layer_ca_scale_shift, axis=(0, 1)) + temb_ca_scale_shift.reshape(
+          batch_size, 1, 4, -1
       )
-    if modality_mask is not None:
-      v2a_attn_hidden_states = v2a_attn_hidden_states * modality_mask
-    audio_hidden_states = audio_hidden_states + v2a_gate * v2a_attn_hidden_states
+
+      video_a2v_ca_scale = video_ca_scale_shift_table[:, :, 0, :]
+      video_a2v_ca_shift = video_ca_scale_shift_table[:, :, 1, :]
+      video_v2a_ca_scale = video_ca_scale_shift_table[:, :, 2, :]
+      video_v2a_ca_shift = video_ca_scale_shift_table[:, :, 3, :]
+
+      a2v_gate = (jnp.expand_dims(video_per_layer_ca_gate, axis=(0, 1)) + temb_ca_gate.reshape(batch_size, 1, 1, -1))[
+          :, :, 0, :
+      ]
+
+      # Audio
+      audio_per_layer_ca_scale_shift = self.audio_a2v_cross_attn_scale_shift_table[:4, :]
+      audio_per_layer_ca_gate = self.audio_a2v_cross_attn_scale_shift_table[4:, :]
+
+      audio_ca_scale_shift_table = jnp.expand_dims(
+          audio_per_layer_ca_scale_shift, axis=(0, 1)
+      ) + temb_ca_audio_scale_shift.reshape(batch_size, 1, 4, -1)
+
+      audio_a2v_ca_scale = audio_ca_scale_shift_table[:, :, 0, :]
+      audio_a2v_ca_shift = audio_ca_scale_shift_table[:, :, 1, :]
+      audio_v2a_ca_scale = audio_ca_scale_shift_table[:, :, 2, :]
+      audio_v2a_ca_shift = audio_ca_scale_shift_table[:, :, 3, :]
+
+      v2a_gate = (jnp.expand_dims(audio_per_layer_ca_gate, axis=(0, 1)) + temb_ca_audio_gate.reshape(batch_size, 1, 1, -1))[
+          :, :, 0, :
+      ]
+
+      # Audio-to-Video Cross Attention: Q: Video; K,V: Audio
+      mod_norm_hidden_states = norm_hidden_states * (1 + video_a2v_ca_scale) + video_a2v_ca_shift
+      mod_norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_a2v_ca_scale) + audio_a2v_ca_shift
+
+      with jax.named_scope("Audio-to-Video Cross-Attention"):
+        a2v_attn_hidden_states = self.audio_to_video_attn(
+            mod_norm_hidden_states,
+            encoder_hidden_states=mod_norm_audio_hidden_states,
+            rotary_emb=ca_video_rotary_emb,
+            k_rotary_emb=ca_audio_rotary_emb,
+            attention_mask=a2v_cross_attention_mask,
+        )
+      if modality_mask is not None:
+        a2v_attn_hidden_states = a2v_attn_hidden_states * modality_mask
+      hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
+
+      # Video-to-Audio Cross Attention: Q: Audio; K,V: Video
+      mod_norm_hidden_states_v2a = norm_hidden_states * (1 + video_v2a_ca_scale) + video_v2a_ca_shift
+      mod_norm_audio_hidden_states_v2a = norm_audio_hidden_states * (1 + audio_v2a_ca_scale) + audio_v2a_ca_shift
+
+      with jax.named_scope("Video-to-Audio Cross-Attention"):
+        v2a_attn_hidden_states = self.video_to_audio_attn(
+            mod_norm_audio_hidden_states_v2a,
+            encoder_hidden_states=mod_norm_hidden_states_v2a,
+            rotary_emb=ca_audio_rotary_emb,
+            k_rotary_emb=ca_video_rotary_emb,
+            attention_mask=v2a_cross_attention_mask,
+        )
+      if modality_mask is not None:
+        v2a_attn_hidden_states = v2a_attn_hidden_states * modality_mask
+      audio_hidden_states = audio_hidden_states + v2a_gate * v2a_attn_hidden_states
 
     # 4. Feedforward
     norm_hidden_states = self.norm3(hidden_states)
@@ -583,10 +592,11 @@ class LTX2VideoTransformerBlock(nnx.Module):
     ff_output = self.ff(norm_hidden_states)
     hidden_states = hidden_states + ff_output * gate_mlp
 
-    norm_audio_hidden_states = self.audio_norm3(audio_hidden_states)
-    norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_mlp) + audio_shift_mlp
-    audio_ff_output = self.audio_ff(norm_audio_hidden_states)
-    audio_hidden_states = audio_hidden_states + audio_ff_output * audio_gate_mlp
+    if self.use_audio and audio_hidden_states is not None:
+      norm_audio_hidden_states = self.audio_norm3(audio_hidden_states)
+      norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_mlp) + audio_shift_mlp
+      audio_ff_output = self.audio_ff(norm_audio_hidden_states)
+      audio_hidden_states = audio_hidden_states + audio_ff_output * audio_gate_mlp
 
     return hidden_states, audio_hidden_states
 
