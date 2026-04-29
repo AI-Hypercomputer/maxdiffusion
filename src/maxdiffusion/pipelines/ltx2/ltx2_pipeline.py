@@ -1614,11 +1614,12 @@ class LTX2Pipeline:
       except Exception as e:
         max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
 
-    # Enable temporal slicing (decodes frame-by-frame) to fit within the 2.4GB remaining HBM limit
-    self.enable_vae_slicing()
-    
-    # Free up any fragmented JAX memory before the VAE allocation
-    jax.clear_caches()
+    # Offload transformer to CPU to free up ~13GB of TPU HBM for the VAE
+    if hasattr(self, "transformer"):
+      graphdef, state = nnx.split(self.transformer)
+      state = jax.tree_util.tree_map(lambda x: jax.device_put(x, jax.devices("cpu")[0]), state)
+      self.transformer = nnx.merge(graphdef, state)
+      jax.clear_caches()
 
     if getattr(self.vae.config, "timestep_conditioning", False):
       noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
@@ -1639,7 +1640,7 @@ class LTX2Pipeline:
       video = self.vae.decode(latents, temb=timestep, return_dict=False)[0]
     else:
       latents = latents.astype(self.vae.dtype)
-      video = self.vae.decode(latents, return_dict=False)[0][0]
+      video = self.vae.decode(latents, return_dict=False)[0]
     # Post-process video (converts to numpy/PIL)
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
     video_np = np.array(video).transpose(0, 4, 1, 2, 3)
