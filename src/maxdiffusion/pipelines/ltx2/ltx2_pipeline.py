@@ -1422,6 +1422,7 @@ class LTX2Pipeline:
         # Old Python loop path
         for i in range(len(timesteps_jax)):
           t = timesteps_jax[i]
+          sigma_t = sigmas[i]
 
           # Isolate input sharding to scan_layers=False to avoid affecting the standard path
           latents_jax_sharded = latents_jax
@@ -1436,42 +1437,90 @@ class LTX2Pipeline:
               graphdef,
               state,
               latents_jax_sharded,
-              audio_latents_jax_sharded,
+              audio_latents_sharded,
               t,
               video_embeds_sharded,
               audio_embeds_sharded,
               new_attention_mask,
               new_attention_mask,
-              guidance_scale > 1.0,
+              do_cfg,
               guidance_scale,
               latent_num_frames,
               latent_height,
               latent_width,
               audio_num_frames,
               frame_rate,
+              global_batch_size=batch_size,
+              sigma=sigma_t,
+              audio_sigma=sigma_t,
+              use_cross_timestep=use_cross_timestep,
+              is_cfg_stg_mode=do_cfg and do_stg,
           )
 
-          if guidance_scale > 1.0:
-            noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-            # Audio guidance
-            noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
-            noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
-
+          # Extract latents_step based on stacking strategy
+          if do_cfg and do_stg:
+            latents_step = latents_jax[batch_size : 2 * batch_size]
+            audio_latents_step = audio_latents_jax[batch_size : 2 * batch_size]
+          elif do_cfg:
             latents_step = latents_jax[batch_size:]
             audio_latents_step = audio_latents_jax[batch_size:]
+          elif do_stg:
+            latents_step = latents_jax[:batch_size]
+            audio_latents_step = audio_latents_jax[:batch_size]
           else:
             latents_step = latents_jax
             audio_latents_step = audio_latents_jax
 
-          # Step
+          def convert_to_x0(lat, vel, sig):
+            return lat - vel * sig
+
+          def convert_to_vel(lat, x0, sig):
+            return (lat - x0) / sig
+
+          if do_cfg and do_stg:
+            noise_pred_uncond, noise_pred_text, noise_pred_perturb, noise_pred_isolated = jnp.split(noise_pred, 4, axis=0)
+            x0_uncond = convert_to_x0(latents_step, noise_pred_uncond, sigma_t)
+            x0_text = convert_to_x0(latents_step, noise_pred_text, sigma_t)
+            x0_perturb = convert_to_x0(latents_step, noise_pred_perturb, sigma_t)
+            x0_isolated = convert_to_x0(latents_step, noise_pred_isolated, sigma_t)
+            
+            cfg_delta = (guidance_scale - 1) * (x0_text - x0_uncond)
+            stg_delta = stg_scale * (x0_text - x0_perturb)
+            video_modality_delta = (modality_scale - 1) * (x0_text - x0_isolated)
+            
+            x0_combined = x0_text + cfg_delta + stg_delta + video_modality_delta
+            if guidance_rescale > 0:
+              x0_combined = rescale_noise_cfg(x0_combined, x0_text, guidance_rescale=guidance_rescale)
+            noise_pred = convert_to_vel(latents_step, x0_combined, sigma_t)
+
+            # Audio
+            noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb, noise_pred_audio_isolated = jnp.split(noise_pred_audio, 4, axis=0)
+            x0_audio_uncond = convert_to_x0(audio_latents_step, noise_pred_audio_uncond, sigma_t)
+            x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text, sigma_t)
+            x0_audio_perturb = convert_to_x0(audio_latents_step, noise_pred_audio_perturb, sigma_t)
+            x0_audio_isolated = convert_to_x0(audio_latents_step, noise_pred_audio_isolated, sigma_t)
+            
+            cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (x0_audio_text - x0_audio_uncond)
+            stg_audio_delta = (audio_stg_scale if audio_stg_scale is not None else stg_scale) * (x0_audio_text - x0_audio_perturb)
+            audio_modality_delta = (audio_modality_scale - 1 if audio_modality_scale is not None else modality_scale - 1) * (x0_audio_text - x0_audio_isolated)
+            x0_audio_combined = x0_audio_text + cfg_audio_delta + stg_audio_delta + audio_modality_delta
+            if audio_guidance_rescale > 0:
+              x0_audio_combined = rescale_noise_cfg(x0_audio_combined, x0_audio_text, guidance_rescale=audio_guidance_rescale)
+            noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined, sigma_t)
+
+          elif do_cfg:
+            noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
+            noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
+
           latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
+          audio_latents_step, _ = self.scheduler.step(scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
 
-          audio_latents_step, _ = self.scheduler.step(
-              scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False
-          )
-
-          if guidance_scale > 1.0:
+          if do_cfg and do_stg:
+            latents_jax = jnp.concatenate([latents_step] * 4, axis=0)
+            audio_latents_jax = jnp.concatenate([audio_latents_step] * 4, axis=0)
+          elif do_cfg:
             latents_jax = jnp.concatenate([latents_step] * 2, axis=0)
             audio_latents_jax = jnp.concatenate([audio_latents_step] * 2, axis=0)
           else:
