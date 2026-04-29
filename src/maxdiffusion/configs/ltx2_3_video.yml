@@ -49,7 +49,6 @@ noise_scale: 0.0
 num_frames: 121
 quantization: "int8"
 scan_diffusion_loop: True
-run_latent_upsampler: False
 use_bwe: True
 #parallelism
 mesh_axes: ['data', 'fsdp', 'context', 'tensor']
@@ -117,3 +116,33 @@ jit_initializers: True
 enable_single_replica_ckpt_restoring: False
 seed: 10
 audio_format: "s16"
+
+# LoRA parameters
+enable_lora: False
+
+# Distilled LoRA
+# lora_config: {
+#   lora_model_name_or_path: ["Lightricks/LTX-2"],
+#   weight_name: ["ltx-2-19b-distilled-lora-384.safetensors"],
+#   adapter_name: ["distilled-lora-384"],
+#   rank: [384]
+# }
+
+# Standard LoRA
+lora_config: {
+  lora_model_name_or_path: ["Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-In"],
+  weight_name: ["ltx-2-19b-lora-camera-control-dolly-in.safetensors"],
+  adapter_name: ["camera-control-dolly-in"],
+  rank: [32]
+}
+
+
+# LTX-2 Latent Upsampler
+run_latent_upsampler: False
+upsampler_model_path: "Lightricks/LTX-2"
+upsampler_spatial_patch_size: 1
+upsampler_temporal_patch_size: 1
+upsampler_adain_factor: 0.0
+upsampler_tone_map_compression_ratio: 0.0
+upsampler_rational_spatial_scale: 2.0
+upsampler_output_type: "pil"
