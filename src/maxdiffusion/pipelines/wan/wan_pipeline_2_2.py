@@ -17,6 +17,7 @@ from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
 from functools import partial
+import time
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 import jax
@@ -133,6 +134,9 @@ class WanPipeline2_2(WanPipeline):
           "SenCache requires classifier-free guidance to be enabled for both transformer phases."
       )
 
+    trace = {}
+    t_cond_start = time.perf_counter()
+
     latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
         prompt,
         negative_prompt,
@@ -147,6 +151,7 @@ class WanPipeline2_2(WanPipeline):
         negative_prompt_embeds,
         vae_only,
     )
+    trace["conditioning"] = time.perf_counter() - t_cond_start
 
     low_noise_graphdef, low_noise_state, low_noise_rest = nnx.split(self.low_noise_transformer, nnx.Param, ...)
     high_noise_graphdef, high_noise_state, high_noise_rest = nnx.split(self.high_noise_transformer, nnx.Param, ...)
@@ -166,6 +171,7 @@ class WanPipeline2_2(WanPipeline):
         height=height,
     )
 
+    t_denoise_start = time.perf_counter()
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       latents = p_run_inference(
           low_noise_graphdef=low_noise_graphdef,
@@ -180,7 +186,14 @@ class WanPipeline2_2(WanPipeline):
           config=self.config,
       )
       latents = self._denormalize_latents(latents)
-    return self._decode_latents_to_video(latents)
+      latents.block_until_ready()
+    trace["denoise_total"] = time.perf_counter() - t_denoise_start
+
+    t_decode_start = time.perf_counter()
+    video = self._decode_latents_to_video(latents)
+    trace["vae_decode"] = time.perf_counter() - t_decode_start
+
+    return video, trace
 
 
 def run_inference_2_2(
