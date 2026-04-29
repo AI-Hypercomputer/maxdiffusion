@@ -1655,12 +1655,18 @@ class LTX2Pipeline:
     video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
 
     # Decode Audio
+    import time
     audio_latents = audio_latents.astype(self.audio_vae.dtype)
     generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
 
     # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
     generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
+
+    vocoder_start_time = time.time()
     audio = self.vocoder(generated_mel_spectrograms)
+    jax.block_until_ready(audio)
+    vocoder_execution_time = time.time() - vocoder_start_time
+    max_logging.log(f"BWE Vocoder Execution Time: {vocoder_execution_time:.4f} seconds")
 
     # Convert audio to numpy
     audio = np.array(audio)
