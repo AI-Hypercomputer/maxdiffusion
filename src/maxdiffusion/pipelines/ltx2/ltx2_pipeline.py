@@ -1615,6 +1615,7 @@ class LTX2Pipeline:
         "fps",
         "global_batch_size",
         "use_cross_timestep",
+        "is_cfg_stg_mode",
     ),
 )
 def transformer_forward_pass(
