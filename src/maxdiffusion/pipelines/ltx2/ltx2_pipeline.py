@@ -1639,7 +1639,6 @@ class LTX2Pipeline:
       graphdef, state = nnx.split(self.transformer)
       state = jax.tree_util.tree_map(lambda x: jax.device_put(x, jax.devices("cpu")[0]), state)
       self.transformer = nnx.merge(graphdef, state)
-      jax.clear_caches()
 
     vae_start = time.time()
     if getattr(self.vae.config, "timestep_conditioning", False):
