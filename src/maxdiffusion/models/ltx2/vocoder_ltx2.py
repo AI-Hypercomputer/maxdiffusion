@@ -19,6 +19,7 @@ from typing import Optional, Sequence
 
 import jax
 import jax.numpy as jnp
+import jax.scipy.special as jss
 from flax import nnx
 from ... import common_types
 from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
