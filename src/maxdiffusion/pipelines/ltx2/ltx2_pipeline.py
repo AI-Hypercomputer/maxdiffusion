@@ -1678,9 +1678,11 @@ class LTX2Pipeline:
     generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
 
     vocoder_start_time = time.time()
-    # Explicitly JIT compile the vocoder at the call site to guarantee it doesn't run eagerly
-    jitted_vocoder = nnx.jit(lambda m, x: m(x))
-    audio = jitted_vocoder(self.vocoder, generated_mel_spectrograms)
+    # Cache the JITted function on the pipeline so it doesn't recompile on the 2nd run
+    if not hasattr(self, "_jitted_vocoder"):
+      self._jitted_vocoder = nnx.jit(lambda m, x: m(x))
+    
+    audio = self._jitted_vocoder(self.vocoder, generated_mel_spectrograms)
     jax.block_until_ready(audio)
     max_logging.log(f"⏱️ BWE Vocoder Execution Time: {time.time() - vocoder_start_time:.4f} seconds")
 
