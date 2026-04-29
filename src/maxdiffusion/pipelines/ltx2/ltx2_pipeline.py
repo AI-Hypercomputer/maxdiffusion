@@ -1219,6 +1219,7 @@ class LTX2Pipeline:
       dtype: Optional[jnp.dtype] = None,
       output_type: str = "pil",
       return_dict: bool = True,
+      use_cross_timestep: bool = False,
   ):
     # 1. Check inputs
     self.check_inputs(
@@ -1415,7 +1416,7 @@ class LTX2Pipeline:
             self.transformer.scan_layers,
             self.scheduler.step,
             tuple(tuple(rule) if isinstance(rule, list) else rule for rule in self.config.logical_axis_rules),
-            use_cross_timestep=False,
+            use_cross_timestep=use_cross_timestep,
         )
       else:
         # Old Python loop path
