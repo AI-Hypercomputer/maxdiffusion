@@ -33,13 +33,8 @@ def kaiser_window(n: int, beta: float) -> Array:
   alpha = (n - 1) / 2.0
   time = jnp.arange(n)
   term = beta * jnp.sqrt(1 - ((time - alpha) / alpha) ** 2)
-  jax.debug.print("kaiser_window term - min: {min}, max: {max}", min=term.min(), max=term.max())
-
   i0_term = jss.i0(term)
   i0_beta = jss.i0(beta)
-  jax.debug.print("kaiser_window i0_term - min: {min}, max: {max}", min=i0_term.min(), max=i0_term.max())
-  jax.debug.print("kaiser_window i0_beta: {val}", val=i0_beta)
-
   res = i0_term / i0_beta
   return res
 
@@ -49,8 +44,6 @@ def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int) -> 
   half_size = kernel_size // 2
   amplitude = 2.285 * (half_size - 1) * math.pi * delta_f + 7.95
 
-  print(f"kaiser_sinc_filter1d amplitude: {amplitude}")
-
   if amplitude > 50.0:
     beta = 0.1102 * (amplitude - 8.7)
   elif amplitude >= 21.0:
@@ -58,10 +51,7 @@ def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int) -> 
   else:
     beta = 0.0
 
-  print(f"kaiser_sinc_filter1d beta: {beta}")
-
   window = kaiser_window(kernel_size, beta)
-  jax.debug.print("kaiser_sinc_filter1d window - min: {min}, max: {max}", min=window.min(), max=window.max())
 
   even = kernel_size % 2 == 0
   time = jnp.arange(-half_size, half_size) + 0.5 if even else jnp.arange(kernel_size) - half_size
@@ -75,10 +65,7 @@ def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int) -> 
         jnp.ones_like(time),
         jnp.sin(math.pi * time) / math.pi / time,
     )
-    jax.debug.print("kaiser_sinc_filter1d sinc - min: {min}, max: {max}", min=sinc.min(), max=sinc.max())
-
     filter = 2 * cutoff * window * sinc
-    jax.debug.print("kaiser_sinc_filter1d before norm - min: {min}, max: {max}, sum: {sum}", min=filter.min(), max=filter.max(), sum=filter.sum())
     filter = filter / filter.sum()
   return filter
 
@@ -121,7 +108,6 @@ class DownSample1d(nnx.Module):
         dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
-    jax.debug.print("DownSample1d after conv - min: {min}, max: {max}", min=x_filtered.min(), max=x_filtered.max())
     return x_filtered
 
 
