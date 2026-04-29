@@ -1357,6 +1357,14 @@ class LTX2Pipeline:
     # GraphDef and State
     graphdef, state = nnx.split(self.transformer)
 
+    # If weights are on CPU (from a previous offload), restore them to TPU with correct sharding
+    sample_leaf = jax.tree_util.tree_leaves(state)[0]
+    if sample_leaf.device().platform == "cpu":
+      logical_state_spec = nnx.get_partition_spec(state)
+      logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, self.mesh, self.config.logical_axis_rules)
+      state = jax.tree_util.tree_map(lambda x, sharding: jax.device_put(x, sharding), state, logical_state_sharding)
+      self.transformer = nnx.merge(graphdef, state)
+
     # 7. Denoising Loop
     import contextlib
 
