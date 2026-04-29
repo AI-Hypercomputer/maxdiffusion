@@ -1437,7 +1437,7 @@ class LTX2Pipeline:
               graphdef,
               state,
               latents_jax_sharded,
-              audio_latents_sharded,
+              audio_latents_jax_sharded,
               t,
               video_embeds_sharded,
               audio_embeds_sharded,
