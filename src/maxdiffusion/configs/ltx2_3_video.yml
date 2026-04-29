@@ -48,6 +48,8 @@ decode_noise_scale: 0.025
 noise_scale: 0.0
 num_frames: 121
 quantization: "int8"
+scan_diffusion_loop: True
+run_latent_upsampler: False
 #parallelism
 mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 logical_axis_rules: [
