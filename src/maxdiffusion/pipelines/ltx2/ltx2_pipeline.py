@@ -482,7 +482,7 @@ class LTX2Pipeline:
     max_logging.log("Loading Vocoder...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      if config.get("use_bwe", True):  # Assuming LTX2.3 uses BWE by default
+      if getattr(config, "use_bwe", True):  # Assuming LTX2.3 uses BWE by default
         vocoder = LTX2VocoderWithBWE.from_config(
             config.pretrained_model_name_or_path,
             subfolder="vocoder",
