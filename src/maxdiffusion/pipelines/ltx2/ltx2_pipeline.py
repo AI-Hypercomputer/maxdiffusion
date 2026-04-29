@@ -1550,19 +1550,20 @@ class LTX2Pipeline:
       return LTX2PipelineOutput(frames=latents, audio=audio_latents)
 
     # Force latents and VAE weights to be fully replicated using with_sharding_constraint, this speeds up single video latency ~3x
-    try:
-      mesh = latents.sharding.mesh
-      replicated_sharding = NamedSharding(mesh, P())
-      latents = jax.lax.with_sharding_constraint(latents, replicated_sharding)
+    if getattr(self.config, "replicate_vae", False):
+      try:
+        mesh = latents.sharding.mesh
+        replicated_sharding = NamedSharding(mesh, P())
+        latents = jax.lax.with_sharding_constraint(latents, replicated_sharding)
 
-      # Replicate VAE weights
-      graphdef, state = nnx.split(self.vae)
-      state = jax.tree_util.tree_map(
-          lambda x: jax.lax.with_sharding_constraint(x, replicated_sharding) if isinstance(x, jax.Array) else x, state
-      )
-      self.vae = nnx.merge(graphdef, state)
-    except Exception as e:
-      max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
+        # Replicate VAE weights
+        graphdef, state = nnx.split(self.vae)
+        state = jax.tree_util.tree_map(
+            lambda x: jax.lax.with_sharding_constraint(x, replicated_sharding) if isinstance(x, jax.Array) else x, state
+        )
+        self.vae = nnx.merge(graphdef, state)
+      except Exception as e:
+        max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
 
     if getattr(self.vae.config, "timestep_conditioning", False):
       noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
