@@ -20,6 +20,7 @@ from flax import nnx
 import jax
 from jax import tree_util
 import jax.numpy as jnp
+from jax.sharding import NamedSharding, PartitionSpec as P
 from maxdiffusion.models.wan.autoencoder_kl_wan import AutoencoderKLWanCache, WanCausalConv3d  # pylint: disable=g-importing-member
 
 from ... import common_types
@@ -1266,6 +1267,7 @@ class AutoencoderKLWan2p2(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.temporal_upsample = temperal_downsample[::-1]
     self.latents_mean = latents_mean
     self.latents_std = latents_std
+    self.mesh = mesh
 
     self.patch_size = 2
     self.patchify = WanPatchify(patch_size=self.patch_size)
@@ -1339,16 +1341,23 @@ class AutoencoderKLWan2p2(nnx.Module, FlaxModelMixin, ConfigMixin):
     iter_ = 1 + (t - 1) // 4
     enc_feat_map = feat_cache._enc_feat_map
 
+    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
     for i in range(iter_):
       enc_conv_idx = 0
       if i == 0:
-        out, enc_feat_map, enc_conv_idx = self.encoder(x[:, :1, :, :, :], feat_cache=enc_feat_map, feat_idx=enc_conv_idx)
+        chunk = x[:, :1, :, :, :]
+        chunk = jax.lax.with_sharding_constraint(chunk, spatial_sharding)
+        out, enc_feat_map, enc_conv_idx = self.encoder(chunk, feat_cache=enc_feat_map, feat_idx=enc_conv_idx)
+        out = jax.lax.with_sharding_constraint(out, spatial_sharding)
       else:
+        chunk = x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :]
+        chunk = jax.lax.with_sharding_constraint(chunk, spatial_sharding)
         out_, enc_feat_map, enc_conv_idx = self.encoder(
-            x[:, 1 + 4 * (i - 1) : 1 + 4 * i, :, :, :],
+            chunk,
             feat_cache=enc_feat_map,
             feat_idx=enc_conv_idx,
         )
+        out_ = jax.lax.with_sharding_constraint(out_, spatial_sharding)
         out = jnp.concatenate([out, out_], axis=1)
 
     # Update back to the wrapper object if needed, but for result we use local vars
@@ -1385,17 +1394,22 @@ class AutoencoderKLWan2p2(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     dec_feat_map = feat_cache._feat_map
 
+    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
     for i in range(iter_):
       conv_idx = 0
+      chunk = x[:, i : i + 1, :, :, :]
+      chunk = jax.lax.with_sharding_constraint(chunk, spatial_sharding)
       if i == 0:
         out, dec_feat_map, conv_idx = self.decoder(
-            x[:, i : i + 1, :, :, :],
+            chunk,
             feat_cache=dec_feat_map,
             feat_idx=conv_idx,
             first_chunk=True,
         )
+        out = jax.lax.with_sharding_constraint(out, spatial_sharding)
       else:
-        out_, dec_feat_map, conv_idx = self.decoder(x[:, i : i + 1, :, :, :], feat_cache=dec_feat_map, feat_idx=conv_idx)
+        out_, dec_feat_map, conv_idx = self.decoder(chunk, feat_cache=dec_feat_map, feat_idx=conv_idx)
+        out_ = jax.lax.with_sharding_constraint(out_, spatial_sharding)
         out = jnp.concatenate([out, out_], axis=1)
 
     feat_cache._feat_map = dec_feat_map
