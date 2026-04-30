@@ -481,10 +481,14 @@ class LTX2Pipeline:
   def load_vocoder(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
     max_logging.log("Loading Vocoder...")
 
-    def create_model(rngs: nnx.Rngs, config: HyperParameters):
-      if getattr(config, "use_bwe", True):  # Assuming LTX2.3 uses BWE by default
+    # Determine correct source path based on which vocoder we are loading
+    use_bwe = getattr(config, "use_bwe", True)
+    model_path = config.pretrained_model_name_or_path if use_bwe else "Lightricks/LTX-2"
+
+    def create_model(rngs: nnx.Rngs, config: HyperParameters, model_path: str, use_bwe: bool):
+      if use_bwe:
         vocoder = LTX2VocoderWithBWE.from_config(
-            config.pretrained_model_name_or_path,
+            model_path,
             subfolder="vocoder",
             rngs=rngs,
             mesh=mesh,
@@ -493,7 +497,7 @@ class LTX2Pipeline:
         )
       else:
         vocoder = LTX2Vocoder.from_config(
-            "Lightricks/LTX-2",
+            model_path,
             subfolder="vocoder",
             rngs=rngs,
             mesh=mesh,
@@ -502,7 +506,7 @@ class LTX2Pipeline:
         )
       return vocoder
 
-    p_model_factory = partial(create_model, config=config)
+    p_model_factory = partial(create_model, config=config, model_path=model_path, use_bwe=use_bwe)
     vocoder = nnx.eval_shape(p_model_factory, rngs=rngs)
     graphdef, state, rest_of_state = nnx.split(vocoder, nnx.Param, ...)
     rest_of_state = jax.tree_util.tree_map(cls._init_dummy_shape, rest_of_state)
@@ -513,7 +517,8 @@ class LTX2Pipeline:
     params = state.to_pure_dict()
     state = dict(nnx.to_flat_state(state))
 
-    params = load_vocoder_weights(config.pretrained_model_name_or_path, params, "cpu", subfolder="vocoder")
+    # CRITICAL FIX: Use the aligned model_path here too to ensure checkpoint keys match the model state
+    params = load_vocoder_weights(model_path, params, "cpu", subfolder="vocoder")
     if hasattr(config, "weights_dtype"):
       params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
 
