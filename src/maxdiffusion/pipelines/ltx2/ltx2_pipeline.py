@@ -1376,6 +1376,9 @@ class LTX2Pipeline:
         prompt_embeds_jax = jax.device_put(prompt_embeds_jax, data_sharding_3d)
       prompt_attention_mask_jax = jax.device_put(prompt_attention_mask_jax, data_sharding_2d)
 
+    # GraphDef and State for the diffusion loop
+    graphdef, state = nnx.split(self.transformer)
+
     # 7. Denoising Loop
     import contextlib
 
