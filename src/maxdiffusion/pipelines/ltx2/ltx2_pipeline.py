@@ -1232,7 +1232,7 @@ class LTX2Pipeline:
     )
 
     # 1.5 Restore Transformer to TPU immediately to free up Host CPU RAM bandwidth for the Text Encoder
-    if hasattr(self, "transformer"):
+    if getattr(self.config, "offload_transformer", True) and hasattr(self, "transformer"):
       graphdef, state = nnx.split(self.transformer)
       sample_leaf = jax.tree_util.tree_leaves(state)[0]
       # If weights are currently parked on CPU from a previous VAE run, restore them to TPU
@@ -1642,7 +1642,7 @@ class LTX2Pipeline:
         max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
 
     # Offload transformer to CPU to free up ~13GB of TPU HBM for the VAE
-    if hasattr(self, "transformer"):
+    if getattr(self.config, "offload_transformer", True) and hasattr(self, "transformer"):
       graphdef, state = nnx.split(self.transformer)
       state = jax.tree_util.tree_map(lambda x: jax.device_put(x, jax.devices("cpu")[0]), state)
       self.transformer = nnx.merge(graphdef, state)

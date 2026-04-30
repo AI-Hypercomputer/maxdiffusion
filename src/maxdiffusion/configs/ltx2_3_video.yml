@@ -91,6 +91,7 @@ ici_tensor_parallelism: 1
 enable_profiler: False
 
 replicate_vae: False
+offload_transformer: True
 
 allow_split_physical_axes: False
 learning_rate_schedule_steps: -1
