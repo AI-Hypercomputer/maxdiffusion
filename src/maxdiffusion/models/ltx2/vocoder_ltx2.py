@@ -172,12 +172,12 @@ class UpSample1d(nnx.Module):
     filter_expanded = jnp.repeat(filter_flipped, num_channels, axis=2)
     filter_expanded = filter_expanded.astype(x.dtype)
 
-    # Use FULL padding to match ConvTranspose output expansion
+    # Use explicit padding to emulate FULL padding (kernel_size - 1 on both sides)
     x_upsampled = jax.lax.conv_general_dilated(
         x_expanded,
         filter_expanded,
         window_strides=(1,),
-        padding="FULL",
+        padding=[(self.kernel_size - 1, self.kernel_size - 1)],
         dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
