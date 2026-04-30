@@ -493,7 +493,7 @@ class LTX2Pipeline:
         )
       else:
         vocoder = LTX2Vocoder.from_config(
-            config.pretrained_model_name_or_path,
+            "Lightricks/LTX-2",
             subfolder="vocoder",
             rngs=rngs,
             mesh=mesh,
