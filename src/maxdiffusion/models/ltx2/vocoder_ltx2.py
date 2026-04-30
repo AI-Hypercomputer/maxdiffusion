@@ -159,26 +159,34 @@ class UpSample1d(nnx.Module):
       )
       filter = sinc_filter.reshape(-1, 1, 1)
 
-    # Interleave zeros (manual upsampling)
-    x_expanded = jnp.zeros((batch, length * self.ratio, channels), dtype=x.dtype)
-    x_expanded = x_expanded.at[:, ::self.ratio, :].set(x)
-
-    # Pad the expanded signal
-    pad_len = self.pad * self.ratio
-    x_padded = jnp.pad(x_expanded, ((0, 0), (pad_len, pad_len), (0, 0)), mode='edge')
-
-    filter_expanded = jnp.repeat(filter, num_channels, axis=2)
+    # 1. Pad the original signal first (matching Diffusers)
+    x_padded = jnp.pad(x, ((0, 0), (self.pad, self.pad), (0, 0)), mode='edge')
+    
+    # 2. Interleave zeros on the padded signal
+    batch_p, length_p, channels_p = x_padded.shape
+    x_expanded = jnp.zeros((batch_p, length_p * self.ratio, channels_p), dtype=x.dtype)
+    x_expanded = x_expanded.at[:, ::self.ratio, :].set(x_padded)
+    
+    # 3. Convolve with the filter (flipped kernel to match ConvTranspose)
+    filter_flipped = filter[::-1, :, :]
+    filter_expanded = jnp.repeat(filter_flipped, num_channels, axis=2)
     filter_expanded = filter_expanded.astype(x.dtype)
 
+    # Use FULL padding to match ConvTranspose output expansion
     x_upsampled = jax.lax.conv_general_dilated(
-        x_padded,
+        x_expanded,
         filter_expanded,
         window_strides=(1,),
-        padding=((0, 0),),
+        padding="FULL",
         dimension_numbers=('NLC', 'LIO', 'NLC'),
         feature_group_count=num_channels,
     )
-
+    
+    # Crop to match Diffusers length before slicing
+    target_len = (length_p - 1) * self.ratio + self.kernel_size
+    x_upsampled = x_upsampled[:, :target_len, :]
+    
+    # Apply the final slicing from Diffusers
     x_upsampled = x_upsampled * self.ratio
     return x_upsampled[:, self.pad_left : -self.pad_right, :]
 
