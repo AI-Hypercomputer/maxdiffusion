@@ -1226,6 +1226,19 @@ class LTX2Pipeline:
         prompt, height, width, prompt_embeds, negative_prompt_embeds, prompt_attention_mask, negative_prompt_attention_mask
     )
 
+    # 1.5 Restore Transformer to TPU immediately to free up Host CPU RAM bandwidth for the Text Encoder
+    if hasattr(self, "transformer"):
+      graphdef, state = nnx.split(self.transformer)
+      sample_leaf = jax.tree_util.tree_leaves(state)[0]
+      # If weights are currently parked on CPU from a previous VAE run, restore them to TPU
+      if list(sample_leaf.devices())[0].platform == "cpu":
+        logical_state_spec = nnx.get_partition_spec(state)
+        logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, self.mesh, self.config.logical_axis_rules)
+        state = jax.tree_util.tree_map(lambda x, sharding: jax.device_put(x, sharding), state, logical_state_sharding)
+        # Block here until tensors are fully uploaded to ensure CPU Host RAM is 100% idle for PyTorch
+        jax.block_until_ready(state)
+        self.transformer = nnx.merge(graphdef, state)
+
     # 2. Encode inputs (Text)
     import time
     text_enc_start = time.time()
@@ -1357,17 +1370,6 @@ class LTX2Pipeline:
       else:
         prompt_embeds_jax = jax.device_put(prompt_embeds_jax, data_sharding_3d)
       prompt_attention_mask_jax = jax.device_put(prompt_attention_mask_jax, data_sharding_2d)
-
-    # GraphDef and State
-    graphdef, state = nnx.split(self.transformer)
-
-    # If weights are on CPU (from a previous offload), restore them to TPU with correct sharding
-    sample_leaf = jax.tree_util.tree_leaves(state)[0]
-    if list(sample_leaf.devices())[0].platform == "cpu":
-      logical_state_spec = nnx.get_partition_spec(state)
-      logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, self.mesh, self.config.logical_axis_rules)
-      state = jax.tree_util.tree_map(lambda x, sharding: jax.device_put(x, sharding), state, logical_state_sharding)
-      self.transformer = nnx.merge(graphdef, state)
 
     # 7. Denoising Loop
     import contextlib
