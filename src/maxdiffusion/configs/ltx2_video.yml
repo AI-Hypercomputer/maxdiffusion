@@ -103,9 +103,11 @@ skip_first_n_steps_for_profiler: 0
 profiler_steps: 5
 
 replicate_vae: False
-
 use_bwe: False
 
+run_text_encoder_on_tpu: True
+# Dynamically disables VAE slicing and distributes the batch dimension to avoid HBM OOM for larger batch sizes.
+enable_dynamic_vae_sharding: True
 allow_split_physical_axes: False
 learning_rate_schedule_steps: -1
 max_train_steps: 500
