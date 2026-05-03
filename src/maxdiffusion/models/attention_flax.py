@@ -28,10 +28,9 @@ from maxdiffusion.kernels.splash_attention import splash_attention_mask as tokam
 from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
 from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
+from maxdiffusion.kernels import custom_splash_attention as custom_splash
 from einops import rearrange
 from .. import common_types, max_logging
-
-from . import custom_splash_attention as custom_splash
 from . import quantizations
 from .modeling_flax_utils import get_activation
 
@@ -576,14 +575,26 @@ def _ulysses_attention(
       bkv_compute_in = 1024
       heads_per_tile = 1
 
+      if flash_block_sizes is not None:
+        if isinstance(flash_block_sizes, dict):
+          bq = flash_block_sizes.get("block_q", bq)
+          bkv = flash_block_sizes.get("block_kv", bkv)
+          bkv_compute = flash_block_sizes.get("block_kv_compute", bkv_compute)
+          bkv_compute_in = flash_block_sizes.get("block_kv_compute_in", bkv_compute_in)
+          heads_per_tile = flash_block_sizes.get("heads_per_tile", heads_per_tile)
+        else:
+          bq = getattr(flash_block_sizes, "block_q", bq)
+          bkv = getattr(flash_block_sizes, "block_kv", bkv)
+          bkv_compute = getattr(flash_block_sizes, "block_kv_compute", bkv_compute)
+          bkv_compute_in = getattr(flash_block_sizes, "block_kv_compute_in", bkv_compute_in)
+          heads_per_tile = getattr(flash_block_sizes, "heads_per_tile", heads_per_tile)
+
+      if use_base2_exp:
+        query = query * 1.44269504
+
       query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
       key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
       value, _, _ = _pad_data_for_flash(value, heads, bkv)
-
-      if use_base2_exp:
-        query_scaled = query * 1.44269504
-      else:
-        query_scaled = query
 
       bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
 
@@ -598,7 +609,7 @@ def _ulysses_attention(
       )
 
       vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
-      attention_output = vmapped_splash(query_scaled, key, value)
+      attention_output = vmapped_splash(query, key, value)
       attention_output = jnp.swapaxes(attention_output, 2, 3)
       attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
     else:

@@ -112,7 +112,7 @@ def _flash_attention_kernel(
       s_curr = _exp2(qk_slice - m_next[0:1], use_base2_exp=use_base2_exp)
       l_curr = s_curr.sum(axis=0, keepdims=True)
 
-      alpha = jnp.exp2(m_prev - m_next)
+      alpha = _exp2(m_prev - m_next, use_base2_exp=use_base2_exp)
       l_next = l_curr + alpha * l_prev
 
       sv_dims = (((0,), (0,)), ((), ()))
@@ -154,7 +154,7 @@ def _flash_attention_kernel(
       s_curr = _exp2(qk_slice - m_next[0:1], use_base2_exp=use_base2_exp)
       l_curr = s_curr.sum(axis=0, keepdims=True)
 
-      alpha = jnp.exp2(m_prev - m_next)
+      alpha = _exp2(m_prev - m_next, use_base2_exp=use_base2_exp)
       l_next = l_curr + alpha * l_prev
 
       sv_dims = (((0,), (0,)), ((), ()))
@@ -259,7 +259,7 @@ def _flash_attention_kernel_mhpt(
         s_curr = _exp2(qk_slice - m_next[0:1], use_base2_exp=use_base2_exp)
         l_curr = s_curr.sum(axis=0, keepdims=True)
 
-        alpha = jnp.exp2(m_prev - m_next)
+        alpha = _exp2(m_prev - m_next, use_base2_exp=use_base2_exp)
         l_next = l_curr + alpha * l_prev
 
         sv_dims = (((0,), (0,)), ((), ()))
@@ -304,7 +304,7 @@ def _flash_attention_kernel_mhpt(
         s_curr = _exp2(qk_slice - m_next[0:1], use_base2_exp=use_base2_exp)
         l_curr = s_curr.sum(axis=0, keepdims=True)
 
-        alpha = jnp.exp2(m_prev - m_next)
+        alpha = _exp2(m_prev - m_next, use_base2_exp=use_base2_exp)
         l_next = l_curr + alpha * l_prev
 
         sv_dims = (((0,), (0,)), ((), ()))
