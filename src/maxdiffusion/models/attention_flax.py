@@ -784,6 +784,137 @@ def _cudnn_flash_attention(query: Array, key: Array, value: Array, heads: int, m
   return _reshape_data_from_cudnn_flash(out)
 
 
+KERNEL_REGISTRY = {}
+
+
+def register_kernel(name: str):
+  def decorator(func):
+    KERNEL_REGISTRY[name] = func
+    return func
+
+  return decorator
+
+
+# Register existing kernels at module level with context dict
+@register_kernel("dot_product")
+def dot_product_kernel(q, k, v, context):
+  return _apply_attention_dot(
+      q,
+      k,
+      v,
+      context["dtype"],
+      context["heads"],
+      context["dim_head"],
+      context["scale"],
+      context["split_head_dim"],
+      context["float32_qk_product"],
+      context["use_memory_efficient_attention"],
+  )
+
+
+@register_kernel("ulysses_custom")
+def ulysses_custom_kernel(q, k, v, context):
+  return _ulysses_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      use_custom_kernel=True,
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", True),
+  )
+
+
+@register_kernel("ulysses")
+def ulysses_kernel(q, k, v, context):
+  return _ulysses_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+  )
+
+
+@register_kernel("flash")
+def flash_kernel(q, k, v, context):
+  return _tpu_flash_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      attention_kernel="flash",
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      use_base2_exp=context["use_base2_exp"],
+      use_experimental_scheduler=context["use_experimental_scheduler"],
+  )
+
+
+@register_kernel("tokamax_flash")
+def tokamax_flash_kernel(q, k, v, context):
+  return _tpu_flash_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      attention_kernel="tokamax_flash",
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      use_base2_exp=context["use_base2_exp"],
+      use_experimental_scheduler=context["use_experimental_scheduler"],
+  )
+
+
+@register_kernel("tokamax_ring")
+def tokamax_ring_kernel(q, k, v, context):
+  return _tpu_flash_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      attention_kernel="tokamax_ring",
+      mask_padding_tokens=context["mask_padding_tokens"],
+      attention_mask=context["attention_mask"],
+  )
+
+
+@register_kernel("cudnn_flash_te")
+def cudnn_flash_te_kernel(q, k, v, context):
+  return _cudnn_flash_attention(q, k, v, context["heads"], context["mesh"], context["dpa_layer"])
+
 def _apply_attention(
     query: Array,
     key: Array,
@@ -808,96 +939,50 @@ def _apply_attention(
     use_base2_exp: bool = False,
     use_experimental_scheduler: bool = False,
 ):
-  """Routes to different attention kernels."""
+  """Routes to different attention kernels using a module-level registry."""
+
   _check_attention_inputs(query, key, value)
   seq_len_idx = 1
   if query.ndim == 4:
     seq_len_idx = 2
+
+  can_use_flash_attention = True
   if attention_kernel in ["flash", "tokamax_flash", "ulysses", "ulysses_custom"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
         and value.shape[seq_len_idx] >= flash_min_seq_length
     )
-  else:
-    can_use_flash_attention = True
-  if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
-    return _apply_attention_dot(
-        query, key, value, dtype, heads, dim_head, scale, split_head_dim, float32_qk_product, use_memory_efficient_attention
-    )
-  elif attention_kernel == "ulysses_custom":
-    return _ulysses_attention(
-        query,
-        key * scale,
-        value,
-        heads,
-        mesh,
-        axis_names_q,
-        axis_names_kv,
-        flash_block_sizes,
-        dtype,
-        mask_padding_tokens=mask_padding_tokens,
-        residual_checkpoint_name=residual_checkpoint_name,
-        attention_mask=attention_mask,
-        use_custom_kernel=True,
-        use_base2_exp=use_base2_exp,
-        use_experimental_scheduler=use_experimental_scheduler,
-    )
-  elif attention_kernel == "ulysses":
-    return _ulysses_attention(
-        query,
-        key * scale,
-        value,
-        heads,
-        mesh,
-        axis_names_q,
-        axis_names_kv,
-        flash_block_sizes,
-        dtype,
-        mask_padding_tokens=mask_padding_tokens,
-        residual_checkpoint_name=residual_checkpoint_name,
-        attention_mask=attention_mask,
-        use_base2_exp=use_base2_exp,
-        use_experimental_scheduler=use_experimental_scheduler,
-    )
-  elif attention_kernel in ["flash", "tokamax_flash"]:
-    return _tpu_flash_attention(
-        query,
-        key * scale,
-        value,
-        heads,
-        mesh,
-        axis_names_q,
-        axis_names_kv,
-        flash_block_sizes,
-        dtype,
-        attention_kernel,
-        mask_padding_tokens=mask_padding_tokens,
-        residual_checkpoint_name=residual_checkpoint_name,
-        attention_mask=attention_mask,
-        use_base2_exp=use_base2_exp,
-        use_experimental_scheduler=use_experimental_scheduler,
-    )
-  elif "ring" in attention_kernel:
-    return _tpu_flash_attention(
-        query,
-        key * scale,
-        value,
-        heads,
-        mesh,
-        axis_names_q,
-        axis_names_kv,
-        flash_block_sizes,
-        dtype,
-        attention_kernel,
-        mask_padding_tokens=mask_padding_tokens,
-        attention_mask=attention_mask,
-    )
-  elif attention_kernel == "cudnn_flash_te":
-    return _cudnn_flash_attention(query, key, value, heads, mesh, dpa_layer)
-  else:
-    raise ValueError(f"Unexpected attention kernel {attention_kernel=}.")
 
+
+  context = {
+      "heads": heads,
+      "mesh": mesh,
+      "axis_names_q": axis_names_q,
+      "axis_names_kv": axis_names_kv,
+      "flash_block_sizes": flash_block_sizes,
+      "dtype": dtype,
+      "mask_padding_tokens": mask_padding_tokens,
+      "residual_checkpoint_name": residual_checkpoint_name,
+      "attention_mask": attention_mask,
+      "scale": scale,
+      "use_base2_exp": use_base2_exp,
+      "use_experimental_scheduler": use_experimental_scheduler,
+      "dim_head": dim_head,
+      "split_head_dim": split_head_dim,
+      "float32_qk_product": float32_qk_product,
+      "use_memory_efficient_attention": use_memory_efficient_attention,
+      "dpa_layer": dpa_layer,
+  }
+
+  if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
+    return KERNEL_REGISTRY["dot_product"](query, key, value, context)
+
+  # Module-level Registry lookup
+  if attention_kernel in KERNEL_REGISTRY:
+    return KERNEL_REGISTRY[attention_kernel](query, key, value, context)
+
+  raise ValueError(f"Unexpected attention kernel {attention_kernel=}.")
 
 def _query_chunk_attention(query, key, value, precision, key_chunk_size: int = 4096):
   """Multi-head dot product attention with a limited number of queries."""
