@@ -42,8 +42,10 @@ DEFAULT_BKVCOMPUTESIZE = 1024
 DEFAULT_BKVCOMPUTEINSIZE = 256
 
 
-def _exp2(x: jax.Array) -> jax.Array:
-  return jnp.exp2(x)
+def _exp2(x: jax.Array, use_base2_exp: bool = True) -> jax.Array:
+  if use_base2_exp:
+    return jnp.exp2(x)
+  return jnp.exp(x)
 
 
 class _BlockSizes:
@@ -73,6 +75,7 @@ def _flash_attention_kernel(
     head_dim_v: int,
     q_seq_len: int,
     kv_seq_len: int,
+    use_base2_exp: bool = True,
 ):
   float32 = jnp.float32
   head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
@@ -106,7 +109,7 @@ def _flash_attention_kernel(
 
       m_curr = qk_slice.max(axis=0)[None, :]
       m_next = jnp.maximum(m_prev, m_curr)
-      s_curr = _exp2(qk_slice - m_next[0:1])
+      s_curr = _exp2(qk_slice - m_next[0:1], use_base2_exp=use_base2_exp)
       l_curr = s_curr.sum(axis=0, keepdims=True)
 
       alpha = jnp.exp2(m_prev - m_next)
@@ -148,7 +151,7 @@ def _flash_attention_kernel(
 
       m_curr = qk_slice.max(axis=0)[None, :]
       m_next = jnp.maximum(m_prev, m_curr)
-      s_curr = _exp2(qk_slice - m_next[0:1])
+      s_curr = _exp2(qk_slice - m_next[0:1], use_base2_exp=use_base2_exp)
       l_curr = s_curr.sum(axis=0, keepdims=True)
 
       alpha = jnp.exp2(m_prev - m_next)
@@ -217,6 +220,7 @@ def _flash_attention_kernel_mhpt(
     q_seq_len: int,
     kv_seq_len: int,
     heads_per_tile: int,
+    use_base2_exp: bool = True,
 ):
   float32 = jnp.float32
   head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
@@ -252,7 +256,7 @@ def _flash_attention_kernel_mhpt(
 
         m_curr = qk_slice.max(axis=0)[None, :]
         m_next = jnp.maximum(m_prev, m_curr)
-        s_curr = _exp2(qk_slice - m_next[0:1])
+        s_curr = _exp2(qk_slice - m_next[0:1], use_base2_exp=use_base2_exp)
         l_curr = s_curr.sum(axis=0, keepdims=True)
 
         alpha = jnp.exp2(m_prev - m_next)
@@ -297,7 +301,7 @@ def _flash_attention_kernel_mhpt(
 
         m_curr = qk_slice.max(axis=0)[None, :]
         m_next = jnp.maximum(m_prev, m_curr)
-        s_curr = _exp2(qk_slice - m_next[0:1])
+        s_curr = _exp2(qk_slice - m_next[0:1], use_base2_exp=use_base2_exp)
         l_curr = s_curr.sum(axis=0, keepdims=True)
 
         alpha = jnp.exp2(m_prev - m_next)
@@ -357,6 +361,8 @@ def _splash_attention_forward(
     bkv_compute_in: int,
     q_seq_len: int | None = None,
     kv_seq_len: int | None = None,
+    use_experimental_scheduler: bool = True,
+    use_base2_exp: bool = True,
 ):
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
@@ -414,6 +420,7 @@ def _splash_attention_forward(
           head_dim_v=head_dim_v,
           q_seq_len=actual_q_seq_len,
           kv_seq_len=actual_kv_seq_len,
+          use_base2_exp=use_base2_exp,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=0,
@@ -423,7 +430,9 @@ def _splash_attention_forward(
       ),
       compiler_params=pltpu.CompilerParams(
           dimension_semantics=("parallel", "arbitrary", "arbitrary"),
-          flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": True},
+          flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": use_experimental_scheduler},
+          disable_bounds_checks=True,
+          skip_device_barrier=True,
       ),
       out_shape=out_shapes,
   )(q, k, v)
@@ -439,6 +448,8 @@ def _splash_attention_forward_mhpt(
     heads_per_tile: int,
     q_seq_len: int | None = None,
     kv_seq_len: int | None = None,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = True,
 ):
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
@@ -498,6 +509,7 @@ def _splash_attention_forward_mhpt(
           q_seq_len=actual_q_seq_len,
           kv_seq_len=actual_kv_seq_len,
           heads_per_tile=hpt,
+          use_base2_exp=use_base2_exp,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=0,
@@ -507,7 +519,9 @@ def _splash_attention_forward_mhpt(
       ),
       compiler_params=pltpu.CompilerParams(
           dimension_semantics=("parallel", "arbitrary", "arbitrary"),
-          flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": True},
+          flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": use_experimental_scheduler},
+          disable_bounds_checks=True,
+          skip_device_barrier=True,
       ),
       out_shape=out_shapes,
   )(q, k, v)
@@ -520,14 +534,16 @@ def make_splash_mha(
     orig_q_seq_len: int | None = None,
     orig_kv_seq_len: int | None = None,
     heads_per_tile: int = 1,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = True,
 ):
   def _splash_attention(q, k, v):
     if heads_per_tile > 1:
       return _splash_attention_forward_mhpt(
-          q, k, v, block_sizes, bkv_compute_in, heads_per_tile, q_seq_len=orig_q_seq_len, kv_seq_len=orig_kv_seq_len
+          q, k, v, block_sizes, bkv_compute_in, heads_per_tile, q_seq_len=orig_q_seq_len, kv_seq_len=orig_kv_seq_len, use_base2_exp=use_base2_exp, use_experimental_scheduler=use_experimental_scheduler
       )
     return _splash_attention_forward(
-        q, k, v, block_sizes, bkv_compute_in, q_seq_len=orig_q_seq_len, kv_seq_len=orig_kv_seq_len
+        q, k, v, block_sizes, bkv_compute_in, q_seq_len=orig_q_seq_len, kv_seq_len=orig_kv_seq_len, use_base2_exp=use_base2_exp, use_experimental_scheduler=use_experimental_scheduler
     )
 
   return _splash_attention
