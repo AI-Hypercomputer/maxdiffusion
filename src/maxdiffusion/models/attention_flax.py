@@ -252,13 +252,13 @@ def _select_flash_block_sizes(
   use_tokamax = attention_kernel in ["tokamax_flash", "tokamax_ring"]
   return splash_attention_kernel.BlockSizes(
       block_q=block_size_q,
-      block_kv_compute=min(kv_max_block_size, key_seq_len),
-      block_kv=min(kv_max_block_size, key_seq_len),
+      block_kv_compute=kv_max_block_size,
+      block_kv=kv_max_block_size,
       block_q_dkv=block_size_q,
-      block_kv_dkv=min(kv_max_block_size, key_seq_len),
-      block_kv_dkv_compute=min(kv_max_block_size, query_seq_len),
+      block_kv_dkv=kv_max_block_size,
+      block_kv_dkv_compute=kv_max_block_size,
       block_q_dq=None if use_tokamax else block_size_q,
-      block_kv_dq=None if use_tokamax else min(kv_max_block_size, query_seq_len),
+      block_kv_dq=None if use_tokamax else kv_max_block_size,
       use_fused_bwd_kernel=True if use_tokamax else False,
   )
 
