@@ -421,3 +421,9 @@ enable_ssim: False
 enable_ml_diagnostics: False
 profiler_gcs_path: ""
 enable_ondemand_xprof: False
+
+# Model surgery parameters
+override_model_dims: True
+target_head_dim: 256
+target_num_heads: 20
+
