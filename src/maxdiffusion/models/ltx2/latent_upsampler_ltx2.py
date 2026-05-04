@@ -121,7 +121,7 @@ class BlurDownsample(nnx.Module):
 
     pad = self.kernel_size // 2
     c = x.shape[-1]
-    kernel_broadcast = jnp.tile(self.kernel, (1, 1, 1, c))
+    kernel_broadcast = jnp.tile(self.kernel, (1, 1, 1, c)).astype(x.dtype)
 
     if self.dims == 2:
       x = jax.lax.conv_general_dilated(
