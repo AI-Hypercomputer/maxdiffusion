@@ -544,10 +544,22 @@ class LTX2Pipeline:
     max_logging.log("Loading Latent Upsampler...")
 
     # 1. Fetch the dynamic configuration
-    upsampler_config = LTX2LatentUpsamplerModel.load_config(config.upsampler_model_path, subfolder="latent_upsampler")
+    config_path = config.upsampler_model_path
+    if config_path == "Lightricks/LTX-2.3":
+      config_path = "Lightricks/LTX-2"
+      
+    upsampler_config = LTX2LatentUpsamplerModel.load_config(config_path, subfolder="latent_upsampler")
 
     if not upsampler_config:
       max_logging.log("Warning: No upsampler config.json found. Using default dimensions.")
+
+    # Allow pyconfig (yml) to override the spatial scale, then fallback to model config, then 2.0
+    rational_spatial_scale = getattr(
+        config, "upsampler_rational_spatial_scale", upsampler_config.get("rational_spatial_scale", 2.0)
+    )
+    if config.upsampler_model_path == "Lightricks/LTX-2.3":
+      rational_spatial_scale = None
+      max_logging.log("Forcing rational_spatial_scale=None for LTX 2.3 upscaler.")
 
     # 2. Instantiate with config values (using current hardcoded values as fallbacks)
     upsampler = LTX2LatentUpsamplerModel(
@@ -557,10 +569,7 @@ class LTX2Pipeline:
         dims=upsampler_config.get("dims", 3),
         spatial_upsample=upsampler_config.get("spatial_upsample", True),
         temporal_upsample=upsampler_config.get("temporal_upsample", False),
-        # Allow pyconfig (yml) to override the spatial scale, then fallback to model config, then 2.0
-        rational_spatial_scale=getattr(
-            config, "upsampler_rational_spatial_scale", upsampler_config.get("rational_spatial_scale", 2.0)
-        ),
+        rational_spatial_scale=rational_spatial_scale,
         rngs=nnx.Rngs(0),
     )
 
