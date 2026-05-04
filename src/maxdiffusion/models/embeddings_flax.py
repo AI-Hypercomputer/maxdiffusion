@@ -226,6 +226,7 @@ def get_1d_rotary_pos_embed(
     ntk_factor=1.0,
     freqs_dtype=jnp.float32,
     use_real: bool = True,
+    original_dim: Optional[int] = None,
 ):
   """
   Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
@@ -236,7 +237,8 @@ def get_1d_rotary_pos_embed(
     pos = jnp.arange(pos)
 
   theta = theta * ntk_factor
-  freqs = 1.0 / (theta ** (jnp.arange(0, dim, 2, dtype=freqs_dtype)[: (dim // 2)] / dim)) / linear_factor
+  scale_dim = original_dim if original_dim is not None else dim
+  freqs = 1.0 / (theta ** (jnp.arange(0, dim, 2, dtype=freqs_dtype)[: (dim // 2)] / scale_dim)) / linear_factor
   freqs = jnp.outer(pos, freqs)
   if use_real:
     # Flux

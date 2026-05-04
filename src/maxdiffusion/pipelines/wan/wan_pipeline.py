@@ -99,6 +99,38 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
   return vs
 
 
+from flax.traverse_util import flatten_dict, unflatten_dict
+
+
+def perform_wan_scaling_surgery(params, target_head_dim, source_head_dim):
+  """
+  scales Q and K weights to preserve attention entropy when
+  changing head dimensions.
+
+  Formula: correction_factor = (target_dim / source_dim)^0.25
+  """
+  if target_head_dim == source_head_dim:
+    print("Target and Source head dims are identical. Skipping surgery.")
+    return params
+
+  ratio = target_head_dim / source_head_dim
+  correction_factor = ratio**0.25
+
+  flat_params = flatten_dict(params, sep="/")
+  new_flat_params = {}
+  modified_count = 0
+
+  for key, tensor in flat_params.items():
+    if ("query" in key or "key" in key) and "kernel" in key and "attn" in key:
+      new_flat_params[key] = tensor * correction_factor
+      modified_count += 1
+    else:
+      new_flat_params[key] = tensor
+
+  print(f"Surgery complete. Scaled {modified_count} tensors by {correction_factor:.4f}")
+  return unflatten_dict(new_flat_params, sep="/")
+
+
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(
     devices_array: np.array,
@@ -141,6 +173,11 @@ def create_sharded_logical_transformer(
   wan_config["use_base2_exp"] = config.use_base2_exp
   wan_config["use_experimental_scheduler"] = config.use_experimental_scheduler
 
+  wan_config["target_head_dim"] = wan_config["attention_head_dim"]
+  if getattr(config, "override_model_dims", False):
+    wan_config["target_head_dim"] = config.target_head_dim
+    wan_config["num_attention_heads"] = config.target_num_heads
+
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.
   p_model_factory = partial(create_model, wan_config=wan_config)
@@ -171,6 +208,8 @@ def create_sharded_logical_transformer(
         scan_layers=config.scan_layers,
         subfolder=subfolder,
     )
+    if getattr(config, "override_model_dims", False):
+      params = perform_wan_scaling_surgery(params, config.target_head_dim, wan_config["attention_head_dim"])
 
   params = jax.tree_util.tree_map_with_path(
       lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
