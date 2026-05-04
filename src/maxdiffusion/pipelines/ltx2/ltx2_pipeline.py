@@ -553,32 +553,51 @@ class LTX2Pipeline:
     if not upsampler_config:
       max_logging.log("Warning: No upsampler config.json found. Using default dimensions.")
 
-    # Allow pyconfig (yml) to override the spatial scale, then fallback to model config, then 2.0
+    # Read filename from config with fallback
+    try:
+      filename = config.upsampler_filename
+    except ValueError:
+      filename = None
+
+    subfolder = "latent_upsampler"
+    if config.upsampler_model_path == "Lightricks/LTX-2.3":
+      subfolder = ""
+      if filename is None:
+        filename = "ltx-2.3-spatial-upscaler-x2-1.0.safetensors" # Default if not specified
+
+    # Infer parameters from filename
+    spatial_upsample = upsampler_config.get("spatial_upsample", True)
+    temporal_upsample = upsampler_config.get("temporal_upsample", False)
     rational_spatial_scale = getattr(
         config, "upsampler_rational_spatial_scale", upsampler_config.get("rational_spatial_scale", 2.0)
     )
-    if config.upsampler_model_path == "Lightricks/LTX-2.3":
-      rational_spatial_scale = None
-      max_logging.log("Forcing rational_spatial_scale=None for LTX 2.3 upscaler.")
 
-    # 2. Instantiate with config values (using current hardcoded values as fallbacks)
+    if filename is not None:
+      if "temporal" in filename:
+        temporal_upsample = True
+        spatial_upsample = False
+      elif "spatial" in filename:
+        spatial_upsample = True
+        temporal_upsample = False
+        
+      if "x1.5" in filename:
+        rational_spatial_scale = 1.5
+      elif "x2" in filename:
+        rational_spatial_scale = None # Force fallback for x2
+
+    max_logging.log(f"Upsampler config inferred: spatial={spatial_upsample}, temporal={temporal_upsample}, scale={rational_spatial_scale}")
+
+    # 2. Instantiate with inferred or config values
     upsampler = LTX2LatentUpsamplerModel(
         in_channels=upsampler_config.get("in_channels", 128),
         mid_channels=upsampler_config.get("mid_channels", 1024),
         num_blocks_per_stage=upsampler_config.get("num_blocks_per_stage", 4),
         dims=upsampler_config.get("dims", 3),
-        spatial_upsample=upsampler_config.get("spatial_upsample", True),
-        temporal_upsample=upsampler_config.get("temporal_upsample", False),
+        spatial_upsample=spatial_upsample,
+        temporal_upsample=temporal_upsample,
         rational_spatial_scale=rational_spatial_scale,
         rngs=nnx.Rngs(0),
     )
-
-    subfolder = "latent_upsampler"
-    filename = None
-    if config.upsampler_model_path == "Lightricks/LTX-2.3":
-      subfolder = ""
-      filename = "ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
-      max_logging.log(f"Using specific upsampler file: {filename}")
 
     # Load weights from disk. Evaluating eval_shapes=None returns the raw checkpoint dict.
     params = load_upsampler_weights(
