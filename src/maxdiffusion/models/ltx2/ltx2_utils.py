@@ -105,12 +105,28 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   return flax_key, flax_tensor
 
 
-def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device):
+def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=None):
   """
-  Loads weights from a sharded safetensors checkpoint.
+  Loads weights from a sharded safetensors checkpoint or a specific file.
   """
-  index_file = "diffusion_pytorch_model.safetensors.index.json"
   tensors = {}
+  
+  if filename is not None:
+    try:
+      ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
+      if filename.endswith(".safetensors"):
+        with safe_open(ckpt_path, framework="pt") as f:
+          for k in f.keys():
+            tensors[k] = torch2jax(f.get_tensor(k))
+      else:
+        loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
+        for k, v in loaded_state_dict.items():
+          tensors[k] = torch2jax(v)
+      return tensors
+    except EntryNotFoundError:
+      max_logging.log(f"Warning: Specific file {filename} not found. Falling back to default logic.")
+      
+  index_file = "diffusion_pytorch_model.safetensors.index.json"
   try:
     index_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=index_file)
     with open(index_path, "r") as f:
@@ -481,6 +497,7 @@ def load_upsampler_weights(
     hf_download: bool = True,
     subfolder: str = "latent_upsampler",
     dims: int = 3,
+    filename: Optional[str] = None,
 ):
   """
   Loads and ports PyTorch upsampler weights to Flax.
@@ -490,7 +507,7 @@ def load_upsampler_weights(
 
   with jax.default_device(device_obj):
     # This native util automatically handles HF hub downloads and caching!
-    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device_obj)
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device_obj, filename=filename)
 
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]

@@ -564,9 +564,16 @@ class LTX2Pipeline:
         rngs=nnx.Rngs(0),
     )
 
+    subfolder = "latent_upsampler"
+    filename = None
+    if config.upsampler_model_path == "Lightricks/LTX-2.3":
+      subfolder = ""
+      filename = "ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
+      max_logging.log(f"Using specific upsampler file: {filename}")
+
     # Load weights from disk. Evaluating eval_shapes=None returns the raw checkpoint dict.
     params = load_upsampler_weights(
-        config.upsampler_model_path, eval_shapes=None, device="cpu", subfolder="latent_upsampler"
+        config.upsampler_model_path, eval_shapes=None, device="cpu", subfolder=subfolder, filename=filename
     )
 
     if hasattr(config, "weights_dtype"):
