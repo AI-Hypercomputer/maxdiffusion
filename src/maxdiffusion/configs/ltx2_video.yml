@@ -6,7 +6,6 @@ a2v_attention_kernel: 'dot_product'
 v2a_attention_kernel: 'dot_product'
 attention_sharding_uniform: True 
 precision: 'bf16'
-offload_transformer: False
 
 # For scanning transformer layers
 scan_layers: True

@@ -1366,17 +1366,6 @@ class LTX2Pipeline:
     # GraphDef and State for the diffusion loop
     graphdef, state = nnx.split(self.transformer)
 
-    # If weights are on CPU (from a previous offload), restore them to TPU with correct sharding
-    if getattr(self.config, "offload_transformer", True):
-      sample_leaf = jax.tree_util.tree_leaves(state)[0]
-      if list(sample_leaf.devices())[0].platform == "cpu":
-        logical_state_spec = nnx.get_partition_spec(state)
-        logical_state_sharding = nn.logical_to_mesh_sharding(logical_state_spec, self.mesh, self.config.logical_axis_rules)
-        state = jax.tree_util.tree_map(lambda x, sharding: jax.device_put(x, sharding), state, logical_state_sharding)
-        # Block here until tensors are fully uploaded to ensure CPU Host RAM is 100% idle for PyTorch
-        jax.block_until_ready(state)
-        self.transformer = nnx.merge(graphdef, state)
-
     # 7. Denoising Loop
     import contextlib
 
@@ -1641,12 +1630,6 @@ class LTX2Pipeline:
         self.vae = nnx.merge(graphdef, state)
       except Exception as e:
         max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
-
-    # Offload transformer to CPU to free up ~13GB of TPU HBM for the VAE
-    if getattr(self.config, "offload_transformer", True) and hasattr(self, "transformer"):
-      graphdef, state = nnx.split(self.transformer)
-      state = jax.tree_util.tree_map(lambda x: jax.device_put(x, jax.devices("cpu")[0]), state)
-      self.transformer = nnx.merge(graphdef, state)
 
     vae_start = time.time()
     if getattr(self.vae.config, "timestep_conditioning", False):
