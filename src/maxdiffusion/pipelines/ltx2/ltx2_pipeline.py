@@ -571,6 +571,7 @@ class LTX2Pipeline:
     rational_spatial_scale = getattr(
         config, "upsampler_rational_spatial_scale", upsampler_config.get("rational_spatial_scale", 2.0)
     )
+    mid_channels = upsampler_config.get("mid_channels", 1024)
 
     if filename is not None:
       if "temporal" in filename:
@@ -584,13 +585,16 @@ class LTX2Pipeline:
         rational_spatial_scale = 1.5
       elif "x2" in filename:
         rational_spatial_scale = None # Force fallback for x2
+        
+    if config.upsampler_model_path == "Lightricks/LTX-2.3":
+      mid_channels = 512 # Force 512 for LTX 2.3 upscaler
 
-    max_logging.log(f"Upsampler config inferred: spatial={spatial_upsample}, temporal={temporal_upsample}, scale={rational_spatial_scale}")
+    max_logging.log(f"Upsampler config inferred: spatial={spatial_upsample}, temporal={temporal_upsample}, scale={rational_spatial_scale}, mid_channels={mid_channels}")
 
     # 2. Instantiate with inferred or config values
     upsampler = LTX2LatentUpsamplerModel(
         in_channels=upsampler_config.get("in_channels", 128),
-        mid_channels=upsampler_config.get("mid_channels", 1024),
+        mid_channels=mid_channels,
         num_blocks_per_stage=upsampler_config.get("num_blocks_per_stage", 4),
         dims=upsampler_config.get("dims", 3),
         spatial_upsample=spatial_upsample,
