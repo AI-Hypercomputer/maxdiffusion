@@ -35,6 +35,7 @@ from ..kernels import custom_splash_attention as custom_splash
 from . import quantizations
 from .modeling_flax_utils import get_activation
 
+LOG2E = math.log2(math.e)
 
 Array = common_types.Array
 Mesh = common_types.Mesh
@@ -591,9 +592,7 @@ def _ulysses_attention(
           heads_per_tile = getattr(flash_block_sizes, "heads_per_tile", heads_per_tile)
 
       if use_base2_exp:
-        query_scaled = query * 1.44269504
-      else:
-        query_scaled = query
+        query = query * LOG2E
 
       query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
       key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
@@ -612,7 +611,7 @@ def _ulysses_attention(
       )
 
       vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
-      attention_output = vmapped_splash(query_scaled, key, value)
+      attention_output = vmapped_splash(query, key, value)
       attention_output = jnp.swapaxes(attention_output, 2, 3)
       attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
     else:
