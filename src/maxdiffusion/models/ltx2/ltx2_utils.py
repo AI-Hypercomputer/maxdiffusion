@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import json
+from typing import Optional
 import torch
 import jax
 import jax.numpy as jnp
