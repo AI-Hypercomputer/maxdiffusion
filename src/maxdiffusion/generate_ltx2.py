@@ -195,7 +195,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
   saved_video_path = []
   audio_sample_rate = (
-      getattr(pipeline.vocoder.config, "output_sampling_rate", 24000) if hasattr(pipeline, "vocoder") else 24000
+      getattr(pipeline.vocoder.config, "output_sampling_rate", 24000) if getattr(pipeline, "vocoder", None) is not None else 24000
   )
   fps = getattr(config, "fps", 24)
 
