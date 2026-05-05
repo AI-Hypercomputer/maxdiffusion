@@ -1357,6 +1357,14 @@ class LTX2Pipeline:
     # 6. Prepare JAX State
     latents_jax = latents
     audio_latents_jax = audio_latents
+
+    import os
+
+    home_dir = os.path.expanduser("~")
+    np.save(os.path.join(home_dir, "latents_jax.npy"), np.array(latents))
+    np.save(os.path.join(home_dir, "audio_latents_jax.npy"), np.array(audio_latents))
+    print(f"DEBUG: Saved initial latents to {home_dir}")
+
     prompt_embeds_jax = prompt_embeds
     prompt_attention_mask_jax = prompt_attention_mask
 
@@ -1431,7 +1439,7 @@ class LTX2Pipeline:
         audio_embeds_sharded = jax.device_put(audio_embeds, spec)
       def _print_stats(name, tensor):
         print(
-            f"DEBUG {name} shape: {tensor.shape}, mean: {jnp.mean(tensor):.6f}, min: {jnp.min(tensor):.6f}, max: {jnp.max(tensor):.6f}, std: {jnp.std(tensor):.6f}"
+            f"DEBUG {name} shape: {tensor.shape}, mean: {jnp.round(jnp.mean(tensor), 4)}, min: {jnp.round(jnp.min(tensor), 4)}, max: {jnp.round(jnp.max(tensor), 4)}, std: {jnp.round(jnp.std(tensor), 4)}"
         )
       _print_stats("video_embeds", video_embeds)
       _print_stats("audio_embeds", audio_embeds)
