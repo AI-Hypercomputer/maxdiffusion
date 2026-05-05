@@ -42,7 +42,6 @@ audio_stg_scale: 0.0
 modality_scale: 1.0
 audio_modality_scale: 1.0
 use_cross_timestep: false
-generate_audio: True
 spatio_temporal_guidance_blocks: []
 noise_scale: 1.0
 fps: 24

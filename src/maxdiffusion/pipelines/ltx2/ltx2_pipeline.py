@@ -262,12 +262,8 @@ class LTX2Pipeline:
         getattr(self.transformer.config, "patch_size_t", 1) if getattr(self, "transformer", None) is not None else 1
     )
 
-    self.audio_sampling_rate = (
-        getattr(self.audio_vae.config, "sample_rate", 16000) if getattr(self, "audio_vae", None) is not None else 16000
-    )
-    self.audio_hop_length = (
-        getattr(self.audio_vae.config, "mel_hop_length", 160) if getattr(self, "audio_vae", None) is not None else 160
-    )
+    self.audio_sampling_rate = getattr(self.audio_vae.config, "sample_rate", 16000)
+    self.audio_hop_length = getattr(self.audio_vae.config, "mel_hop_length", 160)
 
     # Initialize video processor
     self.video_processor = VideoProcessor(vae_scale_factor=self.vae_spatial_compression_ratio)
@@ -654,9 +650,8 @@ class LTX2Pipeline:
     components["tokenizer"] = cls.load_tokenizer(config)
     components["text_encoder"] = cls.load_text_encoder(config)
     components["connectors"] = cls.load_connectors(devices_array, mesh, rngs, config)
-    if getattr(config, "generate_audio", True):
-      components["audio_vae"] = cls.load_audio_vae(devices_array, mesh, rngs, config)
-      components["vocoder"] = cls.load_vocoder(devices_array, mesh, rngs, config)
+    components["audio_vae"] = cls.load_audio_vae(devices_array, mesh, rngs, config)
+    components["vocoder"] = cls.load_vocoder(devices_array, mesh, rngs, config)
     components["scheduler"] = cls.load_scheduler(config)
 
     return components
@@ -1326,18 +1321,15 @@ class LTX2Pipeline:
     )
     audio_num_frames = round(duration_s * audio_latents_per_second)
 
-    if getattr(self.config, "generate_audio", True):
-      audio_latents = self.prepare_audio_latents(
-          batch_size=batch_size,
-          num_channels_latents=audio_channels,
-          audio_latent_length=audio_num_frames,
-          noise_scale=noise_scale,
-          dtype=dtype,
-          generator=key_audio,
-          latents=audio_latents,
-      )
-    else:
-      audio_latents = jnp.zeros((batch_size, audio_num_frames, audio_channels), dtype=dtype)
+    audio_latents = self.prepare_audio_latents(
+        batch_size=batch_size,
+        num_channels_latents=audio_channels,
+        audio_latent_length=audio_num_frames,
+        noise_scale=noise_scale,
+        dtype=dtype,
+        generator=key_audio,
+        latents=audio_latents,
+    )
 
     # 5. Prepare Timesteps
     sigmas = jnp.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
@@ -1643,22 +1635,20 @@ class LTX2Pipeline:
     # =======================================================================
 
     # Denormalize and Unpack Audio (Order important: Denorm THEN Unpack)
-    audio_latents = None
-    if getattr(self.config, "generate_audio", True) and self.audio_vae is not None:
-      audio_latents = self._denormalize_audio_latents(
-          audio_latents_jax, self.audio_vae.latents_mean.value, self.audio_vae.latents_std.value
-      )
+    audio_latents = self._denormalize_audio_latents(
+        audio_latents_jax, self.audio_vae.latents_mean.value, self.audio_vae.latents_std.value
+    )
 
-      num_mel_bins = self.audio_vae.config.mel_bins
-      latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
+    num_mel_bins = self.audio_vae.config.mel_bins
+    latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
 
-      audio_latents = self._unpack_audio_latents(
-          audio_latents, audio_num_frames, num_mel_bins=latent_mel_bins, num_channels=audio_channels
-      )
+    audio_latents = self._unpack_audio_latents(
+        audio_latents, audio_num_frames, num_mel_bins=latent_mel_bins, num_channels=audio_channels
+    )
 
-      # Audio VAE expects channels last (B, T, F, C) but unpack returns (B, C, T, F)
-      if audio_latents.ndim == 4:
-        audio_latents = audio_latents.transpose(0, 2, 3, 1)
+    # Audio VAE expects channels last (B, T, F, C) but unpack returns (B, C, T, F)
+    if audio_latents.ndim == 4:
+      audio_latents = audio_latents.transpose(0, 2, 3, 1)
 
     if output_type == "latent":
       return LTX2PipelineOutput(frames=latents, audio=audio_latents)
@@ -1709,27 +1699,24 @@ class LTX2Pipeline:
     video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
 
     # Decode Audio
-    if getattr(self.config, "generate_audio", True) and self.audio_vae is not None:
-      import time
-      audio_latents = audio_latents.astype(self.audio_vae.dtype)
-      generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
+    import time
+    audio_latents = audio_latents.astype(self.audio_vae.dtype)
+    generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
 
-      # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
-      generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
+    # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
+    generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
 
-      vocoder_start_time = time.time()
-      # Cache the JITted function on the pipeline so it doesn't recompile on the 2nd run
-      if not hasattr(self, "_jitted_vocoder"):
-        self._jitted_vocoder = nnx.jit(lambda m, x: m(x))
-      
-      audio = self._jitted_vocoder(self.vocoder, generated_mel_spectrograms)
-      jax.block_until_ready(audio)
-      max_logging.log(f"⏱️ BWE Vocoder Execution Time: {time.time() - vocoder_start_time:.4f} seconds")
+    vocoder_start_time = time.time()
+    # Cache the JITted function on the pipeline so it doesn't recompile on the 2nd run
+    if not hasattr(self, "_jitted_vocoder"):
+      self._jitted_vocoder = nnx.jit(lambda m, x: m(x))
+    
+    audio = self._jitted_vocoder(self.vocoder, generated_mel_spectrograms)
+    jax.block_until_ready(audio)
+    max_logging.log(f"⏱️ BWE Vocoder Execution Time: {time.time() - vocoder_start_time:.4f} seconds")
 
-      # Convert audio to numpy
-      audio = np.array(audio)
-    else:
-      audio = None
+    # Convert audio to numpy
+    audio = np.array(audio)
 
     return LTX2PipelineOutput(frames=video, audio=audio)
 

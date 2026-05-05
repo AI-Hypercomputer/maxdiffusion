@@ -36,7 +36,6 @@ audio_stg_scale: 1.0
 modality_scale: 3.0
 audio_modality_scale: 3.0
 use_cross_timestep: true
-generate_audio: True
 spatio_temporal_guidance_blocks: [28]
 fps: 24
 pipeline_type: multi-scale
