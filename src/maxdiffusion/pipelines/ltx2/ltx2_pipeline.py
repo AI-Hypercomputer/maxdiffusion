@@ -1359,11 +1359,12 @@ class LTX2Pipeline:
     audio_latents_jax = audio_latents
 
     import os
+    import torch
 
     home_dir = os.path.expanduser("~")
-    np.save(os.path.join(home_dir, "latents_jax.npy"), np.array(latents))
-    np.save(os.path.join(home_dir, "audio_latents_jax.npy"), np.array(audio_latents))
-    print(f"DEBUG: Saved initial latents to {home_dir}")
+    torch.save(torch.from_numpy(np.array(latents)).cpu(), os.path.join(home_dir, "latents_jax.pt"))
+    torch.save(torch.from_numpy(np.array(audio_latents)).cpu(), os.path.join(home_dir, "audio_latents_jax.pt"))
+    print(f"DEBUG: Saved initial latents to {home_dir} as .pt files")
 
     prompt_embeds_jax = prompt_embeds
     prompt_attention_mask_jax = prompt_attention_mask
