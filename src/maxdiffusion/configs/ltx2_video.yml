@@ -89,6 +89,8 @@ enable_profiler: False
 enable_ml_diagnostics: True
 profiler_gcs_path: "gs://mehdy/profiler/ml_diagnostics"
 enable_ondemand_xprof: True
+skip_first_n_steps_for_profiler: 0
+profiler_steps: 5
 
 replicate_vae: False
 
