@@ -1844,6 +1844,7 @@ def transformer_forward_pass(
         "scheduler_step",
         "logical_axis_rules",
         "use_cross_timestep",
+        "force_4way",
     ),
 )
 def run_diffusion_loop(
