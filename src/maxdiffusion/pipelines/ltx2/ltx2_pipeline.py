@@ -1640,20 +1640,22 @@ class LTX2Pipeline:
     # =======================================================================
 
     # Denormalize and Unpack Audio (Order important: Denorm THEN Unpack)
-    audio_latents = self._denormalize_audio_latents(
-        audio_latents_jax, self.audio_vae.latents_mean.value, self.audio_vae.latents_std.value
-    )
+    audio_latents = None
+    if getattr(self.config, "generate_audio", True) and self.audio_vae is not None:
+      audio_latents = self._denormalize_audio_latents(
+          audio_latents_jax, self.audio_vae.latents_mean.value, self.audio_vae.latents_std.value
+      )
 
-    num_mel_bins = self.audio_vae.config.mel_bins if getattr(self, "audio_vae", None) is not None else 64
-    latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
+      num_mel_bins = self.audio_vae.config.mel_bins
+      latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
 
-    audio_latents = self._unpack_audio_latents(
-        audio_latents, audio_num_frames, num_mel_bins=latent_mel_bins, num_channels=audio_channels
-    )
+      audio_latents = self._unpack_audio_latents(
+          audio_latents, audio_num_frames, num_mel_bins=latent_mel_bins, num_channels=audio_channels
+      )
 
-    # Audio VAE expects channels last (B, T, F, C) but unpack returns (B, C, T, F)
-    if audio_latents.ndim == 4:
-      audio_latents = audio_latents.transpose(0, 2, 3, 1)
+      # Audio VAE expects channels last (B, T, F, C) but unpack returns (B, C, T, F)
+      if audio_latents.ndim == 4:
+        audio_latents = audio_latents.transpose(0, 2, 3, 1)
 
     if output_type == "latent":
       return LTX2PipelineOutput(frames=latents, audio=audio_latents)
