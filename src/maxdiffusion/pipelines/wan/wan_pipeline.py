@@ -269,10 +269,13 @@ class WanPipeline:
 
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
+    torch_dtype = getattr(torch, str(config.weights_dtype), torch.float32)
     text_encoder = UMT5EncoderModel.from_pretrained(
         config.pretrained_model_name_or_path,
         subfolder="text_encoder",
+        torch_dtype=torch_dtype,
     )
+    text_encoder = torch.compile(text_encoder)
     return text_encoder
 
   @classmethod
@@ -501,24 +504,45 @@ class WanPipeline:
       negative_prompt_embeds: jax.Array = None,
   ):
     prompt = [prompt] if isinstance(prompt, str) else prompt
-    if prompt_embeds is None:
-      prompt_embeds = self._get_t5_prompt_embeds(
-          prompt=prompt,
-          num_videos_per_prompt=num_videos_per_prompt,
-          max_sequence_length=max_sequence_length,
-      )
-      prompt_embeds = jnp.array(prompt_embeds.detach().float().numpy(), dtype=jnp.float32)
+    batch_size = len(prompt)
 
-    if negative_prompt_embeds is None:
-      batch_size = len(prompt_embeds)
-      negative_prompt = negative_prompt or ""
-      negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-      negative_prompt_embeds = self._get_t5_prompt_embeds(
-          prompt=negative_prompt,
+    if negative_prompt is None:
+      negative_prompt = [""] * batch_size
+    elif isinstance(negative_prompt, str):
+      negative_prompt = [negative_prompt] * batch_size
+
+    use_batched_text_encoder = getattr(self.config, "use_batched_text_encoder", False)
+    if use_batched_text_encoder and prompt_embeds is None and negative_prompt_embeds is None:
+      # Batch both together
+      combined_prompts = prompt + negative_prompt
+      combined_embeds = self._get_t5_prompt_embeds(
+          prompt=combined_prompts,
           num_videos_per_prompt=num_videos_per_prompt,
           max_sequence_length=max_sequence_length,
       )
-      negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().float().numpy(), dtype=jnp.float32)
+      combined_embeds = jnp.array(combined_embeds.detach().float().numpy(), dtype=jnp.float32)
+
+      # Split back
+      prompt_embeds = combined_embeds[: batch_size * num_videos_per_prompt]
+      negative_prompt_embeds = combined_embeds[batch_size * num_videos_per_prompt :]
+
+    else:
+      # Fallback to separate encoding if one of them is already provided
+      if prompt_embeds is None:
+        prompt_embeds = self._get_t5_prompt_embeds(
+            prompt=prompt,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=max_sequence_length,
+        )
+        prompt_embeds = jnp.array(prompt_embeds.detach().float().numpy(), dtype=jnp.float32)
+
+      if negative_prompt_embeds is None:
+        negative_prompt_embeds = self._get_t5_prompt_embeds(
+            prompt=negative_prompt,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=max_sequence_length,
+        )
+        negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().float().numpy(), dtype=jnp.float32)
 
     return prompt_embeds, negative_prompt_embeds
 

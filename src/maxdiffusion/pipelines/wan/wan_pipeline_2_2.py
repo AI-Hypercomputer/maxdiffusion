@@ -151,6 +151,8 @@ class WanPipeline2_2(WanPipeline):
         negative_prompt_embeds,
         vae_only,
     )
+    latents.block_until_ready()
+    prompt_embeds.block_until_ready()
     trace["conditioning"] = time.perf_counter() - t_cond_start
 
     low_noise_graphdef, low_noise_state, low_noise_rest = nnx.split(self.low_noise_transformer, nnx.Param, ...)
@@ -191,6 +193,8 @@ class WanPipeline2_2(WanPipeline):
 
     t_decode_start = time.perf_counter()
     video = self._decode_latents_to_video(latents)
+    if hasattr(video, "block_until_ready"):
+      video.block_until_ready()
     trace["vae_decode"] = time.perf_counter() - t_decode_start
 
     return video, trace
@@ -470,6 +474,65 @@ def run_inference_2_2(
   first_profiling_step = config.skip_first_n_steps_for_profiler if config else 0
   profiler_steps = config.profiler_steps if config else 0
   last_profiling_step = np.clip(first_profiling_step + profiler_steps - 1, first_profiling_step, num_inference_steps - 1)
+
+  scan_diffusion_loop = getattr(config, "scan_diffusion_loop", False) if config else False
+
+  def high_noise_branch(ops):
+    model_latents_in, timestep_in = ops
+    return transformer_forward_pass(
+        high_noise_graphdef,
+        high_noise_state,
+        high_noise_rest,
+        model_latents_in,
+        timestep_in,
+        prompt_embeds_combined,
+        do_classifier_free_guidance,
+        guidance_scale_high,
+    )
+
+  def low_noise_branch(ops):
+    model_latents_in, timestep_in = ops
+    return transformer_forward_pass(
+        low_noise_graphdef,
+        low_noise_state,
+        low_noise_rest,
+        model_latents_in,
+        timestep_in,
+        prompt_embeds_combined,
+        do_classifier_free_guidance,
+        guidance_scale_low,
+    )
+
+  if scan_diffusion_loop:
+    timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
+
+    scheduler_state = scheduler_state.replace(last_sample=jnp.zeros_like(latents), step_index=jnp.array(0, dtype=jnp.int32))
+
+    def scan_body(carry, t):
+      current_latents, current_scheduler_state = carry
+
+      if do_classifier_free_guidance:
+        model_latents = jnp.concatenate([current_latents] * 2)
+      else:
+        model_latents = current_latents
+
+      timestep = jnp.broadcast_to(t, model_latents.shape[0])
+      use_high_noise = jnp.greater_equal(t, boundary)
+
+      noise_pred, latents_out = jax.lax.cond(use_high_noise, high_noise_branch, low_noise_branch, (model_latents, timestep))
+
+      new_latents, new_scheduler_state = scheduler.step(
+          current_scheduler_state, noise_pred, t, latents_out, return_dict=False
+      )
+
+      return (new_latents, new_scheduler_state), None
+
+    initial_carry = (latents, scheduler_state)
+
+    final_carry, _ = jax.lax.scan(scan_body, initial_carry, timesteps)
+
+    final_latents, _ = final_carry
+    return final_latents
 
   profiler = None
   for step in range(num_inference_steps):
