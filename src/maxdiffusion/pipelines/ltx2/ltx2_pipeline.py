@@ -1317,7 +1317,7 @@ class LTX2Pipeline:
     audio_channels = (
         self.audio_vae.config.latent_channels
         if hasattr(self.audio_vae, "config") and hasattr(self.audio_vae.config, "latent_channels")
-        else 8
+        else 128
     )
 
     duration_s = num_frames / frame_rate
@@ -1337,7 +1337,7 @@ class LTX2Pipeline:
           latents=audio_latents,
       )
     else:
-      audio_latents = jnp.zeros((batch_size, audio_channels, audio_num_frames), dtype=dtype)
+      audio_latents = jnp.zeros((batch_size, audio_num_frames, audio_channels), dtype=dtype)
 
     # 5. Prepare Timesteps
     sigmas = jnp.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
