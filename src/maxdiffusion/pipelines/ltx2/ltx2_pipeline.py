@@ -1371,8 +1371,9 @@ class LTX2Pipeline:
     do_cfg = guidance_scale > 1.0
     do_stg = stg_scale > 0.0
     force_4way = getattr(self.config, "model_name", "") == "ltx2.3"
+    use_4way = force_4way or (do_cfg and do_stg)
 
-    if force_4way or (do_cfg and do_stg):
+    if use_4way:
       negative_prompt_embeds_jax = negative_prompt_embeds
       negative_prompt_attention_mask_jax = negative_prompt_attention_mask
       if isinstance(prompt_embeds_jax, list):
