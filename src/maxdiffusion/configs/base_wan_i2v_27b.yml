@@ -44,6 +44,7 @@ activations_dtype: 'bfloat16'
 
 # Replicates vae across devices instead of using the model's sharding annotations for sharding.
 replicate_vae: False
+vae_spatial: -1 # default to total_device * 2 // (dp)
 
 # matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
 # Options are "DEFAULT", "HIGH", "HIGHEST"
@@ -52,6 +53,9 @@ replicate_vae: False
 precision: "DEFAULT"
 # Use jax.lax.scan for transformer layers
 scan_layers: True
+# Use jax.lax.scan for the diffusion loop (non-cache path only).
+# Note: Enabling this will disable per-step profiling.
+scan_diffusion_loop: False
 
 # if False state is not jitted and instead replicate is called. This is good for debugging on single host
 # It must be True for multi-host.
@@ -60,7 +64,7 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te, ring, ulysses
+attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom
 use_base2_exp: True
 use_experimental_scheduler: True
 flash_min_seq_length: 4096
@@ -69,7 +73,11 @@ dropout: 0.0
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
 # Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
 # However, when padding tokens are significant, this will lead to worse quality and should be set to True.
-mask_padding_tokens: True 
+mask_padding_tokens: True
+# Maxdiffusion has 2 types of attention sharding strategies:
+# 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
+# 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
+#    in cross attention q.
 attention_sharding_uniform: True
 
 flash_block_sizes: {
@@ -185,13 +193,13 @@ data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 # value to auto-shard based on available slices and devices.
 # By default, product of the DCN axes should equal number of slices
 # and product of the ICI axes should equal number of devices per slice.
-dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
-dcn_fsdp_parallelism: -1
-dcn_context_parallelism: 1
+dcn_data_parallelism: 1
+dcn_fsdp_parallelism: 1
+dcn_context_parallelism: -1  # recommended DCN axis to be auto-sharded
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
-ici_context_parallelism: 1
+ici_fsdp_parallelism: 1
+ici_context_parallelism: -1  # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 
 allow_split_physical_axes: False
@@ -318,12 +326,17 @@ boundary_ratio: 0.875
 
 # Diffusion CFG cache (FasterCache-style)
 use_cfg_cache: False
+
+# Batch positive and negative prompts in text encoder to save compute.
+use_batched_text_encoder: False
+
+
 # SenCache: Sensitivity-Aware Caching (arXiv:2602.24208)
 use_sen_cache: False
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
-num_inference_steps: 50
+num_inference_steps: 40
 fps: 16
 save_final_checkpoint: False
 

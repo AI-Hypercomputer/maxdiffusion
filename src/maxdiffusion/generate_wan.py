@@ -304,11 +304,11 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       f"{'=' * 50}",
       f"  Load (checkpoint):   {load_time:>7.1f}s",
       f"  Compile:             {compile_time:>7.1f}s",
-      f"  {'─' * 40}",
       f"  Inference:           {generation_time:>7.1f}s",
   ]
   if trace:
     summary.extend([
+        f"  {'─' * 40}",
         f"  Conditioning:        {trace.get('conditioning', 0.0):>7.1f}s",
         f"  Denoise Total:       {trace.get('denoise_total', 0.0):>7.1f}s",
         f"  VAE Decode:          {trace.get('vae_decode', 0.0):>7.1f}s",

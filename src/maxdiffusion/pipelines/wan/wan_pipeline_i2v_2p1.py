@@ -26,6 +26,7 @@ import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 import numpy as np
+import time
 from ... import max_utils
 
 
@@ -180,6 +181,9 @@ class WanPipelineI2V_2_1(WanPipeline):
       max_logging.log(f"Adjusted num_frames to: {num_frames}")
     num_frames = max(num_frames, 1)
 
+    trace = {}
+    t_cond_start = time.perf_counter()
+
     prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size = self._prepare_model_inputs_i2v(
         prompt,
         image,
@@ -222,6 +226,9 @@ class WanPipelineI2V_2_1(WanPipeline):
         last_image=last_image_tensor,
         num_videos_per_prompt=num_videos_per_prompt,
     )
+    latents.block_until_ready()
+    condition.block_until_ready()
+    trace["conditioning"] = time.perf_counter() - t_cond_start
 
     scheduler_state = self.scheduler.set_timesteps(
         self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
@@ -257,6 +264,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         config=self.config,
     )
 
+    t_denoise_start = time.perf_counter()
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       latents = p_run_inference(
           latents=latents,
@@ -268,10 +276,19 @@ class WanPipelineI2V_2_1(WanPipeline):
       )
       latents = jnp.transpose(latents, (0, 4, 1, 2, 3))
       latents = self._denormalize_latents(latents)
+      latents.block_until_ready()
+    trace["denoise_total"] = time.perf_counter() - t_denoise_start
 
     if output_type == "latent":
-      return latents
-    return self._decode_latents_to_video(latents)
+      return latents, trace
+
+    t_decode_start = time.perf_counter()
+    video = self._decode_latents_to_video(latents)
+    if hasattr(video, "block_until_ready"):
+      video.block_until_ready()
+    trace["vae_decode"] = time.perf_counter() - t_decode_start
+
+    return video, trace
 
 
 def run_inference_2_1_i2v(
@@ -316,6 +333,54 @@ def run_inference_2_1_i2v(
   first_profiling_step = config.skip_first_n_steps_for_profiler if config else 0
   profiler_steps = config.profiler_steps if config else 0
   last_profiling_step = np.clip(first_profiling_step + profiler_steps - 1, first_profiling_step, num_inference_steps - 1)
+
+  scan_diffusion_loop = getattr(config, "scan_diffusion_loop", False) if config else False
+
+  if scan_diffusion_loop and not use_magcache:
+    timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
+
+    scheduler_state = scheduler_state.replace(last_sample=jnp.zeros_like(latents), step_index=jnp.array(0, dtype=jnp.int32))
+
+    def scan_body(carry, t):
+      current_latents, current_scheduler_state = carry
+
+      latents_input = current_latents
+      if do_cfg:
+        latents_input = jnp.concatenate([current_latents, current_latents], axis=0)
+
+      latent_model_input = jnp.concatenate([latents_input, condition_combined], axis=-1)
+      timestep = jnp.broadcast_to(t, latents_input.shape[0])
+      latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
+
+      outputs = transformer_forward_pass(
+          graphdef,
+          sharded_state,
+          rest_of_state,
+          latent_model_input,
+          timestep,
+          prompt_embeds_combined,
+          do_classifier_free_guidance=do_cfg,
+          guidance_scale=guidance_scale,
+          encoder_hidden_states_image=image_embeds_combined,
+          skip_blocks=None,
+          cached_residual=None,
+          return_residual=False,
+      )
+      noise_pred, _ = outputs
+
+      noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
+      new_latents, new_scheduler_state = scheduler.step(
+          current_scheduler_state, noise_pred, t, current_latents, return_dict=False
+      )
+
+      return (new_latents, new_scheduler_state), None
+
+    initial_carry = (latents, scheduler_state)
+
+    final_carry, _ = jax.lax.scan(scan_body, initial_carry, timesteps)
+
+    final_latents, _ = final_carry
+    return final_latents
 
   profiler = None
   for step in range(num_inference_steps):
