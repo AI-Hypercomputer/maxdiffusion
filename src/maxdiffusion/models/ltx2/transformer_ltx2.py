@@ -465,7 +465,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
             hidden_states=norm_audio_hidden_states,
             encoder_hidden_states=None,
             rotary_emb=audio_rotary_emb,
-            perturbation_mask=perturbation_mask if self.perturbed_attn else None,
+            perturbation_mask=perturbation_mask,
         )
       audio_hidden_states = audio_hidden_states + attn_audio_hidden_states * audio_gate_msa
 
