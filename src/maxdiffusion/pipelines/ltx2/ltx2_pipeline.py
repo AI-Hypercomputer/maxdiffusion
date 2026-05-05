@@ -1481,7 +1481,6 @@ class LTX2Pipeline:
             self.scheduler.step,
             tuple(tuple(rule) if isinstance(rule, list) else rule for rule in self.config.logical_axis_rules),
             use_cross_timestep=use_cross_timestep,
-            force_4way=force_4way,
         )
       else:
         # Old Python loop path
@@ -1747,7 +1746,7 @@ class LTX2Pipeline:
         "fps",
         "global_batch_size",
         "use_cross_timestep",
-        "is_4way",
+        "is_cfg_stg_mode",
     ),
 )
 def transformer_forward_pass(
@@ -1771,7 +1770,7 @@ def transformer_forward_pass(
     sigma=None,
     audio_sigma=None,
     use_cross_timestep=False,
-    is_4way: bool = False,
+    is_cfg_stg_mode: bool = False,
 ):
   transformer = nnx.merge(graphdef, state)
 
@@ -1788,7 +1787,7 @@ def transformer_forward_pass(
   else:
     audio_sigma = jnp.expand_dims(audio_sigma, 0).repeat(latents.shape[0])
 
-  if is_4way:
+  if is_cfg_stg_mode:
     # 4-way split layout: [Uncond, Cond, Perturb, Isolated]
     ones_mask = jnp.ones((global_batch_size, 1, 1), dtype=latents.dtype)
     zeros_mask = jnp.zeros((global_batch_size, 1, 1), dtype=latents.dtype)
