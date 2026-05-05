@@ -1590,15 +1590,15 @@ class LTX2Pipeline:
 
     # 8. Decode Latents
     decode_start = time.time()
-    if do_cfg and do_stg:
+    if use_4way:
       latents_jax = latents_jax[batch_size : 2 * batch_size]
       audio_latents_jax = audio_latents_jax[batch_size : 2 * batch_size]
     elif do_cfg:
       latents_jax = latents_jax[batch_size:]
       audio_latents_jax = audio_latents_jax[batch_size:]
-    elif do_stg:
-      latents_jax = latents_jax[:batch_size]
-      audio_latents_jax = audio_latents_jax[:batch_size]
+    else:
+      latents_jax = latents_jax
+      audio_latents_jax = audio_latents_jax
 
     # Unpack and Denormalize Video
     latents = self._unpack_latents(
