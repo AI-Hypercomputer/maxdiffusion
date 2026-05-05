@@ -1362,10 +1362,8 @@ class LTX2Pipeline:
 
     do_cfg = guidance_scale > 1.0
     do_stg = stg_scale > 0.0
-    force_4way = getattr(self.config, "model_name", "") == "ltx2.3"
-    use_4way = force_4way or (do_cfg and do_stg)
 
-    if use_4way:
+    if do_cfg and do_stg:
       negative_prompt_embeds_jax = negative_prompt_embeds
       negative_prompt_attention_mask_jax = negative_prompt_attention_mask
       if isinstance(prompt_embeds_jax, list):
@@ -1583,7 +1581,7 @@ class LTX2Pipeline:
 
     # 8. Decode Latents
     decode_start = time.time()
-    if use_4way:
+    if do_cfg and do_stg:
       latents_jax = latents_jax[batch_size : 2 * batch_size]
       audio_latents_jax = audio_latents_jax[batch_size : 2 * batch_size]
     elif do_cfg:
@@ -1832,7 +1830,6 @@ def transformer_forward_pass(
         "scheduler_step",
         "logical_axis_rules",
         "use_cross_timestep",
-        "force_4way",
     ),
 )
 def run_diffusion_loop(
@@ -1865,7 +1862,6 @@ def run_diffusion_loop(
     logical_axis_rules,
     perturbation_mask=None,
     use_cross_timestep=False,
-    force_4way=False,
 ):
   latents_jax = latents_jax.astype(jnp.float32)
   audio_latents_jax = audio_latents_jax.astype(jnp.float32)
@@ -1873,7 +1869,6 @@ def run_diffusion_loop(
 
   do_cfg = guidance_scale > 1.0
   do_stg = stg_scale > 0.0
-  use_4way = force_4way or (do_cfg and do_stg)
 
   # Helper functions matching Diffusers Delta formulation
   def convert_to_x0(lat, vel, sigma_t):
@@ -1917,11 +1912,11 @@ def run_diffusion_loop(
           sigma=sigma_t,
           audio_sigma=sigma_t,
           use_cross_timestep=use_cross_timestep,
-          is_4way=use_4way,
+          is_cfg_stg_mode=do_cfg and do_stg,
       )
 
       # Extract latents_step based on stacking strategy
-      if use_4way:
+      if do_cfg and do_stg:
         latents_step = latents[batch_size : 2 * batch_size]
         audio_latents_step = audio_latents[batch_size : 2 * batch_size]
       elif do_cfg:
@@ -1932,7 +1927,7 @@ def run_diffusion_loop(
         audio_latents_step = audio_latents
 
       # Apply Diffusers STG + CFG + Modality Delta Logic
-      if use_4way:
+      if do_cfg and do_stg:
         noise_pred_uncond, noise_pred_text, noise_pred_perturb, noise_pred_isolated = jnp.split(noise_pred, 4, axis=0)
         
         # Convert to x0
@@ -1987,7 +1982,7 @@ def run_diffusion_loop(
       audio_latents_step, _ = scheduler_step(s_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
       audio_latents_step = audio_latents_step.astype(audio_latents.dtype)
 
-      if use_4way:
+      if do_cfg and do_stg:
         latents_next = jnp.concatenate([latents_step] * 4, axis=0)
         audio_latents_next = jnp.concatenate([audio_latents_step] * 4, axis=0)
       elif do_cfg:
