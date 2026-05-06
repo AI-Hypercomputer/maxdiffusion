@@ -312,13 +312,16 @@ class LTX2Pipeline:
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
     max_logging.log("Loading Gemma3 Text Encoder...")
+    torch_dtype = getattr(torch, str(config.weights_dtype), torch.float32)
     text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
         config.pretrained_model_name_or_path,
         subfolder="text_encoder",
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch_dtype,
     )
     text_encoder.eval()
+    text_encoder = torch.compile(text_encoder)
     return text_encoder
+
 
   @classmethod
   def load_connectors(cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters):
