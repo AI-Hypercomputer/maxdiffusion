@@ -105,9 +105,15 @@ class FluxTrainer(FluxCheckpointer):
       data_iterator = self.load_dataset(pipeline, params, train_states)
       if self.config.dataset_type == "grain":
         data_iterator = self.restore_data_iterator_state(data_iterator)
-
+      
       # don't need this anymore, clear some memory.
       del pipeline.t5_encoder
+      del pipeline.clip_encoder
+      del pipeline.clip_tokenizer
+      del pipeline.t5_tokenizer
+      del pipeline.vae
+      del state_shardings[VAE_STATE_SHARDINGS_KEY]
+      
 
       # evaluate shapes
 
@@ -121,10 +127,11 @@ class FluxTrainer(FluxCheckpointer):
           checkpoint_item_name=FLUX_STATE_KEY,
           is_training=True,
       )
+      
       flux_state = jax.device_put(flux_state, flux_state_mesh_shardings)
       train_states[FLUX_STATE_KEY] = flux_state
       state_shardings[FLUX_STATE_SHARDINGS_KEY] = flux_state_mesh_shardings
-      # self.post_training_steps(pipeline, params, train_states, msg="before_training")
+      
 
       # Create scheduler
       noise_scheduler, noise_scheduler_state = self.create_scheduler(pipeline, params)
@@ -140,7 +147,7 @@ class FluxTrainer(FluxCheckpointer):
       p_train_step = self.compile_train_step(pipeline, params, train_states, state_shardings, data_shardings)
       # Start training
       train_states = self.training_loop(
-          p_train_step, pipeline, params, train_states, data_iterator, flux_learning_rate_scheduler
+          p_train_step, pipeline, params, train_states, data_iterator, data_shardings, flux_learning_rate_scheduler
       )
       # 6. save final checkpoint
       # Hook
@@ -320,12 +327,21 @@ class FluxTrainer(FluxCheckpointer):
       max_logging.log("Precompiling...")
       s = time.time()
       dummy_batch = self.get_shaped_batch(self.config, pipeline)
-      p_train_step = p_train_step.lower(train_states[FLUX_STATE_KEY], dummy_batch, train_rngs)
+      abstract_flux_state = jax.tree_util.tree_map(
+          lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype), 
+          train_states[FLUX_STATE_KEY]
+      )
+      
+      abstract_rngs = jax.tree_util.tree_map(
+          lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype), 
+          train_rngs
+      )
+      p_train_step = p_train_step.lower(abstract_flux_state, dummy_batch, abstract_rngs)
       p_train_step = p_train_step.compile()
       max_logging.log(f"Compile time: {(time.time() - s )}")
       return p_train_step
 
-  def training_loop(self, p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler):
+  def training_loop(self, p_train_step, pipeline, params, train_states, data_iterator, data_shardings, unet_learning_rate_scheduler):
     writer = max_utils.initialize_summary_writer(self.config)
     flux_state = train_states[FLUX_STATE_KEY]
     num_model_parameters = max_utils.calculate_num_params_from_pytree(flux_state.params)
@@ -360,7 +376,12 @@ class FluxTrainer(FluxCheckpointer):
         self._profiler.start()
 
       example_batch = load_next_batch(data_iterator, example_batch, self.config)
-      example_batch = {key: jnp.asarray(value, dtype=self.config.activations_dtype) for key, value in example_batch.items()}
+      example_batch = {
+          key: jax.device_put(
+              jnp.asarray(value, dtype=self.config.activations_dtype),
+              data_shardings[key]
+          ) for key, value in example_batch.items()
+      }
 
       if self.config.profiler == "nsys":
         with self.mesh:

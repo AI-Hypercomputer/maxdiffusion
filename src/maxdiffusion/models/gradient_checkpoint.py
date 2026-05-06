@@ -21,6 +21,8 @@ import jax
 from jax import checkpoint_policies as cp
 from flax import nnx
 
+import flax.linen as linen_nn
+
 SKIP_GRADIENT_CHECKPOINT_KEY = "skip"
 
 
@@ -109,3 +111,32 @@ class GradientCheckpointType(Enum):
     if policy == SKIP_GRADIENT_CHECKPOINT_KEY:
       return module
     return nnx.remat(module, prevent_cse=prevent_cse, policy=policy, static_argnums=static_argnums)  # pylint: disable=invalid-name
+
+  def apply_linen(
+        self,
+        module_class: type[linen_nn.Module],
+        names_which_can_be_saved: list = [],
+        names_which_can_be_offloaded: list = [],
+        static_argnums=(),
+        prevent_cse: bool = False,
+    ) -> type[linen_nn.Module]:
+      """
+      Applies a gradient checkpoint policy to a Linen module class.
+      If no policy is needed, it will return the module class as is.
+
+      Args:
+          module_class: the Linen Module class to apply the policy to
+
+      Returns:
+          The rematerialized Module class (or the original if no policy).
+      """
+      policy = self.to_jax_policy(names_which_can_be_saved, names_which_can_be_offloaded)
+      if policy == SKIP_GRADIENT_CHECKPOINT_KEY:
+        return module_class
+      
+      return linen_nn.remat(
+          module_class, 
+          prevent_cse=prevent_cse, 
+          policy=policy, 
+          static_argnums=static_argnums
+      )
