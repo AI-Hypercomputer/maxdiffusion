@@ -29,6 +29,9 @@ from ...embeddings_flax import (FluxPosEmbed, CombinedTimestepGuidanceTextProjEm
 from .... import common_types
 from ....common_types import BlockSizes
 from ....utils import BaseOutput
+from ...gradient_checkpoint import GradientCheckpointType
+from jax import checkpoint_policies as cp
+from jax.ad_checkpoint import checkpoint_name
 
 AxisNames = common_types.AxisNames
 BATCH = common_types.BATCH
@@ -115,21 +118,35 @@ class FluxSingleTransformerBlock(nn.Module):
   def __call__(self, hidden_states, temb, image_rotary_emb=None):
     residual = hidden_states
     norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
-    qkv, mlp = jnp.split(self.linear1(norm_hidden_states), [3 * self.dim], axis=-1)
-    mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
-    qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
+    norm_hidden_states =self.linear1(norm_hidden_states)
+    norm_hidden_states = checkpoint_name(norm_hidden_states, "lin1_norm_hidden_states")
+    #jax.debug.print("norm_hidden_states shape: {x}",x=norm_hidden_states.shape)
+
+    qkv, mlp = jnp.split(norm_hidden_states, [3 * self.dim], axis=-1)
+    #qkv shape: (8, 4608, 9216)  (Array(8, dtype=int32), Array(4608, dtype=int32), Array(9216, dtype=int32))
+    #mlp shape: (8, 4608, 12288) (Array(8, dtype=int32), Array(4608, dtype=int32), Array(12288, dtype=int32))
+    #jax.debug.print("qkv shape: {x}",x=qkv.shape)
+    #jax.debug.print("mlp shape: {x}",x=mlp.shape)
+    # breakpoint()
+    # jax.debug.print("qkv sharded shape: {shd}", shd=qkv.sharding.shard_shape(qkv.shape))
+    # jax.debug.print("mlp sharded shape: {shd}", shd=mlp.sharding.shard_shape(mlp.shape))
+    #jax.debug.inspect_array_sharding(qkv, callback=lambda s: print(f"qkv sharding: {s}"))
+    #jax.debug.inspect_array_sharding(mlp, callback=lambda s: print(f"mlp sharding: {s}"))
+    #mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
+    #qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
 
     B, L = hidden_states.shape[:2]
     H, D, K = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3), 3
     qkv_proj = qkv.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
     q, k, v = qkv_proj
+    #jax.debug.print("q shape: {x}",x=q.shape)
+    #jax.debug.print("k shape: {x}",x=k.shape)
+    #jax.debug.print("v shape: {x}",x=v.shape) 
 
     q = self.attn.query_norm(q)
     k = self.attn.key_norm(k)
 
     if image_rotary_emb is not None:
-      # since this function returns image_rotary_emb and passes it between layers,
-      # we do not want to modify it
       image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
       q, k = apply_rope(q, k, image_rotary_emb_reordered)
 
@@ -138,10 +155,13 @@ class FluxSingleTransformerBlock(nn.Module):
     v = v.transpose(0, 2, 1, 3).reshape(v.shape[0], v.shape[2], -1)
 
     attn_output = self.attn.attention_op.apply_attention(q, k, v)
+    #jax.debug.print("attn_output shape: {x}",x=attn_output.shape)
 
     attn_mlp = jnp.concatenate([attn_output, self.mlp_act(mlp)], axis=2)
-    attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
+    #jax.debug.print("attn_output shape after concat: {x}",x=attn_output.shape)
+    #attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
     hidden_states = self.linear2(attn_mlp)
+    #jax.debug.print("hidden_states shape: {x}",x=hidden_states.shape)
     hidden_states = gate * hidden_states
     hidden_states = residual + hidden_states
     if hidden_states.dtype == jnp.float16:
@@ -153,22 +173,12 @@ class FluxSingleTransformerBlock(nn.Module):
 class FluxTransformerBlock(nn.Module):
   r"""
   A Transformer block following the MMDiT architecture, introduced in Stable Diffusion 3.
-
-  Reference: https://arxiv.org/abs/2403.03206
-
-  Parameters:
-      dim (`int`): The number of channels in the input and output.
-      num_attention_heads (`int`): The number of heads to use for multi-head attention.
-      attention_head_dim (`int`): The number of channels in each head.
-      context_pre_only (`bool`): Boolean to determine if we should add some blocks associated with the
-          processing of `context` conditions.
   """
-
   dim: int
   num_attention_heads: int
   attention_head_dim: int
   qk_norm: str = "rms_norm"
-  eps: int = 1e-6
+  eps: float = 1e-6
   flash_min_seq_length: int = 4096
   flash_block_sizes: BlockSizes = None
   mesh: jax.sharding.Mesh = None
@@ -253,18 +263,12 @@ class FluxTransformerBlock(nn.Module):
         ),
     ])
 
-    # let chunk size default to None
-    self._chunk_size = None
-    self._chunk_dim = 0
-
   def __call__(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb=None):
     norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.img_norm1(hidden_states, emb=temb)
-
     norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.txt_norm1(
         encoder_hidden_states, emb=temb
     )
 
-    # Attention.
     attn_output, context_attn_output = self.attn(
         hidden_states=norm_hidden_states,
         encoder_hidden_states=norm_encoder_hidden_states,
@@ -280,7 +284,6 @@ class FluxTransformerBlock(nn.Module):
     ff_output = gate_mlp * ff_output
 
     hidden_states = hidden_states + ff_output
-    # Process attention outputs for the `encoder_hidden_states`.
     context_attn_output = c_gate_msa * context_attn_output
     encoder_hidden_states = encoder_hidden_states + context_attn_output
 
@@ -293,34 +296,46 @@ class FluxTransformerBlock(nn.Module):
       encoder_hidden_states = encoder_hidden_states.clip(-65504, 65504)
     return hidden_states, encoder_hidden_states
 
+class ScannedDoubleBlockWrapper(nn.Module):
+    block_kwargs: dict
+    
+    @nn.compact
+    def __call__(self, carry, _):
+        hidden_states, encoder_hidden_states, temb, image_rotary_emb = carry
+        
+        # Instantiate the pure block (no remat here)
+        block = FluxTransformerBlock(**self.block_kwargs)
+        
+        h_out, e_out = block(
+            hidden_states=hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            temb=temb,
+            image_rotary_emb=image_rotary_emb,
+        )
+        return (h_out, e_out, temb, image_rotary_emb), None
+
+
+class ScannedSingleBlockWrapper(nn.Module):
+    block_kwargs: dict
+    
+    @nn.compact
+    def __call__(self, carry, _):
+        hidden_states, temb, image_rotary_emb = carry
+        
+        # Instantiate the pure block
+        block = FluxSingleTransformerBlock(**self.block_kwargs)
+        h_out = block(
+            hidden_states=hidden_states, 
+            temb=temb, 
+            image_rotary_emb=image_rotary_emb
+        )
+        return (h_out, temb, image_rotary_emb), None
 
 @flax_register_to_config
 class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   r"""
   The Transformer model introduced in Flux.
-
-  Reference: https://blackforestlabs.ai/announcing-black-forest-labs/
-
-  This model inherits from [`FlaxModelMixin`]. Check the superclass documentation for it's generic methods
-  implemented for all models (such as downloading or saving).
-
-  This model is also a Flax Linen [flax.linen.Module](https://flax.readthedocs.io/en/latest/flax.linen.html#module)
-  subclass. Use it as a regular Flax Linen module and refer to the Flax documentation for all matters related to its
-  general usage and behavior.
-
-  Parameters:
-      patch_size (`int`): Patch size to turn the input data into small patches.
-      in_channels (`int`, *optional*, defaults to 16): The number of channels in the input.
-      num_layers (`int`, *optional*, defaults to 18): The number of layers of MMDiT blocks to use.
-      num_single_layers (`int`, *optional*, defaults to 18): The number of layers of single DiT blocks to use.
-      attention_head_dim (`int`, *optional*, defaults to 64): The number of channels in each head.
-      num_attention_heads (`int`, *optional*, defaults to 18): The number of heads to use for multi-head attention.
-      joint_attention_dim (`int`, *optional*): The number of `encoder_hidden_states` dimensions to use.
-      pooled_projection_dim (`int`): Number of dimensions to use when projecting the `pooled_projections`.
-      guidance_embeds (`bool`, defaults to False): Whether to use guidance embeddings.
-
   """
-
   patch_size: int = 1
   in_channels: int = 64
   num_layers: int = 19
@@ -341,7 +356,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   qkv_bias: bool = True
   theta: int = 1000
   attention_kernel: str = "dot_product"
-  eps = 1e-6
+  eps: float = 1e-6
+  remat_policy: str = "None"
 
   def setup(self):
     self.out_channels = self.in_channels
@@ -377,43 +393,66 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         precision=self.precision,
     )
 
-    double_blocks = []
-    for _ in range(self.num_layers):
-      double_block = FluxTransformerBlock(
-          dim=self.inner_dim,
-          num_attention_heads=self.num_attention_heads,
-          attention_head_dim=self.attention_head_dim,
-          attention_kernel=self.attention_kernel,
-          flash_min_seq_length=self.flash_min_seq_length,
-          flash_block_sizes=self.flash_block_sizes,
-          mesh=self.mesh,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-          precision=self.precision,
-          mlp_ratio=self.mlp_ratio,
-          qkv_bias=self.qkv_bias,
-      )
-      double_blocks.append(double_block)
-    self.double_blocks = double_blocks
+    self.gradient_checkpoint = GradientCheckpointType.from_str(self.remat_policy)
 
-    single_blocks = []
-    for _ in range(self.num_single_layers):
-      single_block = FluxSingleTransformerBlock(
-          dim=self.inner_dim,
-          num_attention_heads=self.num_attention_heads,
-          attention_head_dim=self.attention_head_dim,
-          attention_kernel=self.attention_kernel,
-          flash_min_seq_length=self.flash_min_seq_length,
-          flash_block_sizes=self.flash_block_sizes,
-          mesh=self.mesh,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-          precision=self.precision,
-          mlp_ratio=self.mlp_ratio,
-      )
-      single_blocks.append(single_block)
+    # 2. Apply the policy to the Module classes
+    #RematDoubleBlock = self.gradient_checkpoint.apply_linen(FluxTransformerBlock)
+    #RematSingleBlock = self.gradient_checkpoint.apply_linen(FluxSingleTransformerBlock)
 
-    self.single_blocks = single_blocks
+    # 1. Prepare the kwargs for the double blocks
+    double_kwargs = {
+        'dim': self.inner_dim,
+        'num_attention_heads': self.num_attention_heads,
+        'attention_head_dim': self.attention_head_dim,
+        'attention_kernel': self.attention_kernel,
+        'flash_min_seq_length': self.flash_min_seq_length,
+        'flash_block_sizes': self.flash_block_sizes,
+        'mesh': self.mesh,
+        'dtype': self.dtype,
+        'weights_dtype': self.weights_dtype,
+        'precision': self.precision,
+        'mlp_ratio': self.mlp_ratio,
+        'qkv_bias': self.qkv_bias,
+    }
+
+    # 2. Force strict checkpointing on the Double Wrapper
+    #RemattedDoubleWrapper = nn.remat(ScannedDoubleBlockWrapper, prevent_cse=True, policy=cp.checkpoint_dots_with_no_batch_dims)
+    RemattedDoubleWrapper = nn.remat(ScannedDoubleBlockWrapper, prevent_cse=True, policy=cp.save_any_names_but_these("lin1_norm_hidden_states"))
+
+    self.scanned_double_blocks = nn.scan(
+        RemattedDoubleWrapper,
+        variable_axes={'params': 0},
+        split_rngs={'params': True, 'dropout': True},
+        length=self.num_layers,
+        metadata_params={'partition_name': None}
+    )(block_kwargs=double_kwargs)
+
+    # 3. Define pure kwargs for single blocks
+    single_kwargs = {
+        'dim': self.inner_dim,
+        'num_attention_heads': self.num_attention_heads,
+        'attention_head_dim': self.attention_head_dim,
+        'attention_kernel': self.attention_kernel,
+        'flash_min_seq_length': self.flash_min_seq_length,
+        'flash_block_sizes': self.flash_block_sizes,
+        'mesh': self.mesh,
+        'dtype': self.dtype,
+        'weights_dtype': self.weights_dtype,
+        'precision': self.precision,
+        'mlp_ratio': self.mlp_ratio,
+    }
+
+    # 4. Force strict checkpointing on the Single Wrapper
+    #RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.checkpoint_dots_with_no_batch_dims)
+    RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.save_any_names_but_these("lin1_norm_hidden_states"))
+
+    self.scanned_single_blocks = nn.scan(
+        RemattedSingleWrapper,
+        variable_axes={'params': 0},
+        split_rngs={'params': True, 'dropout': True},
+        length=self.num_single_layers,
+        metadata_params={'partition_name': None}
+    )(block_kwargs=single_kwargs)
 
     self.norm_out = AdaLayerNormContinuous(
         self.inner_dim,
@@ -478,7 +517,6 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   ):
     hidden_states = self.img_in(hidden_states)
     timestep = self.timestep_embedding(timestep, 256)
-
     timestep = nn.with_logical_constraint(timestep, ("activation_batch", None))
 
     if self.guidance_embeds:
@@ -504,17 +542,18 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     image_rotary_emb = self.pe_embedder(ids)
     image_rotary_emb = nn.with_logical_constraint(image_rotary_emb, (None, None))
 
-    for double_block in self.double_blocks:
-      hidden_states, encoder_hidden_states = double_block(
-          hidden_states=hidden_states,
-          encoder_hidden_states=encoder_hidden_states,
-          temb=temb,
-          image_rotary_emb=image_rotary_emb,
-      )
+    carry = (hidden_states, encoder_hidden_states, temb, image_rotary_emb)
+    carry, _ = self.scanned_double_blocks(carry, None)
+    hidden_states, encoder_hidden_states, _, _ = carry
+
     hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
     hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
-    for single_block in self.single_blocks:
-      hidden_states = single_block(hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb)
+    
+    # Execute the 38 Single Blocks
+    carry = (hidden_states, temb, image_rotary_emb)
+    carry, _ = self.scanned_single_blocks(carry, None)
+    hidden_states, _, _ = carry
+
     hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
     hidden_states = self.norm_out(hidden_states, temb)
@@ -532,24 +571,23 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     batch_size = 1 * num_devices
     batch_image_shape = (
         batch_size,
-        16,  # 16 to match jflux.get_noise
+        16, 
         2 * resolution // scale_factor,
         2 * resolution // scale_factor,
     )
-    # bs, encoder_input, seq_length
     text_shape = (
         batch_size,
         max_sequence_length,
-        4096,  # Sequence length of text encoder, how to get this programmatically?
+        4096, 
     )
     text_ids_shape = (
         batch_size,
         max_sequence_length,
-        3,  # Hardcoded to match jflux.prepare
+        3, 
     )
     vec_shape = (
         batch_size,
-        768,  # Sequence length of clip, how to get this programmatically?
+        768, 
     )
     img = jnp.zeros(batch_image_shape, dtype=self.dtype)
     bs, _, h, w = img.shape
@@ -561,11 +599,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     txt = jnp.zeros(text_shape, dtype=self.dtype)
     txt_ids = jnp.zeros(text_ids_shape, dtype=self.dtype)
-
     t_vec = jnp.full(bs, 0, dtype=self.dtype)
-
     vec = jnp.zeros(vec_shape, dtype=self.dtype)
-
     guidance_vec = jnp.full(bs, 4.0, dtype=self.dtype)
 
     if eval_only:
