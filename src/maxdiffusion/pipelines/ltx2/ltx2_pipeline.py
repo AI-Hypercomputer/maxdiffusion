@@ -319,8 +319,13 @@ class LTX2Pipeline:
         torch_dtype=torch_dtype,
     )
     text_encoder.eval()
+    # Limit PyTorch CPU threads to avoid resource contention with JAX compilation on CPU
+    torch.set_num_threads(8)
+    torch.set_num_interop_threads(8)
+
     text_encoder = torch.compile(text_encoder)
     return text_encoder
+
 
 
   @classmethod
