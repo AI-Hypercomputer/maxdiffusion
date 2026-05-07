@@ -73,18 +73,18 @@ mask_padding_tokens: True
 #    in cross attention q.
 attention_sharding_uniform: True 
 
-flash_block_sizes: {}
+#flash_block_sizes: {}
 # Use the following flash_block_sizes on v6e (Trillium) due to larger vmem.
-# flash_block_sizes: {
-#   "block_q" : 1536,
-#   "block_kv_compute" : 1536,
-#   "block_kv" : 1536,
-#   "block_q_dkv" : 1536,
-#   "block_kv_dkv" : 1536,
-#   "block_kv_dkv_compute" : 1536,
-#   "block_q_dq" : 1536,
-#   "block_kv_dq" : 1536
-# }
+flash_block_sizes: {
+  "block_q" : 1536,
+  "block_kv_compute" : 1536,
+  "block_kv" : 1536,
+  "block_q_dkv" : 1536,
+  "block_kv_dkv" : 1536,
+  "block_kv_dkv_compute" : 1536,
+  "block_q_dq" : 1536,
+  "block_kv_dq" : 1536
+}
 # GroupNorm groups
 norm_num_groups: 32
 
