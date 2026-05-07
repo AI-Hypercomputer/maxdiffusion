@@ -1437,8 +1437,8 @@ class LTX2Pipeline:
         audio_pt = torch.load(pt_audio_path)
         mask_pt = torch.load(pt_mask_path)
 
-        video_uncond, video_cond = jnp.split(jnp.array(video_pt.numpy(), dtype=dtype), 2, axis=0)
-        audio_uncond, audio_cond = jnp.split(jnp.array(audio_pt.numpy(), dtype=dtype), 2, axis=0)
+        video_uncond, video_cond = jnp.split(jnp.array(video_pt.float().numpy(), dtype=dtype), 2, axis=0)
+        audio_uncond, audio_cond = jnp.split(jnp.array(audio_pt.float().numpy(), dtype=dtype), 2, axis=0)
         mask_uncond, mask_cond = jnp.split(jnp.array(mask_pt.numpy(), dtype=jnp.bool_), 2, axis=0)
 
         if do_cfg and do_stg:
