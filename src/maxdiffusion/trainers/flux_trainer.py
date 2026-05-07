@@ -47,6 +47,8 @@ from maxdiffusion.maxdiffusion_utils import calculate_flux_tflops
 
 from ..schedulers import (FlaxEulerDiscreteScheduler)
 
+import tensorflow as tf
+
 
 class FluxTrainer(FluxCheckpointer):
   _profiler: max_utils.Profiler | None = None
@@ -254,6 +256,28 @@ class FluxTrainer(FluxCheckpointer):
     total_train_batch_size = self.total_train_batch_size
     mesh = self.mesh
 
+    feature_description = {
+      "pixel_values": tf.io.FixedLenFeature([], tf.string),
+      "input_ids": tf.io.FixedLenFeature([], tf.string),
+      "text_embeds": tf.io.FixedLenFeature([], tf.string),
+      "prompt_embeds": tf.io.FixedLenFeature([], tf.string),
+      "img_ids": tf.io.FixedLenFeature([], tf.string),  
+    }
+
+    def prepare_sample_train(features):
+      pixel_values = tf.io.parse_tensor(features["pixel_values"], out_type=tf.bfloat16)
+      input_ids = tf.io.parse_tensor(features["input_ids"], out_type=tf.bfloat16)
+      text_embeds = tf.io.parse_tensor(features["text_embeds"], out_type=tf.float32)
+      prompt_embeds = tf.io.parse_tensor(features["prompt_embeds"], out_type=tf.float32)
+      img_ids = tf.io.parse_tensor(features["img_ids"], out_type=tf.float32)
+      return {
+        "pixel_values": pixel_values,
+        "input_ids": input_ids,
+        "text_embeds": text_embeds,
+        "prompt_embeds": prompt_embeds,
+        "image_ids": image_ids,
+      }
+
     # If using synthetic data
     if config.dataset_type == "synthetic":
       return make_data_iterator(
@@ -262,6 +286,8 @@ class FluxTrainer(FluxCheckpointer):
           jax.process_count(),
           mesh,
           total_train_batch_size,
+          feature_description=feature_description,
+          prepare_sample_fn=prepare_sample_train,
           pipeline=pipeline,  # Pass pipeline to extract dimensions
           is_training=True,
       )
@@ -290,6 +316,28 @@ class FluxTrainer(FluxCheckpointer):
         prepare_latent_imgage_ids=prepare_latent_image_ids_p,
     )
 
+    feature_description = {
+      "pixel_values": tf.io.FixedLenFeature([], tf.string),
+      "input_ids": tf.io.FixedLenFeature([], tf.string),
+      "text_embeds": tf.io.FixedLenFeature([], tf.string),
+      "prompt_embeds": tf.io.FixedLenFeature([], tf.string),
+      "img_ids": tf.io.FixedLenFeature([], tf.string),  
+    }
+
+    def prepare_sample_train(features):
+      pixel_values = tf.io.parse_tensor(features["pixel_values"], out_type=tf.bfloat16)
+      input_ids = tf.io.parse_tensor(features["input_ids"], out_type=tf.bfloat16)
+      text_embeds = tf.io.parse_tensor(features["text_embeds"], out_type=tf.float32)
+      prompt_embeds = tf.io.parse_tensor(features["prompt_embeds"], out_type=tf.float32)
+      img_ids = tf.io.parse_tensor(features["img_ids"], out_type=tf.float32)
+      return {
+        "pixel_values": pixel_values,
+        "input_ids": input_ids,
+        "text_embeds": text_embeds,
+        "prompt_embeds": prompt_embeds,
+        "img_ids": img_ids,
+      }
+
     data_iterator = make_data_iterator(
         config,
         jax.process_index(),
@@ -298,6 +346,8 @@ class FluxTrainer(FluxCheckpointer):
         total_train_batch_size,
         tokenize_fn=tokenize_fn,
         image_transforms_fn=image_transforms_fn,
+        feature_description=feature_description,
+        prepare_sample_fn=prepare_sample_train,
     )
 
     return data_iterator
