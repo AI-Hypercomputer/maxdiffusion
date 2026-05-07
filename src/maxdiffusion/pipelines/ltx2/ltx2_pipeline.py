@@ -1423,6 +1423,33 @@ class LTX2Pipeline:
       jax.block_until_ready(video_embeds)
       max_logging.log(f"⏱️ Connectors Time: {time.time() - connectors_start:.4f} seconds")
 
+      # Diagnostic Transformer Isolation Test: Load/overwrite connector inputs from PyTorch
+      import os
+      import torch
+      home_dir = os.path.expanduser("~")
+      pt_video_path = os.path.join(home_dir, "pt_video_prompt_embeds.pt")
+      pt_audio_path = os.path.join(home_dir, "pt_audio_prompt_embeds.pt")
+      pt_mask_path = os.path.join(home_dir, "pt_prompt_attn_mask.pt")
+
+      if os.path.exists(pt_video_path):
+        max_logging.log(f"🚨 [Diagnostic Transformer Test] Loading PyTorch connector outputs from {pt_video_path}...")
+        video_pt = torch.load(pt_video_path)
+        audio_pt = torch.load(pt_audio_path)
+        mask_pt = torch.load(pt_mask_path)
+
+        video_uncond, video_cond = jnp.split(jnp.array(video_pt.numpy(), dtype=dtype), 2, axis=0)
+        audio_uncond, audio_cond = jnp.split(jnp.array(audio_pt.numpy(), dtype=dtype), 2, axis=0)
+        mask_uncond, mask_cond = jnp.split(jnp.array(mask_pt.numpy(), dtype=jnp.bool_), 2, axis=0)
+
+        if do_cfg and do_stg:
+          video_embeds = jnp.concatenate([video_uncond, video_cond, video_cond, video_cond], axis=0)
+          audio_embeds = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
+          new_attention_mask = jnp.concatenate([mask_uncond, mask_cond, mask_cond, mask_cond], axis=0)
+        elif do_cfg:
+          video_embeds = jnp.concatenate([video_uncond, video_cond], axis=0)
+          audio_embeds = jnp.concatenate([audio_uncond, audio_cond], axis=0)
+          new_attention_mask = jnp.concatenate([mask_uncond, mask_cond], axis=0)
+
       video_embeds_sharded = video_embeds
       audio_embeds_sharded = audio_embeds
 
@@ -1590,37 +1617,18 @@ class LTX2Pipeline:
       latents_jax = latents_jax
       audio_latents_jax = audio_latents_jax
 
-    # Diagnostic VAE Isolation Test: Override latents with PyTorch unpacked inputs if present
-    import os
-    import torch
-    home_dir = os.path.expanduser("~")
-    pt_unpacked_path = os.path.join(home_dir, "unpacked_latents_pt.pt")
-    pt_audio_unpacked_path = os.path.join(home_dir, "unpacked_audio_latents_pt.pt")
-
-    if os.path.exists(pt_unpacked_path):
-      max_logging.log(f"🚨 [Diagnostic VAE Test] Loading PyTorch unpacked latents from {pt_unpacked_path}...")
-      latents_pt = torch.load(pt_unpacked_path)
-      audio_latents_pt = torch.load(pt_audio_unpacked_path)
-
     # Unpack and Denormalize Video
-    if os.path.exists(pt_unpacked_path):
-      latents = jnp.array(latents_pt.numpy(), dtype=dtype)
-      latents = self._denormalize_latents(
-          latents, self.vae.latents_mean.value, self.vae.latents_std.value, self.vae.config.scaling_factor
-      )
-      audio_latents = jnp.array(audio_latents_pt.numpy(), dtype=dtype)
-    else:
-      latents = self._unpack_latents(
-          latents_jax,
-          latent_num_frames,
-          latent_height,
-          latent_width,
-          self.transformer_spatial_patch_size,
-          self.transformer_temporal_patch_size,
-      )
-      latents = self._denormalize_latents(
-          latents, self.vae.latents_mean.value, self.vae.latents_std.value, self.vae.config.scaling_factor
-      )
+    latents = self._unpack_latents(
+        latents_jax,
+        latent_num_frames,
+        latent_height,
+        latent_width,
+        self.transformer_spatial_patch_size,
+        self.transformer_temporal_patch_size,
+    )
+    latents = self._denormalize_latents(
+        latents, self.vae.latents_mean.value, self.vae.latents_std.value, self.vae.config.scaling_factor
+    )
 
     # VAE expects channels last (B, T, H, W, C) but unpack returns (B, C, T, H, W)
     latents = latents.transpose(0, 2, 3, 4, 1)
@@ -1651,24 +1659,20 @@ class LTX2Pipeline:
     # =======================================================================
 
     # Denormalize and Unpack Audio (Order important: Denorm THEN Unpack)
-    if os.path.exists(pt_unpacked_path):
-      if audio_latents.ndim == 4:
-        audio_latents = audio_latents.transpose(0, 2, 3, 1)
-    else:
-      audio_latents = self._denormalize_audio_latents(
-          audio_latents_jax, self.audio_vae.latents_mean.value, self.audio_vae.latents_std.value
-      )
+    audio_latents = self._denormalize_audio_latents(
+        audio_latents_jax, self.audio_vae.latents_mean.value, self.audio_vae.latents_std.value
+    )
 
-      num_mel_bins = self.audio_vae.config.mel_bins
-      latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
+    num_mel_bins = self.audio_vae.config.mel_bins
+    latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
 
-      audio_latents = self._unpack_audio_latents(
-          audio_latents, audio_num_frames, num_mel_bins=latent_mel_bins, num_channels=audio_channels
-      )
+    audio_latents = self._unpack_audio_latents(
+        audio_latents, audio_num_frames, num_mel_bins=latent_mel_bins, num_channels=audio_channels
+    )
 
-      # Audio VAE expects channels last (B, T, F, C) but unpack returns (B, C, T, F)
-      if audio_latents.ndim == 4:
-        audio_latents = audio_latents.transpose(0, 2, 3, 1)
+    # Audio VAE expects channels last (B, T, F, C) but unpack returns (B, C, T, F)
+    if audio_latents.ndim == 4:
+      audio_latents = audio_latents.transpose(0, 2, 3, 1)
 
     if output_type == "latent":
       return LTX2PipelineOutput(frames=latents, audio=audio_latents)
