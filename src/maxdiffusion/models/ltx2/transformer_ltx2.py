@@ -1178,8 +1178,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             audio_rotary_emb=audio_rotary_emb,
             ca_video_rotary_emb=video_cross_attn_rotary_emb,
             ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
-            a2v_cross_attention_mask=encoder_attention_mask,
-            v2a_cross_attention_mask=audio_encoder_attention_mask,
+            encoder_attention_mask=encoder_attention_mask,
+            audio_encoder_attention_mask=audio_encoder_attention_mask,
             perturbation_mask=mask,
             modality_mask=modality_mask,
         )
@@ -1224,8 +1224,6 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
               ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
               encoder_attention_mask=encoder_attention_mask,
               audio_encoder_attention_mask=audio_encoder_attention_mask,
-              a2v_cross_attention_mask=encoder_attention_mask,
-              v2a_cross_attention_mask=audio_encoder_attention_mask,
               perturbation_mask=mask,
           )
 
