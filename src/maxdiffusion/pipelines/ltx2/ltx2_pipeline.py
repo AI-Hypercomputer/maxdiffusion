@@ -361,13 +361,14 @@ class LTX2Pipeline:
     max_logging.log("Loading Video VAE...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
+      w_dtype = config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32
       vae = LTX2VideoAutoencoderKL.from_config(
           config.pretrained_model_name_or_path,
           subfolder="vae",
           rngs=rngs,
           mesh=mesh,
-          dtype=jnp.float32,
-          weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          dtype=w_dtype,
+          weights_dtype=w_dtype,
       )
       return vae
 
