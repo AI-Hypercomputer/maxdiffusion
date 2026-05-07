@@ -1909,41 +1909,53 @@ class FlaxFluxAttention(nn.Module):
       attention_mask=None,
       image_rotary_emb=None,
   ):
-    qkv_proj = self.qkv(hidden_states)
     B, L = hidden_states.shape[:2]
-    H, D, K = self.heads, qkv_proj.shape[-1] // (self.heads * 3), 3
-    qkv_proj = qkv_proj.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
-    query_proj, key_proj, value_proj = qkv_proj
+    # Deduce dimensions cleanly from class attributes
+    H, D = self.heads, self.dim_head
+
+    qkv_proj = self.qkv(hidden_states)
+    qkv_proj = checkpoint_name(qkv_proj, "img_qkv_proj")
+    
+    qkv_proj = qkv_proj.reshape(B, L, 3, H, D)
+    query_proj, key_proj, value_proj = [qkv_proj[:, :, i, ...] for i in range(3)]
 
     query_proj = self.query_norm(query_proj)
-
     key_proj = self.key_norm(key_proj)
 
     if encoder_hidden_states is not None:
+      B_enc, L_txt = encoder_hidden_states.shape[:2]
       encoder_qkv_proj = self.encoder_qkv(encoder_hidden_states)
-      B, L = encoder_hidden_states.shape[:2]
-      H, D, K = self.heads, encoder_qkv_proj.shape[-1] // (self.heads * 3), 3
-      encoder_qkv_proj = encoder_qkv_proj.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
-      encoder_query_proj, encoder_key_proj, encoder_value_proj = encoder_qkv_proj
+      encoder_qkv_proj = checkpoint_name(encoder_qkv_proj, "txt_qkv_proj")
+      encoder_qkv_proj = encoder_qkv_proj.reshape(B_enc, L_txt, 3, H, D)
+      enc_query_proj, enc_key_proj, enc_value_proj = [encoder_qkv_proj[:, :, i, ...] for i in range(3)]
 
-      encoder_query_proj = self.encoder_query_norm(encoder_query_proj)
+      encoder_query_proj = self.encoder_query_norm(enc_query_proj)
+      encoder_key_proj = self.encoder_key_norm(enc_key_proj)
 
-      encoder_key_proj = self.encoder_key_norm(encoder_key_proj)
+      query_proj = jnp.concatenate((encoder_query_proj, query_proj), axis=1)
+      key_proj = jnp.concatenate((encoder_key_proj, key_proj), axis=1)
+      value_proj = jnp.concatenate((enc_value_proj, value_proj), axis=1)
 
-      query_proj = jnp.concatenate((encoder_query_proj, query_proj), axis=2)
-      key_proj = jnp.concatenate((encoder_key_proj, key_proj), axis=2)
-      value_proj = jnp.concatenate((encoder_value_proj, value_proj), axis=2)
+      # query_proj = nn.with_logical_constraint(query_proj, self.query_axis_names)
+      # key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
+      # value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
 
+    image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+
+    query_proj = query_proj.swapaxes(1, 2)
+    key_proj = key_proj.swapaxes(1, 2)
+    query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb)
+    query_proj = query_proj.swapaxes(1, 2)
+    key_proj = key_proj.swapaxes(1, 2)
+
+    query_proj = query_proj.reshape(B, -1, H * D)
+    key_proj = key_proj.reshape(B, -1, H * D)
+    value_proj = value_proj.reshape(B, -1, H * D)
+
+    if encoder_hidden_states is not None:
       query_proj = nn.with_logical_constraint(query_proj, self.query_axis_names)
       key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
       value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
-
-    image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-    query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb)
-
-    query_proj = query_proj.transpose(0, 2, 1, 3).reshape(query_proj.shape[0], query_proj.shape[2], -1)
-    key_proj = key_proj.transpose(0, 2, 1, 3).reshape(key_proj.shape[0], key_proj.shape[2], -1)
-    value_proj = value_proj.transpose(0, 2, 1, 3).reshape(value_proj.shape[0], value_proj.shape[2], -1)
 
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj, attention_mask=attention_mask)
     context_attn_output = None

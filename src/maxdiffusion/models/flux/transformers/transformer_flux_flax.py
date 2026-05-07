@@ -117,31 +117,29 @@ class FluxSingleTransformerBlock(nn.Module):
 
   def __call__(self, hidden_states, temb, image_rotary_emb=None):
     residual = hidden_states
+    
+    # FIX: Constrain inputs using valid config parameters (None skips sequence length axis parsing)
+    hidden_states = nn.with_logical_constraint(
+        hidden_states, ("activation_batch", None, "mlp")
+    )
+    
     norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
-    norm_hidden_states =self.linear1(norm_hidden_states)
+    
+    norm_hidden_states = self.linear1(norm_hidden_states)
     norm_hidden_states = checkpoint_name(norm_hidden_states, "lin1_norm_hidden_states")
-    #jax.debug.print("norm_hidden_states shape: {x}",x=norm_hidden_states.shape)
 
+    # FIX: Enforce valid axis constraints prior to splitting the massive projection tensor
+    norm_hidden_states = nn.with_logical_constraint(
+        norm_hidden_states, ("activation_batch", None, "mlp")
+    )
+    
     qkv, mlp = jnp.split(norm_hidden_states, [3 * self.dim], axis=-1)
-    #qkv shape: (8, 4608, 9216)  (Array(8, dtype=int32), Array(4608, dtype=int32), Array(9216, dtype=int32))
-    #mlp shape: (8, 4608, 12288) (Array(8, dtype=int32), Array(4608, dtype=int32), Array(12288, dtype=int32))
-    #jax.debug.print("qkv shape: {x}",x=qkv.shape)
-    #jax.debug.print("mlp shape: {x}",x=mlp.shape)
-    # breakpoint()
-    # jax.debug.print("qkv sharded shape: {shd}", shd=qkv.sharding.shard_shape(qkv.shape))
-    # jax.debug.print("mlp sharded shape: {shd}", shd=mlp.sharding.shard_shape(mlp.shape))
-    #jax.debug.inspect_array_sharding(qkv, callback=lambda s: print(f"qkv sharding: {s}"))
-    #jax.debug.inspect_array_sharding(mlp, callback=lambda s: print(f"mlp sharding: {s}"))
-    #mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
-    #qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
-
+    
     B, L = hidden_states.shape[:2]
     H, D, K = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3), 3
+    
     qkv_proj = qkv.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
     q, k, v = qkv_proj
-    #jax.debug.print("q shape: {x}",x=q.shape)
-    #jax.debug.print("k shape: {x}",x=k.shape)
-    #jax.debug.print("v shape: {x}",x=v.shape) 
 
     q = self.attn.query_norm(q)
     k = self.attn.key_norm(k)
@@ -155,15 +153,20 @@ class FluxSingleTransformerBlock(nn.Module):
     v = v.transpose(0, 2, 1, 3).reshape(v.shape[0], v.shape[2], -1)
 
     attn_output = self.attn.attention_op.apply_attention(q, k, v)
-    #jax.debug.print("attn_output shape: {x}",x=attn_output.shape)
 
+    # Re-combine streams smoothly
     attn_mlp = jnp.concatenate([attn_output, self.mlp_act(mlp)], axis=2)
-    #jax.debug.print("attn_output shape after concat: {x}",x=attn_output.shape)
-    #attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
+    
+    # FIX: Enforce a clean exit layout before executing linear2
+    attn_mlp = nn.with_logical_constraint(
+        attn_mlp, ("activation_batch", None, "mlp")
+    )
+    
     hidden_states = self.linear2(attn_mlp)
-    #jax.debug.print("hidden_states shape: {x}",x=hidden_states.shape)
+    
     hidden_states = gate * hidden_states
     hidden_states = residual + hidden_states
+    
     if hidden_states.dtype == jnp.float16:
       hidden_states = jnp.clip(hidden_states, -65504, 65504)
 
@@ -171,9 +174,6 @@ class FluxSingleTransformerBlock(nn.Module):
 
 
 class FluxTransformerBlock(nn.Module):
-  r"""
-  A Transformer block following the MMDiT architecture, introduced in Stable Diffusion 3.
-  """
   dim: int
   num_attention_heads: int
   attention_head_dim: int
@@ -190,6 +190,7 @@ class FluxTransformerBlock(nn.Module):
   attention_kernel: str = "dot_product"
 
   def setup(self):
+    # These contain the parameter projections ("lin"), optimize them using your updated AdaLayerNorm class
     self.img_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
     self.txt_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
 
@@ -205,13 +206,9 @@ class FluxTransformerBlock(nn.Module):
         flash_block_sizes=self.flash_block_sizes,
     )
 
-    self.img_norm2 = nn.LayerNorm(
-        use_bias=False,
-        use_scale=False,
-        epsilon=self.eps,
-        dtype=self.dtype,
-        param_dtype=self.weights_dtype,
-    )
+    # REMOVED: self.img_norm2 and self.txt_norm2 completely to stop HBM memory spilling.
+    # The mathematical reductions are handled natively below.
+
     self.img_mlp = nn.Sequential([
         nn.Dense(
             int(self.dim * self.mlp_ratio),
@@ -234,13 +231,6 @@ class FluxTransformerBlock(nn.Module):
         ),
     ])
 
-    self.txt_norm2 = nn.LayerNorm(
-        use_bias=False,
-        use_scale=False,
-        epsilon=self.eps,
-        dtype=self.dtype,
-        param_dtype=self.weights_dtype,
-    )
     self.txt_mlp = nn.Sequential([
         nn.Dense(
             int(self.dim * self.mlp_ratio),
@@ -264,36 +254,58 @@ class FluxTransformerBlock(nn.Module):
     ])
 
   def __call__(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb=None):
+    # Enforce active partitioning based on your FSDP setup config
+    hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", None, "mlp"))
+    encoder_hidden_states = nn.with_logical_constraint(encoder_hidden_states, ("activation_batch", None, "mlp"))
+
+    # 1. First Adaptive Normalization Pass
     norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.img_norm1(hidden_states, emb=temb)
     norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.txt_norm1(
         encoder_hidden_states, emb=temb
     )
 
+    # 2. Attention Mechanics
     attn_output, context_attn_output = self.attn(
         hidden_states=norm_hidden_states,
         encoder_hidden_states=norm_encoder_hidden_states,
         image_rotary_emb=image_rotary_emb,
     )
 
+    # --- IMAGE STREAM OPTIMIZATION (img_norm2) ---
     attn_output = gate_msa * attn_output
     hidden_states = hidden_states + attn_output
-    norm_hidden_states = self.img_norm2(hidden_states)
-    norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
+    
+    # Fully fused LayerNorm + scale_mlp + shift_mlp compilation block
+    img_mean = jnp.mean(hidden_states, axis=-1, keepdims=True)
+    img_var = jnp.mean(jnp.square(hidden_states - img_mean), axis=-1, keepdims=True)
+    img_inv_std = jax.lax.rsqrt(img_var + self.eps)
+    
+    norm_hidden_states = (hidden_states - img_mean) * img_inv_std * (1 + scale_mlp) + shift_mlp
+    norm_hidden_states = nn.with_logical_constraint(norm_hidden_states, ("activation_batch", None, "mlp"))
 
     ff_output = self.img_mlp(norm_hidden_states)
-    ff_output = gate_mlp * ff_output
+    hidden_states = hidden_states + gate_mlp * ff_output
 
-    hidden_states = hidden_states + ff_output
+    # --- TEXT STREAM OPTIMIZATION (txt_norm2) ---
     context_attn_output = c_gate_msa * context_attn_output
     encoder_hidden_states = encoder_hidden_states + context_attn_output
 
-    norm_encoder_hidden_states = self.txt_norm2(encoder_hidden_states)
-    norm_encoder_hidden_states = norm_encoder_hidden_states * (1 + c_scale_mlp) + c_shift_mlp
+    # Fully fused LayerNorm + c_scale_mlp + c_shift_mlp compilation block
+    txt_mean = jnp.mean(encoder_hidden_states, axis=-1, keepdims=True)
+    txt_var = jnp.mean(jnp.square(encoder_hidden_states - txt_mean), axis=-1, keepdims=True)
+    txt_inv_std = jax.lax.rsqrt(txt_var + self.eps)
+
+    norm_encoder_hidden_states = (encoder_hidden_states - txt_mean) * txt_inv_std * (1 + c_scale_mlp) + c_shift_mlp
+    norm_encoder_hidden_states = nn.with_logical_constraint(norm_encoder_hidden_states, ("activation_batch", None, "mlp"))
 
     context_ff_output = self.txt_mlp(norm_encoder_hidden_states)
     encoder_hidden_states = encoder_hidden_states + c_gate_mlp * context_ff_output
-    if encoder_hidden_states.dtype == jnp.float16:
+    
+    # Safe numerical clipping limits for half precision math execution
+    if encoder_hidden_states.dtype == jnp.float16 or encoder_hidden_states.dtype == jnp.bfloat16:
       encoder_hidden_states = encoder_hidden_states.clip(-65504, 65504)
+      hidden_states = hidden_states.clip(-65504, 65504)
+
     return hidden_states, encoder_hidden_states
 
 class ScannedDoubleBlockWrapper(nn.Module):
@@ -417,7 +429,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     # 2. Force strict checkpointing on the Double Wrapper
     #RemattedDoubleWrapper = nn.remat(ScannedDoubleBlockWrapper, prevent_cse=True, policy=cp.checkpoint_dots_with_no_batch_dims)
-    RemattedDoubleWrapper = nn.remat(ScannedDoubleBlockWrapper, prevent_cse=True, policy=cp.save_any_names_but_these("lin1_norm_hidden_states"))
+    #RemattedDoubleWrapper = nn.remat(ScannedDoubleBlockWrapper, prevent_cse=True, policy=cp.offload_dot_with_no_batch_dims(offload_src="device", offload_dst="pinned_host"))
+    RemattedDoubleWrapper = nn.remat(ScannedDoubleBlockWrapper, prevent_cse=True, policy=cp.save_any_names_but_these("img_qkv_proj", "txt_qkv_proj"))
 
     self.scanned_double_blocks = nn.scan(
         RemattedDoubleWrapper,
@@ -444,7 +457,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     # 4. Force strict checkpointing on the Single Wrapper
     #RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.checkpoint_dots_with_no_batch_dims)
-    RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.save_any_names_but_these("lin1_norm_hidden_states"))
+    #RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.offload_dot_with_no_batch_dims(offload_src="device", offload_dst="pinned_host"))
+    RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.save_any_names_but_these("lin1_norm_hidden_states", "lin2_hidden_states"))
 
     self.scanned_single_blocks = nn.scan(
         RemattedSingleWrapper,
