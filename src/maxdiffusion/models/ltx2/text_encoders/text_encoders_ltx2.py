@@ -82,37 +82,6 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       self.audio_text_proj_in = nnx.Linear(
           in_features=input_dim, out_features=a_dim, use_bias=proj_bias, rngs=rngs
       )
-
-      self.video_embeddings_connector = Embeddings1DConnector(
-          input_dim=v_dim,
-          heads=video_connector_num_attention_heads,
-          head_dim=video_connector_attention_head_dim,
-          layers=video_connector_num_layers,
-          num_learnable_registers=video_connector_num_learnable_registers,
-          rope_type=rope_type,
-          theta=rope_theta,
-          base_seq_len=connector_rope_base_seq_len,
-          double_precision=rope_double_precision,
-          attention_kernel=attention_kernel,
-          mesh=mesh,
-          rngs=rngs,
-          gated_attn=video_gated_attn,
-      )
-      self.audio_embeddings_connector = Embeddings1DConnector(
-          input_dim=a_dim,
-          heads=audio_connector_num_attention_heads,
-          head_dim=audio_connector_attention_head_dim,
-          layers=audio_connector_num_layers,
-          num_learnable_registers=audio_connector_num_learnable_registers,
-          rope_type=rope_type,
-          theta=rope_theta,
-          base_seq_len=connector_rope_base_seq_len,
-          double_precision=rope_double_precision,
-          attention_kernel=attention_kernel,
-          mesh=mesh,
-          rngs=rngs,
-          gated_attn=audio_gated_attn,
-      )
     else:
       self.feature_extractor = LTX2GemmaFeatureExtractor(
           input_dim=input_dim,
@@ -125,37 +94,37 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
           audio_output_dim=a_dim,
       )
 
-      # Two independent connectors
-      self.video_embeddings_connector = Embeddings1DConnector(
-          input_dim=v_dim,
-          heads=video_connector_num_attention_heads,
-          head_dim=video_connector_attention_head_dim,
-          layers=video_connector_num_layers,
-          num_learnable_registers=video_connector_num_learnable_registers,
-          rope_type=rope_type,
-          theta=rope_theta,
-          base_seq_len=connector_rope_base_seq_len,
-          double_precision=rope_double_precision,
-          attention_kernel=attention_kernel,
-          mesh=mesh,
-          rngs=rngs,
-          gated_attn=video_gated_attn,
-      )
-      self.audio_embeddings_connector = Embeddings1DConnector(
-          input_dim=a_dim,
-          heads=audio_connector_num_attention_heads,
-          head_dim=audio_connector_attention_head_dim,
-          layers=audio_connector_num_layers,
-          num_learnable_registers=audio_connector_num_learnable_registers,
-          rope_type=rope_type,
-          theta=rope_theta,
-          base_seq_len=connector_rope_base_seq_len,
-          double_precision=rope_double_precision,
-          attention_kernel=attention_kernel,
-          mesh=mesh,
-          rngs=rngs,
-          gated_attn=audio_gated_attn,
-      )
+    # Two independent connectors (used in both LTX-2.0 and LTX-2.3 paths)
+    self.video_embeddings_connector = Embeddings1DConnector(
+        input_dim=v_dim,
+        heads=video_connector_num_attention_heads,
+        head_dim=video_connector_attention_head_dim,
+        layers=video_connector_num_layers,
+        num_learnable_registers=video_connector_num_learnable_registers,
+        rope_type=rope_type,
+        theta=rope_theta,
+        base_seq_len=connector_rope_base_seq_len,
+        double_precision=rope_double_precision,
+        attention_kernel=attention_kernel,
+        mesh=mesh,
+        rngs=rngs,
+        gated_attn=video_gated_attn,
+    )
+    self.audio_embeddings_connector = Embeddings1DConnector(
+        input_dim=a_dim,
+        heads=audio_connector_num_attention_heads,
+        head_dim=audio_connector_attention_head_dim,
+        layers=audio_connector_num_layers,
+        num_learnable_registers=audio_connector_num_learnable_registers,
+        rope_type=rope_type,
+        theta=rope_theta,
+        base_seq_len=connector_rope_base_seq_len,
+        double_precision=rope_double_precision,
+        attention_kernel=attention_kernel,
+        mesh=mesh,
+        rngs=rngs,
+        gated_attn=audio_gated_attn,
+    )
 
   def __call__(
       self,
