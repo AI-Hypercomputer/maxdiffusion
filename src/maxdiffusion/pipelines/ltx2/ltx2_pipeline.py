@@ -1692,7 +1692,7 @@ class LTX2Pipeline:
     max_logging.log(f"⏱️ Video VAE Decode Time: {time.time() - vae_start:.4f} seconds")
 
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
-    video_np = np.array(video).transpose(0, 4, 1, 2, 3)
+    video_np = np.array(video.astype(jnp.float32)).transpose(0, 4, 1, 2, 3)
     video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
 
     # Decode Audio
