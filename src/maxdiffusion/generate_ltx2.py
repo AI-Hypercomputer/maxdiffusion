@@ -156,7 +156,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
         )
 
   pipeline.enable_vae_slicing()
-  pipeline.enable_vae_tiling()
+  # pipeline.enable_vae_tiling()
 
   s0 = time.perf_counter()
 
