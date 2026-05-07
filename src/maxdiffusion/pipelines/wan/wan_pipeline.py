@@ -173,7 +173,8 @@ def create_sharded_logical_transformer(
     )
 
   params = jax.tree_util.tree_map_with_path(
-      lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
+      lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype),
+      params,
   )
   for path, val in flax.traverse_util.flatten_dict(params).items():
     if restored_checkpoint:
@@ -291,7 +292,9 @@ class WanPipeline:
     image_processor = CLIPImageProcessor.from_pretrained(config.pretrained_model_name_or_path, subfolder="image_processor")
     try:
       image_encoder = FlaxCLIPVisionModel.from_pretrained(
-          config.pretrained_model_name_or_path, subfolder="image_encoder", dtype=jnp.float32
+          config.pretrained_model_name_or_path,
+          subfolder="image_encoder",
+          dtype=jnp.float32,
       )
     except Exception as e:
       max_logging.error(f"Failed to load FlaxCLIPVisionModel: {e}")
@@ -300,7 +303,12 @@ class WanPipeline:
 
   @classmethod
   def load_vae(
-      cls, devices_array: np.array, mesh: Mesh, rngs: nnx.Rngs, config: HyperParameters, vae_logical_axis_rules: tuple = None
+      cls,
+      devices_array: np.array,
+      mesh: Mesh,
+      rngs: nnx.Rngs,
+      config: HyperParameters,
+      vae_logical_axis_rules: tuple = None,
   ):
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
       wan_vae = AutoencoderKLWan.from_config(
@@ -403,7 +411,13 @@ class WanPipeline:
     return None
 
   @classmethod
-  def quantize_transformer(cls, config: HyperParameters, model: WanModel, pipeline: "WanPipeline", mesh: Mesh):
+  def quantize_transformer(
+      cls,
+      config: HyperParameters,
+      model: WanModel,
+      pipeline: "WanPipeline",
+      mesh: Mesh,
+  ):
     """Quantizes the transformer model."""
     q_rules = cls.get_qt_provider(config)
     if not q_rules:
@@ -484,7 +498,8 @@ class WanPipeline:
     prompt_embeds = self.text_encoder(text_input_ids, mask).last_hidden_state
     prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
     prompt_embeds = torch.stack(
-        [torch.cat([u, u.new_zeros(max_sequence_length - u.size(0), u.size(1))]) for u in prompt_embeds], dim=0
+        [torch.cat([u, u.new_zeros(max_sequence_length - u.size(0), u.size(1))]) for u in prompt_embeds],
+        dim=0,
     )
 
     # duplicate text embeddings for each generation per prompt, using mps friendly method
@@ -503,8 +518,11 @@ class WanPipeline:
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
   ):
-    prompt = [prompt] if isinstance(prompt, str) else prompt
-    batch_size = len(prompt)
+    if prompt is not None:
+      prompt = [prompt] if isinstance(prompt, str) else prompt
+      batch_size = len(prompt)
+    else:
+      batch_size = prompt_embeds.shape[0] // num_videos_per_prompt
 
     if negative_prompt is None:
       negative_prompt = [""] * batch_size
@@ -587,12 +605,26 @@ class WanPipeline:
 
     if last_image is None:
       video_condition = jnp.concatenate(
-          [image, jnp.zeros((image.shape[0], image.shape[1], num_frames - 1, height, width), dtype=image.dtype)], axis=2
+          [
+              image,
+              jnp.zeros(
+                  (image.shape[0], image.shape[1], num_frames - 1, height, width),
+                  dtype=image.dtype,
+              ),
+          ],
+          axis=2,
       )
     else:
       last_image = last_image[:, :, jnp.newaxis, :, :]
       video_condition = jnp.concatenate(
-          [image, jnp.zeros((image.shape[0], image.shape[1], num_frames - 2, height, width), dtype=image.dtype), last_image],
+          [
+              image,
+              jnp.zeros(
+                  (image.shape[0], image.shape[1], num_frames - 2, height, width),
+                  dtype=image.dtype,
+              ),
+              last_image,
+          ],
           axis=2,
       )
 
@@ -679,7 +711,11 @@ class WanPipeline:
 
     with vae_mesh:
       wan_vae, vae_cache = cls.load_vae(
-          devices_array=devices_array, mesh=vae_mesh, rngs=rngs, config=config, vae_logical_axis_rules=vae_logical_axis_rules
+          devices_array=devices_array,
+          mesh=vae_mesh,
+          rngs=rngs,
+          config=config,
+          vae_logical_axis_rules=vae_logical_axis_rules,
       )
 
     components = {
@@ -703,7 +739,10 @@ class WanPipeline:
       components["text_encoder"] = cls.load_text_encoder(config=config)
       components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
       if i2v and config.model_name == "wan2.1":
-        components["image_processor"], components["image_encoder"] = cls.load_image_encoder(config)
+        (
+            components["image_processor"],
+            components["image_encoder"],
+        ) = cls.load_image_encoder(config)
     return components
 
   @abstractmethod
@@ -803,7 +842,7 @@ class WanPipeline:
       if prompt is not None and isinstance(prompt, str):
         prompt = [prompt]
 
-      batch_size = len(prompt)
+      batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
 
       with jax.named_scope("Encode-Prompt"):
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
@@ -836,10 +875,18 @@ class WanPipeline:
       negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
 
       scheduler_state = self.scheduler.set_timesteps(
-          self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
+          self.scheduler_state,
+          num_inference_steps=num_inference_steps,
+          shape=latents.shape,
       )
 
-      return latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames
+      return (
+          latents,
+          prompt_embeds,
+          negative_prompt_embeds,
+          scheduler_state,
+          num_frames,
+      )
 
   @abstractmethod
   def __call__(self, **kwargs):
@@ -847,7 +894,15 @@ class WanPipeline:
     pass
 
 
-@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale", "return_residual", "skip_blocks"))
+@partial(
+    jax.jit,
+    static_argnames=(
+        "do_classifier_free_guidance",
+        "guidance_scale",
+        "return_residual",
+        "skip_blocks",
+    ),
+)
 def transformer_forward_pass(
     graphdef,
     sharded_state,
@@ -861,6 +916,9 @@ def transformer_forward_pass(
     skip_blocks=None,
     cached_residual=None,
     return_residual=False,
+    kv_cache=None,
+    rotary_emb=None,
+    encoder_attention_mask=None,
 ):
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   outputs = wan_transformer(
@@ -871,6 +929,9 @@ def transformer_forward_pass(
       skip_blocks=skip_blocks,
       cached_residual=cached_residual,
       return_residual=return_residual,
+      kv_cache=kv_cache,
+      rotary_emb=rotary_emb,
+      encoder_attention_mask=encoder_attention_mask,
   )
 
   if return_residual:
@@ -901,6 +962,9 @@ def transformer_forward_pass_full_cfg(
     prompt_embeds_combined: jnp.array,
     guidance_scale: float,
     encoder_hidden_states_image=None,
+    kv_cache=None,
+    rotary_emb=None,
+    encoder_attention_mask=None,
 ):
   """Full CFG forward pass.
 
@@ -919,6 +983,9 @@ def transformer_forward_pass_full_cfg(
       skip_blocks=False,
       cached_residual=None,
       return_residual=False,
+      kv_cache=kv_cache,
+      rotary_emb=rotary_emb,
+      encoder_attention_mask=encoder_attention_mask,
   )
   noise_cond = noise_pred[:bsz]
   noise_uncond = noise_pred[bsz:]
@@ -940,6 +1007,9 @@ def transformer_forward_pass_cfg_cache(
     w1: float = 1.0,
     w2: float = 1.0,
     encoder_hidden_states_image=None,
+    kv_cache=None,
+    rotary_emb=None,
+    encoder_attention_mask=None,
 ):
   """CFG-Cache forward pass with FFT frequency-domain compensation.
 
@@ -965,6 +1035,9 @@ def transformer_forward_pass_cfg_cache(
       timestep=timestep_cond,
       encoder_hidden_states=prompt_cond_embeds,
       encoder_hidden_states_image=encoder_hidden_states_image,
+      kv_cache=kv_cache,
+      rotary_emb=rotary_emb,
+      encoder_attention_mask=encoder_attention_mask,
   )
 
   # FFT over spatial dims (H, W) — last 2 dims of [B, C, F, H, W]

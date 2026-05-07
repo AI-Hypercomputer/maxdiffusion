@@ -104,6 +104,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           magcache_thresh=config.magcache_thresh,
           magcache_K=config.magcache_K,
           retention_ratio=config.retention_ratio,
+          use_kv_cache=config.use_kv_cache,
       )
     elif model_key == WAN2_2:
       return pipeline(
@@ -118,6 +119,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           guidance_scale_high=config.guidance_scale_high,
           use_cfg_cache=config.use_cfg_cache,
           use_sen_cache=config.use_sen_cache,
+          use_kv_cache=config.use_kv_cache,
       )
     else:
       raise ValueError(f"Unsupported model_name for I2V in config: {model_key}")
@@ -136,6 +138,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           magcache_thresh=config.magcache_thresh,
           magcache_K=config.magcache_K,
           retention_ratio=config.retention_ratio,
+          use_kv_cache=config.use_kv_cache,
       )
     elif model_key == WAN2_2:
       return pipeline(
@@ -149,9 +152,10 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           guidance_scale_high=config.guidance_scale_high,
           use_cfg_cache=config.use_cfg_cache,
           use_sen_cache=config.use_sen_cache,
+          use_kv_cache=config.use_kv_cache,
       )
     else:
-      raise ValueError(f"Unsupported model_name for T2Vin config: {model_key}")
+      raise ValueError(f"Unsupported model_name for T2V in config: {model_key}")
 
 
 def inference_generate_video(config, pipeline, filename_prefix=""):

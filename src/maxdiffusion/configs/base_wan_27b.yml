@@ -331,7 +331,7 @@ use_cfg_cache: False
 # Batch positive and negative prompts in text encoder to save compute.
 use_batched_text_encoder: False
 
-
+use_kv_cache: False
 # SenCache: Sensitivity-Aware Caching (arXiv:2602.24208) — skip forward pass
 # when predicted output change (based on accumulated latent/timestep drift) is small
 use_sen_cache: False

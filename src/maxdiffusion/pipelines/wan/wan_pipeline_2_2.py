@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 from ... import max_utils
+from maxdiffusion import max_logging
 
 
 class WanPipeline2_2(WanPipeline):
@@ -89,7 +90,13 @@ class WanPipeline2_2(WanPipeline):
     return pipeline
 
   @classmethod
-  def from_checkpoint(cls, config: HyperParameters, restored_checkpoint=None, vae_only=False, load_transformer=True):
+  def from_checkpoint(
+      cls,
+      config: HyperParameters,
+      restored_checkpoint=None,
+      vae_only=False,
+      load_transformer=True,
+  ):
     pipeline, low_noise_transformer, high_noise_transformer = cls._load_and_init(
         config, restored_checkpoint, vae_only, load_transformer
     )
@@ -116,6 +123,7 @@ class WanPipeline2_2(WanPipeline):
       vae_only: bool = False,
       use_cfg_cache: bool = False,
       use_sen_cache: bool = False,
+      use_kv_cache: bool = False,
   ):
     if use_cfg_cache and use_sen_cache:
       raise ValueError("use_cfg_cache and use_sen_cache are mutually exclusive. Enable only one.")
@@ -137,7 +145,13 @@ class WanPipeline2_2(WanPipeline):
     trace = {}
     t_cond_start = time.perf_counter()
 
-    latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
+    (
+        latents,
+        prompt_embeds,
+        negative_prompt_embeds,
+        scheduler_state,
+        num_frames,
+    ) = self._prepare_model_inputs(
         prompt,
         negative_prompt,
         height,
@@ -171,6 +185,7 @@ class WanPipeline2_2(WanPipeline):
         use_cfg_cache=use_cfg_cache,
         use_sen_cache=use_sen_cache,
         height=height,
+        use_kv_cache=use_kv_cache,
     )
 
     t_denoise_start = time.perf_counter()
@@ -220,6 +235,7 @@ def run_inference_2_2(
     use_sen_cache: bool = False,
     height: int = 480,
     config=None,
+    use_kv_cache: bool = False,
 ):
   """Denoising loop for WAN 2.2 T2V with optional caching acceleration.
 
@@ -238,6 +254,33 @@ def run_inference_2_2(
   """
   do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
   bsz = latents.shape[0]
+
+  prompt_embeds_combined = (
+      jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0) if do_classifier_free_guidance else prompt_embeds
+  )
+
+  low_transformer = nnx.merge(low_noise_graphdef, low_noise_state, low_noise_rest)
+
+  # Compute RoPE once as it only depends on shape
+  dummy_hidden_states = jnp.zeros((
+      latents.shape[0],
+      latents.shape[2],
+      latents.shape[3],
+      latents.shape[4],
+      latents.shape[1],
+  ))
+  rotary_emb = low_transformer.rope(dummy_hidden_states)
+
+  kv_cache_low = None
+  encoder_attention_mask_low = None
+  kv_cache_high = None
+  encoder_attention_mask_high = None
+
+  if use_kv_cache:
+    kv_cache_low, encoder_attention_mask_low = low_transformer.compute_kv_cache(prompt_embeds_combined)
+
+    high_transformer = nnx.merge(high_noise_graphdef, high_noise_state, high_noise_rest)
+    kv_cache_high, encoder_attention_mask_high = high_transformer.compute_kv_cache(prompt_embeds_combined)
 
   # ── SenCache path (arXiv:2602.24208) ──
   if use_sen_cache and do_classifier_free_guidance:
@@ -262,8 +305,6 @@ def run_inference_2_2(
     # uses sigmas in [0, 1]. Without normalization |Δt|≈20 >> ε and nothing caches.
     num_train_timesteps = float(scheduler.config.num_train_timesteps)
 
-    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
-
     # SenCache state
     ref_noise_pred = None  # y^r: cached denoiser output
     ref_latent = None  # x^r: latent at last cache refresh
@@ -279,11 +320,23 @@ def run_inference_2_2(
 
       # Select transformer and guidance scale
       if step_uses_high[step]:
-        graphdef, state, rest = high_noise_graphdef, high_noise_state, high_noise_rest
+        graphdef, state, rest = (
+            high_noise_graphdef,
+            high_noise_state,
+            high_noise_rest,
+        )
         guidance_scale = guidance_scale_high
+        kv_cache = kv_cache_high
+        encoder_attention_mask = encoder_attention_mask_high
       else:
-        graphdef, state, rest = low_noise_graphdef, low_noise_state, low_noise_rest
+        graphdef, state, rest = (
+            low_noise_graphdef,
+            low_noise_state,
+            low_noise_rest,
+        )
         guidance_scale = guidance_scale_low
+        kv_cache = kv_cache_low
+        encoder_attention_mask = encoder_attention_mask_low
 
       # Force full compute: warmup, first 30%, last 10%, or transformer boundary
       is_boundary = step > 0 and step_uses_high[step] != step_uses_high[step - 1]
@@ -302,6 +355,9 @@ def run_inference_2_2(
             timestep,
             prompt_embeds_combined,
             guidance_scale=guidance_scale,
+            kv_cache=kv_cache,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=encoder_attention_mask,
         )
         ref_noise_pred = noise_pred
         ref_latent = latents
@@ -338,6 +394,9 @@ def run_inference_2_2(
             timestep,
             prompt_embeds_combined,
             guidance_scale=guidance_scale,
+            kv_cache=kv_cache,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=encoder_attention_mask,
         )
         ref_noise_pred = noise_pred
         ref_latent = latents
@@ -348,7 +407,7 @@ def run_inference_2_2(
 
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
-    print(
+    max_logging.log(
         f"[SenCache] Cached {cache_count}/{num_inference_steps} steps "
         f"({100*cache_count/num_inference_steps:.1f}% cache ratio)"
     )
@@ -374,7 +433,6 @@ def run_inference_2_2(
 
     # Pre-split embeds once
     prompt_cond_embeds = prompt_embeds
-    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
 
     # Determine the first low-noise step (boundary transition).
     # In Wan 2.2 the boundary IS the structural→detail transition, so
@@ -420,16 +478,30 @@ def run_inference_2_2(
 
       # Select transformer and guidance scale based on precomputed schedule
       if step_uses_high[step]:
-        graphdef, state, rest = high_noise_graphdef, high_noise_state, high_noise_rest
+        graphdef, state, rest = (
+            high_noise_graphdef,
+            high_noise_state,
+            high_noise_rest,
+        )
         guidance_scale = guidance_scale_high
+        kv_cache = kv_cache_high
+        encoder_attention_mask = encoder_attention_mask_high
       else:
-        graphdef, state, rest = low_noise_graphdef, low_noise_state, low_noise_rest
+        graphdef, state, rest = (
+            low_noise_graphdef,
+            low_noise_state,
+            low_noise_rest,
+        )
         guidance_scale = guidance_scale_low
+        kv_cache = kv_cache_low
+        encoder_attention_mask = encoder_attention_mask_low
 
       if is_cache_step:
         # ── Cache step: cond-only forward + FFT frequency compensation ──
         w1, w2 = step_w1w2[step]
         timestep = jnp.broadcast_to(t, bsz)
+        kv_cache_cond = jax.tree.map(lambda x: x[:, :bsz], kv_cache) if kv_cache is not None else None
+        encoder_attention_mask_cond = encoder_attention_mask[:bsz] if encoder_attention_mask is not None else None
         noise_pred, cached_noise_cond = transformer_forward_pass_cfg_cache(
             graphdef,
             state,
@@ -442,12 +514,19 @@ def run_inference_2_2(
             guidance_scale=guidance_scale,
             w1=jnp.float32(w1),
             w2=jnp.float32(w2),
+            kv_cache=kv_cache_cond,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=encoder_attention_mask_cond,
         )
       else:
         # ── Full CFG step: doubled batch, store raw cond/uncond for cache ──
         latents_doubled = jnp.concatenate([latents] * 2)
         timestep = jnp.broadcast_to(t, bsz * 2)
-        noise_pred, cached_noise_cond, cached_noise_uncond = transformer_forward_pass_full_cfg(
+        (
+            noise_pred,
+            cached_noise_cond,
+            cached_noise_uncond,
+        ) = transformer_forward_pass_full_cfg(
             graphdef,
             state,
             rest,
@@ -455,6 +534,9 @@ def run_inference_2_2(
             timestep,
             prompt_embeds_combined,
             guidance_scale=guidance_scale,
+            kv_cache=kv_cache,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=encoder_attention_mask,
         )
 
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
@@ -467,40 +549,64 @@ def run_inference_2_2(
   timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
   step_uses_high = [bool(timesteps_np[s] >= boundary) for s in range(num_inference_steps)]
 
-  prompt_embeds_combined = (
-      jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0) if do_classifier_free_guidance else prompt_embeds
-  )
-
   first_profiling_step = config.skip_first_n_steps_for_profiler if config else 0
   profiler_steps = config.profiler_steps if config else 0
-  last_profiling_step = np.clip(first_profiling_step + profiler_steps - 1, first_profiling_step, num_inference_steps - 1)
+  last_profiling_step = np.clip(
+      first_profiling_step + profiler_steps - 1,
+      first_profiling_step,
+      num_inference_steps - 1,
+  )
 
   scan_diffusion_loop = getattr(config, "scan_diffusion_loop", False) if config else False
 
-  def high_noise_branch(ops):
-    model_latents_in, timestep_in = ops
+  def high_noise_branch(operands):
+    (
+        latents_input,
+        ts_input,
+        pe_input,
+        kv_cache_high,
+        _,
+        r_emb,
+        mask_high,
+        _,
+    ) = operands
     return transformer_forward_pass(
         high_noise_graphdef,
         high_noise_state,
         high_noise_rest,
-        model_latents_in,
-        timestep_in,
-        prompt_embeds_combined,
-        do_classifier_free_guidance,
-        guidance_scale_high,
+        latents_input,
+        ts_input,
+        pe_input,
+        do_classifier_free_guidance=do_classifier_free_guidance,
+        guidance_scale=guidance_scale_high,
+        kv_cache=kv_cache_high,
+        rotary_emb=r_emb,
+        encoder_attention_mask=mask_high,
     )
 
-  def low_noise_branch(ops):
-    model_latents_in, timestep_in = ops
+  def low_noise_branch(operands):
+    (
+        latents_input,
+        ts_input,
+        pe_input,
+        _,
+        kv_cache_low,
+        r_emb,
+        _,
+        mask_low,
+    ) = operands
     return transformer_forward_pass(
         low_noise_graphdef,
         low_noise_state,
         low_noise_rest,
-        model_latents_in,
-        timestep_in,
-        prompt_embeds_combined,
-        do_classifier_free_guidance,
-        guidance_scale_low,
+        latents_input,
+        ts_input,
+        pe_input,
+        do_classifier_free_guidance=do_classifier_free_guidance,
+        guidance_scale=guidance_scale_low,
+        kv_cache=kv_cache_low,
+        rotary_emb=r_emb,
+        encoder_attention_mask=mask_low,
     )
 
   if scan_diffusion_loop:
@@ -519,7 +625,21 @@ def run_inference_2_2(
       timestep = jnp.broadcast_to(t, model_latents.shape[0])
       use_high_noise = jnp.greater_equal(t, boundary)
 
-      noise_pred, latents_out = jax.lax.cond(use_high_noise, high_noise_branch, low_noise_branch, (model_latents, timestep))
+      noise_pred, latents_out = jax.lax.cond(
+          use_high_noise,
+          high_noise_branch,
+          low_noise_branch,
+          (
+              model_latents,
+              timestep,
+              prompt_embeds_combined,
+              kv_cache_high,
+              kv_cache_low,
+              rotary_emb,
+              encoder_attention_mask_high,
+              encoder_attention_mask_low,
+          ),
+      )
 
       new_latents, new_scheduler_state = scheduler.step(
           current_scheduler_state, noise_pred, t, latents_out, return_dict=False
@@ -543,11 +663,19 @@ def run_inference_2_2(
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
 
     if step_uses_high[step]:
-      graphdef, state, rest = high_noise_graphdef, high_noise_state, high_noise_rest
+      graphdef, state, rest = (
+          high_noise_graphdef,
+          high_noise_state,
+          high_noise_rest,
+      )
       guidance_scale = guidance_scale_high
+      kv_cache = kv_cache_high
+      encoder_attention_mask = encoder_attention_mask_high
     else:
       graphdef, state, rest = low_noise_graphdef, low_noise_state, low_noise_rest
       guidance_scale = guidance_scale_low
+      kv_cache = kv_cache_low
+      encoder_attention_mask = encoder_attention_mask_low
 
     if do_classifier_free_guidance:
       latents_doubled = jnp.concatenate([latents] * 2)
@@ -560,6 +688,9 @@ def run_inference_2_2(
           timestep,
           prompt_embeds_combined,
           guidance_scale=guidance_scale,
+          kv_cache=kv_cache,
+          rotary_emb=rotary_emb,
+          encoder_attention_mask=encoder_attention_mask,
       )
     else:
       timestep = jnp.broadcast_to(t, bsz)
@@ -572,6 +703,9 @@ def run_inference_2_2(
           prompt_embeds,
           do_classifier_free_guidance,
           guidance_scale,
+          kv_cache=kv_cache,
+          rotary_emb=rotary_emb,
+          encoder_attention_mask=encoder_attention_mask,
       )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

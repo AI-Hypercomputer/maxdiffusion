@@ -21,6 +21,7 @@ import jax
 from .modeling_flax_utils import get_activation
 from ..models.attention_flax import NNXSimpleFeedForward
 from ..models.normalization_flax import FP32LayerNorm
+from maxdiffusion.tpu_utils import get_tpu_type, TpuType
 
 
 def get_sinusoidal_embeddings(
@@ -260,7 +261,7 @@ class NNXWanImageEmbedding(nnx.Module):
       weights_dtype: jnp.dtype,
       precision: jax.lax.Precision,
       pos_embed_seq_len=None,
-      alignment: int = 128,
+      alignment: Optional[int] = None,
       flash_min_seq_length: int = 4096,
   ):
     self.norm1 = FP32LayerNorm(rngs=rngs, dim=in_features, elementwise_affine=True, eps=1e-6)
@@ -275,7 +276,11 @@ class NNXWanImageEmbedding(nnx.Module):
         precision=precision,
     )
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=out_features, elementwise_affine=True, eps=1e-6)
-    self.alignment = alignment
+    if alignment is None:
+      tpu_type = get_tpu_type()
+      self.alignment = 256 if tpu_type in [TpuType.TPU_V6_LITE, TpuType.TPU_7X] else 128
+    else:
+      self.alignment = alignment
     self.flash_min_seq_length = flash_min_seq_length
     if pos_embed_seq_len is not None:
       self.pos_embed = nnx.Param(jnp.zeros((1, pos_embed_seq_len, in_features), dtype=dtype))

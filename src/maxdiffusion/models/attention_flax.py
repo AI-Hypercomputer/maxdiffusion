@@ -15,7 +15,7 @@
 import contextlib
 import functools
 import math
-from typing import Optional, Callable, Tuple
+from typing import Optional, Callable, Tuple, Dict
 import flax.linen as nn
 from flax import nnx
 import jax
@@ -30,6 +30,8 @@ from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokam
 from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
 from einops import rearrange
 from .. import common_types, max_logging
+from maxdiffusion.tpu_utils import get_tpu_type, TpuType
+
 
 from ..kernels import custom_splash_attention as custom_splash
 from . import quantizations
@@ -677,7 +679,13 @@ def _ulysses_attention(
 
     # Restore the original layout expected by the rest of the model:
     # head-sharded / full-sequence -> sequence-sharded / full-heads.
-    attention_output = jax.lax.all_to_all(attention_output, axis_name=axis_name, split_axis=2, concat_axis=1, tiled=True)
+    attention_output = jax.lax.all_to_all(
+        attention_output,
+        axis_name=axis_name,
+        split_axis=2,
+        concat_axis=1,
+        tiled=True,
+    )
     return attention_output
 
   devices_in_batch_sharding = mesh.shape["data"] * (mesh.shape["fsdp"] if "fsdp" in mesh.shape else 1)
@@ -739,7 +747,11 @@ def _apply_attention_dot(
       query_chunk_size = int(flatten_latent_dim)
 
     hidden_states = jax_memory_efficient_attention(
-        query_states, key_states, value_states, query_chunk_size=query_chunk_size, key_chunk_size=4096 * 4
+        query_states,
+        key_states,
+        value_states,
+        query_chunk_size=query_chunk_size,
+        key_chunk_size=4096 * 4,
     )
 
     hidden_states = hidden_states.transpose(1, 0, 2)
@@ -1040,7 +1052,12 @@ def _query_chunk_attention(query, key, value, precision, key_chunk_size: int = 4
 
 
 def jax_memory_efficient_attention(
-    query, key, value, precision=jax.lax.Precision.HIGHEST, query_chunk_size: int = 1024, key_chunk_size: int = 4096
+    query,
+    key,
+    value,
+    precision=jax.lax.Precision.HIGHEST,
+    query_chunk_size: int = 1024,
+    key_chunk_size: int = 4096,
 ):
   r"""
   Flax Memory-efficient multi-head dot product attention. https://arxiv.org/abs/2112.05682v2
@@ -1072,11 +1089,20 @@ def jax_memory_efficient_attention(
 
     return (
         chunk_idx + query_chunk_size,  # unused ignore it
-        _query_chunk_attention(query=query_chunk, key=key, value=value, precision=precision, key_chunk_size=key_chunk_size),
+        _query_chunk_attention(
+            query=query_chunk,
+            key=key,
+            value=value,
+            precision=precision,
+            key_chunk_size=key_chunk_size,
+        ),
     )
 
   _, res = jax.lax.scan(
-      f=chunk_scanner, init=0, xs=None, length=math.ceil(num_q / query_chunk_size)  # start counter  # stop counter
+      f=chunk_scanner,
+      init=0,
+      xs=None,
+      length=math.ceil(num_q / query_chunk_size),  # start counter  # stop counter
   )
 
   return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
@@ -1357,6 +1383,8 @@ class FlaxWanAttention(nnx.Module):
       attention_kernel = "tokamax_flash"  # do not use ring attention for cross attention
     self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
     self.image_seq_len = image_seq_len  # New for I2V
+    tpu_type = get_tpu_type()
+    self.alignment = 256 if tpu_type in [TpuType.TPU_V6_LITE, TpuType.TPU_7X] else 128
 
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
@@ -1547,6 +1575,7 @@ class FlaxWanAttention(nnx.Module):
       encoder_attention_mask: Optional[jax.Array] = None,
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
+      cached_kv: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
   ) -> jax.Array:
     axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
@@ -1566,16 +1595,22 @@ class FlaxWanAttention(nnx.Module):
     if not is_i2v_cross_attention:
       with jax.named_scope("query_proj"):
         query_proj = self.query(hidden_states)
-      with jax.named_scope("key_proj"):
-        key_proj = self.key(encoder_hidden_states)
-      with jax.named_scope("value_proj"):
-        value_proj = self.value(encoder_hidden_states)
 
       if self.qk_norm:
         with self.conditional_named_scope("attn_q_norm"):
           query_proj = self.norm_q(query_proj)
-        with self.conditional_named_scope("attn_k_norm"):
-          key_proj = self.norm_k(key_proj)
+
+      if not is_self_attention and cached_kv is not None and "text" in cached_kv:
+        key_proj, value_proj = cached_kv["text"]
+      else:
+        with jax.named_scope("key_proj"):
+          key_proj = self.key(encoder_hidden_states)
+        with jax.named_scope("value_proj"):
+          value_proj = self.value(encoder_hidden_states)
+
+        if self.qk_norm:
+          with self.conditional_named_scope("attn_k_norm"):
+            key_proj = self.norm_k(key_proj)
 
       if rotary_emb is not None:
         with self.conditional_named_scope("attn_rope"):
@@ -1591,7 +1626,10 @@ class FlaxWanAttention(nnx.Module):
 
       with jax.named_scope("apply_attention"):
         attn_output = self.attention_op.apply_attention(
-            query_proj, key_proj, value_proj, attention_mask=encoder_attention_mask
+            query_proj,
+            key_proj,
+            value_proj,
+            attention_mask=encoder_attention_mask,
         )
 
     else:
@@ -1599,19 +1637,15 @@ class FlaxWanAttention(nnx.Module):
       with self.conditional_named_scope("proj_query"):
         query_proj_raw = self.query(hidden_states)
 
-      # Image embeddings are padded to multiples of 128 for TPU flash attention
+      # Image embeddings are padded to multiples of 128 (v5p and below) or 256 (v6e and above) for TPU flash attention
       # Calculate the padded length to correctly split image and text embeddings
       if self.added_kv_proj_dim is not None:
-        alignment = 128
+        alignment = self.alignment
         if self.image_seq_len is not None:
           image_seq_len_actual = self.image_seq_len
         else:
           image_seq_len_actual = 257
         padded_img_len = ((image_seq_len_actual + alignment - 1) // alignment) * alignment  # 257 -> 384
-
-        if encoder_attention_mask is None:
-          padded_img_len = image_seq_len_actual
-
         encoder_hidden_states_img = encoder_hidden_states[:, :padded_img_len, :]
         encoder_hidden_states_text = encoder_hidden_states[:, padded_img_len:, :]
 
@@ -1635,22 +1669,28 @@ class FlaxWanAttention(nnx.Module):
         query_proj_text = query_proj_raw
 
       # Text K/V
-      with self.conditional_named_scope("proj_key"):
-        key_proj_text = self.key(encoder_hidden_states_text)
-      if self.qk_norm:
-        with self.conditional_named_scope("attn_k_norm"):
-          key_proj_text = self.norm_k(key_proj_text)
-      with self.conditional_named_scope("proj_value"):
-        value_proj_text = self.value(encoder_hidden_states_text)
+      if cached_kv is not None and "text" in cached_kv:
+        key_proj_text, value_proj_text = cached_kv["text"]
+      else:
+        with self.conditional_named_scope("proj_key"):
+          key_proj_text = self.key(encoder_hidden_states_text)
+        if self.qk_norm:
+          with self.conditional_named_scope("attn_k_norm"):
+            key_proj_text = self.norm_k(key_proj_text)
+        with self.conditional_named_scope("proj_value"):
+          value_proj_text = self.value(encoder_hidden_states_text)
 
       # Image K/V (only if image embeddings are present)
       if encoder_hidden_states_img is not None:
-        with self.conditional_named_scope("add_proj_k"):
-          key_proj_img = self.add_k_proj(encoder_hidden_states_img)
-        with self.conditional_named_scope("norm_add_k"):
-          key_proj_img = self.norm_added_k(key_proj_img)
-        with self.conditional_named_scope("add_proj_v"):
-          value_proj_img = self.add_v_proj(encoder_hidden_states_img)
+        if cached_kv is not None and "image" in cached_kv:
+          key_proj_img, value_proj_img = cached_kv["image"]
+        else:
+          with self.conditional_named_scope("add_proj_k"):
+            key_proj_img = self.add_k_proj(encoder_hidden_states_img)
+          with self.conditional_named_scope("norm_add_k"):
+            key_proj_img = self.norm_added_k(key_proj_img)
+          with self.conditional_named_scope("add_proj_v"):
+            value_proj_img = self.add_v_proj(encoder_hidden_states_img)
         query_proj_img = query_proj_raw
         # Check norm_added_k too
         # Checkpointing
@@ -1667,7 +1707,10 @@ class FlaxWanAttention(nnx.Module):
         with self.conditional_named_scope("cross_attn_img_apply"):
           # Pass encoder_attention_mask_img for image cross-attention to mask padded tokens
           attn_output_img = self.attention_op.apply_attention(
-              query_proj_img, key_proj_img, value_proj_img, attention_mask=encoder_attention_mask_img
+              query_proj_img,
+              key_proj_img,
+              value_proj_img,
+              attention_mask=encoder_attention_mask_img,
           )
 
         attn_output = attn_output_text + attn_output_img
@@ -1688,6 +1731,64 @@ class FlaxWanAttention(nnx.Module):
       if self.drop_out.rate > 0:
         hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     return hidden_states
+
+  def compute_kv(
+      self,
+      encoder_hidden_states: jax.Array,
+      encoder_attention_mask: Optional[jax.Array] = None,
+  ) -> Dict[str, Tuple[jax.Array, jax.Array]]:
+    is_i2v_cross_attention = self.added_kv_proj_dim is not None
+
+    if not is_i2v_cross_attention:
+      with jax.named_scope("key_proj"):
+        key_proj = self.key(encoder_hidden_states)
+      with jax.named_scope("value_proj"):
+        value_proj = self.value(encoder_hidden_states)
+
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_k_norm"):
+          key_proj = self.norm_k(key_proj)
+
+      return {"text": (key_proj, value_proj)}
+    else:
+      # Image embeddings are padded to multiples of 128 (v5p and below) or 256 (v6e and above) for TPU flash attention
+      alignment = self.alignment
+      if self.image_seq_len is not None:
+        image_seq_len_actual = self.image_seq_len
+      else:
+        image_seq_len_actual = 257
+      padded_img_len = ((image_seq_len_actual + alignment - 1) // alignment) * alignment
+
+      if encoder_attention_mask is None:
+        padded_img_len = image_seq_len_actual
+
+      encoder_hidden_states_img = encoder_hidden_states[:, :padded_img_len, :]
+      encoder_hidden_states_text = encoder_hidden_states[:, padded_img_len:, :]
+
+      # Text K/V
+      with self.conditional_named_scope("proj_key"):
+        key_proj_text = self.key(encoder_hidden_states_text)
+      if self.qk_norm:
+        with self.conditional_named_scope("attn_k_norm"):
+          key_proj_text = self.norm_k(key_proj_text)
+      with self.conditional_named_scope("proj_value"):
+        value_proj_text = self.value(encoder_hidden_states_text)
+
+      # Image K/V (only if image embeddings are present)
+      if encoder_hidden_states_img is not None:
+        with self.conditional_named_scope("add_proj_k"):
+          key_proj_img = self.add_k_proj(encoder_hidden_states_img)
+        with self.conditional_named_scope("norm_add_k"):
+          key_proj_img = self.norm_added_k(key_proj_img)
+        with self.conditional_named_scope("add_proj_v"):
+          value_proj_img = self.add_v_proj(encoder_hidden_states_img)
+
+        return {
+            "text": (key_proj_text, value_proj_text),
+            "image": (key_proj_img, value_proj_img),
+        }
+      else:
+        return {"text": (key_proj_text, value_proj_text)}
 
 
 class FlaxFluxAttention(nn.Module):
@@ -1801,7 +1902,13 @@ class FlaxFluxAttention(nn.Module):
         param_dtype=self.weights_dtype,
     )
 
-  def __call__(self, hidden_states, encoder_hidden_states=None, attention_mask=None, image_rotary_emb=None):
+  def __call__(
+      self,
+      hidden_states,
+      encoder_hidden_states=None,
+      attention_mask=None,
+      image_rotary_emb=None,
+  ):
     qkv_proj = self.qkv(hidden_states)
     B, L = hidden_states.shape[:2]
     H, D, K = self.heads, qkv_proj.shape[-1] // (self.heads * 3), 3
@@ -1973,7 +2080,13 @@ class FlaxAttention(nn.Module):
     )
     self.dropout_layer = nn.Dropout(rate=self.dropout)
 
-  def __call__(self, hidden_states, context=None, deterministic=True, cross_attention_kwargs=None):
+  def __call__(
+      self,
+      hidden_states,
+      context=None,
+      deterministic=True,
+      cross_attention_kwargs=None,
+  ):
     context = hidden_states if context is None else context
     query_proj = self.query(hidden_states)
     key_proj = self.key(context)
@@ -2077,7 +2190,11 @@ class FlaxBasicTransformerBlock(nn.Module):
         quant=self.quant,
     )
     self.ff = FlaxFeedForward(
-        dim=self.dim, dropout=self.dropout, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
+        dim=self.dim,
+        dropout=self.dropout,
+        dtype=self.dtype,
+        weights_dtype=self.weights_dtype,
+        precision=self.precision,
     )
     self.norm1 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
     self.norm2 = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
@@ -2089,11 +2206,16 @@ class FlaxBasicTransformerBlock(nn.Module):
     residual = hidden_states
     if self.only_cross_attention:
       hidden_states = self.attn1(
-          self.norm1(hidden_states), context, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
+          self.norm1(hidden_states),
+          context,
+          deterministic=deterministic,
+          cross_attention_kwargs=cross_attention_kwargs,
       )
     else:
       hidden_states = self.attn1(
-          self.norm1(hidden_states), deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
+          self.norm1(hidden_states),
+          deterministic=deterministic,
+          cross_attention_kwargs=cross_attention_kwargs,
       )
 
     hidden_states = hidden_states + residual
@@ -2101,7 +2223,10 @@ class FlaxBasicTransformerBlock(nn.Module):
     # cross attention
     residual = hidden_states
     hidden_states = self.attn2(
-        self.norm2(hidden_states), context, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
+        self.norm2(hidden_states),
+        context,
+        deterministic=deterministic,
+        cross_attention_kwargs=cross_attention_kwargs,
     )
     hidden_states = hidden_states + residual
 
@@ -2172,7 +2297,12 @@ class FlaxTransformer2DModel(nn.Module):
   quant: Quant = (None,)
 
   def setup(self):
-    self.norm = nn.GroupNorm(num_groups=self.norm_num_groups, epsilon=1e-5, dtype=self.dtype, param_dtype=self.weights_dtype)
+    self.norm = nn.GroupNorm(
+        num_groups=self.norm_num_groups,
+        epsilon=1e-5,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+    )
 
     conv_kernel_init = nn.with_logical_partitioning(
         nn.initializers.lecun_normal(), ("keep_1", "keep_2", "conv_in", "conv_out")
@@ -2255,7 +2385,10 @@ class FlaxTransformer2DModel(nn.Module):
 
     for transformer_block in self.transformer_blocks:
       hidden_states = transformer_block(
-          hidden_states, context, deterministic=deterministic, cross_attention_kwargs=cross_attention_kwargs
+          hidden_states,
+          context,
+          deterministic=deterministic,
+          cross_attention_kwargs=cross_attention_kwargs,
       )
 
     if self.use_linear_projection:
@@ -2298,8 +2431,19 @@ class FlaxFeedForward(nn.Module):
   def setup(self):
     # The second linear layer needs to be called
     # net_2 for now to match the index of the Sequential layer
-    self.net_0 = FlaxGEGLU(self.dim, self.dropout, self.dtype, self.weights_dtype, precision=self.precision)
-    self.net_2 = nn.Dense(self.dim, dtype=self.dtype, param_dtype=self.weights_dtype, precision=self.precision)
+    self.net_0 = FlaxGEGLU(
+        self.dim,
+        self.dropout,
+        self.dtype,
+        self.weights_dtype,
+        precision=self.precision,
+    )
+    self.net_2 = nn.Dense(
+        self.dim,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
 
   def __call__(self, hidden_states, deterministic=True):
     hidden_states = self.net_0(hidden_states, deterministic=deterministic)
@@ -2329,7 +2473,12 @@ class FlaxGEGLU(nn.Module):
 
   def setup(self):
     inner_dim = self.dim * 4
-    self.proj = nn.Dense(inner_dim * 2, dtype=self.dtype, param_dtype=self.weights_dtype, precision=self.precision)
+    self.proj = nn.Dense(
+        inner_dim * 2,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
     self.dropout_layer = nn.Dropout(rate=self.dropout)
 
   def __call__(self, hidden_states, deterministic=True):
