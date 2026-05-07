@@ -521,13 +521,11 @@ class LTX2Attention(nnx.Module):
       attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
 
       if perturbation_mask is not None:
-        print("DEBUG: Applying perturbation mask")
         # value is [B, S, InnerDim]
         # attn_output is [B, S, InnerDim]
         attn_output = value + perturbation_mask * (attn_output - value)
 
       if getattr(self, "to_gate_logits", None) is not None:
-        print("DEBUG: Applying gated attention")
         gate_logits = self.to_gate_logits(hidden_states)
         b, s, _ = attn_output.shape
         attn_output = attn_output.reshape(b, s, self.heads, self.dim_head)

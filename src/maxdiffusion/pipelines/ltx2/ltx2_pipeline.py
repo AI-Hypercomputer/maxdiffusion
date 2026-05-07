@@ -1358,14 +1358,6 @@ class LTX2Pipeline:
     latents_jax = latents
     audio_latents_jax = audio_latents
 
-    import os
-    import torch
-
-    home_dir = os.path.expanduser("~")
-    torch.save(torch.from_numpy(np.array(latents).astype(np.float32)).cpu(), os.path.join(home_dir, "latents_jax.pt"))
-    torch.save(torch.from_numpy(np.array(audio_latents).astype(np.float32)).cpu(), os.path.join(home_dir, "audio_latents_jax.pt"))
-    print(f"DEBUG: Saved initial latents to {home_dir} as .pt files")
-
     prompt_embeds_jax = prompt_embeds
     prompt_attention_mask_jax = prompt_attention_mask
 
@@ -1438,20 +1430,10 @@ class LTX2Pipeline:
         spec = NamedSharding(self.mesh, P(*activation_axes))
         video_embeds_sharded = jax.device_put(video_embeds, spec)
         audio_embeds_sharded = jax.device_put(audio_embeds, spec)
-      def _print_stats(name, tensor):
-        print(
-            f"DEBUG {name} shape: {tensor.shape}, mean: {jnp.round(jnp.mean(tensor), 4)}, min: {jnp.round(jnp.min(tensor), 4)}, max: {jnp.round(jnp.max(tensor), 4)}, std: {jnp.round(jnp.std(tensor), 4)}"
-        )
-      _print_stats("video_embeds", video_embeds)
-      _print_stats("audio_embeds", audio_embeds)
-
       timesteps_jax = jnp.array(timesteps, dtype=jnp.float32)
 
       diffusion_loop_start = time.time()
       scan_diffusion_loop = getattr(self.config, "scan_diffusion_loop", True)
-
-      _print_stats("latents_jax_before_loop", latents_jax)
-      _print_stats("audio_latents_jax_before_loop", audio_latents_jax)
       if scan_diffusion_loop:
         latents_jax, audio_latents_jax = run_diffusion_loop(
             graphdef,
@@ -1886,10 +1868,6 @@ def run_diffusion_loop(
   do_cfg = guidance_scale > 1.0
   do_stg = stg_scale > 0.0
 
-  def print_stats_jit(name, tensor):
-    jax.debug.print("DEBUG {name} shape: {shape}, mean: {mean}, min: {min}, max: {max}, std: {std}",
-                    name=name, shape=tensor.shape, mean=jnp.round(jnp.mean(tensor), 4), min=jnp.round(jnp.min(tensor), 4), max=jnp.round(jnp.max(tensor), 4), std=jnp.round(jnp.std(tensor), 4))
-
   # Helper functions matching Diffusers Delta formulation
   def convert_to_x0(lat, vel, sigma_t):
     return lat - vel * sigma_t
@@ -1934,10 +1912,6 @@ def run_diffusion_loop(
           use_cross_timestep=use_cross_timestep,
           is_cfg_stg_mode=do_cfg and do_stg,
       )
-
-      is_first_step = (t == timesteps_jax[0])
-      jax.lax.cond(is_first_step, lambda: print_stats_jit("noise_pred", noise_pred), lambda: None)
-      jax.lax.cond(is_first_step, lambda: print_stats_jit("noise_pred_audio", noise_pred_audio), lambda: None)
 
       # Extract latents_step based on stacking strategy
       if do_cfg and do_stg:
