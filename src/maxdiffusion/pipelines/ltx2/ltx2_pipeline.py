@@ -1520,7 +1520,7 @@ class LTX2Pipeline:
               latents_jax_sharded = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
               audio_latents_jax_sharded = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
               
-              t_val = timestep_pt.float().numpy()[0]
+              t_val = timestep_pt.item()
               t = jnp.array(t_val, dtype=jnp.float32)
               sigma_t = t
 
