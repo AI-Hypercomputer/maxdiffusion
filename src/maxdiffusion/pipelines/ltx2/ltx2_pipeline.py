@@ -1285,18 +1285,24 @@ class LTX2Pipeline:
     jax.block_until_ready(prompt_embeds)
     max_logging.log(f"⏱️ Text Encoder Time: {time.time() - text_enc_start:.4f} seconds")
 
-    # Continuous Gemma Embeddings Parity isolation check
+    # Layer-by-layer Gemma Continuous Embeddings Parity isolation check
     import os
     import torch
     home_dir = os.path.expanduser("~")
     pt_gemma_path = os.path.join(home_dir, "pt_gemma_embeds.pt")
     if os.path.exists(pt_gemma_path):
       gemma_pt = jnp.array(torch.load(pt_gemma_path).float().numpy(), dtype=jnp.float32)
-      # Stack JAX's prompt embeddings list along axis 2 and flatten
-      stacked_jax = jnp.stack(prompt_embeds, axis=2)
-      gemma_jax = stacked_jax.reshape(stacked_jax.shape[0], stacked_jax.shape[1], -1)
-      mse = jnp.mean((gemma_jax - gemma_pt) ** 2)
-      max_logging.log(f"📊 [Gemma Continuous Embeddings Parity] MSE: {mse:.6f}")
+      # Unflatten PyTorch's flattened continuous sequence back to (B, L, 49, 3840)
+      pt_unflattened = gemma_pt.reshape(gemma_pt.shape[0], gemma_pt.shape[1], 49, 3840)
+      
+      # Compare layers natively without flattening transposes
+      mse_l0 = jnp.mean((prompt_embeds[0] - pt_unflattened[:, :, 0, :]) ** 2)
+      mse_l24 = jnp.mean((prompt_embeds[24] - pt_unflattened[:, :, 24, :]) ** 2)
+      mse_l48 = jnp.mean((prompt_embeds[48] - pt_unflattened[:, :, 48, :]) ** 2)
+      
+      max_logging.log(f"📊 [Gemma Continuous Embeddings Parity] Layer 0 MSE: {mse_l0:.6f} | Layer 24 MSE: {mse_l24:.6f} | Layer 48 MSE: {mse_l48:.6f}")
+
+
 
     # 3. Prepare latents
     batch_size = prompt_embeds[0].shape[0] if isinstance(prompt_embeds, list) else prompt_embeds.shape[0]
@@ -1318,6 +1324,8 @@ class LTX2Pipeline:
         latents=latents,
     )
 
+
+
     # Starting Latent Noise Parity isolation check
     import os
     import torch
@@ -1325,7 +1333,7 @@ class LTX2Pipeline:
     pt_latents_path = os.path.join(home_dir, "pt_latents_step_0.pt")
     if os.path.exists(pt_latents_path):
       latents_pt = jnp.array(torch.load(pt_latents_path).float().numpy(), dtype=jnp.float32)
-      # Extract JAX's first Cond slice to compare against PyTorch
+      # Compare JAX starting noise directly against PyTorch
       latents_jax_slice = jnp.array(latents, dtype=jnp.float32)
       mse = jnp.mean((latents_jax_slice - latents_pt) ** 2)
       max_logging.log(f"📊 [Starting Latent Noise Parity] MSE: {mse:.6f}")
@@ -1455,9 +1463,9 @@ class LTX2Pipeline:
       pt_video_path = os.path.join(home_dir, "pt_video_prompt_embeds.pt")
       if os.path.exists(pt_video_path):
         video_pt = jnp.array(torch.load(pt_video_path).float().numpy(), dtype=jnp.float32)
-        # Extract JAX's first Cond slice to compare against PyTorch
-        video_jax = jnp.array(video_embeds[:1], dtype=jnp.float32)
-        mse = jnp.mean((video_jax - video_pt[:1]) ** 2)
+        # Compare JAX video embeds directly against PyTorch
+        video_jax = jnp.array(video_embeds, dtype=jnp.float32)
+        mse = jnp.mean((video_jax - video_pt) ** 2)
         max_logging.log(f"📊 [Text Connectors Video Output Parity] MSE: {mse:.6f}")
 
       video_embeds_sharded = video_embeds
