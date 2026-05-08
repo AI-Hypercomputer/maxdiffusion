@@ -1987,6 +1987,14 @@ def run_diffusion_loop(
   audio_latents_jax = audio_latents_jax.astype(jnp.float32)
   transformer = nnx.merge(graphdef, state)
 
+  # Temporary Compile-Time Prints
+  print(f"🔍 [Compile-Time run_diffusion_loop]")
+  print(f"  - guidance_scale: {guidance_scale}")
+  print(f"  - stg_scale: {stg_scale}")
+  print(f"  - modality_scale: {modality_scale}")
+  print(f"  - do_cfg: {guidance_scale > 1.0}")
+  print(f"  - do_stg: {stg_scale > 0.0}")
+
   do_cfg = guidance_scale > 1.0
   do_stg = stg_scale > 0.0
 
