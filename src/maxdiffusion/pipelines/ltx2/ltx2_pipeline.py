@@ -1575,6 +1575,13 @@ class LTX2Pipeline:
               pt_out = jnp.concatenate([cfg_pt, stg_pt, mig_pt], axis=0)
               jax_out = jnp.array(noise_pred, dtype=jnp.float32)
 
+              # Print surgical shape and range logs
+              max_logging.log(f"🔍 [Step 0 Diagnostic Shapes]")
+              max_logging.log(f"  - latents_jax_sharded shape: {latents_jax_sharded.shape} | range: [{latents_jax_sharded.min():.4f}, {latents_jax_sharded.max():.4f}]")
+              max_logging.log(f"  - jax_out shape: {jax_out.shape} | range: [{jax_out.min():.4f}, {jax_out.max():.4f}]")
+              max_logging.log(f"  - pt_out shape: {pt_out.shape} | range: [{pt_out.min():.4f}, {pt_out.max():.4f}]")
+              max_logging.log(f"  - sigma_t: {sigma_t}")
+
               mse = jnp.mean((jax_out - pt_out) ** 2)
               max_diff = jnp.max(jnp.abs(jax_out - pt_out))
               max_logging.log(f"📊 [Step {i} Video Parity] Full 4-Way MSE (Mixed Domain): {mse:.6f} | Max Diff: {max_diff:.6f}")
