@@ -1292,13 +1292,14 @@ class LTX2Pipeline:
     pt_gemma_path = os.path.join(home_dir, "pt_gemma_embeds.pt")
     if os.path.exists(pt_gemma_path):
       gemma_pt = jnp.array(torch.load(pt_gemma_path).float().numpy(), dtype=jnp.float32)
-      # Unflatten PyTorch's flattened continuous sequence back to (B, L, 49, 3840)
-      pt_unflattened = gemma_pt.reshape(gemma_pt.shape[0], gemma_pt.shape[1], 49, 3840)
+      # Unflatten PyTorch's sequence in Channel-first order (3840, 49) and transpose to Layer-first order (49, 3840)
+      pt_unflattened = gemma_pt.reshape(gemma_pt.shape[0], gemma_pt.shape[1], 3840, 49)
+      pt_unflattened_transposed = pt_unflattened.transpose(0, 1, 3, 2)
       
-      # Compare layers natively without flattening transposes
-      mse_l0 = jnp.mean((prompt_embeds[0] - pt_unflattened[:, :, 0, :]) ** 2)
-      mse_l24 = jnp.mean((prompt_embeds[24] - pt_unflattened[:, :, 24, :]) ** 2)
-      mse_l48 = jnp.mean((prompt_embeds[48] - pt_unflattened[:, :, 48, :]) ** 2)
+      # Compare JAX's Positive prompt layers directly against PyTorch's Positive prompt layers (Slice 1)
+      mse_l0 = jnp.mean((prompt_embeds[0] - pt_unflattened_transposed[1:2, :, 0, :]) ** 2)
+      mse_l24 = jnp.mean((prompt_embeds[24] - pt_unflattened_transposed[1:2, :, 24, :]) ** 2)
+      mse_l48 = jnp.mean((prompt_embeds[48] - pt_unflattened_transposed[1:2, :, 48, :]) ** 2)
       
       max_logging.log(f"📊 [Gemma Continuous Embeddings Parity] Layer 0 MSE: {mse_l0:.6f} | Layer 24 MSE: {mse_l24:.6f} | Layer 48 MSE: {mse_l48:.6f}")
 
@@ -1463,8 +1464,8 @@ class LTX2Pipeline:
       pt_video_path = os.path.join(home_dir, "pt_video_prompt_embeds.pt")
       if os.path.exists(pt_video_path):
         video_pt = jnp.array(torch.load(pt_video_path).float().numpy(), dtype=jnp.float32)
-        # Compare JAX video embeds directly against PyTorch
-        video_jax = jnp.array(video_embeds, dtype=jnp.float32)
+        # Compare JAX video embeds first two slices directly against PyTorch
+        video_jax = jnp.array(video_embeds[:2], dtype=jnp.float32)
         mse = jnp.mean((video_jax - video_pt) ** 2)
         max_logging.log(f"📊 [Text Connectors Video Output Parity] MSE: {mse:.6f}")
 
