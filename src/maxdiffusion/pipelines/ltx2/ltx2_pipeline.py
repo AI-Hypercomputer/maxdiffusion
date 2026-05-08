@@ -1423,27 +1423,7 @@ class LTX2Pipeline:
       jax.block_until_ready(video_embeds)
       max_logging.log(f"⏱️ Connectors Time: {time.time() - connectors_start:.4f} seconds")
 
-      # Diagnostic Transformer Isolation Test: Load/overwrite connector inputs from PyTorch
-      import os
-      import torch
-      home_dir = os.path.expanduser("~")
-      pt_video_path = os.path.join(home_dir, "pt_video_prompt_embeds.pt")
-      pt_audio_path = os.path.join(home_dir, "pt_audio_prompt_embeds.pt")
-      pt_mask_path = os.path.join(home_dir, "pt_prompt_attn_mask.pt")
 
-      if os.path.exists(pt_video_path):
-        max_logging.log(f"🚨 [Diagnostic Transformer Test] Loading PyTorch connector outputs from {pt_video_path}...")
-        video_pt = torch.load(pt_video_path)
-        audio_pt = torch.load(pt_audio_path)
-        mask_pt = torch.load(pt_mask_path)
-
-        video_uncond, video_cond = jnp.split(jnp.array(video_pt.float().numpy(), dtype=dtype), 2, axis=0)
-        audio_uncond, audio_cond = jnp.split(jnp.array(audio_pt.float().numpy(), dtype=dtype), 2, axis=0)
-        mask_uncond, mask_cond = jnp.split(jnp.array(mask_pt.numpy(), dtype=jnp.bool_), 2, axis=0)
-
-        video_embeds = jnp.concatenate([video_uncond, video_cond, video_cond, video_cond], axis=0)
-        audio_embeds = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
-        new_attention_mask = jnp.concatenate([mask_uncond, mask_cond, mask_cond, mask_cond], axis=0)
 
       video_embeds_sharded = video_embeds
       audio_embeds_sharded = audio_embeds
@@ -1498,32 +1478,7 @@ class LTX2Pipeline:
           latents_jax_sharded = latents_jax
           audio_latents_jax_sharded = audio_latents_jax
 
-          if i < 5:
-            import os
-            import torch
-            home_dir = os.path.expanduser("~")
-            pt_latents_path = os.path.join(home_dir, f"pt_latents_step_{i}.pt")
-            pt_audio_latents_path = os.path.join(home_dir, f"pt_audio_latents_step_{i}.pt")
-            pt_timestep_path = os.path.join(home_dir, f"pt_timestep_step_{i}.pt")
 
-            if os.path.exists(pt_latents_path):
-              max_logging.log(f"🚨 [Diagnostic Step {i}] Overwriting transformer inputs with PyTorch data...")
-              latents_pt = torch.load(pt_latents_path)
-              audio_latents_pt = torch.load(pt_audio_latents_path)
-              timestep_pt = torch.load(pt_timestep_path)
-
-              latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
-              audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
-
-              latents_uncond, latents_cond = jnp.split(latents_pt_arr, 2, axis=0)
-              audio_uncond, audio_cond = jnp.split(audio_latents_pt_arr, 2, axis=0)
-
-              latents_jax_sharded = jnp.concatenate([latents_uncond, latents_cond, latents_cond, latents_cond], axis=0)
-              audio_latents_jax_sharded = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
-              
-              t_val = timestep_pt.item()
-              t = jnp.array(t_val, dtype=jnp.float32)
-              # sigma_t is kept at JAX scheduler's sigmas[i] (unscaled [0.0, 1.0])
 
           if not self.transformer.scan_layers:
             activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
@@ -1557,77 +1512,8 @@ class LTX2Pipeline:
           if i < 5:
             max_logging.log(f"🚨 [Python Loop Step {i} Video Prediction] mean: {noise_pred.mean()} | std: {noise_pred.std()}")
 
-          if i < 5:
-            import os
-            import torch
-            home_dir = os.path.expanduser("~")
-            pt_cfg_path = os.path.join(home_dir, f"pt_noise_pred_cfg_step_{i}.pt")
-            pt_stg_path = os.path.join(home_dir, f"pt_noise_pred_stg_step_{i}.pt")
-            pt_mig_path = os.path.join(home_dir, f"pt_noise_pred_mig_step_{i}.pt")
-
-            pt_audio_cfg_path = os.path.join(home_dir, f"pt_audio_noise_pred_cfg_step_{i}.pt")
-            pt_audio_stg_path = os.path.join(home_dir, f"pt_audio_noise_pred_stg_step_{i}.pt")
-            pt_audio_mig_path = os.path.join(home_dir, f"pt_audio_noise_pred_mig_step_{i}.pt")
-
-            if os.path.exists(pt_cfg_path) and os.path.exists(pt_stg_path) and os.path.exists(pt_mig_path):
-              # Load and concatenate PyTorch video inputs
-              cfg_pt = jnp.array(torch.load(pt_cfg_path).float().numpy(), dtype=jnp.float32)
-              stg_pt = jnp.array(torch.load(pt_stg_path).float().numpy(), dtype=jnp.float32)
-              mig_pt = jnp.array(torch.load(pt_mig_path).float().numpy(), dtype=jnp.float32)
-              
-              pt_out = jnp.concatenate([cfg_pt, stg_pt, mig_pt], axis=0)
-              jax_out = jnp.array(noise_pred, dtype=jnp.float32)
-
-              # Print surgical shape and range logs
-              max_logging.log(f"🔍 [Step 0 Diagnostic Shapes]")
-              max_logging.log(f"  - latents_jax_sharded shape: {latents_jax_sharded.shape}")
-              max_logging.log(f"  - jax_out shape: {jax_out.shape}")
-              max_logging.log(f"  - pt_out shape: {pt_out.shape}")
-              max_logging.log(f"  - sigma_t: {sigma_t}")
-
-              mse = jnp.mean((jax_out - pt_out) ** 2)
-              max_diff = jnp.max(jnp.abs(jax_out - pt_out))
-              max_logging.log(f"📊 [Step {i} Video Parity] Full 4-Way MSE (Mixed Domain): {mse:.6f} | Max Diff: {max_diff:.6f}")
-
-              # Slice-by-Slice Video Analysis
-              for idx, name in enumerate(["Uncond", "Cond", "Perturb (STG)", "Isolated (MIG)"]):
-                p_slice = pt_out[idx]
-                if idx in [0, 1]:
-                  # CFG Slices: Velocity vs Velocity
-                  j_slice = jax_out[idx]
-                else:
-                  # STG/MIG Slices: Convert JAX velocity slice to x0 domain to match PyTorch
-                  j_slice = latents_jax_sharded[idx] - jax_out[idx] * sigma_t
-                
-                slice_mse = jnp.mean((j_slice - p_slice) ** 2)
-                slice_max = jnp.max(jnp.abs(j_slice - p_slice))
-                max_logging.log(f"  - {name} Video MSE: {slice_mse:.6f} | Max Diff: {slice_max:.6f}")
-
-              # Load and concatenate PyTorch audio inputs
-              cfg_audio_pt = jnp.array(torch.load(pt_audio_cfg_path).float().numpy(), dtype=jnp.float32)
-              stg_audio_pt = jnp.array(torch.load(pt_audio_stg_path).float().numpy(), dtype=jnp.float32)
-              mig_audio_pt = jnp.array(torch.load(pt_audio_mig_path).float().numpy(), dtype=jnp.float32)
-
-              pt_audio_out = jnp.concatenate([cfg_audio_pt, stg_audio_pt, mig_audio_pt], axis=0)
-              jax_audio_out = jnp.array(noise_pred_audio, dtype=jnp.float32)
-
-              audio_mse = jnp.mean((jax_audio_out - pt_audio_out) ** 2)
-              audio_max_diff = jnp.max(jnp.abs(jax_audio_out - pt_audio_out))
-              max_logging.log(f"📊 [Step {i} Audio Parity] Full 4-Way MSE (Mixed Domain): {audio_mse:.6f} | Max Diff: {audio_max_diff:.6f}")
-
-              # Slice-by-Slice Audio Analysis
-              for idx, name in enumerate(["Uncond", "Cond", "Perturb (STG)", "Isolated (MIG)"]):
-                p_slice = pt_audio_out[idx]
-                if idx in [0, 1]:
-                  # CFG Slices: Velocity vs Velocity
-                  j_slice = jax_audio_out[idx]
-                else:
-                  # STG/MIG Slices: Convert JAX velocity slice to x0 domain to match PyTorch
-                  j_slice = audio_latents_jax_sharded[idx] - jax_audio_out[idx] * sigma_t
-
-                slice_mse = jnp.mean((j_slice - p_slice) ** 2)
-                slice_max = jnp.max(jnp.abs(j_slice - p_slice))
-                max_logging.log(f"  - {name} Audio MSE: {slice_mse:.6f} | Max Diff: {slice_max:.6f}")
+          if i == 1:
+            max_logging.log(f"🔍 [Python Loop Step 1 Transformer Inputs] latents mean: {latents_jax_sharded.mean()} | timestep: {t} | sigma: {sigma_t} | is_cfg_stg: {do_cfg and do_stg}")
 
           # Extract latents_step based on stacking strategy
           if do_cfg and do_stg:
@@ -1689,8 +1575,7 @@ class LTX2Pipeline:
           latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
           audio_latents_step, _ = self.scheduler.step(scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
 
-          if i == 0:
-            max_logging.log(f"🚨 [Python Loop Step 0 Scheduler Output Latents] mean: {latents_step.mean()} | std: {latents_step.std()}")
+
 
           if do_cfg and do_stg:
             latents_jax = jnp.concatenate([latents_step] * 4, axis=0)
@@ -2058,6 +1943,15 @@ def run_diffusion_loop(
           step_idx
       )
 
+      # Print overall Transformer inputs at Step 1 specifically
+      jax.lax.cond(
+          step_idx == 1,
+          lambda idx: jax.debug.print("🔍 [JIT Scanned Loop Step 1 Transformer Inputs] latents mean: {mean} | timestep: {t} | sigma: {sig} | is_cfg_stg: {stg}", 
+                                      mean=latents_sharded.mean(), t=t, sig=sigma_t, stg=is_cfg_stg_mode),
+          lambda idx: None,
+          step_idx
+      )
+
       # Extract latents_step based on stacking strategy
       if do_cfg and do_stg:
         latents_step = latents[batch_size : 2 * batch_size]
@@ -2122,12 +2016,7 @@ def run_diffusion_loop(
       latents_step, _ = scheduler_step(s_state, noise_pred, t, latents_step, return_dict=False)
       latents_step = latents_step.astype(latents.dtype)
 
-      # Dynamic compile-safe Step 0 print to trace scheduler output latents
-      jax.lax.cond(
-          step_idx == 0,
-          lambda: jax.debug.print("🚨 [JIT Scanned Loop Step 0 Scheduler Output Latents] mean: {mean} | std: {std}", mean=latents_step.mean(), std=latents_step.std()),
-          lambda: None
-      )
+
 
       audio_latents_step, _ = scheduler_step(s_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
       audio_latents_step = audio_latents_step.astype(audio_latents.dtype)
