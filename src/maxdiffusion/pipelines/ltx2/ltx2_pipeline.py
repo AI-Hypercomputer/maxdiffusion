@@ -1469,6 +1469,28 @@ class LTX2Pipeline:
         mse = jnp.mean((video_jax - video_pt) ** 2)
         max_logging.log(f"📊 [Text Connectors Video Output Parity] MSE: {mse:.6f}")
 
+      # Developer Diagnostic Mode: Load and overwrite connectors outputs from PyTorch
+      import os
+      import torch
+      home_dir = os.path.expanduser("~")
+      pt_video_path = os.path.join(home_dir, "pt_video_prompt_embeds.pt")
+      pt_audio_path = os.path.join(home_dir, "pt_audio_prompt_embeds.pt")
+      pt_mask_path = os.path.join(home_dir, "pt_prompt_attn_mask.pt")
+
+      if os.path.exists(pt_video_path):
+        max_logging.log("🚨 [Diagnostic Mode] Overwriting connectors output with PyTorch reference...")
+        video_pt = torch.load(pt_video_path)
+        audio_pt = torch.load(pt_audio_path)
+        mask_pt = torch.load(pt_mask_path)
+
+        video_uncond, video_cond = jnp.split(jnp.array(video_pt.float().numpy(), dtype=dtype), 2, axis=0)
+        audio_uncond, audio_cond = jnp.split(jnp.array(audio_pt.float().numpy(), dtype=dtype), 2, axis=0)
+        mask_uncond, mask_cond = jnp.split(jnp.array(mask_pt.numpy(), dtype=jnp.bool_), 2, axis=0)
+
+        video_embeds = jnp.concatenate([video_uncond, video_cond, video_cond, video_cond], axis=0)
+        audio_embeds = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
+        new_attention_mask = jnp.concatenate([mask_uncond, mask_cond, mask_cond, mask_cond], axis=0)
+
       video_embeds_sharded = video_embeds
       audio_embeds_sharded = audio_embeds
 
@@ -1522,7 +1544,34 @@ class LTX2Pipeline:
           latents_jax_sharded = latents_jax
           audio_latents_jax_sharded = audio_latents_jax
 
+          # Developer Diagnostic Mode: Load and overwrite intermediate latents/timesteps from PyTorch
+          if i < 5:
+            import os
+            import torch
+            home_dir = os.path.expanduser("~")
+            pt_latents_path = os.path.join(home_dir, f"pt_latents_step_{i}.pt")
+            pt_audio_latents_path = os.path.join(home_dir, f"pt_audio_latents_step_{i}.pt")
+            pt_timestep_path = os.path.join(home_dir, f"pt_timestep_step_{i}.pt")
 
+            if os.path.exists(pt_latents_path):
+              max_logging.log(f"🚨 [Diagnostic Mode] Loading PyTorch Step {i} inputs...")
+              latents_pt = torch.load(pt_latents_path)
+              audio_latents_pt = torch.load(pt_audio_latents_path)
+              timestep_pt = torch.load(pt_timestep_path)
+
+              latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
+              audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
+
+              latents_uncond, latents_cond = jnp.split(latents_pt_arr, 2, axis=0)
+              audio_uncond, audio_cond = jnp.split(audio_latents_pt_arr, 2, axis=0)
+
+              # Concatenate to stacked shape 4: [Uncond, Cond, Cond, Cond]
+              latents_jax_sharded = jnp.concatenate([latents_uncond, latents_cond, latents_cond, latents_cond], axis=0)
+              audio_latents_jax_sharded = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
+
+              t_val = timestep_pt.item()
+              t = jnp.array(t_val, dtype=jnp.float32)
+              # sigma_t remains at JAX scheduler's sigmas[i] (unscaled [0.0, 1.0])
 
           if not self.transformer.scan_layers:
             activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
