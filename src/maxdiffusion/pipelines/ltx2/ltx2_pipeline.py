@@ -1577,12 +1577,18 @@ class LTX2Pipeline:
 
               mse = jnp.mean((jax_out - pt_out) ** 2)
               max_diff = jnp.max(jnp.abs(jax_out - pt_out))
-              max_logging.log(f"📊 [Step {i} Video Parity] Full 4-Way MSE: {mse:.6f} | Max Diff: {max_diff:.6f}")
+              max_logging.log(f"📊 [Step {i} Video Parity] Full 4-Way MSE (Mixed Domain): {mse:.6f} | Max Diff: {max_diff:.6f}")
 
               # Slice-by-Slice Video Analysis
               for idx, name in enumerate(["Uncond", "Cond", "Perturb (STG)", "Isolated (MIG)"]):
                 p_slice = pt_out[idx]
-                j_slice = jax_out[idx]
+                if idx in [0, 1]:
+                  # CFG Slices: Velocity vs Velocity
+                  j_slice = jax_out[idx]
+                else:
+                  # STG/MIG Slices: Convert JAX velocity slice to x0 domain to match PyTorch
+                  j_slice = latents_jax_sharded[idx] - jax_out[idx] * sigma_t
+                
                 slice_mse = jnp.mean((j_slice - p_slice) ** 2)
                 slice_max = jnp.max(jnp.abs(j_slice - p_slice))
                 max_logging.log(f"  - {name} Video MSE: {slice_mse:.6f} | Max Diff: {slice_max:.6f}")
@@ -1597,12 +1603,18 @@ class LTX2Pipeline:
 
               audio_mse = jnp.mean((jax_audio_out - pt_audio_out) ** 2)
               audio_max_diff = jnp.max(jnp.abs(jax_audio_out - pt_audio_out))
-              max_logging.log(f"📊 [Step {i} Audio Parity] Full 4-Way MSE: {audio_mse:.6f} | Max Diff: {audio_max_diff:.6f}")
+              max_logging.log(f"📊 [Step {i} Audio Parity] Full 4-Way MSE (Mixed Domain): {audio_mse:.6f} | Max Diff: {audio_max_diff:.6f}")
 
               # Slice-by-Slice Audio Analysis
               for idx, name in enumerate(["Uncond", "Cond", "Perturb (STG)", "Isolated (MIG)"]):
                 p_slice = pt_audio_out[idx]
-                j_slice = jax_audio_out[idx]
+                if idx in [0, 1]:
+                  # CFG Slices: Velocity vs Velocity
+                  j_slice = jax_audio_out[idx]
+                else:
+                  # STG/MIG Slices: Convert JAX velocity slice to x0 domain to match PyTorch
+                  j_slice = audio_latents_jax_sharded[idx] - jax_audio_out[idx] * sigma_t
+
                 slice_mse = jnp.mean((j_slice - p_slice) ** 2)
                 slice_max = jnp.max(jnp.abs(j_slice - p_slice))
                 max_logging.log(f"  - {name} Audio MSE: {slice_mse:.6f} | Max Diff: {slice_max:.6f}")
