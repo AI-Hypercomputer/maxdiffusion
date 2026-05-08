@@ -1292,7 +1292,9 @@ class LTX2Pipeline:
     pt_gemma_path = os.path.join(home_dir, "pt_gemma_embeds.pt")
     if os.path.exists(pt_gemma_path):
       gemma_pt = jnp.array(torch.load(pt_gemma_path).float().numpy(), dtype=jnp.float32)
-      gemma_jax = jnp.array(prompt_embeds, dtype=jnp.float32)
+      # Stack JAX's prompt embeddings list along axis 2 and flatten
+      stacked_jax = jnp.stack(prompt_embeds, axis=2)
+      gemma_jax = stacked_jax.reshape(stacked_jax.shape[0], stacked_jax.shape[1], -1)
       mse = jnp.mean((gemma_jax - gemma_pt) ** 2)
       max_logging.log(f"📊 [Gemma Continuous Embeddings Parity] MSE: {mse:.6f}")
 
