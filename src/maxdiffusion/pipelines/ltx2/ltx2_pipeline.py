@@ -1503,10 +1503,31 @@ class LTX2Pipeline:
           latents_jax_sharded = latents_jax
           audio_latents_jax_sharded = audio_latents_jax
 
+          if i == 0:
+            import os
+            import torch
+            home_dir = os.path.expanduser("~")
+            pt_latents_path = os.path.join(home_dir, "pt_latents_step_0.pt")
+            pt_audio_latents_path = os.path.join(home_dir, "pt_audio_latents_step_0.pt")
+            pt_timestep_path = os.path.join(home_dir, "pt_timestep_step_0.pt")
+
+            if os.path.exists(pt_latents_path):
+              max_logging.log("🚨 [Diagnostic Step 0] Overwriting transformer inputs with PyTorch data...")
+              latents_pt = torch.load(pt_latents_path)
+              audio_latents_pt = torch.load(pt_audio_latents_path)
+              timestep_pt = torch.load(pt_timestep_path)
+
+              latents_jax_sharded = jnp.array(latents_pt.numpy(), dtype=latents_jax.dtype)
+              audio_latents_jax_sharded = jnp.array(audio_latents_pt.numpy(), dtype=audio_latents_jax.dtype)
+              
+              t_val = timestep_pt.float().numpy()[0]
+              t = jnp.array(t_val, dtype=jnp.float32)
+              sigma_t = t
+
           if not self.transformer.scan_layers:
             activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
-            latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax, activation_axis_names)
-            audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax, activation_axis_names)
+            latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax_sharded, activation_axis_names)
+            audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax_sharded, activation_axis_names)
 
           noise_pred, noise_pred_audio = transformer_forward_pass(
               graphdef,
@@ -1531,6 +1552,26 @@ class LTX2Pipeline:
               use_cross_timestep=use_cross_timestep,
               is_cfg_stg_mode=do_cfg and do_stg,
           )
+
+          if i == 0:
+            import os
+            import torch
+            home_dir = os.path.expanduser("~")
+            pt_out_path = os.path.join(home_dir, "pt_noise_pred_step_0.pt")
+            pt_audio_out_path = os.path.join(home_dir, "pt_audio_noise_pred_step_0.pt")
+
+            if os.path.exists(pt_out_path):
+              pt_out = jnp.array(torch.load(pt_out_path).numpy(), dtype=jnp.float32)
+              jax_out = jnp.array(noise_pred, dtype=jnp.float32)
+              mse = jnp.mean((jax_out - pt_out) ** 2)
+              max_diff = jnp.max(jnp.abs(jax_out - pt_out))
+              max_logging.log(f"📊 [Step 0 Video Parity] MSE: {mse:.6f} | Max Diff: {max_diff:.6f}")
+
+              pt_audio_out = jnp.array(torch.load(pt_audio_out_path).numpy(), dtype=jnp.float32)
+              jax_audio_out = jnp.array(noise_pred_audio, dtype=jnp.float32)
+              audio_mse = jnp.mean((jax_audio_out - pt_audio_out) ** 2)
+              audio_max_diff = jnp.max(jnp.abs(jax_audio_out - pt_audio_out))
+              max_logging.log(f"📊 [Step 0 Audio Parity] MSE: {audio_mse:.6f} | Max Diff: {audio_max_diff:.6f}")
 
           # Extract latents_step based on stacking strategy
           if do_cfg and do_stg:
