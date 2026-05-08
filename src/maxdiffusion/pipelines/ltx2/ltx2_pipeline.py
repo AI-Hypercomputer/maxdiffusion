@@ -1579,6 +1579,14 @@ class LTX2Pipeline:
               max_diff = jnp.max(jnp.abs(jax_out - pt_out))
               max_logging.log(f"📊 [Step {i} Video Parity] Full 4-Way MSE: {mse:.6f} | Max Diff: {max_diff:.6f}")
 
+              # Slice-by-Slice Video Analysis
+              for idx, name in enumerate(["Uncond", "Cond", "Perturb (STG)", "Isolated (MIG)"]):
+                p_slice = pt_out[idx]
+                j_slice = jax_out[idx]
+                slice_mse = jnp.mean((j_slice - p_slice) ** 2)
+                slice_max = jnp.max(jnp.abs(j_slice - p_slice))
+                max_logging.log(f"  - {name} Video MSE: {slice_mse:.6f} | Max Diff: {slice_max:.6f}")
+
               # Load and concatenate PyTorch audio inputs
               cfg_audio_pt = jnp.array(torch.load(pt_audio_cfg_path).float().numpy(), dtype=jnp.float32)
               stg_audio_pt = jnp.array(torch.load(pt_audio_stg_path).float().numpy(), dtype=jnp.float32)
@@ -1590,6 +1598,14 @@ class LTX2Pipeline:
               audio_mse = jnp.mean((jax_audio_out - pt_audio_out) ** 2)
               audio_max_diff = jnp.max(jnp.abs(jax_audio_out - pt_audio_out))
               max_logging.log(f"📊 [Step {i} Audio Parity] Full 4-Way MSE: {audio_mse:.6f} | Max Diff: {audio_max_diff:.6f}")
+
+              # Slice-by-Slice Audio Analysis
+              for idx, name in enumerate(["Uncond", "Cond", "Perturb (STG)", "Isolated (MIG)"]):
+                p_slice = pt_audio_out[idx]
+                j_slice = jax_audio_out[idx]
+                slice_mse = jnp.mean((j_slice - p_slice) ** 2)
+                slice_max = jnp.max(jnp.abs(j_slice - p_slice))
+                max_logging.log(f"  - {name} Audio MSE: {slice_mse:.6f} | Max Diff: {slice_max:.6f}")
 
           # Extract latents_step based on stacking strategy
           if do_cfg and do_stg:
