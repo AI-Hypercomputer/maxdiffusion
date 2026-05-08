@@ -1523,7 +1523,7 @@ class LTX2Pipeline:
               
               t_val = timestep_pt.item()
               t = jnp.array(t_val, dtype=jnp.float32)
-              sigma_t = t
+              # sigma_t is kept at JAX scheduler's sigmas[i] (unscaled [0.0, 1.0])
 
           if not self.transformer.scan_layers:
             activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
