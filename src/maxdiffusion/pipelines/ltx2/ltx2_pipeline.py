@@ -1947,7 +1947,7 @@ def run_diffusion_loop(
       jax.lax.cond(
           step_idx == 1,
           lambda idx: jax.debug.print("🔍 [JIT Scanned Loop Step 1 Transformer Inputs] latents mean: {mean} | timestep: {t} | sigma: {sig} | is_cfg_stg: {stg}", 
-                                      mean=latents_sharded.mean(), t=t, sig=sigma_t, stg=is_cfg_stg_mode),
+                                      mean=latents_sharded.mean(), t=t, sig=sigma_t, stg=do_cfg and do_stg),
           lambda idx: None,
           step_idx
       )
