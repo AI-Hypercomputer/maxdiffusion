@@ -1437,18 +1437,9 @@ class LTX2Pipeline:
         audio_pt = torch.load(pt_audio_path)
         mask_pt = torch.load(pt_mask_path)
 
-        video_uncond, video_cond = jnp.split(jnp.array(video_pt.float().numpy(), dtype=dtype), 2, axis=0)
-        audio_uncond, audio_cond = jnp.split(jnp.array(audio_pt.float().numpy(), dtype=dtype), 2, axis=0)
-        mask_uncond, mask_cond = jnp.split(jnp.array(mask_pt.numpy(), dtype=jnp.bool_), 2, axis=0)
-
-        if do_cfg and do_stg:
-          video_embeds = jnp.concatenate([video_uncond, video_cond, video_cond, video_cond], axis=0)
-          audio_embeds = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
-          new_attention_mask = jnp.concatenate([mask_uncond, mask_cond, mask_cond, mask_cond], axis=0)
-        elif do_cfg:
-          video_embeds = jnp.concatenate([video_uncond, video_cond], axis=0)
-          audio_embeds = jnp.concatenate([audio_uncond, audio_cond], axis=0)
-          new_attention_mask = jnp.concatenate([mask_uncond, mask_cond], axis=0)
+        video_embeds = jnp.array(video_pt.float().numpy(), dtype=dtype)
+        audio_embeds = jnp.array(audio_pt.float().numpy(), dtype=dtype)
+        new_attention_mask = jnp.array(mask_pt.numpy(), dtype=jnp.bool_)
 
       video_embeds_sharded = video_embeds
       audio_embeds_sharded = audio_embeds
