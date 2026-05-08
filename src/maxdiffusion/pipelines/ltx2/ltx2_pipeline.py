@@ -1551,7 +1551,7 @@ class LTX2Pipeline:
               sigma=sigma_t,
               audio_sigma=sigma_t,
               use_cross_timestep=use_cross_timestep,
-              is_cfg_stg_mode=(do_cfg and do_stg) and not os.path.exists(pt_latents_path),
+              is_cfg_stg_mode=do_cfg and do_stg,
           )
 
           if i < 5:
