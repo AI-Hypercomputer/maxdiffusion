@@ -1285,6 +1285,17 @@ class LTX2Pipeline:
     jax.block_until_ready(prompt_embeds)
     max_logging.log(f"⏱️ Text Encoder Time: {time.time() - text_enc_start:.4f} seconds")
 
+    # Continuous Gemma Embeddings Parity isolation check
+    import os
+    import torch
+    home_dir = os.path.expanduser("~")
+    pt_gemma_path = os.path.join(home_dir, "pt_gemma_embeds.pt")
+    if os.path.exists(pt_gemma_path):
+      gemma_pt = jnp.array(torch.load(pt_gemma_path).float().numpy(), dtype=jnp.float32)
+      gemma_jax = jnp.array(prompt_embeds, dtype=jnp.float32)
+      mse = jnp.mean((gemma_jax - gemma_pt) ** 2)
+      max_logging.log(f"📊 [Gemma Continuous Embeddings Parity] MSE: {mse:.6f}")
+
     # 3. Prepare latents
     batch_size = prompt_embeds[0].shape[0] if isinstance(prompt_embeds, list) else prompt_embeds.shape[0]
 
@@ -1304,6 +1315,18 @@ class LTX2Pipeline:
         generator=key_latents,
         latents=latents,
     )
+
+    # Starting Latent Noise Parity isolation check
+    import os
+    import torch
+    home_dir = os.path.expanduser("~")
+    pt_latents_path = os.path.join(home_dir, "pt_latents_step_0.pt")
+    if os.path.exists(pt_latents_path):
+      latents_pt = jnp.array(torch.load(pt_latents_path).float().numpy(), dtype=jnp.float32)
+      # Extract JAX's first Cond slice to compare against PyTorch
+      latents_jax_slice = jnp.array(latents, dtype=jnp.float32)
+      mse = jnp.mean((latents_jax_slice - latents_pt) ** 2)
+      max_logging.log(f"📊 [Starting Latent Noise Parity] MSE: {mse:.6f}")
 
     latent_height = height // self.vae_spatial_compression_ratio
     latent_width = width // self.vae_spatial_compression_ratio
@@ -1423,7 +1446,17 @@ class LTX2Pipeline:
       jax.block_until_ready(video_embeds)
       max_logging.log(f"⏱️ Connectors Time: {time.time() - connectors_start:.4f} seconds")
 
-
+      # Text Connectors Video Output Parity isolation check
+      import os
+      import torch
+      home_dir = os.path.expanduser("~")
+      pt_video_path = os.path.join(home_dir, "pt_video_prompt_embeds.pt")
+      if os.path.exists(pt_video_path):
+        video_pt = jnp.array(torch.load(pt_video_path).float().numpy(), dtype=jnp.float32)
+        # Extract JAX's first Cond slice to compare against PyTorch
+        video_jax = jnp.array(video_embeds[:1], dtype=jnp.float32)
+        mse = jnp.mean((video_jax - video_pt[:1]) ** 2)
+        max_logging.log(f"📊 [Text Connectors Video Output Parity] MSE: {mse:.6f}")
 
       video_embeds_sharded = video_embeds
       audio_embeds_sharded = audio_embeds
