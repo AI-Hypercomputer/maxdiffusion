@@ -1437,9 +1437,13 @@ class LTX2Pipeline:
         audio_pt = torch.load(pt_audio_path)
         mask_pt = torch.load(pt_mask_path)
 
-        video_embeds = jnp.array(video_pt.float().numpy(), dtype=dtype)
-        audio_embeds = jnp.array(audio_pt.float().numpy(), dtype=dtype)
-        new_attention_mask = jnp.array(mask_pt.numpy(), dtype=jnp.bool_)
+        video_uncond, video_cond = jnp.split(jnp.array(video_pt.float().numpy(), dtype=dtype), 2, axis=0)
+        audio_uncond, audio_cond = jnp.split(jnp.array(audio_pt.float().numpy(), dtype=dtype), 2, axis=0)
+        mask_uncond, mask_cond = jnp.split(jnp.array(mask_pt.numpy(), dtype=jnp.bool_), 2, axis=0)
+
+        video_embeds = jnp.concatenate([video_uncond, video_cond, video_cond, video_cond], axis=0)
+        audio_embeds = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
+        new_attention_mask = jnp.concatenate([mask_uncond, mask_cond, mask_cond, mask_cond], axis=0)
 
       video_embeds_sharded = video_embeds
       audio_embeds_sharded = audio_embeds
@@ -1508,8 +1512,14 @@ class LTX2Pipeline:
               audio_latents_pt = torch.load(pt_audio_latents_path)
               timestep_pt = torch.load(pt_timestep_path)
 
-              latents_jax_sharded = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
-              audio_latents_jax_sharded = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
+              latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
+              audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
+
+              latents_uncond, latents_cond = jnp.split(latents_pt_arr, 2, axis=0)
+              audio_uncond, audio_cond = jnp.split(audio_latents_pt_arr, 2, axis=0)
+
+              latents_jax_sharded = jnp.concatenate([latents_uncond, latents_cond, latents_cond, latents_cond], axis=0)
+              audio_latents_jax_sharded = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
               
               t_val = timestep_pt.item()
               t = jnp.array(t_val, dtype=jnp.float32)
@@ -1541,7 +1551,7 @@ class LTX2Pipeline:
               sigma=sigma_t,
               audio_sigma=sigma_t,
               use_cross_timestep=use_cross_timestep,
-              is_cfg_stg_mode=do_cfg and do_stg,
+              is_cfg_stg_mode=(do_cfg and do_stg) and not os.path.exists(pt_latents_path),
           )
 
           if i < 5:
