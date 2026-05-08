@@ -1555,6 +1555,9 @@ class LTX2Pipeline:
           )
 
           if i < 5:
+            max_logging.log(f"🚨 [Python Loop Step {i} Video Prediction] mean: {noise_pred.mean():.6f} | std: {noise_pred.std():.6f}")
+
+          if i < 5:
             import os
             import torch
             home_dir = os.path.expanduser("~")
