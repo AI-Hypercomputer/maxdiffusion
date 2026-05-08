@@ -1555,7 +1555,7 @@ class LTX2Pipeline:
           )
 
           if i < 5:
-            max_logging.log(f"🚨 [Python Loop Step {i} Video Prediction] mean: {noise_pred.mean():.6f} | std: {noise_pred.std():.6f}")
+            max_logging.log(f"🚨 [Python Loop Step {i} Video Prediction] mean: {noise_pred.mean()} | std: {noise_pred.std()}")
 
           if i < 5:
             import os
