@@ -1503,16 +1503,16 @@ class LTX2Pipeline:
           latents_jax_sharded = latents_jax
           audio_latents_jax_sharded = audio_latents_jax
 
-          if i == 0:
+          if i < 5:
             import os
             import torch
             home_dir = os.path.expanduser("~")
-            pt_latents_path = os.path.join(home_dir, "pt_latents_step_0.pt")
-            pt_audio_latents_path = os.path.join(home_dir, "pt_audio_latents_step_0.pt")
-            pt_timestep_path = os.path.join(home_dir, "pt_timestep_step_0.pt")
+            pt_latents_path = os.path.join(home_dir, f"pt_latents_step_{i}.pt")
+            pt_audio_latents_path = os.path.join(home_dir, f"pt_audio_latents_step_{i}.pt")
+            pt_timestep_path = os.path.join(home_dir, f"pt_timestep_step_{i}.pt")
 
             if os.path.exists(pt_latents_path):
-              max_logging.log("🚨 [Diagnostic Step 0] Overwriting transformer inputs with PyTorch data...")
+              max_logging.log(f"🚨 [Diagnostic Step {i}] Overwriting transformer inputs with PyTorch data...")
               latents_pt = torch.load(pt_latents_path)
               audio_latents_pt = torch.load(pt_audio_latents_path)
               timestep_pt = torch.load(pt_timestep_path)
@@ -1553,25 +1553,42 @@ class LTX2Pipeline:
               is_cfg_stg_mode=do_cfg and do_stg,
           )
 
-          if i == 0:
+          if i < 5:
             import os
             import torch
             home_dir = os.path.expanduser("~")
-            pt_out_path = os.path.join(home_dir, "pt_noise_pred_step_0.pt")
-            pt_audio_out_path = os.path.join(home_dir, "pt_audio_noise_pred_step_0.pt")
+            pt_cfg_path = os.path.join(home_dir, f"pt_noise_pred_cfg_step_{i}.pt")
+            pt_stg_path = os.path.join(home_dir, f"pt_noise_pred_stg_step_{i}.pt")
+            pt_mig_path = os.path.join(home_dir, f"pt_noise_pred_mig_step_{i}.pt")
 
-            if os.path.exists(pt_out_path):
-              pt_out = jnp.array(torch.load(pt_out_path).numpy(), dtype=jnp.float32)
+            pt_audio_cfg_path = os.path.join(home_dir, f"pt_audio_noise_pred_cfg_step_{i}.pt")
+            pt_audio_stg_path = os.path.join(home_dir, f"pt_audio_noise_pred_stg_step_{i}.pt")
+            pt_audio_mig_path = os.path.join(home_dir, f"pt_audio_noise_pred_mig_step_{i}.pt")
+
+            if os.path.exists(pt_cfg_path) and os.path.exists(pt_stg_path) and os.path.exists(pt_mig_path):
+              # Load and concatenate PyTorch video inputs
+              cfg_pt = jnp.array(torch.load(pt_cfg_path).float().numpy(), dtype=jnp.float32)
+              stg_pt = jnp.array(torch.load(pt_stg_path).float().numpy(), dtype=jnp.float32)
+              mig_pt = jnp.array(torch.load(pt_mig_path).float().numpy(), dtype=jnp.float32)
+              
+              pt_out = jnp.concatenate([cfg_pt, stg_pt, mig_pt], axis=0)
               jax_out = jnp.array(noise_pred, dtype=jnp.float32)
+
               mse = jnp.mean((jax_out - pt_out) ** 2)
               max_diff = jnp.max(jnp.abs(jax_out - pt_out))
-              max_logging.log(f"📊 [Step 0 Video Parity] MSE: {mse:.6f} | Max Diff: {max_diff:.6f}")
+              max_logging.log(f"📊 [Step {i} Video Parity] Full 4-Way MSE: {mse:.6f} | Max Diff: {max_diff:.6f}")
 
-              pt_audio_out = jnp.array(torch.load(pt_audio_out_path).numpy(), dtype=jnp.float32)
+              # Load and concatenate PyTorch audio inputs
+              cfg_audio_pt = jnp.array(torch.load(pt_audio_cfg_path).float().numpy(), dtype=jnp.float32)
+              stg_audio_pt = jnp.array(torch.load(pt_audio_stg_path).float().numpy(), dtype=jnp.float32)
+              mig_audio_pt = jnp.array(torch.load(pt_audio_mig_path).float().numpy(), dtype=jnp.float32)
+
+              pt_audio_out = jnp.concatenate([cfg_audio_pt, stg_audio_pt, mig_audio_pt], axis=0)
               jax_audio_out = jnp.array(noise_pred_audio, dtype=jnp.float32)
+
               audio_mse = jnp.mean((jax_audio_out - pt_audio_out) ** 2)
               audio_max_diff = jnp.max(jnp.abs(jax_audio_out - pt_audio_out))
-              max_logging.log(f"📊 [Step 0 Audio Parity] MSE: {audio_mse:.6f} | Max Diff: {audio_max_diff:.6f}")
+              max_logging.log(f"📊 [Step {i} Audio Parity] Full 4-Way MSE: {audio_mse:.6f} | Max Diff: {audio_max_diff:.6f}")
 
           # Extract latents_step based on stacking strategy
           if do_cfg and do_stg:
