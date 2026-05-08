@@ -1689,6 +1689,9 @@ class LTX2Pipeline:
           latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
           audio_latents_step, _ = self.scheduler.step(scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
 
+          if i == 0:
+            max_logging.log(f"🚨 [Python Loop Step 0 Scheduler Output Latents] mean: {latents_step.mean()} | std: {latents_step.std()}")
+
           if do_cfg and do_stg:
             latents_jax = jnp.concatenate([latents_step] * 4, axis=0)
             audio_latents_jax = jnp.concatenate([audio_latents_step] * 4, axis=0)
@@ -2118,6 +2121,13 @@ def run_diffusion_loop(
       # Step scheduler
       latents_step, _ = scheduler_step(s_state, noise_pred, t, latents_step, return_dict=False)
       latents_step = latents_step.astype(latents.dtype)
+
+      # Dynamic compile-safe Step 0 print to trace scheduler output latents
+      jax.lax.cond(
+          step_idx == 0,
+          lambda: jax.debug.print("🚨 [JIT Scanned Loop Step 0 Scheduler Output Latents] mean: {mean} | std: {std}", mean=latents_step.mean(), std=latents_step.std()),
+          lambda: None
+      )
 
       audio_latents_step, _ = scheduler_step(s_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
       audio_latents_step = audio_latents_step.astype(audio_latents.dtype)
