@@ -1517,8 +1517,8 @@ class LTX2Pipeline:
               audio_latents_pt = torch.load(pt_audio_latents_path)
               timestep_pt = torch.load(pt_timestep_path)
 
-              latents_jax_sharded = jnp.array(latents_pt.numpy(), dtype=latents_jax.dtype)
-              audio_latents_jax_sharded = jnp.array(audio_latents_pt.numpy(), dtype=audio_latents_jax.dtype)
+              latents_jax_sharded = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
+              audio_latents_jax_sharded = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
               
               t_val = timestep_pt.float().numpy()[0]
               t = jnp.array(t_val, dtype=jnp.float32)
