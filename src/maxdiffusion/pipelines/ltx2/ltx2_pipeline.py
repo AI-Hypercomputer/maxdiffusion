@@ -1577,9 +1577,9 @@ class LTX2Pipeline:
 
               # Print surgical shape and range logs
               max_logging.log(f"🔍 [Step 0 Diagnostic Shapes]")
-              max_logging.log(f"  - latents_jax_sharded shape: {latents_jax_sharded.shape} | range: [{latents_jax_sharded.min():.4f}, {latents_jax_sharded.max():.4f}]")
-              max_logging.log(f"  - jax_out shape: {jax_out.shape} | range: [{jax_out.min():.4f}, {jax_out.max():.4f}]")
-              max_logging.log(f"  - pt_out shape: {pt_out.shape} | range: [{pt_out.min():.4f}, {pt_out.max():.4f}]")
+              max_logging.log(f"  - latents_jax_sharded shape: {latents_jax_sharded.shape}")
+              max_logging.log(f"  - jax_out shape: {jax_out.shape}")
+              max_logging.log(f"  - pt_out shape: {pt_out.shape}")
               max_logging.log(f"  - sigma_t: {sigma_t}")
 
               mse = jnp.mean((jax_out - pt_out) ** 2)
