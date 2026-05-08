@@ -2043,6 +2043,14 @@ def run_diffusion_loop(
           is_cfg_stg_mode=do_cfg and do_stg,
       )
 
+      # Dynamic compile-safe Step 0 print to debug the JIT scan loop boundary
+      step_idx = jnp.argmin(jnp.abs(timesteps_jax - t))
+      jax.lax.cond(
+          step_idx == 0,
+          lambda: jax.debug.print("🚨 [JIT Scanned Loop Step 0 Video Prediction] mean: {mean} | std: {std}", mean=noise_pred.mean(), std=noise_pred.std()),
+          lambda: None
+      )
+
       # Extract latents_step based on stacking strategy
       if do_cfg and do_stg:
         latents_step = latents[batch_size : 2 * batch_size]
