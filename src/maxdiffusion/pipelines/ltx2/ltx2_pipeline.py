@@ -1453,13 +1453,29 @@ class LTX2Pipeline:
           max_logging.log(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {mse:.8f}")
       jax.debug.callback(audit_proj_in, out)
       return out
-    self.transformer.proj_in = hooked_proj_in
+    # 1. Proj_in Hook
+    orig_proj_in_call = self.transformer.proj_in.__call__
+    def hooked_proj_in(x):
+      out = orig_proj_in_call(x)
+      def audit_proj_in(jax_out):
+        import os
+        import torch
+        home_dir = os.path.expanduser("~")
+        ref_path = os.path.join(home_dir, "pt_proj_in_out.pt")
+        if os.path.exists(ref_path):
+          ref = torch.load(ref_path, weights_only=False).float().numpy()
+          jax_flat = jax_out.reshape(jax_out.shape[0], -1, jax_out.shape[-1])
+          mse = np.mean((jax_flat[:2] - ref) ** 2)
+          max_logging.log(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {mse:.8f}")
+      jax.debug.callback(audit_proj_in, out)
+      return out
+    self.transformer.proj_in.__call__ = hooked_proj_in
 
     # 2. Block 0 Hook
     is_subscriptable = hasattr(self.transformer.transformer_blocks, "__getitem__")
-    orig_block0 = self.transformer.transformer_blocks[0] if is_subscriptable else self.transformer.transformer_blocks
+    orig_block0_call = self.transformer.transformer_blocks[0].__call__ if is_subscriptable else self.transformer.transformer_blocks.__call__
     def hooked_block0(*args, **kwargs):
-      out = orig_block0(*args, **kwargs)
+      out = orig_block0_call(*args, **kwargs)
       def audit_block0(video_out, audio_out):
         import os
         import torch
@@ -1477,9 +1493,9 @@ class LTX2Pipeline:
       jax.debug.callback(audit_block0, out[0], out[1])
       return out
     if is_subscriptable:
-      self.transformer.transformer_blocks[0] = hooked_block0
+      self.transformer.transformer_blocks[0].__call__ = hooked_block0
     else:
-      self.transformer.transformer_blocks = hooked_block0
+      self.transformer.transformer_blocks.__call__ = hooked_block0
 
     # GraphDef and State for the diffusion loop
     graphdef, state = nnx.split(self.transformer)
