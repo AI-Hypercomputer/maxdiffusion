@@ -1081,10 +1081,13 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         ref_proj_in_in_slice = ref_proj_in_in[0:1]
         jax_flat_in = hidden_states.reshape(hidden_states.shape[0], -1, hidden_states.shape[-1])
         in_mse = jnp.mean((jax_flat_in[0:1] - ref_proj_in_in_slice) ** 2)
-        def print_proj_in_input(val, cond):
+        def print_proj_in_input(val, cond, jax_tensor, pt_tensor):
           if cond:
             print(f"🔍 [Step 0 Intermediate] proj_in Input MSE: {float(val):.8f}", flush=True)
-        jax.debug.callback(print_proj_in_input, in_mse, is_step_0)
+            print(f"📊 [Step 0 proj_in Input] JAX shape: {jax_tensor.shape} | PyTorch shape: {pt_tensor.shape}", flush=True)
+            print(f"📊 [Step 0 proj_in Input] JAX first 5 elements: {[float(x) for x in jax_tensor[0, 0, :5]]}", flush=True)
+            print(f"📊 [Step 0 proj_in Input] PyTorch first 5 elements: {[float(x) for x in pt_tensor[0, 0, :5]]}", flush=True)
+        jax.debug.callback(print_proj_in_input, in_mse, is_step_0, jax_flat_in[0:1], ref_proj_in_in_slice)
 
       hidden_states = self.proj_in(hidden_states)
       audio_hidden_states = self.audio_proj_in(audio_hidden_states)
