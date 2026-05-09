@@ -1651,7 +1651,6 @@ class LTX2Pipeline:
             latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax_sharded, activation_axis_names)
             audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax_sharded, activation_axis_names)
 
-          audit_state["is_step_0"] = (i == 0)
           noise_pred, noise_pred_audio = transformer_forward_pass(
               graphdef,
               state,
