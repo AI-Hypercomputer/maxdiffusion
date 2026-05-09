@@ -1083,10 +1083,19 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         is_step_0 = (timestep.mean() > 990)
         jax_flat = hidden_states.reshape(hidden_states.shape[0], -1, hidden_states.shape[-1])
         mse = jnp.mean((jax_flat[:2] - ref_proj_in) ** 2)
-        def print_proj_in(val, cond):
+        def print_proj_in(val, cond, kernel, bias):
           if cond:
             print(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {val:.8f}", flush=True)
-        jax.debug.callback(print_proj_in, mse, is_step_0)
+            print(f"📊 [Step 0 proj_in Weights] JAX kernel - mean: {kernel.mean():.8f}, std: {kernel.std():.8f}", flush=True)
+            if bias is not None:
+              print(f"📊 [Step 0 proj_in Weights] JAX bias - mean: {bias.mean():.8f}, std: {bias.std():.8f}", flush=True)
+        jax.debug.callback(
+            print_proj_in,
+            mse,
+            is_step_0,
+            self.proj_in.kernel,
+            self.proj_in.bias if hasattr(self.proj_in, "bias") else None,
+        )
 
     # 3. Prepare timestep embeddings and modulation parameters
     with jax.named_scope("Timestep and Caption Projection"):
