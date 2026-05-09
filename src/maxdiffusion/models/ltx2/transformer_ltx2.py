@@ -382,6 +382,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       a2v_cross_attention_mask: Optional[jax.Array] = None,
       v2a_cross_attention_mask: Optional[jax.Array] = None,
       perturbation_mask: Optional[jax.Array] = None,
+      layer_idx: Optional[int] = None,
   ) -> Tuple[jax.Array, jax.Array]:
     batch_size = hidden_states.shape[0]
 
@@ -428,6 +429,23 @@ class LTX2VideoTransformerBlock(nnx.Module):
           rotary_emb=video_rotary_emb,
           perturbation_mask=perturbation_mask,
       )
+    
+    # Diagnostics for attn1 output
+    is_layer_0 = (layer_idx == 0) if layer_idx is not None else True
+    import os
+    import torch
+    home_dir = os.path.expanduser("~")
+    ref_attn1_path = os.path.join(home_dir, "pt_block0_attn1_out.pt")
+    if os.path.exists(ref_attn1_path):
+      ref_attn1 = jnp.array(torch.load(ref_attn1_path, weights_only=False).float().numpy())
+      ref_attn1_slice = ref_attn1[0:1]
+      jax_flat_attn1 = attn_hidden_states.reshape(attn_hidden_states.shape[0], -1, attn_hidden_states.shape[-1])
+      attn1_mse = jnp.mean((jax_flat_attn1[0:1] - ref_attn1_slice) ** 2)
+      def print_attn1(val, cond):
+        if cond:
+          print(f"🔍 [Step 0 Intermediate] Block 0 attn1 Output MSE: {float(val):.8f}", flush=True)
+      jax.debug.callback(print_attn1, attn1_mse, is_layer_0)
+
     hidden_states = hidden_states + attn_hidden_states * gate_msa
 
     # Calculate Audio AdaLN values
@@ -480,6 +498,19 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rotary_emb=None,
         attention_mask=encoder_attention_mask,
     )
+    
+    # Diagnostics for attn2 output
+    ref_attn2_path = os.path.join(home_dir, "pt_block0_attn2_out.pt")
+    if os.path.exists(ref_attn2_path):
+      ref_attn2 = jnp.array(torch.load(ref_attn2_path, weights_only=False).float().numpy())
+      ref_attn2_slice = ref_attn2[0:1]
+      jax_flat_attn2 = attn_hidden_states.reshape(attn_hidden_states.shape[0], -1, attn_hidden_states.shape[-1])
+      attn2_mse = jnp.mean((jax_flat_attn2[0:1] - ref_attn2_slice) ** 2)
+      def print_attn2(val, cond):
+        if cond:
+          print(f"🔍 [Step 0 Intermediate] Block 0 attn2 Output MSE: {float(val):.8f}", flush=True)
+      jax.debug.callback(print_attn2, attn2_mse, is_layer_0)
+
     if getattr(self, "cross_attn_mod", False):
       attn_hidden_states = attn_hidden_states * gate_q
     hidden_states = hidden_states + attn_hidden_states
@@ -557,6 +588,19 @@ class LTX2VideoTransformerBlock(nnx.Module):
           k_rotary_emb=ca_audio_rotary_emb,
           attention_mask=a2v_cross_attention_mask,
       )
+      
+    # Diagnostics for audio_to_video_attn output
+    ref_a2v_path = os.path.join(home_dir, "pt_block0_a2v_out.pt")
+    if os.path.exists(ref_a2v_path):
+      ref_a2v = jnp.array(torch.load(ref_a2v_path, weights_only=False).float().numpy())
+      ref_a2v_slice = ref_a2v[0:1]
+      jax_flat_a2v = a2v_attn_hidden_states.reshape(a2v_attn_hidden_states.shape[0], -1, a2v_attn_hidden_states.shape[-1])
+      a2v_mse = jnp.mean((jax_flat_a2v[0:1] - ref_a2v_slice) ** 2)
+      def print_a2v(val, cond):
+        if cond:
+          print(f"🔍 [Step 0 Intermediate] Block 0 a2v Output MSE: {float(val):.8f}", flush=True)
+      jax.debug.callback(print_a2v, a2v_mse, is_layer_0)
+
     if modality_mask is not None:
       a2v_attn_hidden_states = a2v_attn_hidden_states * modality_mask
     hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
@@ -581,6 +625,19 @@ class LTX2VideoTransformerBlock(nnx.Module):
     norm_hidden_states = self.norm3(hidden_states)
     norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
     ff_output = self.ff(norm_hidden_states)
+    
+    # Diagnostics for feedforward output
+    ref_ff_path = os.path.join(home_dir, "pt_block0_ff_out.pt")
+    if os.path.exists(ref_ff_path):
+      ref_ff = jnp.array(torch.load(ref_ff_path, weights_only=False).float().numpy())
+      ref_ff_slice = ref_ff[0:1]
+      jax_flat_ff = ff_output.reshape(ff_output.shape[0], -1, ff_output.shape[-1])
+      ff_mse = jnp.mean((jax_flat_ff[0:1] - ref_ff_slice) ** 2)
+      def print_ff(val, cond):
+        if cond:
+          print(f"🔍 [Step 0 Intermediate] Block 0 ff Output MSE: {float(val):.8f}", flush=True)
+      jax.debug.callback(print_ff, ff_mse, is_layer_0)
+
     hidden_states = hidden_states + ff_output * gate_mlp
 
     norm_audio_hidden_states = self.audio_norm3(audio_hidden_states)
@@ -1222,6 +1279,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             audio_encoder_attention_mask=audio_encoder_attention_mask,
             perturbation_mask=mask,
             modality_mask=modality_mask,
+            layer_idx=layer_idx,
         )
 
       # Direct Step 0 Block 0 Auditing Print
