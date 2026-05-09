@@ -43,6 +43,7 @@ with jax.default_device(jax.devices("cpu")[0]):
       audio_cross_attention_dim=config.audio_cross_attention_dim,
       num_layers=config.num_layers,
       scan_layers=True,
+      cross_attn_mod=True,
       rngs=nnx.Rngs(0),
   )
 
