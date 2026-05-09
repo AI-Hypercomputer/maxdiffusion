@@ -1083,7 +1083,10 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         is_step_0 = (timestep.mean() > 990)
         jax_flat = hidden_states.reshape(hidden_states.shape[0], -1, hidden_states.shape[-1])
         mse = jnp.mean((jax_flat[:2] - ref_proj_in) ** 2)
-        jax.debug.print("🔍 [Step 0 Intermediate] proj_in Output MSE: {}", mse, when=is_step_0)
+        def print_proj_in(val, cond):
+          if cond:
+            print(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {val:.8f}", flush=True)
+        jax.debug.callback(print_proj_in, mse, is_step_0)
 
     # 3. Prepare timestep embeddings and modulation parameters
     with jax.named_scope("Timestep and Caption Projection"):
@@ -1208,12 +1211,18 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       if os.path.exists(v_ref_path):
         ref_v = jnp.array(torch.load(v_ref_path, weights_only=False).float().numpy())
         mse_v = jnp.mean((hidden_states_out[:2] - ref_v) ** 2)
-        jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {}", mse_v, when=is_step_0_block_0)
+        def print_block0_video(val, cond):
+          if cond:
+            print(f"🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {val:.8f}", flush=True)
+        jax.debug.callback(print_block0_video, mse_v, is_step_0_block_0)
         
       if os.path.exists(a_ref_path):
         ref_a = jnp.array(torch.load(a_ref_path, weights_only=False).float().numpy())
         mse_a = jnp.mean((audio_hidden_states_out[:2] - ref_a) ** 2)
-        jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {}", mse_a, when=is_step_0_block_0)
+        def print_block0_audio(val, cond):
+          if cond:
+            print(f"🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {val:.8f}", flush=True)
+        jax.debug.callback(print_block0_audio, mse_a, is_step_0_block_0)
 
       return (
           hidden_states_out.astype(hidden_states.dtype),
