@@ -534,9 +534,10 @@ class LTX2Attention(nnx.Module):
         if hasattr(gate_bias, "value"):
           gate_bias = gate_bias.value
         
+        import jax
         import jax.numpy as jnp
-        print(f"🔍 [Gating Diagnostics] to_gate_logits kernel - mean: {float(jnp.mean(gate_kernel)):.8f}, std: {float(jnp.std(gate_kernel)):.8f}", flush=True)
-        print(f"🔍 [Gating Diagnostics] to_gate_logits bias - mean: {float(jnp.mean(gate_bias)):.8f}, std: {float(jnp.std(gate_bias)):.8f}", flush=True)
+        jax.debug.print("🔍 [Gating Diagnostics] to_gate_logits kernel - mean: {mean:.8f}, std: {std:.8f}", mean=jnp.mean(gate_kernel), std=jnp.std(gate_kernel))
+        jax.debug.print("🔍 [Gating Diagnostics] to_gate_logits bias - mean: {mean:.8f}, std: {std:.8f}", mean=jnp.mean(gate_bias), std=jnp.std(gate_bias))
 
         gate_logits = self.to_gate_logits(hidden_states)
         b, s, _ = attn_output.shape
