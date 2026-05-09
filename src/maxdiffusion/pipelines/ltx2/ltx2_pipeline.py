@@ -1456,7 +1456,8 @@ class LTX2Pipeline:
     self.transformer.proj_in = hooked_proj_in
 
     # 2. Block 0 Hook
-    orig_block0 = self.transformer.transformer_blocks[0]
+    is_subscriptable = hasattr(self.transformer.transformer_blocks, "__getitem__")
+    orig_block0 = self.transformer.transformer_blocks[0] if is_subscriptable else self.transformer.transformer_blocks
     def hooked_block0(*args, **kwargs):
       out = orig_block0(*args, **kwargs)
       def audit_block0(video_out, audio_out):
@@ -1475,7 +1476,10 @@ class LTX2Pipeline:
           max_logging.log(f"🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {mse:.8f}")
       jax.debug.callback(audit_block0, out[0], out[1])
       return out
-    self.transformer.transformer_blocks[0] = hooked_block0
+    if is_subscriptable:
+      self.transformer.transformer_blocks[0] = hooked_block0
+    else:
+      self.transformer.transformer_blocks = hooked_block0
 
     # GraphDef and State for the diffusion loop
     graphdef, state = nnx.split(self.transformer)
