@@ -1073,6 +1073,18 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       hidden_states = self.proj_in(hidden_states)
       audio_hidden_states = self.audio_proj_in(audio_hidden_states)
 
+      # Direct Step 0 Auditing Print
+      import os
+      import torch
+      home_dir = os.path.expanduser("~")
+      ref_path = os.path.join(home_dir, "pt_proj_in_out.pt")
+      if os.path.exists(ref_path):
+        ref_proj_in = jnp.array(torch.load(ref_path, weights_only=False).float().numpy())
+        is_step_0 = (timestep.mean() > 990)
+        jax_flat = hidden_states.reshape(hidden_states.shape[0], -1, hidden_states.shape[-1])
+        mse = jnp.mean((jax_flat[:2] - ref_proj_in) ** 2)
+        jax.debug.print("🔍 [Step 0 Intermediate] proj_in Output MSE: {}", mse, when=is_step_0)
+
     # 3. Prepare timestep embeddings and modulation parameters
     with jax.named_scope("Timestep and Caption Projection"):
       timestep_cross_attn_gate_scale_factor = self.cross_attn_timestep_scale_multiplier / self.timestep_scale_multiplier
@@ -1157,8 +1169,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       perturbation_mask_per_layer = masks
 
     # 5. Run transformer blocks
-    def scan_fn(carry, block_and_mask):
-      block, mask = block_and_mask
+    def scan_fn(carry, block_mask_and_index):
+      block, mask, layer_idx = block_mask_and_index
       hidden_states, audio_hidden_states, rngs_carry = carry
       with jax.named_scope("Transformer Layer"):
         hidden_states_out, audio_hidden_states_out = block(
@@ -1183,6 +1195,26 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             perturbation_mask=mask,
             modality_mask=modality_mask,
         )
+
+      # Direct Step 0 Block 0 Auditing Print
+      import os
+      import torch
+      home_dir = os.path.expanduser("~")
+      v_ref_path = os.path.join(home_dir, "pt_block0_video_out.pt")
+      a_ref_path = os.path.join(home_dir, "pt_block0_audio_out.pt")
+      
+      is_step_0_block_0 = (timestep.mean() > 990) & (layer_idx == 0)
+      
+      if os.path.exists(v_ref_path):
+        ref_v = jnp.array(torch.load(v_ref_path, weights_only=False).float().numpy())
+        mse_v = jnp.mean((hidden_states_out[:2] - ref_v) ** 2)
+        jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {}", mse_v, when=is_step_0_block_0)
+        
+      if os.path.exists(a_ref_path):
+        ref_a = jnp.array(torch.load(a_ref_path, weights_only=False).float().numpy())
+        mse_a = jnp.mean((audio_hidden_states_out[:2] - ref_a) ** 2)
+        jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {}", mse_a, when=is_step_0_block_0)
+
       return (
           hidden_states_out.astype(hidden_states.dtype),
           audio_hidden_states_out.astype(audio_hidden_states.dtype),
@@ -1201,7 +1233,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             in_axes=(nnx.Carry, 0),
             out_axes=(nnx.Carry, 0),
             transform_metadata={nnx.PARTITION_NAME: "layers"},
-        )(carry, (self.transformer_blocks, perturbation_mask_per_layer))
+        )(carry, (self.transformer_blocks, perturbation_mask_per_layer, jnp.arange(self.num_layers)))
       else:
         for i, block in enumerate(self.transformer_blocks):
           mask = perturbation_mask_per_layer[i] if perturbation_mask_per_layer is not None else None

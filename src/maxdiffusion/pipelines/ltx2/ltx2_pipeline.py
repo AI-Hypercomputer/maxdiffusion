@@ -1656,7 +1656,6 @@ class LTX2Pipeline:
               audio_sigma=sigma_t,
               use_cross_timestep=use_cross_timestep,
               is_cfg_stg_mode=do_cfg and do_stg,
-              is_step_0=(i == 0),
           )
 
           if i < 40:
@@ -2010,7 +2009,6 @@ class LTX2Pipeline:
         "global_batch_size",
         "use_cross_timestep",
         "is_cfg_stg_mode",
-        "is_step_0",
     ),
 )
 def transformer_forward_pass(
@@ -2035,39 +2033,8 @@ def transformer_forward_pass(
     audio_sigma=None,
     use_cross_timestep=False,
     is_cfg_stg_mode: bool = False,
-    is_step_0: bool = False,
 ):
   transformer = nnx.merge(graphdef, state)
-
-  if is_step_0:
-    # 1. Inner Proj_in Hook
-    orig_proj_in = transformer.proj_in.__call__
-    def JIT_hooked_proj_in(x):
-      out = orig_proj_in(x)
-      if ref_proj_in is not None:
-        jax_flat = out.reshape(out.shape[0], -1, out.shape[-1])
-        mse = jnp.mean((jax_flat[:2] - ref_proj_in) ** 2)
-        jax.debug.print("🔍 [Step 0 Intermediate] proj_in Output MSE: {}", mse)
-      return out
-    transformer.proj_in.__call__ = JIT_hooked_proj_in
-
-    # 2. Inner Block 0 Hook
-    is_subscriptable = hasattr(transformer.transformer_blocks, "__getitem__")
-    orig_block0 = transformer.transformer_blocks[0].__call__ if is_subscriptable else transformer.transformer_blocks.__call__
-    def JIT_hooked_block0(*args, **kwargs):
-      out = orig_block0(*args, **kwargs)
-      if ref_block0_video is not None:
-        mse_v = jnp.mean((out[0][:2] - ref_block0_video) ** 2)
-        jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {}", mse_v)
-      if ref_block0_audio is not None:
-        mse_a = jnp.mean((out[1][:2] - ref_block0_audio) ** 2)
-        jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {}", mse_a)
-      return out
-
-    if is_subscriptable:
-      transformer.transformer_blocks[0].__call__ = JIT_hooked_block0
-    else:
-      transformer.transformer_blocks.__call__ = JIT_hooked_block0
 
   # Expand timestep to batch size
   timestep = jnp.expand_dims(timestep, 0).repeat(latents.shape[0])
