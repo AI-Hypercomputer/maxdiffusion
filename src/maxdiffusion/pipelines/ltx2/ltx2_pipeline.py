@@ -1647,29 +1647,47 @@ class LTX2Pipeline:
             latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax_sharded, activation_axis_names)
             audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax_sharded, activation_axis_names)
 
-          noise_pred, noise_pred_audio = transformer_forward_pass(
-              graphdef,
-              state,
-              latents_jax_sharded,
-              audio_latents_jax_sharded,
-              t,
-              video_embeds_sharded,
-              audio_embeds_sharded,
-              new_attention_mask,
-              new_attention_mask,
-              do_cfg,
-              guidance_scale,
-              latent_num_frames,
-              latent_height,
-              latent_width,
-              audio_num_frames,
-              frame_rate,
-              global_batch_size=batch_size,
-              sigma=sigma_t,
-              audio_sigma=sigma_t,
-              use_cross_timestep=use_cross_timestep,
-              is_cfg_stg_mode=do_cfg and do_stg,
-          )
+          if i == 0:
+            # Run Step 0 outside JIT to allow plain Python logging to output directly to ssh console stdout
+            model_merged = nnx.merge(graphdef, state)
+            noise_pred, noise_pred_audio = model_merged(
+                hidden_states=latents_jax_sharded,
+                audio_hidden_states=audio_latents_jax_sharded,
+                encoder_hidden_states=video_embeds_sharded,
+                audio_encoder_hidden_states=audio_embeds_sharded,
+                timestep=t,
+                sigma=sigma_t,
+                audio_sigma=sigma_t,
+                encoder_attention_mask=new_attention_mask,
+                audio_encoder_attention_mask=new_attention_mask,
+                use_cross_timestep=use_cross_timestep,
+                return_dict=False,
+            )
+            graphdef, state = nnx.split(model_merged)
+          else:
+            noise_pred, noise_pred_audio = transformer_forward_pass(
+                graphdef,
+                state,
+                latents_jax_sharded,
+                audio_latents_jax_sharded,
+                t,
+                video_embeds_sharded,
+                audio_embeds_sharded,
+                new_attention_mask,
+                new_attention_mask,
+                do_cfg,
+                guidance_scale,
+                latent_num_frames,
+                latent_height,
+                latent_width,
+                audio_num_frames,
+                frame_rate,
+                global_batch_size=batch_size,
+                sigma=sigma_t,
+                audio_sigma=sigma_t,
+                use_cross_timestep=use_cross_timestep,
+                is_cfg_stg_mode=do_cfg and do_stg,
+            )
 
           if i < 40:
             max_logging.log(f"🚨 [Python Loop Step {i} Video Prediction] mean: {noise_pred.mean()} | std: {noise_pred.std()}")
