@@ -1436,22 +1436,36 @@ class LTX2Pipeline:
 
     # Inject runtime monkey-patches for Step 0 intermediate parity audits
     import numpy as np
-    
+    import os
+    import torch
+
+    home_dir = os.path.expanduser("~")
+    ref_proj_in = None
+    ref_block0_video = None
+    ref_block0_audio = None
+
+    ref_path = os.path.join(home_dir, "pt_proj_in_out.pt")
+    if os.path.exists(ref_path):
+      ref_proj_in = jnp.array(torch.load(ref_path, weights_only=False).float().numpy())
+
+    v_ref_path = os.path.join(home_dir, "pt_block0_video_out.pt")
+    if os.path.exists(v_ref_path):
+      ref_block0_video = jnp.array(torch.load(v_ref_path, weights_only=False).float().numpy())
+
+    a_ref_path = os.path.join(home_dir, "pt_block0_audio_out.pt")
+    if os.path.exists(a_ref_path):
+      ref_block0_audio = jnp.array(torch.load(a_ref_path, weights_only=False).float().numpy())
+
+    audit_state = {"is_step_0": False}
+
     # 1. Proj_in Hook
     orig_proj_in_call = self.transformer.proj_in.__call__
     def hooked_proj_in(x):
       out = orig_proj_in_call(x)
-      def audit_proj_in(jax_out):
-        import os
-        import torch
-        home_dir = os.path.expanduser("~")
-        ref_path = os.path.join(home_dir, "pt_proj_in_out.pt")
-        if os.path.exists(ref_path):
-          ref = torch.load(ref_path, weights_only=False).float().numpy()
-          jax_flat = jax_out.reshape(jax_out.shape[0], -1, jax_out.shape[-1])
-          mse = np.mean((jax_flat[:2] - ref) ** 2)
-          print(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {mse:.8f}", flush=True)
-      jax.debug.callback(audit_proj_in, out)
+      if audit_state["is_step_0"] and ref_proj_in is not None:
+        jax_flat = out.reshape(out.shape[0], -1, out.shape[-1])
+        mse = jnp.mean((jax_flat[:2] - ref_proj_in) ** 2)
+        jax.debug.print("🔍 [Step 0 Intermediate] proj_in Output MSE: {}", mse)
       return out
     self.transformer.proj_in.__call__ = hooked_proj_in
 
@@ -1460,21 +1474,13 @@ class LTX2Pipeline:
     orig_block0_call = self.transformer.transformer_blocks[0].__call__ if is_subscriptable else self.transformer.transformer_blocks.__call__
     def hooked_block0(*args, **kwargs):
       out = orig_block0_call(*args, **kwargs)
-      def audit_block0(video_out, audio_out):
-        import os
-        import torch
-        home_dir = os.path.expanduser("~")
-        v_ref_path = os.path.join(home_dir, "pt_block0_video_out.pt")
-        a_ref_path = os.path.join(home_dir, "pt_block0_audio_out.pt")
-        if os.path.exists(v_ref_path):
-          v_ref = torch.load(v_ref_path, weights_only=False).float().numpy()
-          mse = np.mean((video_out[:2] - v_ref) ** 2)
-          print(f"🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {mse:.8f}", flush=True)
-        if os.path.exists(a_ref_path):
-          a_ref = torch.load(a_ref_path, weights_only=False).float().numpy()
-          mse = np.mean((audio_out[:2] - a_ref) ** 2)
-          print(f"🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {mse:.8f}", flush=True)
-      jax.debug.callback(audit_block0, out[0], out[1])
+      if audit_state["is_step_0"]:
+        if ref_block0_video is not None:
+          mse_v = jnp.mean((out[0][:2] - ref_block0_video) ** 2)
+          jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {}", mse_v)
+        if ref_block0_audio is not None:
+          mse_a = jnp.mean((out[1][:2] - ref_block0_audio) ** 2)
+          jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {}", mse_a)
       return out
     if is_subscriptable:
       self.transformer.transformer_blocks[0].__call__ = hooked_block0
@@ -1647,56 +1653,30 @@ class LTX2Pipeline:
             latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax_sharded, activation_axis_names)
             audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax_sharded, activation_axis_names)
 
-          if i == 0:
-            # Run Step 0 outside JIT via jax.disable_jit() to allow plain Python logging to output directly to ssh console
-            with jax.disable_jit():
-              noise_pred, noise_pred_audio = transformer_forward_pass(
-                  graphdef,
-                  state,
-                  latents_jax_sharded,
-                  audio_latents_jax_sharded,
-                  t,
-                  video_embeds_sharded,
-                  audio_embeds_sharded,
-                  new_attention_mask,
-                  new_attention_mask,
-                  do_cfg,
-                  guidance_scale,
-                  latent_num_frames,
-                  latent_height,
-                  latent_width,
-                  audio_num_frames,
-                  frame_rate,
-                  global_batch_size=batch_size,
-                  sigma=sigma_t,
-                  audio_sigma=sigma_t,
-                  use_cross_timestep=use_cross_timestep,
-                  is_cfg_stg_mode=do_cfg and do_stg,
-              )
-          else:
-            noise_pred, noise_pred_audio = transformer_forward_pass(
-                graphdef,
-                state,
-                latents_jax_sharded,
-                audio_latents_jax_sharded,
-                t,
-                video_embeds_sharded,
-                audio_embeds_sharded,
-                new_attention_mask,
-                new_attention_mask,
-                do_cfg,
-                guidance_scale,
-                latent_num_frames,
-                latent_height,
-                latent_width,
-                audio_num_frames,
-                frame_rate,
-                global_batch_size=batch_size,
-                sigma=sigma_t,
-                audio_sigma=sigma_t,
-                use_cross_timestep=use_cross_timestep,
-                is_cfg_stg_mode=do_cfg and do_stg,
-            )
+          audit_state["is_step_0"] = (i == 0)
+          noise_pred, noise_pred_audio = transformer_forward_pass(
+              graphdef,
+              state,
+              latents_jax_sharded,
+              audio_latents_jax_sharded,
+              t,
+              video_embeds_sharded,
+              audio_embeds_sharded,
+              new_attention_mask,
+              new_attention_mask,
+              do_cfg,
+              guidance_scale,
+              latent_num_frames,
+              latent_height,
+              latent_width,
+              audio_num_frames,
+              frame_rate,
+              global_batch_size=batch_size,
+              sigma=sigma_t,
+              audio_sigma=sigma_t,
+              use_cross_timestep=use_cross_timestep,
+              is_cfg_stg_mode=do_cfg and do_stg,
+          )
 
           if i < 40:
             max_logging.log(f"🚨 [Python Loop Step {i} Video Prediction] mean: {noise_pred.mean()} | std: {noise_pred.std()}")
