@@ -1444,17 +1444,27 @@ class LTX2Pipeline:
     ref_block0_video = None
     ref_block0_audio = None
 
+    print(f"🔍 [Startup Reference Check] Searching home directory {home_dir} for reference tensors...", flush=True)
     ref_path = os.path.join(home_dir, "pt_proj_in_out.pt")
     if os.path.exists(ref_path):
       ref_proj_in = jnp.array(torch.load(ref_path, weights_only=False).float().numpy())
+      print(f"✅ Found proj_in reference: shape {ref_proj_in.shape}", flush=True)
+    else:
+      print(f"❌ proj_in reference not found at {ref_path}", flush=True)
 
     v_ref_path = os.path.join(home_dir, "pt_block0_video_out.pt")
     if os.path.exists(v_ref_path):
       ref_block0_video = jnp.array(torch.load(v_ref_path, weights_only=False).float().numpy())
+      print(f"✅ Found block0 video reference: shape {ref_block0_video.shape}", flush=True)
+    else:
+      print(f"❌ block0 video reference not found at {v_ref_path}", flush=True)
 
     a_ref_path = os.path.join(home_dir, "pt_block0_audio_out.pt")
     if os.path.exists(a_ref_path):
       ref_block0_audio = jnp.array(torch.load(a_ref_path, weights_only=False).float().numpy())
+      print(f"✅ Found block0 audio reference: shape {ref_block0_audio.shape}", flush=True)
+    else:
+      print(f"❌ block0 audio reference not found at {a_ref_path}", flush=True)
 
     # 1. Proj_in Hook
     orig_proj_in_call = self.transformer.proj_in.__call__
