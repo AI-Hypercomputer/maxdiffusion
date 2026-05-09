@@ -1070,17 +1070,28 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
     # 2. Patchify input projections
     with jax.named_scope("Input Projection"):
-      hidden_states = self.proj_in(hidden_states)
-      audio_hidden_states = self.audio_proj_in(audio_hidden_states)
-
-      # Direct Step 0 Auditing Print
+      # Direct Step 0 Auditing Print for Inputs
       import os
       import torch
       home_dir = os.path.expanduser("~")
+      ref_in_path = os.path.join(home_dir, "pt_proj_in_in.pt")
+      is_step_0 = (timestep.mean() > 990)
+      if os.path.exists(ref_in_path):
+        ref_proj_in_in = jnp.array(torch.load(ref_in_path, weights_only=False).float().numpy())
+        jax_flat_in = hidden_states.reshape(hidden_states.shape[0], -1, hidden_states.shape[-1])
+        in_mse = jnp.mean((jax_flat_in[0:1] - ref_proj_in_in) ** 2)
+        def print_proj_in_input(val, cond):
+          if cond:
+            print(f"🔍 [Step 0 Intermediate] proj_in Input MSE: {float(val):.8f}", flush=True)
+        jax.debug.callback(print_proj_in_input, in_mse, is_step_0)
+
+      hidden_states = self.proj_in(hidden_states)
+      audio_hidden_states = self.audio_proj_in(audio_hidden_states)
+
+      # Direct Step 0 Auditing Print for Outputs
       ref_path = os.path.join(home_dir, "pt_proj_in_out.pt")
       if os.path.exists(ref_path):
         ref_proj_in = jnp.array(torch.load(ref_path, weights_only=False).float().numpy())
-        is_step_0 = (timestep.mean() > 990)
         jax_flat = hidden_states.reshape(hidden_states.shape[0], -1, hidden_states.shape[-1])
         mse = jnp.mean((jax_flat[0:1] - ref_proj_in) ** 2)
         def print_proj_in(val, cond, kernel, bias):
