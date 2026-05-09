@@ -1434,6 +1434,49 @@ class LTX2Pipeline:
         prompt_embeds_jax = jax.device_put(prompt_embeds_jax, data_sharding_3d)
       prompt_attention_mask_jax = jax.device_put(prompt_attention_mask_jax, data_sharding_2d)
 
+    # Inject runtime monkey-patches for Step 0 intermediate parity audits
+    import numpy as np
+    
+    # 1. Proj_in Hook
+    orig_proj_in = self.transformer.proj_in
+    def hooked_proj_in(x):
+      out = orig_proj_in(x)
+      def audit_proj_in(jax_out):
+        import os
+        import torch
+        home_dir = os.path.expanduser("~")
+        ref_path = os.path.join(home_dir, "pt_proj_in_out.pt")
+        if os.path.exists(ref_path):
+          ref = torch.load(ref_path, weights_only=False).float().numpy()
+          jax_flat = jax_out.reshape(jax_out.shape[0], -1, jax_out.shape[-1])
+          mse = np.mean((jax_flat[:2] - ref) ** 2)
+          max_logging.log(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {mse:.8f}")
+      jax.debug.callback(audit_proj_in, out)
+      return out
+    self.transformer.proj_in = hooked_proj_in
+
+    # 2. Block 0 Hook
+    orig_block0 = self.transformer.transformer_blocks[0]
+    def hooked_block0(*args, **kwargs):
+      out = orig_block0(*args, **kwargs)
+      def audit_block0(video_out, audio_out):
+        import os
+        import torch
+        home_dir = os.path.expanduser("~")
+        v_ref_path = os.path.join(home_dir, "pt_block0_video_out.pt")
+        a_ref_path = os.path.join(home_dir, "pt_block0_audio_out.pt")
+        if os.path.exists(v_ref_path):
+          v_ref = torch.load(v_ref_path, weights_only=False).float().numpy()
+          mse = np.mean((video_out[:2] - v_ref) ** 2)
+          max_logging.log(f"🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {mse:.8f}")
+        if os.path.exists(a_ref_path):
+          a_ref = torch.load(a_ref_path, weights_only=False).float().numpy()
+          mse = np.mean((audio_out[:2] - a_ref) ** 2)
+          max_logging.log(f"🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {mse:.8f}")
+      jax.debug.callback(audit_block0, out[0], out[1])
+      return out
+    self.transformer.transformer_blocks[0] = hooked_block0
+
     # GraphDef and State for the diffusion loop
     graphdef, state = nnx.split(self.transformer)
 
