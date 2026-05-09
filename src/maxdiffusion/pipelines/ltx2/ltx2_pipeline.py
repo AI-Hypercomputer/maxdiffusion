@@ -1456,13 +1456,11 @@ class LTX2Pipeline:
     if os.path.exists(a_ref_path):
       ref_block0_audio = jnp.array(torch.load(a_ref_path, weights_only=False).float().numpy())
 
-    audit_state = {"is_step_0": False}
-
     # 1. Proj_in Hook
     orig_proj_in_call = self.transformer.proj_in.__call__
-    def hooked_proj_in(x):
+    def hooked_proj_in(proj_in_self, x):
       out = orig_proj_in_call(x)
-      if audit_state["is_step_0"] and ref_proj_in is not None:
+      if getattr(proj_in_self, "is_step_0", False) and ref_proj_in is not None:
         jax_flat = out.reshape(out.shape[0], -1, out.shape[-1])
         mse = jnp.mean((jax_flat[:2] - ref_proj_in) ** 2)
         jax.debug.print("🔍 [Step 0 Intermediate] proj_in Output MSE: {}", mse)
@@ -1472,9 +1470,9 @@ class LTX2Pipeline:
     # 2. Block 0 Hook
     is_subscriptable = hasattr(self.transformer.transformer_blocks, "__getitem__")
     orig_block0_call = self.transformer.transformer_blocks[0].__call__ if is_subscriptable else self.transformer.transformer_blocks.__call__
-    def hooked_block0(*args, **kwargs):
+    def hooked_block0(block0_self, *args, **kwargs):
       out = orig_block0_call(*args, **kwargs)
-      if audit_state["is_step_0"]:
+      if getattr(block0_self, "is_step_0", False):
         if ref_block0_video is not None:
           mse_v = jnp.mean((out[0][:2] - ref_block0_video) ** 2)
           jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {}", mse_v)
@@ -1676,6 +1674,7 @@ class LTX2Pipeline:
               audio_sigma=sigma_t,
               use_cross_timestep=use_cross_timestep,
               is_cfg_stg_mode=do_cfg and do_stg,
+              is_step_0=(i == 0),
           )
 
           if i < 40:
@@ -2029,6 +2028,7 @@ class LTX2Pipeline:
         "global_batch_size",
         "use_cross_timestep",
         "is_cfg_stg_mode",
+        "is_step_0",
     ),
 )
 def transformer_forward_pass(
@@ -2053,8 +2053,16 @@ def transformer_forward_pass(
     audio_sigma=None,
     use_cross_timestep=False,
     is_cfg_stg_mode: bool = False,
+    is_step_0: bool = False,
 ):
   transformer = nnx.merge(graphdef, state)
+  transformer.proj_in.is_step_0 = is_step_0
+  if hasattr(transformer.transformer_blocks, "is_step_0"):
+    transformer.transformer_blocks.is_step_0 = is_step_0
+  elif hasattr(transformer.transformer_blocks, "__getitem__"):
+    transformer.transformer_blocks[0].is_step_0 = is_step_0
+  else:
+    transformer.transformer_blocks.is_step_0 = is_step_0
 
   # Expand timestep to batch size
   timestep = jnp.expand_dims(timestep, 0).repeat(latents.shape[0])
