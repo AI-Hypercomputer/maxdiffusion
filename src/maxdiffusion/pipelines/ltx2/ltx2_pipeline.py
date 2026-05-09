@@ -1466,34 +1466,7 @@ class LTX2Pipeline:
     else:
       print(f"❌ block0 audio reference not found at {a_ref_path}", flush=True)
 
-    # 1. Proj_in Hook
-    orig_proj_in_call = self.transformer.proj_in.__call__
-    def hooked_proj_in(proj_in_self, x):
-      out = orig_proj_in_call(x)
-      if getattr(proj_in_self, "is_step_0", False) and ref_proj_in is not None:
-        jax_flat = out.reshape(out.shape[0], -1, out.shape[-1])
-        mse = jnp.mean((jax_flat[:2] - ref_proj_in) ** 2)
-        jax.debug.print("🔍 [Step 0 Intermediate] proj_in Output MSE: {}", mse)
-      return out
-    self.transformer.proj_in.__call__ = hooked_proj_in
 
-    # 2. Block 0 Hook
-    is_subscriptable = hasattr(self.transformer.transformer_blocks, "__getitem__")
-    orig_block0_call = self.transformer.transformer_blocks[0].__call__ if is_subscriptable else self.transformer.transformer_blocks.__call__
-    def hooked_block0(block0_self, *args, **kwargs):
-      out = orig_block0_call(*args, **kwargs)
-      if getattr(block0_self, "is_step_0", False):
-        if ref_block0_video is not None:
-          mse_v = jnp.mean((out[0][:2] - ref_block0_video) ** 2)
-          jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {}", mse_v)
-        if ref_block0_audio is not None:
-          mse_a = jnp.mean((out[1][:2] - ref_block0_audio) ** 2)
-          jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {}", mse_a)
-      return out
-    if is_subscriptable:
-      self.transformer.transformer_blocks[0].__call__ = hooked_block0
-    else:
-      self.transformer.transformer_blocks.__call__ = hooked_block0
 
     # GraphDef and State for the diffusion loop
     graphdef, state = nnx.split(self.transformer)
@@ -2065,13 +2038,36 @@ def transformer_forward_pass(
     is_step_0: bool = False,
 ):
   transformer = nnx.merge(graphdef, state)
-  transformer.proj_in.is_step_0 = is_step_0
-  if hasattr(transformer.transformer_blocks, "is_step_0"):
-    transformer.transformer_blocks.is_step_0 = is_step_0
-  elif hasattr(transformer.transformer_blocks, "__getitem__"):
-    transformer.transformer_blocks[0].is_step_0 = is_step_0
-  else:
-    transformer.transformer_blocks.is_step_0 = is_step_0
+
+  if is_step_0:
+    # 1. Inner Proj_in Hook
+    orig_proj_in = transformer.proj_in.__call__
+    def JIT_hooked_proj_in(x):
+      out = orig_proj_in(x)
+      if ref_proj_in is not None:
+        jax_flat = out.reshape(out.shape[0], -1, out.shape[-1])
+        mse = jnp.mean((jax_flat[:2] - ref_proj_in) ** 2)
+        jax.debug.print("🔍 [Step 0 Intermediate] proj_in Output MSE: {}", mse)
+      return out
+    transformer.proj_in.__call__ = JIT_hooked_proj_in
+
+    # 2. Inner Block 0 Hook
+    is_subscriptable = hasattr(transformer.transformer_blocks, "__getitem__")
+    orig_block0 = transformer.transformer_blocks[0].__call__ if is_subscriptable else transformer.transformer_blocks.__call__
+    def JIT_hooked_block0(*args, **kwargs):
+      out = orig_block0(*args, **kwargs)
+      if ref_block0_video is not None:
+        mse_v = jnp.mean((out[0][:2] - ref_block0_video) ** 2)
+        jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {}", mse_v)
+      if ref_block0_audio is not None:
+        mse_a = jnp.mean((out[1][:2] - ref_block0_audio) ** 2)
+        jax.debug.print("🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {}", mse_a)
+      return out
+
+    if is_subscriptable:
+      transformer.transformer_blocks[0].__call__ = JIT_hooked_block0
+    else:
+      transformer.transformer_blocks.__call__ = JIT_hooked_block0
 
   # Expand timestep to batch size
   timestep = jnp.expand_dims(timestep, 0).repeat(latents.shape[0])
