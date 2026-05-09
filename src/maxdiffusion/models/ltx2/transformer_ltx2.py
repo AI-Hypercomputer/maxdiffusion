@@ -1085,10 +1085,10 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         mse = jnp.mean((jax_flat[0:1] - ref_proj_in) ** 2)
         def print_proj_in(val, cond, kernel, bias):
           if cond:
-            print(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {val:.8f}", flush=True)
-            print(f"📊 [Step 0 proj_in Weights] JAX kernel - mean: {kernel.mean():.8f}, std: {kernel.std():.8f}", flush=True)
+            print(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {float(val):.8f}", flush=True)
+            print(f"📊 [Step 0 proj_in Weights] JAX kernel - mean: {float(kernel.mean()):.8f}, std: {float(kernel.std()):.8f}", flush=True)
             if bias is not None:
-              print(f"📊 [Step 0 proj_in Weights] JAX bias - mean: {bias.mean():.8f}, std: {bias.std():.8f}", flush=True)
+              print(f"📊 [Step 0 proj_in Weights] JAX bias - mean: {float(bias.mean()):.8f}, std: {float(bias.std()):.8f}", flush=True)
         jax.debug.callback(
             print_proj_in,
             mse,
@@ -1222,7 +1222,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         mse_v = jnp.mean((hidden_states_out[0:1] - ref_v) ** 2)
         def print_block0_video(val, cond):
           if cond:
-            print(f"🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {val:.8f}", flush=True)
+            print(f"🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {float(val):.8f}", flush=True)
         jax.debug.callback(print_block0_video, mse_v, is_step_0_block_0)
         
       if os.path.exists(a_ref_path):
@@ -1230,7 +1230,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         mse_a = jnp.mean((audio_hidden_states_out[0:1] - ref_a) ** 2)
         def print_block0_audio(val, cond):
           if cond:
-            print(f"🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {val:.8f}", flush=True)
+            print(f"🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {float(val):.8f}", flush=True)
         jax.debug.callback(print_block0_audio, mse_a, is_step_0_block_0)
 
       return (
