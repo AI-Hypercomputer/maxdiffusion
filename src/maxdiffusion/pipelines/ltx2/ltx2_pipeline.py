@@ -1545,7 +1545,7 @@ class LTX2Pipeline:
           audio_latents_jax_sharded = audio_latents_jax
 
           # Developer Diagnostic Mode: Load and overwrite intermediate latents/timesteps from PyTorch
-          if i < 5:
+          if True:
             import os
             import torch
             home_dir = os.path.expanduser("~")
@@ -1556,25 +1556,44 @@ class LTX2Pipeline:
             # Set True to run JAX natively after Step 0 while still auditing MSE
             overwrite_only_step_0 = True
 
-            if os.path.exists(pt_latents_path) and (not overwrite_only_step_0 or i == 0):
-              max_logging.log(f"🚨 [Diagnostic Mode] Loading PyTorch Step {i} inputs...")
-              latents_pt = torch.load(pt_latents_path)
-              audio_latents_pt = torch.load(pt_audio_latents_path)
-              timestep_pt = torch.load(pt_timestep_path)
+            if os.path.exists(pt_latents_path):
+              if (not overwrite_only_step_0 or i == 0):
+                max_logging.log(f"🚨 [Diagnostic Mode] Loading PyTorch Step {i} inputs...")
+                latents_pt = torch.load(pt_latents_path)
+                audio_latents_pt = torch.load(pt_audio_latents_path)
+                timestep_pt = torch.load(pt_timestep_path)
 
-              latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
-              audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
+                latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
+                audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
 
-              latents_uncond, latents_cond = jnp.split(latents_pt_arr, 2, axis=0)
-              audio_uncond, audio_cond = jnp.split(audio_latents_pt_arr, 2, axis=0)
+                latents_uncond, latents_cond = jnp.split(latents_pt_arr, 2, axis=0)
+                audio_uncond, audio_cond = jnp.split(audio_latents_pt_arr, 2, axis=0)
 
-              # Concatenate to stacked shape 4: [Uncond, Cond, Cond, Cond]
-              latents_jax_sharded = jnp.concatenate([latents_uncond, latents_cond, latents_cond, latents_cond], axis=0)
-              audio_latents_jax_sharded = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
+                # Concatenate to stacked shape 4: [Uncond, Cond, Cond, Cond]
+                latents_jax_sharded = jnp.concatenate([latents_uncond, latents_cond, latents_cond, latents_cond], axis=0)
+                audio_latents_jax_sharded = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
 
-              t_val = timestep_pt.item()
-              t = jnp.array(t_val, dtype=jnp.float32)
-              # sigma_t remains at JAX scheduler's sigmas[i] (unscaled [0.0, 1.0])
+                t_val = timestep_pt.item()
+                t = jnp.array(t_val, dtype=jnp.float32)
+              else:
+                # Audit JAX's carried-forward latents against PyTorch's reference at this step
+                latents_pt = torch.load(pt_latents_path)
+                audio_latents_pt = torch.load(pt_audio_latents_path)
+
+                latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
+                audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
+
+                jax_uncond = latents_jax_sharded[0]
+                jax_cond = latents_jax_sharded[1]
+                jax_comp = jnp.stack([jax_uncond, jax_cond], axis=0)
+
+                audio_jax_uncond = audio_latents_jax_sharded[0]
+                audio_jax_cond = audio_latents_jax_sharded[1]
+                audio_jax_comp = jnp.stack([audio_jax_uncond, audio_jax_cond], axis=0)
+
+                video_mse = jnp.mean((jax_comp - latents_pt_arr) ** 2)
+                audio_mse = jnp.mean((audio_jax_comp - audio_latents_pt_arr) ** 2)
+                max_logging.log(f"📊 [Step {i} Latents Carried Forward] Video Latents MSE: {video_mse:.6f} | Audio Latents MSE: {audio_mse:.6f}")
 
           if not self.transformer.scan_layers:
             activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
@@ -1605,11 +1624,11 @@ class LTX2Pipeline:
               is_cfg_stg_mode=do_cfg and do_stg,
           )
 
-          if i < 5:
+          if i < 40:
             max_logging.log(f"🚨 [Python Loop Step {i} Video Prediction] mean: {noise_pred.mean()} | std: {noise_pred.std()}")
 
           # Compile-safe real-time Step Parity Auditor block
-          if i < 5:
+          if i < 40:
             import os
             import torch
             home_dir = os.path.expanduser("~")
@@ -1617,30 +1636,30 @@ class LTX2Pipeline:
             pt_stg_path = os.path.join(home_dir, f"pt_noise_pred_stg_step_{i}.pt")
             pt_mig_path = os.path.join(home_dir, f"pt_noise_pred_mig_step_{i}.pt")
 
-            if os.path.exists(pt_cfg_path) and os.path.exists(pt_stg_path) and os.path.exists(pt_mig_path):
+            if os.path.exists(pt_cfg_path):
               cfg_pt = jnp.array(torch.load(pt_cfg_path).float().numpy(), dtype=jnp.float32)
-              stg_pt = jnp.array(torch.load(pt_stg_path).float().numpy(), dtype=jnp.float32)
-              mig_pt = jnp.array(torch.load(pt_mig_path).float().numpy(), dtype=jnp.float32)
-
-              pt_out = jnp.concatenate([cfg_pt, stg_pt, mig_pt], axis=0)
               jax_out = jnp.array(noise_pred, dtype=jnp.float32)
 
-              # Extract current positive latents step slice
-              lat_step = latents_jax[batch_size : 2 * batch_size]
+              # Compare CFG prediction (first two slices)
+              slice_mse = jnp.mean((jax_out[:2] - cfg_pt) ** 2)
+              slice_max = jnp.max(jnp.abs(jax_out[:2] - cfg_pt))
+              max_logging.log(f"🔍 [Step {i} CFG Prediction Parity] MSE: {slice_mse:.6f} | Max Diff: {slice_max:.6f}")
 
-              max_logging.log(f"🔍 [Step {i} Real-Time Parity Auditor]")
-              for idx, name in enumerate(["Uncond", "Cond", "Perturb (STG)", "Isolated (MIG)"]):
-                p_slice = pt_out[idx]
-                if idx in [0, 1]:
-                  # CFG Slices: Velocity vs Velocity
-                  j_slice = jax_out[idx]
-                else:
-                  # STG/MIG Slices: Convert JAX velocity slice to x0 to match PyTorch's saved x0 files
-                  j_slice = lat_step[0] - jax_out[idx] * sigma_t
+              # Compare STG prediction (slice 2) converted to x0
+              if os.path.exists(pt_stg_path):
+                stg_pt = jnp.array(torch.load(pt_stg_path).float().numpy(), dtype=jnp.float32)
+                lat_step = latents_jax[batch_size : 2 * batch_size]
+                jax_stg_x0 = lat_step[0] - jax_out[2] * sigma_t
+                stg_mse = jnp.mean((jax_stg_x0 - stg_pt[0]) ** 2)
+                max_logging.log(f"🔍 [Step {i} STG Prediction Parity] MSE: {stg_mse:.6f}")
 
-                slice_mse = jnp.mean((j_slice - p_slice) ** 2)
-                slice_max = jnp.max(jnp.abs(j_slice - p_slice))
-                max_logging.log(f"  - {name} Video MSE: {slice_mse:.6f} | Max Diff: {slice_max:.6f}")
+              # Compare MIG prediction (slice 3) converted to x0
+              if os.path.exists(pt_mig_path):
+                mig_pt = jnp.array(torch.load(pt_mig_path).float().numpy(), dtype=jnp.float32)
+                lat_step = latents_jax[batch_size : 2 * batch_size]
+                jax_mig_x0 = lat_step[0] - jax_out[3] * sigma_t
+                mig_mse = jnp.mean((jax_mig_x0 - mig_pt[0]) ** 2)
+                max_logging.log(f"🔍 [Step {i} MIG Prediction Parity] MSE: {mig_mse:.6f}")
 
           if i == 1:
             max_logging.log(f"🔍 [Python Loop Step 1 Transformer Inputs] latents mean: {latents_jax_sharded.mean()} | timestep: {t} | sigma: {sigma_t} | is_cfg_stg: {do_cfg and do_stg}")
@@ -1822,13 +1841,54 @@ class LTX2Pipeline:
       timestep = jnp.array(decode_timestep, dtype=latents.dtype)
       decode_noise_scale = jnp.array(decode_noise_scale, dtype=latents.dtype)[:, None, None, None, None]
 
-      latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
+      # Audit VAE input (unpacked and denormalized but before noise scaling/transposition)
+      import os
+      import torch
+      home_dir = os.path.expanduser("~")
+      pt_vae_in_unpacked_path = os.path.join(home_dir, "pt_vae_input_unpacked_denormalized.pt")
+      if os.path.exists(pt_vae_in_unpacked_path):
+        vae_in_pt = torch.load(pt_vae_in_unpacked_path)
+        vae_in_pt_arr = jnp.array(vae_in_pt.float().numpy(), dtype=jnp.float32)
+        
+        # In JAX, before transposition, latents was (B, C, T, H, W)
+        # Let's compare transposed JAX back or match PyTorch
+        jax_comp = latents.transpose(0, 4, 1, 2, 3)  # from (B, T, H, W, C) back to (B, C, T, H, W)
+        mse = jnp.mean((jax_comp - vae_in_pt_arr) ** 2)
+        max_logging.log(f"📊 [VAE Input Unpacked/Denormalized Parity] MSE: {mse:.6f}")
 
-      latents = latents.astype(self.vae.dtype)
+      # Audit VAE input (normalized/rescaled right before decode)
+      pt_vae_in_normalized_path = os.path.join(home_dir, "pt_vae_input_normalized.pt")
+      if os.path.exists(pt_vae_in_normalized_path):
+        vae_in_pt = torch.load(pt_vae_in_normalized_path)
+        vae_in_pt_arr = jnp.array(vae_in_pt.float().numpy(), dtype=jnp.float32)
+        
+        # Compare JAX latents after noise scaling and typecast
+        latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
+        latents = latents.astype(self.vae.dtype)
+        
+        jax_comp = latents.transpose(0, 4, 1, 2, 3)
+        mse = jnp.mean((jax_comp - vae_in_pt_arr) ** 2)
+        max_logging.log(f"📊 [VAE Input Normalized Parity] MSE: {mse:.6f}")
+
       video = self.vae.decode(latents, temb=timestep, return_dict=False)[0]
     else:
       latents = latents.astype(self.vae.dtype)
       video = self.vae.decode(latents, return_dict=False)[0]
+
+    # Audit VAE raw output
+    import os
+    import torch
+    home_dir = os.path.expanduser("~")
+    pt_vae_out_decoded_path = os.path.join(home_dir, "pt_vae_output_decoded.pt")
+    if os.path.exists(pt_vae_out_decoded_path):
+      vae_out_pt = torch.load(pt_vae_out_decoded_path)
+      vae_out_pt_arr = jnp.array(vae_out_pt.float().numpy(), dtype=jnp.float32)
+      
+      # JAX raw decoded video is (B, T, H, W, C). PyTorch is (B, C, T, H, W).
+      jax_comp = video.astype(jnp.float32).transpose(0, 4, 1, 2, 3)
+      mse = jnp.mean((jax_comp - vae_out_pt_arr) ** 2)
+      max_logging.log(f"📊 [VAE Output Decoded Parity] MSE: {mse:.6f}")
+
     # Post-process video (converts to numpy/PIL)
     jax.block_until_ready(video)
     max_logging.log(f"⏱️ Video VAE Decode Time: {time.time() - vae_start:.4f} seconds")
@@ -1837,13 +1897,47 @@ class LTX2Pipeline:
     video_np = np.array(video.astype(jnp.float32)).transpose(0, 4, 1, 2, 3)
     video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
 
+    # Audit VAE final postprocessed output
+    pt_vae_out_postprocessed_path = os.path.join(home_dir, "pt_vae_output_postprocessed.pt")
+    if os.path.exists(pt_vae_out_postprocessed_path):
+      vae_out_pt = torch.load(pt_vae_out_postprocessed_path)
+      # both are numpy arrays or PyTorch tensors
+      if isinstance(video, list):
+        # convert PIL/other to comparable structure or print note
+        max_logging.log("📊 [VAE Output Postprocessed Parity] (Output is PIL list; skipped numpy MSE check)")
+      else:
+        video_arr = jnp.array(video, dtype=jnp.float32)
+        vae_out_pt_arr = jnp.array(vae_out_pt, dtype=jnp.float32)
+        mse = jnp.mean((video_arr - vae_out_pt_arr) ** 2)
+        max_logging.log(f"📊 [VAE Output Postprocessed Parity] MSE: {mse:.6f}")
+
     # Decode Audio
     import time
     audio_latents = audio_latents.astype(self.audio_vae.dtype)
+
+    # Audit Audio VAE input
+    pt_audio_vae_in_path = os.path.join(home_dir, "pt_audio_vae_input_unpacked.pt")
+    if os.path.exists(pt_audio_vae_in_path):
+      audio_in_pt = torch.load(pt_audio_vae_in_path)
+      audio_in_pt_arr = jnp.array(audio_in_pt.float().numpy(), dtype=jnp.float32)
+      # in JAX, audio_latents is (B, T, F, C) right now
+      # in PyTorch, it is (B, C, T, F)
+      jax_comp = audio_latents.astype(jnp.float32).transpose(0, 3, 1, 2)
+      mse = jnp.mean((jax_comp - audio_in_pt_arr) ** 2)
+      max_logging.log(f"📊 [Audio VAE Input Parity] MSE: {mse:.6f}")
+
     generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
 
     # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
     generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
+
+    # Audit Audio VAE Output / Vocoder Input
+    pt_vocoder_in_path = os.path.join(home_dir, "pt_vocoder_input.pt")
+    if os.path.exists(pt_vocoder_in_path):
+      voc_in_pt = torch.load(pt_vocoder_in_path)
+      voc_in_pt_arr = jnp.array(voc_in_pt.float().numpy(), dtype=jnp.float32)
+      mse = jnp.mean((generated_mel_spectrograms.astype(jnp.float32) - voc_in_pt_arr) ** 2)
+      max_logging.log(f"📊 [Audio VAE Output / Vocoder Input Parity] MSE: {mse:.6f}")
 
     vocoder_start_time = time.time()
     # Cache the JITted function on the pipeline so it doesn't recompile on the 2nd run
@@ -1856,6 +1950,14 @@ class LTX2Pipeline:
 
     # Convert audio to numpy
     audio = np.array(audio)
+
+    # Audit Vocoder Output
+    pt_vocoder_out_path = os.path.join(home_dir, "pt_vocoder_output.pt")
+    if os.path.exists(pt_vocoder_out_path):
+      voc_out_pt = torch.load(pt_vocoder_out_path)
+      voc_out_pt_arr = jnp.array(voc_out_pt.float().numpy(), dtype=jnp.float32)
+      mse = jnp.mean((audio.astype(jnp.float32) - voc_out_pt_arr) ** 2)
+      max_logging.log(f"📊 [Vocoder Output Parity] MSE: {mse:.6f}")
 
     return LTX2PipelineOutput(frames=video, audio=audio)
 
