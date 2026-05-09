@@ -1599,6 +1599,7 @@ class LTX2Pipeline:
 
                 latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
                 audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
+                max_logging.log(f"📊 [Diagnostic Mode] Loaded pt_latents_step_0.pt first 5 values: {[float(x) for x in latents_pt_arr[0, 0, :5]]}")
 
                 latents_uncond, latents_cond = jnp.split(latents_pt_arr, 2, axis=0)
                 audio_uncond, audio_cond = jnp.split(audio_latents_pt_arr, 2, axis=0)
