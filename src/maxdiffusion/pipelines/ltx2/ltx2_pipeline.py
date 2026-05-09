@@ -1553,7 +1553,10 @@ class LTX2Pipeline:
             pt_audio_latents_path = os.path.join(home_dir, f"pt_audio_latents_step_{i}.pt")
             pt_timestep_path = os.path.join(home_dir, f"pt_timestep_step_{i}.pt")
 
-            if os.path.exists(pt_latents_path):
+            # Set True to run JAX natively after Step 0 while still auditing MSE
+            overwrite_only_step_0 = True
+
+            if os.path.exists(pt_latents_path) and (not overwrite_only_step_0 or i == 0):
               max_logging.log(f"🚨 [Diagnostic Mode] Loading PyTorch Step {i} inputs...")
               latents_pt = torch.load(pt_latents_path)
               audio_latents_pt = torch.load(pt_audio_latents_path)
@@ -1604,6 +1607,40 @@ class LTX2Pipeline:
 
           if i < 5:
             max_logging.log(f"🚨 [Python Loop Step {i} Video Prediction] mean: {noise_pred.mean()} | std: {noise_pred.std()}")
+
+          # Compile-safe real-time Step Parity Auditor block
+          if i < 5:
+            import os
+            import torch
+            home_dir = os.path.expanduser("~")
+            pt_cfg_path = os.path.join(home_dir, f"pt_noise_pred_cfg_step_{i}.pt")
+            pt_stg_path = os.path.join(home_dir, f"pt_noise_pred_stg_step_{i}.pt")
+            pt_mig_path = os.path.join(home_dir, f"pt_noise_pred_mig_step_{i}.pt")
+
+            if os.path.exists(pt_cfg_path) and os.path.exists(pt_stg_path) and os.path.exists(pt_mig_path):
+              cfg_pt = jnp.array(torch.load(pt_cfg_path).float().numpy(), dtype=jnp.float32)
+              stg_pt = jnp.array(torch.load(pt_stg_path).float().numpy(), dtype=jnp.float32)
+              mig_pt = jnp.array(torch.load(pt_mig_path).float().numpy(), dtype=jnp.float32)
+
+              pt_out = jnp.concatenate([cfg_pt, stg_pt, mig_pt], axis=0)
+              jax_out = jnp.array(noise_pred, dtype=jnp.float32)
+
+              # Extract current positive latents step slice
+              lat_step = latents_jax[batch_size : 2 * batch_size]
+
+              max_logging.log(f"🔍 [Step {i} Real-Time Parity Auditor]")
+              for idx, name in enumerate(["Uncond", "Cond", "Perturb (STG)", "Isolated (MIG)"]):
+                p_slice = pt_out[idx]
+                if idx in [0, 1]:
+                  # CFG Slices: Velocity vs Velocity
+                  j_slice = jax_out[idx]
+                else:
+                  # STG/MIG Slices: Convert JAX velocity slice to x0 to match PyTorch's saved x0 files
+                  j_slice = lat_step[0] - jax_out[idx] * sigma_t
+
+                slice_mse = jnp.mean((j_slice - p_slice) ** 2)
+                slice_max = jnp.max(jnp.abs(j_slice - p_slice))
+                max_logging.log(f"  - {name} Video MSE: {slice_mse:.6f} | Max Diff: {slice_max:.6f}")
 
           if i == 1:
             max_logging.log(f"🔍 [Python Loop Step 1 Transformer Inputs] latents mean: {latents_jax_sharded.mean()} | timestep: {t} | sigma: {sigma_t} | is_cfg_stg: {do_cfg and do_stg}")
