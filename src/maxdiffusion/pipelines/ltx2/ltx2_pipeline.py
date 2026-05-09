@@ -1438,22 +1438,6 @@ class LTX2Pipeline:
     import numpy as np
     
     # 1. Proj_in Hook
-    orig_proj_in = self.transformer.proj_in
-    def hooked_proj_in(x):
-      out = orig_proj_in(x)
-      def audit_proj_in(jax_out):
-        import os
-        import torch
-        home_dir = os.path.expanduser("~")
-        ref_path = os.path.join(home_dir, "pt_proj_in_out.pt")
-        if os.path.exists(ref_path):
-          ref = torch.load(ref_path, weights_only=False).float().numpy()
-          jax_flat = jax_out.reshape(jax_out.shape[0], -1, jax_out.shape[-1])
-          mse = np.mean((jax_flat[:2] - ref) ** 2)
-          max_logging.log(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {mse:.8f}")
-      jax.debug.callback(audit_proj_in, out)
-      return out
-    # 1. Proj_in Hook
     orig_proj_in_call = self.transformer.proj_in.__call__
     def hooked_proj_in(x):
       out = orig_proj_in_call(x)
@@ -1466,7 +1450,7 @@ class LTX2Pipeline:
           ref = torch.load(ref_path, weights_only=False).float().numpy()
           jax_flat = jax_out.reshape(jax_out.shape[0], -1, jax_out.shape[-1])
           mse = np.mean((jax_flat[:2] - ref) ** 2)
-          max_logging.log(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {mse:.8f}")
+          print(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {mse:.8f}", flush=True)
       jax.debug.callback(audit_proj_in, out)
       return out
     self.transformer.proj_in.__call__ = hooked_proj_in
@@ -1485,11 +1469,11 @@ class LTX2Pipeline:
         if os.path.exists(v_ref_path):
           v_ref = torch.load(v_ref_path, weights_only=False).float().numpy()
           mse = np.mean((video_out[:2] - v_ref) ** 2)
-          max_logging.log(f"🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {mse:.8f}")
+          print(f"🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {mse:.8f}", flush=True)
         if os.path.exists(a_ref_path):
           a_ref = torch.load(a_ref_path, weights_only=False).float().numpy()
           mse = np.mean((audio_out[:2] - a_ref) ** 2)
-          max_logging.log(f"🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {mse:.8f}")
+          print(f"🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {mse:.8f}", flush=True)
       jax.debug.callback(audit_block0, out[0], out[1])
       return out
     if is_subscriptable:
