@@ -1578,7 +1578,6 @@ class LTX2Pipeline:
     max_logging.log(f"⏱️ Diffusion Loop Time: {time.time() - diffusion_loop_start:.4f} seconds")
 
     # 8. Decode Latents
-    decode_start = time.time()
     if do_cfg and do_stg:
       latents_jax = latents_jax[batch_size : 2 * batch_size]
       audio_latents_jax = audio_latents_jax[batch_size : 2 * batch_size]
@@ -1863,8 +1862,7 @@ def run_diffusion_loop(
 ):
   latents_jax = latents_jax.astype(jnp.float32)
   audio_latents_jax = audio_latents_jax.astype(jnp.float32)
-  transformer = nnx.merge(graphdef, state)
-
+  
   do_cfg = guidance_scale > 1.0
   do_stg = stg_scale > 0.0
 

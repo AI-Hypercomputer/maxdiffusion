@@ -300,7 +300,9 @@ class ResBlock(nnx.Module):
       elif act_fn == "snake":
         act = SnakeBeta(channels, use_beta=False, rngs=rngs)
       else:
-        act = lambda x: jax.nn.leaky_relu(x, negative_slope=leaky_relu_negative_slope)
+        def leaky_relu_act(x):
+          return jax.nn.leaky_relu(x, negative_slope=leaky_relu_negative_slope)
+        act = leaky_relu_act
 
       if antialias:
         act = AntiAliasAct1d(act, ratio=antialias_ratio, kernel_size=antialias_kernel_size)
@@ -329,7 +331,9 @@ class ResBlock(nnx.Module):
       elif act_fn == "snake":
         act = SnakeBeta(channels, use_beta=False, rngs=rngs)
       else:
-        act = lambda x: jax.nn.leaky_relu(x, negative_slope=leaky_relu_negative_slope)
+        def leaky_relu_act(x):
+          return jax.nn.leaky_relu(x, negative_slope=leaky_relu_negative_slope)
+        act = leaky_relu_act
 
       if antialias:
         act = AntiAliasAct1d(act, ratio=antialias_ratio, kernel_size=antialias_kernel_size)
