@@ -526,17 +526,6 @@ class LTX2Attention(nnx.Module):
         attn_output = value + perturbation_mask * (attn_output - value)
 
       if getattr(self, "to_gate_logits", None) is not None:
-        # Auditing gate logits parameters
-        gate_kernel = self.to_gate_logits.kernel
-        gate_bias = self.to_gate_logits.bias
-        if hasattr(gate_kernel, "value"):
-          gate_kernel = gate_kernel.value
-        if hasattr(gate_bias, "value"):
-          gate_bias = gate_bias.value
-        
-        jax.debug.print("🔍 [Gating Diagnostics] to_gate_logits kernel - mean: {}, std: {}", jnp.mean(gate_kernel), jnp.std(gate_kernel))
-        jax.debug.print("🔍 [Gating Diagnostics] to_gate_logits bias - mean: {}, std: {}", jnp.mean(gate_bias), jnp.std(gate_bias))
-
         gate_logits = self.to_gate_logits(hidden_states)
         b, s, _ = attn_output.shape
         attn_output = attn_output.reshape(b, s, self.heads, self.dim_head)
