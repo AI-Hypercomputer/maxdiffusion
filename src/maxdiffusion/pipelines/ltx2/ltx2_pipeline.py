@@ -1338,6 +1338,8 @@ class LTX2Pipeline:
       latents_jax_slice = jnp.array(latents, dtype=jnp.float32)
       mse = jnp.mean((latents_jax_slice - latents_pt) ** 2)
       max_logging.log(f"📊 [Starting Latent Noise Parity] MSE: {mse:.6f}")
+      # Override with PyTorch reference to guarantee mathematical starting parity
+      latents = jnp.array(latents_pt, dtype=dtype)
 
     latent_height = height // self.vae_spatial_compression_ratio
     latent_width = width // self.vae_spatial_compression_ratio
@@ -1365,6 +1367,12 @@ class LTX2Pipeline:
         generator=key_audio,
         latents=audio_latents,
     )
+
+    pt_audio_latents_path = os.path.join(home_dir, "pt_audio_latents_step_0.pt")
+    if os.path.exists(pt_audio_latents_path):
+      audio_latents_pt = jnp.array(torch.load(pt_audio_latents_path, weights_only=False).float().numpy(), dtype=jnp.float32)
+      # Override with PyTorch reference to guarantee mathematical starting parity
+      audio_latents = jnp.array(audio_latents_pt, dtype=dtype)
 
     # 5. Prepare Timesteps
     sigmas = jnp.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
