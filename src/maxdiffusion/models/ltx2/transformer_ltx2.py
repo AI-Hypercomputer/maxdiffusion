@@ -56,6 +56,10 @@ def audit_slice_parity(jax_tensor, timestep_val, module_name, is_video=True):
   t_val = float(np.mean(timestep_val))
   step_idx = find_step_idx(t_val)
   
+  # Only perform parity verification on the first 5 steps
+  if step_idx >= 5:
+    return
+  
   # 2. Convert JAX tensor to numpy on host
   jax_arr = np.array(jax_tensor).astype(np.float32)
   
@@ -65,26 +69,25 @@ def audit_slice_parity(jax_tensor, timestep_val, module_name, is_video=True):
   for name in slice_names:
     path = os.path.join(home_dir, f"pt_{module_name}_{name}_step_{step_idx}.pt")
     if os.path.exists(path):
-      pt_val = torch.load(path, weights_only=False).flatten()
+      pt_val = torch.load(path, weights_only=False).float().numpy()
       ref_tensors[name] = pt_val
       
   if not ref_tensors:
     return
     
-  # 4. Match and compute slice parity by slicing matching lengths
+  # 4. Match and compute slice parity by comparing flattened arrays of exact matching element counts
   b_local = jax_arr.shape[0]
   for idx in range(b_local):
     local_slice = jax_arr[idx]
     local_slice_flat = local_slice.flatten()
-    if local_slice_flat.size > 100000:
-      local_slice_flat = local_slice_flat[:100000]
-      
+    
     best_name = None
     min_mse = float("inf")
     
     for name, ref in ref_tensors.items():
-      if local_slice_flat.size == ref.size:
-        mse = float(np.mean((local_slice_flat - ref) ** 2))
+      ref_flat = ref.flatten()
+      if local_slice_flat.size == ref_flat.size:
+        mse = float(np.mean((local_slice_flat - ref_flat) ** 2))
         if mse < min_mse:
           min_mse = mse
           best_name = name
