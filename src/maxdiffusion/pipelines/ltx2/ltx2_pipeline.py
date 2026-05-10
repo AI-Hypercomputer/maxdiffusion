@@ -1749,10 +1749,6 @@ class LTX2Pipeline:
     video_vae_time = time.perf_counter() - t0_video_vae
     max_logging.log(f"Video VAE decode time: {video_vae_time:.2f}s")
 
-    # Post-process video (converts to numpy/PIL)
-    jax.block_until_ready(video)
-    max_logging.log(f"⏱️ Video VAE Decode Time: {time.time() - vae_start:.4f} seconds")
-
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
     t0_video_post = time.perf_counter()
     video_np = np.array(video).transpose(0, 4, 1, 2, 3)
@@ -1768,7 +1764,7 @@ class LTX2Pipeline:
     generated_mel_spectrograms = generated_mel_spectrograms.block_until_ready()
     audio_vae_time = time.perf_counter() - t0_audio_vae
     max_logging.log(f"Audio VAE decode time: {audio_vae_time:.2f}s")
-    
+
     t0_vocoder = time.perf_counter()
     with jax.named_scope("vocoder_pass"):
       generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
