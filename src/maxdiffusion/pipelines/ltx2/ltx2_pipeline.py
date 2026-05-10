@@ -582,9 +582,6 @@ class LTX2Pipeline:
       elif "x2" in filename:
         rational_spatial_scale = None  # Force fallback for x2
 
-    if config.upsampler_model_path == "Lightricks/LTX-2.3":
-      mid_channels = 512  # Force 512 for LTX 2.3 upscaler
-
     max_logging.log(
         f"Upsampler config inferred: spatial={spatial_upsample}, temporal={temporal_upsample}, scale={rational_spatial_scale}, mid_channels={mid_channels}"
     )
