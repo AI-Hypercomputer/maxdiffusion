@@ -46,6 +46,7 @@ class LTX2SmokeTest(unittest.TestCase):
             "height=256",  # Small resolution
             "width=256",
             "num_frames=9",  # Small number of frames
+            "max_sequence_length=256",  # Highly optimized sequence length to prevent VMEM OOM
             "seed=0",
             "attention=flash",
             "ici_fsdp_parallelism=1",
