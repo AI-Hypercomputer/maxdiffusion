@@ -28,6 +28,73 @@ from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
 from maxdiffusion.common_types import BlockSizes
 
 
+# ==============================================================================
+# Step-by-step parity audit helper functions
+# ==============================================================================
+def find_step_idx(current_t_val):
+  import os, torch
+  home_dir = os.path.expanduser("~")
+  closest_step = 0
+  min_diff = float("inf")
+  for s in range(40):
+    t_path = os.path.join(home_dir, f"pt_timestep_step_{s}.pt")
+    if os.path.exists(t_path):
+      t_val = float(torch.load(t_path, weights_only=False).item())
+      diff = abs(t_val - current_t_val)
+      if diff < min_diff:
+        min_diff = diff
+        closest_step = s
+  return closest_step
+
+def audit_slice_parity(jax_tensor, timestep_val, module_name, is_video=True):
+  if timestep_val is None:
+    return
+  import os, torch, numpy as np
+  home_dir = os.path.expanduser("~")
+  
+  # 1. Find closest step index
+  t_val = float(np.mean(timestep_val))
+  step_idx = find_step_idx(t_val)
+  
+  # 2. Convert JAX tensor to numpy on host
+  jax_arr = np.array(jax_tensor).astype(np.float32)
+  
+  # 3. Load PyTorch slices
+  slice_names = ["uncond", "cond", "perturb", "isolated"]
+  ref_tensors = {}
+  for name in slice_names:
+    path = os.path.join(home_dir, f"pt_{module_name}_{name}_step_{step_idx}.pt")
+    if os.path.exists(path):
+      pt_val = torch.load(path, weights_only=False).flatten()
+      ref_tensors[name] = pt_val
+      
+  if not ref_tensors:
+    return
+    
+  # 4. Match and compute slice parity by slicing matching lengths
+  b_local = jax_arr.shape[0]
+  for idx in range(b_local):
+    local_slice = jax_arr[idx]
+    local_slice_flat = local_slice.flatten()
+    if local_slice_flat.size > 100000:
+      local_slice_flat = local_slice_flat[:100000]
+      
+    best_name = None
+    min_mse = float("inf")
+    
+    for name, ref in ref_tensors.items():
+      if local_slice_flat.size == ref.size:
+        mse = float(np.mean((local_slice_flat - ref) ** 2))
+        if mse < min_mse:
+          min_mse = mse
+          best_name = name
+        
+    if best_name is not None:
+      stream_suffix = "Video" if is_video else "Audio"
+      print(f"🔍 [Step {step_idx} Intermediate] {module_name} {stream_suffix} {best_name} MSE: {min_mse:.8f}", flush=True)
+# ==============================================================================
+
+
 class LTX2AdaLayerNormSingle(nnx.Module):
 
   def __init__(
@@ -383,6 +450,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       v2a_cross_attention_mask: Optional[jax.Array] = None,
       perturbation_mask: Optional[jax.Array] = None,
       layer_idx: Optional[int] = None,
+      timestep: Optional[jax.Array] = None,
   ) -> Tuple[jax.Array, jax.Array]:
     batch_size = hidden_states.shape[0]
 
@@ -430,21 +498,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
           perturbation_mask=perturbation_mask,
       )
     
-    # Diagnostics for attn1 output
-    is_layer_0 = (layer_idx == 0) if layer_idx is not None else True
-    def print_attn1(attn_val, cond):
-      if cond:
-        import os
-        import torch
-        home_dir = os.path.expanduser("~")
-        ref_attn1_path = os.path.join(home_dir, "pt_block0_attn1_out.pt")
-        if os.path.exists(ref_attn1_path):
-          ref_attn1 = torch.load(ref_attn1_path, weights_only=False).float().numpy()
-          ref_attn1_slice = ref_attn1[0:1]
-          jax_flat_attn1 = attn_val.reshape(attn_val.shape[0], -1, attn_val.shape[-1])
-          mse = ((jax_flat_attn1[0:1] - ref_attn1_slice) ** 2).mean()
-          print(f"🔍 [Step 0 Intermediate] Block 0 attn1 Output MSE: {float(mse):.8f}", flush=True)
-    jax.debug.callback(print_attn1, attn_hidden_states, is_layer_0)
+    # Step-by-step parity audit for Block 0 attn1 output
+    if layer_idx == 0 or layer_idx is None:
+      jax.debug.callback(audit_slice_parity, attn_hidden_states, timestep, "block0_attn1_out", True)
+
 
     hidden_states = hidden_states + attn_hidden_states * gate_msa
 
@@ -499,20 +556,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_mask=encoder_attention_mask,
     )
     
-    # Diagnostics for attn2 output
-    def print_attn2(attn_val, cond):
-      if cond:
-        import os
-        import torch
-        home_dir = os.path.expanduser("~")
-        ref_attn2_path = os.path.join(home_dir, "pt_block0_attn2_out.pt")
-        if os.path.exists(ref_attn2_path):
-          ref_attn2 = torch.load(ref_attn2_path, weights_only=False).float().numpy()
-          ref_attn2_slice = ref_attn2[0:1]
-          jax_flat_attn2 = attn_val.reshape(attn_val.shape[0], -1, attn_val.shape[-1])
-          mse = ((jax_flat_attn2[0:1] - ref_attn2_slice) ** 2).mean()
-          print(f"🔍 [Step 0 Intermediate] Block 0 attn2 Output MSE: {float(mse):.8f}", flush=True)
-    jax.debug.callback(print_attn2, attn_hidden_states, is_layer_0)
+    # Step-by-step parity audit for Block 0 attn2 output
+    if layer_idx == 0 or layer_idx is None:
+      jax.debug.callback(audit_slice_parity, attn_hidden_states, timestep, "block0_attn2_out", True)
+
 
     if getattr(self, "cross_attn_mod", False):
       attn_hidden_states = attn_hidden_states * gate_q
@@ -592,20 +639,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
           attention_mask=a2v_cross_attention_mask,
       )
       
-    # Diagnostics for audio_to_video_attn output
-    def print_a2v(attn_val, cond):
-      if cond:
-        import os
-        import torch
-        home_dir = os.path.expanduser("~")
-        ref_a2v_path = os.path.join(home_dir, "pt_block0_a2v_out.pt")
-        if os.path.exists(ref_a2v_path):
-          ref_a2v = torch.load(ref_a2v_path, weights_only=False).float().numpy()
-          ref_a2v_slice = ref_a2v[0:1]
-          jax_flat_a2v = attn_val.reshape(attn_val.shape[0], -1, attn_val.shape[-1])
-          mse = ((jax_flat_a2v[0:1] - ref_a2v_slice) ** 2).mean()
-          print(f"🔍 [Step 0 Intermediate] Block 0 a2v Output MSE: {float(mse):.8f}", flush=True)
-    jax.debug.callback(print_a2v, a2v_attn_hidden_states, is_layer_0)
+    # Step-by-step parity audit for Block 0 a2v output
+    if layer_idx == 0 or layer_idx is None:
+      jax.debug.callback(audit_slice_parity, a2v_attn_hidden_states, timestep, "block0_a2v_out", True)
+
 
     if modality_mask is not None:
       a2v_attn_hidden_states = a2v_attn_hidden_states * modality_mask
@@ -632,20 +669,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
     norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
     ff_output = self.ff(norm_hidden_states)
     
-    # Diagnostics for feedforward output
-    def print_ff(attn_val, cond):
-      if cond:
-        import os
-        import torch
-        home_dir = os.path.expanduser("~")
-        ref_ff_path = os.path.join(home_dir, "pt_block0_ff_out.pt")
-        if os.path.exists(ref_ff_path):
-          ref_ff = torch.load(ref_ff_path, weights_only=False).float().numpy()
-          ref_ff_slice = ref_ff[0:1]
-          jax_flat_ff = attn_val.reshape(attn_val.shape[0], -1, attn_val.shape[-1])
-          mse = ((jax_flat_ff[0:1] - ref_ff_slice) ** 2).mean()
-          print(f"🔍 [Step 0 Intermediate] Block 0 ff Output MSE: {float(mse):.8f}", flush=True)
-    jax.debug.callback(print_ff, ff_output, is_layer_0)
+    # Step-by-step parity audit for Block 0 ff output
+    if layer_idx == 0 or layer_idx is None:
+      jax.debug.callback(audit_slice_parity, ff_output, timestep, "block0_ff_out", True)
+
 
     hidden_states = hidden_states + ff_output * gate_mlp
 
@@ -653,6 +680,11 @@ class LTX2VideoTransformerBlock(nnx.Module):
     norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_mlp) + audio_shift_mlp
     audio_ff_output = self.audio_ff(norm_audio_hidden_states)
     audio_hidden_states = audio_hidden_states + audio_ff_output * audio_gate_mlp
+
+    # Step-by-step parity audit for Block 0 final outputs
+    if layer_idx == 0 or layer_idx is None:
+      jax.debug.callback(audit_slice_parity, hidden_states, timestep, "block0_video_out", True)
+      jax.debug.callback(audit_slice_parity, audio_hidden_states, timestep, "block0_audio_out", False)
 
     return hidden_states, audio_hidden_states
 
@@ -1136,48 +1168,15 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
     # 2. Patchify input projections
     with jax.named_scope("Input Projection"):
-      # Direct Step 0 Auditing Print for Inputs
-      import os
-      import torch
-      home_dir = os.path.expanduser("~")
-      ref_in_path = os.path.join(home_dir, "pt_proj_in_in.pt")
-      is_step_0 = (timestep.mean() > 990)
-      if os.path.exists(ref_in_path):
-        ref_proj_in_in = jnp.array(torch.load(ref_in_path, weights_only=False).float().numpy())
-        ref_proj_in_in_slice = ref_proj_in_in[0:1]
-        jax_flat_in = hidden_states.reshape(hidden_states.shape[0], -1, hidden_states.shape[-1])
-        in_mse = jnp.mean((jax_flat_in[0:1] - ref_proj_in_in_slice) ** 2)
-        def print_proj_in_input(val, cond, jax_tensor, pt_tensor):
-          if cond:
-            print(f"🔍 [Step 0 Intermediate] proj_in Input MSE: {float(val):.8f}", flush=True)
-            print(f"📊 [Step 0 proj_in Input] JAX shape: {jax_tensor.shape} | PyTorch shape: {pt_tensor.shape}", flush=True)
-            print(f"📊 [Step 0 proj_in Input] JAX first 5 elements: {[float(x) for x in jax_tensor[0, 0, :5]]}", flush=True)
-            print(f"📊 [Step 0 proj_in Input] PyTorch first 5 elements: {[float(x) for x in pt_tensor[0, 0, :5]]}", flush=True)
-        jax.debug.callback(print_proj_in_input, in_mse, is_step_0, jax_flat_in[0:1], ref_proj_in_in_slice)
-
+      # Step-by-step parity audit for proj_in input
+      jax.debug.callback(audit_slice_parity, hidden_states, timestep, "proj_in_in", True)
+      
       hidden_states = self.proj_in(hidden_states)
+      
+      # Step-by-step parity audit for proj_in output
+      jax.debug.callback(audit_slice_parity, hidden_states, timestep, "proj_in_out", True)
+      
       audio_hidden_states = self.audio_proj_in(audio_hidden_states)
-
-      # Direct Step 0 Auditing Print for Outputs
-      ref_path = os.path.join(home_dir, "pt_proj_in_out.pt")
-      if os.path.exists(ref_path):
-        ref_proj_in = jnp.array(torch.load(ref_path, weights_only=False).float().numpy())
-        ref_proj_in_slice = ref_proj_in[0:1]
-        jax_flat = hidden_states.reshape(hidden_states.shape[0], -1, hidden_states.shape[-1])
-        mse = jnp.mean((jax_flat[0:1] - ref_proj_in_slice) ** 2)
-        def print_proj_in(val, cond, kernel, bias):
-          if cond:
-            print(f"🔍 [Step 0 Intermediate] proj_in Output MSE: {float(val):.8f}", flush=True)
-            print(f"📊 [Step 0 proj_in Weights] JAX kernel - mean: {float(kernel.mean()):.8f}, std: {float(kernel.std()):.8f}", flush=True)
-            if bias is not None:
-              print(f"📊 [Step 0 proj_in Weights] JAX bias - mean: {float(bias.mean()):.8f}, std: {float(bias.std()):.8f}", flush=True)
-        jax.debug.callback(
-            print_proj_in,
-            mse,
-            is_step_0,
-            self.proj_in.kernel,
-            self.proj_in.bias if hasattr(self.proj_in, "bias") else None,
-        )
 
     # 3. Prepare timestep embeddings and modulation parameters
     with jax.named_scope("Timestep and Caption Projection"):
@@ -1289,34 +1288,10 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             perturbation_mask=mask,
             modality_mask=modality_mask,
             layer_idx=layer_idx,
+            timestep=timestep,
         )
 
-      # Direct Step 0 Block 0 Auditing Print
-      import os
-      import torch
-      home_dir = os.path.expanduser("~")
-      v_ref_path = os.path.join(home_dir, "pt_block0_video_out.pt")
-      a_ref_path = os.path.join(home_dir, "pt_block0_audio_out.pt")
-      
-      is_step_0_block_0 = (timestep.mean() > 990) & (layer_idx == 0)
-      
-      if os.path.exists(v_ref_path):
-        ref_v = jnp.array(torch.load(v_ref_path, weights_only=False).float().numpy())
-        ref_v_slice = ref_v[0:1]
-        mse_v = jnp.mean((hidden_states_out[0:1] - ref_v_slice) ** 2)
-        def print_block0_video(val, cond):
-          if cond:
-            print(f"🔍 [Step 0 Intermediate] Block 0 Video Output MSE: {float(val):.8f}", flush=True)
-        jax.debug.callback(print_block0_video, mse_v, is_step_0_block_0)
-        
-      if os.path.exists(a_ref_path):
-        ref_a = jnp.array(torch.load(a_ref_path, weights_only=False).float().numpy())
-        ref_a_slice = ref_a[0:1]
-        mse_a = jnp.mean((audio_hidden_states_out[0:1] - ref_a_slice) ** 2)
-        def print_block0_audio(val, cond):
-          if cond:
-            print(f"🔍 [Step 0 Intermediate] Block 0 Audio Output MSE: {float(val):.8f}", flush=True)
-        jax.debug.callback(print_block0_audio, mse_a, is_step_0_block_0)
+
 
       return (
           hidden_states_out.astype(hidden_states.dtype),
@@ -1360,6 +1335,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
               encoder_attention_mask=encoder_attention_mask,
               audio_encoder_attention_mask=audio_encoder_attention_mask,
               perturbation_mask=mask,
+              timestep=timestep,
           )
 
     # 6. Output layers
