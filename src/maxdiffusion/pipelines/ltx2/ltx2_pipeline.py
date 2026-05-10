@@ -1609,12 +1609,10 @@ class LTX2Pipeline:
                 audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
                 max_logging.log(f"📊 [Diagnostic Mode] Loaded pt_latents_step_0.pt first 5 values: {[float(x) for x in latents_pt_arr[0, 0, :5]]}")
 
-                latents_uncond, latents_cond = jnp.split(latents_pt_arr, 2, axis=0)
-                audio_uncond, audio_cond = jnp.split(audio_latents_pt_arr, 2, axis=0)
-
-                # Concatenate to stacked shape 4: [Uncond, Cond, Cond, Cond]
-                latents_jax_sharded = jnp.concatenate([latents_uncond, latents_cond, latents_cond, latents_cond], axis=0)
-                audio_latents_jax_sharded = jnp.concatenate([audio_uncond, audio_cond, audio_cond, audio_cond], axis=0)
+                # PyTorch references are saved in raw shape (batch size 1).
+                # We replicate them to the stacked 4-pass JAX shape [Uncond, Cond, Perturb, Isolated]
+                latents_jax_sharded = jnp.concatenate([latents_pt_arr] * 4, axis=0)
+                audio_latents_jax_sharded = jnp.concatenate([audio_latents_pt_arr] * 4, axis=0)
 
                 t_val = timestep_pt.item()
                 t = jnp.array(t_val, dtype=jnp.float32)
@@ -1626,16 +1624,12 @@ class LTX2Pipeline:
                 latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
                 audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
 
-                jax_uncond = latents_jax_sharded[0]
-                jax_cond = latents_jax_sharded[1]
-                jax_comp = jnp.stack([jax_uncond, jax_cond], axis=0)
+                # JAX's carry-forward latents are replicated in latents_jax_sharded; extract the single-batch slice
+                jax_step = latents_jax_sharded[:1]
+                audio_jax_step = audio_latents_jax_sharded[:1]
 
-                audio_jax_uncond = audio_latents_jax_sharded[0]
-                audio_jax_cond = audio_latents_jax_sharded[1]
-                audio_jax_comp = jnp.stack([audio_jax_uncond, audio_jax_cond], axis=0)
-
-                video_mse = jnp.mean((jax_comp - latents_pt_arr) ** 2)
-                audio_mse = jnp.mean((audio_jax_comp - audio_latents_pt_arr) ** 2)
+                video_mse = jnp.mean((jax_step - latents_pt_arr) ** 2)
+                audio_mse = jnp.mean((audio_jax_step - audio_latents_pt_arr) ** 2)
                 max_logging.log(f"📊 [Step {i} Latents Carried Forward] Video Latents MSE: {video_mse:.6f} | Audio Latents MSE: {audio_mse:.6f}")
 
           if not self.transformer.scan_layers:
