@@ -46,7 +46,9 @@ def find_step_idx(current_t_val):
         closest_step = s
   return closest_step
 
-def audit_slice_parity(jax_tensor, timestep_val, module_name, is_video=True):
+def audit_slice_parity(jax_tensor, timestep_val, module_name, is_video=True, layer_idx=None):
+  if layer_idx is not None and int(layer_idx) != 0:
+    return
   if timestep_val is None:
     return
   import os, torch, numpy as np
@@ -502,8 +504,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       )
     
     # Step-by-step parity audit for Block 0 attn1 output
-    if layer_idx == 0 or layer_idx is None:
-      jax.debug.callback(audit_slice_parity, attn_hidden_states, timestep, "block0_attn1_out", True)
+    jax.debug.callback(audit_slice_parity, attn_hidden_states, timestep, "block0_attn1_out", True, layer_idx)
 
 
     hidden_states = hidden_states + attn_hidden_states * gate_msa
@@ -560,8 +561,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
     )
     
     # Step-by-step parity audit for Block 0 attn2 output
-    if layer_idx == 0 or layer_idx is None:
-      jax.debug.callback(audit_slice_parity, attn_hidden_states, timestep, "block0_attn2_out", True)
+    jax.debug.callback(audit_slice_parity, attn_hidden_states, timestep, "block0_attn2_out", True, layer_idx)
 
 
     if getattr(self, "cross_attn_mod", False):
@@ -643,8 +643,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       )
       
     # Step-by-step parity audit for Block 0 a2v output
-    if layer_idx == 0 or layer_idx is None:
-      jax.debug.callback(audit_slice_parity, a2v_attn_hidden_states, timestep, "block0_a2v_out", True)
+    jax.debug.callback(audit_slice_parity, a2v_attn_hidden_states, timestep, "block0_a2v_out", True, layer_idx)
 
 
     if modality_mask is not None:
@@ -673,8 +672,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
     ff_output = self.ff(norm_hidden_states)
     
     # Step-by-step parity audit for Block 0 ff output
-    if layer_idx == 0 or layer_idx is None:
-      jax.debug.callback(audit_slice_parity, ff_output, timestep, "block0_ff_out", True)
+    jax.debug.callback(audit_slice_parity, ff_output, timestep, "block0_ff_out", True, layer_idx)
 
 
     hidden_states = hidden_states + ff_output * gate_mlp
@@ -685,9 +683,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
     audio_hidden_states = audio_hidden_states + audio_ff_output * audio_gate_mlp
 
     # Step-by-step parity audit for Block 0 final outputs
-    if layer_idx == 0 or layer_idx is None:
-      jax.debug.callback(audit_slice_parity, hidden_states, timestep, "block0_video_out", True)
-      jax.debug.callback(audit_slice_parity, audio_hidden_states, timestep, "block0_audio_out", False)
+    jax.debug.callback(audit_slice_parity, hidden_states, timestep, "block0_video_out", True, layer_idx)
+    jax.debug.callback(audit_slice_parity, audio_hidden_states, timestep, "block0_audio_out", False, layer_idx)
 
     return hidden_states, audio_hidden_states
 
