@@ -302,6 +302,13 @@ flow_shift: 3.0
 # Diffusion CFG cache (FasterCache-style, WAN 2.1 T2V only)
 use_cfg_cache: False
 
+# Batch positive and negative prompts in text encoder to save compute.
+use_batched_text_encoder: False
+
+# Use jax.lax.scan for the diffusion loop (non-cache path only).
+# Note: Enabling this will disable per-step profiling.
+scan_diffusion_loop: False
+
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
 num_inference_steps: 30

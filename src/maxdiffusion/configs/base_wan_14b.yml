@@ -53,6 +53,9 @@ vae_spatial: -1 # default to total_device * 2 // (dp)
 precision: "DEFAULT"
 # Use jax.lax.scan for transformer layers
 scan_layers: True
+# Use jax.lax.scan for the diffusion loop (non-cache path only).
+# Note: Enabling this will disable per-step profiling.
+scan_diffusion_loop: False
 
 # if False state is not jitted and instead replicate is called. This is good for debugging on single host
 # It must be True for multi-host.
@@ -61,21 +64,21 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses
+attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom
 use_base2_exp: True
 use_experimental_scheduler: True
-flash_min_seq_length: 0
+flash_min_seq_length: 4096
+dropout: 0.0
 
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
 # Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
 # However, when padding tokens are significant, this will lead to worse quality and should be set to True.
-mask_padding_tokens: True 
+mask_padding_tokens: True
 # Maxdiffusion has 2 types of attention sharding strategies:
 # 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
 # 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
 #    in cross attention q.
-attention_sharding_uniform: True 
-dropout: 0.0
+attention_sharding_uniform: True
 
 flash_block_sizes: {
   "block_q" : 512,
@@ -202,9 +205,9 @@ data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 # value to auto-shard based on available slices and devices.
 # By default, product of the DCN axes should equal number of slices
 # and product of the ICI axes should equal number of devices per slice.
-dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
+dcn_data_parallelism: 1
 dcn_fsdp_parallelism: 1
-dcn_context_parallelism: -1
+dcn_context_parallelism: -1  # recommended DCN axis to be auto-sharded
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
 ici_fsdp_parallelism: 1
@@ -338,16 +341,20 @@ prompt: "A cat and a dog baking a cake together in a kitchen. The cat is careful
 prompt_2: "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
 negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 do_classifier_free_guidance: True
-height: 480
-width: 832
+height: 720
+width: 1280
 num_frames: 81
 guidance_scale: 5.0
-flow_shift: 3.0
+flow_shift: 5.0
 
 # Diffusion CFG cache (FasterCache-style, WAN 2.1 T2V only)
 # Skips the unconditional forward pass on ~35% of steps via residual compensation.
 # See: FasterCache (Lv et al. 2024), WAN 2.1 paper §4.4.2
 use_cfg_cache: False
+
+# Batch positive and negative prompts in text encoder to save compute.
+use_batched_text_encoder: False
+
 use_magcache: False
 magcache_thresh: 0.12
 magcache_K: 2
@@ -356,7 +363,7 @@ mag_ratios_base: [1.0, 1.0, 1.02504, 1.03017, 1.00025, 1.00251, 0.9985, 0.99962,
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0
-num_inference_steps: 30
+num_inference_steps: 50
 fps: 16
 save_final_checkpoint: False
 

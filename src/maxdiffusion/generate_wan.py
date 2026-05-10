@@ -255,6 +255,8 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
   )
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+  if isinstance(videos, tuple):
+    videos = videos[0]
 
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")
@@ -278,7 +280,12 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
 
   s0 = time.perf_counter()
-  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+  outputs = call_pipeline(config, pipeline, prompt, negative_prompt)
+  if isinstance(outputs, tuple):
+    videos, trace = outputs
+  else:
+    videos = outputs
+    trace = {}
   generation_time = time.perf_counter() - s0
   max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
@@ -291,18 +298,39 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
-  max_logging.log(
-      f"\n{'=' * 50}\n"
-      f"  TIMING SUMMARY\n"
-      f"{'=' * 50}\n"
-      f"  Load (checkpoint):   {load_time:>7.1f}s\n"
-      f"  Compile:             {compile_time:>7.1f}s\n"
-      f"  {'─' * 40}\n"
-      f"  Inference:           {generation_time:>7.1f}s\n"
-      f"{'=' * 50}"
-  )
+  summary = [
+      f"\n{'=' * 50}",
+      "  TIMING SUMMARY",
+      f"{'=' * 50}",
+      f"  Load (checkpoint):   {load_time:>7.1f}s",
+      f"  Compile:             {compile_time:>7.1f}s",
+      f"  Inference:           {generation_time:>7.1f}s",
+  ]
+  if trace:
+    summary.extend([
+        f"  {'─' * 40}",
+        f"  Conditioning:        {trace.get('conditioning', 0.0):>7.1f}s",
+        f"  Denoise Total:       {trace.get('denoise_total', 0.0):>7.1f}s",
+        f"  VAE Decode:          {trace.get('vae_decode', 0.0):>7.1f}s",
+    ])
+  summary.append(f"{'=' * 50}")
+  max_logging.log("\n".join(summary))
 
-  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+  s0 = time.perf_counter()
+  if max_utils.profiler_enabled(config):
+    # Injecting user requested XLA tracing flags
+    xla_flags = os.environ.get("XLA_FLAGS", "")
+    new_flags = "--xla_enable_mxu_trace=true --xla_jf_dump_llo_html=true --xla_tpu_enable_llo_profiling=true"
+    os.environ["XLA_FLAGS"] = f"{xla_flags} {new_flags}"
+    max_logging.log(f"Injected XLA_FLAGS for profiling: {new_flags}")
+
+    videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+    if isinstance(videos, tuple):
+      videos = videos[0]
+    generation_time_with_profiler = time.perf_counter() - s0
+    max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
+    if writer and jax.process_index() == 0:
+      writer.add_scalar("inference/generation_time_with_profiler", generation_time_with_profiler, global_step=0)
 
   return saved_video_path
 

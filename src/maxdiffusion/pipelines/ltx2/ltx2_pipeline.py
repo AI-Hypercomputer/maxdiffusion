@@ -17,6 +17,7 @@ limitations under the License.
 from typing import Optional, Any, List, Union
 from functools import partial
 
+import time
 import numpy as np
 import torch
 import jax
@@ -60,6 +61,7 @@ from maxdiffusion.maxdiffusion_utils import get_dummy_ltx2_inputs
 class LTX2PipelineOutput:
   frames: jax.Array
   audio: Optional[jax.Array] = None
+  timings: Optional[Any] = None
 
 
 def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
@@ -1260,15 +1262,14 @@ class LTX2Pipeline:
       return_dict: bool = True,
       use_cross_timestep: bool = False,
   ):
+    t0_init = time.perf_counter()
     # 1. Check inputs
     self.check_inputs(
         prompt, height, width, prompt_embeds, negative_prompt_embeds, prompt_attention_mask, negative_prompt_attention_mask
     )
 
     # 2. Encode inputs (Text)
-    import time
-
-    text_enc_start = time.time()
+    t0_encode = time.perf_counter()
     prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask = self.encode_prompt(
         prompt,
         negative_prompt,
@@ -1281,8 +1282,10 @@ class LTX2Pipeline:
         max_sequence_length=max_sequence_length,
         dtype=dtype,
     )
-    jax.block_until_ready(prompt_embeds)
-    max_logging.log(f"⏱️ Text Encoder Time: {time.time() - text_enc_start:.4f} seconds")
+    encode_time = time.perf_counter() - t0_encode
+    max_logging.log(f"Text Encoding time (Gemma-3 on CPU): {encode_time:.2f}s")
+
+    t0_setup = time.perf_counter()
 
     # 3. Prepare latents
     batch_size = prompt_embeds[0].shape[0] if isinstance(prompt_embeds, list) else prompt_embeds.shape[0]
@@ -1427,12 +1430,17 @@ class LTX2Pipeline:
     with context_manager, axis_rules_context:
       connectors_graphdef, connectors_state = nnx.split(self.connectors)
 
-      connectors_start = time.time()
-      video_embeds, audio_embeds, new_attention_mask = self._run_connectors(
-          connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
-      )
-      jax.block_until_ready(video_embeds)
-      max_logging.log(f"⏱️ Connectors Time: {time.time() - connectors_start:.4f} seconds")
+      setup_time = time.perf_counter() - t0_setup
+      max_logging.log(f"Preparation/Setup time: {setup_time:.2f}s")
+
+      t0_connectors = time.perf_counter()
+      with jax.named_scope("connectors_pass"):
+        video_embeds, audio_embeds, new_attention_mask = self._run_connectors(
+            connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
+        )
+      video_embeds = video_embeds.block_until_ready()
+      connectors_time = time.perf_counter() - t0_connectors
+      max_logging.log(f"Connectors pass time: {connectors_time:.2f}s")
 
       video_embeds_sharded = video_embeds
       audio_embeds_sharded = audio_embeds
@@ -1444,7 +1452,7 @@ class LTX2Pipeline:
         audio_embeds_sharded = jax.device_put(audio_embeds, spec)
       timesteps_jax = jnp.array(timesteps, dtype=jnp.float32)
 
-      diffusion_loop_start = time.time()
+      t0_denoise = time.perf_counter()
       scan_diffusion_loop = getattr(self.config, "scan_diffusion_loop", True)
       if scan_diffusion_loop:
         latents_jax, audio_latents_jax = run_diffusion_loop(
@@ -1598,8 +1606,11 @@ class LTX2Pipeline:
             latents_jax = latents_step
             audio_latents_jax = audio_latents_step
 
-    jax.block_until_ready(latents_jax)
-    max_logging.log(f"⏱️ Diffusion Loop Time: {time.time() - diffusion_loop_start:.4f} seconds")
+      jax.block_until_ready(latents_jax)
+      denoise_time = time.perf_counter() - t0_denoise
+      max_logging.log(f"Denoising steps time: {denoise_time:.2f}s")
+
+    t0_latent_processing = time.perf_counter()
 
     # 8. Decode Latents
     if do_cfg and do_stg:
@@ -1628,30 +1639,41 @@ class LTX2Pipeline:
     # VAE expects channels last (B, T, H, W, C) but unpack returns (B, C, T, H, W)
     latents = latents.transpose(0, 2, 3, 4, 1)
 
+    latent_processing_time = time.perf_counter() - t0_latent_processing
+
     # =======================================================================
     # LATENT UPSAMPLER
     # =======================================================================
     if getattr(self.config, "run_latent_upsampler", False) and self.latent_upsampler is not None:
       max_logging.log("🚀 Running Latent Upsampler pass...")
 
-      if self.latent_upsampler_params is not None:
-        nnx.update(self.latent_upsampler, self.latent_upsampler_params)
-        self.latent_upsampler_params = None
+      upsampler_t0 = time.perf_counter()
+      with jax.named_scope("upsampler_pass"):
+        if self.latent_upsampler_params is not None:
+          nnx.update(self.latent_upsampler, self.latent_upsampler_params)
+          self.latent_upsampler_params = None
 
-      graphdef, state = nnx.split(self.latent_upsampler)
+        graphdef, state = nnx.split(self.latent_upsampler)
 
-      latents_upsampled = self._run_upsampler(graphdef, state, latents)
+        latents_upsampled = self._run_upsampler(graphdef, state, latents)
 
-      adain_factor = getattr(self.config, "upsampler_adain_factor", 0.0)
-      if adain_factor > 0.0:
-        latents = adain_filter_latent(latents_upsampled, latents, adain_factor)
-      else:
-        latents = latents_upsampled
+        adain_factor = getattr(self.config, "upsampler_adain_factor", 0.0)
+        if adain_factor > 0.0:
+          latents = adain_filter_latent(latents_upsampled, latents, adain_factor)
+        else:
+          latents = latents_upsampled
 
-      tone_map_compression = getattr(self.config, "upsampler_tone_map_compression_ratio", 0.0)
-      if tone_map_compression > 0.0:
-        latents = tone_map_latents(latents, tone_map_compression)
+        tone_map_compression = getattr(self.config, "upsampler_tone_map_compression_ratio", 0.0)
+        if tone_map_compression > 0.0:
+          latents = tone_map_latents(latents, tone_map_compression)
+
+      jax.block_until_ready(latents)
+      upsampler_time = time.perf_counter() - upsampler_t0
+
+      max_logging.log(f"Latent Upsampler time: {upsampler_time:.2f}s")
     # =======================================================================
+
+    t0_latent_processing = time.perf_counter()
 
     # Denormalize and Unpack Audio (Order important: Denorm THEN Unpack)
     audio_latents = self._denormalize_audio_latents(
@@ -1669,8 +1691,17 @@ class LTX2Pipeline:
     if audio_latents.ndim == 4:
       audio_latents = audio_latents.transpose(0, 2, 3, 1)
 
+    timings = {
+        "Text Encoding": encode_time,
+        "Preparation": setup_time,
+        "Connectors": connectors_time,
+        "Denoising": denoise_time,
+        "Latent Processing": latent_processing_time,
+        "Latent Upsampler": upsampler_time if "upsampler_time" in locals() else 0.0,
+    }
+
     if output_type == "latent":
-      return LTX2PipelineOutput(frames=latents, audio=audio_latents)
+      return LTX2PipelineOutput(frames=latents, audio=audio_latents, timings=timings)
 
     # Force latents and VAE weights to be fully replicated using with_sharding_constraint, this speeds up single video latency ~3x
     if getattr(self.config, "replicate_vae", False):
@@ -1688,57 +1719,75 @@ class LTX2Pipeline:
       except Exception as e:
         max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
 
-    vae_start = time.time()
-    if getattr(self.vae.config, "timestep_conditioning", False):
-      noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
+    latent_processing_time += time.perf_counter() - t0_latent_processing
+    timings["Latent Processing"] = latent_processing_time
 
-      if not isinstance(decode_timestep, list):
-        decode_timestep = [decode_timestep] * batch_size
-      if decode_noise_scale is None:
-        decode_noise_scale = decode_timestep
-      elif not isinstance(decode_noise_scale, list):
-        decode_noise_scale = [decode_noise_scale] * batch_size
+    t0_video_vae = time.perf_counter()
+    with jax.named_scope("video_vae_decode"):
+      if getattr(self.vae.config, "timestep_conditioning", False):
+        noise = jax.random.normal(generator, latents.shape, dtype=latents.dtype)
 
-      timestep = jnp.array(decode_timestep, dtype=latents.dtype)
-      decode_noise_scale = jnp.array(decode_noise_scale, dtype=latents.dtype)[:, None, None, None, None]
+        if not isinstance(decode_timestep, list):
+          decode_timestep = [decode_timestep] * batch_size
+        if decode_noise_scale is None:
+          decode_noise_scale = decode_timestep
+        elif not isinstance(decode_noise_scale, list):
+          decode_noise_scale = [decode_noise_scale] * batch_size
 
-      latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
+        timestep = jnp.array(decode_timestep, dtype=latents.dtype)
+        decode_noise_scale = jnp.array(decode_noise_scale, dtype=latents.dtype)[:, None, None, None, None]
 
-      latents = latents.astype(self.vae.dtype)
-      video = self.vae.decode(latents, temb=timestep, return_dict=False)[0]
-    else:
-      latents = latents.astype(self.vae.dtype)
-      video = self.vae.decode(latents, return_dict=False)[0]
+        latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
+
+        latents = latents.astype(self.vae.dtype)
+        video = self.vae.decode(latents, temb=timestep, return_dict=False)[0]
+      else:
+        latents = latents.astype(self.vae.dtype)
+        video = self.vae.decode(latents, return_dict=False)[0]
+
+    video = video.block_until_ready()
+    video_vae_time = time.perf_counter() - t0_video_vae
+    max_logging.log(f"Video VAE decode time: {video_vae_time:.2f}s")
+
     # Post-process video (converts to numpy/PIL)
     jax.block_until_ready(video)
     max_logging.log(f"⏱️ Video VAE Decode Time: {time.time() - vae_start:.4f} seconds")
 
     # VAE outputs (B, T, H, W, C), but video processor expects (B, C, T, H, W)
+    t0_video_post = time.perf_counter()
     video_np = np.array(video).transpose(0, 4, 1, 2, 3)
     video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
+    video_post_time = time.perf_counter() - t0_video_post
+    max_logging.log(f"Video Post-processing time (numpy+PIL): {video_post_time:.2f}s")
 
     # Decode Audio
-    import time
-
-    audio_latents = audio_latents.astype(self.audio_vae.dtype)
-    generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
-
-    # Audio VAE outputs (B, T, F, C), Vocoder expects (B, Channels, Time, MelBins)
-    generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
-
-    vocoder_start_time = time.time()
-    # Cache the JITted function on the pipeline so it doesn't recompile on the 2nd run
-    if not hasattr(self, "_jitted_vocoder"):
-      self._jitted_vocoder = nnx.jit(lambda m, x: m(x))
-
-    audio = self._jitted_vocoder(self.vocoder, generated_mel_spectrograms)
-    jax.block_until_ready(audio)
-    max_logging.log(f"⏱️ BWE Vocoder Execution Time: {time.time() - vocoder_start_time:.4f} seconds")
+    t0_audio_vae = time.perf_counter()
+    with jax.named_scope("audio_vae_decode"):
+      audio_latents = audio_latents.astype(self.audio_vae.dtype)
+      generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
+    generated_mel_spectrograms = generated_mel_spectrograms.block_until_ready()
+    audio_vae_time = time.perf_counter() - t0_audio_vae
+    max_logging.log(f"Audio VAE decode time: {audio_vae_time:.2f}s")
+    
+    t0_vocoder = time.perf_counter()
+    with jax.named_scope("vocoder_pass"):
+      generated_mel_spectrograms = generated_mel_spectrograms.transpose(0, 3, 1, 2)
+      # Cache the JITted function on the pipeline so it doesn't recompile on the 2nd run
+      if not hasattr(self, "_jitted_vocoder"):
+        self._jitted_vocoder = nnx.jit(lambda m, x: m(x))
+      audio = self._jitted_vocoder(self.vocoder, generated_mel_spectrograms)
 
     # Convert audio to numpy
     audio = np.array(audio)
+    vocoder_time = time.perf_counter() - t0_vocoder
+    max_logging.log(f"Vocoder & Audio numpy time: {vocoder_time:.2f}s")
 
-    return LTX2PipelineOutput(frames=video, audio=audio)
+    timings["Video VAE"] = video_vae_time
+    timings["Video Post"] = video_post_time
+    timings["Audio VAE"] = audio_vae_time
+    timings["Vocoder"] = vocoder_time
+
+    return LTX2PipelineOutput(frames=video, audio=audio, timings=timings)
 
 
 @partial(

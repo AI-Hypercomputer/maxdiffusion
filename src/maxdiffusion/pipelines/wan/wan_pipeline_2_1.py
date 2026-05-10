@@ -23,6 +23,7 @@ import jax
 import jax.numpy as jnp
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 import numpy as np
+import time
 from ... import max_utils
 
 
@@ -114,6 +115,9 @@ class WanPipeline2_1(WanPipeline):
           "CFG cache accelerates classifier-free guidance, which is disabled when guidance_scale <= 1.0."
       )
 
+    trace = {}
+    t_cond_start = time.perf_counter()
+
     latents, prompt_embeds, negative_prompt_embeds, scheduler_state, num_frames = self._prepare_model_inputs(
         prompt,
         negative_prompt,
@@ -128,6 +132,9 @@ class WanPipeline2_1(WanPipeline):
         negative_prompt_embeds,
         vae_only,
     )
+    latents.block_until_ready()
+    prompt_embeds.block_until_ready()
+    trace["conditioning"] = time.perf_counter() - t_cond_start
 
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
 
@@ -147,6 +154,7 @@ class WanPipeline2_1(WanPipeline):
         config=self.config,
     )
 
+    t_denoise_start = time.perf_counter()
     with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
       latents = p_run_inference(
           graphdef=graphdef,
@@ -157,7 +165,16 @@ class WanPipeline2_1(WanPipeline):
           negative_prompt_embeds=negative_prompt_embeds,
       )
       latents = self._denormalize_latents(latents)
-    return self._decode_latents_to_video(latents)
+      latents.block_until_ready()
+    trace["denoise_total"] = time.perf_counter() - t_denoise_start
+
+    t_decode_start = time.perf_counter()
+    video = self._decode_latents_to_video(latents)
+    if hasattr(video, "block_until_ready"):
+      video.block_until_ready()
+    trace["vae_decode"] = time.perf_counter() - t_decode_start
+
+    return video, trace
 
 
 def run_inference_2_1(
@@ -260,6 +277,54 @@ def run_inference_2_1(
   first_profiling_step = config.skip_first_n_steps_for_profiler if config else 0
   profiler_steps = config.profiler_steps if config else 0
   last_profiling_step = np.clip(first_profiling_step + profiler_steps - 1, first_profiling_step, num_inference_steps - 1)
+
+  scan_diffusion_loop = getattr(config, "scan_diffusion_loop", False) if config else False
+
+  if scan_diffusion_loop and not use_magcache and not use_cfg_cache:
+    timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
+
+    scheduler_state = scheduler_state.replace(last_sample=jnp.zeros_like(latents), step_index=jnp.array(0, dtype=jnp.int32))
+
+    def scan_body(carry, t):
+      current_latents, current_scheduler_state = carry
+
+      if do_cfg:
+        latents_doubled = jnp.concatenate([current_latents] * 2)
+        timestep = jnp.broadcast_to(t, bsz * 2)
+        noise_pred, _, _ = transformer_forward_pass_full_cfg(
+            graphdef,
+            sharded_state,
+            rest_of_state,
+            latents_doubled,
+            timestep,
+            prompt_embeds_combined,
+            guidance_scale=guidance_scale,
+        )
+      else:
+        timestep = jnp.broadcast_to(t, bsz)
+        noise_pred, _ = transformer_forward_pass(
+            graphdef,
+            sharded_state,
+            rest_of_state,
+            current_latents,
+            timestep,
+            prompt_cond_embeds,
+            do_classifier_free_guidance=False,
+            guidance_scale=guidance_scale,
+        )
+
+      new_latents, new_scheduler_state = scheduler.step(
+          current_scheduler_state, noise_pred, t, current_latents, return_dict=False
+      )
+
+      return (new_latents, new_scheduler_state), None
+
+    initial_carry = (latents, scheduler_state)
+
+    final_carry, _ = jax.lax.scan(scan_body, initial_carry, timesteps)
+
+    final_latents, _ = final_carry
+    return final_latents
 
   profiler = None
   for step in range(num_inference_steps):
