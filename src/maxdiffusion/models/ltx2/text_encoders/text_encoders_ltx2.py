@@ -70,18 +70,22 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     gemma_dim = 3840 if video_caption_channels is not None else caption_channels
     input_dim = gemma_dim * text_proj_in_factor
 
-    v_dim = video_hidden_dim if video_hidden_dim is not None else (video_caption_channels if video_caption_channels is not None else caption_channels)
-    a_dim = audio_hidden_dim if audio_hidden_dim is not None else (audio_caption_channels if audio_caption_channels is not None else caption_channels)
+    v_dim = (
+        video_hidden_dim
+        if video_hidden_dim is not None
+        else (video_caption_channels if video_caption_channels is not None else caption_channels)
+    )
+    a_dim = (
+        audio_hidden_dim
+        if audio_hidden_dim is not None
+        else (audio_caption_channels if audio_caption_channels is not None else caption_channels)
+    )
 
     self.per_modality_projections = per_modality_projections
 
     if per_modality_projections:
-      self.video_text_proj_in = nnx.Linear(
-          in_features=input_dim, out_features=v_dim, use_bias=proj_bias, rngs=rngs
-      )
-      self.audio_text_proj_in = nnx.Linear(
-          in_features=input_dim, out_features=a_dim, use_bias=proj_bias, rngs=rngs
-      )
+      self.video_text_proj_in = nnx.Linear(in_features=input_dim, out_features=v_dim, use_bias=proj_bias, rngs=rngs)
+      self.audio_text_proj_in = nnx.Linear(in_features=input_dim, out_features=a_dim, use_bias=proj_bias, rngs=rngs)
     else:
       self.feature_extractor = LTX2GemmaFeatureExtractor(
           input_dim=input_dim,

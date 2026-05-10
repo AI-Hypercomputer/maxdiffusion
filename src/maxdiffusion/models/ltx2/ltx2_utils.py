@@ -111,7 +111,7 @@ def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, fi
   Loads weights from a sharded safetensors checkpoint or a specific file.
   """
   tensors = {}
-  
+
   if filename is not None:
     try:
       ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
@@ -126,7 +126,7 @@ def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, fi
       return tensors
     except EntryNotFoundError:
       max_logging.log(f"Warning: Specific file {filename} not found. Falling back to default logic.")
-      
+
   index_file = "diffusion_pytorch_model.safetensors.index.json"
   try:
     index_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=index_file)

@@ -543,7 +543,7 @@ class LTX2Pipeline:
     config_path = config.upsampler_model_path
     if config_path == "Lightricks/LTX-2.3":
       config_path = "Lightricks/LTX-2"
-      
+
     upsampler_config = LTX2LatentUpsamplerModel.load_config(config_path, subfolder="latent_upsampler")
 
     if not upsampler_config:
@@ -559,7 +559,7 @@ class LTX2Pipeline:
     if config.upsampler_model_path == "Lightricks/LTX-2.3":
       subfolder = ""
       if filename is None:
-        filename = "ltx-2.3-spatial-upscaler-x2-1.0.safetensors" # Default if not specified
+        filename = "ltx-2.3-spatial-upscaler-x2-1.0.safetensors"  # Default if not specified
 
     # Infer parameters from filename
     spatial_upsample = upsampler_config.get("spatial_upsample", True)
@@ -576,16 +576,18 @@ class LTX2Pipeline:
       elif "spatial" in filename:
         spatial_upsample = True
         temporal_upsample = False
-        
+
       if "x1.5" in filename:
         rational_spatial_scale = 1.5
       elif "x2" in filename:
-        rational_spatial_scale = None # Force fallback for x2
-        
-    if config.upsampler_model_path == "Lightricks/LTX-2.3":
-      mid_channels = 512 # Force 512 for LTX 2.3 upscaler
+        rational_spatial_scale = None  # Force fallback for x2
 
-    max_logging.log(f"Upsampler config inferred: spatial={spatial_upsample}, temporal={temporal_upsample}, scale={rational_spatial_scale}, mid_channels={mid_channels}")
+    if config.upsampler_model_path == "Lightricks/LTX-2.3":
+      mid_channels = 512  # Force 512 for LTX 2.3 upscaler
+
+    max_logging.log(
+        f"Upsampler config inferred: spatial={spatial_upsample}, temporal={temporal_upsample}, scale={rational_spatial_scale}, mid_channels={mid_channels}"
+    )
 
     # 2. Instantiate with inferred or config values
     upsampler = LTX2LatentUpsamplerModel(
@@ -1268,6 +1270,7 @@ class LTX2Pipeline:
 
     # 2. Encode inputs (Text)
     import time
+
     text_enc_start = time.time()
     prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask = self.encode_prompt(
         prompt,
@@ -1368,11 +1371,23 @@ class LTX2Pipeline:
       negative_prompt_embeds_jax = negative_prompt_embeds
       negative_prompt_attention_mask_jax = negative_prompt_attention_mask
       if isinstance(prompt_embeds_jax, list):
-        prompt_embeds_jax = [jnp.concatenate([n, p, p, p], axis=0) for n, p in zip(negative_prompt_embeds_jax, prompt_embeds_jax)]
+        prompt_embeds_jax = [
+            jnp.concatenate([n, p, p, p], axis=0) for n, p in zip(negative_prompt_embeds_jax, prompt_embeds_jax)
+        ]
       else:
-        prompt_embeds_jax = jnp.concatenate([negative_prompt_embeds_jax, prompt_embeds_jax, prompt_embeds_jax, prompt_embeds_jax], axis=0)
+        prompt_embeds_jax = jnp.concatenate(
+            [negative_prompt_embeds_jax, prompt_embeds_jax, prompt_embeds_jax, prompt_embeds_jax], axis=0
+        )
 
-      prompt_attention_mask_jax = jnp.concatenate([negative_prompt_attention_mask_jax, prompt_attention_mask_jax, prompt_attention_mask_jax, prompt_attention_mask_jax], axis=0)
+      prompt_attention_mask_jax = jnp.concatenate(
+          [
+              negative_prompt_attention_mask_jax,
+              prompt_attention_mask_jax,
+              prompt_attention_mask_jax,
+              prompt_attention_mask_jax,
+          ],
+          axis=0,
+      )
       latents_jax = jnp.concatenate([latents_jax] * 4, axis=0)
       audio_latents_jax = jnp.concatenate([audio_latents_jax] * 4, axis=0)
     elif do_cfg:
@@ -1530,29 +1545,39 @@ class LTX2Pipeline:
             x0_text = convert_to_x0(latents_step, noise_pred_text, sigma_t)
             x0_perturb = convert_to_x0(latents_step, noise_pred_perturb, sigma_t)
             x0_isolated = convert_to_x0(latents_step, noise_pred_isolated, sigma_t)
-            
+
             cfg_delta = (guidance_scale - 1) * (x0_text - x0_uncond)
             stg_delta = stg_scale * (x0_text - x0_perturb)
             video_modality_delta = (modality_scale - 1) * (x0_text - x0_isolated)
-            
+
             x0_combined = x0_text + cfg_delta + stg_delta + video_modality_delta
             if guidance_rescale > 0:
               x0_combined = rescale_noise_cfg(x0_combined, x0_text, guidance_rescale=guidance_rescale)
             noise_pred = convert_to_vel(latents_step, x0_combined, sigma_t)
 
             # Audio
-            noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb, noise_pred_audio_isolated = jnp.split(noise_pred_audio, 4, axis=0)
+            noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb, noise_pred_audio_isolated = jnp.split(
+                noise_pred_audio, 4, axis=0
+            )
             x0_audio_uncond = convert_to_x0(audio_latents_step, noise_pred_audio_uncond, sigma_t)
             x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text, sigma_t)
             x0_audio_perturb = convert_to_x0(audio_latents_step, noise_pred_audio_perturb, sigma_t)
             x0_audio_isolated = convert_to_x0(audio_latents_step, noise_pred_audio_isolated, sigma_t)
-            
-            cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (x0_audio_text - x0_audio_uncond)
-            stg_audio_delta = (audio_stg_scale if audio_stg_scale is not None else stg_scale) * (x0_audio_text - x0_audio_perturb)
-            audio_modality_delta = (audio_modality_scale - 1 if audio_modality_scale is not None else modality_scale - 1) * (x0_audio_text - x0_audio_isolated)
+
+            cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (
+                x0_audio_text - x0_audio_uncond
+            )
+            stg_audio_delta = (audio_stg_scale if audio_stg_scale is not None else stg_scale) * (
+                x0_audio_text - x0_audio_perturb
+            )
+            audio_modality_delta = (audio_modality_scale - 1 if audio_modality_scale is not None else modality_scale - 1) * (
+                x0_audio_text - x0_audio_isolated
+            )
             x0_audio_combined = x0_audio_text + cfg_audio_delta + stg_audio_delta + audio_modality_delta
             if audio_guidance_rescale > 0:
-              x0_audio_combined = rescale_noise_cfg(x0_audio_combined, x0_audio_text, guidance_rescale=audio_guidance_rescale)
+              x0_audio_combined = rescale_noise_cfg(
+                  x0_audio_combined, x0_audio_text, guidance_rescale=audio_guidance_rescale
+              )
             noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined, sigma_t)
 
           elif do_cfg:
@@ -1562,7 +1587,9 @@ class LTX2Pipeline:
             noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
 
           latents_step, _ = self.scheduler.step(scheduler_state, noise_pred, t, latents_step, return_dict=False)
-          audio_latents_step, _ = self.scheduler.step(scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
+          audio_latents_step, _ = self.scheduler.step(
+              scheduler_state, noise_pred_audio, t, audio_latents_step, return_dict=False
+          )
 
           if do_cfg and do_stg:
             latents_jax = jnp.concatenate([latents_step] * 4, axis=0)
@@ -1695,6 +1722,7 @@ class LTX2Pipeline:
 
     # Decode Audio
     import time
+
     audio_latents = audio_latents.astype(self.audio_vae.dtype)
     generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
 
@@ -1705,7 +1733,7 @@ class LTX2Pipeline:
     # Cache the JITted function on the pipeline so it doesn't recompile on the 2nd run
     if not hasattr(self, "_jitted_vocoder"):
       self._jitted_vocoder = nnx.jit(lambda m, x: m(x))
-    
+
     audio = self._jitted_vocoder(self.vocoder, generated_mel_spectrograms)
     jax.block_until_ready(audio)
     max_logging.log(f"⏱️ BWE Vocoder Execution Time: {time.time() - vocoder_start_time:.4f} seconds")
@@ -1776,7 +1804,7 @@ def transformer_forward_pass(
 
     # Modality mask isolates the 4th slice (zeros out cross-attention for Isolated)
     modality_mask = jnp.concatenate([ones_mask, ones_mask, ones_mask, zeros_mask], axis=0)
-    
+
     # Perturbation mask perturbs the 3rd slice (zeros out self-attention for Perturb)
     perturbation_mask = jnp.concatenate([ones_mask, ones_mask, zeros_mask, ones_mask], axis=0)
   else:
@@ -1805,6 +1833,7 @@ def transformer_forward_pass(
   )
 
   return noise_pred, noise_pred_audio
+
 
 @partial(
     jax.jit,
@@ -1862,7 +1891,7 @@ def run_diffusion_loop(
 ):
   latents_jax = latents_jax.astype(jnp.float32)
   audio_latents_jax = audio_latents_jax.astype(jnp.float32)
-  
+
   do_cfg = guidance_scale > 1.0
   do_stg = stg_scale > 0.0
 
@@ -1925,37 +1954,45 @@ def run_diffusion_loop(
       # Apply Diffusers STG + CFG + Modality Delta Logic
       if do_cfg and do_stg:
         noise_pred_uncond, noise_pred_text, noise_pred_perturb, noise_pred_isolated = jnp.split(noise_pred, 4, axis=0)
-        
+
         # Convert to x0
         x0_uncond = convert_to_x0(latents_step, noise_pred_uncond, sigma_t)
         x0_text = convert_to_x0(latents_step, noise_pred_text, sigma_t)
         x0_perturb = convert_to_x0(latents_step, noise_pred_perturb, sigma_t)
         x0_isolated = convert_to_x0(latents_step, noise_pred_isolated, sigma_t)
-        
+
         # Delta formulation
         cfg_delta = (guidance_scale - 1) * (x0_text - x0_uncond)
         stg_delta = stg_scale * (x0_text - x0_perturb)
         video_modality_delta = (modality_scale - 1) * (x0_text - x0_isolated)
-        
+
         x0_combined = x0_text + cfg_delta + stg_delta + video_modality_delta
-        
+
         if guidance_rescale > 0:
           x0_combined = rescale_noise_cfg(x0_combined, x0_text, guidance_rescale=guidance_rescale)
-          
+
         noise_pred = convert_to_vel(latents_step, x0_combined, sigma_t)
 
         # Audio guidance
-        noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb, noise_pred_audio_isolated = jnp.split(noise_pred_audio, 4, axis=0)
-        
+        noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb, noise_pred_audio_isolated = jnp.split(
+            noise_pred_audio, 4, axis=0
+        )
+
         x0_audio_uncond = convert_to_x0(audio_latents_step, noise_pred_audio_uncond, sigma_t)
         x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text, sigma_t)
         x0_audio_perturb = convert_to_x0(audio_latents_step, noise_pred_audio_perturb, sigma_t)
         x0_audio_isolated = convert_to_x0(audio_latents_step, noise_pred_audio_isolated, sigma_t)
-        
-        cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (x0_audio_text - x0_audio_uncond)
-        stg_audio_delta = (audio_stg_scale if audio_stg_scale is not None else stg_scale) * (x0_audio_text - x0_audio_perturb)
-        audio_modality_delta = (audio_modality_scale - 1 if audio_modality_scale is not None else modality_scale - 1) * (x0_audio_text - x0_audio_isolated)
-        
+
+        cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (
+            x0_audio_text - x0_audio_uncond
+        )
+        stg_audio_delta = (audio_stg_scale if audio_stg_scale is not None else stg_scale) * (
+            x0_audio_text - x0_audio_perturb
+        )
+        audio_modality_delta = (audio_modality_scale - 1 if audio_modality_scale is not None else modality_scale - 1) * (
+            x0_audio_text - x0_audio_isolated
+        )
+
         x0_audio_combined = x0_audio_text + cfg_audio_delta + stg_audio_delta + audio_modality_delta
 
         if audio_guidance_rescale > 0:

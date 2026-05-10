@@ -28,6 +28,7 @@ from maxdiffusion.models.modeling_flax_utils import FlaxModelMixin
 Array = common_types.Array
 DType = common_types.DType
 
+
 def kaiser_window(n: int, beta: float) -> Array:
   """Computes the Kaiser window."""
   alpha = (n - 1) / 2.0
@@ -37,6 +38,7 @@ def kaiser_window(n: int, beta: float) -> Array:
   i0_beta = jss.i0(beta)
   res = i0_term / i0_beta
   return res
+
 
 def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int) -> Array:
   """Creates a Kaiser sinc kernel for low-pass filtering."""
@@ -95,7 +97,7 @@ class DownSample1d(nnx.Module):
     low_pass_filter = kaiser_sinc_filter1d(cutoff, half_width, self.kernel_size)
     filter = jnp.expand_dims(low_pass_filter, axis=(1, 2))
     if self.use_padding:
-      x = jnp.pad(x, ((0, 0), (self.pad_left, self.pad_right), (0, 0)), mode='edge')
+      x = jnp.pad(x, ((0, 0), (self.pad_left, self.pad_right), (0, 0)), mode="edge")
 
     filter_expanded = jnp.repeat(filter, num_channels, axis=2)
     filter_expanded = filter_expanded.astype(x.dtype)
@@ -105,13 +107,14 @@ class DownSample1d(nnx.Module):
         filter_expanded,
         window_strides=(self.ratio,),
         padding=((0, 0),),
-        dimension_numbers=('NLC', 'LIO', 'NLC'),
+        dimension_numbers=("NLC", "LIO", "NLC"),
         feature_group_count=num_channels,
     )
     return x_filtered
 
 
 class UpSample1d(nnx.Module):
+
   def __init__(
       self,
       ratio: int = 2,
@@ -160,13 +163,13 @@ class UpSample1d(nnx.Module):
       filter = sinc_filter.reshape(-1, 1, 1)
 
     # 1. Pad the original signal first (matching Diffusers)
-    x_padded = jnp.pad(x, ((0, 0), (self.pad, self.pad), (0, 0)), mode='edge')
-    
+    x_padded = jnp.pad(x, ((0, 0), (self.pad, self.pad), (0, 0)), mode="edge")
+
     # 2. Interleave zeros on the padded signal
     batch_p, length_p, channels_p = x_padded.shape
     x_expanded = jnp.zeros((batch_p, length_p * self.ratio, channels_p), dtype=x.dtype)
-    x_expanded = x_expanded.at[:, ::self.ratio, :].set(x_padded)
-    
+    x_expanded = x_expanded.at[:, :: self.ratio, :].set(x_padded)
+
     # 3. Convolve with the filter (flipped kernel to match ConvTranspose)
     filter_flipped = filter[::-1, :, :]
     filter_expanded = jnp.repeat(filter_flipped, num_channels, axis=2)
@@ -178,20 +181,21 @@ class UpSample1d(nnx.Module):
         filter_expanded,
         window_strides=(1,),
         padding=[(self.kernel_size - 1, self.kernel_size - 1)],
-        dimension_numbers=('NLC', 'LIO', 'NLC'),
+        dimension_numbers=("NLC", "LIO", "NLC"),
         feature_group_count=num_channels,
     )
-    
+
     # Crop to match Diffusers length before slicing
     target_len = (length_p - 1) * self.ratio + self.kernel_size
     x_upsampled = x_upsampled[:, :target_len, :]
-    
+
     # Apply the final slicing from Diffusers
     x_upsampled = x_upsampled * self.ratio
     return x_upsampled[:, self.pad_left : -self.pad_right, :]
 
 
 class SnakeBeta(nnx.Module):
+
   def __init__(
       self,
       channels: int,
@@ -237,6 +241,7 @@ class SnakeBeta(nnx.Module):
 
 
 class AntiAliasAct1d(nnx.Module):
+
   def __init__(
       self,
       act_fn: nnx.Module,
@@ -300,8 +305,10 @@ class ResBlock(nnx.Module):
       elif act_fn == "snake":
         act = SnakeBeta(channels, use_beta=False, rngs=rngs)
       else:
+
         def leaky_relu_act(x):
           return jax.nn.leaky_relu(x, negative_slope=leaky_relu_negative_slope)
+
         act = leaky_relu_act
 
       if antialias:
@@ -331,8 +338,10 @@ class ResBlock(nnx.Module):
       elif act_fn == "snake":
         act = SnakeBeta(channels, use_beta=False, rngs=rngs)
       else:
+
         def leaky_relu_act(x):
           return jax.nn.leaky_relu(x, negative_slope=leaky_relu_negative_slope)
+
         act = leaky_relu_act
 
       if antialias:
@@ -346,9 +355,9 @@ class ResBlock(nnx.Module):
       xt = act2(xt)
       xt = conv2(xt)
       if xt.shape[1] < x.shape[1]:
-        xt = jnp.pad(xt, ((0, 0), (0, x.shape[1] - xt.shape[1]), (0, 0)), mode='edge')
+        xt = jnp.pad(xt, ((0, 0), (0, x.shape[1] - xt.shape[1]), (0, 0)), mode="edge")
       elif xt.shape[1] > x.shape[1]:
-        xt = xt[:, :x.shape[1], :]
+        xt = xt[:, : x.shape[1], :]
       x = x + xt
     return x
 
@@ -418,7 +427,6 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     for i, (stride, kernel_size) in enumerate(zip(upsample_factors, upsample_kernel_sizes)):
       output_channels = input_channels // 2
 
-
       self.upsamplers.append(
           nnx.ConvTranspose(
               in_features=input_channels,
@@ -447,7 +455,7 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
             )
         )
       input_channels = output_channels
-    
+
     if act_fn == "snakebeta" or act_fn == "snake":
       act_out = SnakeBeta(channels=output_channels, use_beta=True, rngs=rngs)
       self.act_out = AntiAliasAct1d(act_out, ratio=antialias_ratio, kernel_size=antialias_kernel_size)
@@ -518,7 +526,9 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     return hidden_states
 
+
 class CausalSTFT(nnx.Module):
+
   def __init__(self, filter_length: int = 512, hop_length: int = 80, window_length: int = 512, *, rngs: nnx.Rngs):
     self.hop_length = hop_length
     self.window_length = window_length
@@ -540,7 +550,7 @@ class CausalSTFT(nnx.Module):
         self.forward_basis.value,
         window_strides=(self.hop_length,),
         padding=((0, 0),),
-        dimension_numbers=('NLC', 'LIO', 'NLC'),
+        dimension_numbers=("NLC", "LIO", "NLC"),
     )
 
     n_freqs = spec.shape[-1] // 2
@@ -554,6 +564,7 @@ class CausalSTFT(nnx.Module):
 
 
 class MelSTFT(nnx.Module):
+
   def __init__(
       self,
       filter_length: int = 512,
@@ -696,9 +707,9 @@ class LTX2VocoderWithBWE(nnx.Module, FlaxModelMixin, ConfigMixin):
     residual = jnp.transpose(residual, (0, 2, 1))
 
     if residual.shape[1] < skip.shape[1]:
-      residual = jnp.pad(residual, ((0, 0), (0, skip.shape[1] - residual.shape[1]), (0, 0)), mode='edge')
+      residual = jnp.pad(residual, ((0, 0), (0, skip.shape[1] - residual.shape[1]), (0, 0)), mode="edge")
     elif residual.shape[1] > skip.shape[1]:
-      residual = residual[:, :skip.shape[1], :]
+      residual = residual[:, : skip.shape[1], :]
 
     raw_waveform = residual + skip
     waveform = jnp.clip(raw_waveform, -1, 1)

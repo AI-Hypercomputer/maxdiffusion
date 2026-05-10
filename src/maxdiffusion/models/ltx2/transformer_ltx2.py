@@ -1108,7 +1108,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         temb_prompt_audio = None
 
       if use_cross_timestep:
-        assert sigma is not None and audio_sigma is not None, "sigma and audio_sigma must be provided when use_cross_timestep is True"
+        assert (
+            sigma is not None and audio_sigma is not None
+        ), "sigma and audio_sigma must be provided when use_cross_timestep is True"
         video_ca_timestep = audio_sigma.flatten()
         audio_ca_timestep = sigma.flatten()
       else:
@@ -1146,7 +1148,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         audio_encoder_hidden_states = self.audio_caption_projection(audio_encoder_hidden_states)
 
         encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
-        audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])    # Construct perturbation_mask_per_layer for STG
+        audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(
+            batch_size, -1, audio_hidden_states.shape[-1]
+        )  # Construct perturbation_mask_per_layer for STG
     if perturbation_mask is None:
       perturbation_mask_per_layer = jnp.ones((self.num_layers, batch_size, 1, 1), dtype=self.dtype)
     else:

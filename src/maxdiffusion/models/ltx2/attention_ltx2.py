@@ -444,7 +444,7 @@ class LTX2Attention(nnx.Module):
       self.dropout_layer = nnx.Dropout(self.dropout_rate, rngs=rngs)
     else:
       self.dropout_layer = None
-    
+
     if gated_attn:
       self.to_gate_logits = nnx.Linear(
           query_dim,
