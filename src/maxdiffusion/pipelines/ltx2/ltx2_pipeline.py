@@ -135,7 +135,8 @@ def create_sharded_logical_transformer(
   ltx2_config["flash_min_seq_length"] = getattr(config, "flash_min_seq_length", 4096)
   ltx2_config["remat_policy"] = config.remat_policy
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
-  ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
+  ltx2_config["spatio_temporal_guidance_blocks"] = tuple(getattr(config, "spatio_temporal_guidance_blocks", ()))
+  ltx2_config["cross_attn_mod"] = getattr(config, "model_name", "") == "ltx2.3"
 
   # 2. eval_shape
   p_model_factory = partial(create_model, ltx2_config=ltx2_config)
@@ -1654,9 +1655,8 @@ class LTX2Pipeline:
               latent_width,
               audio_num_frames,
               frame_rate,
-              global_batch_size=batch_size,
-              sigma=sigma_t,
-              audio_sigma=sigma_t,
+              sigma=t,
+              audio_sigma=t,
               use_cross_timestep=use_cross_timestep,
               is_cfg_stg_mode=do_cfg and do_stg,
           )
@@ -2197,8 +2197,8 @@ def run_diffusion_loop(
           audio_num_frames=audio_num_frames,
           fps=fps,
           global_batch_size=batch_size,
-          sigma=sigma_t,
-          audio_sigma=sigma_t,
+          sigma=t,
+          audio_sigma=t,
           use_cross_timestep=use_cross_timestep,
           is_cfg_stg_mode=do_cfg and do_stg,
       )
