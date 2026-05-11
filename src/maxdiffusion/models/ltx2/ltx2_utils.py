@@ -26,6 +26,28 @@ from safetensors import safe_open
 from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
 
+KNOWN_UPSAMPLER_CONFIGS = {
+    "ltx-2.3-spatial-upscaler-x2-1.0.safetensors": {
+        "spatial_upsample": True,
+        "temporal_upsample": False,
+        "rational_spatial_scale": None,
+    },
+    "ltx-2.3-spatial-upscaler-x2-1.1.safetensors": {
+        "spatial_upsample": True,
+        "temporal_upsample": False,
+        "rational_spatial_scale": None,
+    },
+    "ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors": {
+        "spatial_upsample": True,
+        "temporal_upsample": False,
+        "rational_spatial_scale": 1.5,
+    },
+    "ltx-2.3-temporal-upscaler-x2-1.0.safetensors": {
+        "spatial_upsample": False,
+        "temporal_upsample": True,
+        "rational_spatial_scale": None,
+    },
+}
 
 def _tuple_str_to_int(in_tuple):
   out_list = []

@@ -140,6 +140,11 @@ lora_config: {
 # LTX-2 Latent Upsampler
 run_latent_upsampler: False
 upsampler_model_path: "Lightricks/LTX-2.3"
+# Following upsampler files are supported:
+# ltx-2.3-spatial-upscaler-x2-1.0.safetensors
+# ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+# ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors
+# ltx-2.3-temporal-upscaler-x2-1.0.safetensors
 upsampler_filename: "ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
 upsampler_spatial_patch_size: 1
 upsampler_temporal_patch_size: 1

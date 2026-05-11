@@ -47,6 +47,7 @@ from ...models.ltx2.ltx2_utils import (
     load_upsampler_weights,
     adain_filter_latent,
     tone_map_latents,
+    KNOWN_UPSAMPLER_CONFIGS,
 )
 from ...models.ltx2.text_encoders.text_encoders_ltx2 import LTX2AudioVideoGemmaTextEncoder
 from ...video_processor import VideoProcessor
@@ -572,17 +573,26 @@ class LTX2Pipeline:
     mid_channels = upsampler_config.get("mid_channels", 1024)
 
     if filename is not None:
-      if "temporal" in filename:
-        temporal_upsample = True
-        spatial_upsample = False
-      elif "spatial" in filename:
-        spatial_upsample = True
-        temporal_upsample = False
+      if filename in KNOWN_UPSAMPLER_CONFIGS:
+        mapped_config = KNOWN_UPSAMPLER_CONFIGS[filename]
+        spatial_upsample = mapped_config.get("spatial_upsample", spatial_upsample)
+        temporal_upsample = mapped_config.get("temporal_upsample", temporal_upsample)
+        rational_spatial_scale = mapped_config.get("rational_spatial_scale", rational_spatial_scale)
+      else:
+        max_logging.log(
+            f"Warning: Filename '{filename}' not in KNOWN_UPSAMPLER_CONFIGS, falling back to heuristic parsing."
+        )
+        if "temporal" in filename:
+          temporal_upsample = True
+          spatial_upsample = False
+        elif "spatial" in filename:
+          spatial_upsample = True
+          temporal_upsample = False
 
-      if "x1.5" in filename:
-        rational_spatial_scale = 1.5
-      elif "x2" in filename:
-        rational_spatial_scale = None  # Force fallback for x2
+        if "x1.5" in filename:
+          rational_spatial_scale = 1.5
+        elif "x2" in filename:
+          rational_spatial_scale = None  # Force fallback for x2
 
     max_logging.log(
         f"Upsampler config inferred: spatial={spatial_upsample}, temporal={temporal_upsample}, scale={rational_spatial_scale}, mid_channels={mid_channels}"
@@ -1315,7 +1325,7 @@ class LTX2Pipeline:
     audio_channels = (
         self.audio_vae.config.latent_channels
         if hasattr(self.audio_vae, "config") and hasattr(self.audio_vae.config, "latent_channels")
-        else 128
+        else 8
     )
 
     duration_s = num_frames / frame_rate
