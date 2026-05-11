@@ -126,6 +126,8 @@ def create_sharded_logical_transformer(
   if ltx2_config.get("activation_fn") == "gelu-approximate":
     ltx2_config["activation_fn"] = "gelu"
 
+  print("DEBUG LTX2_CONFIG LOADED:", {k: ltx2_config[k] for k in ["cross_attn_mod", "gated_attn", "perturbed_attn"] if k in ltx2_config})
+
   ltx2_config["scan_layers"] = getattr(config, "scan_layers", True)
   ltx2_config["mesh"] = mesh
   ltx2_config["dtype"] = config.activations_dtype
@@ -140,6 +142,7 @@ def create_sharded_logical_transformer(
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
   ltx2_config["spatio_temporal_guidance_blocks"] = tuple(getattr(config, "spatio_temporal_guidance_blocks", ()))
+  ltx2_config["cross_attn_mod"] = getattr(config, "model_name", "") == "ltx2.3"
 
   # 2. eval_shape
   p_model_factory = partial(create_model, ltx2_config=ltx2_config)
