@@ -126,6 +126,8 @@ def create_sharded_logical_transformer(
   if ltx2_config.get("activation_fn") == "gelu-approximate":
     ltx2_config["activation_fn"] = "gelu"
 
+  print("DEBUG MODEL NAME OR PATH:", config.pretrained_model_name_or_path)
+  print("DEBUG LTX2_CONFIG KEYS LOADED:", list(ltx2_config.keys()))
   print("DEBUG LTX2_CONFIG LOADED:", {k: ltx2_config[k] for k in ["cross_attn_mod", "gated_attn", "perturbed_attn"] if k in ltx2_config})
 
   ltx2_config["scan_layers"] = getattr(config, "scan_layers", True)
