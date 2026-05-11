@@ -82,6 +82,15 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
 logger = logging.get_logger(__name__)
 
 
+def print_stats(name, tensor):
+  if tensor is None:
+    print(f"📊 [{name}] is None", flush=True)
+    return
+  t_f = jax.device_get(tensor).astype(jnp.float32)
+  print(f"📊 [{name}] shape: {list(tensor.shape)} | mean: {t_f.mean().item():.6f} | min: {t_f.min().item():.6f} | max: {t_f.max().item():.6f} | std: {t_f.std().item():.6f}", flush=True)
+
+
+
 def cast_with_exclusion(path, x, dtype_to_cast):
   """
   Casts arrays to dtype_to_cast, but keeps params from any 'norm' layer in float32.
@@ -1292,6 +1301,9 @@ class LTX2Pipeline:
         max_sequence_length=max_sequence_length,
         dtype=dtype,
     )
+    print_stats("JAX Text Encoder Output (prompt_embeds)", prompt_embeds)
+    print_stats("JAX Text Encoder Output (negative_prompt_embeds)", negative_prompt_embeds)
+
     encode_time = time.perf_counter() - t0_encode
     max_logging.log(f"Text Encoding time (Gemma-3 on CPU): {encode_time:.2f}s")
 
@@ -1316,6 +1328,15 @@ class LTX2Pipeline:
         generator=key_latents,
         latents=latents,
     )
+
+    import os
+    import torch
+    home_dir = os.path.expanduser("~")
+    pt_latents_path = os.path.join(home_dir, "pt_latents_step_0.pt")
+    if os.path.exists(pt_latents_path):
+      print("👉 JAX loading starting noise from home directory...", flush=True)
+      latents_pt = jnp.array(torch.load(pt_latents_path, weights_only=False).float().numpy(), dtype=dtype)
+      latents = latents_pt
 
     latent_height = height // self.vae_spatial_compression_ratio
     latent_width = width // self.vae_spatial_compression_ratio
@@ -1343,6 +1364,15 @@ class LTX2Pipeline:
         generator=key_audio,
         latents=audio_latents,
     )
+
+    pt_audio_latents_path = os.path.join(home_dir, "pt_audio_latents_step_0.pt")
+    if os.path.exists(pt_audio_latents_path):
+      audio_latents_pt = jnp.array(torch.load(pt_audio_latents_path, weights_only=False).float().numpy(), dtype=dtype)
+      audio_latents = audio_latents_pt
+
+    print_stats("JAX Initial Video Latents (unpacked/packed)", latents)
+    print_stats("JAX Initial Audio Latents (unpacked/packed)", audio_latents)
+
 
     # 5. Prepare Timesteps
     sigmas = jnp.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
@@ -1449,7 +1479,10 @@ class LTX2Pipeline:
             connectors_graphdef, connectors_state, prompt_embeds_jax, prompt_attention_mask_jax.astype(jnp.bool_)
         )
       video_embeds = video_embeds.block_until_ready()
+      print_stats("JAX Text Connectors Output (video)", video_embeds)
+      print_stats("JAX Text Connectors Output (audio)", audio_embeds)
       connectors_time = time.perf_counter() - t0_connectors
+
       max_logging.log(f"Connectors pass time: {connectors_time:.2f}s")
 
       video_embeds_sharded = video_embeds
@@ -1750,11 +1783,14 @@ class LTX2Pipeline:
         latents = (1 - decode_noise_scale) * latents + decode_noise_scale * noise
 
         latents = latents.astype(self.vae.dtype)
+        print_stats("JAX Video VAE Input", latents)
         video = self.vae.decode(latents, temb=timestep, return_dict=False)[0]
       else:
         latents = latents.astype(self.vae.dtype)
+        print_stats("JAX Video VAE Input", latents)
         video = self.vae.decode(latents, return_dict=False)[0]
 
+    print_stats("JAX Video VAE Output (raw decoded)", video)
     video = video.block_until_ready()
     video_vae_time = time.perf_counter() - t0_video_vae
     max_logging.log(f"Video VAE decode time: {video_vae_time:.2f}s")
@@ -1770,7 +1806,9 @@ class LTX2Pipeline:
     t0_audio_vae = time.perf_counter()
     with jax.named_scope("audio_vae_decode"):
       audio_latents = audio_latents.astype(self.audio_vae.dtype)
+      print_stats("JAX Audio VAE Input", audio_latents)
       generated_mel_spectrograms = self.audio_vae.decode(audio_latents, return_dict=False)[0]
+    print_stats("JAX Audio VAE Output (Mel Spectrograms)", generated_mel_spectrograms)
     generated_mel_spectrograms = generated_mel_spectrograms.block_until_ready()
     audio_vae_time = time.perf_counter() - t0_audio_vae
     max_logging.log(f"Audio VAE decode time: {audio_vae_time:.2f}s")
@@ -1783,8 +1821,10 @@ class LTX2Pipeline:
         self._jitted_vocoder = nnx.jit(lambda m, x: m(x))
       audio = self._jitted_vocoder(self.vocoder, generated_mel_spectrograms)
 
+    print_stats("JAX Vocoder Output (audio waveforms)", audio)
     # Convert audio to numpy
     audio = np.array(audio)
+
     vocoder_time = time.perf_counter() - t0_vocoder
     max_logging.log(f"Vocoder & Audio numpy time: {vocoder_time:.2f}s")
 
@@ -1956,7 +1996,7 @@ def run_diffusion_loop(
 
   def scan_body(carry, inputs):
     t, sigma_t = inputs
-    latents, audio_latents, s_state = carry
+    latents, audio_latents, s_state, step = carry
 
     with nn_partitioning.axis_rules(logical_axis_rules):
       latents_sharded = latents
@@ -1966,6 +2006,24 @@ def run_diffusion_loop(
         activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
         latents_sharded = jax.lax.with_sharding_constraint(latents, activation_axis_names)
         audio_latents_sharded = jax.lax.with_sharding_constraint(audio_latents, activation_axis_names)
+
+      def print_stats_jax_debug(name, x):
+        x_f = x.astype(jnp.float32)
+        jax.debug.print("📊 [{}] shape: {} | mean: {} | min: {} | max: {} | std: {}", name, x.shape, x_f.mean(), x_f.min(), x_f.max(), x_f.std())
+
+      def print_step_0_inputs(dummy):
+        print_stats_jax_debug("JAX Transformer Input Step 0 (hidden_states)", latents_sharded)
+        print_stats_jax_debug("JAX Transformer Input Step 0 (audio_hidden_states)", audio_latents_sharded)
+        print_stats_jax_debug("JAX Transformer Input Step 0 (timestep)", t)
+        return None
+
+      jax.lax.cond(
+          step == 0,
+          print_step_0_inputs,
+          lambda _: None,
+          operand=None
+      )
+
 
       # Forward Pass
       noise_pred, noise_pred_audio = transformer_forward_pass(
@@ -2002,6 +2060,16 @@ def run_diffusion_loop(
       else:
         latents_step = latents
         audio_latents_step = audio_latents
+
+      x0_text = latents_step
+      x0_uncond = latents_step
+      x0_perturb = latents_step
+      x0_isolated = latents_step
+
+      x0_audio_text = audio_latents_step
+      x0_audio_uncond = audio_latents_step
+      x0_audio_perturb = audio_latents_step
+      x0_audio_isolated = audio_latents_step
 
       # Apply Diffusers STG + CFG + Modality Delta Logic
       if do_cfg and do_stg:
@@ -2060,6 +2128,30 @@ def run_diffusion_loop(
         noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
         noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
 
+      def print_last_step_outputs(dummy):
+        # Video splits
+        print_stats_jax_debug("JAX Transformer Output Last Step - Video COND", x0_text)
+        print_stats_jax_debug("JAX Transformer Output Last Step - Video UNCOND", x0_uncond)
+        if do_stg:
+          print_stats_jax_debug("JAX Transformer Output Last Step - Video STG", x0_perturb)
+        print_stats_jax_debug("JAX Transformer Output Last Step - Video MIG", x0_isolated)
+
+        # Audio splits
+        print_stats_jax_debug("JAX Transformer Output Last Step - Audio COND", x0_audio_text)
+        print_stats_jax_debug("JAX Transformer Output Last Step - Audio UNCOND", x0_audio_uncond)
+        if do_stg:
+          print_stats_jax_debug("JAX Transformer Output Last Step - Audio STG", x0_audio_perturb)
+        print_stats_jax_debug("JAX Transformer Output Last Step - Audio MIG", x0_audio_isolated)
+        return None
+
+
+      jax.lax.cond(
+          step == timesteps_jax.shape[0] - 1,
+          print_last_step_outputs,
+          lambda _: None,
+          operand=None
+      )
+
       # Step scheduler
       latents_step, _ = scheduler_step(s_state, noise_pred, t, latents_step, return_dict=False)
       latents_step = latents_step.astype(latents.dtype)
@@ -2077,10 +2169,10 @@ def run_diffusion_loop(
         latents_next = latents_step
         audio_latents_next = audio_latents_step
 
-      new_carry = (latents_next, audio_latents_next, s_state)
+      new_carry = (latents_next, audio_latents_next, s_state, step + 1)
       return new_carry, None
 
-  initial_carry = (latents_jax, audio_latents_jax, scheduler_state)
+  initial_carry = (latents_jax, audio_latents_jax, scheduler_state, 0)
   scan_inputs = (timesteps_jax, sigmas)
 
   final_carry, _ = nnx.scan(
@@ -2090,3 +2182,4 @@ def run_diffusion_loop(
   )(initial_carry, scan_inputs)
 
   return final_carry[0], final_carry[1]
+
