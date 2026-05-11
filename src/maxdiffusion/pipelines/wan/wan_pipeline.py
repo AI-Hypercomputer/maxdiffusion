@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -702,9 +702,13 @@ class WanPipeline:
       components["tokenizer"] = cls.load_tokenizer(config=config)
       components["text_encoder"] = cls.load_text_encoder(config=config)
       components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
-      if i2v and config.model_name == "wan2.1":
+      if cls._needs_image_encoder(config, i2v=i2v):
         components["image_processor"], components["image_encoder"] = cls.load_image_encoder(config)
     return components
+
+  @classmethod
+  def _needs_image_encoder(cls, config: HyperParameters, i2v: bool = False) -> bool:
+    return i2v and config.model_name == "wan2.1"
 
   @abstractmethod
   def _get_num_channel_latents(self) -> int:
