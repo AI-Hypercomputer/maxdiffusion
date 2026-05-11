@@ -139,6 +139,7 @@ def create_sharded_logical_transformer(
   ltx2_config["remat_policy"] = config.remat_policy
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
+  ltx2_config["spatio_temporal_guidance_blocks"] = tuple(getattr(config, "spatio_temporal_guidance_blocks", ()))
 
   # 2. eval_shape
   p_model_factory = partial(create_model, ltx2_config=ltx2_config)
