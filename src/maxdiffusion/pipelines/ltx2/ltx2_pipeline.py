@@ -1612,6 +1612,15 @@ class LTX2Pipeline:
                 latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
                 latents_pt_arr = self._pack_latents(latents_pt_arr, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size)
                 audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
+                
+                audio_vae_config = getattr(self, "audio_vae", None)
+                if audio_vae_config is not None:
+                  audio_vae_config = getattr(audio_vae_config, "config", None)
+                audio_latents_pt_arr = self._pack_audio_latents(
+                    audio_latents_pt_arr,
+                    getattr(audio_vae_config, "patch_size", None),
+                    getattr(audio_vae_config, "patch_size_t", None),
+                )
                 max_logging.log(f"📊 [Diagnostic Mode] Loaded pt_latents_step_0.pt first 5 values: {[float(x) for x in latents_pt_arr[0, 0, :5]]}")
 
                 # PyTorch references are saved in raw shape (batch size 1).
@@ -1629,6 +1638,15 @@ class LTX2Pipeline:
                 latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
                 latents_pt_arr = self._pack_latents(latents_pt_arr, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size)
                 audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
+                
+                audio_vae_config = getattr(self, "audio_vae", None)
+                if audio_vae_config is not None:
+                  audio_vae_config = getattr(audio_vae_config, "config", None)
+                audio_latents_pt_arr = self._pack_audio_latents(
+                    audio_latents_pt_arr,
+                    getattr(audio_vae_config, "patch_size", None),
+                    getattr(audio_vae_config, "patch_size_t", None),
+                )
 
                 # JAX's carry-forward latents are replicated in latents_jax_sharded; extract the single-batch slice
                 jax_step = latents_jax_sharded[:1]
