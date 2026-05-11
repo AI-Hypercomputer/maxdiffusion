@@ -1336,6 +1336,8 @@ class LTX2Pipeline:
     pt_latents_path = os.path.join(home_dir, "pt_latents_step_0.pt")
     if os.path.exists(pt_latents_path):
       latents_pt = jnp.array(torch.load(pt_latents_path, weights_only=False).float().numpy(), dtype=jnp.float32)
+      # Pack PyTorch starting noise to match JAX sequence structure
+      latents_pt = self._pack_latents(latents_pt, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size)
       # Compare JAX starting noise directly against PyTorch
       latents_jax_slice = jnp.array(latents, dtype=jnp.float32)
       mse = jnp.mean((latents_jax_slice - latents_pt) ** 2)
@@ -1608,6 +1610,7 @@ class LTX2Pipeline:
                 timestep_pt = torch.load(pt_timestep_path, weights_only=False)
 
                 latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
+                latents_pt_arr = self._pack_latents(latents_pt_arr, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size)
                 audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
                 max_logging.log(f"📊 [Diagnostic Mode] Loaded pt_latents_step_0.pt first 5 values: {[float(x) for x in latents_pt_arr[0, 0, :5]]}")
 
@@ -1624,6 +1627,7 @@ class LTX2Pipeline:
                 audio_latents_pt = torch.load(pt_audio_latents_path, weights_only=False)
 
                 latents_pt_arr = jnp.array(latents_pt.float().numpy(), dtype=latents_jax.dtype)
+                latents_pt_arr = self._pack_latents(latents_pt_arr, self.transformer_spatial_patch_size, self.transformer_temporal_patch_size)
                 audio_latents_pt_arr = jnp.array(audio_latents_pt.float().numpy(), dtype=audio_latents_jax.dtype)
 
                 # JAX's carry-forward latents are replicated in latents_jax_sharded; extract the single-batch slice
