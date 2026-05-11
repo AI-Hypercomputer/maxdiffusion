@@ -192,7 +192,7 @@ def _flash_attention_kernel(
   @pl.when(j == grid_width - 1)
   def end():
     l = l_scratch_ref[...]
-    l_inv = pltpu.repeat(1.0 / l, head_dim_v_repeats, axis=0)
+    l_inv = jnp.tile(1.0 / l, (head_dim_v_repeats, 1))
     o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
 
 
@@ -345,7 +345,7 @@ def _flash_attention_kernel_mhpt(
   def end():
     for h_local in range(heads_per_tile):
       l = l_scratch_ref[h_local]
-      l_inv = pltpu.repeat(1.0 / l, head_dim_v_repeats, axis=0)
+      l_inv = jnp.tile(1.0 / l, (head_dim_v_repeats, 1))
       o_ref[h_local] = (o_scratch_ref[h_local] * l_inv).astype(o_ref.dtype)
 
 
