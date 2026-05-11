@@ -1526,8 +1526,8 @@ class LTX2Pipeline:
               audio_num_frames,
               frame_rate,
               global_batch_size=batch_size,
-              sigma=sigma_t,
-              audio_sigma=sigma_t,
+              sigma=t,
+              audio_sigma=t,
               use_cross_timestep=use_cross_timestep,
               is_cfg_stg_mode=do_cfg and do_stg,
           )
@@ -1984,8 +1984,8 @@ def run_diffusion_loop(
           audio_num_frames=audio_num_frames,
           fps=fps,
           global_batch_size=batch_size,
-          sigma=sigma_t,
-          audio_sigma=sigma_t,
+          sigma=t,
+          audio_sigma=t,
           use_cross_timestep=use_cross_timestep,
           is_cfg_stg_mode=do_cfg and do_stg,
       )
