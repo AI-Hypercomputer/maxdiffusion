@@ -579,9 +579,7 @@ class LTX2Pipeline:
         temporal_upsample = mapped_config.get("temporal_upsample", temporal_upsample)
         rational_spatial_scale = mapped_config.get("rational_spatial_scale", rational_spatial_scale)
       else:
-        max_logging.log(
-            f"Warning: Filename '{filename}' not in KNOWN_UPSAMPLER_CONFIGS, falling back to heuristic parsing."
-        )
+        max_logging.log(f"Warning: Filename '{filename}' not in KNOWN_UPSAMPLER_CONFIGS, falling back to heuristic parsing.")
         if "temporal" in filename:
           temporal_upsample = True
           spatial_upsample = False
