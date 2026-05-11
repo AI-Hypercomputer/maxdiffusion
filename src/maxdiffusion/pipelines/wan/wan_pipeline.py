@@ -503,8 +503,11 @@ class WanPipeline:
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
   ):
-    prompt = [prompt] if isinstance(prompt, str) else prompt
-    batch_size = len(prompt)
+    if prompt is not None:
+      prompt = [prompt] if isinstance(prompt, str) else prompt
+      batch_size = len(prompt)
+    else:
+      batch_size = prompt_embeds.shape[0]
 
     if negative_prompt is None:
       negative_prompt = [""] * batch_size
