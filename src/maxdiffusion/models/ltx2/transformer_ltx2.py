@@ -473,9 +473,6 @@ class LTX2VideoTransformerBlock(nnx.Module):
       shift_text_kv = prompt_ada_values[:, :, 0, :]
       scale_text_kv = prompt_ada_values[:, :, 1, :]
       encoder_hidden_states = encoder_hidden_states * (1 + scale_text_kv) + shift_text_kv
-      jax.debug.print("DEBUG BLOCK AT RUNTIME: cross_attn_mod=True, scale_text_kv mean={}", scale_text_kv.mean())
-    else:
-      jax.debug.print("DEBUG BLOCK AT RUNTIME: cross_attn_mod={}, temb_prompt_none={}", getattr(self, "cross_attn_mod", False), temb_prompt is None)
 
     attn_hidden_states = self.attn2(
         norm_hidden_states,

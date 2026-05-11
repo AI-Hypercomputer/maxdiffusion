@@ -434,7 +434,6 @@ class ConfigMixin:
             f"containing a {cls.config_name} file"
         )
 
-    print("DEBUG CONFIG_FILE PATH LOADED BY CONFIG_MIXIN:", os.path.abspath(config_file))
     try:
       # Load config dict
       f = open(config_file)
