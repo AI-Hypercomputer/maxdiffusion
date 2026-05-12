@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import json
+from typing import Optional
 import torch
 import jax
 import jax.numpy as jnp
@@ -24,6 +25,29 @@ from huggingface_hub.utils import EntryNotFoundError
 from safetensors import safe_open
 from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
+
+KNOWN_UPSAMPLER_CONFIGS = {
+    "ltx-2.3-spatial-upscaler-x2-1.0.safetensors": {
+        "spatial_upsample": True,
+        "temporal_upsample": False,
+        "rational_spatial_scale": None,
+    },
+    "ltx-2.3-spatial-upscaler-x2-1.1.safetensors": {
+        "spatial_upsample": True,
+        "temporal_upsample": False,
+        "rational_spatial_scale": None,
+    },
+    "ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors": {
+        "spatial_upsample": True,
+        "temporal_upsample": False,
+        "rational_spatial_scale": 1.5,
+    },
+    "ltx-2.3-temporal-upscaler-x2-1.0.safetensors": {
+        "spatial_upsample": False,
+        "temporal_upsample": True,
+        "rational_spatial_scale": None,
+    },
+}
 
 
 def _tuple_str_to_int(in_tuple):
@@ -40,6 +64,11 @@ def rename_for_ltx2_transformer(key):
   """
   Renames Diffusers LTX-2 keys to MaxDiffusion Flax LTX-2 keys.
   """
+  if "caption_proj" in key and "caption_projection" not in key:
+    key = key.replace("caption_proj", "caption_projection")
+  if "audio_caption_proj" in key and "audio_caption_projection" not in key:
+    key = key.replace("audio_caption_proj", "audio_caption_projection")
+
   key = key.replace("patchify_proj", "proj_in")
   key = key.replace("audio_patchify_proj", "audio_proj_in")
   key = key.replace("norm_final", "norm_out")
@@ -100,12 +129,28 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
   return flax_key, flax_tensor
 
 
-def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device):
+def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=None):
   """
-  Loads weights from a sharded safetensors checkpoint.
+  Loads weights from a sharded safetensors checkpoint or a specific file.
   """
-  index_file = "diffusion_pytorch_model.safetensors.index.json"
   tensors = {}
+
+  if filename is not None:
+    try:
+      ckpt_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=filename)
+      if filename.endswith(".safetensors"):
+        with safe_open(ckpt_path, framework="pt") as f:
+          for k in f.keys():
+            tensors[k] = torch2jax(f.get_tensor(k))
+      else:
+        loaded_state_dict = torch.load(ckpt_path, map_location="cpu")
+        for k, v in loaded_state_dict.items():
+          tensors[k] = torch2jax(v)
+      return tensors
+    except EntryNotFoundError:
+      max_logging.log(f"Warning: Specific file {filename} not found. Falling back to default logic.")
+
+  index_file = "diffusion_pytorch_model.safetensors.index.json"
   try:
     index_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=index_file)
     with open(index_path, "r") as f:
@@ -289,11 +334,18 @@ def load_vocoder_weights(
 
     flax_key = _tuple_str_to_int(parts)
 
+    # Skip filter keys as they are derived in NNX model
+    if "filter" in flax_key:
+      continue
+
     if flax_key[-1] == "kernel":
       if "upsamplers" in flax_key:
         tensor = tensor.transpose(2, 0, 1)[::-1, :, :]
       else:
         tensor = tensor.transpose(2, 1, 0)
+
+    if "mel_stft" in flax_key and ("forward_basis" in flax_key or "inverse_basis" in flax_key):
+      tensor = tensor.transpose(2, 1, 0)
 
     flax_state_dict[flax_key] = jax.device_put(tensor, device=cpu)
 
@@ -305,6 +357,8 @@ def rename_for_ltx2_connector(key):
   key = key.replace("video_connector", "video_embeddings_connector")
   key = key.replace("audio_connector", "audio_embeddings_connector")
   key = key.replace("text_proj_in", "feature_extractor.linear")
+  key = key.replace("audio_feature_extractor.linear", "audio_text_proj_in")
+  key = key.replace("video_feature_extractor.linear", "video_text_proj_in")
 
   if "transformer_blocks" in key:
     key = key.replace("transformer_blocks", "stacked_blocks")
@@ -467,6 +521,7 @@ def load_upsampler_weights(
     hf_download: bool = True,
     subfolder: str = "latent_upsampler",
     dims: int = 3,
+    filename: Optional[str] = None,
 ):
   """
   Loads and ports PyTorch upsampler weights to Flax.
@@ -476,7 +531,7 @@ def load_upsampler_weights(
 
   with jax.default_device(device_obj):
     # This native util automatically handles HF hub downloads and caching!
-    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device_obj)
+    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device_obj, filename=filename)
 
     flax_state_dict = {}
     cpu = jax.local_devices(backend="cpu")[0]
