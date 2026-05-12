@@ -1125,7 +1125,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
         audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(
             batch_size, -1, audio_hidden_states.shape[-1]
-        )  # Construct perturbation_mask_per_layer for STG
+        )
+    # Construct perturbation_mask_per_layer for STG
     if perturbation_mask is None:
       perturbation_mask_per_layer = jnp.ones((self.num_layers, batch_size, 1, 1), dtype=self.dtype)
     else:

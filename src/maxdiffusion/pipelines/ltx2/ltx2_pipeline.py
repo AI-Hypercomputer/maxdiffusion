@@ -1793,8 +1793,6 @@ class LTX2Pipeline:
 @partial(
     jax.jit,
     static_argnames=(
-        "do_classifier_free_guidance",
-        "guidance_scale",
         "latent_num_frames",
         "latent_height",
         "latent_width",
