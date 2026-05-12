@@ -194,6 +194,16 @@ class UpSample1d(nnx.Module):
     return x_upsampled[:, self.pad_left : -self.pad_right, :]
 
 
+class LeakyReLU(nnx.Module):
+  """Stateless LeakyReLU module for Flax NNX."""
+
+  def __init__(self, negative_slope: float = 0.1):
+    self.negative_slope = negative_slope
+
+  def __call__(self, x: Array) -> Array:
+    return jax.nn.leaky_relu(x, negative_slope=self.negative_slope)
+
+
 class SnakeBeta(nnx.Module):
 
   def __init__(
@@ -305,11 +315,7 @@ class ResBlock(nnx.Module):
       elif act_fn == "snake":
         act = SnakeBeta(channels, use_beta=False, rngs=rngs)
       else:
-
-        def leaky_relu_act(x):
-          return jax.nn.leaky_relu(x, negative_slope=leaky_relu_negative_slope)
-
-        act = leaky_relu_act
+        act = LeakyReLU(negative_slope=leaky_relu_negative_slope)
 
       if antialias:
         act = AntiAliasAct1d(act, ratio=antialias_ratio, kernel_size=antialias_kernel_size)
@@ -338,11 +344,7 @@ class ResBlock(nnx.Module):
       elif act_fn == "snake":
         act = SnakeBeta(channels, use_beta=False, rngs=rngs)
       else:
-
-        def leaky_relu_act(x):
-          return jax.nn.leaky_relu(x, negative_slope=leaky_relu_negative_slope)
-
-        act = leaky_relu_act
+        act = LeakyReLU(negative_slope=leaky_relu_negative_slope)
 
       if antialias:
         act = AntiAliasAct1d(act, ratio=antialias_ratio, kernel_size=antialias_kernel_size)
@@ -460,7 +462,7 @@ class LTX2Vocoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       act_out = SnakeBeta(channels=output_channels, use_beta=True, rngs=rngs)
       self.act_out = AntiAliasAct1d(act_out, ratio=antialias_ratio, kernel_size=antialias_kernel_size)
     elif act_fn == "leaky_relu":
-      self.act_out = lambda x: jax.nn.leaky_relu(x, negative_slope=0.01)
+      self.act_out = LeakyReLU(negative_slope=0.01)
 
     self.conv_out = nnx.Conv(
         in_features=output_channels,
