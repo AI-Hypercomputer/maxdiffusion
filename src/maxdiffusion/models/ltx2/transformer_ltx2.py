@@ -1229,6 +1229,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
               encoder_attention_mask=encoder_attention_mask,
               audio_encoder_attention_mask=audio_encoder_attention_mask,
               perturbation_mask=mask,
+              modality_mask=modality_mask,
           )
 
     # 6. Output layers

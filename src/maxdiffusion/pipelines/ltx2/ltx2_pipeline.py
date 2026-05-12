@@ -1689,7 +1689,7 @@ class LTX2Pipeline:
         audio_latents_jax, self.audio_vae.latents_mean.value, self.audio_vae.latents_std.value
     )
 
-    num_mel_bins = self.audio_vae.config.mel_bins
+    num_mel_bins = self.audio_vae.config.mel_bins if self.audio_vae is not None else 128
     latent_mel_bins = num_mel_bins // self.audio_vae_mel_compression_ratio
 
     audio_latents = self._unpack_audio_latents(
