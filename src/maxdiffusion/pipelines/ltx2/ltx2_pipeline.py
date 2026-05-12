@@ -554,10 +554,7 @@ class LTX2Pipeline:
       max_logging.log("Warning: No upsampler config.json found. Using default dimensions.")
 
     # Read filename from config with fallback
-    try:
-      filename = config.upsampler_filename
-    except ValueError:
-      filename = None
+    filename = getattr(config, "upsampler_filename", None)
 
     subfolder = "latent_upsampler"
     if config.upsampler_model_path == "Lightricks/LTX-2.3":

@@ -81,6 +81,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         else (audio_caption_channels if audio_caption_channels is not None else caption_channels)
     )
 
+    self.caption_channels = caption_channels
     self.per_modality_projections = per_modality_projections
 
     if per_modality_projections:

@@ -982,7 +982,6 @@ class LTX2VideoDecoder3d(nnx.Module):
     inject_noise = tuple(reversed(inject_noise))
     upsample_residual = tuple(reversed(upsample_residual))
     upsample_factor = tuple(reversed(upsample_factor))
-    upsample_type = upsample_type
     output_channel = block_out_channels[0]
 
     self.conv_in = LTX2VideoCausalConv3d(

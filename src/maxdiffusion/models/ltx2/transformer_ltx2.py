@@ -328,32 +328,26 @@ class LTX2VideoTransformerBlock(nnx.Module):
     table_size = 9 if cross_attn_mod else 6
 
     self.scale_shift_table = nnx.Param(
-        jax.random.normal(k1, (table_size, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
-        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+        jax.random.normal(k1, (table_size, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim)
     )
 
     if self.cross_attn_mod:
       self.prompt_scale_shift_table = nnx.Param(
-          jax.random.normal(k5, (2, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim),
-          kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+          jax.random.normal(k5, (2, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim)
       )
 
     self.audio_scale_shift_table = nnx.Param(
-        jax.random.normal(k2, (table_size, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
-        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+        jax.random.normal(k2, (table_size, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
     )
     self.video_a2v_cross_attn_scale_shift_table = nnx.Param(
-        jax.random.normal(k3, (5, self.dim), dtype=weights_dtype),
-        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+        jax.random.normal(k3, (5, self.dim), dtype=weights_dtype)
     )
     self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(
-        jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype),
-        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+        jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype)
     )
     if self.cross_attn_mod:
       self.audio_prompt_scale_shift_table = nnx.Param(
-          jax.random.normal(k6, (2, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim),
-          kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
+          jax.random.normal(k6, (2, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
       )
 
   def __call__(
@@ -841,12 +835,10 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     # 3. Output Layer Scale/Shift Modulation parameters
     param_rng = rngs.params()
     self.scale_shift_table = nnx.Param(
-        jax.random.normal(param_rng, (2, inner_dim), dtype=self.weights_dtype) / jnp.sqrt(inner_dim),
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
+        jax.random.normal(param_rng, (2, inner_dim), dtype=self.weights_dtype) / jnp.sqrt(inner_dim)
     )
     self.audio_scale_shift_table = nnx.Param(
-        jax.random.normal(param_rng, (2, audio_inner_dim), dtype=self.weights_dtype) / jnp.sqrt(audio_inner_dim),
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
+        jax.random.normal(param_rng, (2, audio_inner_dim), dtype=self.weights_dtype) / jnp.sqrt(audio_inner_dim)
     )
 
     # 4. Rotary Positional Embeddings (RoPE)
