@@ -26,6 +26,10 @@ on:
     # Run the job every 12 hours
     - cron:  '0 */12 * * *'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
