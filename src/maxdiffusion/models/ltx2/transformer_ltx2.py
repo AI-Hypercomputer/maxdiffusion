@@ -339,12 +339,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
     self.audio_scale_shift_table = nnx.Param(
         jax.random.normal(k2, (table_size, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
     )
-    self.video_a2v_cross_attn_scale_shift_table = nnx.Param(
-        jax.random.normal(k3, (5, self.dim), dtype=weights_dtype)
-    )
-    self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(
-        jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype)
-    )
+    self.video_a2v_cross_attn_scale_shift_table = nnx.Param(jax.random.normal(k3, (5, self.dim), dtype=weights_dtype))
+    self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype))
     if self.cross_attn_mod:
       self.audio_prompt_scale_shift_table = nnx.Param(
           jax.random.normal(k6, (2, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
@@ -1123,9 +1119,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         audio_encoder_hidden_states = self.audio_caption_projection(audio_encoder_hidden_states)
 
         encoder_hidden_states = encoder_hidden_states.reshape(batch_size, -1, hidden_states.shape[-1])
-        audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(
-            batch_size, -1, audio_hidden_states.shape[-1]
-        )
+        audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
     # Construct perturbation_mask_per_layer for STG
     if perturbation_mask is None:
       perturbation_mask_per_layer = jnp.ones((self.num_layers, batch_size, 1, 1), dtype=self.dtype)
