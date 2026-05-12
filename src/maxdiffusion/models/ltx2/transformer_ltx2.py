@@ -814,23 +814,6 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
     )
-    if self.cross_attn_mod:
-      self.prompt_adaln = LTX2AdaLayerNormSingle(
-          rngs=rngs,
-          embedding_dim=inner_dim,
-          num_mod_params=2,
-          use_additional_conditions=False,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-      )
-      self.audio_prompt_adaln = LTX2AdaLayerNormSingle(
-          rngs=rngs,
-          embedding_dim=audio_inner_dim,
-          num_mod_params=2,
-          use_additional_conditions=False,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-      )
 
     # 3. Output Layer Scale/Shift Modulation parameters
     param_rng = rngs.params()
