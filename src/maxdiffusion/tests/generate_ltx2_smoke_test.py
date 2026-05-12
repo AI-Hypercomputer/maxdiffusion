@@ -46,6 +46,7 @@ class LTX2SmokeTest(unittest.TestCase):
             "height=256",  # Small resolution
             "width=256",
             "num_frames=9",  # Small number of frames
+            "max_sequence_length=256",  # Highly optimized sequence length to prevent VMEM OOM
             "seed=0",
             "attention=flash",
             "ici_fsdp_parallelism=1",
@@ -78,6 +79,7 @@ class LTX2SmokeTest(unittest.TestCase):
         guidance_scale=self.config.guidance_scale,
         generator=generator,
         dtype=jnp.bfloat16,
+        max_sequence_length=self.config.max_sequence_length,
     )
     t1 = time.perf_counter()
 

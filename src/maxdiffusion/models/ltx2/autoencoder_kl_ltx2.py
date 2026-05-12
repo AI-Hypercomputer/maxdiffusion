@@ -13,6 +13,21 @@
 # limitations under the License.
 
 from typing import Tuple, Union, Optional, Sequence
+from enum import Enum
+
+
+class UpsampleType(str, Enum):
+  SPATIOTEMPORAL = "spatiotemporal"
+  TEMPORAL = "temporal"
+  SPATIAL = "spatial"
+
+
+class DownsampleType(str, Enum):
+  CONV = "conv"
+  SPATIAL = "spatial"
+  TEMPORAL = "temporal"
+  SPATIOTEMPORAL = "spatiotemporal"
+
 
 import jax
 import jax.numpy as jnp
@@ -447,7 +462,7 @@ class LTX2VideoDownBlock3D(nnx.Module):
       resnet_eps: float = 1e-6,
       resnet_act_fn: str = "swish",
       spatio_temporal_scale: bool = True,
-      downsample_type: str = "conv",
+      downsample_type: DownsampleType = DownsampleType.CONV,
       spatial_padding_mode: str = "constant",
       rngs: Optional[nnx.Rngs] = None,
       mesh: Optional[jax.sharding.Mesh] = None,
@@ -668,6 +683,7 @@ class LTX2VideoUpBlock3d(nnx.Module):
       timestep_conditioning: bool = False,
       upsample_residual: bool = False,
       upscale_factor: int = 1,
+      upsample_type: UpsampleType = UpsampleType.SPATIOTEMPORAL,
       spatial_padding_mode: str = "constant",
       rngs: Optional[nnx.Rngs] = None,
       mesh: Optional[jax.sharding.Mesh] = None,
@@ -711,9 +727,17 @@ class LTX2VideoUpBlock3d(nnx.Module):
       )
 
     if spatio_temporal_scale:
+      if upsample_type == "spatiotemporal":
+        stride = (2, 2, 2)
+      elif upsample_type == "temporal":
+        stride = (2, 1, 1)
+      elif upsample_type == "spatial":
+        stride = (1, 2, 2)
+      else:
+        raise ValueError(f"Unknown upsample_type: {upsample_type}")
       self.upsampler = LTXVideoUpsampler3d(
           in_channels=out_channels * upscale_factor,
-          stride=(2, 2, 2),
+          stride=stride,
           residual=upsample_residual,
           upscale_factor=upscale_factor,
           spatial_padding_mode=spatial_padding_mode,
@@ -804,7 +828,12 @@ class LTX2VideoEncoder3d(nnx.Module):
       ),
       spatio_temporal_scaling: Tuple[bool, ...] = (True, True, True, True),
       layers_per_block: Tuple[int, ...] = (4, 6, 6, 2, 2),
-      downsample_type: Tuple[str, ...] = ("spatial", "temporal", "spatiotemporal", "spatiotemporal"),
+      downsample_type: Tuple[DownsampleType, ...] = (
+          DownsampleType.SPATIAL,
+          DownsampleType.TEMPORAL,
+          DownsampleType.SPATIOTEMPORAL,
+          DownsampleType.SPATIOTEMPORAL,
+      ),
       patch_size: int = 4,
       patch_size_t: int = 1,
       resnet_norm_eps: float = 1e-6,
@@ -954,6 +983,11 @@ class LTX2VideoDecoder3d(nnx.Module):
       timestep_conditioning: bool = False,
       upsample_residual: Tuple[bool, ...] = (True, True, True),
       upsample_factor: Tuple[int, ...] = (2, 2, 2),
+      upsample_type: Tuple[UpsampleType, ...] = (
+          UpsampleType.SPATIOTEMPORAL,
+          UpsampleType.SPATIOTEMPORAL,
+          UpsampleType.SPATIOTEMPORAL,
+      ),
       spatial_padding_mode: str = "reflect",
       rngs: Optional[nnx.Rngs] = None,
       mesh: Optional[jax.sharding.Mesh] = None,
@@ -1020,6 +1054,7 @@ class LTX2VideoDecoder3d(nnx.Module):
               timestep_conditioning=timestep_conditioning,
               upsample_residual=upsample_residual[i],
               upscale_factor=upsample_factor[i],
+              upsample_type=upsample_type[i],
               spatial_padding_mode=spatial_padding_mode,
               rngs=rngs,
               mesh=mesh,
@@ -1136,9 +1171,19 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
       spatio_temporal_scaling: Tuple[bool, ...] = (True, True, True, True),
       decoder_spatio_temporal_scaling: Tuple[bool, ...] = (True, True, True),
       decoder_inject_noise: Tuple[bool, ...] = (False, False, False, False),
-      downsample_type: Tuple[str, ...] = ("spatial", "temporal", "spatiotemporal", "spatiotemporal"),
+      downsample_type: Tuple[DownsampleType, ...] = (
+          DownsampleType.SPATIAL,
+          DownsampleType.TEMPORAL,
+          DownsampleType.SPATIOTEMPORAL,
+          DownsampleType.SPATIOTEMPORAL,
+      ),
       upsample_residual: Tuple[bool, ...] = (True, True, True),
       upsample_factor: Tuple[int, ...] = (2, 2, 2),
+      upsample_type: Tuple[UpsampleType, ...] = (
+          UpsampleType.SPATIOTEMPORAL,
+          UpsampleType.SPATIOTEMPORAL,
+          UpsampleType.SPATIOTEMPORAL,
+      ),
       timestep_conditioning: bool = False,
       patch_size: int = 4,
       patch_size_t: int = 1,
@@ -1184,6 +1229,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
         spatio_temporal_scaling=decoder_spatio_temporal_scaling,
         upsample_factor=upsample_factor,
         upsample_residual=upsample_residual,
+        upsample_type=upsample_type,
         patch_size=patch_size,
         patch_size_t=patch_size_t,
         resnet_norm_eps=resnet_norm_eps,
