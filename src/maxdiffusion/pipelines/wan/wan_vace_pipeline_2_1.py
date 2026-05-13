@@ -499,6 +499,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       prompt_embeds: jax.Array | None = None,
       negative_prompt_embeds: jax.Array | None = None,
       vae_only: bool = False,
+      use_kv_cache: bool = False,
   ):
     """Runs the VACE model for the given inputs.
 
@@ -639,6 +640,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
           num_inference_steps=num_inference_steps,
           scheduler=self.scheduler,
           scheduler_state=scheduler_state,
+          use_kv_cache=use_kv_cache,
       )
 
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -742,6 +744,8 @@ def transformer_forward_pass(
     control_hidden_states_scale: jax.Array,
     do_classifier_free_guidance: bool,
     guidance_scale: float,
+    kv_cache=None,
+    encoder_attention_mask=None,
 ):
   """Performs a forward pass on the transformer."""
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
@@ -751,6 +755,8 @@ def transformer_forward_pass(
       encoder_hidden_states=prompt_embeds,
       control_hidden_states=control_hidden_states,
       control_hidden_states_scale=control_hidden_states_scale,
+      kv_cache=kv_cache,
+      encoder_attention_mask=encoder_attention_mask,
   )
   if do_classifier_free_guidance:
     bsz = latents.shape[0] // 2
@@ -775,11 +781,18 @@ def run_inference(
     scheduler_state,
     control_hidden_states,
     control_hidden_states_scale,
+    use_kv_cache: bool = False,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
   if do_classifier_free_guidance:
     prompt_embeds = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
     control_hidden_states = jnp.concatenate([control_hidden_states] * 2)
+
+  transformer_obj = nnx.merge(graphdef, sharded_state, rest_of_state)
+  kv_cache = None
+  encoder_attention_mask = None
+  if use_kv_cache:
+    kv_cache, encoder_attention_mask = transformer_obj.compute_kv_cache(prompt_embeds)
 
   for step in range(num_inference_steps):
     t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
@@ -798,6 +811,8 @@ def run_inference(
         control_hidden_states_scale=control_hidden_states_scale,
         do_classifier_free_guidance=do_classifier_free_guidance,
         guidance_scale=guidance_scale,
+        kv_cache=kv_cache,
+        encoder_attention_mask=encoder_attention_mask,
     )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

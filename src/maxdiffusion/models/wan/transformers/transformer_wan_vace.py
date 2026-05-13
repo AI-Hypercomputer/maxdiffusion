@@ -199,6 +199,9 @@ class WanVACETransformerBlock(nnx.Module):
     """Return a JAX named scope if enabled, otherwise a null context."""
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
 
+  def compute_kv(self, encoder_hidden_states: jax.Array, encoder_attention_mask: Optional[jax.Array] = None):
+    return self.attn2.compute_kv(encoder_hidden_states, encoder_attention_mask)
+
   def __call__(
       self,
       *,
@@ -207,6 +210,8 @@ class WanVACETransformerBlock(nnx.Module):
       control_hidden_states: jax.Array,
       temb: jax.Array,
       rotary_emb: jax.Array,
+      kv_cache: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
+      encoder_attention_mask: Optional[jax.Array] = None,
       deterministic: bool = True,
       rngs: nnx.Rngs | None = None,
   ) -> Tuple[jax.Array, jax.Array]:
@@ -253,6 +258,8 @@ class WanVACETransformerBlock(nnx.Module):
           attn_output = self.attn2(
               hidden_states=norm_hidden_states,
               encoder_hidden_states=encoder_hidden_states,
+              cached_kv=kv_cache,
+              encoder_attention_mask=encoder_attention_mask,
               deterministic=deterministic,
               rngs=rngs,
           )
@@ -467,6 +474,66 @@ class WanVACEModel(WanModel):
     """Return a JAX named scope if enabled, otherwise a null context."""
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
 
+  def compute_kv_cache(
+      self,
+      encoder_hidden_states: jax.Array,
+      encoder_hidden_states_image: Optional[jax.Array] = None,
+      timestep: Optional[jax.Array] = None,
+  ) -> Tuple[Tuple[Dict[str, Tuple[jax.Array, jax.Array]], Dict[str, Tuple[jax.Array, jax.Array]]], Optional[jax.Array]]:
+    if timestep is None:
+      batch_size = encoder_hidden_states.shape[0]
+      timestep = jnp.zeros((batch_size,), dtype=jnp.int32)
+
+    with self.conditional_named_scope("condition_embedder"):
+      (
+          temb,
+          timestep_proj,
+          encoder_hidden_states,
+          encoder_hidden_states_image,
+          encoder_attention_mask,
+      ) = self.condition_embedder(timestep, encoder_hidden_states, encoder_hidden_states_image)
+
+    if encoder_hidden_states_image is not None:
+      encoder_hidden_states = jnp.concatenate([encoder_hidden_states_image, encoder_hidden_states], axis=1)
+      if encoder_attention_mask is not None:
+        text_mask = jnp.ones(
+            (
+                encoder_hidden_states.shape[0],
+                encoder_hidden_states.shape[1] - encoder_hidden_states_image.shape[1],
+            ),
+            dtype=jnp.int32,
+        )
+        encoder_attention_mask = jnp.concatenate([encoder_attention_mask, text_mask], axis=1)
+
+    if self.scan_layers:
+      raise NotImplementedError("scan_layers is not supported yet")
+    else:
+      # VACE blocks
+      vace_kv_cache_list = []
+      for block in self.vace_blocks:
+        vace_kv_cache_list.append(block.compute_kv(encoder_hidden_states, encoder_attention_mask))
+      vace_kv_cache = {}
+      if vace_kv_cache_list:
+        keys = vace_kv_cache_list[0].keys()
+        for k in keys:
+          k_list = [d[k][0] for d in vace_kv_cache_list]
+          v_list = [d[k][1] for d in vace_kv_cache_list]
+          vace_kv_cache[k] = (jnp.stack(k_list, axis=0), jnp.stack(v_list, axis=0))
+
+      # Main blocks
+      main_kv_cache_list = []
+      for block in self.blocks:
+        main_kv_cache_list.append(block.compute_kv(encoder_hidden_states, encoder_attention_mask))
+      main_kv_cache = {}
+      if main_kv_cache_list:
+        keys = main_kv_cache_list[0].keys()
+        for k in keys:
+          k_list = [d[k][0] for d in main_kv_cache_list]
+          v_list = [d[k][1] for d in main_kv_cache_list]
+          main_kv_cache[k] = (jnp.stack(k_list, axis=0), jnp.stack(v_list, axis=0))
+
+    return (vace_kv_cache, main_kv_cache), encoder_attention_mask
+
   @jax.named_scope("WanVACEModel")
   def __call__(
       self,
@@ -478,6 +545,8 @@ class WanVACEModel(WanModel):
       encoder_hidden_states_image: Optional[jax.Array] = None,
       return_dict: bool = True,
       attention_kwargs: Optional[Dict[str, Any]] = None,
+      kv_cache: Optional[Tuple[Dict[str, Tuple[jax.Array, jax.Array]], Dict[str, Tuple[jax.Array, jax.Array]]]] = None,
+      encoder_attention_mask: Optional[jax.Array] = None,
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> jax.Array:
@@ -524,7 +593,7 @@ class WanVACEModel(WanModel):
           encoder_hidden_states_image,
           _,
       ) = self.condition_embedder(  # We will need to mask out the text embedding.
-          timestep, encoder_hidden_states, encoder_hidden_states_image
+          timestep, encoder_hidden_states, encoder_hidden_states_image, skip_embeddings=(kv_cache is not None)
       )
       timestep_proj = timestep_proj.reshape(timestep_proj.shape[0], 6, -1)
 
@@ -534,9 +603,14 @@ class WanVACEModel(WanModel):
     if self.scan_layers:
       raise NotImplementedError("scan_layers is not supported yet")
     else:
+      vace_kv_cache, main_kv_cache = kv_cache if kv_cache is not None else (None, None)
+
       # Prepare VACE hints
       control_hidden_states_list = []
       for i, vace_block in enumerate(self.vace_blocks):
+        layer_kv_cache = None
+        if vace_kv_cache is not None:
+          layer_kv_cache = jax.tree.map(lambda x: x[i], vace_kv_cache)
 
         def layer_forward(hidden_states, control_hidden_states, rngs):
           return vace_block(
@@ -545,6 +619,8 @@ class WanVACEModel(WanModel):
               control_hidden_states=control_hidden_states,
               temb=timestep_proj,
               rotary_emb=rotary_emb,
+              kv_cache=layer_kv_cache,
+              encoder_attention_mask=encoder_attention_mask,
               deterministic=deterministic,
               rngs=rngs,
           )
@@ -561,6 +637,9 @@ class WanVACEModel(WanModel):
       control_hidden_states_list = control_hidden_states_list[::-1]
 
       for i, block in enumerate(self.blocks):
+        layer_kv_cache = None
+        if main_kv_cache is not None:
+          layer_kv_cache = jax.tree.map(lambda x: x[i], main_kv_cache)
 
         def layer_forward_vace(hidden_states, rngs):
           return block(
@@ -570,6 +649,8 @@ class WanVACEModel(WanModel):
               rotary_emb,
               deterministic,
               rngs,
+              encoder_attention_mask=encoder_attention_mask,
+              cached_kv=layer_kv_cache,
           )
 
         rematted_layer_forward = self.gradient_checkpoint.apply(

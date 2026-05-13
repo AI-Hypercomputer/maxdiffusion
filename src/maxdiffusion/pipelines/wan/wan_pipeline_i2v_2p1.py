@@ -77,7 +77,13 @@ class WanPipelineI2V_2_1(WanPipeline):
     return pipeline
 
   @classmethod
-  def from_checkpoint(cls, config: HyperParameters, restored_checkpoint=None, vae_only=False, load_transformer=True):
+  def from_checkpoint(
+      cls,
+      config: HyperParameters,
+      restored_checkpoint=None,
+      vae_only=False,
+      load_transformer=True,
+  ):
     pipeline, _ = cls._load_and_init(config, restored_checkpoint, vae_only, load_transformer)
     return pipeline
 
@@ -113,7 +119,13 @@ class WanPipelineI2V_2_1(WanPipeline):
     latent_height = height // self.vae_scale_factor_spatial
     latent_width = width // self.vae_scale_factor_spatial
 
-    shape = (batch_size, num_latent_frames, latent_height, latent_width, num_channels_latents)
+    shape = (
+        batch_size,
+        num_latent_frames,
+        latent_height,
+        latent_width,
+        num_channels_latents,
+    )
 
     if latents is None:
       latents = jax.random.normal(rng, shape=shape, dtype=jnp.float32)
@@ -129,7 +141,12 @@ class WanPipelineI2V_2_1(WanPipeline):
     first_frame_mask = jnp.repeat(first_frame_mask, self.vae_scale_factor_temporal, axis=2)
     mask_lat_size = jnp.concatenate([first_frame_mask, mask_lat_size[:, :, 1:]], axis=2)
     mask_lat_size = mask_lat_size.reshape(
-        batch_size, 1, num_latent_frames, self.vae_scale_factor_temporal, latent_height, latent_width
+        batch_size,
+        1,
+        num_latent_frames,
+        self.vae_scale_factor_temporal,
+        latent_height,
+        latent_width,
     )
     mask_lat_size = jnp.transpose(mask_lat_size, (0, 2, 4, 5, 3, 1)).squeeze(-1)
     condition = jnp.concatenate([mask_lat_size, latent_condition], axis=-1)
@@ -158,6 +175,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       magcache_thresh: Optional[float] = None,
       magcache_K: Optional[int] = None,
       retention_ratio: Optional[float] = None,
+      use_kv_cache: bool = False,
   ):
     config = getattr(self, "config", None)
     if magcache_thresh is None:
@@ -180,7 +198,6 @@ class WanPipelineI2V_2_1(WanPipeline):
       num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
       max_logging.log(f"Adjusted num_frames to: {num_frames}")
     num_frames = max(num_frames, 1)
-
     trace = {}
     t_cond_start = time.perf_counter()
 
@@ -231,7 +248,9 @@ class WanPipelineI2V_2_1(WanPipeline):
     trace["conditioning"] = time.perf_counter() - t_cond_start
 
     scheduler_state = self.scheduler.set_timesteps(
-        self.scheduler_state, num_inference_steps=num_inference_steps, shape=latents.shape
+        self.scheduler_state,
+        num_inference_steps=num_inference_steps,
+        shape=latents.shape,
     )
 
     graphdef, state, rest_of_state = nnx.split(self.transformer, nnx.Param, ...)
@@ -262,6 +281,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         height=height,
         mag_ratios_base=self.config.mag_ratios_base_720p if height >= 720 else self.config.mag_ratios_base_480p,
         config=self.config,
+        use_kv_cache=use_kv_cache,
     )
 
     t_denoise_start = time.perf_counter()
@@ -311,6 +331,7 @@ def run_inference_2_1_i2v(
     height: int = 480,
     mag_ratios_base: Optional[List[float]] = None,
     config=None,
+    use_kv_cache: bool = False,
 ):
   do_cfg = guidance_scale > 1.0
 
@@ -330,9 +351,25 @@ def run_inference_2_1_i2v(
     image_embeds_combined = image_embeds
     condition_combined = condition
 
+  transformer_obj = nnx.merge(graphdef, sharded_state, rest_of_state)
+
+  # Compute RoPE once as it only depends on shape
+  dummy_hidden_states = jnp.zeros(latents.shape)
+  rotary_emb = transformer_obj.rope(dummy_hidden_states)
+
+  kv_cache = None
+  encoder_attention_mask = None
+
+  if use_kv_cache:
+    kv_cache, encoder_attention_mask = transformer_obj.compute_kv_cache(prompt_embeds_combined, image_embeds_combined)
+
   first_profiling_step = config.skip_first_n_steps_for_profiler if config else 0
   profiler_steps = config.profiler_steps if config else 0
-  last_profiling_step = np.clip(first_profiling_step + profiler_steps - 1, first_profiling_step, num_inference_steps - 1)
+  last_profiling_step = np.clip(
+      first_profiling_step + profiler_steps - 1,
+      first_profiling_step,
+      num_inference_steps - 1,
+  )
 
   scan_diffusion_loop = getattr(config, "scan_diffusion_loop", False) if config else False
 
@@ -365,6 +402,9 @@ def run_inference_2_1_i2v(
           skip_blocks=None,
           cached_residual=None,
           return_residual=False,
+          kv_cache=kv_cache,
+          rotary_emb=rotary_emb,
+          encoder_attention_mask=encoder_attention_mask,
       )
       noise_pred, _ = outputs
 
@@ -393,7 +433,12 @@ def run_inference_2_1_i2v(
     skip_blocks = False
     if use_magcache and do_cfg:
       skip_blocks, accumulated_state = magcache_step(
-          step, mag_ratios, accumulated_state, magcache_thresh, magcache_K, skip_warmup
+          step,
+          mag_ratios,
+          accumulated_state,
+          magcache_thresh,
+          magcache_K,
+          skip_warmup,
       )
 
     latents_input = latents
@@ -417,6 +462,9 @@ def run_inference_2_1_i2v(
         skip_blocks=bool(skip_blocks) if use_magcache and do_cfg else None,
         cached_residual=cached_residual if use_magcache and do_cfg else None,
         return_residual=True if use_magcache and do_cfg else False,
+        kv_cache=kv_cache,
+        rotary_emb=rotary_emb,
+        encoder_attention_mask=encoder_attention_mask,
     )
     if use_magcache and do_cfg:
       noise_pred, _, residual_x_cur = outputs

@@ -301,6 +301,7 @@ flow_shift: 3.0
 
 # Diffusion CFG cache (FasterCache-style, WAN 2.1 T2V only)
 use_cfg_cache: False
+use_kv_cache: False
 
 # Batch positive and negative prompts in text encoder to save compute.
 use_batched_text_encoder: False

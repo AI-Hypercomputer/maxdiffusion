@@ -355,6 +355,7 @@ use_cfg_cache: False
 # Batch positive and negative prompts in text encoder to save compute.
 use_batched_text_encoder: False
 
+use_kv_cache: False
 use_magcache: False
 magcache_thresh: 0.12
 magcache_K: 2

@@ -93,7 +93,7 @@ class FlaxModelMixin(PushToHubMixin):
       return param
 
     if mask is None:
-      return jax.tree_map(conditional_cast, params)
+      return jax.tree.map(conditional_cast, params)
 
     flat_params = flatten_dict(params)
     flat_mask, _ = jax.tree_flatten(mask)

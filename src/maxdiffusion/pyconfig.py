@@ -314,7 +314,7 @@ class HyperParameters:  # pylint: disable=missing-class-docstring
 
   def __getattr__(self, attr):
     if attr not in _config.keys:
-      raise ValueError(f"Requested key {attr}, not in config")
+      raise AttributeError(f"Requested key {attr}, not in config")
     return _config.keys[attr]
 
   def __setattr__(self, attr, value):
