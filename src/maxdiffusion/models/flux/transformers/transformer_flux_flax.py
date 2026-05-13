@@ -157,6 +157,7 @@ class FluxSingleTransformerBlock(nn.Module):
     v = v.transpose(0, 2, 1, 3).reshape(v.shape[0], v.shape[2], -1)
 
     attn_output = self.attn.attention_op.apply_attention(q, k, v)
+    attn_output = checkpoint_name(attn_output, "attn_output")
 
     # Re-combine streams smoothly
     attn_mlp = jnp.concatenate([attn_output, self.mlp_act(mlp)], axis=2)
@@ -473,7 +474,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     # 4. Force strict checkpointing on the Single Wrapper
     #RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.checkpoint_dots_with_no_batch_dims)
     #RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.offload_dot_with_no_batch_dims(offload_src="device", offload_dst="pinned_host"))
-    RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.save_any_names_but_these("lin1_norm_hidden_states", "lin2_hidden_states"))
+    RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.save_only_these_names("attn_output", "lin2_hidden_states"))
 
     self.scanned_single_blocks = nn.scan(
         RemattedSingleWrapper,
