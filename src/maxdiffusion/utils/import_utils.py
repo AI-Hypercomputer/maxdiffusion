@@ -23,7 +23,10 @@ from itertools import chain
 from types import ModuleType
 from typing import Any, Union
 
-from huggingface_hub.utils import is_jinja_available  # noqa: F401
+try:
+  from huggingface_hub.utils import is_jinja_available  # noqa: F401
+except ImportError:
+  from huggingface_hub.v0.utils import is_jinja_available  # noqa: F401
 from packaging import version
 from packaging.version import Version, parse
 

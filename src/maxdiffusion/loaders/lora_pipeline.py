@@ -22,7 +22,11 @@ from .lora_conversion_utils import (
     _maybe_map_sgm_blocks_to_diffusers,
 )
 from ..models.modeling_flax_pytorch_utils import convert_lora_pytorch_state_dict_to_flax
-from huggingface_hub.utils import validate_hf_hub_args
+
+try:
+  from huggingface_hub.utils import validate_hf_hub_args
+except ImportError:
+  from huggingface_hub.v0.utils import validate_hf_hub_args
 
 TEXT_ENCODER_NAME = "text_encoder"
 UNET_NAME = "unet"

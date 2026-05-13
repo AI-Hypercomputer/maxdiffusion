@@ -21,7 +21,12 @@ import jax
 import jax.numpy as jnp
 from maxdiffusion import max_logging
 from huggingface_hub import hf_hub_download
-from huggingface_hub.utils import EntryNotFoundError
+
+try:
+  from huggingface_hub.utils import EntryNotFoundError
+except ImportError:
+  from huggingface_hub.v0.utils import EntryNotFoundError
+
 from safetensors import safe_open
 from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)

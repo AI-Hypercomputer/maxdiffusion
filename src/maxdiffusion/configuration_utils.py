@@ -29,7 +29,11 @@ import numpy as np
 from dataclasses import asdict, is_dataclass
 
 from huggingface_hub import create_repo, hf_hub_download
-from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
+
+try:
+  from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
+except ImportError:
+  from huggingface_hub.v0.errors import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
 from requests import HTTPError
 import jax.numpy as jnp
 from . import __version__

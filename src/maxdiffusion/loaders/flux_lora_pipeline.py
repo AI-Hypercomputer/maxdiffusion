@@ -18,7 +18,11 @@ from ..models.lora import LoRALinearLayer, BaseLoRALayer
 import jax.numpy as jnp
 from flax.traverse_util import flatten_dict
 from ..models.modeling_flax_pytorch_utils import convert_flux_lora_pytorch_state_dict_to_flax
-from huggingface_hub.utils import validate_hf_hub_args
+
+try:
+  from huggingface_hub.utils import validate_hf_hub_args
+except ImportError:
+  from huggingface_hub.v0.utils import validate_hf_hub_args
 
 
 class FluxLoraLoaderMixin(LoRABaseMixin):

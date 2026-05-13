@@ -24,7 +24,11 @@ from flax.core.frozen_dict import FrozenDict
 from flax.serialization import from_bytes, to_bytes
 from flax.traverse_util import flatten_dict, unflatten_dict
 from huggingface_hub import create_repo, hf_hub_download
-from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
+
+try:
+  from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
+except ImportError:
+  from huggingface_hub.v0.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
 from requests import HTTPError
 
 from .. import __version__, is_torch_available

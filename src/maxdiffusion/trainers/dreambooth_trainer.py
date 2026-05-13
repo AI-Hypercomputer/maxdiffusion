@@ -28,7 +28,11 @@ from flax.linen import partitioning as nn_partitioning
 import optax
 import torch
 from torch.utils.data import Dataset
-from huggingface_hub.utils import insecure_hashlib
+
+try:
+  from huggingface_hub.utils import insecure_hashlib
+except ImportError:
+  from huggingface_hub.v0.utils import insecure_hashlib
 from tqdm import tqdm
 
 from maxdiffusion.trainers.base_stable_diffusion_trainer import BaseStableDiffusionTrainer

@@ -26,12 +26,21 @@ from uuid import uuid4
 
 from huggingface_hub import ModelCard, ModelCardData, create_repo, get_token, hf_hub_download, upload_folder, whoami
 from huggingface_hub.file_download import REGEX_COMMIT_HASH
-from huggingface_hub.utils import (
-    EntryNotFoundError,
-    RepositoryNotFoundError,
-    RevisionNotFoundError,
-    is_jinja_available,
-)
+
+try:
+  from huggingface_hub.utils import (
+      EntryNotFoundError,
+      RepositoryNotFoundError,
+      RevisionNotFoundError,
+      is_jinja_available,
+  )
+except ImportError:
+  from huggingface_hub.v0.utils import (
+      EntryNotFoundError,
+      RepositoryNotFoundError,
+      RevisionNotFoundError,
+      is_jinja_available,
+  )
 from packaging import version
 from requests import HTTPError
 
