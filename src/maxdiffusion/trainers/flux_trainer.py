@@ -372,7 +372,7 @@ class FluxTrainer(FluxCheckpointer):
               None,
           ),
           out_shardings=(state_shardings["flux_state_shardings"], None, None),
-          donate_argnums=(0,),
+          donate_argnums=(0, 1),
       )
       max_logging.log("Precompiling...")
       s = time.time()
