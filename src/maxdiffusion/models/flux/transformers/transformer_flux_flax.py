@@ -78,6 +78,8 @@ class FluxSingleTransformerBlock(nn.Module):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     self.mlp_hidden_dim = int(self.dim * self.mlp_ratio)
@@ -113,6 +115,8 @@ class FluxSingleTransformerBlock(nn.Module):
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
         flash_block_sizes=self.flash_block_sizes,
+        use_base2_exp=self.use_base2_exp,
+        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
   def __call__(self, hidden_states, temb, image_rotary_emb=None):
@@ -188,6 +192,8 @@ class FluxTransformerBlock(nn.Module):
   mlp_ratio: float = 4.0
   qkv_bias: bool = False
   attention_kernel: str = "dot_product"
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     # These contain the parameter projections ("lin"), optimize them using your updated AdaLayerNorm class
@@ -204,6 +210,8 @@ class FluxTransformerBlock(nn.Module):
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
         flash_block_sizes=self.flash_block_sizes,
+        use_base2_exp=self.use_base2_exp,
+        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
     # REMOVED: self.img_norm2 and self.txt_norm2 completely to stop HBM memory spilling.
@@ -370,6 +378,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   attention_kernel: str = "dot_product"
   eps: float = 1e-6
   remat_policy: str = "None"
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     self.out_channels = self.in_channels
@@ -425,6 +435,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         'precision': self.precision,
         'mlp_ratio': self.mlp_ratio,
         'qkv_bias': self.qkv_bias,
+        'use_base2_exp': self.use_base2_exp,
+        'use_experimental_scheduler': self.use_experimental_scheduler,
     }
 
     # 2. Force strict checkpointing on the Double Wrapper
@@ -453,6 +465,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         'weights_dtype': self.weights_dtype,
         'precision': self.precision,
         'mlp_ratio': self.mlp_ratio,
+        'use_base2_exp': self.use_base2_exp,
+        'use_experimental_scheduler': self.use_experimental_scheduler,
     }
 
     # 4. Force strict checkpointing on the Single Wrapper
