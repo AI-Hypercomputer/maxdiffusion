@@ -1,5 +1,5 @@
 """
-Copyright 2024 Google LLC
+Copyright 2026 Google LLC
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,11 @@ from enum import Enum
 
 
 def print_device_memory_info(devices):
+  """Prints information about JAX devices.
+
+  Args:
+    devices: The JAX device or list of jax.Device to print information about.
+  """
   if not isinstance(devices, list):
     devices = [devices]
 
@@ -35,14 +40,24 @@ def print_device_memory_info(devices):
 
 
 def print_array_info(array, name):
+  """Prints information about a JAX array.
+
+  Note: This function is intended for use with concrete JAX arrays outside of
+  JIT-compiled contexts. Calling this function inside a `@jax.jit` (or similar)
+  context will fail because `array` will be a Tracer object, which does not
+  have attributes like `is_fully_replicated` or `device_buffers`.
+
+  Args:
+    array: The JAX array (jax.Array) to print information about.
+    name: (str) A name to identify the array in the output.
+  """
   print("**** name: ", name)
   jax.debug.print("dtype: {x}", x=array.dtype)
   jax.debug.print("shape: {x}", x=array.shape)
   jax.debug.print("is fully replicated: {x}", x=array.is_fully_replicated)
-  num_devices = jax.device_count()
-  for device_idx in num_devices:
-    jax.debug.print("shape on device {x} : {y}", x=device_idx, y=array.device_buffers[0].shape)
-    jax.debug.print("size on device {x} : {y}", x=device_idx, y=array.device_buffers[device_idx].size / array.size)
+  for device_idx, buffer in enumerate(array.device_buffers):
+    jax.debug.print("shape on device {x} : {y}", x=device_idx, y=buffer.shape)
+    jax.debug.print("size on device {x} : {y}", x=device_idx, y=buffer.size / array.size)
 
 
 class TpuType(Enum):
