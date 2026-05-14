@@ -53,6 +53,46 @@ class Transformer2DModelOutput(BaseOutput):
   sample: jnp.ndarray
 
 
+class MlpAndOutputBlock(nn.Module):
+  dim: int
+  mlp_ratio: float = 4.0
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  precision: jax.lax.Precision = None
+
+  def setup(self):
+    self.mlp_hidden_dim = int(self.dim * self.mlp_ratio)
+    self.lin_mlp = nn.Dense(
+        self.mlp_hidden_dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
+    self.mlp_act = nn.gelu
+    self.linear2 = nn.Dense(
+        self.dim,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+    )
+
+  def __call__(self, x, attn_output, gate, residual):
+    mlp = self.lin_mlp(x)
+    attn_mlp = jnp.concatenate([attn_output, self.mlp_act(mlp)], axis=2)
+    attn_mlp = nn.with_logical_constraint(
+        attn_mlp, ("activation_batch", None, "mlp")
+    )
+    hidden_states = self.linear2(attn_mlp)
+    hidden_states = checkpoint_name(hidden_states, "lin2_hidden_states")
+    hidden_states = gate * hidden_states
+    hidden_states = residual + hidden_states
+    return hidden_states
+
+
 class FluxSingleTransformerBlock(nn.Module):
   r"""
   A Transformer block following the MMDiT architecture, introduced in Stable Diffusion 3.
@@ -88,8 +128,8 @@ class FluxSingleTransformerBlock(nn.Module):
         self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
     )
 
-    self.linear1 = nn.Dense(
-        self.dim * 3 + self.mlp_hidden_dim,
+    self.lin_qkv = nn.Dense(
+        self.dim * 3,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
         bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
         dtype=self.dtype,
@@ -97,15 +137,14 @@ class FluxSingleTransformerBlock(nn.Module):
         precision=self.precision,
     )
 
-    self.mlp_act = nn.gelu
-    self.linear2 = nn.Dense(
-        self.dim,
-        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+    self.mlp_and_out = nn.remat(MlpAndOutputBlock, prevent_cse=True)(
+        dim=self.dim,
+        mlp_ratio=self.mlp_ratio,
         dtype=self.dtype,
-        param_dtype=self.weights_dtype,
+        weights_dtype=self.weights_dtype,
         precision=self.precision,
     )
+
     self.attn = FlaxFluxAttention(
         query_dim=self.dim,
         heads=self.num_attention_heads,
@@ -129,15 +168,9 @@ class FluxSingleTransformerBlock(nn.Module):
     
     norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
     
-    norm_hidden_states = self.linear1(norm_hidden_states)
-    norm_hidden_states = checkpoint_name(norm_hidden_states, "lin1_norm_hidden_states")
-
-    # FIX: Enforce valid axis constraints prior to splitting the massive projection tensor
-    norm_hidden_states = nn.with_logical_constraint(
-        norm_hidden_states, ("activation_batch", None, "mlp")
-    )
-    
-    qkv, mlp = jnp.split(norm_hidden_states, [3 * self.dim], axis=-1)
+    qkv = self.lin_qkv(norm_hidden_states)
+    qkv = checkpoint_name(qkv, "lin1_norm_hidden_states")
+    qkv = nn.with_logical_constraint(qkv, ("activation_batch", None, "mlp"))
     
     B, L = hidden_states.shape[:2]
     H, D, K = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3), 3
@@ -159,19 +192,7 @@ class FluxSingleTransformerBlock(nn.Module):
     attn_output = self.attn.attention_op.apply_attention(q, k, v)
     attn_output = checkpoint_name(attn_output, "attn_output")
 
-    # Re-combine streams smoothly
-    attn_mlp = jnp.concatenate([attn_output, self.mlp_act(mlp)], axis=2)
-    
-    # FIX: Enforce a clean exit layout before executing linear2
-    attn_mlp = nn.with_logical_constraint(
-        attn_mlp, ("activation_batch", None, "mlp")
-    )
-    
-    hidden_states = self.linear2(attn_mlp)
-    hidden_states = checkpoint_name(hidden_states, "lin2_hidden_states")
-    
-    hidden_states = gate * hidden_states
-    hidden_states = residual + hidden_states
+    hidden_states = self.mlp_and_out(norm_hidden_states, attn_output, gate, residual)
     
     if hidden_states.dtype == jnp.float16:
       hidden_states = jnp.clip(hidden_states, -65504, 65504)
@@ -474,7 +495,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     # 4. Force strict checkpointing on the Single Wrapper
     #RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.checkpoint_dots_with_no_batch_dims)
     #RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.offload_dot_with_no_batch_dims(offload_src="device", offload_dst="pinned_host"))
-    RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=cp.save_any_names_but_these("lin1_norm_hidden_states", "lin2_hidden_states", "attn_output"))
+    RemattedSingleWrapper = ScannedSingleBlockWrapper
 
     self.scanned_single_blocks = nn.scan(
         RemattedSingleWrapper,

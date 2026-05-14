@@ -176,6 +176,22 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
           renamed_pt_key = renamed_pt_key.replace("modulation", "norm")
           renamed_pt_key = renamed_pt_key.replace("norm.key_norm", "attn.key_norm")
           renamed_pt_key = renamed_pt_key.replace("norm.query_norm", "attn.query_norm")
+          if "linear1" in renamed_pt_key:
+            if tensor.ndim == 2:
+              qkv_tensor = tensor[:9216, :]
+              mlp_tensor = tensor[9216:, :]
+            else:
+              qkv_tensor = tensor[:9216]
+              mlp_tensor = tensor[9216:]
+            qkv_pt_key = renamed_pt_key.replace("linear1", "lin_qkv")
+            mlp_pt_key = renamed_pt_key.replace("linear1", "mlp_and_out.lin_mlp")
+            flax_key_qkv, flax_tensor_qkv = rename_key_and_reshape_tensor(tuple(qkv_pt_key.split(".")), qkv_tensor, eval_shapes)
+            flax_state_dict[flax_key_qkv] = jax.device_put(jnp.asarray(flax_tensor_qkv), device=cpu)
+            flax_key_mlp, flax_tensor_mlp = rename_key_and_reshape_tensor(tuple(mlp_pt_key.split(".")), mlp_tensor, eval_shapes)
+            flax_state_dict[flax_key_mlp] = jax.device_put(jnp.asarray(flax_tensor_mlp), device=cpu)
+            continue
+          elif "linear2" in renamed_pt_key:
+            renamed_pt_key = renamed_pt_key.replace("linear2", "mlp_and_out.linear2")
         elif "vector_in" in renamed_pt_key or "time_in" in renamed_pt_key:
           renamed_pt_key = renamed_pt_key.replace("vector_in", "time_text_embed.PixArtAlphaTextProjection_0")
           renamed_pt_key = renamed_pt_key.replace("time_in", "time_text_embed.FlaxTimestepEmbedding_0")
