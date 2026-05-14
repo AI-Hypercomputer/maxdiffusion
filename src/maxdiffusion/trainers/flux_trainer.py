@@ -115,6 +115,7 @@ class FluxTrainer(FluxCheckpointer):
       del pipeline.t5_tokenizer
       del pipeline.vae
       del state_shardings[VAE_STATE_SHARDINGS_KEY]
+      jax.clear_caches()
       
 
       # evaluate shapes
