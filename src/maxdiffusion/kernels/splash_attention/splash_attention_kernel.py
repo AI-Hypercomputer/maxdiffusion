@@ -1264,7 +1264,6 @@ def _splash_attention_fwd(
       max_logit_value=max_logit_value,
   )
   logsumexp = stats["logsumexp"]  # save in the config base for the bwd pass
-  logsumexp = jax.checkpoint_name(logsumexp, "pallas_logsumexp")
   if config.use_base2_exp:  # for user, output values in natural base
     stats["logsumexp"] = stats["logsumexp"] / LOG2E
     stats["max_logits"] = stats["max_logits"] / LOG2E
