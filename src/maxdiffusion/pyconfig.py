@@ -281,8 +281,8 @@ class _HyperParameters:
         raw_keys["global_batch_size_to_train_on"],
     ) = _HyperParameters.calculate_global_batch_sizes(raw_keys["per_device_batch_size"])
 
-    if raw_keys.get("vae_spatial", -1) == -1:
-      raw_keys["vae_spatial"] = 1
+    if "vae_spatial" not in raw_keys:
+      raw_keys["vae_spatial"] = -1
 
 
 def get_num_slices(raw_keys):

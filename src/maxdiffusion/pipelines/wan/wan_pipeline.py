@@ -672,11 +672,8 @@ class WanPipeline:
     vae_spatial = getattr(config, "vae_spatial", -1)
     total_devices = math.prod(devices_array.shape)
 
-    if vae_spatial <= 0:
-      dp_size = mesh.shape.get("data", 1)
-      if dp_size == -1 or dp_size == 0:
-        dp_size = 1
-      vae_spatial = (2 * total_devices) // dp_size
+    if vae_spatial == -1:
+      vae_spatial = total_devices
 
     assert (
         total_devices % vae_spatial == 0
