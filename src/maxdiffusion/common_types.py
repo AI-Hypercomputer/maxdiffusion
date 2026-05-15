@@ -95,3 +95,15 @@ ULYSSES_ATTENTION_AXIS_RULES = [
     [CROSS_ATTN_Q_LENGTH, CONTEXT],
     [CROSS_ATTN_KV_LENGTH, CONTEXT],
 ]
+
+### Common axis rules for 2D Ulysses + ring attention ###
+# Public configs shard sequence on `context`; attention code privately reshapes
+# that axis into hidden ring and Ulysses axes for the hybrid kernel.
+ULYSSES_RING_ATTENTION_AXIS_RULES = [
+    [SELF_ATTN_HEAD, None],
+    [SELF_ATTN_Q_LENGTH, CONTEXT],
+    [SELF_ATTN_KV_LENGTH, CONTEXT],
+    [CROSS_ATTN_HEAD, None],
+    [CROSS_ATTN_Q_LENGTH, CONTEXT],
+    [CROSS_ATTN_KV_LENGTH, CONTEXT],
+]

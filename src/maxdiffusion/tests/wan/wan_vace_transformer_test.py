@@ -44,6 +44,19 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class WanVaceTransformerTest(unittest.TestCase):
 
+  def test_wan_vace_block_passes_ulysses_shards_to_attention_ops(self):
+    block = WanVACETransformerBlock(
+        rngs=nnx.Rngs(jax.random.key(0)),
+        dim=8,
+        ffn_dim=16,
+        num_heads=2,
+        cross_attn_norm=True,
+        attention_config={"ulysses_shards": 2},
+    )
+
+    self.assertEqual(block.attn1.attention_op.ulysses_shards, 2)
+    self.assertEqual(block.attn2.attention_op.ulysses_shards, 2)
+
   def test_wan_vace_block_returns_the_correct_shape(self):
     key = jax.random.key(0)
     rngs = nnx.Rngs(key)

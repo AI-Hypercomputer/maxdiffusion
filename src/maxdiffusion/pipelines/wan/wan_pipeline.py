@@ -170,8 +170,11 @@ def create_sharded_logical_transformer(
   wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
-  wan_config["use_base2_exp"] = config.use_base2_exp
-  wan_config["use_experimental_scheduler"] = config.use_experimental_scheduler
+  wan_config["attention_config"] = {
+      "use_base2_exp": config.use_base2_exp,
+      "use_experimental_scheduler": config.use_experimental_scheduler,
+      "ulysses_shards": getattr(config, "ulysses_shards", -1),
+  }
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.

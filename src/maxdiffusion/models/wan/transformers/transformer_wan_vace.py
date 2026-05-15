@@ -66,8 +66,7 @@ class WanVACETransformerBlock(nnx.Module):
       enable_jax_named_scopes: bool = False,
       apply_input_projection: bool = False,
       apply_output_projection: bool = False,
-      use_base2_exp: bool = False,
-      use_experimental_scheduler: bool = False,
+      attention_config: Optional[dict] = None,
   ):
     """Sets up the model.
 
@@ -97,6 +96,12 @@ class WanVACETransformerBlock(nnx.Module):
     self.enable_jax_named_scopes = enable_jax_named_scopes
     self.apply_input_projection = apply_input_projection
     self.apply_output_projection = apply_output_projection
+    attention_config = {
+        "use_base2_exp": False,
+        "use_experimental_scheduler": False,
+        "ulysses_shards": -1,
+        **(attention_config or {}),
+    }
 
     # 1. Input projection
     self.proj_in = nnx.data([None])
@@ -132,8 +137,7 @@ class WanVACETransformerBlock(nnx.Module):
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="self_attn",
         enable_jax_named_scopes=enable_jax_named_scopes,
-        use_base2_exp=use_base2_exp,
-        use_experimental_scheduler=use_experimental_scheduler,
+        attention_config=attention_config,
     )
 
     # 3. Cross-attention
@@ -156,8 +160,7 @@ class WanVACETransformerBlock(nnx.Module):
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="cross_attn",
         enable_jax_named_scopes=enable_jax_named_scopes,
-        use_base2_exp=use_base2_exp,
-        use_experimental_scheduler=use_experimental_scheduler,
+        attention_config=attention_config,
     )
     assert cross_attn_norm is True, "cross_attn_norm must be True"
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
@@ -327,8 +330,7 @@ class WanVACEModel(WanModel):
       mask_padding_tokens: bool = True,
       scan_layers: bool = True,
       enable_jax_named_scopes: bool = False,
-      use_base2_exp: bool = False,
-      use_experimental_scheduler: bool = False,
+      attention_config: Optional[dict] = None,
   ):
     """Initializes the VACE model.
 
@@ -342,6 +344,12 @@ class WanVACEModel(WanModel):
     self.num_layers = num_layers
     self.scan_layers = scan_layers
     self.enable_jax_named_scopes = enable_jax_named_scopes
+    attention_config = {
+        "use_base2_exp": False,
+        "use_experimental_scheduler": False,
+        "ulysses_shards": -1,
+        **(attention_config or {}),
+    }
 
     # 1. Patch & position embedding
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
@@ -401,8 +409,7 @@ class WanVACEModel(WanModel):
             dropout=dropout,
             mask_padding_tokens=mask_padding_tokens,
             enable_jax_named_scopes=enable_jax_named_scopes,
-            use_base2_exp=use_base2_exp,
-            use_experimental_scheduler=use_experimental_scheduler,
+            attention_config=attention_config,
         )
         blocks.append(block)
       self.blocks = blocks
@@ -433,8 +440,7 @@ class WanVACEModel(WanModel):
             enable_jax_named_scopes=enable_jax_named_scopes,
             apply_input_projection=vace_block_id == 0,
             apply_output_projection=True,
-            use_base2_exp=use_base2_exp,
-            use_experimental_scheduler=use_experimental_scheduler,
+            attention_config=attention_config,
         )
         vace_blocks.append(vace_block)
       self.vace_blocks = vace_blocks

@@ -43,7 +43,20 @@ class AttentionTest(unittest.TestCase):
     devices = np.array(jax.devices()[:2]).reshape(1, 1, 2, 1)
     return Mesh(devices, ("data", "fsdp", "context", "tensor"))
 
+  def _ulysses_ring_mesh(self):
+    devices = np.array(jax.devices()[:4]).reshape(1, 1, 4, 1)
+    return Mesh(devices, ("data", "fsdp", "context", "tensor"))
+
   def _ulysses_axis_rules(self):
+    return (
+        (attention_flax.BATCH, "data"),
+        (attention_flax.SELF_ATTN_HEAD, None),
+        (attention_flax.SELF_ATTN_Q_LENGTH, "context"),
+        (attention_flax.SELF_ATTN_KV_LENGTH, "context"),
+        (attention_flax.D_KV, None),
+    )
+
+  def _ulysses_ring_axis_rules(self):
     return (
         (attention_flax.BATCH, "data"),
         (attention_flax.SELF_ATTN_HEAD, None),
@@ -440,6 +453,296 @@ class AttentionTest(unittest.TestCase):
     expected = query + jnp.broadcast_to(attention_mask[:, :, None], query.shape)
     self.assertEqual(output.shape, query.shape)
     self.assertTrue(jnp.array_equal(output, expected))
+
+  @unittest.skipIf(len(jax.devices()) < 4, "Ulysses ring attention layout test requires at least 4 devices.")
+  def test_ulysses_ring_attention_round_trips_query_when_heads_are_divisible(self):
+    """Hybrid Ulysses+ring should preserve layout while only exposing context."""
+    batch = 2
+    length = 8
+    heads = 4
+    head_depth = 4
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    key = query + 1000.0
+    value = query + 2000.0
+    mesh = self._ulysses_ring_mesh()
+
+    def fake_make_ring_attention(**unused_kwargs):
+      def fake_kernel(q, k, v, segment_ids):
+        del k, v, segment_ids
+        return q
+
+      return fake_kernel
+
+    with (
+        mesh,
+        nn_partitioning.axis_rules(self._ulysses_ring_axis_rules()),
+        mock.patch.object(
+            attention_flax.tokamax_ring_attention_kernel,
+            "make_ring_attention",
+            side_effect=fake_make_ring_attention,
+        ),
+    ):
+      output = attention_flax._ulysses_ring_attention(
+          query,
+          key,
+          value,
+          heads=heads,
+          mesh=mesh,
+          axis_names_q=(
+              attention_flax.BATCH,
+              attention_flax.SELF_ATTN_HEAD,
+              attention_flax.SELF_ATTN_Q_LENGTH,
+              attention_flax.D_KV,
+          ),
+          axis_names_kv=(
+              attention_flax.BATCH,
+              attention_flax.SELF_ATTN_HEAD,
+              attention_flax.SELF_ATTN_KV_LENGTH,
+              attention_flax.D_KV,
+          ),
+          flash_block_sizes=self._ulysses_block_sizes(),
+          dtype=jnp.float32,
+          ulysses_shards=4,
+      )
+
+    self.assertEqual(output.shape, query.shape)
+    self.assertTrue(jnp.array_equal(output, query))
+
+  @unittest.skipIf(len(jax.devices()) < 4, "Ulysses ring attention mask test requires at least 4 devices.")
+  def test_ulysses_ring_attention_masks_global_kv_padding(self):
+    """Hybrid Ulysses+ring masks padding via segment ids, not a NumpyMask."""
+    batch = 1
+    length = 7
+    heads = 4
+    head_depth = 4
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    key = query + 1000.0
+    value = query + 2000.0
+    mesh = self._ulysses_ring_mesh()
+    segment_ids_seen = []
+
+    def fake_make_ring_attention(**kwargs):
+      # Padding should be handled by segment ids, so the kernel gets a FullMask.
+      assert kwargs["rotate_segment_ids"] is False
+      assert not hasattr(kwargs["mask"], "array")
+
+      def fake_kernel(q, k, v, segment_ids):
+        del k, v
+        # Record padding masking is segment-id based; don't leak tracers outside.
+        segment_ids_seen.append(segment_ids is not None and hasattr(segment_ids, "q") and hasattr(segment_ids, "kv"))
+        return q
+
+      return fake_kernel
+
+    with (
+        mesh,
+        nn_partitioning.axis_rules(self._ulysses_ring_axis_rules()),
+        mock.patch.object(
+            attention_flax.tokamax_ring_attention_kernel,
+            "make_ring_attention",
+            side_effect=fake_make_ring_attention,
+        ),
+    ):
+      output = attention_flax._ulysses_ring_attention(
+          query,
+          key,
+          value,
+          heads=heads,
+          mesh=mesh,
+          axis_names_q=(
+              attention_flax.BATCH,
+              attention_flax.SELF_ATTN_HEAD,
+              attention_flax.SELF_ATTN_Q_LENGTH,
+              attention_flax.D_KV,
+          ),
+          axis_names_kv=(
+              attention_flax.BATCH,
+              attention_flax.SELF_ATTN_HEAD,
+              attention_flax.SELF_ATTN_KV_LENGTH,
+              attention_flax.D_KV,
+          ),
+          flash_block_sizes=self._ulysses_block_sizes(),
+          dtype=jnp.float32,
+          ulysses_shards=2,
+      )
+
+    self.assertEqual(output.shape, query.shape)
+    self.assertTrue(jnp.array_equal(output, query))
+    # Padding is masked via segment ids (q and kv), not a NumpyMask.
+    self.assertEqual(segment_ids_seen, [True])
+
+  @unittest.skipIf(len(jax.devices()) < 4, "Ulysses ring attention mask test requires at least 4 devices.")
+  def test_ulysses_ring_attention_folds_attention_mask_into_segment_ids(self):
+    """Hybrid Ulysses+ring zeros masked kv tokens and rotates segment ids."""
+    batch = 1
+    length = 8
+    heads = 4
+    head_depth = 4
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    attention_mask = jnp.array([[1, 1, 0, 0, 1, 1, 1, 0]], dtype=jnp.int32)
+    mesh = self._ulysses_ring_mesh()
+    seen = []
+
+    def fake_make_ring_attention(**kwargs):
+      seen.append(kwargs["rotate_segment_ids"])
+
+      def fake_kernel(q, k, v, segment_ids):
+        del k, v, segment_ids
+        return q
+
+      return fake_kernel
+
+    with (
+        mesh,
+        nn_partitioning.axis_rules(self._ulysses_ring_axis_rules()),
+        mock.patch.object(
+            attention_flax.tokamax_ring_attention_kernel,
+            "make_ring_attention",
+            side_effect=fake_make_ring_attention,
+        ),
+    ):
+      output = attention_flax._ulysses_ring_attention(
+          query,
+          query,
+          query,
+          heads=heads,
+          mesh=mesh,
+          axis_names_q=(
+              attention_flax.BATCH,
+              attention_flax.SELF_ATTN_HEAD,
+              attention_flax.SELF_ATTN_Q_LENGTH,
+              attention_flax.D_KV,
+          ),
+          axis_names_kv=(
+              attention_flax.BATCH,
+              attention_flax.SELF_ATTN_HEAD,
+              attention_flax.SELF_ATTN_KV_LENGTH,
+              attention_flax.D_KV,
+          ),
+          flash_block_sizes=self._ulysses_block_sizes(),
+          dtype=jnp.float32,
+          ulysses_shards=2,
+          attention_mask=attention_mask,
+      )
+
+    self.assertEqual(output.shape, query.shape)
+    self.assertTrue(jnp.array_equal(output, query))
+    # Same convention as the tokamax_ring kernel: shards pad identically, no rotation.
+    self.assertEqual(seen, [False])
+
+  def test_ulysses_ring_attention_raises_when_heads_are_not_divisible_by_ulysses_shards(self):
+    """The hidden all-to-all head split still requires divisible heads."""
+    if len(jax.devices()) < 4:
+      self.skipTest("Ulysses ring attention validation test requires at least 4 devices.")
+    batch = 2
+    length = 8
+    heads = 3
+    head_depth = 4
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    key = query + 1000.0
+    value = query + 2000.0
+    mesh = self._ulysses_ring_mesh()
+
+    with mesh, nn_partitioning.axis_rules(self._ulysses_ring_axis_rules()):
+      with self.assertRaisesRegex(
+          ValueError,
+          r"heads=3 and ulysses_shards=2",
+      ):
+        attention_flax._ulysses_ring_attention(
+            query,
+            key,
+            value,
+            heads=heads,
+            mesh=mesh,
+            axis_names_q=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_Q_LENGTH,
+                attention_flax.D_KV,
+            ),
+            axis_names_kv=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_KV_LENGTH,
+                attention_flax.D_KV,
+            ),
+            flash_block_sizes=self._ulysses_block_sizes(),
+            dtype=jnp.float32,
+            ulysses_shards=2,
+        )
+
+  def test_ulysses_ring_attention_raises_when_ulysses_shards_are_not_set(self):
+    if len(jax.devices()) < 4:
+      self.skipTest("Ulysses ring attention validation test requires at least 4 devices.")
+    batch = 2
+    length = 8
+    heads = 4
+    head_depth = 4
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    key = query + 1000.0
+    value = query + 2000.0
+    mesh = self._ulysses_ring_mesh()
+
+    with mesh, nn_partitioning.axis_rules(self._ulysses_ring_axis_rules()):
+      with self.assertRaisesRegex(ValueError, r"ulysses_shards"):
+        attention_flax._ulysses_ring_attention(
+            query,
+            key,
+            value,
+            heads=heads,
+            mesh=mesh,
+            axis_names_q=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_Q_LENGTH,
+                attention_flax.D_KV,
+            ),
+            axis_names_kv=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_KV_LENGTH,
+                attention_flax.D_KV,
+            ),
+            flash_block_sizes=self._ulysses_block_sizes(),
+            dtype=jnp.float32,
+        )
+
+  def test_ulysses_ring_attention_raises_when_ulysses_shards_do_not_divide_context(self):
+    if len(jax.devices()) < 4:
+      self.skipTest("Ulysses ring attention validation test requires at least 4 devices.")
+    batch = 2
+    length = 8
+    heads = 4
+    head_depth = 4
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    key = query + 1000.0
+    value = query + 2000.0
+    mesh = self._ulysses_ring_mesh()
+
+    with mesh, nn_partitioning.axis_rules(self._ulysses_ring_axis_rules()):
+      with self.assertRaisesRegex(ValueError, r"context_shards=4 and ulysses_shards=3"):
+        attention_flax._ulysses_ring_attention(
+            query,
+            key,
+            value,
+            heads=heads,
+            mesh=mesh,
+            axis_names_q=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_Q_LENGTH,
+                attention_flax.D_KV,
+            ),
+            axis_names_kv=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_KV_LENGTH,
+                attention_flax.D_KV,
+            ),
+            flash_block_sizes=self._ulysses_block_sizes(),
+            dtype=jnp.float32,
+            ulysses_shards=3,
+        )
 
 
 if __name__ == "__main__":
