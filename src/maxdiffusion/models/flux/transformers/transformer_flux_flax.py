@@ -175,8 +175,11 @@ class FluxSingleTransformerBlock(nn.Module):
     B, L = hidden_states.shape[:2]
     H, D, K = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3), 3
     
-    qkv_proj = qkv.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
-    q, k, v = qkv_proj
+    qkv_proj = qkv.reshape(B, L, K, H, D)
+    q, k, v = jnp.split(qkv_proj, 3, axis=2)
+    q = q.squeeze(2).swapaxes(1, 2)
+    k = k.squeeze(2).swapaxes(1, 2)
+    v = v.squeeze(2).swapaxes(1, 2)
 
     q = self.attn.query_norm(q)
     k = self.attn.key_norm(k)
