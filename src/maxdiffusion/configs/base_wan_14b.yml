@@ -41,6 +41,11 @@ revision: ''
 weights_dtype: 'bfloat16'
 # This sets the layer's dtype in the model. Ex: nn.Dense(dtype=activations_dtype)
 activations_dtype: 'bfloat16'
+# The dtype for text_encoder model during load/compile
+text_encoder_dtype: 'float32'
+
+# Whether to compile the text_encoder with torch.compile
+compile_text_encoder: False
 
 # Replicates vae across devices instead of using the model's sharding annotations for sharding.
 replicate_vae: False
