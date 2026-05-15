@@ -712,5 +712,6 @@ def run_inference_2_2(
 
     if config and max_utils.profiler_enabled(config) and step == last_profiling_step:
       if profiler:
+        latents.block_until_ready()
         profiler.stop()
   return latents

@@ -16,6 +16,9 @@ limitations under the License.
 
 import unittest
 from unittest.mock import patch
+import os
+
+real_exists = os.path.exists
 from maxdiffusion import max_utils
 
 
@@ -79,6 +82,82 @@ class ProfilerTest(unittest.TestCase):
 
     max_utils.ensure_machinelearning_job_runs(config)
     mock_ml_run.assert_not_called()
+
+  @patch("maxdiffusion.max_utils.storage.Client")
+  @patch("maxdiffusion.max_utils.os.path.exists")
+  @patch("maxdiffusion.max_utils.os.walk", return_value=[("/tmp/profiler_traces/test_run", [], ["file1.trace"])])
+  @patch("jax.profiler.start_trace")
+  @patch("jax.profiler.stop_trace")
+  @patch("jax.process_index", return_value=0)
+  def test_jax_profiler_manual_gcs(
+      self,
+      mock_process_index,
+      mock_stop_trace,
+      mock_start_trace,
+      mock_os_walk,
+      mock_os_exists,
+      mock_storage_client,
+  ):
+    """Tests manual start/stop with GCS upload."""
+    mock_os_exists.side_effect = lambda path: True if path == "/tmp/profiler_traces/test_run" else real_exists(path)
+    config = MockConfig(
+        enable_ml_diagnostics=False,
+        enable_profiler=True,
+        tensorboard_dir="gs://test-bucket/tensorboard",
+        run_name="test_run",
+    )
+
+    profiler = max_utils.Profiler(config)
+    profiler.start()
+    mock_start_trace.assert_called_once()
+
+    profiler.stop()
+    mock_stop_trace.assert_called_once()
+
+    # Verify GCS upload was attempted
+    mock_storage_client.assert_called_once()
+    mock_bucket = mock_storage_client.return_value.bucket
+    mock_bucket.assert_called_once_with("test-bucket")
+    mock_blob = mock_bucket.return_value.blob
+    mock_blob.assert_called_once_with("tensorboard/file1.trace")
+    mock_blob.return_value.upload_from_filename.assert_called_once_with("/tmp/profiler_traces/test_run/file1.trace")
+
+  @patch("maxdiffusion.max_utils.storage.Client")
+  @patch("maxdiffusion.max_utils.os.path.exists")
+  @patch("maxdiffusion.max_utils.os.walk", return_value=[("/tmp/profiler_traces/test_run", [], ["file1.trace"])])
+  @patch("jax.profiler.start_trace")
+  @patch("jax.profiler.stop_trace")
+  @patch("jax.process_index", return_value=0)
+  def test_jax_profiler_context_gcs(
+      self,
+      mock_process_index,
+      mock_stop_trace,
+      mock_start_trace,
+      mock_os_walk,
+      mock_os_exists,
+      mock_storage_client,
+  ):
+    """Tests context manager with GCS upload."""
+    mock_os_exists.side_effect = lambda path: True if path == "/tmp/profiler_traces/test_run" else real_exists(path)
+    config = MockConfig(
+        enable_ml_diagnostics=False,
+        enable_profiler=True,
+        tensorboard_dir="gs://test-bucket/tensorboard",
+        run_name="test_run",
+    )
+
+    with max_utils.Profiler(config):
+      mock_start_trace.assert_called_once()
+
+    mock_stop_trace.assert_called_once()
+
+    # Verify GCS upload was attempted
+    mock_storage_client.assert_called_once()
+    mock_bucket = mock_storage_client.return_value.bucket
+    mock_bucket.assert_called_once_with("test-bucket")
+    mock_blob = mock_bucket.return_value.blob
+    mock_blob.assert_called_once_with("tensorboard/file1.trace")
+    mock_blob.return_value.upload_from_filename.assert_called_once_with("/tmp/profiler_traces/test_run/file1.trace")
 
 
 if __name__ == "__main__":
