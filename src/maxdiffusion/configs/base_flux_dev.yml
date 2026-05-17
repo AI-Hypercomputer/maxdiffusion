@@ -190,7 +190,7 @@ dataset_type: 'tfrecord'  # Options: 'tfrecord', 'hf', 'tf', 'grain', 'synthetic
 # 2. Optionally set synthetic_num_samples (null=infinite, or a number like 10000)
 # 3. Optionally override dimensions
 #
-# synthetic_num_samples: null  # null for infinite, or set a number
+synthetic_num_samples: 1000  # null for infinite, or set a number
 #
 # Optional dimension overrides:
 # resolution: 512

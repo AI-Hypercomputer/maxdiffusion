@@ -354,13 +354,18 @@ class FluxTrainer(FluxCheckpointer):
     start_step = get_first_step(train_states[FLUX_STATE_KEY])
     _, train_rngs = jax.random.split(self.rng)
     times = []
+    if self.config.reuse_example_batch:
+      example_batch = load_next_batch(data_iterator, None, self.config)
+      example_batch = {key: jnp.asarray(value, dtype=self.config.activations_dtype) for key, value in example_batch.items()}
+
     for step in np.arange(start_step, self.config.max_train_steps):
       if max_utils.profiler_enabled(self.config) and step == first_profiling_step:
         self._profiler = max_utils.Profiler(self.config)
         self._profiler.start()
 
-      example_batch = load_next_batch(data_iterator, example_batch, self.config)
-      example_batch = {key: jnp.asarray(value, dtype=self.config.activations_dtype) for key, value in example_batch.items()}
+      if not self.config.reuse_example_batch:
+        example_batch = load_next_batch(data_iterator, example_batch, self.config)
+        example_batch = {key: jnp.asarray(value, dtype=self.config.activations_dtype) for key, value in example_batch.items()}
 
       if self.config.profiler == "nsys":
         with self.mesh:
