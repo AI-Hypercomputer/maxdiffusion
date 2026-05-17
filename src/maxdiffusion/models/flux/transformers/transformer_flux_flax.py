@@ -29,6 +29,9 @@ from ...embeddings_flax import (FluxPosEmbed, CombinedTimestepGuidanceTextProjEm
 from .... import common_types
 from ....common_types import BlockSizes
 from ....utils import BaseOutput
+from ...gradient_checkpoint import GradientCheckpointType
+from jax import checkpoint_policies as cp
+from jax.ad_checkpoint import checkpoint_name
 
 AxisNames = common_types.AxisNames
 BATCH = common_types.BATCH
@@ -305,6 +308,42 @@ class FluxTransformerBlock(nn.Module):
     return hidden_states, encoder_hidden_states
 
 
+class ScannedDoubleBlockWrapper(nn.Module):
+    block_kwargs: dict
+    
+    @nn.compact
+    def __call__(self, carry, _):
+        hidden_states, encoder_hidden_states, temb, image_rotary_emb = carry
+        
+        # Instantiate the pure block
+        block = FluxTransformerBlock(**self.block_kwargs)
+        
+        h_out, e_out = block(
+            hidden_states=hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            temb=temb,
+            image_rotary_emb=image_rotary_emb,
+        )
+        return (h_out, e_out, temb, image_rotary_emb), None
+
+
+class ScannedSingleBlockWrapper(nn.Module):
+    block_kwargs: dict
+    
+    @nn.compact
+    def __call__(self, carry, _):
+        hidden_states, temb, image_rotary_emb = carry
+        
+        # Instantiate the pure block
+        block = FluxSingleTransformerBlock(**self.block_kwargs)
+        h_out = block(
+            hidden_states=hidden_states, 
+            temb=temb, 
+            image_rotary_emb=image_rotary_emb
+        )
+        return (h_out, temb, image_rotary_emb), None
+
+
 @flax_register_to_config
 class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   r"""
@@ -390,47 +429,114 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         precision=self.precision,
     )
 
-    double_blocks = []
-    for _ in range(self.num_layers):
-      double_block = FluxTransformerBlock(
-          dim=self.inner_dim,
-          num_attention_heads=self.num_attention_heads,
-          attention_head_dim=self.attention_head_dim,
-          attention_kernel=self.attention_kernel,
-          flash_min_seq_length=self.flash_min_seq_length,
-          flash_block_sizes=self.flash_block_sizes,
-          mesh=self.mesh,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-          precision=self.precision,
-          mlp_ratio=self.mlp_ratio,
-          qkv_bias=self.qkv_bias,
-          use_base2_exp=self.use_base2_exp,
-          use_experimental_scheduler=self.use_experimental_scheduler,
-      )
-      double_blocks.append(double_block)
-    self.double_blocks = double_blocks
+    self.use_scan = getattr(self.config, "use_scan", False)
+    self.remat_policy = getattr(self.config, "remat_policy", "none")
+    self.gradient_checkpoint = GradientCheckpointType.from_str(self.remat_policy)
 
-    single_blocks = []
-    for _ in range(self.num_single_layers):
-      single_block = FluxSingleTransformerBlock(
-          dim=self.inner_dim,
-          num_attention_heads=self.num_attention_heads,
-          attention_head_dim=self.attention_head_dim,
-          attention_kernel=self.attention_kernel,
-          flash_min_seq_length=self.flash_min_seq_length,
-          flash_block_sizes=self.flash_block_sizes,
-          mesh=self.mesh,
-          dtype=self.dtype,
-          weights_dtype=self.weights_dtype,
-          precision=self.precision,
-          mlp_ratio=self.mlp_ratio,
-          use_base2_exp=self.use_base2_exp,
-          use_experimental_scheduler=self.use_experimental_scheduler,
-      )
-      single_blocks.append(single_block)
+    if self.use_scan:
+      double_kwargs = {
+          'dim': self.inner_dim,
+          'num_attention_heads': self.num_attention_heads,
+          'attention_head_dim': self.attention_head_dim,
+          'attention_kernel': self.attention_kernel,
+          'flash_min_seq_length': self.flash_min_seq_length,
+          'flash_block_sizes': self.flash_block_sizes,
+          'mesh': self.mesh,
+          'dtype': self.dtype,
+          'weights_dtype': self.weights_dtype,
+          'precision': self.precision,
+          'mlp_ratio': self.mlp_ratio,
+          'qkv_bias': self.qkv_bias,
+          'use_base2_exp': self.use_base2_exp,
+          'use_experimental_scheduler': self.use_experimental_scheduler,
+      }
 
-    self.single_blocks = single_blocks
+      names_saved = getattr(self.config, "names_which_can_be_saved", [])
+      names_offloaded = getattr(self.config, "names_which_can_be_offloaded", [])
+      policy = self.gradient_checkpoint.to_jax_policy(
+          names_which_can_be_saved=names_saved,
+          names_which_can_be_offloaded=names_offloaded,
+      )
+
+      if policy == "skip":
+        RemattedDoubleWrapper = ScannedDoubleBlockWrapper
+        RemattedSingleWrapper = ScannedSingleBlockWrapper
+      else:
+        RemattedDoubleWrapper = nn.remat(ScannedDoubleBlockWrapper, prevent_cse=True, policy=policy)
+        RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=policy)
+
+      self.scanned_double_blocks = nn.scan(
+          RemattedDoubleWrapper,
+          variable_axes={'params': 0},
+          split_rngs={'params': True, 'dropout': True},
+          length=self.num_layers,
+          metadata_params={'partition_name': None}
+      )(block_kwargs=double_kwargs)
+
+      single_kwargs = {
+          'dim': self.inner_dim,
+          'num_attention_heads': self.num_attention_heads,
+          'attention_head_dim': self.attention_head_dim,
+          'attention_kernel': self.attention_kernel,
+          'flash_min_seq_length': self.flash_min_seq_length,
+          'flash_block_sizes': self.flash_block_sizes,
+          'mesh': self.mesh,
+          'dtype': self.dtype,
+          'weights_dtype': self.weights_dtype,
+          'precision': self.precision,
+          'mlp_ratio': self.mlp_ratio,
+          'use_base2_exp': self.use_base2_exp,
+          'use_experimental_scheduler': self.use_experimental_scheduler,
+      }
+
+      self.scanned_single_blocks = nn.scan(
+          RemattedSingleWrapper,
+          variable_axes={'params': 0},
+          split_rngs={'params': True, 'dropout': True},
+          length=self.num_single_layers,
+          metadata_params={'partition_name': None}
+      )(block_kwargs=single_kwargs)
+    else:
+      double_blocks = []
+      for _ in range(self.num_layers):
+        double_block = FluxTransformerBlock(
+            dim=self.inner_dim,
+            num_attention_heads=self.num_attention_heads,
+            attention_head_dim=self.attention_head_dim,
+            attention_kernel=self.attention_kernel,
+            flash_min_seq_length=self.flash_min_seq_length,
+            flash_block_sizes=self.flash_block_sizes,
+            mesh=self.mesh,
+            dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
+            precision=self.precision,
+            mlp_ratio=self.mlp_ratio,
+            qkv_bias=self.qkv_bias,
+            use_base2_exp=self.use_base2_exp,
+            use_experimental_scheduler=self.use_experimental_scheduler,
+        )
+        double_blocks.append(double_block)
+      self.double_blocks = double_blocks
+
+      single_blocks = []
+      for _ in range(self.num_single_layers):
+        single_block = FluxSingleTransformerBlock(
+            dim=self.inner_dim,
+            num_attention_heads=self.num_attention_heads,
+            attention_head_dim=self.attention_head_dim,
+            attention_kernel=self.attention_kernel,
+            flash_min_seq_length=self.flash_min_seq_length,
+            flash_block_sizes=self.flash_block_sizes,
+            mesh=self.mesh,
+            dtype=self.dtype,
+            weights_dtype=self.weights_dtype,
+            precision=self.precision,
+            mlp_ratio=self.mlp_ratio,
+            use_base2_exp=self.use_base2_exp,
+            use_experimental_scheduler=self.use_experimental_scheduler,
+        )
+        single_blocks.append(single_block)
+      self.single_blocks = single_blocks
 
     self.norm_out = AdaLayerNormContinuous(
         self.inner_dim,
@@ -521,17 +627,29 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     image_rotary_emb = self.pe_embedder(ids)
     image_rotary_emb = nn.with_logical_constraint(image_rotary_emb, (None, None))
 
-    for double_block in self.double_blocks:
-      hidden_states, encoder_hidden_states = double_block(
-          hidden_states=hidden_states,
-          encoder_hidden_states=encoder_hidden_states,
-          temb=temb,
-          image_rotary_emb=image_rotary_emb,
-      )
-    hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
-    hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
-    for single_block in self.single_blocks:
-      hidden_states = single_block(hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb)
+    if self.use_scan:
+      carry = (hidden_states, encoder_hidden_states, temb, image_rotary_emb)
+      carry, _ = self.scanned_double_blocks(carry, None)
+      hidden_states, encoder_hidden_states, _, _ = carry
+
+      hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
+      hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
+
+      carry = (hidden_states, temb, image_rotary_emb)
+      carry, _ = self.scanned_single_blocks(carry, None)
+      hidden_states, _, _ = carry
+    else:
+      for double_block in self.double_blocks:
+        hidden_states, encoder_hidden_states = double_block(
+            hidden_states=hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            temb=temb,
+            image_rotary_emb=image_rotary_emb,
+        )
+      hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
+      hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
+      for single_block in self.single_blocks:
+        hidden_states = single_block(hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb)
     hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
     hidden_states = self.norm_out(hidden_states, temb)
