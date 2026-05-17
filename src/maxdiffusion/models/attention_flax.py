@@ -1912,8 +1912,11 @@ class FlaxFluxAttention(nn.Module):
     qkv_proj = self.qkv(hidden_states)
     B, L = hidden_states.shape[:2]
     H, D, K = self.heads, qkv_proj.shape[-1] // (self.heads * 3), 3
-    qkv_proj = qkv_proj.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
-    query_proj, key_proj, value_proj = qkv_proj
+    qkv_proj = qkv_proj.reshape(B, L, K, H, D)
+    query_proj, key_proj, value_proj = jnp.split(qkv_proj, 3, axis=2)
+    query_proj = query_proj.squeeze(2).swapaxes(1, 2)
+    key_proj = key_proj.squeeze(2).swapaxes(1, 2)
+    value_proj = value_proj.squeeze(2).swapaxes(1, 2)
 
     query_proj = self.query_norm(query_proj)
 
@@ -1923,8 +1926,11 @@ class FlaxFluxAttention(nn.Module):
       encoder_qkv_proj = self.encoder_qkv(encoder_hidden_states)
       B, L = encoder_hidden_states.shape[:2]
       H, D, K = self.heads, encoder_qkv_proj.shape[-1] // (self.heads * 3), 3
-      encoder_qkv_proj = encoder_qkv_proj.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
-      encoder_query_proj, encoder_key_proj, encoder_value_proj = encoder_qkv_proj
+      encoder_qkv_proj = encoder_qkv_proj.reshape(B, L, K, H, D)
+      encoder_query_proj, encoder_key_proj, encoder_value_proj = jnp.split(encoder_qkv_proj, 3, axis=2)
+      encoder_query_proj = encoder_query_proj.squeeze(2).swapaxes(1, 2)
+      encoder_key_proj = encoder_key_proj.squeeze(2).swapaxes(1, 2)
+      encoder_value_proj = encoder_value_proj.squeeze(2).swapaxes(1, 2)
 
       encoder_query_proj = self.encoder_query_norm(encoder_query_proj)
 
