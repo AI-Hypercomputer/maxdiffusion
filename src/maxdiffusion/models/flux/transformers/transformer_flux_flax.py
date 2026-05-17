@@ -75,6 +75,8 @@ class FluxSingleTransformerBlock(nn.Module):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     self.mlp_hidden_dim = int(self.dim * self.mlp_ratio)
@@ -110,6 +112,8 @@ class FluxSingleTransformerBlock(nn.Module):
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
         flash_block_sizes=self.flash_block_sizes,
+        use_base2_exp=self.use_base2_exp,
+        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
   def __call__(self, hidden_states, temb, image_rotary_emb=None):
@@ -181,6 +185,8 @@ class FluxTransformerBlock(nn.Module):
   mlp_ratio: float = 4.0
   qkv_bias: bool = False
   attention_kernel: str = "dot_product"
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     self.img_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
@@ -196,6 +202,8 @@ class FluxTransformerBlock(nn.Module):
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
         flash_block_sizes=self.flash_block_sizes,
+        use_base2_exp=self.use_base2_exp,
+        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
     self.img_norm2 = nn.LayerNorm(
@@ -345,6 +353,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   theta: int = 1000
   attention_kernel: str = "dot_product"
   eps = 1e-6
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     self.out_channels = self.in_channels
@@ -395,6 +405,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           precision=self.precision,
           mlp_ratio=self.mlp_ratio,
           qkv_bias=self.qkv_bias,
+          use_base2_exp=self.use_base2_exp,
+          use_experimental_scheduler=self.use_experimental_scheduler,
       )
       double_blocks.append(double_block)
     self.double_blocks = double_blocks
@@ -413,6 +425,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           weights_dtype=self.weights_dtype,
           precision=self.precision,
           mlp_ratio=self.mlp_ratio,
+          use_base2_exp=self.use_base2_exp,
+          use_experimental_scheduler=self.use_experimental_scheduler,
       )
       single_blocks.append(single_block)
 
