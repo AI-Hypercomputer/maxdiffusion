@@ -276,7 +276,7 @@ class FluxTrainer(FluxCheckpointer):
         "input_ids": input_ids,
         "text_embeds": text_embeds,
         "prompt_embeds": prompt_embeds,
-        "image_ids": image_ids,
+        "img_ids": img_ids,
       }
 
     # If using synthetic data
