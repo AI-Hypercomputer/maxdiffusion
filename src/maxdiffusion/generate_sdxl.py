@@ -115,14 +115,18 @@ def tokenize(prompt, pipeline):
   return inputs
 
 
-def get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size):
+def get_unet_inputs(pipeline, scheduler_params, states, config, rng, mesh, batch_size):
   data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
 
   vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
   prompt_ids = [config.prompt] * batch_size
   prompt_ids = tokenize(prompt_ids, pipeline)
+  prompt_ids = jax.lax.with_sharding_constraint(prompt_ids, jax.sharding.NamedSharding(mesh, P("data", None, None)))
   negative_prompt_ids = [config.negative_prompt] * batch_size
   negative_prompt_ids = tokenize(negative_prompt_ids, pipeline)
+  negative_prompt_ids = jax.lax.with_sharding_constraint(
+      negative_prompt_ids, jax.sharding.NamedSharding(mesh, P("data", None, None))
+  )
   guidance_scale = config.guidance_scale
   guidance_rescale = config.guidance_rescale
   num_inference_steps = config.num_inference_steps
@@ -133,6 +137,8 @@ def get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size):
       "text_encoder_2": states["text_encoder_2_state"].params,
   }
   prompt_embeds, pooled_embeds = get_embeddings(prompt_ids, pipeline, text_encoder_params)
+  prompt_embeds = jax.lax.with_sharding_constraint(prompt_embeds, jax.sharding.NamedSharding(mesh, P("data", None, None)))
+  pooled_embeds = jax.lax.with_sharding_constraint(pooled_embeds, jax.sharding.NamedSharding(mesh, P("data", None)))
 
   batch_size = prompt_embeds.shape[0]
   add_time_ids = get_add_time_ids(
@@ -148,6 +154,9 @@ def get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size):
 
     prompt_embeds = jnp.concatenate([negative_prompt_embeds, prompt_embeds], axis=0)
     add_text_embeds = jnp.concatenate([negative_pooled_embeds, pooled_embeds], axis=0)
+    prompt_embeds = jax.lax.with_sharding_constraint(prompt_embeds, jax.sharding.NamedSharding(mesh, P("data", None, None)))
+    add_text_embeds = jax.lax.with_sharding_constraint(add_text_embeds, jax.sharding.NamedSharding(mesh, P("data", None)))
+
     add_time_ids = jnp.concatenate([add_time_ids, add_time_ids], axis=0)
 
   else:
@@ -166,8 +175,11 @@ def get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size):
 
   latents = jax.random.normal(rng, shape=latents_shape, dtype=jnp.float32)
 
+  if isinstance(scheduler_params, dict) and "scheduler" in scheduler_params:
+    scheduler_params = scheduler_params["scheduler"]
+
   scheduler_state = pipeline.scheduler.set_timesteps(
-      params["scheduler"], num_inference_steps=num_inference_steps, shape=latents.shape
+      scheduler_params, num_inference_steps=num_inference_steps, shape=latents.shape
   )
 
   latents = latents * scheduler_state.init_noise_sigma
@@ -217,9 +229,11 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
 def run(config):
   checkpoint_loader = GenerateSDXL(config)
   mesh = checkpoint_loader.mesh
-  with mesh:
-    pipeline, params = checkpoint_loader.load_checkpoint()
+  # NOTE: load_checkpoint() is called outside the mesh context intentionally.
+  # If checkpoint loading requires mesh-aware sharding, move this back inside `with mesh:`.
+  pipeline, params = checkpoint_loader.load_checkpoint()
 
+  with mesh:
     noise_scheduler, noise_scheduler_state = create_scheduler(pipeline.scheduler.config, config)
 
     weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=checkpoint_loader.rng)
@@ -303,11 +317,13 @@ def run(config):
       _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
       p_run_inference(states).block_until_ready()
     print("compile time: ", (time.time() - s))
+
     s = time.time()
     with ExitStack() as stack:
       _ = [stack.enter_context(nn.intercept_methods(interceptor)) for interceptor in lora_interceptors]
       images = p_run_inference(states).block_until_ready()
     print("inference time: ", (time.time() - s))
+
     images = jax.experimental.multihost_utils.process_allgather(images, tiled=True)
     numpy_images = np.array(images)
     images = VaeImageProcessor.numpy_to_pil(numpy_images)

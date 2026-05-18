@@ -24,8 +24,8 @@ from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from flax.linen import logical_to_mesh_sharding
 from jax.sharding import Mesh
-from .. import pyconfig
-from ..max_utils import (
+from maxdiffusion import pyconfig
+from maxdiffusion.max_utils import (
     create_device_mesh,
     device_put_replicated,
 )
@@ -33,7 +33,7 @@ import numpy as np
 import unittest
 from absl.testing import absltest
 from skimage.metrics import structural_similarity as ssim
-from ..models.wan.autoencoder_kl_wan import (
+from maxdiffusion.models.wan.autoencoder_kl_wan import (
     WanCausalConv3d,
     WanUpsample,
     AutoencoderKLWan,
@@ -45,9 +45,9 @@ from ..models.wan.autoencoder_kl_wan import (
     WanAttentionBlock,
     AutoencoderKLWanCache,
 )
-from ..models.wan.wan_utils import load_wan_vae
-from ..utils import load_video
-from ..video_processor import VideoProcessor
+from maxdiffusion.models.wan.wan_utils import load_wan_vae
+from maxdiffusion.utils import load_video
+from maxdiffusion.video_processor import VideoProcessor
 import flax
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -168,7 +168,7 @@ class WanVaeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )
@@ -276,7 +276,7 @@ class WanVaeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )
@@ -335,7 +335,7 @@ class WanVaeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )
@@ -393,7 +393,7 @@ class WanVaeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )
@@ -424,7 +424,7 @@ class WanVaeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )
@@ -475,7 +475,7 @@ class WanVaeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )
@@ -527,7 +527,7 @@ class WanVaeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )

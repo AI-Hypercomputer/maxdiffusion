@@ -18,35 +18,32 @@ import os
 import time
 import unittest
 import jax
-import jax.numpy as jnp
 
 from maxdiffusion import pyconfig
-from maxdiffusion.checkpointing.ltx2_checkpointer import LTX2Checkpointer
+from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 
 try:
   jax.distributed.initialize()
 except Exception:
   pass
 
-IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-class LTX2SmokeTest(unittest.TestCase):
-  """End-to-end smoke test for LTX2."""
+class WanSmokeTest(unittest.TestCase):
+  """End-to-end smoke test for Wan."""
 
   @classmethod
   def setUpClass(cls):
-    # Initialize config with the LTX2 video config file
+    # Initialize config with the Wan video config file
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "ltx2_video.yml"),
+            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
             "num_inference_steps=2",  # Small number of steps for fast test
-            "height=256",  # Small resolution
+            "height=256",  # Small resolution (using what we used for cache tests)
             "width=256",
             "num_frames=9",  # Small number of frames
-            "max_sequence_length=256",  # Highly optimized sequence length to prevent VMEM OOM
             "seed=0",
             "attention=flash",
             "ici_fsdp_parallelism=1",
@@ -57,18 +54,16 @@ class LTX2SmokeTest(unittest.TestCase):
         unittest=True,
     )
     cls.config = pyconfig.config
-    checkpoint_loader = LTX2Checkpointer(config=cls.config)
-    cls.pipeline, _, _ = checkpoint_loader.load_checkpoint(load_upsampler=False)
+    checkpoint_loader = WanCheckpointer2_1(config=cls.config)
+    cls.pipeline, _, _ = checkpoint_loader.load_checkpoint()
 
     cls.prompt = [cls.config.prompt]
     cls.negative_prompt = [cls.config.negative_prompt]
 
-  def test_ltx2_inference(self):
-    """Test that LTX2 pipeline can run inference and produce output."""
-    generator = jax.random.key(self.config.seed)
-
+  def test_wan_inference(self):
+    """Test that Wan pipeline can run inference and produce output."""
     t0 = time.perf_counter()
-    out = self.pipeline(
+    videos = self.pipeline(
         prompt=self.prompt,
         negative_prompt=self.negative_prompt,
         height=self.config.height,
@@ -76,24 +71,14 @@ class LTX2SmokeTest(unittest.TestCase):
         num_frames=self.config.num_frames,
         num_inference_steps=self.config.num_inference_steps,
         guidance_scale=self.config.guidance_scale,
-        generator=generator,
-        dtype=jnp.bfloat16,
-        max_sequence_length=self.config.max_sequence_length,
     )
     t1 = time.perf_counter()
 
-    print(f"LTX2 Inference took: {t1 - t0:.2f}s")
-
-    videos = out.frames if hasattr(out, "frames") else out[0]
-    audios = out.audio if hasattr(out, "audio") else None
+    print(f"Wan Inference took: {t1 - t0:.2f}s")
 
     self.assertIsNotNone(videos)
     # Check that we got frames
     self.assertGreater(len(videos), 0)
-
-    if audios is not None:
-      print(f"Audio produced with shape: {audios[0].shape}")
-      self.assertGreater(len(audios), 0)
 
   @classmethod
   def tearDownClass(cls):

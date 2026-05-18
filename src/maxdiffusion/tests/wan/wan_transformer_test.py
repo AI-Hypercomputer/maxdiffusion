@@ -24,17 +24,17 @@ from absl.testing import absltest
 from flax import nnx
 from jax.sharding import Mesh
 from flax.linen import partitioning as nn_partitioning
-from .. import pyconfig
-from ..max_utils import (create_device_mesh, get_flash_block_sizes)
-from ..models.wan.transformers.transformer_wan import (
+from maxdiffusion import pyconfig
+from maxdiffusion.max_utils import (create_device_mesh, get_flash_block_sizes)
+from maxdiffusion.models.wan.transformers.transformer_wan import (
     WanRotaryPosEmbed,
     WanTimeTextImageEmbedding,
     WanTransformerBlock,
     WanModel,
 )
-from ..models.embeddings_flax import NNXTimestepEmbedding, NNXPixArtAlphaTextProjection
-from ..models.normalization_flax import FP32LayerNorm
-from ..models.attention_flax import FlaxWanAttention
+from maxdiffusion.models.embeddings_flax import NNXTimestepEmbedding, NNXPixArtAlphaTextProjection
+from maxdiffusion.models.normalization_flax import FP32LayerNorm
+from maxdiffusion.models.attention_flax import FlaxWanAttention
 from maxdiffusion.pyconfig import HyperParameters
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 import qwix
@@ -56,7 +56,7 @@ class WanTransformerTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )
@@ -136,7 +136,7 @@ class WanTransformerTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )
@@ -195,7 +195,8 @@ class WanTransformerTest(unittest.TestCase):
   def test_wan_attention(self):
     for attention_kernel in ["flash", "tokamax_flash"]:
       pyconfig.initialize(
-          [None, os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"), f"attention={attention_kernel}"], unittest=True
+          [None, os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"), f"attention={attention_kernel}"],
+          unittest=True,
       )
       config = pyconfig.config
       batch_size = 1
@@ -254,7 +255,7 @@ class WanTransformerTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )

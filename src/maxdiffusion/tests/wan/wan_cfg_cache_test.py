@@ -185,7 +185,7 @@ class WanCfgCacheSmokeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
             "num_inference_steps=50",
             "height=720",
             "width=1280",
@@ -270,6 +270,13 @@ class WanCfgCacheSmokeTest(unittest.TestCase):
     mean_ssim = np.mean(ssim_scores)
     print(f"SSIM: mean={mean_ssim:.4f}, min={np.min(ssim_scores):.4f}")
     self.assertGreaterEqual(mean_ssim, 0.95, f"Mean SSIM={mean_ssim:.4f} < 0.95")
+
+  @classmethod
+  def tearDownClass(cls):
+    del cls.pipeline
+    import gc
+
+    gc.collect()
 
 
 class Wan22CfgCacheValidationTest(unittest.TestCase):
@@ -460,7 +467,7 @@ class Wan22CfgCacheSmokeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_27b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_27b.yml"),
             "num_inference_steps=50",
             "height=720",
             "width=1280",
@@ -556,6 +563,13 @@ class Wan22CfgCacheSmokeTest(unittest.TestCase):
     mean_ssim = np.mean(ssim_scores)
     print(f"SSIM: mean={mean_ssim:.4f}, min={np.min(ssim_scores):.4f}")
     self.assertGreaterEqual(mean_ssim, 0.95, f"Mean SSIM={mean_ssim:.4f} < 0.95")
+
+  @classmethod
+  def tearDownClass(cls):
+    del cls.pipeline
+    import gc
+
+    gc.collect()
 
 
 class Wan22I2VCfgCacheValidationTest(unittest.TestCase):
@@ -731,7 +745,7 @@ class Wan22I2VCfgCacheSmokeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_i2v_27b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_i2v_27b.yml"),
             "num_inference_steps=50",
             "height=720",
             "width=1280",
@@ -830,6 +844,13 @@ class Wan22I2VCfgCacheSmokeTest(unittest.TestCase):
     mean_ssim = np.mean(ssim_scores)
     print(f"I2V SSIM: mean={mean_ssim:.4f}, min={np.min(ssim_scores):.4f}")
     self.assertGreaterEqual(mean_ssim, 0.95, f"Mean SSIM={mean_ssim:.4f} < 0.95")
+
+  @classmethod
+  def tearDownClass(cls):
+    del cls.pipeline
+    import gc
+
+    gc.collect()
 
 
 if __name__ == "__main__":

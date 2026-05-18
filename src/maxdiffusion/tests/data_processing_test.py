@@ -16,9 +16,9 @@ limitations under the License.
 
 import os
 import pytest
-import functools
 import jax
 import jax.numpy as jnp
+from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from jax.sharding import Mesh
 from .. import pyconfig
@@ -81,11 +81,14 @@ class DataProcessingTest(unittest.TestCase):
     video = load_video(video_path)
     videos = [video_processor.preprocess_video([video], height=config.height, width=config.width)]
     videos = jnp.array(np.squeeze(np.array(videos), axis=1), dtype=config.weights_dtype)
-    p_vae_encode = jax.jit(functools.partial(vae_encode, vae=pipeline.vae, vae_cache=pipeline.vae_cache))
+
+    @nnx.jit
+    def p_vae_encode(video, rng, vae, vae_cache):
+      return vae_encode(video, rng, vae, vae_cache)
 
     rng = jax.random.key(config.seed)
     with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-      latents = p_vae_encode(videos, rng=rng)
+      latents = p_vae_encode(videos, rng=rng, vae=pipeline.vae, vae_cache=pipeline.vae_cache)
     # 1. Verify Channel Count (Wan 2.1 requires 16)
     self.assertEqual(latents.shape[1], 16, f"Expected 16 channels, got {latents.shape[1]}")
 
