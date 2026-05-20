@@ -270,13 +270,15 @@ class WanPipeline:
 
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
-    torch_dtype = getattr(torch, str(config.weights_dtype), torch.float32)
+    text_encoder_dtype = getattr(config, "text_encoder_dtype", "float32")
+    torch_dtype = getattr(torch, str(text_encoder_dtype), torch.float32)
     text_encoder = UMT5EncoderModel.from_pretrained(
         config.pretrained_model_name_or_path,
         subfolder="text_encoder",
         torch_dtype=torch_dtype,
     )
-    text_encoder = torch.compile(text_encoder)
+    if getattr(config, "compile_text_encoder", True):
+      text_encoder = torch.compile(text_encoder)
     return text_encoder
 
   @classmethod
