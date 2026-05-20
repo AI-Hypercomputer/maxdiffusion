@@ -17,7 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN python -m pip install --upgrade pip uv --no-warn-script-location
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y apt-utils git curl gnupg procps iproute2 ethtool && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y apt-utils git curl gnupg procps iproute2 ethtool g++ && rm -rf /var/lib/apt/lists/*
 
 # Add the Google Cloud SDK package repository
 RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
