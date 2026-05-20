@@ -174,8 +174,10 @@ def create_sharded_logical_transformer(
   for path, val in flax.traverse_util.flatten_dict(params).items():
     if restored_checkpoint:
       path = path[:-1]
-    sharding = logical_state_sharding[path].get_value()
-    state[path].set_value(device_put_replicated(val, sharding))
+    sharding = logical_state_sharding[path]
+    if isinstance(sharding, nnx.Variable):
+        sharding = sharding.value
+    state[path] = nnx.Param(device_put_replicated(val, sharding))
   state = nnx.from_flat_state(state)
 
   transformer = nnx.merge(graphdef, state, rest_of_state)
@@ -351,10 +353,11 @@ class LTX2Pipeline:
     for path, val in flax.traverse_util.flatten_dict(params).items():
       sharding = logical_state_sharding.get(path)
       if sharding is not None:
-        sharding = sharding.get_value()
-        state[path].set_value(device_put_replicated(val, sharding))
+        if isinstance(sharding, nnx.Variable):
+          sharding = sharding.value
+        state[path] = nnx.Param(device_put_replicated(val, sharding))
       else:
-        state[path].set_value(jax.device_put(val))
+        state[path] = nnx.Param(jax.device_put(val))
 
     state = nnx.from_flat_state(state)
     connectors = nnx.merge(graphdef, state, rest_of_state)
@@ -393,16 +396,17 @@ class LTX2Pipeline:
     for path, val in flax.traverse_util.flatten_dict(params).items():
       sharding = logical_state_sharding.get(path)
       if sharding is not None:
-        sharding = sharding.get_value()
+        if isinstance(sharding, nnx.Variable):
+          sharding = sharding.value
         try:
           replicate_vae = config.replicate_vae
         except ValueError:
           replicate_vae = False
         if replicate_vae:
           sharding = NamedSharding(mesh, P())
-        state[path].set_value(device_put_replicated(val, sharding))
+        state[path] = nnx.Param(device_put_replicated(val, sharding))
       else:
-        state[path].set_value(jax.device_put(val))
+        state[path] = nnx.Param(jax.device_put(val))
 
     state = nnx.from_flat_state(state)
     vae = nnx.merge(graphdef, state, rest_of_state)
@@ -441,16 +445,17 @@ class LTX2Pipeline:
     for path, val in flax.traverse_util.flatten_dict(params).items():
       sharding = logical_state_sharding.get(path)
       if sharding is not None:
-        sharding = sharding.get_value()
+        if isinstance(sharding, nnx.Variable):
+          sharding = sharding.value
         try:
           replicate_vae = config.replicate_vae
         except ValueError:
           replicate_vae = False
         if replicate_vae:
           sharding = NamedSharding(mesh, P())
-        state[path].set_value(device_put_replicated(val, sharding))
+        state[path] = nnx.Param(device_put_replicated(val, sharding))
       else:
-        state[path].set_value(jax.device_put(val))
+        state[path] = nnx.Param(jax.device_put(val))
 
     state = nnx.from_flat_state(state)
     audio_vae = nnx.merge(graphdef, state, rest_of_state)
@@ -525,10 +530,11 @@ class LTX2Pipeline:
     for path, val in flax.traverse_util.flatten_dict(params).items():
       sharding = logical_state_sharding.get(path)
       if sharding is not None:
-        sharding = sharding.get_value()
-        state[path].set_value(device_put_replicated(val, sharding))
+        if isinstance(sharding, nnx.Variable):
+          sharding = sharding.value
+        state[path] = nnx.Param(device_put_replicated(val, sharding))
       else:
-        state[path].set_value(jax.device_put(val))
+        state[path] = nnx.Param(jax.device_put(val))
 
     state = nnx.from_flat_state(state)
     vocoder = nnx.merge(graphdef, state, rest_of_state)

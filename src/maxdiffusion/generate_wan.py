@@ -340,6 +340,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
 
 def main(argv: Sequence[str]) -> None:
+  jax.distributed.initialize()
   commit_hash = get_git_commit_hash()
   pyconfig.initialize(argv)
   try:

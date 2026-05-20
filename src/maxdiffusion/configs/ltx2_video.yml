@@ -23,6 +23,7 @@ activations_dtype: 'bfloat16'
 
 run_name: 'ltx2_inference'
 output_dir: ''
+base_output_directory: '' 
 config_path: ''
 save_config_to_gcs: False
 
