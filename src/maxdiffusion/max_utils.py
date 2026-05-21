@@ -154,30 +154,30 @@ class Profiler:
     if _jax_profiler_enabled(self.config):
       jax.profiler.stop_trace()
 
+      trace_dir = self.config.tensorboard_dir
+      if trace_dir.startswith("gs://"):
+        local_dir = os.path.join("/tmp/profiler_traces", self.config.run_name)
+        if os.path.exists(local_dir):
+          max_logging.log(f"Uploading profiler traces from {local_dir} to {trace_dir}...")
+          client = storage.Client()
+          bucket_name, prefix = parse_gcs_bucket_and_prefix(trace_dir)
+          bucket = client.bucket(bucket_name)
+
+          for root, _, files in os.walk(local_dir):
+            for file in files:
+              local_file = os.path.join(root, file)
+              rel_path = os.path.relpath(local_file, local_dir)
+              blob_name = os.path.join(prefix, rel_path)
+              blob = bucket.blob(blob_name)
+              blob.upload_from_filename(local_file)
+              max_logging.log(f"Uploaded {local_file} to gs://{bucket_name}/{blob_name}")
+
   def __enter__(self):
     self.start()
     return self
 
   def __exit__(self, exc_type, exc_val, exc_tb):
     self.stop()
-
-    trace_dir = self.config.tensorboard_dir
-    if trace_dir.startswith("gs://"):
-      local_dir = os.path.join("/tmp/profiler_traces", self.config.run_name)
-      if os.path.exists(local_dir):
-        max_logging.log(f"Uploading profiler traces from {local_dir} to {trace_dir}...")
-        client = storage.Client()
-        bucket_name, prefix = parse_gcs_bucket_and_prefix(trace_dir)
-        bucket = client.bucket(bucket_name)
-
-        for root, _, files in os.walk(local_dir):
-          for file in files:
-            local_file = os.path.join(root, file)
-            rel_path = os.path.relpath(local_file, local_dir)
-            blob_name = os.path.join(prefix, rel_path)
-            blob = bucket.blob(blob_name)
-            blob.upload_from_filename(local_file)
-            max_logging.log(f"Uploaded {local_file} to gs://{bucket_name}/{blob_name}")
 
 
 def initialize_summary_writer(config):

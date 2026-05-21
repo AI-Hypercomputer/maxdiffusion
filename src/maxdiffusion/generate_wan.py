@@ -251,6 +251,10 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
   s0 = time.perf_counter()
 
+  # Disable profiler for the first two runs to avoid duplicate uploads
+  original_enable_profiler = config.enable_profiler if "enable_profiler" in config.get_keys() else False
+  config.get_keys()["enable_profiler"] = False
+
   # Using global_batch_size_to_train_on so not to create more config variables
   prompt = [config.prompt] * config.global_batch_size_to_train_on
   negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
@@ -321,6 +325,8 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log("\n".join(summary))
 
   s0 = time.perf_counter()
+  # Restore original profiler setting for the profiling run
+  config.get_keys()["enable_profiler"] = original_enable_profiler
   if max_utils.profiler_enabled(config):
     # Injecting user requested XLA tracing flags
     xla_flags = os.environ.get("XLA_FLAGS", "")
