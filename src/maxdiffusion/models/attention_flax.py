@@ -1134,6 +1134,22 @@ class NNXSimpleFeedForward(nnx.Module):
   ):
     inner_dim = int(dim * mult)
     dim_out = dim_out if dim_out is not None else dim
+
+    tpu_type = get_tpu_type()
+    is_ironwood = tpu_type == TpuType.TPU_7X
+
+    # Hardware-aware sharding specs: Ironwood (v7x) keeps the embedding dimension (embed)
+    # replicated (None) to minimize cross-device communication, while other hardware (default)
+    # shards it to prevent OOM issues.
+    if is_ironwood:
+      net0_kernel_spec = (None, "mlp")
+      net2_kernel_spec = ("mlp", None)
+      net2_bias_spec = (None,)
+    else:
+      net0_kernel_spec = ("embed", "mlp")
+      net2_kernel_spec = ("mlp", "embed")
+      net2_bias_spec = ("embed",)
+
     self.net_0 = nnx.Linear(
         dim,
         inner_dim,
@@ -1142,7 +1158,7 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), (None, "mlp")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), net0_kernel_spec),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
     )
     self.act = get_activation(activation_fn)
@@ -1154,8 +1170,8 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", None)),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), net2_kernel_spec),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, net2_bias_spec),
     )
 
   def __call__(self, hidden_states: Array) -> Array:

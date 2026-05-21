@@ -2,6 +2,7 @@
 absl-py
 accelerate
 aqtp
+av
 chex
 datasets
 einops
