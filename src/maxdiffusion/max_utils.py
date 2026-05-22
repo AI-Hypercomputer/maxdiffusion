@@ -20,7 +20,14 @@ limitations under the License.
 import functools
 from functools import partial, reduce
 from contextlib import nullcontext
-from typing import Dict, Callable
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Set,
+    Tuple,
+    Union,
+)
 import json
 import yaml
 import os
@@ -36,7 +43,6 @@ import jax.numpy as jnp
 import optax
 from maxdiffusion import max_logging
 from maxdiffusion.checkpointing import checkpointing_utils
-from maxdiffusion.models.attention_flax import AttentionOp
 import flax.linen as nn
 import flax.linen.module as module_lib
 from flax.linen.summary import _process_inputs
@@ -50,13 +56,6 @@ from jax.experimental import mesh_utils
 
 from transformers import FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel
 from flax import struct
-from typing import (
-    Callable,
-    Any,
-    Tuple,
-    Union,
-    Set,
-)
 from flax import core
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
@@ -676,6 +675,8 @@ def get_live_arrays():
 # to retrieve layer parameters and calculate
 def calculate_model_tflops(module: module_lib.Module, rngs: Union[PRNGKey, RNGSequences], train, **kwargs):
   """Calculates model tflops by passing a module."""
+  from maxdiffusion.models.attention_flax import AttentionOp
+
   with module_lib._tabulate_context():
     _ = jax.eval_shape(module.init, rngs, **kwargs)
     calls = module_lib._context.call_info_stack[-1].calls
@@ -769,3 +770,8 @@ def maybe_initialize_jax_distributed_system(raw_keys):
     max_logging.log("Jax distributed system initialized on GPU!")
   else:
     jax.distributed.initialize()
+
+
+def safe_getattr(obj: Any, name: str, default: Any) -> Any:
+  """Safely reads attribute from an object, returning default if obj is None or attribute missing."""
+  return getattr(obj, name, default) if obj is not None else default

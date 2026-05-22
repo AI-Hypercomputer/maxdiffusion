@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 from ... import common_types
 from ..attention_flax import NNXAttentionOp
-from maxdiffusion.tpu_utils import get_tpu_type, TpuType
+from .logical_sharding_ltx2 import get_sharding_specs, LTX2DiTShardingSpecs
 
 Array = common_types.Array
 Mesh = common_types.Mesh
@@ -350,9 +350,7 @@ class LTX2Attention(nnx.Module):
       rope_type: str = "interleaved",
       flash_block_sizes: BlockSizes = None,
       flash_min_seq_length: int = 4096,
-      qkv_sharding_spec: Optional[tuple] = None,
-      out_sharding_spec: Optional[tuple] = None,
-      out_bias_sharding_spec: Optional[tuple] = None,
+      sharding_specs: Optional[LTX2DiTShardingSpecs] = None,
       gated_attn: bool = False,
   ):
     self.heads = heads
@@ -361,33 +359,24 @@ class LTX2Attention(nnx.Module):
     self.inner_dim = dim_head * heads
     self.dropout_rate = dropout
 
-    # Auto-detect hardware for sharding specs if not overridden
-    tpu_type = get_tpu_type()
-    is_ironwood = tpu_type == TpuType.TPU_7X
-
-    # Hardware-aware sharding: Ironwood (v7x) uses 1D sharding along the heads dimension (leaving the embedding dimension replicated)
-    # to minimize cross-device communication, while other hardware defaults to 2D sharding along both heads and embed dimensions.
-    # This has currently only been tested on Trillium (v6e) and Ironwood (v7x).
-    if qkv_sharding_spec is None:
-      qkv_sharding_spec = (None, "heads") if is_ironwood else ("embed", "heads")
-    if out_sharding_spec is None:
-      out_sharding_spec = ("heads", None) if is_ironwood else ("heads", "embed")
-    if out_bias_sharding_spec is None:
-      out_bias_sharding_spec = (None,) if is_ironwood else ("embed",)
+    if sharding_specs is None:
+      specs = get_sharding_specs("default", "ltx2_dit")
+    else:
+      specs = sharding_specs
 
     # 1. Define Partitioned Initializers (Logical Axes)
     # Q, K, V kernels: [in_features (embed), out_features (heads)]
-    qkv_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), qkv_sharding_spec)
+    qkv_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), specs.qkv_kernel)
     # Q, K, V biases: [out_features (heads)]
-    qkv_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), ("heads",))
+    qkv_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), specs.qkv_bias)
 
     # Out kernel: [in_features (heads), out_features (embed)]
-    out_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), out_sharding_spec)
+    out_kernel_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), specs.out_kernel)
     # Out bias: [out_features (embed)]
-    out_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), out_bias_sharding_spec)
+    out_bias_init = nnx.with_partitioning(nnx.initializers.zeros_init(), specs.out_bias)
 
     # Norm scales
-    norm_scale_init = nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",))
+    norm_scale_init = nnx.with_partitioning(nnx.initializers.ones_init(), specs.norm_scale)
 
     # 2. Projections
     self.to_q = nnx.Linear(
@@ -450,8 +439,8 @@ class LTX2Attention(nnx.Module):
           query_dim,
           heads,
           use_bias=True,
-          kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
-          bias_init=nnx.with_partitioning(nnx.initializers.zeros_init(), ("heads",)),
+          kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), specs.gate_logits_kernel),
+          bias_init=nnx.with_partitioning(nnx.initializers.zeros_init(), specs.gate_logits_bias),
           rngs=rngs,
           dtype=dtype,
       )

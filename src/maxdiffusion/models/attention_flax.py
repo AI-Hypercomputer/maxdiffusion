@@ -15,7 +15,7 @@
 import contextlib
 import functools
 import math
-from typing import Optional, Callable, Tuple, Dict
+from typing import Optional, Callable, Tuple, Any, Dict
 import flax.linen as nn
 from flax import nnx
 import jax
@@ -31,6 +31,7 @@ from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
 from einops import rearrange
 from .. import common_types, max_logging
 from maxdiffusion.tpu_utils import get_tpu_type, TpuType
+from maxdiffusion.max_utils import safe_getattr
 
 
 from ..kernels import custom_splash_attention as custom_splash
@@ -1133,24 +1134,15 @@ class NNXSimpleFeedForward(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: Optional[jax.lax.Precision] = None,
+      sharding_specs: Optional[Any] = None,
   ):
     inner_dim = int(dim * mult)
     dim_out = dim_out if dim_out is not None else dim
 
-    tpu_type = get_tpu_type()
-    is_ironwood = tpu_type == TpuType.TPU_7X
-
-    # Hardware-aware sharding specs: Ironwood (v7x) keeps the embedding dimension (embed)
-    # replicated (None) to minimize cross-device communication, while other hardware (default)
-    # shards it to prevent OOM issues.
-    if is_ironwood:
-      net0_kernel_spec = (None, "mlp")
-      net2_kernel_spec = ("mlp", None)
-      net2_bias_spec = (None,)
-    else:
-      net0_kernel_spec = ("embed", "mlp")
-      net2_kernel_spec = ("mlp", "embed")
-      net2_bias_spec = ("embed",)
+    net_0_kernel = safe_getattr(sharding_specs, "net_0_kernel", ("embed", "mlp"))
+    net_0_bias = safe_getattr(sharding_specs, "net_0_bias", ("mlp",))
+    net_2_kernel = safe_getattr(sharding_specs, "net_2_kernel", ("mlp", "embed"))
+    net_2_bias = safe_getattr(sharding_specs, "net_2_bias", ("embed",))
 
     self.net_0 = nnx.Linear(
         dim,
@@ -1160,8 +1152,8 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), net0_kernel_spec),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), net_0_kernel),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, net_0_bias),
     )
     self.act = get_activation(activation_fn)
     self.net_2 = nnx.Linear(
@@ -1172,8 +1164,8 @@ class NNXSimpleFeedForward(nnx.Module):
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), net2_kernel_spec),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, net2_bias_spec),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), net_2_kernel),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, net_2_bias),
     )
 
   def __call__(self, hidden_states: Array) -> Array:

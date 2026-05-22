@@ -28,6 +28,7 @@ class LTX2PipelineTest(unittest.TestCase):
   def setUp(self):
     self.config = MagicMock()
     self.config.pretrained_model_name_or_path = "test_model"
+    self.config.use_batched_text_encoder = False
 
   def test_calculate_shift(self):
     """Test shift calculation math."""
@@ -82,6 +83,7 @@ class LTX2PipelineTest(unittest.TestCase):
         connectors=MagicMock(),
         transformer=mock_transformer,
         vocoder=MagicMock(),
+        config=self.config,
     )
 
     self.assertEqual(pipeline.vae_spatial_compression_ratio, 8)
@@ -105,6 +107,7 @@ class LTX2PipelineTest(unittest.TestCase):
         connectors=MagicMock(),
         transformer=MagicMock(),
         vocoder=MagicMock(),
+        config=self.config,
     )
 
     # Valid check shouldn't raise
@@ -118,14 +121,9 @@ class LTX2PipelineTest(unittest.TestCase):
     with self.assertRaises(ValueError):
       pipeline.check_inputs(prompt="test", height=64, width=63)
 
-  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.get_tpu_type")
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline._get_gemma_prompt_embeds")
-  def test_encode_prompt(self, list_embed_mock, mock_get_tpu_type):
-    """Test conditional encoding of positive and negative prompts."""
-    from maxdiffusion.tpu_utils import TpuType
-
-    mock_get_tpu_type.return_value = TpuType.TPU_7X
-
+  def test_encode_prompt(self, list_embed_mock):
+    """Test conditional encoding of positive and negative prompts without batching."""
     pipeline = LTX2Pipeline(
         scheduler=MagicMock(),
         vae=MagicMock(),
@@ -135,26 +133,28 @@ class LTX2PipelineTest(unittest.TestCase):
         connectors=MagicMock(),
         transformer=MagicMock(),
         vocoder=MagicMock(),
+        config=self.config,
     )
+    pipeline.config.sharding = {"text_encoder": "trillium"}
 
-    combined_embeds = jnp.zeros((2, 10, 10))
-    combined_attention_mask = jnp.ones((2, 10))
+    single_embeds = jnp.zeros((1, 10, 10))
+    single_attention_mask = jnp.ones((1, 10))
 
-    # Mock return value for combined prompt encoding
-    list_embed_mock.return_value = (combined_embeds, combined_attention_mask)
+    # Mock return value for single prompt encoding
+    list_embed_mock.return_value = (single_embeds, single_attention_mask)
 
     p_e, p_a, n_e, n_a = pipeline.encode_prompt(
         prompt=["A cute cat"], negative_prompt=["ugly"], do_classifier_free_guidance=True
     )
 
-    # Check mock calls
-    self.assertEqual(list_embed_mock.call_count, 1)
+    # We expect 2 separate calls (one for positive, one for negative)
+    self.assertEqual(list_embed_mock.call_count, 2)
 
     # Check returns
-    np.testing.assert_array_equal(p_e, combined_embeds[:1])
-    np.testing.assert_array_equal(p_a, combined_attention_mask[:1])
-    np.testing.assert_array_equal(n_e, combined_embeds[1:])
-    np.testing.assert_array_equal(n_a, combined_attention_mask[1:])
+    np.testing.assert_array_equal(p_e, single_embeds)
+    np.testing.assert_array_equal(p_a, single_attention_mask)
+    np.testing.assert_array_equal(n_e, single_embeds)
+    np.testing.assert_array_equal(n_a, single_attention_mask)
 
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline._get_gemma_prompt_embeds")
   def test_encode_prompt_no_cfg(self, list_embed_mock):
@@ -168,6 +168,7 @@ class LTX2PipelineTest(unittest.TestCase):
         connectors=MagicMock(),
         transformer=MagicMock(),
         vocoder=MagicMock(),
+        config=self.config,
     )
 
     prompt_embeds = jnp.zeros((1, 10, 10))

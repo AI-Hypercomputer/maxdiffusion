@@ -196,6 +196,15 @@ class _HyperParameters:
   @staticmethod
   def user_init(raw_keys):
     """Transformations between the config data and configs used at runtime"""
+    # Set default for use_batched_text_encoder if not present
+    if "use_batched_text_encoder" not in raw_keys:
+      raw_keys["use_batched_text_encoder"] = False
+
+    # Validate that use_batched_text_encoder is a boolean
+    if not isinstance(raw_keys["use_batched_text_encoder"], bool):
+      raise TypeError(
+          f"Expected config.use_batched_text_encoder to be a boolean, but got {type(raw_keys['use_batched_text_encoder'])}"
+      )
     # Set defaults for dtypes if they weren't explicitly provided
     if "vae_dtype" not in raw_keys:
       raw_keys["vae_dtype"] = "float32"
@@ -205,7 +214,14 @@ class _HyperParameters:
       raw_keys["scheduler_dtype"] = "float32"
 
     # Cast all dtype configs to jax.numpy.dtype
-    for dtype_key in ["weights_dtype", "activations_dtype", "scheduler_dtype", "vae_dtype", "vae_weights_dtype"]:
+    for dtype_key in [
+        "weights_dtype",
+        "activations_dtype",
+        "scheduler_dtype",
+        "vae_dtype",
+        "vae_weights_dtype",
+        "text_encoder_dtype",
+    ]:
       if dtype_key in raw_keys:
         raw_keys[dtype_key] = jax.numpy.dtype(raw_keys[dtype_key])
     if raw_keys["run_name"] == "":

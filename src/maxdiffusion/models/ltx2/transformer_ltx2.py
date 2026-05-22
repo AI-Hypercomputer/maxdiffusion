@@ -26,6 +26,7 @@ from maxdiffusion.models.embeddings_flax import NNXPixArtAlphaCombinedTimestepSi
 from maxdiffusion.models.gradient_checkpoint import GradientCheckpointType
 from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
 from maxdiffusion.common_types import BlockSizes
+from .logical_sharding_ltx2 import get_sharding_specs, LTX2DiTShardingSpecs
 
 
 class LTX2AdaLayerNormSingle(nnx.Module):
@@ -45,8 +46,12 @@ class LTX2AdaLayerNormSingle(nnx.Module):
       use_additional_conditions: bool = False,
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
+      sharding_specs: Optional[LTX2DiTShardingSpecs] = None,
   ):
     self.num_mod_params = num_mod_params
+
+    if sharding_specs is None:
+      sharding_specs = get_sharding_specs("default", "ltx2_dit")
     self.use_additional_conditions = use_additional_conditions
     self.emb = NNXPixArtAlphaCombinedTimestepSizeEmbeddings(
         rngs=rngs,
@@ -55,6 +60,7 @@ class LTX2AdaLayerNormSingle(nnx.Module):
         use_additional_conditions=use_additional_conditions,
         dtype=dtype,
         weights_dtype=weights_dtype,
+        sharding_specs=sharding_specs,
     )
     self.silu = nnx.silu
     self.linear = nnx.Linear(
@@ -64,8 +70,8 @@ class LTX2AdaLayerNormSingle(nnx.Module):
         use_bias=True,
         dtype=dtype,
         param_dtype=weights_dtype,
-        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, (None, "embed")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.zeros, sharding_specs.adaln_kernel),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, sharding_specs.adaln_bias),
     )
 
   def __call__(
@@ -120,6 +126,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       v2a_attention_kernel: str = "dot_product",
       flash_block_sizes: BlockSizes = None,
       flash_min_seq_length: int = 4096,
+      sharding_specs: Optional[LTX2DiTShardingSpecs] = None,
       perturbed_attn: bool = False,
   ):
     self.dim = dim
@@ -127,6 +134,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
     self.norm_elementwise_affine = norm_elementwise_affine
     self.attention_kernel = attention_kernel
     self.perturbed_attn = perturbed_attn
+
+    if sharding_specs is None:
+      sharding_specs = get_sharding_specs("default", "ltx2_dit")
+    self.sharding_specs = sharding_specs
 
     # 1. Self-Attention (video and audio)
     self.norm1 = nnx.RMSNorm(
@@ -136,7 +147,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), self.sharding_specs.norm_scale),
     )
     self.attn1 = LTX2Attention(
         rngs=rngs,
@@ -153,6 +164,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
     )
 
@@ -163,7 +175,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), self.sharding_specs.norm_scale),
     )
     self.audio_attn1 = LTX2Attention(
         rngs=rngs,
@@ -180,6 +192,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
     )
 
@@ -191,7 +204,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), self.sharding_specs.norm_scale),
     )
     self.attn2 = LTX2Attention(
         rngs=rngs,
@@ -208,6 +221,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_kernel=self.attention_kernel,
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
+        sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
     )
 
@@ -218,7 +232,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), self.sharding_specs.norm_scale),
     )
     self.audio_attn2 = LTX2Attention(
         rngs=rngs,
@@ -236,6 +250,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
     )
 
@@ -247,7 +262,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), self.sharding_specs.norm_scale),
     )
     self.audio_to_video_attn = LTX2Attention(
         rngs=rngs,
@@ -265,6 +280,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=0,
+        sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
     )
 
@@ -275,7 +291,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), self.sharding_specs.norm_scale),
     )
     self.video_to_audio_attn = LTX2Attention(
         rngs=rngs,
@@ -293,6 +309,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
     )
 
@@ -304,7 +321,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), self.sharding_specs.norm_scale),
     )
     self.ff = NNXSimpleFeedForward(
         rngs=rngs,
@@ -313,6 +330,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         activation_fn=activation_fn,
         dtype=dtype,
         weights_dtype=weights_dtype,
+        sharding_specs=self.sharding_specs,
     )
 
     self.audio_norm3 = nnx.RMSNorm(
@@ -322,10 +340,16 @@ class LTX2VideoTransformerBlock(nnx.Module):
         rngs=rngs,
         dtype=jnp.float32,
         param_dtype=jnp.float32,
-        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), ("norm",)),
+        scale_init=nnx.with_partitioning(nnx.initializers.ones_init(), self.sharding_specs.norm_scale),
     )
     self.audio_ff = NNXSimpleFeedForward(
-        rngs=rngs, dim=audio_dim, dim_out=audio_dim, activation_fn=activation_fn, dtype=dtype, weights_dtype=weights_dtype
+        rngs=rngs,
+        dim=audio_dim,
+        dim_out=audio_dim,
+        activation_fn=activation_fn,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        sharding_specs=self.sharding_specs,
     )
 
     key = rngs.params()
@@ -333,24 +357,44 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
     self.cross_attn_mod = cross_attn_mod
     table_size = 9 if cross_attn_mod else 6
+    table_sharding = self.sharding_specs.scale_shift_table
 
     self.scale_shift_table = nnx.Param(
-        jax.random.normal(k1, (table_size, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim)
+        nnx.with_partitioning(
+            lambda key, shape: jax.random.normal(key, shape, dtype=weights_dtype) / jnp.sqrt(self.dim), table_sharding
+        )(k1, (table_size, self.dim))
     )
 
     if self.cross_attn_mod:
       self.prompt_scale_shift_table = nnx.Param(
-          jax.random.normal(k5, (2, self.dim), dtype=weights_dtype) / jnp.sqrt(self.dim)
+          nnx.with_partitioning(
+              lambda key, shape: jax.random.normal(key, shape, dtype=weights_dtype) / jnp.sqrt(self.dim), table_sharding
+          )(k5, (2, self.dim))
       )
 
     self.audio_scale_shift_table = nnx.Param(
-        jax.random.normal(k2, (table_size, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
+        nnx.with_partitioning(
+            lambda key, shape: jax.random.normal(key, shape, dtype=weights_dtype) / jnp.sqrt(audio_dim), table_sharding
+        )(k2, (table_size, audio_dim))
     )
-    self.video_a2v_cross_attn_scale_shift_table = nnx.Param(jax.random.normal(k3, (5, self.dim), dtype=weights_dtype))
-    self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(jax.random.normal(k4, (5, audio_dim), dtype=weights_dtype))
+
+    self.video_a2v_cross_attn_scale_shift_table = nnx.Param(
+        nnx.with_partitioning(lambda key, shape: jax.random.normal(key, shape, dtype=weights_dtype), table_sharding)(
+            k3, (5, self.dim)
+        )
+    )
+
+    self.audio_a2v_cross_attn_scale_shift_table = nnx.Param(
+        nnx.with_partitioning(lambda key, shape: jax.random.normal(key, shape, dtype=weights_dtype), table_sharding)(
+            k4, (5, audio_dim)
+        )
+    )
+
     if self.cross_attn_mod:
       self.audio_prompt_scale_shift_table = nnx.Param(
-          jax.random.normal(k6, (2, audio_dim), dtype=weights_dtype) / jnp.sqrt(audio_dim)
+          nnx.with_partitioning(
+              lambda key, shape: jax.random.normal(key, shape, dtype=weights_dtype) / jnp.sqrt(audio_dim), table_sharding
+          )(k6, (2, audio_dim))
       )
 
   def __call__(
@@ -645,6 +689,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       qk_norm: str = "rms_norm_across_heads",
       flash_block_sizes: BlockSizes = None,
       flash_min_seq_length: int = 4096,
+      sharding_specs: Optional[LTX2DiTShardingSpecs] = None,
       gated_attn: bool = False,
       cross_attn_mod: bool = False,
       use_prompt_embeddings: bool = True,
@@ -706,6 +751,10 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.v2a_attention_kernel = v2a_attention_kernel
     self.flash_min_seq_length = flash_min_seq_length
 
+    if sharding_specs is None:
+      sharding_specs = get_sharding_specs("default", "ltx2_dit")
+    self.sharding_specs = sharding_specs
+
     _out_channels = self.out_channels or self.in_channels
     _audio_out_channels = self.audio_out_channels or self.audio_in_channels
     inner_dim = self.num_attention_heads * self.attention_head_dim
@@ -718,8 +767,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         rngs=rngs,
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), self.sharding_specs.embed_kernel),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, self.sharding_specs.embed_bias),
     )
     self.audio_proj_in = nnx.Linear(
         self.audio_in_channels,
@@ -727,8 +776,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         rngs=rngs,
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, "embed")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), self.sharding_specs.embed_kernel),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, self.sharding_specs.embed_bias),
     )
 
     if self.use_prompt_embeddings:
@@ -738,6 +787,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           hidden_size=inner_dim,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
+          sharding_specs=self.sharding_specs,
       )
       self.audio_caption_projection = NNXPixArtAlphaTextProjection(
           rngs=rngs,
@@ -745,6 +795,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           hidden_size=audio_inner_dim,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
+          sharding_specs=self.sharding_specs,
       )
     else:
       self.caption_projection = None
@@ -758,6 +809,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           use_additional_conditions=False,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
+          sharding_specs=self.sharding_specs,
       )
       self.audio_prompt_adaln = LTX2AdaLayerNormSingle(
           rngs=rngs,
@@ -766,6 +818,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           use_additional_conditions=False,
           dtype=self.dtype,
           weights_dtype=self.weights_dtype,
+          sharding_specs=self.sharding_specs,
       )
     # 3. Timestep Modulation Params and Embedding
     num_mod_params = 9 if self.cross_attn_mod else 6
@@ -776,6 +829,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         use_additional_conditions=False,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
+        sharding_specs=self.sharding_specs,
     )
     self.audio_time_embed = LTX2AdaLayerNormSingle(
         rngs=rngs,
@@ -784,6 +838,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         use_additional_conditions=False,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
+        sharding_specs=self.sharding_specs,
     )
     self.av_cross_attn_video_scale_shift = LTX2AdaLayerNormSingle(
         rngs=rngs,
@@ -792,6 +847,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         use_additional_conditions=False,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
+        sharding_specs=self.sharding_specs,
     )
     self.av_cross_attn_audio_scale_shift = LTX2AdaLayerNormSingle(
         rngs=rngs,
@@ -800,6 +856,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         use_additional_conditions=False,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
+        sharding_specs=self.sharding_specs,
     )
     self.av_cross_attn_video_a2v_gate = LTX2AdaLayerNormSingle(
         rngs=rngs,
@@ -808,6 +865,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         use_additional_conditions=False,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
+        sharding_specs=self.sharding_specs,
     )
     self.av_cross_attn_audio_v2a_gate = LTX2AdaLayerNormSingle(
         rngs=rngs,
@@ -816,15 +874,22 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         use_additional_conditions=False,
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
+        sharding_specs=self.sharding_specs,
     )
 
     # 3. Output Layer Scale/Shift Modulation parameters
     param_rng = rngs.params()
+    table_sharding = self.sharding_specs.scale_shift_table
     self.scale_shift_table = nnx.Param(
-        jax.random.normal(param_rng, (2, inner_dim), dtype=self.weights_dtype) / jnp.sqrt(inner_dim)
+        nnx.with_partitioning(
+            lambda key, shape: jax.random.normal(key, shape, dtype=self.weights_dtype) / jnp.sqrt(inner_dim), table_sharding
+        )(param_rng, (2, inner_dim))
     )
     self.audio_scale_shift_table = nnx.Param(
-        jax.random.normal(param_rng, (2, audio_inner_dim), dtype=self.weights_dtype) / jnp.sqrt(audio_inner_dim)
+        nnx.with_partitioning(
+            lambda key, shape: jax.random.normal(key, shape, dtype=self.weights_dtype) / jnp.sqrt(audio_inner_dim),
+            table_sharding,
+        )(param_rng, (2, audio_inner_dim))
     )
 
     # 4. Rotary Positional Embeddings (RoPE)
@@ -895,6 +960,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     def init_block(rngs):
       return LTX2VideoTransformerBlock(
           rngs=rngs,
+          sharding_specs=self.sharding_specs,
           dim=inner_dim,
           num_attention_heads=self.num_attention_heads,
           attention_head_dim=self.attention_head_dim,
@@ -977,8 +1043,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         rngs=rngs,
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", None)),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), self.sharding_specs.out_embed_kernel),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, self.sharding_specs.out_embed_bias),
     )
 
     self.audio_norm_out = nnx.LayerNorm(
@@ -990,8 +1056,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         rngs=rngs,
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), ("embed", None)),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), self.sharding_specs.out_embed_kernel),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, self.sharding_specs.out_embed_bias),
     )
 
   def __call__(
