@@ -1345,9 +1345,11 @@ class LTX2Pipeline:
 
     video_sequence_length = (num_frames - 1) // self.vae_temporal_compression_ratio + 1
     video_sequence_length *= (height // self.vae_spatial_compression_ratio) * (width // self.vae_spatial_compression_ratio)
+    # Cap long videos while preserving smaller videos' dynamic shift behavior.
+    shift_sequence_length = min(6144, video_sequence_length)
 
     mu = calculate_shift(
-        video_sequence_length,
+        shift_sequence_length,
         self.scheduler.config.get("base_image_seq_len", 1024),
         self.scheduler.config.get("max_image_seq_len", 4096),
         self.scheduler.config.get("base_shift", 0.95),
