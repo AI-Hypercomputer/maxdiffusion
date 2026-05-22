@@ -20,12 +20,12 @@ Prepare tfrecords with latents and text embeddings preprocessed.
 """
 
 import os
-import functools
 from absl import app
 from typing import Sequence, Union, List
 from datasets import load_dataset
 import numpy as np
 import jax
+from flax import nnx
 import jax.numpy as jnp
 from jax.sharding import Mesh
 from maxdiffusion import pyconfig, max_utils
@@ -110,8 +110,9 @@ def generate_dataset(config, pipeline):
   vae_scale_factor_spatial = 2 ** len(pipeline.vae.temperal_downsample)
   video_processor = VideoProcessor(vae_scale_factor=vae_scale_factor_spatial)
 
-  # jit vae fun.
-  p_vae_encode = jax.jit(functools.partial(vae_encode, vae=pipeline.vae, vae_cache=pipeline.vae_cache))
+  @nnx.jit
+  def p_vae_encode(video, rng, vae, vae_cache):
+    return vae_encode(video, rng, vae, vae_cache)
 
   # Load dataset
   ds = load_dataset(config.dataset_name, split="train")
@@ -126,7 +127,7 @@ def generate_dataset(config, pipeline):
     videos = [video_processor.preprocess_video([video], height=config.height, width=config.width) for video in videos]
     video = jnp.array(np.squeeze(np.array(videos), axis=1), dtype=config.weights_dtype)
     with mesh:
-      latents = p_vae_encode(video=video, rng=new_rng)
+      latents = p_vae_encode(video=video, rng=new_rng, vae=pipeline.vae, vae_cache=pipeline.vae_cache)
     encoder_hidden_states = text_encode(pipeline, text)
     for latent, encoder_hidden_state in zip(latents, encoder_hidden_states):
       writer.write(create_example(latent, encoder_hidden_state))

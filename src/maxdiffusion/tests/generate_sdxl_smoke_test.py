@@ -36,6 +36,15 @@ JAX_CACHE_DIR = "gs://maxdiffusion-github-runner-test-assets/cache_dir"
 class Generate(unittest.TestCase):
   """Smoke test."""
 
+  def tearDown(self):
+    super().tearDown()
+    import gc
+
+    gc.collect()
+    import jax
+
+    jax.clear_caches()
+
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_hyper_sdxl_lora(self):
     img_url = os.path.join(THIS_DIR, "images", "test_hyper_sdxl.png")
@@ -53,6 +62,7 @@ class Generate(unittest.TestCase):
             'diffusion_scheduler_config={"_class_name" : "FlaxDDIMScheduler", "timestep_spacing" : "trailing"}',
             'lora_config={"lora_model_name_or_path" : ["ByteDance/Hyper-SD"], "weight_name" : ["Hyper-SDXL-2steps-lora.safetensors"], "adapter_name" : ["hyper-sdxl"], "scale": [0.7], "from_pt": ["true"]}',
             f"jax_cache_dir={JAX_CACHE_DIR}",
+            "jit_initializers=False",
         ],
         unittest=True,
     )
@@ -84,6 +94,7 @@ class Generate(unittest.TestCase):
             "run_name=sdxl-inference-test",
             "split_head_dim=False",
             f"jax_cache_dir={JAX_CACHE_DIR}",
+            "jit_initializers=False",
         ],
         unittest=True,
     )
@@ -116,6 +127,7 @@ class Generate(unittest.TestCase):
             "run_name=sdxl-inference-test",
             "split_head_dim=False",
             f"jax_cache_dir={JAX_CACHE_DIR}",
+            "jit_initializers=False",
         ],
         unittest=True,
     )
@@ -139,6 +151,8 @@ class Generate(unittest.TestCase):
             "activations_dtype=bfloat16",
             "weights_dtype=bfloat16",
             f"jax_cache_dir={JAX_CACHE_DIR}",
+            "controlnet_image=" + os.path.join(THIS_DIR, "images", "cnet_test.png"),
+            "jit_initializers=False",
         ],
         unittest=True,
     )
@@ -146,7 +160,7 @@ class Generate(unittest.TestCase):
     test_image = np.array(images[0]).astype(np.uint8)
     ssim_compare = ssim(base_image, test_image, multichannel=True, channel_axis=-1, data_range=255)
     assert base_image.shape == test_image.shape
-    assert ssim_compare >= 0.70
+    assert ssim_compare >= 0.80
 
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_sdxl_lightning(self):
@@ -158,6 +172,7 @@ class Generate(unittest.TestCase):
             os.path.join(THIS_DIR, "..", "configs", "base_xl_lightning.yml"),
             "run_name=sdxl-lightning-test",
             f"jax_cache_dir={JAX_CACHE_DIR}",
+            "jit_initializers=False",
         ],
         unittest=True,
     )
@@ -165,7 +180,7 @@ class Generate(unittest.TestCase):
     test_image = np.array(images[0]).astype(np.uint8)
     ssim_compare = ssim(base_image, test_image, multichannel=True, channel_axis=-1, data_range=255)
     assert base_image.shape == test_image.shape
-    assert ssim_compare >= 0.70
+    assert ssim_compare >= 0.80
 
 
 if __name__ == "__main__":

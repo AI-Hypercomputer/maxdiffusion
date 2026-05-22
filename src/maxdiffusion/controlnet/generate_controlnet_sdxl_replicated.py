@@ -36,6 +36,9 @@ def create_key(seed=0):
 def run(config):
   rng = jax.random.PRNGKey(config.seed)
 
+  devices_array = max_utils.create_device_mesh(config)
+  mesh = jax.sharding.Mesh(devices_array, config.mesh_axes)
+
   prompts = config.prompt
   negative_prompts = config.negative_prompt
   controlnet_conditioning_scale = config.controlnet_conditioning_scale
@@ -48,13 +51,14 @@ def run(config):
   image = np.concatenate([image, image, image], axis=2)
   image = Image.fromarray(image)
 
-  controlnet, controlnet_params = FlaxControlNetModel.from_pretrained(
-      config.controlnet_model_name_or_path, from_pt=config.controlnet_from_pt, dtype=config.activations_dtype
-  )
+  with mesh:
+    controlnet, controlnet_params = FlaxControlNetModel.from_pretrained(
+        config.controlnet_model_name_or_path, from_pt=config.controlnet_from_pt, dtype=config.activations_dtype
+    )
 
-  pipe, params = FlaxStableDiffusionXLControlNetPipeline.from_pretrained(
-      config.pretrained_model_name_or_path, controlnet=controlnet, revision=config.revision, dtype=config.activations_dtype
-  )
+    pipe, params = FlaxStableDiffusionXLControlNetPipeline.from_pretrained(
+        config.pretrained_model_name_or_path, controlnet=controlnet, revision=config.revision, dtype=config.activations_dtype
+    )
 
   scheduler_state = params.pop("scheduler")
   params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), params)
@@ -68,21 +72,23 @@ def run(config):
   prompt_ids = pipe.prepare_text_inputs([prompts] * num_samples)
   negative_prompt_ids = pipe.prepare_text_inputs([negative_prompts] * num_samples)
   processed_image = pipe.prepare_image_inputs([image] * num_samples)
-  p_params = replicate(params)
-  prompt_ids = shard(prompt_ids)
-  negative_prompt_ids = shard(negative_prompt_ids)
-  processed_image = shard(processed_image)
 
-  output = pipe(
-      prompt_ids=prompt_ids,
-      image=processed_image,
-      params=p_params,
-      prng_seed=rng,
-      num_inference_steps=config.num_inference_steps,
-      neg_prompt_ids=negative_prompt_ids,
-      controlnet_conditioning_scale=controlnet_conditioning_scale,
-      jit=True,
-  ).images
+  with mesh:
+    p_params = replicate(params)
+    prompt_ids = shard(prompt_ids)
+    negative_prompt_ids = shard(negative_prompt_ids)
+    processed_image = shard(processed_image)
+
+    output = pipe(
+        prompt_ids=prompt_ids,
+        image=processed_image,
+        params=p_params,
+        prng_seed=rng,
+        num_inference_steps=config.num_inference_steps,
+        neg_prompt_ids=negative_prompt_ids,
+        controlnet_conditioning_scale=controlnet_conditioning_scale,
+        jit=True,
+    ).images
 
   output_images = pipe.numpy_to_pil(np.asarray(output.reshape((num_samples,) + output.shape[-3:])))
   output_images[0].save("generated_image.png")

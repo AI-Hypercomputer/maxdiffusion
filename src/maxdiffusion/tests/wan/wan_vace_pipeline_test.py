@@ -47,7 +47,7 @@ class WanVacePipelineTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_1_3b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_1_3b.yml"),
             # For completeness, all configs and weights are mocked in this test
             "pretrained_model_name_or_path=Wan-AI/Wan2.1-VACE-1.3B-Diffusers",
             "num_inference_steps=2",  # Reduced steps for speed

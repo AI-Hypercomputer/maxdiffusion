@@ -39,7 +39,7 @@ class WanKvCacheTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_1_3b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_1_3b.yml"),
             "pretrained_model_name_or_path=Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
             "num_inference_steps=2",  # Reduced steps for speed
             "height=240",  # Reduced resolution for speed (divisible by 16)

@@ -80,7 +80,7 @@ class Wan21T2VMagCacheSmokeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
             "num_inference_steps=50",
             "height=720",
             "width=1280",
@@ -145,6 +145,13 @@ class Wan21T2VMagCacheSmokeTest(unittest.TestCase):
     self.assertGreater(speedup, 1.0)
     self.assertGreaterEqual(psnr, 30.0)
 
+  @classmethod
+  def tearDownClass(cls):
+    del cls.pipeline
+    import gc
+
+    gc.collect()
+
 
 @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Requires TPU v7-8 and model weights")
 class Wan21I2VMagCacheSmokeTest(unittest.TestCase):
@@ -155,7 +162,7 @@ class Wan21I2VMagCacheSmokeTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_i2v_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_i2v_14b.yml"),
             "num_inference_steps=50",
             "height=720",
             "width=1280",
@@ -223,3 +230,10 @@ class Wan21I2VMagCacheSmokeTest(unittest.TestCase):
     self.assertGreaterEqual(ssim, 0.98)
     self.assertGreater(speedup, 1.0)
     self.assertGreaterEqual(psnr, 30.0)
+
+  @classmethod
+  def tearDownClass(cls):
+    del cls.pipeline
+    import gc
+
+    gc.collect()

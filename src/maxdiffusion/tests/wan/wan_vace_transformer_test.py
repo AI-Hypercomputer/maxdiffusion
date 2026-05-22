@@ -22,12 +22,12 @@ from absl.testing import absltest
 from flax import nnx
 from jax.sharding import Mesh
 
-from .. import pyconfig
-from ..max_utils import (create_device_mesh, get_flash_block_sizes)
-from ..models.wan.transformers.transformer_wan import (
+from maxdiffusion import pyconfig
+from maxdiffusion.max_utils import (create_device_mesh, get_flash_block_sizes)
+from maxdiffusion.models.wan.transformers.transformer_wan import (
     WanRotaryPosEmbed,
 )
-from ..models.wan.transformers.transformer_wan_vace import (
+from maxdiffusion.models.wan.transformers.transformer_wan_vace import (
     WanVACETransformerBlock,
 )
 import qwix
@@ -50,7 +50,7 @@ class WanVaceTransformerTest(unittest.TestCase):
     pyconfig.initialize(
         [
             None,
-            os.path.join(THIS_DIR, "..", "configs", "base_wan_14b.yml"),
+            os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
         ],
         unittest=True,
     )
