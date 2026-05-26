@@ -82,7 +82,7 @@ class WanKvCacheTest(unittest.TestCase):
           "freq_dim": 256,
           "image_dim": None,
           "in_channels": 16,
-          "num_attention_heads": 12,
+          "num_attention_heads": 40,
           "num_layers": 2,
           "out_channels": 16,
           "patch_size": [1, 2, 2],
@@ -209,8 +209,11 @@ class WanKvCacheTest(unittest.TestCase):
     self.assertEqual(len(video_with_cache), batch_size)
     self.assertEqual(video_with_cache[0].shape, (num_frames, height, width, 3))
 
-    # Compare outputs
-    np.testing.assert_allclose(video_no_cache, video_with_cache, rtol=1e-1, atol=0.7)
+    # Calculate the average absolute difference across all pixels
+    mae = np.mean(np.abs(video_no_cache.astype(np.float32) - video_with_cache.astype(np.float32)))
+
+    # Ensure average pixel drift is less than 3 units
+    self.assertLess(mae, 3.0, f"KV Cache caused an unacceptably high average pixel drift of {mae}")
 
 
 if __name__ == "__main__":

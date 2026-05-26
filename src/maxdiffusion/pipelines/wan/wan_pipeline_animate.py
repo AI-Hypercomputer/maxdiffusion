@@ -304,6 +304,8 @@ class WanAnimatePipeline(WanPipeline):
         scheduler_state=common_components["scheduler_state"],
         devices_array=common_components["devices_array"],
         mesh=common_components["mesh"],
+        vae_mesh=common_components["vae_mesh"],
+        vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
     )
     return pipeline, transformer
 
@@ -506,7 +508,7 @@ class WanAnimatePipeline(WanPipeline):
       Normalized latents: (B, T_lat, H_lat, W_lat, z_dim) channel-last.
     """
     vae_dtype = getattr(self.vae, "dtype", jnp.float32)
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
       encoded = self.vae.encode(video.astype(vae_dtype), self.vae_cache)[0].mode()
     # Normalize
     mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
@@ -702,7 +704,7 @@ class WanAnimatePipeline(WanPipeline):
     """
     latents_cf = jnp.transpose(latents_cl, (0, 4, 1, 2, 3))  # (B, z_dim, T, H, W)
     latents_cf = self._denormalize_latents(latents_cf)
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
       video_cl = self.vae.decode(latents_cf, self.vae_cache)[0]  # (B, T, H, W, C)
     return jnp.transpose(video_cl, (0, 4, 1, 2, 3))  # (B, C, T, H, W)
 
@@ -728,7 +730,7 @@ class WanAnimatePipeline(WanPipeline):
       motion_encode_batch_size: Optional[int] = None,
       guidance_scale: float = 1.0,
       num_videos_per_prompt: int = 1,
-      max_sequence_length: int = 512,
+      max_sequence_length: Optional[int] = None,
       latents: Optional[jnp.ndarray] = None,
       prompt_embeds: Optional[jnp.ndarray] = None,
       negative_prompt_embeds: Optional[jnp.ndarray] = None,
@@ -763,6 +765,9 @@ class WanAnimatePipeline(WanPipeline):
       If output_type == "np": numpy array of shape (B, T, H, W, C) in [0, 1].
       If output_type == "latent": raw latents from the final segment.
     """
+    if max_sequence_length is None:
+      max_sequence_length = getattr(self.config, "max_sequence_length", 512)
+
     height = height or self.config.height
     width = width or self.config.width
 
@@ -1041,5 +1046,13 @@ class WanAnimatePipeline(WanPipeline):
       return seg_latents
 
     # Postprocess to [0, 1] numpy.
-    video_torch = torch.from_numpy(np.array(video_cf.astype(jnp.float32))).to(torch.bfloat16)
-    return self.video_processor.postprocess_video(video_torch, output_type="np")
+    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
+      video = (video_cf / 2.0) + 0.5
+      video = jnp.clip(video, 0.0, 1.0)
+      video = jnp.transpose(video, (0, 2, 3, 4, 1))
+      video = (video * 255.0).astype(jnp.uint8)
+      video.block_until_ready()
+
+    video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
+    video = np.array(video)
+    return video

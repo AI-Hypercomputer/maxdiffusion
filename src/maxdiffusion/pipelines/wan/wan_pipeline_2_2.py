@@ -116,7 +116,7 @@ class WanPipeline2_2(WanPipeline):
       guidance_scale_low: float = 3.0,
       guidance_scale_high: float = 4.0,
       num_videos_per_prompt: Optional[int] = 1,
-      max_sequence_length: int = 512,
+      max_sequence_length: Optional[int] = None,
       latents: jax.Array = None,
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
@@ -125,6 +125,10 @@ class WanPipeline2_2(WanPipeline):
       use_sen_cache: bool = False,
       use_kv_cache: bool = False,
   ):
+    config = getattr(self, "config", None)
+    if max_sequence_length is None:
+      max_sequence_length = getattr(config, "max_sequence_length", 512)
+
     if use_cfg_cache and use_sen_cache:
       raise ValueError("use_cfg_cache and use_sen_cache are mutually exclusive. Enable only one.")
 
@@ -207,7 +211,7 @@ class WanPipeline2_2(WanPipeline):
     trace["denoise_total"] = time.perf_counter() - t_denoise_start
 
     t_decode_start = time.perf_counter()
-    video = self._decode_latents_to_video(latents)
+    video = self._decode_latents_to_video(latents, trace=trace)
     if hasattr(video, "block_until_ready"):
       video.block_until_ready()
     trace["vae_decode"] = time.perf_counter() - t_decode_start

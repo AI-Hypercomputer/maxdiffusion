@@ -47,8 +47,23 @@ text_encoder_dtype: 'float32'
 # Whether to compile the text_encoder with torch.compile
 compile_text_encoder: False
 
+# Maximum sequence length for the text encoder
+max_sequence_length: 512
+
+vae_weights_dtype: 'float32'
+vae_dtype: 'float32'
+scheduler_dtype: 'float32'
+
 # Replicates vae across devices instead of using the model's sharding annotations for sharding.
 replicate_vae: False
+
+# Chunk size for VAE decode scan. Increase to improve decode time at the cost of memory.
+vae_decode_chunk: 1
+
+# Chunk size for VAE encode scan. (num_input_frames - 1) must be divisible by this value.
+# Increase to improve encode time at the cost of memory.
+vae_encode_chunk: 4
+vae_spatial: -1
 
 # matmul and conv precision from https://jax.readthedocs.io/en/latest/jax.lax.html#jax.lax.Precision
 # Options are "DEFAULT", "HIGH", "HIGHEST"

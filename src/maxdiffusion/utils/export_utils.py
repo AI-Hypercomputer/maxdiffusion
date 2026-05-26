@@ -141,7 +141,7 @@ def _legacy_export_to_video(
     output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
 
   if isinstance(video_frames[0], np.ndarray):
-    video_frames = [(frame * 255).astype(np.uint8) for frame in video_frames]
+    video_frames = [(frame * 255).astype(np.uint8) if frame.dtype != np.uint8 else frame for frame in video_frames]
 
   elif isinstance(video_frames[0], PIL.Image.Image):
     video_frames = [np.array(frame) for frame in video_frames]
@@ -157,7 +157,7 @@ def _legacy_export_to_video(
 
 
 def export_to_video(
-    video_frames: Union[List[np.ndarray], List[PIL.Image.Image]],
+    video_frames: Union[np.ndarray, List[np.ndarray], List[PIL.Image.Image]],
     output_video_path: str = None,
     fps: int = 10,
     quality: float = 5.0,
@@ -212,11 +212,15 @@ def export_to_video(
   if output_video_path is None:
     output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
 
-  if isinstance(video_frames[0], np.ndarray):
-    video_frames = [(frame * 255).astype(np.uint8) for frame in video_frames]
-
+  if isinstance(video_frames, np.ndarray):
+    if video_frames.dtype != np.uint8:
+      video_frames = (video_frames * 255).astype(np.uint8)
+  elif isinstance(video_frames[0], np.ndarray):
+    video_frames = np.stack(video_frames)
+    if video_frames.dtype != np.uint8:
+      video_frames = (video_frames * 255).astype(np.uint8)
   elif isinstance(video_frames[0], PIL.Image.Image):
-    video_frames = [np.array(frame) for frame in video_frames]
+    video_frames = np.stack([np.asarray(frame) for frame in video_frames])
 
   with imageio.get_writer(
       output_video_path, fps=fps, quality=quality, bitrate=bitrate, macro_block_size=macro_block_size

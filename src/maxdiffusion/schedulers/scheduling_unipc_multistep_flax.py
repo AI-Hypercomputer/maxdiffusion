@@ -674,7 +674,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
     the multistep UniPC.
     """
 
-    sample = sample.astype(jnp.float32)
+    sample = sample.astype(self.dtype)
 
     if state.timesteps is None:
       raise ValueError("Number of inference steps is 'None', you need to run 'set_timesteps' after creating the scheduler")
@@ -694,6 +694,7 @@ class FlaxUniPCMultistepScheduler(FlaxSchedulerMixin, ConfigMixin):
 
     # Convert model_output (noise/v_pred) to x0_pred or epsilon_pred, based on prediction_type
     model_output_for_history = self.convert_model_output(state, model_output, sample)
+    model_output_for_history = model_output_for_history.astype(self.dtype)
 
     # Apply corrector if applicable
     sample = jax.lax.cond(
