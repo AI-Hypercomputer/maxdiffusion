@@ -30,6 +30,10 @@ from google.cloud import storage
 import flax
 from maxdiffusion.common_types import WAN2_1, WAN2_2
 from maxdiffusion.loaders.wan_lora_nnx_loader import Wan2_1NNXLoraLoader, Wan2_2NNXLoraLoader
+from maxdiffusion.pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
+from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
+from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p1 import WanPipelineI2V_2_1
+from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p2 import WanPipelineI2V_2_2
 
 
 def upload_video_to_gcs(output_dir: str, video_path: str):
@@ -196,18 +200,34 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     load_start = time.perf_counter()
     model_type = config.model_type
     if model_key == WAN2_1:
+      pipeline_cls = WanPipelineI2V_2_1 if model_type == "I2V" else WanPipeline2_1
+      pretrained_state_sources = (("wan_state", "transformer"),)
+      pretrained_config_transformer_attr = "transformer"
       if model_type == "I2V":
         checkpoint_loader = WanCheckpointerI2V_2_1(config=config)
       else:
         checkpoint_loader = WanCheckpointer2_1(config=config)
     elif model_key == WAN2_2:
+      pipeline_cls = WanPipelineI2V_2_2 if model_type == "I2V" else WanPipeline2_2
+      pretrained_state_sources = (
+          ("low_noise_transformer_state", "low_noise_transformer"),
+          ("high_noise_transformer_state", "high_noise_transformer"),
+      )
+      # WAN 2.2 training checkpoints save `wan_config` from the low-noise transformer.
+      pretrained_config_transformer_attr = "low_noise_transformer"
       if model_type == "I2V":
         checkpoint_loader = WanCheckpointerI2V_2_2(config=config)
       else:
         checkpoint_loader = WanCheckpointer2_2(config=config)
     else:
       raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
-    pipeline, _, _ = checkpoint_loader.load_checkpoint()
+    checkpoint_step = checkpoint_loader.checkpoint_manager.latest_step()
+    if checkpoint_step is not None:
+      pipeline, _, _ = checkpoint_loader.load_checkpoint(checkpoint_step)
+    else:
+      pipeline = checkpoint_loader.load_pretrained_pipeline_or_diffusers(
+          config, pipeline_cls, pretrained_state_sources, pretrained_config_transformer_attr
+      )
     load_time = time.perf_counter() - load_start
     max_logging.log(f"load_time: {load_time:.1f}s")
   else:

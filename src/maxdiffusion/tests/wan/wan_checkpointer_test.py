@@ -13,11 +13,148 @@ limitations under the License.
 
 import unittest
 from unittest.mock import patch, MagicMock
+from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
 from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
+from maxdiffusion.pipelines.wan.wan_pipeline import _select_restored_transformer_state
 from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p1 import WanPipelineI2V_2_1
+
+
+class WanPretrainedCacheTest(unittest.TestCase):
+  """Tests for the shared WAN pretrained Orbax cache helper."""
+
+  def setUp(self):
+    self.config = MagicMock()
+    self.config.pretrained_orbax_dir = "/tmp/wan_pretrained_cache"
+    self.pipeline_cls = MagicMock()
+    self.state_sources = (("wan_state", "transformer"),)
+    self.config_transformer_attr = "transformer"
+
+  @patch.object(WanCheckpointer, "_restore_pretrained_checkpoint")
+  def test_loads_from_pretrained_cache_hit(self, mock_restore):
+    restored_checkpoint = MagicMock()
+    mock_restore.return_value = restored_checkpoint
+    pipeline = MagicMock()
+    self.pipeline_cls.from_checkpoint.return_value = pipeline
+
+    result = WanCheckpointer.load_pretrained_pipeline_or_diffusers(
+        self.config, self.pipeline_cls, self.state_sources, self.config_transformer_attr
+    )
+
+    mock_restore.assert_called_once_with(self.config.pretrained_orbax_dir, ("wan_state",))
+    self.pipeline_cls.from_checkpoint.assert_called_once_with(self.config, restored_checkpoint)
+    self.pipeline_cls.from_pretrained.assert_not_called()
+    self.assertEqual(result, pipeline)
+
+  @patch.object(WanCheckpointer, "_save_pretrained_checkpoint")
+  @patch.object(WanCheckpointer, "_restore_pretrained_checkpoint")
+  def test_loads_from_diffusers_and_saves_on_cache_miss(self, mock_restore, mock_save):
+    mock_restore.return_value = None
+    pipeline = MagicMock()
+    self.pipeline_cls.from_pretrained.return_value = pipeline
+
+    result = WanCheckpointer.load_pretrained_pipeline_or_diffusers(
+        self.config, self.pipeline_cls, self.state_sources, self.config_transformer_attr
+    )
+
+    self.pipeline_cls.from_pretrained.assert_called_once_with(self.config)
+    mock_save.assert_called_once_with(
+        self.config.pretrained_orbax_dir, pipeline, self.state_sources, self.config_transformer_attr
+    )
+    self.assertEqual(result, pipeline)
+
+  @patch.object(WanCheckpointer, "_save_pretrained_checkpoint")
+  @patch.object(WanCheckpointer, "_restore_pretrained_checkpoint")
+  def test_empty_pretrained_dir_uses_diffusers_without_cache(self, mock_restore, mock_save):
+    self.config.pretrained_orbax_dir = ""
+    pipeline = MagicMock()
+    self.pipeline_cls.from_pretrained.return_value = pipeline
+
+    result = WanCheckpointer.load_pretrained_pipeline_or_diffusers(
+        self.config, self.pipeline_cls, self.state_sources, self.config_transformer_attr
+    )
+
+    mock_restore.assert_not_called()
+    mock_save.assert_not_called()
+    self.pipeline_cls.from_pretrained.assert_called_once_with(self.config)
+    self.assertEqual(result, pipeline)
+
+  @patch("maxdiffusion.checkpointing.wan_checkpointer.nnx.split")
+  def test_pretrained_save_items_uses_explicit_transformer_config(self, mock_split):
+    pipeline = MagicMock()
+    low_noise_transformer = MagicMock()
+    high_noise_transformer = MagicMock()
+    low_noise_transformer.to_json_string.return_value = '{"model_type": "wan"}'
+    pipeline.low_noise_transformer = low_noise_transformer
+    pipeline.high_noise_transformer = high_noise_transformer
+    low_noise_state = MagicMock()
+    high_noise_state = MagicMock()
+    low_noise_state.to_pure_dict.return_value = {"low": "state"}
+    high_noise_state.to_pure_dict.return_value = {"high": "state"}
+    mock_split.side_effect = [
+        (None, low_noise_state, None),
+        (None, high_noise_state, None),
+    ]
+
+    items = WanCheckpointer._pretrained_save_items(
+        pipeline,
+        (
+            ("low_noise_transformer_state", "low_noise_transformer"),
+            ("high_noise_transformer_state", "high_noise_transformer"),
+        ),
+        "low_noise_transformer",
+    )
+
+    low_noise_transformer.to_json_string.assert_called_once()
+    high_noise_transformer.to_json_string.assert_not_called()
+    mock_split.assert_any_call(low_noise_transformer, unittest.mock.ANY, ...)
+    mock_split.assert_any_call(high_noise_transformer, unittest.mock.ANY, ...)
+    self.assertIn("low_noise_transformer_state", items)
+    self.assertIn("high_noise_transformer_state", items)
+    self.assertIn("wan_config", items)
+
+  def test_pretrained_save_items_requires_transformer_source(self):
+    with self.assertRaisesRegex(ValueError, "at least one transformer source"):
+      WanCheckpointer._pretrained_save_items(MagicMock(), (), "transformer")
+
+
+class WanRestoredTransformerStateTest(unittest.TestCase):
+  """Tests for strict WAN checkpoint state selection."""
+
+  def test_selects_single_wan_state(self):
+    restored_checkpoint = {"wan_state": {"params": {}}}
+
+    self.assertEqual(_select_restored_transformer_state(restored_checkpoint, ""), {"params": {}})
+
+  def test_selects_wan_2_2_low_noise_state(self):
+    restored_checkpoint = {"low_noise_transformer_state": {"low": "state"}}
+
+    self.assertEqual(
+        _select_restored_transformer_state(restored_checkpoint, "transformer_2"),
+        {"low": "state"},
+    )
+
+  def test_selects_wan_2_2_high_noise_state(self):
+    restored_checkpoint = {"high_noise_transformer_state": {"high": "state"}}
+
+    self.assertEqual(
+        _select_restored_transformer_state(restored_checkpoint, "transformer"),
+        {"high": "state"},
+    )
+
+  def test_rejects_mismatched_wan_2_2_state(self):
+    restored_checkpoint = {"low_noise_transformer_state": {"low": "state"}}
+
+    with self.assertRaisesRegex(ValueError, "high_noise_transformer_state"):
+      _select_restored_transformer_state(restored_checkpoint, "transformer")
+
+  def test_rejects_unknown_subfolder(self):
+    restored_checkpoint = {"low_noise_transformer_state": {}, "high_noise_transformer_state": {}}
+
+    with self.assertRaisesRegex(ValueError, "Unsupported WAN checkpoint transformer subfolder"):
+      _select_restored_transformer_state(restored_checkpoint, "unexpected")
 
 
 class WanCheckpointer2_1Test(unittest.TestCase):
