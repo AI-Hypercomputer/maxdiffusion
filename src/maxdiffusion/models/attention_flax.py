@@ -325,7 +325,7 @@ def _tpu_flash_attention(
 ) -> jax.Array:
   """TPU Flash Attention"""
 
-  num_context_shards = mesh.shape["context"]
+  num_context_shards = mesh.shape["context"] if "context" in mesh.shape else 1
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
   value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
@@ -491,7 +491,9 @@ def _tpu_flash_attention(
         raise ValueError("ring attention requires context > 1")
     return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
-  devices_in_batch_sharding = mesh.shape["data"] * (mesh.shape["fsdp"] if "fsdp" in mesh.shape else 1)
+  data_dim = mesh.shape["data"] if "data" in mesh.shape else 1
+  fsdp_dim = mesh.shape["fsdp"] if "fsdp" in mesh.shape else 1
+  devices_in_batch_sharding = data_dim * fsdp_dim
   # This warning might show up when doing model eval for example, when calculating model flops
   # and that is expected.
   if not (query.shape[0] / devices_in_batch_sharding).is_integer():

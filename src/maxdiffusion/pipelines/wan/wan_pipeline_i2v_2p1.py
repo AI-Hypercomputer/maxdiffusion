@@ -99,6 +99,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       latents: Optional[jax.Array] = None,
       last_image: Optional[jax.Array] = None,
       num_videos_per_prompt: int = 1,
+      trace: Optional[dict] = None,
   ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
     if hasattr(image, "detach"):
       image = image.detach().cpu().numpy()
@@ -131,7 +132,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       latents = jax.random.normal(rng, shape=shape, dtype=jnp.float32)
     else:
       latents = latents.astype(dtype)
-    latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image)
+    latent_condition, _ = self.prepare_latents_i2v_base(image, num_frames, dtype, last_image, trace=trace)
     mask_lat_size = jnp.ones((batch_size, 1, num_frames, latent_height, latent_width), dtype=dtype)
     if last_image is None:
       mask_lat_size = mask_lat_size.at[:, :, 1:, :, :].set(0)
@@ -163,7 +164,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       num_inference_steps: int = 50,
       guidance_scale: float = 5.0,
       num_videos_per_prompt: int = 1,
-      max_sequence_length: int = 512,
+      max_sequence_length: Optional[int] = None,
       latents: Optional[jax.Array] = None,
       prompt_embeds: Optional[jax.Array] = None,
       negative_prompt_embeds: Optional[jax.Array] = None,
@@ -178,6 +179,9 @@ class WanPipelineI2V_2_1(WanPipeline):
       use_kv_cache: bool = False,
   ):
     config = getattr(self, "config", None)
+    if max_sequence_length is None:
+      max_sequence_length = getattr(config, "max_sequence_length", 512)
+
     if magcache_thresh is None:
       magcache_thresh = getattr(config, "magcache_thresh", 0.04)
     if magcache_K is None:
@@ -242,6 +246,7 @@ class WanPipelineI2V_2_1(WanPipeline):
         latents=latents,
         last_image=last_image_tensor,
         num_videos_per_prompt=num_videos_per_prompt,
+        trace=trace,
     )
     latents.block_until_ready()
     condition.block_until_ready()
@@ -303,7 +308,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       return latents, trace
 
     t_decode_start = time.perf_counter()
-    video = self._decode_latents_to_video(latents)
+    video = self._decode_latents_to_video(latents, trace=trace)
     if hasattr(video, "block_until_ready"):
       video.block_until_ready()
     trace["vae_decode"] = time.perf_counter() - t_decode_start

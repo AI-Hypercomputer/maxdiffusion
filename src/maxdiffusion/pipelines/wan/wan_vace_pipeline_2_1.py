@@ -494,7 +494,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       num_inference_steps: int = 50,
       guidance_scale: float = 5.0,
       num_videos_per_prompt: Optional[int] = 1,
-      max_sequence_length: int = 512,
+      max_sequence_length: Optional[int] = None,
       latents: jax.Array | None = None,
       prompt_embeds: jax.Array | None = None,
       negative_prompt_embeds: jax.Array | None = None,
@@ -522,6 +522,9 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       negative_prompt_embeds: Optional precomputed negative prompt embeddings for the text encoder.
       vae_only: Whether to only run the decoder for a given latent.
     """
+    config = getattr(self, "config", None)
+    if max_sequence_length is None:
+      max_sequence_length = getattr(config, "max_sequence_length", 512)
 
     self.check_inputs(
         prompt=prompt,
@@ -655,18 +658,12 @@ class VaceWanPipeline2_1(WanPipeline2_1):
             control_hidden_states_scale=conditioning_scale,
         )
         latents = latents[:, :, num_reference_images:]
-        latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
-        latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
-        latents = latents / latents_std + latents_mean
-        latents = latents.astype(jnp.float32)
+        latents = self._denormalize_latents(latents)
+        latents.block_until_ready()
 
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      video = self.vae.decode(latents, self.vae_cache)[0]
-
-    video = jnp.transpose(video, (0, 4, 1, 2, 3))
-    video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
-    video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
-    video = self.video_processor.postprocess_video(video, output_type="np")
+    video = self._decode_latents_to_video(latents)
+    if hasattr(video, "block_until_ready"):
+      video.block_until_ready()
     return video
 
   def prepare_video_latents(
@@ -702,8 +699,9 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       mask = jnp.where(mask > 0.5, 1.0, 0.0).astype(vae_dtype)
       inactive = video * (1 - mask)
       reactive = video * mask
-      inactive = retrieve_latents(self.vae.encode(inactive, self.vae_cache), rngs=rngs, sample_mode="argmax")
-      reactive = retrieve_latents(self.vae.encode(reactive, self.vae_cache), rngs=rngs, sample_mode="argmax")
+      with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
+        inactive = retrieve_latents(self.vae.encode(inactive, self.vae_cache), rngs=rngs, sample_mode="argmax")
+        reactive = retrieve_latents(self.vae.encode(reactive, self.vae_cache), rngs=rngs, sample_mode="argmax")
       inactive = ((inactive.astype(jnp.float32) - latents_mean) * latents_std).astype(vae_dtype)
       reactive = ((reactive.astype(jnp.float32) - latents_mean) * latents_std).astype(vae_dtype)
 
@@ -717,9 +715,10 @@ class VaceWanPipeline2_1(WanPipeline2_1):
         reference_image = jax.device_put(reference_image, data_sharding)
         reference_image = reference_image[None, None, :, :, :]  # [1, 1, H, W, C]
 
-        reference_latent = retrieve_latents(
-            self.vae.encode(reference_image, feat_cache=self.vae_cache), rngs=None, sample_mode="argmax"
-        )
+        with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
+          reference_latent = retrieve_latents(
+              self.vae.encode(reference_image, feat_cache=self.vae_cache), rngs=None, sample_mode="argmax"
+          )
 
         reference_latent = ((reference_latent.astype(jnp.float32) - latents_mean) * latents_std).astype(vae_dtype)
 

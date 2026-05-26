@@ -282,13 +282,11 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    # Add vae_spatial axis to mesh for VAE operations
-    mesh_axes = list(config.mesh_axes)
-    if "vae_spatial" not in mesh_axes:
-      mesh_axes.append("vae_spatial")
-      # Reshape devices to include vae_spatial (size 1 for test)
-      devices_array = devices_array.reshape(devices_array.shape + (1,))
-    mesh = Mesh(devices_array, mesh_axes)
+    vae_spatial = getattr(config, "vae_spatial", -1)
+    if vae_spatial == -1:
+      vae_spatial = devices_array.size
+    vae_devices_array = devices_array.flatten().reshape(-1, vae_spatial)
+    mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
 
     batch_size = 1
     in_depth, in_height, in_width = 10, 32, 32
@@ -305,7 +303,7 @@ class WanVaeTest(unittest.TestCase):
     dummy_cache = jnp.zeros((batch_size, cache_depth, in_height, in_width, in_channels))
 
     # Instantiate the module
-    with self.mesh, nn_partitioning.axis_rules(config.vae_logical_axis_rules):
+    with mesh, nn_partitioning.axis_rules(config.vae_logical_axis_rules):
       causal_conv_layer = WanCausalConv3d(
           in_channels=in_channels,
           out_channels=out_channels,
@@ -341,13 +339,11 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    # Add vae_spatial axis to mesh for VAE operations
-    mesh_axes = list(config.mesh_axes)
-    if "vae_spatial" not in mesh_axes:
-      mesh_axes.append("vae_spatial")
-      # Reshape devices to include vae_spatial (size 1 for test)
-      devices_array = devices_array.reshape(devices_array.shape + (1,))
-    mesh = Mesh(devices_array, mesh_axes)
+    vae_spatial = getattr(config, "vae_spatial", -1)
+    if vae_spatial == -1:
+      vae_spatial = devices_array.size
+    vae_devices_array = devices_array.flatten().reshape(-1, vae_spatial)
+    mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
     # --- Test Case 1: same in/out dim ---
     in_dim = out_dim = 96
     batch = 1
@@ -399,18 +395,16 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    # Add vae_spatial axis to mesh for VAE operations
-    mesh_axes = list(config.mesh_axes)
-    if "vae_spatial" not in mesh_axes:
-      mesh_axes.append("vae_spatial")
-      # Reshape devices to include vae_spatial (size 1 for test)
-      devices_array = devices_array.reshape(devices_array.shape + (1,))
-    mesh = Mesh(devices_array, mesh_axes)
+    vae_spatial = getattr(config, "vae_spatial", -1)
+    if vae_spatial == -1:
+      vae_spatial = devices_array.size
+    vae_devices_array = devices_array.flatten().reshape(-1, vae_spatial)
+    mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
     batch = 1
     t = 1
     dim = 384
     height = 60
-    width = 90
+    width = 96
     input_shape = (batch, t, height, width, dim)
     with mesh, nn_partitioning.axis_rules(config.vae_logical_axis_rules):
       wan_midblock = WanMidBlock(dim=dim, rngs=rngs, mesh=mesh)
@@ -430,13 +424,11 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    # Add vae_spatial axis to mesh for VAE operations
-    mesh_axes = list(config.mesh_axes)
-    if "vae_spatial" not in mesh_axes:
-      mesh_axes.append("vae_spatial")
-      # Reshape devices to include vae_spatial (size 1 for test)
-      devices_array = devices_array.reshape(devices_array.shape + (1,))
-    mesh = Mesh(devices_array, mesh_axes)
+    vae_spatial = getattr(config, "vae_spatial", -1)
+    if vae_spatial == -1:
+      vae_spatial = devices_array.size
+    vae_devices_array = devices_array.flatten().reshape(-1, vae_spatial)
+    mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
     dim = 96
     z_dim = 16
     dim_mult = [1, 2, 4, 4]
@@ -459,7 +451,7 @@ class WanVaeTest(unittest.TestCase):
       t = 13
       channels = 16
       height = 60
-      width = 90
+      width = 96
       input_shape = (batch, t, height, width, channels)
       input = jnp.ones(input_shape)
 
@@ -467,7 +459,7 @@ class WanVaeTest(unittest.TestCase):
       latents_std = 1.0 / jnp.array(wan_vae.latents_std).reshape(1, 1, 1, 1, wan_vae.z_dim)
       input = input / latents_std + latents_mean
       dummy_output = wan_vae.decode(input, feat_cache=vae_cache)
-      assert dummy_output.sample.shape == (batch, 49, 480, 720, 3)
+      assert dummy_output.sample.shape == (batch, 49, 480, 768, 3)
 
   def test_wan_encode(self):
     key = jax.random.key(0)
@@ -481,13 +473,11 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    # Add vae_spatial axis to mesh for VAE operations
-    mesh_axes = list(config.mesh_axes)
-    if "vae_spatial" not in mesh_axes:
-      mesh_axes.append("vae_spatial")
-      # Reshape devices to include vae_spatial (size 1 for test)
-      devices_array = devices_array.reshape(devices_array.shape + (1,))
-    mesh = Mesh(devices_array, mesh_axes)
+    vae_spatial = getattr(config, "vae_spatial", -1)
+    if vae_spatial == -1:
+      vae_spatial = devices_array.size
+    vae_devices_array = devices_array.flatten().reshape(-1, vae_spatial)
+    mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
     dim = 96
     z_dim = 16
     dim_mult = [1, 2, 4, 4]
@@ -533,14 +523,12 @@ class WanVaeTest(unittest.TestCase):
     )
     config = pyconfig.config
     devices_array = create_device_mesh(config)
-    # Add vae_spatial axis to mesh for VAE operations
-    mesh_axes = list(config.mesh_axes)
-    if "vae_spatial" not in mesh_axes:
-      mesh_axes.append("vae_spatial")
-      # Reshape devices to include vae_spatial (size 1 for test)
-      devices_array = devices_array.reshape(devices_array.shape + (1,))
-    mesh = Mesh(devices_array, mesh_axes)
-    with self.mesh, nn_partitioning.axis_rules(self.config.vae_logical_axis_rules):
+    vae_spatial = getattr(config, "vae_spatial", -1)
+    if vae_spatial == -1:
+      vae_spatial = devices_array.size
+    vae_devices_array = devices_array.flatten().reshape(-1, vae_spatial)
+    mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
+    with mesh, nn_partitioning.axis_rules(self.config.vae_logical_axis_rules):
       wan_vae = AutoencoderKLWan.from_config(config.pretrained_model_name_or_path, subfolder="vae", rngs=rngs, mesh=mesh)
       vae_cache = AutoencoderKLWanCache(wan_vae)
     video_path = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/hiker.mp4"

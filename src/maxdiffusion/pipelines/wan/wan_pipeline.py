@@ -20,6 +20,7 @@ import numpy as np
 import math
 import jax
 import jax.numpy as jnp
+import time
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import flax
 import flax.linen as nn
@@ -318,8 +319,10 @@ class WanPipeline:
           subfolder="vae",
           rngs=rngs,
           mesh=mesh,
-          dtype=jnp.float32,
-          weights_dtype=jnp.float32,
+          dtype=config.vae_dtype,
+          weights_dtype=config.vae_weights_dtype,
+          vae_decode_chunk=config.vae_decode_chunk,
+          vae_encode_chunk=config.vae_encode_chunk,
       )
       return wan_vae
 
@@ -461,6 +464,7 @@ class WanPipeline:
         config.pretrained_model_name_or_path,
         subfolder="scheduler",
         flow_shift=config.flow_shift,  # 5.0 for 720p, 3.0 for 480p
+        dtype=config.scheduler_dtype,
     )
     return scheduler, scheduler_state
 
@@ -480,8 +484,11 @@ class WanPipeline:
       self,
       prompt: Union[str, List[str]] = None,
       num_videos_per_prompt: int = 1,
-      max_sequence_length: int = 226,
+      max_sequence_length: Optional[int] = None,
   ):
+    if max_sequence_length is None:
+      max_sequence_length = getattr(self.config, "max_sequence_length", 512)
+
     prompt = [prompt] if isinstance(prompt, str) else prompt
     prompt = [prompt_clean(u) for u in prompt]
     batch_size = len(prompt)
@@ -516,10 +523,13 @@ class WanPipeline:
       prompt: Union[str, List[str]],
       negative_prompt: Optional[Union[str, List[str]]] = None,
       num_videos_per_prompt: int = 1,
-      max_sequence_length: int = 226,
+      max_sequence_length: Optional[int] = None,
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
   ):
+    if max_sequence_length is None:
+      max_sequence_length = getattr(self.config, "max_sequence_length", 512)
+
     if prompt is not None:
       prompt = [prompt] if isinstance(prompt, str) else prompt
       batch_size = len(prompt)
@@ -595,6 +605,7 @@ class WanPipeline:
       num_frames: int,
       dtype: jnp.dtype,
       last_image: Optional[jax.Array] = None,
+      trace: Optional[dict] = None,
   ) -> Tuple[jax.Array, jax.Array]:
     """
     Encodes the initial image(s) into latents to be used as conditioning.
@@ -632,12 +643,14 @@ class WanPipeline:
 
     vae_dtype = getattr(self.vae, "dtype", jnp.float32)
     video_condition = video_condition.astype(vae_dtype)
-    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
-      data_mesh_size = self.mesh.shape[self.config.mesh_axes[0]]
-      if video_condition.shape[0] % data_mesh_size == 0:
-        sharding_spec = P(self.config.mesh_axes[0], None, None, None, None)
-        video_condition = jax.lax.with_sharding_constraint(video_condition, sharding_spec)
+    t_vae_encode_start = time.perf_counter()
+    with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
       encoded_output = self.vae.encode(video_condition, self.vae_cache)[0].mode()
+      if hasattr(encoded_output, "block_until_ready"):
+        encoded_output.block_until_ready()
+
+    if trace is not None:
+      trace["vae_encode"] = time.perf_counter() - t_vae_encode_start
 
     # Normalize latents
     latents_mean = jnp.array(self.vae.latents_mean).reshape(1, 1, 1, 1, self.vae.z_dim)
@@ -650,21 +663,27 @@ class WanPipeline:
 
   def _denormalize_latents(self, latents: jax.Array) -> jax.Array:
     """Denormalizes latents using VAE statistics."""
-    latents_mean = jnp.array(self.vae.latents_mean).reshape(1, self.vae.z_dim, 1, 1, 1)
-    latents_std = 1.0 / jnp.array(self.vae.latents_std).reshape(1, self.vae.z_dim, 1, 1, 1)
+    dtype = self.config.activations_dtype
+    latents_mean = jnp.array(self.vae.latents_mean, dtype=dtype).reshape(1, self.vae.z_dim, 1, 1, 1)
+    latents_std = 1.0 / jnp.array(self.vae.latents_std, dtype=dtype).reshape(1, self.vae.z_dim, 1, 1, 1)
     latents = latents / latents_std + latents_mean
-    latents = latents.astype(jnp.float32)
     return latents
 
-  def _decode_latents_to_video(self, latents: jax.Array) -> np.ndarray:
+  def _decode_latents_to_video(self, latents: jax.Array, trace: Optional[dict] = None) -> np.ndarray:
     """Decodes latents to video frames and postprocesses."""
+    t_vae_tpu_start = time.perf_counter()
     with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
       video = self.vae.decode(latents, self.vae_cache)[0]
+      video = (video / 2.0) + 0.5
+      video = jnp.clip(video, 0.0, 1.0)
+      video = (video * 255.0).astype(jnp.uint8)
+      video.block_until_ready()
+    if trace is not None:
+      trace["vae_decode_tpu"] = time.perf_counter() - t_vae_tpu_start
 
-    video = jnp.transpose(video, (0, 4, 1, 2, 3))
     video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
-    video = torch.from_numpy(np.array(video.astype(dtype=jnp.float32))).to(dtype=torch.bfloat16)
-    return self.video_processor.postprocess_video(video, output_type="np")
+    video = np.array(video)
+    return video
 
   @classmethod
   def _create_common_components(cls, config, vae_only=False, i2v=False):
@@ -691,20 +710,6 @@ class WanPipeline:
 
     # logical axis rules for VAE encoding/decoding
     vae_logical_axis_rules = getattr(config, "vae_logical_axis_rules", None)
-    if vae_logical_axis_rules is None:
-      vae_logical_axis_rules = (
-          ("activation_batch", "redundant"),
-          ("activation_length", "vae_spatial"),
-          ("activation_heads", None),
-          ("activation_kv_length", None),
-          ("embed", None),
-          ("heads", None),
-          ("norm", None),
-          ("conv_batch", "redundant"),
-          ("out_channels", "vae_spatial"),
-          ("conv_out", "vae_spatial"),
-      )
-
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
 
@@ -759,12 +764,14 @@ class WanPipeline:
       image: Union[PIL.Image.Image, List[PIL.Image.Image]],
       negative_prompt: Optional[Union[str, List[str]]] = None,
       num_videos_per_prompt: int = 1,
-      max_sequence_length: int = 512,
+      max_sequence_length: Optional[int] = None,
       prompt_embeds: Optional[jax.Array] = None,
       negative_prompt_embeds: Optional[jax.Array] = None,
       image_embeds: Optional[jax.Array] = None,
       last_image: Optional[PIL.Image.Image] = None,
   ):
+    if max_sequence_length is None:
+      max_sequence_length = getattr(self.config, "max_sequence_length", 512)
     if prompt is not None and isinstance(prompt, str):
       prompt = [prompt]
     batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
@@ -827,12 +834,15 @@ class WanPipeline:
       num_frames: int = 81,
       num_inference_steps: int = 50,
       num_videos_per_prompt: Optional[int] = 1,
-      max_sequence_length: int = 512,
+      max_sequence_length: Optional[int] = None,
       latents: jax.Array = None,
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
       vae_only: bool = False,
   ):
+    if max_sequence_length is None:
+      max_sequence_length = getattr(self.config, "max_sequence_length", 512)
+
     if not vae_only:
       if num_frames % self.vae_scale_factor_temporal != 1:
         max_logging.log(
