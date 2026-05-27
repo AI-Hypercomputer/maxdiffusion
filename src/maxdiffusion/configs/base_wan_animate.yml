@@ -267,6 +267,10 @@ names_which_can_be_offloaded: []
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1
 checkpoint_dir: ""
+# Directory to cache pretrained weights as an orbax checkpoint for fast inference loads.
+# On first run (slow, diffusers load), weights are saved here automatically.
+# On subsequent runs, weights are loaded from here instead (~10x faster).
+pretrained_orbax_dir: ""
 # enables one replica to read the ckpt then broadcast to the rest
 enable_single_replica_ckpt_restoring: False
 

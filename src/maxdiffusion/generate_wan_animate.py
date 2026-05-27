@@ -11,6 +11,7 @@ import flax
 import jax
 
 from maxdiffusion import max_logging, max_utils, pyconfig
+from maxdiffusion.checkpointing.wan_checkpointer import WanCheckpointer
 from maxdiffusion.pipelines.wan.wan_pipeline_animate import WanAnimatePipeline
 from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.utils import export_to_video
@@ -43,7 +44,9 @@ def run(config):
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
 
   load_start = time.perf_counter()
-  pipeline = WanAnimatePipeline.from_pretrained(config)
+  pipeline = WanCheckpointer.load_pretrained_pipeline_or_diffusers(
+      config, WanAnimatePipeline, (("wan_state", "transformer"),), "transformer"
+  )
   load_time = time.perf_counter() - load_start
   max_logging.log(f"load_time: {load_time:.1f}s")
 

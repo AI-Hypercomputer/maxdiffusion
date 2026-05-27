@@ -100,6 +100,30 @@ def _add_sharding_rule(vs: nnx.VariableState, logical_axis_rules) -> nnx.Variabl
   return vs
 
 
+def _select_restored_transformer_state(restored_checkpoint, subfolder: str):
+  """Select the transformer state that belongs to a WAN checkpoint restore call.
+
+  WAN 2.1 and Wan Animate checkpoints use a single `wan_state`. WAN 2.2 checkpoints
+  store separate transformer states: diffusers `transformer_2` is the low-noise
+  transformer, while `transformer` is the high-noise transformer.
+  """
+  checkpoint_keys = restored_checkpoint.keys()
+  if "wan_state" in checkpoint_keys:
+    return restored_checkpoint["wan_state"]
+
+  if subfolder == "transformer_2":
+    if "low_noise_transformer_state" not in checkpoint_keys:
+      raise ValueError("WAN checkpoint is missing `low_noise_transformer_state` for subfolder `transformer_2`.")
+    return restored_checkpoint["low_noise_transformer_state"]
+
+  if subfolder == "transformer":
+    if "high_noise_transformer_state" not in checkpoint_keys:
+      raise ValueError("WAN checkpoint is missing `high_noise_transformer_state` for subfolder `transformer`.")
+    return restored_checkpoint["high_noise_transformer_state"]
+
+  raise ValueError(f"Unsupported WAN checkpoint transformer subfolder `{subfolder}`.")
+
+
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(
     devices_array: np.array,
@@ -156,13 +180,14 @@ def create_sharded_logical_transformer(
   state = dict(nnx.to_flat_state(state))
 
   # 4. Load pretrained weights and move them to device using the state shardings from (3) above.
-  # This helps with loading sharded weights directly into the accelerators without fist copying them
+  # This helps with loading sharded weights directly into the accelerators without first copying them
   # all to one device and then distributing them, thus using low HBM memory.
   if restored_checkpoint:
-    if "params" in restored_checkpoint["wan_state"]:  # if checkpointed with optimizer
-      params = restored_checkpoint["wan_state"]["params"]
+    checkpoint_state = _select_restored_transformer_state(restored_checkpoint, subfolder)
+    if "params" in checkpoint_state:  # if checkpointed with optimizer
+      params = checkpoint_state["params"]
     else:  # if not checkpointed with optimizer
-      params = restored_checkpoint["wan_state"]
+      params = checkpoint_state
   else:
     params = load_wan_transformer(
         config.wan_transformer_pretrained_model_name_or_path,
