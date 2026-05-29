@@ -19,13 +19,14 @@ import time
 import unittest
 import jax
 import jax.numpy as jnp
+import gc
 
 from maxdiffusion import pyconfig
 from maxdiffusion.checkpointing.ltx2_checkpointer import LTX2Checkpointer
 
 try:
   jax.distributed.initialize()
-except Exception:
+except Exception:  # pylint: disable=broad-exception-caught
   pass
 
 IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
@@ -37,6 +38,9 @@ class LTX2SmokeTest(unittest.TestCase):
 
   @classmethod
   def setUpClass(cls):
+    gc.collect()
+    jax.clear_caches()
+
     # Initialize config with the LTX2 video config file
     pyconfig.initialize(
         [
@@ -57,6 +61,19 @@ class LTX2SmokeTest(unittest.TestCase):
         unittest=True,
     )
     cls.config = pyconfig.config
+
+    # Since this is just a smoke test to ensure the diffusion loop logic and inference code
+    # work end-to-end, we don't actually need the real 4B parameter TorchAX text encoder running.
+    # We patch the loader to prevent it from consuming the limited TPU HBM memory.
+    cls.patcher1 = unittest.mock.patch(
+        "maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.load_text_encoder", return_value=None
+    )
+    cls.patcher2 = unittest.mock.patch(
+        "maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.load_tokenizer", return_value=None
+    )
+    cls.patcher1.start()
+    cls.patcher2.start()
+
     checkpoint_loader = LTX2Checkpointer(config=cls.config)
     cls.pipeline, _, _ = checkpoint_loader.load_checkpoint(load_upsampler=False)
 
@@ -67,10 +84,22 @@ class LTX2SmokeTest(unittest.TestCase):
     """Test that LTX2 pipeline can run inference and produce output."""
     generator = jax.random.key(self.config.seed)
 
+    batch_size = len(self.prompt)
+    # Create dummy embeddings to bypass the text encoder
+    # LTX2AudioVideoGemmaTextEncoder expects a list of 49 tensors of shape (B, 1024, 3840)
+    prompt_embeds = [jnp.zeros((batch_size, 1024, 3840), dtype=jnp.bfloat16) for _ in range(49)]
+    prompt_attention_mask = jnp.ones((batch_size, 1024), dtype=jnp.bool_)
+    negative_prompt_embeds = [jnp.zeros((batch_size, 1024, 3840), dtype=jnp.bfloat16) for _ in range(49)]
+    negative_prompt_attention_mask = jnp.ones((batch_size, 1024), dtype=jnp.bool_)
+
     t0 = time.perf_counter()
     out = self.pipeline(
-        prompt=self.prompt,
-        negative_prompt=self.negative_prompt,
+        prompt=None,
+        negative_prompt=None,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
+        prompt_attention_mask=prompt_attention_mask,
+        negative_prompt_attention_mask=negative_prompt_attention_mask,
         height=self.config.height,
         width=self.config.width,
         num_frames=self.config.num_frames,
@@ -98,8 +127,8 @@ class LTX2SmokeTest(unittest.TestCase):
   @classmethod
   def tearDownClass(cls):
     del cls.pipeline
-    import gc
-
+    cls.patcher1.stop()
+    cls.patcher2.stop()
     gc.collect()
 
 

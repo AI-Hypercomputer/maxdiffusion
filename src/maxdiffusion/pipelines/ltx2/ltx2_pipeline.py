@@ -23,16 +23,20 @@ import torch
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from torchax import default_env
+from maxdiffusion.models.ltx2.text_encoders.torchax_text_encoder import TorchaxGemma3TextEncoder
+from maxdiffusion.tpu_utils import get_tpu_type, TpuType
+from maxdiffusion.maxdiffusion_utils import get_dummy_ltx2_inputs
+import contextlib
 import flax
 import flax.linen as nn
 import flax.traverse_util
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from transformers import AutoTokenizer, GemmaTokenizer, GemmaTokenizerFast, Gemma3ForConditionalGeneration
-from maxdiffusion.tpu_utils import get_tpu_type, TpuType
 import qwix
 from ...utils import logging
-from ...schedulers import FlaxFlowMatchScheduler
+from ...schedulers import FlaxFlowMatchScheduler  # pylint: disable=no-name-in-module
 from ...models.ltx2.autoencoder_kl_ltx2 import LTX2VideoAutoencoderKL
 from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder, LTX2VocoderWithBWE
@@ -55,7 +59,6 @@ from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
 from ...max_utils import get_precision, device_put_replicated, get_flash_block_sizes
-from maxdiffusion.maxdiffusion_utils import get_dummy_ltx2_inputs
 
 
 @flax.struct.dataclass
@@ -68,7 +71,8 @@ class LTX2PipelineOutput:
 def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
   """
   Rescales `noise_cfg` tensor based on `guidance_rescale` to improve image quality and fix overexposure.
-  Based on Section 3.4 from [Common Diffusion Noise Schedules and Sample Steps are Flawed](https://huggingface.co/papers/2305.08891).
+  Based on Section 3.4 from [Common Diffusion Noise Schedules and Sample Steps are Flawed]
+  (https://huggingface.co/papers/2305.08891).
   """
   std_text = jnp.std(noise_pred_text, axis=list(range(1, noise_pred_text.ndim)), keepdims=True)
   std_cfg = jnp.std(noise_cfg, axis=list(range(1, noise_cfg.ndim)), keepdims=True)
@@ -113,6 +117,9 @@ def create_sharded_logical_transformer(
     restored_checkpoint=None,
     subfolder: str = "",
 ):
+  """Creates a sharded logical transformer."""
+
+  # pylint: disable=too-many-positional-arguments,unused-argument
   def create_model(rngs: nnx.Rngs, ltx2_config: dict):
     transformer = LTX2VideoTransformer3DModel(**ltx2_config, rngs=rngs)
     return transformer
@@ -190,6 +197,8 @@ def calculate_shift(
     base_shift: float = 0.5,
     max_shift: float = 1.15,
 ):
+  """Calculates the shift for the timestep schedule."""
+  # pylint: disable=too-many-positional-arguments
   m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
   b = base_shift - m * base_seq_len
   mu = image_seq_len * m + b
@@ -204,6 +213,8 @@ def retrieve_timesteps(
     sigmas: Optional[List[float]] = None,
     **kwargs,
 ):
+  """Retrieves timesteps for the scheduler."""
+  # pylint: disable=too-many-positional-arguments
   if timesteps is not None and sigmas is not None:
     raise ValueError("Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values")
 
@@ -225,6 +236,8 @@ class LTX2Pipeline:
   """
   Pipeline for LTX-2.
   """
+
+  # pylint: disable=missing-function-docstring,too-many-positional-arguments,unused-argument
 
   def __init__(
       self,
@@ -249,6 +262,8 @@ class LTX2Pipeline:
     self.transformer = transformer
     self.latent_upsampler = latent_upsampler
     self.latent_upsampler_params = latent_upsampler_params
+    self.mesh = None
+    self.config = None
 
     # VAE compression ratios
     self.vae_spatial_compression_ratio = getattr(self.vae, "spatial_compression_ratio", 32)
@@ -316,6 +331,12 @@ class LTX2Pipeline:
         torch_dtype=torch.bfloat16,
     )
     text_encoder.eval()
+
+    if getattr(config, "run_text_encoder_on_tpu", True):
+      with default_env():
+        text_encoder = text_encoder.to("jax")
+        text_encoder = TorchaxGemma3TextEncoder(text_encoder)
+
     return text_encoder
 
   @classmethod
@@ -394,10 +415,7 @@ class LTX2Pipeline:
       sharding = logical_state_sharding.get(path)
       if sharding is not None:
         sharding = sharding.get_value()
-        try:
-          replicate_vae = config.replicate_vae
-        except ValueError:
-          replicate_vae = False
+        replicate_vae = getattr(config, "replicate_vae", False)
         if replicate_vae:
           sharding = NamedSharding(mesh, P())
         state[path].set_value(device_put_replicated(val, sharding))
@@ -442,10 +460,7 @@ class LTX2Pipeline:
       sharding = logical_state_sharding.get(path)
       if sharding is not None:
         sharding = sharding.get_value()
-        try:
-          replicate_vae = config.replicate_vae
-        except ValueError:
-          replicate_vae = False
+        replicate_vae = getattr(config, "replicate_vae", False)
         if replicate_vae:
           sharding = NamedSharding(mesh, P())
         state[path].set_value(device_put_replicated(val, sharding))
@@ -807,39 +822,83 @@ class LTX2Pipeline:
     prompt = [p.strip() for p in prompt]
 
     if self.text_encoder is not None:
-      # PyTorch Text Encoder
-      text_inputs = self.tokenizer(
-          prompt,
-          padding="max_length",
-          max_length=max_sequence_length,
-          truncation=True,
-          add_special_tokens=True,
-          return_tensors="pt",
-      )
-      text_input_ids = text_inputs.input_ids
-      prompt_attention_mask = text_inputs.attention_mask
+      run_text_encoder_on_tpu = getattr(self.config, "run_text_encoder_on_tpu", True) if hasattr(self, "config") else True
+      if run_text_encoder_on_tpu:
+        # Torchax Text Encoder
+        text_inputs = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            add_special_tokens=True,
+            return_tensors="np",
+        )
+        text_input_ids = jnp.array(text_inputs.input_ids)
+        prompt_attention_mask = jnp.array(text_inputs.attention_mask)
 
-      text_input_ids = text_input_ids.to(self.text_encoder.device)
-      prompt_attention_mask = prompt_attention_mask.to(self.text_encoder.device)
+        # Distribute the batch dimension across available TPUs to prevent Softmax OOM
+        # (reduces 512MB allocation down to 64MB per TPU for batch size 16)
+        devices = np.array(jax.devices())
+        num_shards = 1
+        for i in range(len(devices), 0, -1):
+          if text_input_ids.shape[0] % i == 0:
+            num_shards = i
+            break
 
-      with torch.no_grad():
-        text_encoder_outputs = self.text_encoder(
+        if num_shards > 1:
+          mesh = Mesh(devices[:num_shards], axis_names=("batch",))
+          sharding = NamedSharding(mesh, P("batch"))
+          text_input_ids = jax.device_put(text_input_ids, sharding)
+          prompt_attention_mask = jax.device_put(prompt_attention_mask, sharding)
+
+        # Torchax wrapper returns tuple of hidden states natively
+        text_encoder_hidden_states = self.text_encoder(
             input_ids=text_input_ids, attention_mask=prompt_attention_mask, output_hidden_states=True
         )
 
-      text_encoder_hidden_states = text_encoder_outputs.hidden_states
-      del text_encoder_outputs  # Free memory
+        prompt_embeds_list = []
+        # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
+        for state in text_encoder_hidden_states:
+          prompt_embeds_list.append(state.astype(jnp.bfloat16))
 
-      prompt_embeds_list = []
-      # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
-      for state in text_encoder_hidden_states:
-        state_np = state.cpu().to(torch.float32).numpy()
-        prompt_embeds_list.append(jnp.array(state_np, dtype=jnp.bfloat16))
+        prompt_embeds = prompt_embeds_list
+        del text_encoder_hidden_states  # Free memory
 
-      prompt_embeds = prompt_embeds_list
-      del text_encoder_hidden_states  # Free PyTorch tensor memory
+        prompt_attention_mask = prompt_attention_mask.astype(jnp.bool_)
+      else:
+        # PyTorch Text Encoder
+        text_inputs = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            add_special_tokens=True,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids
+        prompt_attention_mask = text_inputs.attention_mask
 
-      prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bool_)
+        text_input_ids = text_input_ids.to(self.text_encoder.device)
+        prompt_attention_mask = prompt_attention_mask.to(self.text_encoder.device)
+
+        with torch.no_grad():
+          text_encoder_outputs = self.text_encoder(
+              input_ids=text_input_ids, attention_mask=prompt_attention_mask, output_hidden_states=True
+          )
+
+        text_encoder_hidden_states = text_encoder_outputs.hidden_states
+        del text_encoder_outputs  # Free memory
+
+        prompt_embeds_list = []
+        # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
+        for state in text_encoder_hidden_states:
+          state_np = state.cpu().to(torch.float32).numpy()
+          prompt_embeds_list.append(jnp.array(state_np, dtype=jnp.bfloat16))
+
+        prompt_embeds = prompt_embeds_list
+        del text_encoder_hidden_states  # Free PyTorch tensor memory
+
+        prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bool_)
     else:
       raise ValueError("`text_encoder` is required to encode prompts.")
 
@@ -884,7 +943,7 @@ class LTX2Pipeline:
     elif prompt is not None and isinstance(prompt, list):
       batch_size = len(prompt)
     else:
-      batch_size = prompt_embeds.shape[0]
+      batch_size = prompt_embeds[0].shape[0] if isinstance(prompt_embeds, list) else prompt_embeds.shape[0]
 
     tpu_type = get_tpu_type()
     # Batching text encoder gives better results on Ironwood (v7x) but poor on Trillium (v6e)
@@ -981,12 +1040,21 @@ class LTX2Pipeline:
       raise ValueError("Must provide `negative_prompt_attention_mask` when specifying `negative_prompt_embeds`.")
 
     if prompt_embeds is not None and negative_prompt_embeds is not None:
-      if prompt_embeds.shape != negative_prompt_embeds.shape:
-        raise ValueError(
-            "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
-            f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
-            f" {negative_prompt_embeds.shape}."
-        )
+      if isinstance(prompt_embeds, list):
+        p_shape = [p.shape for p in prompt_embeds]
+        n_shape = [n.shape for n in negative_prompt_embeds] if isinstance(negative_prompt_embeds, list) else None
+        if p_shape != n_shape:
+          raise ValueError(
+              "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
+              f" got: `prompt_embeds` {p_shape} != `negative_prompt_embeds` {n_shape}."
+          )
+      else:
+        if prompt_embeds.shape != negative_prompt_embeds.shape:
+          raise ValueError(
+              "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
+              f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
+              f" {negative_prompt_embeds.shape}."
+          )
       if prompt_attention_mask.shape != negative_prompt_attention_mask.shape:
         raise ValueError(
             "`prompt_attention_mask` and `negative_prompt_attention_mask` must have the same shape when passed directly, but"
@@ -996,7 +1064,7 @@ class LTX2Pipeline:
 
   @staticmethod
   def _pack_latents(latents: jax.Array, patch_size: int = 1, patch_size_t: int = 1) -> jax.Array:
-    batch_size, num_channels, num_frames, height, width = latents.shape
+    batch_size, _, num_frames, height, width = latents.shape
     post_patch_num_frames = num_frames // patch_size_t
     post_patch_height = height // patch_size
     post_patch_width = width // patch_size
@@ -1085,7 +1153,7 @@ class LTX2Pipeline:
       latents: jax.Array, patch_size: Optional[int] = None, patch_size_t: Optional[int] = None
   ) -> jax.Array:
     if patch_size is not None and patch_size_t is not None:
-      batch_size, num_channels, latent_length, latent_mel_bins = latents.shape
+      batch_size, _, latent_length, latent_mel_bins = latents.shape
       post_patch_latent_length = latent_length // patch_size_t
       post_patch_mel_bins = latent_mel_bins // patch_size
       latents = latents.reshape(batch_size, -1, post_patch_latent_length, patch_size_t, post_patch_mel_bins, patch_size)
@@ -1428,7 +1496,6 @@ class LTX2Pipeline:
     graphdef, state = nnx.split(self.transformer)
 
     # 7. Denoising Loop
-    import contextlib
 
     context_manager = self.mesh if hasattr(self, "mesh") and self.mesh is not None else contextlib.nullcontext()
     axis_rules_context = (
@@ -1502,7 +1569,6 @@ class LTX2Pipeline:
         for i in range(len(timesteps_jax)):
           t = timesteps_jax[i]
           sigma_t = sigmas[i]
-
           # Isolate input sharding to scan_layers=False to avoid affecting the standard path
           latents_jax_sharded = latents_jax
           audio_latents_jax_sharded = audio_latents_jax
@@ -1714,20 +1780,48 @@ class LTX2Pipeline:
     if output_type == "latent":
       return LTX2PipelineOutput(frames=latents, audio=audio_latents, timings=timings)
 
-    # Force latents and VAE weights to be fully replicated using with_sharding_constraint, this speeds up single video latency ~3x
-    if getattr(self.config, "replicate_vae", False):
+    # Force latents and VAE weights to be fully replicated using with_sharding_constraint,
+    # this speeds up single video latency ~3x
+    replicate_vae = getattr(self.config, "replicate_vae", False) if hasattr(self, "config") else False
+    enable_dynamic_vae_sharding = (
+        getattr(self.config, "enable_dynamic_vae_sharding", True) if hasattr(self, "config") else True
+    )
+
+    if enable_dynamic_vae_sharding and batch_size > 2:
+      max_logging.log(
+          f"[Tuning] Skipping VAE replication and disabling slicing to prevent HBM OOM for batch_size {batch_size} > 2"
+      )
+      try:
+        # Disable sequential slicing to avoid JAX concatenating 17GB arrays on the TPU
+        self.vae.use_slicing = False
+
+        # Distribute the batch dimension across the existing mesh to ensure topological compatibility
+        mesh = latents.sharding.mesh
+        active_axes = []
+        current_shards = 1
+
+        for axis_name, size in mesh.shape.items():
+          if size > 1 and batch_size % (current_shards * size) == 0:
+            active_axes.append(axis_name)
+            current_shards *= size
+
+        if active_axes:
+          batch_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(tuple(active_axes)))
+          latents = jax.lax.with_sharding_constraint(latents, batch_sharding)
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        max_logging.log(f"[Tuning] Failed to apply batch sharding constraint to VAE: {e}")
+    elif replicate_vae:
       try:
         mesh = latents.sharding.mesh
         replicated_sharding = NamedSharding(mesh, P())
         latents = jax.lax.with_sharding_constraint(latents, replicated_sharding)
-
         # Replicate VAE weights
         graphdef, state = nnx.split(self.vae)
         state = jax.tree_util.tree_map(
             lambda x: jax.lax.with_sharding_constraint(x, replicated_sharding) if isinstance(x, jax.Array) else x, state
         )
         self.vae = nnx.merge(graphdef, state)
-      except Exception as e:
+      except Exception as e:  # pylint: disable=broad-exception-caught
         max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
 
     latent_processing_time += time.perf_counter() - t0_latent_processing
@@ -1831,6 +1925,8 @@ def transformer_forward_pass(
     use_cross_timestep=False,
     is_cfg_stg_mode: bool = False,
 ):
+  """Forward pass for the transformer."""
+  # pylint: disable=too-many-positional-arguments,unused-argument
   transformer = nnx.merge(graphdef, state)
 
   # Expand timestep to batch size
@@ -1938,6 +2034,8 @@ def run_diffusion_loop(
     perturbation_mask=None,
     use_cross_timestep=False,
 ):
+  """Runs the diffusion loop."""
+  # pylint: disable=too-many-positional-arguments
   latents_jax = latents_jax.astype(jnp.float32)
   audio_latents_jax = audio_latents_jax.astype(jnp.float32)
 
