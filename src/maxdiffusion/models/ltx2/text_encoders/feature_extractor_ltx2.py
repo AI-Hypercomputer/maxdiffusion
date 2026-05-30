@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 import jax.numpy as jnp
 from flax import nnx
 from maxdiffusion import common_types
@@ -106,6 +106,7 @@ class LTX2GemmaFeatureExtractor(nnx.Module):
       use_bias: bool = False,
       video_output_dim: Optional[int] = None,
       audio_output_dim: Optional[int] = None,
+      sharding_specs: Optional[Any] = None,
   ):
     """
     Args:
@@ -114,13 +115,44 @@ class LTX2GemmaFeatureExtractor(nnx.Module):
     """
     self.per_modality_projections = per_modality_projections
 
+    if sharding_specs is not None:
+      proj_k_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), sharding_specs.proj_kernel)
+      proj_b_init = nnx.with_partitioning(nnx.initializers.zeros, sharding_specs.proj_bias)
+    else:
+      proj_k_init = nnx.initializers.lecun_normal()
+      proj_b_init = nnx.initializers.zeros
+
     if per_modality_projections:
       v_dim = video_output_dim if video_output_dim is not None else output_dim
       a_dim = audio_output_dim if audio_output_dim is not None else output_dim
-      self.video_linear = nnx.Linear(input_dim, v_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
-      self.audio_linear = nnx.Linear(input_dim, a_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
+      self.video_linear = nnx.Linear(
+          input_dim,
+          v_dim,
+          use_bias=use_bias,
+          dtype=dtype,
+          rngs=rngs,
+          kernel_init=proj_k_init,
+          bias_init=proj_b_init,
+      )
+      self.audio_linear = nnx.Linear(
+          input_dim,
+          a_dim,
+          use_bias=use_bias,
+          dtype=dtype,
+          rngs=rngs,
+          kernel_init=proj_k_init,
+          bias_init=proj_b_init,
+      )
     else:
-      self.linear = nnx.Linear(input_dim, output_dim, use_bias=use_bias, dtype=dtype, rngs=rngs)
+      self.linear = nnx.Linear(
+          input_dim,
+          output_dim,
+          use_bias=use_bias,
+          dtype=dtype,
+          rngs=rngs,
+          kernel_init=proj_k_init,
+          bias_init=proj_b_init,
+      )
 
   def __call__(self, hidden_states: Union[Tuple[Array, ...], Array], attention_mask: Array) -> Array:
     """

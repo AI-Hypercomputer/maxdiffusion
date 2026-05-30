@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -37,6 +37,7 @@ class _BasicTransformerBlock1D(nnx.Module):
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
+      sharding_specs: Optional[Any] = None,
       gated_attn: bool = False,
   ):
     self.attn1 = LTX2Attention(
@@ -49,9 +50,10 @@ class _BasicTransformerBlock1D(nnx.Module):
         attention_kernel=attention_kernel,
         mesh=mesh,
         rngs=rngs,
+        sharding_specs=sharding_specs,
         gated_attn=gated_attn,
     )
-    self.ff = NNXSimpleFeedForward(rngs=rngs, dim=dim, dim_out=dim, activation_fn="gelu_tanh")
+    self.ff = NNXSimpleFeedForward(rngs=rngs, dim=dim, dim_out=dim, activation_fn="gelu_tanh", sharding_specs=sharding_specs)
     self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=False, rngs=rngs)
     self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, dtype=jnp.float32, param_dtype=jnp.float32, use_scale=False, rngs=rngs)
 
@@ -94,6 +96,7 @@ class Embeddings1DConnector(nnx.Module):
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
+      sharding_specs: Optional[Any] = None,
       gated_attn: bool = False,
   ):
     self.dim = input_dim
@@ -120,6 +123,7 @@ class Embeddings1DConnector(nnx.Module):
           attention_kernel=attention_kernel,
           mesh=mesh,
           rngs=rngs,
+          sharding_specs=sharding_specs,
           gated_attn=gated_attn,
       )
 

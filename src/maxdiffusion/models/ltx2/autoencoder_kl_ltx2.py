@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple, Union, Optional, Sequence
+from typing import Tuple, Union, Optional, Sequence, Any
 from enum import Enum
 
 
@@ -180,6 +180,7 @@ class LTX2VideoResnetBlock3d(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      sharding_specs: Optional[Any] = None,
   ):
     out_channels = out_channels or in_channels
     self.nonlinearity = get_activation(non_linearity)
@@ -233,15 +234,18 @@ class LTX2VideoResnetBlock3d(nnx.Module):
       self.conv_shortcut = None
 
     if inject_noise:
-      self.per_channel_scale1 = nnx.Param(jnp.zeros((in_channels,), dtype=dtype))
-      self.per_channel_scale2 = nnx.Param(jnp.zeros((in_channels,), dtype=dtype))
+      sharding = sharding_specs.per_channel_scale if sharding_specs is not None else None
+      self.per_channel_scale1 = nnx.Param(jnp.zeros((in_channels,), dtype=dtype), sharding=sharding)
+      self.per_channel_scale2 = nnx.Param(jnp.zeros((in_channels,), dtype=dtype), sharding=sharding)
     else:
       self.per_channel_scale1 = None
       self.per_channel_scale2 = None
 
     if timestep_conditioning:
+      sharding = sharding_specs.scale_shift_table if sharding_specs is not None else None
       self.scale_shift_table = nnx.Param(
-          jax.random.normal(rngs.params(), (4, in_channels), dtype=dtype) / (in_channels**0.5)
+          jax.random.normal(rngs.params(), (4, in_channels), dtype=dtype) / (in_channels**0.5),
+          sharding=sharding,
       )
     else:
       self.scale_shift_table = None
@@ -469,9 +473,11 @@ class LTX2VideoDownBlock3D(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      sharding_specs: Optional[Any] = None,
   ):
     out_channels = out_channels or in_channels
     self.num_layers = num_layers
+    self.sharding_specs = sharding_specs
 
     @nnx.split_rngs(splits=num_layers)
     @nnx.vmap(in_axes=0, out_axes=0, axis_size=num_layers)
@@ -488,6 +494,7 @@ class LTX2VideoDownBlock3D(nnx.Module):
           dtype=dtype,
           weights_dtype=weights_dtype,
           precision=precision,
+          sharding_specs=sharding_specs,
       )
 
     self.resnets = create_resnets(rngs)
@@ -599,6 +606,7 @@ class LTX2VideoMidBlock3d(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      sharding_specs: Optional[Any] = None,
   ):
     if timestep_conditioning:
       self.time_embedder = nnx.data(
@@ -609,6 +617,7 @@ class LTX2VideoMidBlock3d(nnx.Module):
               use_additional_conditions=False,
               dtype=dtype,
               weights_dtype=weights_dtype,
+              sharding_specs=sharding_specs,
           )
       )
     else:
@@ -633,6 +642,7 @@ class LTX2VideoMidBlock3d(nnx.Module):
           dtype=dtype,
           weights_dtype=weights_dtype,
           precision=precision,
+          sharding_specs=sharding_specs,
       )
 
     self.resnets = create_resnets(rngs)
@@ -690,6 +700,7 @@ class LTX2VideoUpBlock3d(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      sharding_specs: Optional[Any] = None,
   ):
     out_channels = out_channels or in_channels
 
@@ -703,6 +714,7 @@ class LTX2VideoUpBlock3d(nnx.Module):
               use_additional_conditions=False,
               dtype=dtype,
               weights_dtype=weights_dtype,
+              sharding_specs=sharding_specs,
           )
       )
 
@@ -723,6 +735,7 @@ class LTX2VideoUpBlock3d(nnx.Module):
               dtype=dtype,
               weights_dtype=weights_dtype,
               precision=precision,
+              sharding_specs=sharding_specs,
           )
       )
 
@@ -769,6 +782,7 @@ class LTX2VideoUpBlock3d(nnx.Module):
           dtype=dtype,
           weights_dtype=weights_dtype,
           precision=precision,
+          sharding_specs=sharding_specs,
       )
 
     self.resnets = create_resnets(rngs)
@@ -844,11 +858,13 @@ class LTX2VideoEncoder3d(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      sharding_specs: Optional[Any] = None,
   ):
     self.patch_size = patch_size
     self.patch_size_t = patch_size_t
     self.in_channels = in_channels * patch_size**2
     self.is_causal = is_causal
+    self.sharding_specs = sharding_specs
 
     output_channel = out_channels
 
@@ -882,6 +898,7 @@ class LTX2VideoEncoder3d(nnx.Module):
                 dtype=dtype,
                 weights_dtype=weights_dtype,
                 precision=precision,
+                sharding_specs=sharding_specs,
             )
             for i in range(num_block_out_channels)
         ]
@@ -901,6 +918,7 @@ class LTX2VideoEncoder3d(nnx.Module):
         dtype=dtype,
         weights_dtype=weights_dtype,
         precision=precision,
+        sharding_specs=sharding_specs,
     )
 
     # out
@@ -994,6 +1012,7 @@ class LTX2VideoDecoder3d(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      sharding_specs: Optional[Any] = None,
   ):
     self.patch_size = patch_size
     self.patch_size_t = patch_size_t
@@ -1033,6 +1052,7 @@ class LTX2VideoDecoder3d(nnx.Module):
         dtype=dtype,
         weights_dtype=weights_dtype,
         precision=precision,
+        sharding_specs=sharding_specs,
     )
 
     # up blocks
@@ -1061,6 +1081,7 @@ class LTX2VideoDecoder3d(nnx.Module):
               dtype=dtype,
               weights_dtype=weights_dtype,
               precision=precision,
+              sharding_specs=sharding_specs,
           )
       )
 
@@ -1094,6 +1115,7 @@ class LTX2VideoDecoder3d(nnx.Module):
               use_additional_conditions=False,
               dtype=dtype,
               weights_dtype=weights_dtype,
+              sharding_specs=sharding_specs,
           )
       )
     else:
@@ -1200,6 +1222,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      sharding_specs: Optional[Any] = None,
   ):
     self.encoder = LTX2VideoEncoder3d(
         in_channels=in_channels,
@@ -1219,6 +1242,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
         dtype=dtype,
         weights_dtype=weights_dtype,
         precision=precision,
+        sharding_specs=sharding_specs,
     )
 
     self.decoder = LTX2VideoDecoder3d(
@@ -1242,6 +1266,7 @@ class LTX2VideoAutoencoderKL(nnx.Module, FlaxModelMixin, ConfigMixin):
         dtype=dtype,
         weights_dtype=weights_dtype,
         precision=precision,
+        sharding_specs=sharding_specs,
     )
 
     self.scaling_factor = scaling_factor

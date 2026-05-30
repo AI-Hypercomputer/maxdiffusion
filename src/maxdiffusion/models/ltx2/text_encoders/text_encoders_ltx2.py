@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Optional, Tuple, Union, List
+from typing import Optional, Tuple, Union, List, Any
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -59,6 +59,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
       attention_kernel: str = "flash",
       mesh: jax.sharding.Mesh = None,
       rngs: nnx.Rngs = None,
+      sharding_specs: Optional[Any] = None,
       per_modality_projections: bool = False,
       proj_bias: bool = False,
       video_gated_attn: bool = False,
@@ -85,8 +86,28 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.per_modality_projections = per_modality_projections
 
     if per_modality_projections:
-      self.video_text_proj_in = nnx.Linear(in_features=input_dim, out_features=v_dim, use_bias=proj_bias, rngs=rngs)
-      self.audio_text_proj_in = nnx.Linear(in_features=input_dim, out_features=a_dim, use_bias=proj_bias, rngs=rngs)
+      if sharding_specs is not None:
+        proj_k_init = nnx.with_partitioning(nnx.initializers.lecun_normal(), sharding_specs.proj_kernel)
+        proj_b_init = nnx.with_partitioning(nnx.initializers.zeros, sharding_specs.proj_bias)
+      else:
+        proj_k_init = nnx.initializers.lecun_normal()
+        proj_b_init = nnx.initializers.zeros
+      self.video_text_proj_in = nnx.Linear(
+          in_features=input_dim,
+          out_features=v_dim,
+          use_bias=proj_bias,
+          rngs=rngs,
+          kernel_init=proj_k_init,
+          bias_init=proj_b_init,
+      )
+      self.audio_text_proj_in = nnx.Linear(
+          in_features=input_dim,
+          out_features=a_dim,
+          use_bias=proj_bias,
+          rngs=rngs,
+          kernel_init=proj_k_init,
+          bias_init=proj_b_init,
+      )
     else:
       self.feature_extractor = LTX2GemmaFeatureExtractor(
           input_dim=input_dim,
@@ -97,6 +118,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
           use_bias=proj_bias,
           video_output_dim=v_dim,
           audio_output_dim=a_dim,
+          sharding_specs=sharding_specs,
       )
 
     # Two independent connectors (used in both LTX-2.0 and LTX-2.3 paths)
@@ -113,6 +135,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         attention_kernel=attention_kernel,
         mesh=mesh,
         rngs=rngs,
+        sharding_specs=sharding_specs,
         gated_attn=video_gated_attn,
     )
     self.audio_embeddings_connector = Embeddings1DConnector(
@@ -128,6 +151,7 @@ class LTX2AudioVideoGemmaTextEncoder(nnx.Module, FlaxModelMixin, ConfigMixin):
         attention_kernel=attention_kernel,
         mesh=mesh,
         rngs=rngs,
+        sharding_specs=sharding_specs,
         gated_attn=audio_gated_attn,
     )
 

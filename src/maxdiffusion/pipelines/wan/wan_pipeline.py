@@ -54,6 +54,13 @@ except ModuleNotFoundError:
 import PIL
 
 
+TORCH_DTYPE_MAP = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+    "float32": torch.float32,
+}
+
+
 def cast_with_exclusion(path, x, dtype_to_cast):
   """
   Casts arrays to dtype_to_cast, but keeps params from any 'norm' layer in float32.
@@ -297,7 +304,12 @@ class WanPipeline:
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
     text_encoder_dtype = getattr(config, "text_encoder_dtype", "float32")
-    torch_dtype = getattr(torch, str(text_encoder_dtype), torch.float32)
+    dtype_str = text_encoder_dtype.name if hasattr(text_encoder_dtype, "name") else str(text_encoder_dtype)
+
+    if dtype_str not in TORCH_DTYPE_MAP:
+      raise ValueError(f"Unsupported text_encoder_dtype: {dtype_str}. Supported values are: {list(TORCH_DTYPE_MAP.keys())}")
+    torch_dtype = TORCH_DTYPE_MAP[dtype_str]
+
     text_encoder = UMT5EncoderModel.from_pretrained(
         config.pretrained_model_name_or_path,
         subfolder="text_encoder",
@@ -566,7 +578,7 @@ class WanPipeline:
     elif isinstance(negative_prompt, str):
       negative_prompt = [negative_prompt] * batch_size
 
-    use_batched_text_encoder = getattr(self.config, "use_batched_text_encoder", False)
+    use_batched_text_encoder = self.config.use_batched_text_encoder
     if use_batched_text_encoder and prompt_embeds is None and negative_prompt_embeds is None:
       # Batch both together
       combined_prompts = prompt + negative_prompt

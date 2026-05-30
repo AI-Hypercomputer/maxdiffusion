@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
-from typing import Optional
+from typing import Optional, Any
 import flax.linen as nn
 from flax import nnx
 import jax.numpy as jnp
@@ -22,6 +22,7 @@ from .modeling_flax_utils import get_activation
 from ..models.attention_flax import NNXSimpleFeedForward
 from ..models.normalization_flax import FP32LayerNorm
 from maxdiffusion.tpu_utils import get_tpu_type, TpuType
+from maxdiffusion.max_utils import safe_getattr
 
 
 def get_sinusoidal_embeddings(
@@ -85,7 +86,12 @@ class NNXTimestepEmbedding(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      sharding_specs: Optional[Any] = None,
   ):
+    linear_1_kernel = safe_getattr(sharding_specs, "emb_linear_1_kernel", ("embed", "mlp"))
+    linear_1_bias = safe_getattr(sharding_specs, "emb_linear_1_bias", ("mlp",))
+    linear_2_kernel = safe_getattr(sharding_specs, "emb_linear_2_kernel", ("mlp", "embed"))
+    linear_2_bias = safe_getattr(sharding_specs, "emb_linear_2_bias", ("embed",))
     self.linear_1 = nnx.Linear(
         rngs=rngs,
         in_features=in_channels,
@@ -96,12 +102,9 @@ class NNXTimestepEmbedding(nnx.Module):
         precision=precision,
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
-            (
-                "embed",
-                "mlp",
-            ),
+            linear_1_kernel,
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, linear_1_bias),
     )
 
     if cond_proj_dim is not None:
@@ -128,12 +131,9 @@ class NNXTimestepEmbedding(nnx.Module):
         precision=precision,
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
-            (
-                "mlp",
-                "embed",
-            ),
+            linear_2_kernel,
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, linear_2_bias),
     )
 
     if post_act_fn is None:
@@ -341,7 +341,12 @@ class NNXPixArtAlphaTextProjection(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
+      sharding_specs: Optional[Any] = None,
   ):
+    linear_1_kernel = safe_getattr(sharding_specs, "emb_linear_1_kernel", ("embed", "mlp"))
+    linear_1_bias = safe_getattr(sharding_specs, "emb_linear_1_bias", ("mlp",))
+    linear_2_kernel = safe_getattr(sharding_specs, "emb_linear_2_kernel", ("mlp", "embed"))
+    linear_2_bias = safe_getattr(sharding_specs, "emb_linear_2_bias", ("embed",))
     if out_features is None:
       out_features = hidden_size
 
@@ -355,12 +360,9 @@ class NNXPixArtAlphaTextProjection(nnx.Module):
         precision=precision,
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
-            (
-                "embed",
-                "mlp",
-            ),
+            linear_1_kernel,
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("mlp",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, linear_1_bias),
     )
     self.act_1 = get_activation(act_fn)
 
@@ -374,12 +376,9 @@ class NNXPixArtAlphaTextProjection(nnx.Module):
         precision=precision,
         kernel_init=nnx.with_partitioning(
             nnx.initializers.xavier_uniform(),
-            (
-                "mlp",
-                "embed",
-            ),
+            linear_2_kernel,
         ),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, linear_2_bias),
     )
 
   def __call__(self, caption):
@@ -535,22 +534,38 @@ class NNXPixArtAlphaCombinedTimestepSizeEmbeddings(nnx.Module):
       use_additional_conditions: bool = False,
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
+      sharding_specs: Optional[Any] = None,
   ):
     self.outdim = size_emb_dim
     self.use_additional_conditions = use_additional_conditions
 
     self.time_proj = NNXTimesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
     self.timestep_embedder = NNXTimestepEmbedding(
-        rngs=rngs, in_channels=256, time_embed_dim=embedding_dim, dtype=dtype, weights_dtype=weights_dtype
+        rngs=rngs,
+        in_channels=256,
+        time_embed_dim=embedding_dim,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        sharding_specs=sharding_specs,
     )
 
     if use_additional_conditions:
       self.additional_condition_proj = NNXTimesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
       self.resolution_embedder = NNXTimestepEmbedding(
-          rngs=rngs, in_channels=256, time_embed_dim=size_emb_dim, dtype=dtype, weights_dtype=weights_dtype
+          rngs=rngs,
+          in_channels=256,
+          time_embed_dim=size_emb_dim,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          sharding_specs=sharding_specs,
       )
       self.aspect_ratio_embedder = NNXTimestepEmbedding(
-          rngs=rngs, in_channels=256, time_embed_dim=size_emb_dim, dtype=dtype, weights_dtype=weights_dtype
+          rngs=rngs,
+          in_channels=256,
+          time_embed_dim=size_emb_dim,
+          dtype=dtype,
+          weights_dtype=weights_dtype,
+          sharding_specs=sharding_specs,
       )
 
   def __call__(

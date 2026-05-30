@@ -25,7 +25,6 @@ import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from torchax import default_env
 from maxdiffusion.models.ltx2.text_encoders.torchax_text_encoder import TorchaxGemma3TextEncoder
-from maxdiffusion.tpu_utils import get_tpu_type, TpuType
 from maxdiffusion.maxdiffusion_utils import get_dummy_ltx2_inputs
 import contextlib
 import flax
@@ -42,6 +41,7 @@ from ...models.ltx2.autoencoder_kl_ltx2_audio import FlaxAutoencoderKLLTX2Audio
 from ...models.ltx2.vocoder_ltx2 import LTX2Vocoder, LTX2VocoderWithBWE
 from ...models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DModel
 from ...models.ltx2.latent_upsampler_ltx2 import LTX2LatentUpsamplerModel
+from ...models.ltx2.logical_sharding_ltx2 import get_sharding_specs
 from ...models.ltx2.ltx2_utils import (
     load_transformer_weights,
     load_connector_weights,
@@ -59,6 +59,13 @@ from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
 from ...max_utils import get_precision, device_put_replicated, get_flash_block_sizes
+
+
+TORCH_DTYPE_MAP = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+    "float32": torch.float32,
+}
 
 
 @flax.struct.dataclass
@@ -147,6 +154,11 @@ def create_sharded_logical_transformer(
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
   ltx2_config["spatio_temporal_guidance_blocks"] = tuple(getattr(config, "spatio_temporal_guidance_blocks", ()))
+
+  sharding_config = getattr(config, "sharding", {})
+  transformer_strategy = sharding_config.get("transformer", "default")
+  dit_specs = get_sharding_specs(transformer_strategy, "ltx2_dit")
+  ltx2_config["sharding_specs"] = dit_specs
 
   # 2. eval_shape
   p_model_factory = partial(create_model, ltx2_config=ltx2_config)
@@ -251,6 +263,7 @@ class LTX2Pipeline:
       vocoder: Union[LTX2Vocoder, LTX2VocoderWithBWE],
       latent_upsampler: Optional[LTX2LatentUpsamplerModel] = None,
       latent_upsampler_params: Optional[dict] = None,
+      config: Optional[HyperParameters] = None,
   ):
     self.scheduler = scheduler
     self.vae = vae
@@ -263,7 +276,7 @@ class LTX2Pipeline:
     self.latent_upsampler = latent_upsampler
     self.latent_upsampler_params = latent_upsampler_params
     self.mesh = None
-    self.config = None
+    self.config = config
 
     # VAE compression ratios
     self.vae_spatial_compression_ratio = getattr(self.vae, "spatial_compression_ratio", 32)
@@ -325,10 +338,17 @@ class LTX2Pipeline:
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
     max_logging.log("Loading Gemma3 Text Encoder...")
+    dtype_obj = getattr(config, "text_encoder_dtype", "float32")
+    dtype_str = dtype_obj.name if hasattr(dtype_obj, "name") else str(dtype_obj)
+
+    if dtype_str not in TORCH_DTYPE_MAP:
+      raise ValueError(f"Unsupported text_encoder_dtype: {dtype_str}. Supported values are: {list(TORCH_DTYPE_MAP.keys())}")
+    torch_dtype = TORCH_DTYPE_MAP[dtype_str]
+
     text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
         config.pretrained_model_name_or_path,
         subfolder="text_encoder",
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch_dtype,
     )
     text_encoder.eval()
 
@@ -336,6 +356,9 @@ class LTX2Pipeline:
       with default_env():
         text_encoder = text_encoder.to("jax")
         text_encoder = TorchaxGemma3TextEncoder(text_encoder)
+    elif getattr(config, "compile_text_encoder", False):
+      max_logging.log("Compiling Gemma3 Text Encoder...")
+      text_encoder = torch.compile(text_encoder)
 
     return text_encoder
 
@@ -344,6 +367,10 @@ class LTX2Pipeline:
     max_logging.log("Loading Connectors...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
+      sharding_config = getattr(config, "sharding", {})
+      connector_strategy = sharding_config.get("text_connector", "default")
+      connector_specs = get_sharding_specs(connector_strategy, "text_connector")
+
       connectors = LTX2AudioVideoGemmaTextEncoder.from_config(
           config.pretrained_model_name_or_path,
           subfolder="connectors",
@@ -351,6 +378,7 @@ class LTX2Pipeline:
           mesh=mesh,
           dtype=jnp.float32,
           weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          sharding_specs=connector_specs,
       )
       return connectors
 
@@ -386,6 +414,10 @@ class LTX2Pipeline:
     max_logging.log("Loading Video VAE...")
 
     def create_model(rngs: nnx.Rngs, config: HyperParameters):
+      sharding_config = getattr(config, "sharding", {})
+      vae_strategy = sharding_config.get("vae", "default")
+      vae_specs = get_sharding_specs(vae_strategy, "vae")
+
       vae = LTX2VideoAutoencoderKL.from_config(
           config.pretrained_model_name_or_path,
           subfolder="vae",
@@ -393,6 +425,7 @@ class LTX2Pipeline:
           mesh=mesh,
           dtype=jnp.float32,
           weights_dtype=config.weights_dtype if hasattr(config, "weights_dtype") else jnp.float32,
+          sharding_specs=vae_specs,
       )
       return vae
 
@@ -713,9 +746,9 @@ class LTX2Pipeline:
         vocoder=components["vocoder"],
         latent_upsampler=latent_upsampler,
         latent_upsampler_params=latent_upsampler_params,
+        config=config,
     )
     pipeline.mesh = components["mesh"]
-    pipeline.config = config
     if load_transformer:
       pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, pipeline.mesh)
     return pipeline, pipeline.transformer
@@ -945,9 +978,7 @@ class LTX2Pipeline:
     else:
       batch_size = prompt_embeds[0].shape[0] if isinstance(prompt_embeds, list) else prompt_embeds.shape[0]
 
-    tpu_type = get_tpu_type()
-    # Batching text encoder gives better results on Ironwood (v7x) but poor on Trillium (v6e)
-    use_batched_text_encoder = tpu_type == TpuType.TPU_7X
+    use_batched_text_encoder = self.config.use_batched_text_encoder
 
     if use_batched_text_encoder and prompt_embeds is None and do_classifier_free_guidance and negative_prompt_embeds is None:
       negative_prompt = negative_prompt or ""
