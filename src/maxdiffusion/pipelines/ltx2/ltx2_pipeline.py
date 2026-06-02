@@ -23,8 +23,6 @@ import torch
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-from torchax import default_env
-from maxdiffusion.models.ltx2.text_encoders.torchax_text_encoder import TorchaxGemma3TextEncoder
 from maxdiffusion.maxdiffusion_utils import get_dummy_ltx2_inputs
 import contextlib
 import flax
@@ -352,7 +350,10 @@ class LTX2Pipeline:
     )
     text_encoder.eval()
 
-    if getattr(config, "run_text_encoder_on_tpu", True):
+    if getattr(config, "run_text_encoder_on_tpu", False):
+      from torchax import default_env
+      from maxdiffusion.models.ltx2.text_encoders.torchax_text_encoder import TorchaxGemma3TextEncoder
+
       with default_env():
         text_encoder = text_encoder.to("jax")
         text_encoder = TorchaxGemma3TextEncoder(text_encoder)
@@ -855,7 +856,7 @@ class LTX2Pipeline:
     prompt = [p.strip() for p in prompt]
 
     if self.text_encoder is not None:
-      run_text_encoder_on_tpu = getattr(self.config, "run_text_encoder_on_tpu", True) if hasattr(self, "config") else True
+      run_text_encoder_on_tpu = getattr(self.config, "run_text_encoder_on_tpu", False) if hasattr(self, "config") else False
       if run_text_encoder_on_tpu:
         # Torchax Text Encoder
         text_inputs = self.tokenizer(
