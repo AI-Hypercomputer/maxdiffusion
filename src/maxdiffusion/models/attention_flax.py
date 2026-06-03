@@ -15,6 +15,7 @@
 import contextlib
 import functools
 import math
+import os
 from typing import Optional, Callable, Tuple, Dict
 import flax.linen as nn
 from flax import nnx
@@ -514,6 +515,75 @@ def _tpu_flash_attention(
 # ---------------------------------------------------------------------------
 
 
+def _cs_bound_diag(q_ref, k_ref, n_query_sample=2048, kv_block=4096):
+  """Diagnostic: is the Cauchy-Schwarz cheap-max bound safe for this model?
+
+  q_ref/k_ref are in the kernel's scaled (log2) score space, shape [b, h, S, d], so
+  the per-query logit is s_jk = Σ_d k_ref[k,d]·q_ref[j,d] and the CS upper bound is
+  ||q_ref_j||·max_k||k_ref_k||. We compute, over a sample of queries (all keys), the
+  gap = bound - true_max in the log2 domain and print its distribution at runtime.
+
+  Read it as: if `max gap` < ~120 and `frac gap>126` == 0, the CS bound never
+  underflows -> safe to build the cheap-max kernel. If any query has gap > ~126 the
+  bound would drive exp2 to 0 for that whole query -> 0/0 NaN -> CS is unsafe.
+  """
+  q = q_ref.astype(jnp.float32)
+  k = k_ref.astype(jnp.float32)
+  qn = jnp.sqrt(jnp.sum(q * q, axis=-1))  # [b,h,Sq]
+  kn = jnp.sqrt(jnp.sum(k * k, axis=-1))  # [b,h,Sk]
+  bound = qn * jnp.max(kn, axis=-1, keepdims=True)  # [b,h,Sq], >= true max
+
+  Sq = q.shape[2]
+  n = min(n_query_sample, Sq)
+  idx = (jnp.arange(n) * (Sq // n)).astype(jnp.int32)  # strided query sample
+  qs = jnp.take(q, idx, axis=2)  # [b,h,n,d]
+  bnd = jnp.take(bound, idx, axis=2)  # [b,h,n]
+
+  # True max logit over ALL keys, blockwise (static slices) to bound memory.
+  tm = jnp.full(bnd.shape, -1e30, jnp.float32)
+  Sk = k.shape[2]
+  for s0 in range(0, Sk, kv_block):
+    s = jnp.einsum("bhnd,bhkd->bhnk", qs, k[:, :, s0 : s0 + kv_block, :])
+    tm = jnp.maximum(tm, s.max(axis=-1))
+  gap = bnd - tm
+  jax.debug.print(
+      "[CS-DIAG] log2 gap(bound-true_max): max={mx} p99.9={p} median={md} | "
+      "true_max max={tmx} | frac queries gap>126={f}",
+      mx=gap.max(),
+      p=jnp.percentile(gap, 99.9),
+      md=jnp.percentile(gap, 50),
+      tmx=tm.max(),
+      f=(gap > 126).mean(),
+  )
+
+
+def _cs_augment(query, key, pad_lanes=128):
+  """Encode the Cauchy-Schwarz per-query max-bound subtraction into the QK matmul.
+
+  Appends one contraction lane: q gets -mⱼ, k gets 1, so q_aug·k_aug = q·k - mⱼ where
+  mⱼ = ‖qⱼ‖·maxₖ‖kₖ‖ ≥ maxₖ(q·k) (Cauchy-Schwarz). The kernel's no-max branch then sees
+  scores ≤ 0 (overflow-safe) and the subtraction is the exact per-query softmax shift
+  (mⱼ is constant over k ⇒ cancels). head_dim is padded to the next 128 multiple so the
+  extra lane tiles cleanly on the MXU; the rest of the pad is zeros. query/key are in the
+  scaled (log2) score space. NOTE: doubles the QK contraction (128→256), which is hidden
+  by the idle MXU in this softmax-bound kernel.
+  """
+  qf = query.astype(jnp.float32)
+  kf = key.astype(jnp.float32)
+  qn = jnp.sqrt(jnp.sum(qf * qf, axis=-1))  # [b,h,Sq]
+  kn = jnp.sqrt(jnp.sum(kf * kf, axis=-1))  # [b,h,Sk]
+  m = qn * jnp.max(kn, axis=-1, keepdims=True)  # [b,h,Sq] >= true max
+  b, h, sq, _ = query.shape
+  sk = key.shape[2]
+  q_bias = (-m)[..., None].astype(query.dtype)  # [b,h,Sq,1]
+  k_bias = jnp.ones((b, h, sk, 1), dtype=key.dtype)
+  q_pad = jnp.zeros((b, h, sq, pad_lanes - 1), dtype=query.dtype)
+  k_pad = jnp.zeros((b, h, sk, pad_lanes - 1), dtype=key.dtype)
+  q_aug = jnp.concatenate([query, q_bias, q_pad], axis=-1)  # [b,h,Sq,d+pad]
+  k_aug = jnp.concatenate([key, k_bias, k_pad], axis=-1)
+  return q_aug, k_aug
+
+
 def _ulysses_attention(
     query: jax.Array,
     key: jax.Array,
@@ -530,6 +600,8 @@ def _ulysses_attention(
     use_custom_kernel: bool = False,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
+    use_k_smooth: bool = False,
+    use_stable_softmax: bool = True,
 ) -> jax.Array:
   """Ulysses sequence-parallel attention.
 
@@ -540,6 +612,15 @@ def _ulysses_attention(
   """
   axis_name = "context"
   num_shards = mesh.shape[axis_name]
+
+  # Safety: the no-max softmax branch relies on a bounded score range. Without key
+  # smoothing it can overflow exp2 and produce NaNs (validated empirically).
+  if use_custom_kernel and not use_stable_softmax and not use_k_smooth and os.environ.get("USE_CS_BOUND", "false") != "true":
+    max_logging.log(
+        "WARNING: ulysses_custom attention has use_stable_softmax=False but "
+        "use_k_smooth=False — the no-max branch may overflow exp2 to NaN on large "
+        "scores. Set use_k_smooth=True (or USE_CS_BOUND=true) to bound the range."
+    )
 
   # Reshape to [b, h, s, d] and pad sequence for even context-axis splitting.
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_shards)
@@ -574,6 +655,12 @@ def _ulysses_attention(
     key = jax.lax.all_to_all(key, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
     value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
 
+    # Key smoothing (mathematically exact for softmax): center keys over the full
+    # KV sequence so scores have a smaller dynamic range. Applied here, after the
+    # all-to-all, so the mean is over the full sequence each device now holds.
+    if use_k_smooth:
+      key = key - jnp.mean(key, axis=2, keepdims=True)
+
     if use_custom_kernel:
       bq = 4864
       bkv = 1024
@@ -598,6 +685,19 @@ def _ulysses_attention(
       if use_base2_exp:
         query = query * LOG2E
 
+      if os.environ.get("CS_BOUND_DIAG", "false") == "true":
+        # One-shot safety gate for the Cauchy-Schwarz cheap-max idea: compare each
+        # query's TRUE max logit to the CS bound ||q_ref||*max||k_ref|| (both in the
+        # kernel's scaled/log2 score space). gap = bound - true_max; if any query has
+        # gap > ~126 the bound would underflow exp2 -> 0/0 NaN, so CS is unsafe.
+        _cs_bound_diag(query, key)
+
+      # Cauchy-Schwarz cheap-max: subtract a per-query upper bound via matmul augmentation
+      # so the no-max kernel branch is exact + overflow-safe (replaces the reduce_max).
+      # Validated safe by CS_BOUND_DIAG (gap << 126). Requires use_stable_softmax=False.
+      if os.environ.get("USE_CS_BOUND", "false") == "true" and not use_stable_softmax:
+        query, key = _cs_augment(query, key)
+
       query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
       key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
       value, _, _ = _pad_data_for_flash(value, heads, bkv)
@@ -612,6 +712,7 @@ def _ulysses_attention(
           heads_per_tile=heads_per_tile,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
+          use_stable_softmax=use_stable_softmax,
       )
 
       vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
@@ -846,6 +947,8 @@ def ulysses_custom_kernel(q, k, v, context):
       use_custom_kernel=True,
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      use_k_smooth=context.get("use_k_smooth", False),
+      use_stable_softmax=context.get("use_stable_softmax", True),
   )
 
 
@@ -955,6 +1058,8 @@ def _apply_attention(
     attention_mask: Array = None,
     use_base2_exp: bool = False,
     use_experimental_scheduler: bool = False,
+    use_k_smooth: bool = False,
+    use_stable_softmax: bool = True,
 ):
   """Routes to different attention kernels using a module-level registry."""
 
@@ -985,6 +1090,8 @@ def _apply_attention(
       "scale": scale,
       "use_base2_exp": use_base2_exp,
       "use_experimental_scheduler": use_experimental_scheduler,
+      "use_k_smooth": use_k_smooth,
+      "use_stable_softmax": use_stable_softmax,
       "dim_head": dim_head,
       "split_head_dim": split_head_dim,
       "float32_qk_product": float32_qk_product,
@@ -1206,10 +1313,14 @@ class NNXAttentionOp(nnx.Module):
       residual_checkpoint_name: str | None = None,
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
+      use_k_smooth: bool = False,
+      use_stable_softmax: bool = True,
   ):
     self.dpa_layer = None
     self.use_base2_exp = use_base2_exp
     self.use_experimental_scheduler = use_experimental_scheduler
+    self.use_k_smooth = use_k_smooth
+    self.use_stable_softmax = use_stable_softmax
     if attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
 
@@ -1272,6 +1383,8 @@ class NNXAttentionOp(nnx.Module):
         attention_mask=attention_mask,
         use_base2_exp=self.use_base2_exp if hasattr(self, "use_base2_exp") else False,
         use_experimental_scheduler=self.use_experimental_scheduler if hasattr(self, "use_experimental_scheduler") else False,
+        use_k_smooth=self.use_k_smooth if hasattr(self, "use_k_smooth") else False,
+        use_stable_softmax=self.use_stable_softmax if hasattr(self, "use_stable_softmax") else True,
     )
 
 
@@ -1377,6 +1490,8 @@ class FlaxWanAttention(nnx.Module):
       image_seq_len: Optional[int] = None,  # New for I2V
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
+      use_k_smooth: bool = False,
+      use_stable_softmax: bool = True,
   ):
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
@@ -1423,6 +1538,8 @@ class FlaxWanAttention(nnx.Module):
         residual_checkpoint_name=residual_checkpoint_name,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
+        use_k_smooth=use_k_smooth,
+        use_stable_softmax=use_stable_softmax,
     )
     # None axes corresponds to the stacked weights across all blocks
     # because of the use of nnx.vmap and nnx.scan.

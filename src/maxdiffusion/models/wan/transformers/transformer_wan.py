@@ -355,6 +355,8 @@ class WanTransformerBlock(nnx.Module):
       enable_jax_named_scopes: bool = False,
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
+      use_k_smooth: bool = False,
+      use_stable_softmax: bool = True,
   ):
     self.enable_jax_named_scopes = enable_jax_named_scopes
 
@@ -381,6 +383,8 @@ class WanTransformerBlock(nnx.Module):
         enable_jax_named_scopes=enable_jax_named_scopes,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
+        use_k_smooth=use_k_smooth,
+        use_stable_softmax=use_stable_softmax,
     )
 
     # 1. Cross-attention
@@ -407,6 +411,8 @@ class WanTransformerBlock(nnx.Module):
         enable_jax_named_scopes=enable_jax_named_scopes,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
+        use_k_smooth=use_k_smooth,
+        use_stable_softmax=use_stable_softmax,
     )
     assert cross_attn_norm is True
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
@@ -572,6 +578,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       enable_jax_named_scopes: bool = False,
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
+      use_k_smooth: bool = False,
+      use_stable_softmax: bool = True,
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
@@ -639,6 +647,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           image_seq_len=image_seq_len,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
+          use_k_smooth=use_k_smooth,
+          use_stable_softmax=use_stable_softmax,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)

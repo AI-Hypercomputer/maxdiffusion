@@ -86,6 +86,15 @@ split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom
 use_base2_exp: True
 use_experimental_scheduler: True
+# Key smoothing: subtract per-(batch,head,dim) mean of keys over the KV sequence
+# before attention. Mathematically exact for softmax; shrinks the score range.
+# Only consumed by the ulysses_custom attention path.
+use_k_smooth: False
+# Online softmax with running-max stabilization (True, default/safe). False = no-max
+# branch: drops the running max + per-step rescale to save VPU work, but REQUIRES
+# use_k_smooth: True to keep exp2 from overflowing on large scores. Only the
+# ulysses_custom attention path honors this.
+use_stable_softmax: True
 flash_min_seq_length: 4096
 dropout: 0.0
 

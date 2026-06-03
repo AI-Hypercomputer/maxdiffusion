@@ -141,6 +141,8 @@ def create_sharded_logical_transformer(
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
   wan_config["use_base2_exp"] = config.use_base2_exp
   wan_config["use_experimental_scheduler"] = config.use_experimental_scheduler
+  wan_config["use_k_smooth"] = getattr(config, "use_k_smooth", False)
+  wan_config["use_stable_softmax"] = getattr(config, "use_stable_softmax", True)
 
   # 2. eval_shape - will not use flops or create weights on device
   # thus not using HBM memory.

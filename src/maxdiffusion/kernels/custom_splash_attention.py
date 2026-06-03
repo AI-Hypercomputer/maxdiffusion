@@ -18,6 +18,7 @@ limitations under the License.
 
 import functools
 import math
+import os
 
 import jax
 import jax.numpy as jnp
@@ -32,6 +33,19 @@ DEFAULT_MASK_VALUE = -0.7 * float(np.finfo(np.dtype("float32")).max)
 NUM_LANES = 128
 NUM_SUBLANES = 8
 NT_DIM_NUMBERS = (((1,), (1,)), ((), ()))
+
+# Logit ceiling for the no-max (use_stable_softmax=False) branch, in the LOG2 domain
+# (scores are already pre-scaled by scale*log2e, so exp == exp2). Clamping the top of
+# the scores keeps exp2 from overflowing f32 without subtracting a per-query max:
+#   - f32 overflows at exp2(~128); summing ~1e5 padded KV positions needs cap < ~111.
+#   - 80 leaves ~9 orders of headroom on the sum, and only saturates scores > 80
+#     (raw logits > ~600) i.e. attention sinks, which already dominate overwhelmingly
+#     (exp2(80) vs exp2(~20) content), so capping them barely changes their weight.
+# Raise toward ~105 if a model has legitimate logits above the cap (quality), lower
+# for more overflow margin (do NOT exceed ~108 or the f32 sum overflows). Only used
+# when use_stable_softmax=False. Sweepable without editing code:
+#   NO_MAX_LOGIT_CAP_LOG2=100 bash scripts/.../8tpu_custom_kernel_new.sh
+NO_MAX_LOGIT_CAP_LOG2 = float(os.environ.get("NO_MAX_LOGIT_CAP_LOG2", "80.0"))
 
 # Default block sizes (tuned for 720p Wan2.1 on v6e/v7x)
 DEFAULT_BQSIZE = 3328
@@ -70,6 +84,7 @@ def _flash_attention_kernel(
     q_seq_len: int,
     kv_seq_len: int,
     use_base2_exp: bool = True,
+    use_stable_softmax: bool = True,
 ):
   float32 = jnp.float32
   head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
@@ -82,92 +97,80 @@ def _flash_attention_kernel(
   @pl.when(j == 0)
   def init():
     o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
-    m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
+    if use_stable_softmax:
+      m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
     l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
 
-  def compute_body(kv_compute_index, _):
-    m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
-    q = q_ref[...]
-    o_prev = o_scratch_ref[:]
+  def _flash_step(qk, v_chunk, m_prev, l_prev, o_prev):
+    """One bkv_compute block of online softmax accumulation.
 
-    base_offset = kv_compute_index * bkv_compute
-    slice_k = pl.ds(base_offset, bkv_compute)
-    k_chunk = k_ref[slice_k, :]
-
-    qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
-    v_chunk = v_ref[slice_k, :]
-
-    # --- V1 VPU REGISTER TILING ---
+    Block-granular: the running max and the o/l rescale are done ONCE for the whole
+    block, then the exp/PV are streamed over register-sized sub-tiles using the fixed
+    block-inclusive max. Exact (still online softmax) and overflow-safe (exp arg <= 0),
+    but moves the expensive [head_dim, bq] rescale from per-sub-tile to per-block.
+    """
+    sv_dims = (((0,), (0,)), ((), ()))
     step = bkv_compute_in
-    for i in range(0, qk.shape[0], step):
-      qk_slice = qk[i : i + step]
-
-      m_curr = qk_slice.max(axis=0)[None, :]
-      m_next = jnp.maximum(m_prev, m_curr)
-      s_curr = exp(qk_slice - m_next[0:1])
-      l_curr = s_curr.sum(axis=0, keepdims=True)
-
+    if use_stable_softmax:
+      m_next = jnp.maximum(m_prev, qk.max(axis=0)[None, :])  # one reduce over the block
       alpha = exp(m_prev - m_next)
-      l_next = l_curr + alpha * l_prev
+      o_prev = alpha[0:1, ...] * o_prev  # rescale o once per block
+      l_prev = alpha * l_prev  # rescale l once per block
+      m_ref = m_next[0:1]
+      for i in range(0, qk.shape[0], step):
+        qk_slice = qk[i : i + step]
+        s_curr = exp(qk_slice - m_ref)  # <= 1 (m_ref >= block max)
+        l_prev = l_prev + s_curr.sum(axis=0, keepdims=True)
+        o_prev = o_prev + lax.dot_general(
+            v_chunk[i : i + step],
+            s_curr.astype(q_ref.dtype),
+            sv_dims,
+            preferred_element_type=float32,
+        )
+      m_prev = m_next
+    else:
+      # No running max: clamp logits to a fixed safe ceiling so exp2 can't overflow,
+      # instead of subtracting a per-query max. Clamping the TOP (not subtracting a
+      # global constant) keeps every query's denominator > 0 (no underflow->NaN).
+      # Approximate for logits above the cap (saturated sinks). See NO_MAX_LOGIT_CAP_LOG2.
+      for i in range(0, qk.shape[0], step):
+        qk_slice = qk[i : i + step]
+        s_curr = exp(jnp.minimum(qk_slice, NO_MAX_LOGIT_CAP_LOG2))
+        l_prev = l_prev + s_curr.sum(axis=0, keepdims=True)
+        o_prev = o_prev + lax.dot_general(
+            v_chunk[i : i + step],
+            s_curr.astype(q_ref.dtype),
+            sv_dims,
+            preferred_element_type=float32,
+        )
+    return m_prev, l_prev, o_prev
 
-      sv_dims = (((0,), (0,)), ((), ()))
-      o_curr = lax.dot_general(
-          v_chunk[i : i + step],
-          s_curr.astype(q_ref.dtype),
-          sv_dims,
-          preferred_element_type=float32,
-      )
+  def _load_state():
+    m_prev = m_scratch_ref[...] if use_stable_softmax else None
+    return m_prev, l_scratch_ref[...], o_scratch_ref[:]
 
-      alpha_o = alpha[0:1, ...]
-      o_prev = alpha_o * o_prev + o_curr
-
-      m_prev, l_prev = m_next, l_next
-    # --- END V1 TILING ---
-
-    m_scratch_ref[...], l_scratch_ref[...] = m_prev, l_prev
+  def _store_state(m_prev, l_prev, o_prev):
+    if use_stable_softmax:
+      m_scratch_ref[...] = m_prev
+    l_scratch_ref[...] = l_prev
     o_scratch_ref[:] = o_prev
+
+  def compute_body(kv_compute_index, _):
+    m_prev, l_prev, o_prev = _load_state()
+    q = q_ref[...]
+    slice_k = pl.ds(kv_compute_index * bkv_compute, bkv_compute)
+    qk = lax.dot_general(k_ref[slice_k, :], q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    m_prev, l_prev, o_prev = _flash_step(qk, v_ref[slice_k, :], m_prev, l_prev, o_prev)
+    _store_state(m_prev, l_prev, o_prev)
 
   def last_compute_body(kv_compute_index):
-    m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
+    m_prev, l_prev, o_prev = _load_state()
     q = q_ref[...]
-    o_prev = o_scratch_ref[:]
-
     slice_k_len = kv_seq_len % bkv_compute
     slice_k = pl.ds(kv_compute_index * bkv_compute, slice_k_len)
-    k_chunk = k_ref[slice_k, :]
-
-    qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
-    v_chunk = v_ref[slice_k, :]
-
-    # --- V1 VPU REGISTER TILING ---
-    step = bkv_compute_in
-    for i in range(0, qk.shape[0], step):
-      qk_slice = qk[i : i + step]
-
-      m_curr = qk_slice.max(axis=0)[None, :]
-      m_next = jnp.maximum(m_prev, m_curr)
-      s_curr = exp(qk_slice - m_next[0:1])
-      l_curr = s_curr.sum(axis=0, keepdims=True)
-
-      alpha = exp(m_prev - m_next)
-      l_next = l_curr + alpha * l_prev
-
-      sv_dims = (((0,), (0,)), ((), ()))
-      o_curr = lax.dot_general(
-          v_chunk[i : i + step],
-          s_curr.astype(q_ref.dtype),
-          sv_dims,
-          preferred_element_type=float32,
-      )
-
-      alpha_o = alpha[0:1, ...]
-      o_prev = alpha_o * o_prev + o_curr
-
-      m_prev, l_prev = m_next, l_next
-    # --- END V1 TILING ---
-
-    m_scratch_ref[...], l_scratch_ref[...] = m_prev, l_prev
-    o_scratch_ref[:] = o_prev
+    qk = lax.dot_general(k_ref[slice_k, :], q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    m_prev, l_prev, o_prev = _flash_step(qk, v_ref[slice_k, :], m_prev, l_prev, o_prev)
+    _store_state(m_prev, l_prev, o_prev)
 
   assert bkv % bkv_compute == 0
 
@@ -216,6 +219,7 @@ def _flash_attention_kernel_mhpt(
     kv_seq_len: int,
     heads_per_tile: int,
     use_base2_exp: bool = True,
+    use_stable_softmax: bool = True,
 ):
   float32 = jnp.float32
   head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
@@ -228,98 +232,68 @@ def _flash_attention_kernel_mhpt(
   @pl.when(j == 0)
   def init():
     o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
-    m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
+    if use_stable_softmax:
+      m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
     l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
 
-  def compute_body(kv_compute_index, _):
-    base_offset = kv_compute_index * bkv_compute
-    slice_k = pl.ds(base_offset, bkv_compute)
-
-    for h_local in range(heads_per_tile):
-      m_prev = m_scratch_ref[h_local]
-      l_prev = l_scratch_ref[h_local]
-      q = q_ref[h_local]
-      o_prev = o_scratch_ref[h_local]
-
-      k_chunk = k_ref[h_local, slice_k, :]
-      qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
-      v_chunk = v_ref[h_local, slice_k, :]
-
-      # --- V1 VPU REGISTER TILING ---
-      step = bkv_compute_in
+  def _flash_step(qk, v_chunk, m_prev, l_prev, o_prev):
+    """One bkv_compute block for a single head. Block-granular online softmax: one max +
+    one o/l rescale per block, exp/PV streamed over sub-tiles (see _flash_attention_kernel)."""
+    sv_dims = (((0,), (0,)), ((), ()))
+    step = bkv_compute_in
+    if use_stable_softmax:
+      m_next = jnp.maximum(m_prev, qk.max(axis=0)[None, :])
+      alpha = exp(m_prev - m_next)
+      o_prev = alpha[0:1, ...] * o_prev
+      l_prev = alpha * l_prev
+      m_ref = m_next[0:1]
       for i in range(0, qk.shape[0], step):
         qk_slice = qk[i : i + step]
-
-        m_curr = qk_slice.max(axis=0)[None, :]
-        m_next = jnp.maximum(m_prev, m_curr)
-        s_curr = exp(qk_slice - m_next[0:1])
-        l_curr = s_curr.sum(axis=0, keepdims=True)
-
-        alpha = exp(m_prev - m_next)
-        l_next = l_curr + alpha * l_prev
-
-        sv_dims = (((0,), (0,)), ((), ()))
-        o_curr = lax.dot_general(
+        s_curr = exp(qk_slice - m_ref)
+        l_prev = l_prev + s_curr.sum(axis=0, keepdims=True)
+        o_prev = o_prev + lax.dot_general(
             v_chunk[i : i + step],
             s_curr.astype(q_ref.dtype),
             sv_dims,
             preferred_element_type=float32,
         )
+      m_prev = m_next
+    else:
+      # No running max: clamp to a safe ceiling (see _flash_attention_kernel + NO_MAX_LOGIT_CAP_LOG2).
+      for i in range(0, qk.shape[0], step):
+        qk_slice = qk[i : i + step]
+        s_curr = exp(jnp.minimum(qk_slice, NO_MAX_LOGIT_CAP_LOG2))
+        l_prev = l_prev + s_curr.sum(axis=0, keepdims=True)
+        o_prev = o_prev + lax.dot_general(
+            v_chunk[i : i + step],
+            s_curr.astype(q_ref.dtype),
+            sv_dims,
+            preferred_element_type=float32,
+        )
+    return m_prev, l_prev, o_prev
 
-        alpha_o = alpha[0:1, ...]
-        o_prev = alpha_o * o_prev + o_curr
-
-        m_prev, l_prev = m_next, l_next
-      # --- END V1 TILING ---
-
-      m_scratch_ref[h_local] = m_prev
+  def _run_heads(slice_k):
+    for h_local in range(heads_per_tile):
+      m_prev = m_scratch_ref[h_local] if use_stable_softmax else None
+      qk = lax.dot_general(
+          k_ref[h_local, slice_k, :],
+          q_ref[h_local],
+          NT_DIM_NUMBERS,
+          preferred_element_type=float32,
+      )
+      m_prev, l_prev, o_prev = _flash_step(
+          qk, v_ref[h_local, slice_k, :], m_prev, l_scratch_ref[h_local], o_scratch_ref[h_local]
+      )
+      if use_stable_softmax:
+        m_scratch_ref[h_local] = m_prev
       l_scratch_ref[h_local] = l_prev
       o_scratch_ref[h_local] = o_prev
+
+  def compute_body(kv_compute_index, _):
+    _run_heads(pl.ds(kv_compute_index * bkv_compute, bkv_compute))
 
   def last_compute_body(kv_compute_index):
-    slice_k_len = kv_seq_len % bkv_compute
-    slice_k = pl.ds(kv_compute_index * bkv_compute, slice_k_len)
-
-    for h_local in range(heads_per_tile):
-      m_prev = m_scratch_ref[h_local]
-      l_prev = l_scratch_ref[h_local]
-      q = q_ref[h_local]
-      o_prev = o_scratch_ref[h_local]
-
-      k_chunk = k_ref[h_local, slice_k, :]
-      qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
-      v_chunk = v_ref[h_local, slice_k, :]
-
-      # --- V1 VPU REGISTER TILING ---
-      step = bkv_compute_in
-      for i in range(0, qk.shape[0], step):
-        qk_slice = qk[i : i + step]
-
-        m_curr = qk_slice.max(axis=0)[None, :]
-        m_next = jnp.maximum(m_prev, m_curr)
-        s_curr = exp(qk_slice - m_next[0:1])
-        l_curr = s_curr.sum(axis=0, keepdims=True)
-
-        alpha = exp(m_prev - m_next)
-        l_next = l_curr + alpha * l_prev
-
-        sv_dims = (((0,), (0,)), ((), ()))
-        o_curr = lax.dot_general(
-            v_chunk[i : i + step],
-            s_curr.astype(q_ref.dtype),
-            sv_dims,
-            preferred_element_type=float32,
-        )
-
-        alpha_o = alpha[0:1, ...]
-        o_prev = alpha_o * o_prev + o_curr
-
-        m_prev, l_prev = m_next, l_next
-      # --- END V1 TILING ---
-
-      m_scratch_ref[h_local] = m_prev
-      l_scratch_ref[h_local] = l_prev
-      o_scratch_ref[h_local] = o_prev
+    _run_heads(pl.ds(kv_compute_index * bkv_compute, kv_seq_len % bkv_compute))
 
   assert bkv % bkv_compute == 0
 
@@ -359,6 +333,7 @@ def _splash_attention_forward(
     kv_seq_len: int | None = None,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
+    use_stable_softmax: bool = True,
 ):
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
@@ -404,7 +379,7 @@ def _splash_attention_forward(
   grid_height = (actual_q_seq_len + bq - 1) // bq
   grid = (num_q_heads, grid_height, grid_width)
 
-  all_out = pl.pallas_call(
+  _pallas_fn = pl.pallas_call(
       functools.partial(
           _flash_attention_kernel,
           mask_value=DEFAULT_MASK_VALUE,
@@ -417,6 +392,7 @@ def _splash_attention_forward(
           q_seq_len=actual_q_seq_len,
           kv_seq_len=actual_kv_seq_len,
           use_base2_exp=use_base2_exp,
+          use_stable_softmax=use_stable_softmax,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=0,
@@ -431,7 +407,8 @@ def _splash_attention_forward(
           skip_device_barrier=True,
       ),
       out_shape=out_shapes,
-  )(q, k, v)
+  )
+  all_out = jax.named_call(_pallas_fn, name="ulysses_flash_attention")(q, k, v)
   return all_out[-1]
 
 
@@ -446,6 +423,7 @@ def _splash_attention_forward_mhpt(
     kv_seq_len: int | None = None,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
+    use_stable_softmax: bool = True,
 ):
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
@@ -492,7 +470,7 @@ def _splash_attention_forward_mhpt(
   grid_height = (actual_q_seq_len + bq - 1) // bq
   grid = (num_q_heads // hpt, grid_height, grid_width)
 
-  all_out = pl.pallas_call(
+  _pallas_fn = pl.pallas_call(
       functools.partial(
           _flash_attention_kernel_mhpt,
           mask_value=DEFAULT_MASK_VALUE,
@@ -506,6 +484,7 @@ def _splash_attention_forward_mhpt(
           kv_seq_len=actual_kv_seq_len,
           heads_per_tile=hpt,
           use_base2_exp=use_base2_exp,
+          use_stable_softmax=use_stable_softmax,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=0,
@@ -520,7 +499,8 @@ def _splash_attention_forward_mhpt(
           skip_device_barrier=True,
       ),
       out_shape=out_shapes,
-  )(q, k, v)
+  )
+  all_out = jax.named_call(_pallas_fn, name="ulysses_flash_attention_mhpt")(q, k, v)
   return all_out[-1]
 
 
@@ -532,6 +512,7 @@ def make_splash_mha(
     heads_per_tile: int = 1,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
+    use_stable_softmax: bool = True,
 ):
   def _splash_attention(q, k, v):
     if heads_per_tile > 1:
@@ -546,6 +527,7 @@ def make_splash_mha(
           kv_seq_len=orig_kv_seq_len,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
+          use_stable_softmax=use_stable_softmax,
       )
     return _splash_attention_forward(
         q,
@@ -557,6 +539,7 @@ def make_splash_mha(
         kv_seq_len=orig_kv_seq_len,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
+        use_stable_softmax=use_stable_softmax,
     )
 
   return _splash_attention
@@ -582,9 +565,19 @@ def tpu_custom_attention(
     use_base2_exp=True,
     use_experimental_scheduler=False,
     flash_block_sizes=None,
+    use_k_smooth=False,
+    use_stable_softmax=True,
 ):
   _LOG2_E = 1.44269504
   num_heads = query.shape[1]
+
+  # Key smoothing: subtract the per-(batch, head, dim) mean of the keys over the
+  # KV sequence. Q·(K-mean)^T = Q·K^T - Q·mean^T, and Q·mean^T is a per-query
+  # constant across all keys, so softmax is invariant -> mathematically exact,
+  # but it shrinks the score dynamic range (helps numerical stability / enables
+  # skipping max-stabilization). key/value are [batch, heads, kv_seq, dim].
+  if use_k_smooth:
+    key = key - jnp.mean(key, axis=2, keepdims=True)
 
   if flash_block_sizes is not None:
     block_q = flash_block_sizes.get("block_q", block_q)
@@ -639,6 +632,7 @@ def tpu_custom_attention(
           heads_per_tile=heads_per_tile,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
+          use_stable_softmax=use_stable_softmax,
       )
       out = splash_kernel(
           q_3d_padded.astype(jnp.bfloat16),
