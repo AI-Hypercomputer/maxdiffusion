@@ -15,6 +15,7 @@
 import contextlib
 import functools
 import math
+import os
 from typing import Optional, Callable, Tuple, Any, Dict
 import flax.linen as nn
 from flax import nnx
@@ -704,6 +705,122 @@ def _ulysses_attention(
   return x
 
 
+def _ulysses_attention_fused(
+    hidden_states: jax.Array,
+    *,
+    heads: int,
+    mesh: Mesh,
+    axis_names_q: AxisNames,
+    flash_block_sizes,
+    q_proj_fn,
+    k_proj_fn,
+    v_proj_fn,
+    rope_fn,
+    rotary_emb: jax.Array,
+    dtype: jnp.dtype = jnp.float32,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = False,
+) -> jax.Array:
+  """Lever A (EXPERIMENTAL): fused projection + Ulysses all-to-all, self-attn only.
+
+  The QKV projections (+ qk_norm) run INSIDE the shard_map, emitted interleaved
+  with the per-tensor all-to-all, so XLA can overlap each a2a (ICI) with the next
+  projection matmul (TensorCore). RoPE is applied AFTER the a2a — valid because
+  rotary_emb is full-sequence and RoPE commutes with the head/seq swap.
+
+  q/k/v_proj_fn: hidden[b,s,dim] -> projected[b,s,inner] (proj, and qk_norm if any).
+  rope_fn:       (q[b,h,s,d], k[b,h,s,d], rotary) -> (q, k).
+
+  Math is identical to the standard ulysses_custom path; only the *schedule*
+  differs. Untested — validate output == baseline before trusting timing.
+  """
+  axis_name = "context"
+  num_shards = mesh.shape[axis_name]
+
+  orig_q_seq_len = hidden_states.shape[1]
+  rem = orig_q_seq_len % num_shards
+  if rem != 0:
+    hidden_states = jnp.pad(hidden_states, ((0, 0), (0, num_shards - rem), (0, 0)))
+
+  q_spec = nn.logical_to_mesh_axes(axis_names_q)
+  h_spec = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
+  rep_spec = jax.sharding.PartitionSpec()
+  # Force rotary replicated so the post-a2a (full-sequence) RoPE is correct.
+  rotary_emb = jax.lax.with_sharding_constraint(
+      rotary_emb, jax.sharding.NamedSharding(mesh, rep_spec)
+  )
+
+  @functools.partial(
+      jax.shard_map,
+      mesh=mesh,
+      in_specs=(h_spec, rep_spec),
+      out_specs=q_spec,
+      check_vma=False,
+  )
+  def fused(hidden, rotary):
+    # proj -> unflatten -> a2a, interleaved: a2a(q) overlaps proj(k)/proj(v).
+    query = _unflatten_heads(q_proj_fn(hidden), heads)
+    query = jax.lax.all_to_all(query, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+    key = _unflatten_heads(k_proj_fn(hidden), heads)
+    key = jax.lax.all_to_all(key, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+    value = _unflatten_heads(v_proj_fn(hidden), heads)
+    value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+
+    # RoPE after the a2a (full sequence per head-shard).
+    if rope_fn is not None and rotary is not None:
+      query, key = rope_fn(query, key, rotary)
+
+    if use_base2_exp:
+      query = query * LOG2E
+
+    bq = 4864
+    bkv = 1024
+    bkv_compute = 1024
+    bkv_compute_in = 1024
+    heads_per_tile = 1
+    if flash_block_sizes is not None:
+      if isinstance(flash_block_sizes, dict):
+        bq = flash_block_sizes.get("block_q", bq)
+        bkv = flash_block_sizes.get("block_kv", bkv)
+        bkv_compute = flash_block_sizes.get("block_kv_compute", bkv_compute)
+        bkv_compute_in = flash_block_sizes.get("block_kv_compute_in", bkv_compute_in)
+        heads_per_tile = flash_block_sizes.get("heads_per_tile", heads_per_tile)
+      else:
+        bq = getattr(flash_block_sizes, "block_q", bq)
+        bkv = getattr(flash_block_sizes, "block_kv", bkv)
+        bkv_compute = getattr(flash_block_sizes, "block_kv_compute", bkv_compute)
+        bkv_compute_in = getattr(flash_block_sizes, "block_kv_compute_in", bkv_compute_in)
+        heads_per_tile = getattr(flash_block_sizes, "heads_per_tile", heads_per_tile)
+
+    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
+    key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
+    value, _, _ = _pad_data_for_flash(value, heads, bkv)
+
+    bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
+    splash_kernel = custom_splash.make_splash_mha(
+        block_sizes=bsizes,
+        bkv_compute_in=bkv_compute_in,
+        orig_q_seq_len=query_seq_len,
+        orig_kv_seq_len=key_seq_len,
+        heads_per_tile=heads_per_tile,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
+    )
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
+    out = vmapped_splash(query, key, value)
+    out = jnp.swapaxes(out, 2, 3)
+    out = out[:, :, :query_seq_len, :kv_size].astype(query.dtype)
+
+    # Restore seq-sharded / full-heads layout.
+    out = jax.lax.all_to_all(out, axis_name=axis_name, split_axis=2, concat_axis=1, tiled=True)
+    return out
+
+  x = fused(hidden_states, rotary_emb)
+  x = x[:, :, :orig_q_seq_len, :]
+  x = _reshape_heads_to_head_dim(x)
+  return x
+
+
 def _apply_attention_dot(
     query: Array,
     key: Array,
@@ -1377,6 +1494,7 @@ class FlaxWanAttention(nnx.Module):
     self.inner_dim = dim_head * heads
     scale = dim_head**-0.5
     self.qk_norm = qk_norm
+    self.is_self_attention = is_self_attention
     self.query_axis_names = query_axis_names
     self.key_axis_names = key_axis_names
     self.value_axis_names = value_axis_names
@@ -1602,7 +1720,32 @@ class FlaxWanAttention(nnx.Module):
     if not is_i2v_cross_attention:
       encoder_attention_mask = None
 
-    if not is_i2v_cross_attention:
+    if (
+        os.environ.get("ULYSSES_FUSE_PROJ", "0") == "1"
+        and self.is_self_attention
+        and getattr(self.attention_op, "attention_kernel", None) == "ulysses_custom"
+        and rotary_emb is not None
+    ):
+      # Lever A (EXPERIMENTAL, gated): fused projection + Ulysses all-to-all so
+      # a2a(q) overlaps proj(k)/proj(v). Validate output == baseline before use.
+      max_logging.log("[ULYSSES_FUSE_PROJ] fused proj+a2a path ACTIVE (lever A)")
+      with jax.named_scope("ulysses_fused_proj_attn"):
+        attn_output = _ulysses_attention_fused(
+            hidden_states,
+            heads=self.heads,
+            mesh=self.attention_op.mesh,
+            axis_names_q=self.attention_op.axis_names_q,
+            flash_block_sizes=self.attention_op.flash_block_sizes,
+            q_proj_fn=(lambda h: self.norm_q(self.query(h))) if self.qk_norm else self.query,
+            k_proj_fn=(lambda h: self.norm_k(self.key(h))) if self.qk_norm else self.key,
+            v_proj_fn=self.value,
+            rope_fn=self._apply_rope,
+            rotary_emb=rotary_emb,
+            dtype=dtype,
+            use_base2_exp=getattr(self.attention_op, "use_base2_exp", True),
+            use_experimental_scheduler=getattr(self.attention_op, "use_experimental_scheduler", False),
+        )
+    elif not is_i2v_cross_attention:
       with jax.named_scope("query_proj"):
         query_proj = self.query(hidden_states)
 
