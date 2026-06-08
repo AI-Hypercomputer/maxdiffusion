@@ -746,9 +746,7 @@ def _ulysses_attention_fused(
   h_spec = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
   rep_spec = jax.sharding.PartitionSpec()
   # Force rotary replicated so the post-a2a (full-sequence) RoPE is correct.
-  rotary_emb = jax.lax.with_sharding_constraint(
-      rotary_emb, jax.sharding.NamedSharding(mesh, rep_spec)
-  )
+  rotary_emb = jax.lax.with_sharding_constraint(rotary_emb, jax.sharding.NamedSharding(mesh, rep_spec))
 
   @functools.partial(
       jax.shard_map,
