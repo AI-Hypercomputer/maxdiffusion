@@ -97,18 +97,19 @@ def _flash_attention_kernel(
     qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
     v_chunk = v_ref[slice_k, :]
 
+    m_curr = qk.max(axis=0)[None, :]
+    m_next = jnp.maximum(m_prev, m_curr)
+    alpha = exp(m_prev - m_next)
+    l_prev_scaled = alpha * l_prev
+    o_accum = alpha[0:1, ...] * o_prev
+
     # --- V1 VPU REGISTER TILING ---
     step = bkv_compute_in
     for i in range(0, qk.shape[0], step):
       qk_slice = qk[i : i + step]
 
-      m_curr = qk_slice.max(axis=0)[None, :]
-      m_next = jnp.maximum(m_prev, m_curr)
       s_curr = exp(qk_slice - m_next[0:1])
       l_curr = s_curr.sum(axis=0, keepdims=True)
-
-      alpha = exp(m_prev - m_next)
-      l_next = l_curr + alpha * l_prev
 
       sv_dims = (((0,), (0,)), ((), ()))
       o_curr = lax.dot_general(
@@ -118,14 +119,12 @@ def _flash_attention_kernel(
           preferred_element_type=float32,
       )
 
-      alpha_o = alpha[0:1, ...]
-      o_prev = alpha_o * o_prev + o_curr
-
-      m_prev, l_prev = m_next, l_next
+      o_accum = o_accum + o_curr
+      l_prev_scaled = l_prev_scaled + l_curr
     # --- END V1 TILING ---
 
-    m_scratch_ref[...], l_scratch_ref[...] = m_prev, l_prev
-    o_scratch_ref[:] = o_prev
+    m_scratch_ref[...], l_scratch_ref[...] = m_next, l_prev_scaled
+    o_scratch_ref[:] = o_accum
 
   def last_compute_body(kv_compute_index):
     m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
@@ -139,18 +138,19 @@ def _flash_attention_kernel(
     qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
     v_chunk = v_ref[slice_k, :]
 
+    m_curr = qk.max(axis=0)[None, :]
+    m_next = jnp.maximum(m_prev, m_curr)
+    alpha = exp(m_prev - m_next)
+    l_prev_scaled = alpha * l_prev
+    o_accum = alpha[0:1, ...] * o_prev
+
     # --- V1 VPU REGISTER TILING ---
     step = bkv_compute_in
     for i in range(0, qk.shape[0], step):
       qk_slice = qk[i : i + step]
 
-      m_curr = qk_slice.max(axis=0)[None, :]
-      m_next = jnp.maximum(m_prev, m_curr)
       s_curr = exp(qk_slice - m_next[0:1])
       l_curr = s_curr.sum(axis=0, keepdims=True)
-
-      alpha = exp(m_prev - m_next)
-      l_next = l_curr + alpha * l_prev
 
       sv_dims = (((0,), (0,)), ((), ()))
       o_curr = lax.dot_general(
@@ -160,14 +160,12 @@ def _flash_attention_kernel(
           preferred_element_type=float32,
       )
 
-      alpha_o = alpha[0:1, ...]
-      o_prev = alpha_o * o_prev + o_curr
-
-      m_prev, l_prev = m_next, l_next
+      o_accum = o_accum + o_curr
+      l_prev_scaled = l_prev_scaled + l_curr
     # --- END V1 TILING ---
 
-    m_scratch_ref[...], l_scratch_ref[...] = m_prev, l_prev
-    o_scratch_ref[:] = o_prev
+    m_scratch_ref[...], l_scratch_ref[...] = m_next, l_prev_scaled
+    o_scratch_ref[:] = o_accum
 
   assert bkv % bkv_compute == 0
 
@@ -245,18 +243,19 @@ def _flash_attention_kernel_mhpt(
       qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
       v_chunk = v_ref[h_local, slice_k, :]
 
+      m_curr = qk.max(axis=0)[None, :]
+      m_next = jnp.maximum(m_prev, m_curr)
+      alpha = exp(m_prev - m_next)
+      l_prev_scaled = alpha * l_prev
+      o_accum = alpha[0:1, ...] * o_prev
+
       # --- V1 VPU REGISTER TILING ---
       step = bkv_compute_in
       for i in range(0, qk.shape[0], step):
         qk_slice = qk[i : i + step]
 
-        m_curr = qk_slice.max(axis=0)[None, :]
-        m_next = jnp.maximum(m_prev, m_curr)
         s_curr = exp(qk_slice - m_next[0:1])
         l_curr = s_curr.sum(axis=0, keepdims=True)
-
-        alpha = exp(m_prev - m_next)
-        l_next = l_curr + alpha * l_prev
 
         sv_dims = (((0,), (0,)), ((), ()))
         o_curr = lax.dot_general(
@@ -266,15 +265,13 @@ def _flash_attention_kernel_mhpt(
             preferred_element_type=float32,
         )
 
-        alpha_o = alpha[0:1, ...]
-        o_prev = alpha_o * o_prev + o_curr
-
-        m_prev, l_prev = m_next, l_next
+        o_accum = o_accum + o_curr
+        l_prev_scaled = l_prev_scaled + l_curr
       # --- END V1 TILING ---
 
-      m_scratch_ref[h_local] = m_prev
-      l_scratch_ref[h_local] = l_prev
-      o_scratch_ref[h_local] = o_prev
+      m_scratch_ref[h_local] = m_next
+      l_scratch_ref[h_local] = l_prev_scaled
+      o_scratch_ref[h_local] = o_accum
 
   def last_compute_body(kv_compute_index):
     slice_k_len = kv_seq_len % bkv_compute
@@ -290,18 +287,19 @@ def _flash_attention_kernel_mhpt(
       qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
       v_chunk = v_ref[h_local, slice_k, :]
 
+      m_curr = qk.max(axis=0)[None, :]
+      m_next = jnp.maximum(m_prev, m_curr)
+      alpha = exp(m_prev - m_next)
+      l_prev_scaled = alpha * l_prev
+      o_accum = alpha[0:1, ...] * o_prev
+
       # --- V1 VPU REGISTER TILING ---
       step = bkv_compute_in
       for i in range(0, qk.shape[0], step):
         qk_slice = qk[i : i + step]
 
-        m_curr = qk_slice.max(axis=0)[None, :]
-        m_next = jnp.maximum(m_prev, m_curr)
         s_curr = exp(qk_slice - m_next[0:1])
         l_curr = s_curr.sum(axis=0, keepdims=True)
-
-        alpha = exp(m_prev - m_next)
-        l_next = l_curr + alpha * l_prev
 
         sv_dims = (((0,), (0,)), ((), ()))
         o_curr = lax.dot_general(
@@ -311,15 +309,13 @@ def _flash_attention_kernel_mhpt(
             preferred_element_type=float32,
         )
 
-        alpha_o = alpha[0:1, ...]
-        o_prev = alpha_o * o_prev + o_curr
-
-        m_prev, l_prev = m_next, l_next
+        o_accum = o_accum + o_curr
+        l_prev_scaled = l_prev_scaled + l_curr
       # --- END V1 TILING ---
 
-      m_scratch_ref[h_local] = m_prev
-      l_scratch_ref[h_local] = l_prev
-      o_scratch_ref[h_local] = o_prev
+      m_scratch_ref[h_local] = m_next
+      l_scratch_ref[h_local] = l_prev_scaled
+      o_scratch_ref[h_local] = o_accum
 
   assert bkv % bkv_compute == 0
 
