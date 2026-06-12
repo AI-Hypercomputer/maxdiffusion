@@ -17,6 +17,7 @@ limitations under the License.
 
 # pylint: disable=bare-except, consider-using-generator
 """ Common Max Utils needed by multiple modules"""
+import dataclasses
 import functools
 from functools import partial, reduce
 from contextlib import nullcontext
@@ -612,12 +613,44 @@ def value_or_none(flash_block_sizes, key):
     return None
 
 
+@dataclasses.dataclass(frozen=True)
+class CustomFlashBlockSizes:
+  """Hashable carrier for the custom splash kernel's block sizes.
+
+  The JAX `splash_attention_kernel.BlockSizes` is frozen + slotted and only has
+  fields for block_q/block_kv/block_kv_compute — it silently drops
+  block_kv_compute_in, heads_per_tile, and vmem_limit_bytes, which the custom
+  kernel needs. A plain dict would carry them but is unhashable (it ends up in
+  nnx's static graphdef, which jit requires to be hashable). This frozen
+  dataclass is hashable and is read via getattr in wrap_ulysses_attention.
+  """
+
+  block_q: int | None = None
+  block_kv: int | None = None
+  block_kv_compute: int | None = None
+  block_kv_compute_in: int | None = None
+  heads_per_tile: int | None = None
+  vmem_limit_bytes: int | None = None
+
+
 def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
   flash_block_sizes = None
   if len(config.flash_block_sizes.keys()) > 0:
     attention_is_tokamax = "tokamax" in config.attention
     user_block_sizes: Dict[str, int] = config.flash_block_sizes
+    # The custom splash kernel reads flash_block_sizes via getattr and needs
+    # fields the JAX BlockSizes dataclass cannot hold. Return a frozen, hashable
+    # carrier so they survive the trip to wrap_ulysses_attention.
+    if "custom" in config.attention:
+      return CustomFlashBlockSizes(
+          block_q=user_block_sizes.get("block_q"),
+          block_kv=user_block_sizes.get("block_kv"),
+          block_kv_compute=user_block_sizes.get("block_kv_compute"),
+          block_kv_compute_in=user_block_sizes.get("block_kv_compute_in"),
+          heads_per_tile=user_block_sizes.get("heads_per_tile"),
+          vmem_limit_bytes=user_block_sizes.get("vmem_limit_bytes"),
+      )
     if attention_is_tokamax:
       max_logging.log(
           "Tokamax kernel specified, Note: Tokamax only supports fused backward kernel."

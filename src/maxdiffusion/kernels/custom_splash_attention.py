@@ -359,6 +359,7 @@ def _splash_attention_forward(
     kv_seq_len: int | None = None,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
 ):
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
@@ -429,6 +430,7 @@ def _splash_attention_forward(
           flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": use_experimental_scheduler},
           disable_bounds_checks=True,
           skip_device_barrier=True,
+          vmem_limit_bytes=vmem_limit_bytes,
       ),
       out_shape=out_shapes,
   )(q, k, v)
@@ -446,6 +448,7 @@ def _splash_attention_forward_mhpt(
     kv_seq_len: int | None = None,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
 ):
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
@@ -518,6 +521,7 @@ def _splash_attention_forward_mhpt(
           flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": use_experimental_scheduler},
           disable_bounds_checks=True,
           skip_device_barrier=True,
+          vmem_limit_bytes=vmem_limit_bytes,
       ),
       out_shape=out_shapes,
   )(q, k, v)
@@ -532,6 +536,7 @@ def make_splash_mha(
     heads_per_tile: int = 1,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
 ):
   def _splash_attention(q, k, v):
     if heads_per_tile > 1:
@@ -546,6 +551,7 @@ def make_splash_mha(
           kv_seq_len=orig_kv_seq_len,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=vmem_limit_bytes,
       )
     return _splash_attention_forward(
         q,
@@ -557,6 +563,7 @@ def make_splash_mha(
         kv_seq_len=orig_kv_seq_len,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
+        vmem_limit_bytes=vmem_limit_bytes,
     )
 
   return _splash_attention
@@ -581,6 +588,7 @@ def tpu_custom_attention(
     heads_per_tile=None,
     use_base2_exp=True,
     use_experimental_scheduler=False,
+    vmem_limit_bytes=None,
     flash_block_sizes=None,
 ):
   _LOG2_E = 1.44269504
@@ -592,6 +600,7 @@ def tpu_custom_attention(
     block_kv_compute = flash_block_sizes.get("block_kv_compute", block_kv_compute)
     block_kv_compute_in = flash_block_sizes.get("block_kv_compute_in", block_kv_compute_in)
     heads_per_tile = flash_block_sizes.get("heads_per_tile", heads_per_tile)
+    vmem_limit_bytes = flash_block_sizes.get("vmem_limit_bytes", vmem_limit_bytes)
 
   block_q = block_q if block_q is not None else DEFAULT_BQSIZE
   block_kv = block_kv if block_kv is not None else DEFAULT_BKVSIZE
@@ -639,6 +648,7 @@ def tpu_custom_attention(
           heads_per_tile=heads_per_tile,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=vmem_limit_bytes,
       )
       out = splash_kernel(
           q_3d_padded.astype(jnp.bfloat16),
@@ -706,6 +716,7 @@ def make_custom_splash_sdpa(mesh, env, **kwargs):
   use_k_smooth = kwargs.get("use_k_smooth", True)
   use_base2_exp = kwargs.get("use_base2_exp", True)
   use_experimental_scheduler = kwargs.get("use_experimental_scheduler", False)
+  vmem_limit_bytes = kwargs.get("vmem_limit_bytes", None)
 
   def _simple_attention(q, k, v, scale=None):
     s = scale if scale is not None else 1.0 / math.sqrt(q.shape[-1])
@@ -747,6 +758,7 @@ def make_custom_splash_sdpa(mesh, env, **kwargs):
         heads_per_tile=hpt,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
+        vmem_limit_bytes=vmem_limit_bytes,
         flash_block_sizes=flash_block_sizes,
     )
     return env.j2t_iso(result)

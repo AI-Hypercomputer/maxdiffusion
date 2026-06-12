@@ -581,6 +581,7 @@ def _ulysses_attention(
       bkv_compute = 1024
       bkv_compute_in = 1024
       heads_per_tile = 1
+      vmem_limit_bytes = None
 
       if flash_block_sizes is not None:
         if isinstance(flash_block_sizes, dict):
@@ -589,12 +590,14 @@ def _ulysses_attention(
           bkv_compute = flash_block_sizes.get("block_kv_compute", bkv_compute)
           bkv_compute_in = flash_block_sizes.get("block_kv_compute_in", bkv_compute_in)
           heads_per_tile = flash_block_sizes.get("heads_per_tile", heads_per_tile)
+          vmem_limit_bytes = flash_block_sizes.get("vmem_limit_bytes", vmem_limit_bytes)
         else:
           bq = getattr(flash_block_sizes, "block_q", bq)
           bkv = getattr(flash_block_sizes, "block_kv", bkv)
           bkv_compute = getattr(flash_block_sizes, "block_kv_compute", bkv_compute)
           bkv_compute_in = getattr(flash_block_sizes, "block_kv_compute_in", bkv_compute_in)
           heads_per_tile = getattr(flash_block_sizes, "heads_per_tile", heads_per_tile)
+          vmem_limit_bytes = getattr(flash_block_sizes, "vmem_limit_bytes", vmem_limit_bytes)
 
       if use_base2_exp:
         query = query * LOG2E
@@ -613,6 +616,7 @@ def _ulysses_attention(
           heads_per_tile=heads_per_tile,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=vmem_limit_bytes,
       )
 
       vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
