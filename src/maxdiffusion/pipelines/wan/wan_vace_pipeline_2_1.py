@@ -82,8 +82,15 @@ def create_sharded_logical_transformer(
   wan_config["dropout"] = config.dropout
   wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
-  wan_config["use_base2_exp"] = config.use_base2_exp
-  wan_config["use_experimental_scheduler"] = config.use_experimental_scheduler
+  attention_config = wan_config.pop("attention_config", {})
+  wan_config.pop("use_base2_exp", None)
+  wan_config.pop("use_experimental_scheduler", None)
+  wan_config["attention_config"] = {
+      **attention_config,
+      "use_base2_exp": config.use_base2_exp,
+      "use_experimental_scheduler": config.use_experimental_scheduler,
+      "ulysses_shards": getattr(config, "ulysses_shards", -1),
+  }
 
   wan_config["scan_layers"] = False
 

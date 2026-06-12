@@ -38,6 +38,7 @@ from maxdiffusion.common_types import (
     RING_ATTENTION_AXIS_RULES,
     SEQUENCE_PARALLEL_AXIS_RULES,
     ULYSSES_ATTENTION_AXIS_RULES,
+    ULYSSES_RING_ATTENTION_AXIS_RULES,
 )
 
 _ALLOWED_MODEL_NAMES = {WAN2_1, WAN2_2, LTX2_VIDEO, LTX2_3}
@@ -240,10 +241,11 @@ class _HyperParameters:
       raw_keys["vae_logical_axis_rules"] = _lists_to_tuples(raw_keys["vae_logical_axis_rules"])
     # Verify qkv is sharded across sequence.
     attention = raw_keys["attention"]
-    uses_ring_attention = "ring" in attention
-    uses_ulysses_attention = "ulysses" in attention
+    uses_ulysses_ring_attention = attention == "ulysses_ring"
+    uses_ring_attention = "ring" in attention and not uses_ulysses_ring_attention
+    uses_ulysses_attention = "ulysses" in attention and not uses_ulysses_ring_attention
     uses_uniform_sequence_sharding = raw_keys["attention_sharding_uniform"]
-    if uses_ring_attention or uses_ulysses_attention or uses_uniform_sequence_sharding:
+    if uses_ring_attention or uses_ulysses_attention or uses_ulysses_ring_attention or uses_uniform_sequence_sharding:
       max_logging.log(
           "Adding sequence sharding to q and kv if not already present because "
           f"{attention=} requires it or attention_sharding_uniform={uses_uniform_sequence_sharding} is set."
@@ -259,7 +261,12 @@ class _HyperParameters:
       if kv_seq_sharding not in logical_axis_rules:
         logical_axis_rules.append(kv_seq_sharding)
         max_logging.log(f"Adding key/value sequence axis rule {kv_seq_sharding}")
-      if uses_ring_attention:
+      if uses_ulysses_ring_attention:
+        for ulysses_ring_attention_axis_rule in ULYSSES_RING_ATTENTION_AXIS_RULES:
+          if ulysses_ring_attention_axis_rule not in logical_axis_rules:
+            max_logging.log(f"Adding ulysses ring attention axis rule {ulysses_ring_attention_axis_rule}")
+            new_rules.append(ulysses_ring_attention_axis_rule)
+      elif uses_ring_attention:
         for ring_attention_axis_rule in RING_ATTENTION_AXIS_RULES:
           if ring_attention_axis_rule not in logical_axis_rules:
             max_logging.log(f"Adding ring attention axis rule {ring_attention_axis_rule}")

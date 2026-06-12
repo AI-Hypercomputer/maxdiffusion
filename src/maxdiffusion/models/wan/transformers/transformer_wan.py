@@ -353,10 +353,15 @@ class WanTransformerBlock(nnx.Module):
       dropout: float = 0.0,
       mask_padding_tokens: bool = True,
       enable_jax_named_scopes: bool = False,
-      use_base2_exp: bool = False,
-      use_experimental_scheduler: bool = False,
+      attention_config: Optional[dict] = None,
   ):
     self.enable_jax_named_scopes = enable_jax_named_scopes
+    attention_config = {
+        "use_base2_exp": False,
+        "use_experimental_scheduler": False,
+        "ulysses_shards": -1,
+        **(attention_config or {}),
+    }
 
     # 1. Self-attention
     self.norm1 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=False)
@@ -379,8 +384,7 @@ class WanTransformerBlock(nnx.Module):
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="self_attn",
         enable_jax_named_scopes=enable_jax_named_scopes,
-        use_base2_exp=use_base2_exp,
-        use_experimental_scheduler=use_experimental_scheduler,
+        attention_config=attention_config,
     )
 
     # 1. Cross-attention
@@ -405,8 +409,7 @@ class WanTransformerBlock(nnx.Module):
         mask_padding_tokens=mask_padding_tokens,
         residual_checkpoint_name="cross_attn",
         enable_jax_named_scopes=enable_jax_named_scopes,
-        use_base2_exp=use_base2_exp,
-        use_experimental_scheduler=use_experimental_scheduler,
+        attention_config=attention_config,
     )
     assert cross_attn_norm is True
     self.norm2 = FP32LayerNorm(rngs=rngs, dim=dim, eps=eps, elementwise_affine=True)
@@ -570,14 +573,19 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       mask_padding_tokens: bool = True,
       scan_layers: bool = True,
       enable_jax_named_scopes: bool = False,
-      use_base2_exp: bool = False,
-      use_experimental_scheduler: bool = False,
+      attention_config: Optional[dict] = None,
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
     self.num_layers = num_layers
     self.scan_layers = scan_layers
     self.enable_jax_named_scopes = enable_jax_named_scopes
+    attention_config = {
+        "use_base2_exp": False,
+        "use_experimental_scheduler": False,
+        "ulysses_shards": -1,
+        **(attention_config or {}),
+    }
 
     # 1. Patch & position embedding
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
@@ -637,8 +645,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           enable_jax_named_scopes=enable_jax_named_scopes,
           added_kv_proj_dim=added_kv_proj_dim,
           image_seq_len=image_seq_len,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
+          attention_config=attention_config,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
@@ -667,6 +674,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             precision=precision,
             attention=attention,
             enable_jax_named_scopes=enable_jax_named_scopes,
+            attention_config=attention_config,
         )
         blocks.append(block)
       self.blocks = nnx.data(blocks)

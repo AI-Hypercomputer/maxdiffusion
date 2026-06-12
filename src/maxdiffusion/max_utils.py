@@ -637,7 +637,7 @@ def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
   flash_block_sizes = None
   if len(config.flash_block_sizes.keys()) > 0:
-    attention_is_tokamax = "tokamax" in config.attention
+    attention_is_tokamax = "tokamax" in config.attention or config.attention == "ulysses_ring"
     user_block_sizes: Dict[str, int] = config.flash_block_sizes
     # The custom splash kernel reads flash_block_sizes via getattr and needs
     # fields the JAX BlockSizes dataclass cannot hold. Return a frozen, hashable
