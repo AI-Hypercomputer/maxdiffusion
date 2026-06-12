@@ -43,9 +43,12 @@ from maxdiffusion.train_utils import (
     write_metrics,
 )
 
+
 from maxdiffusion.maxdiffusion_utils import calculate_flux_tflops
 
 from ..schedulers import (FlaxEulerDiscreteScheduler)
+
+import tensorflow as tf
 
 
 class FluxTrainer(FluxCheckpointer):
@@ -108,6 +111,12 @@ class FluxTrainer(FluxCheckpointer):
 
       # don't need this anymore, clear some memory.
       del pipeline.t5_encoder
+      del pipeline.clip_encoder
+      del pipeline.clip_tokenizer
+      del pipeline.t5_tokenizer
+      del pipeline.vae
+      del state_shardings[VAE_STATE_SHARDINGS_KEY]
+      jax.clear_caches()
 
       # evaluate shapes
 
@@ -121,10 +130,10 @@ class FluxTrainer(FluxCheckpointer):
           checkpoint_item_name=FLUX_STATE_KEY,
           is_training=True,
       )
+
       flux_state = jax.device_put(flux_state, flux_state_mesh_shardings)
       train_states[FLUX_STATE_KEY] = flux_state
       state_shardings[FLUX_STATE_SHARDINGS_KEY] = flux_state_mesh_shardings
-      # self.post_training_steps(pipeline, params, train_states, msg="before_training")
 
       # Create scheduler
       noise_scheduler, noise_scheduler_state = self.create_scheduler(pipeline, params)
@@ -140,7 +149,7 @@ class FluxTrainer(FluxCheckpointer):
       p_train_step = self.compile_train_step(pipeline, params, train_states, state_shardings, data_shardings)
       # Start training
       train_states = self.training_loop(
-          p_train_step, pipeline, params, train_states, data_iterator, flux_learning_rate_scheduler
+          p_train_step, pipeline, params, train_states, data_iterator, data_shardings, flux_learning_rate_scheduler
       )
       # 6. save final checkpoint
       # Hook
@@ -247,6 +256,28 @@ class FluxTrainer(FluxCheckpointer):
     total_train_batch_size = self.total_train_batch_size
     mesh = self.mesh
 
+    feature_description = {
+        "pixel_values": tf.io.FixedLenFeature([], tf.string),
+        "input_ids": tf.io.FixedLenFeature([], tf.string),
+        "text_embeds": tf.io.FixedLenFeature([], tf.string),
+        "prompt_embeds": tf.io.FixedLenFeature([], tf.string),
+        "img_ids": tf.io.FixedLenFeature([], tf.string),
+    }
+
+    def prepare_sample_train(features):
+      pixel_values = tf.io.parse_tensor(features["pixel_values"], out_type=tf.bfloat16)
+      input_ids = tf.io.parse_tensor(features["input_ids"], out_type=tf.bfloat16)
+      text_embeds = tf.io.parse_tensor(features["text_embeds"], out_type=tf.float32)
+      prompt_embeds = tf.io.parse_tensor(features["prompt_embeds"], out_type=tf.float32)
+      img_ids = tf.io.parse_tensor(features["img_ids"], out_type=tf.float32)
+      return {
+          "pixel_values": pixel_values,
+          "input_ids": input_ids,
+          "text_embeds": text_embeds,
+          "prompt_embeds": prompt_embeds,
+          "img_ids": img_ids,
+      }
+
     # If using synthetic data
     if config.dataset_type == "synthetic":
       return make_data_iterator(
@@ -255,6 +286,8 @@ class FluxTrainer(FluxCheckpointer):
           jax.process_count(),
           mesh,
           total_train_batch_size,
+          feature_description=feature_description,
+          prepare_sample_fn=prepare_sample_train,
           pipeline=pipeline,  # Pass pipeline to extract dimensions
           is_training=True,
       )
@@ -283,6 +316,28 @@ class FluxTrainer(FluxCheckpointer):
         prepare_latent_imgage_ids=prepare_latent_image_ids_p,
     )
 
+    feature_description = {
+        "pixel_values": tf.io.FixedLenFeature([], tf.string),
+        "input_ids": tf.io.FixedLenFeature([], tf.string),
+        "text_embeds": tf.io.FixedLenFeature([], tf.string),
+        "prompt_embeds": tf.io.FixedLenFeature([], tf.string),
+        "img_ids": tf.io.FixedLenFeature([], tf.string),
+    }
+
+    def prepare_sample_train(features):
+      pixel_values = tf.io.parse_tensor(features["pixel_values"], out_type=tf.bfloat16)
+      input_ids = tf.io.parse_tensor(features["input_ids"], out_type=tf.bfloat16)
+      text_embeds = tf.io.parse_tensor(features["text_embeds"], out_type=tf.float32)
+      prompt_embeds = tf.io.parse_tensor(features["prompt_embeds"], out_type=tf.float32)
+      img_ids = tf.io.parse_tensor(features["img_ids"], out_type=tf.float32)
+      return {
+          "pixel_values": pixel_values,
+          "input_ids": input_ids,
+          "text_embeds": text_embeds,
+          "prompt_embeds": prompt_embeds,
+          "img_ids": img_ids,
+      }
+
     data_iterator = make_data_iterator(
         config,
         jax.process_index(),
@@ -291,6 +346,8 @@ class FluxTrainer(FluxCheckpointer):
         total_train_batch_size,
         tokenize_fn=tokenize_fn,
         image_transforms_fn=image_transforms_fn,
+        feature_description=feature_description,
+        prepare_sample_fn=prepare_sample_train,
     )
 
     return data_iterator
@@ -315,17 +372,24 @@ class FluxTrainer(FluxCheckpointer):
               None,
           ),
           out_shardings=(state_shardings["flux_state_shardings"], None, None),
-          donate_argnums=(0,),
+          donate_argnums=(0, 1),
       )
       max_logging.log("Precompiling...")
       s = time.time()
       dummy_batch = self.get_shaped_batch(self.config, pipeline)
-      p_train_step = p_train_step.lower(train_states[FLUX_STATE_KEY], dummy_batch, train_rngs)
+      abstract_flux_state = jax.tree_util.tree_map(
+          lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype), train_states[FLUX_STATE_KEY]
+      )
+
+      abstract_rngs = jax.tree_util.tree_map(lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype), train_rngs)
+      p_train_step = p_train_step.lower(abstract_flux_state, dummy_batch, abstract_rngs)
       p_train_step = p_train_step.compile()
       max_logging.log(f"Compile time: {(time.time() - s )}")
       return p_train_step
 
-  def training_loop(self, p_train_step, pipeline, params, train_states, data_iterator, unet_learning_rate_scheduler):
+  def training_loop(
+      self, p_train_step, pipeline, params, train_states, data_iterator, data_shardings, unet_learning_rate_scheduler
+  ):
     writer = max_utils.initialize_summary_writer(self.config)
     flux_state = train_states[FLUX_STATE_KEY]
     num_model_parameters = max_utils.calculate_num_params_from_pytree(flux_state.params)
@@ -360,7 +424,10 @@ class FluxTrainer(FluxCheckpointer):
         self._profiler.start()
 
       example_batch = load_next_batch(data_iterator, example_batch, self.config)
-      example_batch = {key: jnp.asarray(value, dtype=self.config.activations_dtype) for key, value in example_batch.items()}
+      example_batch = {
+          key: jax.device_put(jnp.asarray(value, dtype=self.config.activations_dtype), data_shardings[key])
+          for key, value in example_batch.items()
+      }
 
       if self.config.profiler == "nsys":
         with self.mesh:

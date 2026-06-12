@@ -367,7 +367,7 @@ else:
   _import_structure["models.controlnet_flax"] = ["FlaxControlNetModel"]
   _import_structure["models.modeling_flax_utils"] = ["FlaxModelMixin"]
   _import_structure["models.unet_2d_condition_flax"] = ["FlaxUNet2DConditionModel"]
-  _import_structure["models.flux.transformers.transformer_flux_flax"] = ["FluxTransformer2DModel"]
+  _import_structure["models.flux.transformers.transformer_flux"] = ["FluxTransformer2DModel"]
   _import_structure["models.vae_flax"] = ["FlaxAutoencoderKL"]
   _import_structure["models.ltx_video.transformers.transformer3d"] = ["Transformer3DModel"]
   _import_structure["pipelines"].extend(["FlaxDiffusionPipeline"])
@@ -444,7 +444,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
     from .models.controlnet_flax import FlaxControlNetModel
     from .models.modeling_flax_utils import FlaxModelMixin
     from .models.unet_2d_condition_flax import FlaxUNet2DConditionModel
-    from .models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+    from .models.flux.transformers.transformer_flux import FluxTransformer2DModel
     from .models.ltx_video.transformers.transformer3d import Transformer3DModel
     from .models.vae_flax import FlaxAutoencoderKL
     from .pipelines import FlaxDiffusionPipeline

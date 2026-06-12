@@ -31,7 +31,7 @@ from flax.linen import partitioning as nn_partitioning
 from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
 
 from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging, max_utils
-from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+from maxdiffusion.models.flux.transformers.transformer_flux import FluxTransformer2DModel
 from maxdiffusion.max_utils import (
     device_put_replicated,
     get_memory_allocations,
