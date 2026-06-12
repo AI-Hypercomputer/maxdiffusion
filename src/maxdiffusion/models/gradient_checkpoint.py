@@ -21,6 +21,8 @@ import jax
 from jax import checkpoint_policies as cp
 from flax import nnx
 
+import flax.linen as linen_nn
+
 SKIP_GRADIENT_CHECKPOINT_KEY = "skip"
 
 
@@ -42,6 +44,7 @@ class GradientCheckpointType(Enum):
   OFFLOAD_MATMUL_WITHOUT_BATCH = auto()
   CUSTOM = auto()
   HIDDEN_STATE_WITH_OFFLOAD = auto()
+  FLUX_OPTIMIZED = auto()
 
   @classmethod
   def from_str(cls, s: Optional[str] = None) -> "GradientCheckpointType":
@@ -58,7 +61,12 @@ class GradientCheckpointType(Enum):
       s = "none"
     return GradientCheckpointType[s.upper()]
 
-  def to_jax_policy(self, names_which_can_be_saved: list = [], names_which_can_be_offloaded: list = []):
+  def to_jax_policy(
+      self,
+      names_which_can_be_saved: list = [],
+      names_which_can_be_offloaded: list = [],
+      block_type: Optional[str] = None,
+  ):
     """
     Converts the gradient checkpoint type to a jax policy
     """
@@ -86,6 +94,13 @@ class GradientCheckpointType(Enum):
         )
       case GradientCheckpointType.MATMUL_WITHOUT_BATCH:
         return jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
+      case GradientCheckpointType.FLUX_OPTIMIZED:
+        if block_type == "double":
+          return cp.save_any_names_but_these("img_qkv_proj", "txt_qkv_proj")
+        elif block_type == "single":
+          return cp.save_only_these_names("attn_output", "lin1_norm_hidden_states")
+        else:
+          return jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
 
   def apply(
       self,
@@ -109,3 +124,27 @@ class GradientCheckpointType(Enum):
     if policy == SKIP_GRADIENT_CHECKPOINT_KEY:
       return module
     return nnx.remat(module, prevent_cse=prevent_cse, policy=policy, static_argnums=static_argnums)  # pylint: disable=invalid-name
+
+  def apply_linen(
+      self,
+      module_class: type[linen_nn.Module],
+      names_which_can_be_saved: list = [],
+      names_which_can_be_offloaded: list = [],
+      static_argnums=(),
+      prevent_cse: bool = False,
+  ) -> type[linen_nn.Module]:
+    """
+    Applies a gradient checkpoint policy to a Linen module class.
+    If no policy is needed, it will return the module class as is.
+
+    Args:
+        module_class: the Linen Module class to apply the policy to
+
+    Returns:
+        The rematerialized Module class (or the original if no policy).
+    """
+    policy = self.to_jax_policy(names_which_can_be_saved, names_which_can_be_offloaded)
+    if policy == SKIP_GRADIENT_CHECKPOINT_KEY:
+      return module_class
+
+    return linen_nn.remat(module_class, prevent_cse=prevent_cse, policy=policy, static_argnums=static_argnums)
