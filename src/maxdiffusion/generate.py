@@ -22,12 +22,13 @@ import numpy as np
 
 import jax
 from jax.sharding import PartitionSpec as P
+from jax.sharding import NamedSharding
 import jax.numpy as jnp
 from absl import app
-from maxdiffusion import (pyconfig, FlaxDDIMScheduler, max_utils)
+from maxdiffusion import (pyconfig, max_utils)
 
 from maxdiffusion.train_utils import transformer_engine_context
-from maxdiffusion.maxdiffusion_utils import rescale_noise_cfg
+from maxdiffusion.maxdiffusion_utils import rescale_noise_cfg, create_scheduler
 from flax.linen import partitioning as nn_partitioning
 from maxdiffusion.image_processor import VaeImageProcessor
 from maxdiffusion.trainers.stable_diffusion_trainer import (StableDiffusionTrainer)
@@ -46,7 +47,17 @@ class GenerateSD(StableDiffusionTrainer):
     return super().post_training_steps(pipeline, params, train_states)
 
 
-def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidance_rescale):
+def get_batch_sharding(mesh, config):
+  """Sharding for the batch dimension.
+
+  Shard the batch over the data axis to run data parallel. For sub-device
+  batches (per_device_batch_size < 1) the batch can't be split, so replicate.
+  """
+  spec = P() if config.per_device_batch_size < 1 else P("data")
+  return NamedSharding(mesh, spec)
+
+
+def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidance_rescale, batch_sharding):
   latents, scheduler_state, state = args
   latents_input = jnp.concatenate([latents] * 2)
 
@@ -76,6 +87,7 @@ def loop_body(step, args, model, pipeline, prompt_embeds, guidance_scale, guidan
   )
 
   latents, scheduler_state = pipeline.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+  latents = jax.lax.with_sharding_constraint(latents, batch_sharding)
   return latents, scheduler_state, state
 
 
@@ -86,9 +98,7 @@ def tokenize(prompt, tokenizer):
   ).input_ids
 
 
-def get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size):
-  data_sharding = jax.sharding.NamedSharding(mesh, P(*config.data_sharding))
-
+def get_unet_inputs(pipeline, params, states, config, rng, batch_sharding, batch_size):
   vae_scale_factor = 2 ** (len(pipeline.vae.config.block_out_channels) - 1)
   prompt_ids = [config.prompt] * batch_size
   prompt_ids = tokenize(prompt_ids, pipeline.tokenizer)
@@ -118,8 +128,9 @@ def get_unet_inputs(pipeline, params, states, config, rng, mesh, batch_size):
   )
   latents = latents * params["scheduler"].init_noise_sigma
 
-  latents = jax.device_put(latents, data_sharding)
-  context = jax.device_put(context, data_sharding)
+  # Seed the batch sharding so it propagates through the program.
+  latents = jax.lax.with_sharding_constraint(latents, batch_sharding)
+  context = jax.lax.with_sharding_constraint(context, batch_sharding)
 
   return latents, context, guidance_scale, guidance_rescale, scheduler_state
 
@@ -135,8 +146,10 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
   unet_state = states["unet_state"]
   vae_state = states["vae_state"]
 
+  batch_sharding = get_batch_sharding(mesh, config)
+
   (latents, context, guidance_scale, guidance_rescale, scheduler_state) = get_unet_inputs(
-      pipeline, params, states, config, rng, mesh, batch_size
+      pipeline, params, states, config, rng, batch_sharding, batch_size
   )
 
   loop_body_p = functools.partial(
@@ -146,18 +159,29 @@ def run_inference(states, pipeline, params, config, rng, mesh, batch_size):
       prompt_embeds=context,
       guidance_scale=guidance_scale,
       guidance_rescale=guidance_rescale,
+      batch_sharding=batch_sharding,
   )
 
   vae_decode_p = functools.partial(vae_decode, pipeline=pipeline)
 
-  with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-    latents, _, _ = jax.lax.fori_loop(0, config.num_inference_steps, loop_body_p, (latents, scheduler_state, unet_state))
+  # Loop over the full sampler schedule. For most schedulers this equals
+  # num_inference_steps, but PNDM with skip_prk_steps emits one extra (PLMS
+  # warmup) timestep, so iterate over the actual scheduler timesteps to match
+  # diffusers/reference semantics exactly.
+  num_steps = scheduler_state.timesteps.shape[0]
+  with nn_partitioning.axis_rules(config.logical_axis_rules):
+    latents, _, _ = jax.lax.fori_loop(0, num_steps, loop_body_p, (latents, scheduler_state, unet_state))
     image = vae_decode_p(latents, vae_state)
     return image
 
 
 def run(config):
   checkpoint_loader = GenerateSD(config, STABLE_DIFFUSION_CHECKPOINT)
+  with jax.set_mesh(checkpoint_loader.mesh):
+    return _run_with_mesh(config, checkpoint_loader)
+
+
+def _run_with_mesh(config, checkpoint_loader):
   pipeline, params = checkpoint_loader.load_checkpoint()
 
   weights_init_fn = functools.partial(pipeline.unet.init_weights, rng=checkpoint_loader.rng)
@@ -221,11 +245,16 @@ def run(config):
   states["vae_state"] = vae_state
   states["text_encoder_state"] = text_encoder_state
 
-  scheduler, scheduler_state = FlaxDDIMScheduler.from_pretrained(
-      config.pretrained_model_name_or_path, revision=config.revision, subfolder="scheduler", dtype=jnp.float32
-  )
+  # Build the sampler from the checkpoint's scheduler config (PNDM for SD 1.5),
+  # honoring any overrides in config.diffusion_scheduler_config. This mirrors the
+  # SDXL generate path and keeps the scheduler choice driven by config rather
+  # than hardcoded here.
+  scheduler, scheduler_state = create_scheduler(pipeline.scheduler.config, config)
   pipeline.scheduler = scheduler
   params["scheduler"] = scheduler_state
+
+  # Keep the output sharding in line with the batch sharding.
+  image_out_sharding = get_batch_sharding(checkpoint_loader.mesh, config)
 
   p_run_inference = jax.jit(
       functools.partial(
@@ -238,7 +267,7 @@ def run(config):
           batch_size=checkpoint_loader.total_train_batch_size,
       ),
       in_shardings=(state_shardings,),
-      out_shardings=None,
+      out_shardings=image_out_sharding,
   )
 
   s = time.time()
