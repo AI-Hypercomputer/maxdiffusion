@@ -147,18 +147,29 @@ def get_add_time_ids(original_size, crops_coords_top_left, target_size, bs, dtyp
 
 
 def override_scheduler_config(scheduler_config, config):
-  """Overrides diffusion scheduler params from checkpoint."""
+  """Overrides diffusion scheduler params from config.
 
-  maxdiffusion_scheduler_config = config.diffusion_scheduler_config
+  Values set in ``config.diffusion_scheduler_config`` take precedence; empty
+  values fall back to the checkpoint's scheduler config, and finally to safe
+  defaults. Older diffusers scheduler configs (e.g. the SD 1.5 PNDM config) may
+  omit keys such as ``timestep_spacing`` or ``prediction_type``, so the
+  checkpoint lookups are tolerant of missing keys instead of raising.
+  """
 
-  scheduler_config["_class_name"] = maxdiffusion_scheduler_config.get("_class_name", scheduler_config["_class_name"])
-  scheduler_config["prediction_type"] = maxdiffusion_scheduler_config.get(
-      "prediction_type", scheduler_config["prediction_type"]
-  )
-  scheduler_config["timestep_spacing"] = maxdiffusion_scheduler_config.get(
-      "timestep_spacing", scheduler_config["timestep_spacing"]
-  )
-  scheduler_config["rescale_zero_terminal_snr"] = maxdiffusion_scheduler_config.get("rescale_zero_terminal_snr", False)
+  maxdiffusion_scheduler_config = getattr(config, "diffusion_scheduler_config", {}) or {}
+
+  def _resolve(key, default):
+    # An explicit override wins; otherwise keep the checkpoint value,
+    # falling back to a safe default when the checkpoint omits the key.
+    override = maxdiffusion_scheduler_config.get(key, None)
+    if override is not None:
+      return override
+    return scheduler_config.get(key, default)
+
+  scheduler_config["_class_name"] = _resolve("_class_name", scheduler_config.get("_class_name", ""))
+  scheduler_config["prediction_type"] = _resolve("prediction_type", "epsilon")
+  scheduler_config["timestep_spacing"] = _resolve("timestep_spacing", "leading")
+  scheduler_config["rescale_zero_terminal_snr"] = _resolve("rescale_zero_terminal_snr", False)
 
   return scheduler_config
 
