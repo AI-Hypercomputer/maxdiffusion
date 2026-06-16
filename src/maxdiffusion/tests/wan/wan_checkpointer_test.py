@@ -19,7 +19,10 @@ from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
 from maxdiffusion.pipelines.wan.wan_pipeline import _select_restored_transformer_state
+from maxdiffusion.pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
+from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
 from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p1 import WanPipelineI2V_2_1
+from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p2 import WanPipelineI2V_2_2
 
 
 class WanPretrainedCacheTest(unittest.TestCase):
@@ -166,27 +169,34 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     self.config.dataset_type = "test_dataset"
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_1.WanPipeline2_1")
-  def test_load_from_diffusers(self, mock_wan_pipeline, mock_create_manager):
+  @patch.object(WanPipeline2_1, "from_pretrained", autospec=True)
+  def test_load_from_diffusers(self, mock_from_pretrained, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = None
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline.from_pretrained.return_value = mock_pipeline_instance
+    mock_from_pretrained.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=None)
 
     mock_manager.latest_step.assert_called_once()
-    mock_wan_pipeline.from_pretrained.assert_called_once_with(self.config)
+    mock_from_pretrained.assert_called_once_with(
+        self.config,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertIsNone(step)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_1.WanPipeline2_1")
-  def test_load_checkpoint_no_optimizer(self, mock_wan_pipeline, mock_create_manager):
+  @patch.object(WanPipeline2_1, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_no_optimizer(self, mock_from_checkpoint, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
     metadata_mock = MagicMock()
@@ -203,20 +213,28 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
-    mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
+    mock_from_checkpoint.assert_called_with(
+        self.config,
+        mock_manager.restore.return_value,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_1.WanPipeline2_1")
-  def test_load_checkpoint_with_optimizer(self, mock_wan_pipeline, mock_create_manager):
+  @patch.object(WanPipeline2_1, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_with_optimizer(self, mock_from_checkpoint, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
     metadata_mock = MagicMock()
@@ -233,13 +251,21 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
-    mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
+    mock_from_checkpoint.assert_called_with(
+        self.config,
+        mock_manager.restore.return_value,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.001)
@@ -255,28 +281,35 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     self.config.dataset_type = "test_dataset"
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
-  def test_load_from_diffusers(self, mock_wan_pipeline, mock_create_manager):
+  @patch.object(WanPipeline2_2, "from_pretrained", autospec=True)
+  def test_load_from_diffusers(self, mock_from_pretrained, mock_create_manager):
     """Test loading from pretrained when no checkpoint exists."""
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = None
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline.from_pretrained.return_value = mock_pipeline_instance
+    mock_from_pretrained.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=None)
 
     mock_manager.latest_step.assert_called_once()
-    mock_wan_pipeline.from_pretrained.assert_called_once_with(self.config)
+    mock_from_pretrained.assert_called_once_with(
+        self.config,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertIsNone(step)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
-  def test_load_checkpoint_no_optimizer(self, mock_wan_pipeline, mock_create_manager):
+  @patch.object(WanPipeline2_2, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_no_optimizer(self, mock_from_checkpoint, mock_create_manager):
     """Test loading checkpoint without optimizer state."""
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
@@ -296,20 +329,28 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
-    mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
+    mock_from_checkpoint.assert_called_with(
+        self.config,
+        mock_manager.restore.return_value,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
-  def test_load_checkpoint_with_optimizer_in_low_noise(self, mock_wan_pipeline, mock_create_manager):
+  @patch.object(WanPipeline2_2, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_with_optimizer_in_low_noise(self, mock_from_checkpoint, mock_create_manager):
     """Test loading checkpoint with optimizer state in low_noise_transformer."""
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
@@ -329,21 +370,29 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
-    mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
+    mock_from_checkpoint.assert_called_with(
+        self.config,
+        mock_manager.restore.return_value,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.001)
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
-  def test_load_checkpoint_with_optimizer_in_high_noise(self, mock_wan_pipeline, mock_create_manager):
+  @patch.object(WanPipeline2_2, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_with_optimizer_in_high_noise(self, mock_from_checkpoint, mock_create_manager):
     """Test loading checkpoint with optimizer state in high_noise_transformer."""
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
@@ -363,13 +412,21 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once_with(step=1, args=unittest.mock.ANY)
-    mock_wan_pipeline.from_checkpoint.assert_called_with(self.config, mock_manager.restore.return_value)
+    mock_from_checkpoint.assert_called_with(
+        self.config,
+        mock_manager.restore.return_value,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.002)
@@ -399,7 +456,14 @@ class WanCheckpointerI2V_2_1Test(unittest.TestCase):
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=None)
 
     mock_manager.latest_step.assert_called_once()
-    mock_from_pretrained.assert_called_once_with(self.config)
+    mock_from_pretrained.assert_called_once_with(
+        self.config,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertIsNone(step)
@@ -428,7 +492,15 @@ class WanCheckpointerI2V_2_1Test(unittest.TestCase):
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once()
-    mock_from_checkpoint.assert_called_once_with(self.config, restored_mock)
+    mock_from_checkpoint.assert_called_once_with(
+        self.config,
+        restored_mock,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertEqual(step, 1)
@@ -457,7 +529,15 @@ class WanCheckpointerI2V_2_1Test(unittest.TestCase):
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once()
-    mock_from_checkpoint.assert_called_once_with(self.config, restored_mock)
+    mock_from_checkpoint.assert_called_once_with(
+        self.config,
+        restored_mock,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.001)
@@ -474,27 +554,34 @@ class WanCheckpointerI2V_2_2Test(unittest.TestCase):
     self.config.model_type = "I2V"
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2.WanPipelineI2V_2_2")
-  def test_load_from_diffusers(self, mock_wan_pipeline_i2v_2p2, mock_create_manager):
+  @patch.object(WanPipelineI2V_2_2, "from_pretrained", autospec=True)
+  def test_load_from_diffusers(self, mock_from_pretrained, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = None
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline_i2v_2p2.from_pretrained.return_value = mock_pipeline_instance
+    mock_from_pretrained.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointerI2V_2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=None)
 
     mock_manager.latest_step.assert_called_once()
-    mock_wan_pipeline_i2v_2p2.from_pretrained.assert_called_once_with(self.config)
+    mock_from_pretrained.assert_called_once_with(
+        self.config,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertIsNone(step)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2.WanPipelineI2V_2_2")
-  def test_load_checkpoint_no_optimizer(self, mock_wan_pipeline_i2v_2p2, mock_create_manager):
+  @patch.object(WanPipelineI2V_2_2, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_no_optimizer(self, mock_from_checkpoint, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
     metadata_mock = MagicMock()
@@ -512,20 +599,28 @@ class WanCheckpointerI2V_2_2Test(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline_i2v_2p2.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointerI2V_2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once()
-    mock_wan_pipeline_i2v_2p2.from_checkpoint.assert_called_once_with(self.config, restored_mock)
+    mock_from_checkpoint.assert_called_once_with(
+        self.config,
+        restored_mock,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2.WanPipelineI2V_2_2")
-  def test_load_checkpoint_with_optimizer_in_low_noise(self, mock_wan_pipeline_i2v_2p2, mock_create_manager):
+  @patch.object(WanPipelineI2V_2_2, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_with_optimizer_in_low_noise(self, mock_from_checkpoint, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
     metadata_mock = MagicMock()
@@ -543,21 +638,29 @@ class WanCheckpointerI2V_2_2Test(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline_i2v_2p2.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointerI2V_2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once()
-    mock_wan_pipeline_i2v_2p2.from_checkpoint.assert_called_once_with(self.config, restored_mock)
+    mock_from_checkpoint.assert_called_once_with(
+        self.config,
+        restored_mock,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.001)
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2.WanPipelineI2V_2_2")
-  def test_load_checkpoint_with_optimizer_in_high_noise(self, mock_wan_pipeline_i2v_2p2, mock_create_manager):
+  @patch.object(WanPipelineI2V_2_2, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_with_optimizer_in_high_noise(self, mock_from_checkpoint, mock_create_manager):
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
     metadata_mock = MagicMock()
@@ -575,13 +678,21 @@ class WanCheckpointerI2V_2_2Test(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline_i2v_2p2.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointerI2V_2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
     mock_manager.restore.assert_called_once()
-    mock_wan_pipeline_i2v_2p2.from_checkpoint.assert_called_once_with(self.config, restored_mock)
+    mock_from_checkpoint.assert_called_once_with(
+        self.config,
+        restored_mock,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+    )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
     self.assertEqual(opt_state["learning_rate"], 0.002)
@@ -597,8 +708,8 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     self.config.dataset_type = "test_dataset"
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_1.WanPipeline2_1")
-  def test_load_checkpoint_with_explicit_none_step(self, mock_wan_pipeline, mock_create_manager):
+  @patch.object(WanPipeline2_1, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_with_explicit_none_step(self, mock_from_checkpoint, mock_create_manager):
     """Test loading checkpoint with explicit None step falls back to latest."""
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 5
@@ -614,7 +725,7 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointer2_1(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=None)
@@ -623,8 +734,8 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     self.assertEqual(step, 5)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
-  @patch("maxdiffusion.checkpointing.wan_checkpointer_2_2.WanPipeline2_2")
-  def test_load_checkpoint_both_optimizers_present(self, mock_wan_pipeline, mock_create_manager):
+  @patch.object(WanPipeline2_2, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_both_optimizers_present(self, mock_from_checkpoint, mock_create_manager):
     """Test loading checkpoint when both transformers have optimizer state (prioritize low_noise)."""
     mock_manager = MagicMock()
     mock_manager.latest_step.return_value = 1
@@ -642,7 +753,7 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     mock_create_manager.return_value = mock_manager
 
     mock_pipeline_instance = MagicMock()
-    mock_wan_pipeline.from_checkpoint.return_value = mock_pipeline_instance
+    mock_from_checkpoint.return_value = mock_pipeline_instance
 
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)

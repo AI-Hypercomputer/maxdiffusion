@@ -31,6 +31,8 @@ from maxdiffusion import max_logging
 class WanPipeline2_2(WanPipeline):
   """Pipeline for WAN 2.2 with dual transformers."""
 
+  _transformer_keys = ["low_noise_transformer", "high_noise_transformer"]
+
   def __init__(
       self,
       config: HyperParameters,
@@ -44,10 +46,23 @@ class WanPipeline2_2(WanPipeline):
     self.boundary_ratio = config.boundary_ratio
 
   @classmethod
-  def _load_and_init(cls, config, restored_checkpoint=None, vae_only=False, load_transformer=True):
-    common_components = cls._create_common_components(config, vae_only)
+  def _load_and_init(
+      cls,
+      config,
+      restored_checkpoint=None,
+      load_vae=True,
+      load_text_encoder=True,
+      load_transformer=True,
+      load_scheduler=True,
+  ):
+    common_components = cls._create_common_components(
+        config,
+        load_vae=load_vae,
+        load_text_encoder=load_text_encoder,
+        load_scheduler=load_scheduler,
+    )
     low_noise_transformer, high_noise_transformer = None, None
-    if not vae_only and load_transformer:
+    if load_transformer:
       low_noise_transformer = super().load_transformer(
           devices_array=common_components["devices_array"],
           mesh=common_components["mesh"],
@@ -65,42 +80,22 @@ class WanPipeline2_2(WanPipeline):
           subfolder="transformer",
       )
 
-      pipeline = cls(
-          tokenizer=common_components["tokenizer"],
-          text_encoder=common_components["text_encoder"],
-          low_noise_transformer=low_noise_transformer,
-          high_noise_transformer=high_noise_transformer,
-          vae=common_components["vae"],
-          vae_cache=common_components["vae_cache"],
-          scheduler=common_components["scheduler"],
-          scheduler_state=common_components["scheduler_state"],
-          devices_array=common_components["devices_array"],
-          mesh=common_components["mesh"],
-          vae_mesh=common_components["vae_mesh"],
-          vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
-          config=config,
-      )
-    return pipeline, low_noise_transformer, high_noise_transformer
-
-  @classmethod
-  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
-    pipeline, low_noise_transformer, high_noise_transformer = cls._load_and_init(config, None, vae_only, load_transformer)
-    pipeline.low_noise_transformer = cls.quantize_transformer(config, low_noise_transformer, pipeline, pipeline.mesh)
-    pipeline.high_noise_transformer = cls.quantize_transformer(config, high_noise_transformer, pipeline, pipeline.mesh)
-    return pipeline
-
-  @classmethod
-  def from_checkpoint(
-      cls,
-      config: HyperParameters,
-      restored_checkpoint=None,
-      vae_only=False,
-      load_transformer=True,
-  ):
-    pipeline, low_noise_transformer, high_noise_transformer = cls._load_and_init(
-        config, restored_checkpoint, vae_only, load_transformer
+    pipeline = cls(
+        tokenizer=common_components["tokenizer"],
+        text_encoder=common_components["text_encoder"],
+        low_noise_transformer=low_noise_transformer,
+        high_noise_transformer=high_noise_transformer,
+        vae=common_components["vae"],
+        vae_cache=common_components["vae_cache"],
+        scheduler=common_components["scheduler"],
+        scheduler_state=common_components["scheduler_state"],
+        devices_array=common_components["devices_array"],
+        mesh=common_components["mesh"],
+        vae_mesh=common_components["vae_mesh"],
+        vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
+        config=config,
     )
-    return pipeline
+    return pipeline, low_noise_transformer, high_noise_transformer
 
   def _get_num_channel_latents(self) -> int:
     return self.low_noise_transformer.config.in_channels
@@ -120,7 +115,6 @@ class WanPipeline2_2(WanPipeline):
       latents: jax.Array = None,
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
-      vae_only: bool = False,
       use_cfg_cache: bool = False,
       use_sen_cache: bool = False,
       use_kv_cache: bool = False,
@@ -167,7 +161,6 @@ class WanPipeline2_2(WanPipeline):
         latents,
         prompt_embeds,
         negative_prompt_embeds,
-        vae_only,
     )
     latents.block_until_ready()
     prompt_embeds.block_until_ready()

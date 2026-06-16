@@ -24,7 +24,8 @@ from .. import max_logging
 from ..pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
 
 
-class WanCheckpointer2_1(WanCheckpointer):
+class WanCheckpointer2_1(WanCheckpointer[WanPipeline2_1]):
+  pipeline_class = WanPipeline2_1
 
   def load_wan_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
     if step is None:
@@ -58,23 +59,10 @@ class WanCheckpointer2_1(WanCheckpointer):
     max_logging.log(f"optimizer state saved in attribute self.opt_state {self.opt_state}")
     return restored_checkpoint, step
 
-  def load_diffusers_checkpoint(self):
-    pipeline = WanPipeline2_1.from_pretrained(self.config)
-    return pipeline
-
-  def load_checkpoint(self, step=None) -> Tuple[WanPipeline2_1, Optional[dict], Optional[int]]:
-    restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
-    opt_state = None
-    if restored_checkpoint:
-      max_logging.log("Loading WAN pipeline from checkpoint")
-      pipeline = WanPipeline2_1.from_checkpoint(self.config, restored_checkpoint)
-      if "opt_state" in restored_checkpoint.wan_state.keys():
-        opt_state = restored_checkpoint.wan_state["opt_state"]
-    else:
-      max_logging.log("No checkpoint found, loading default pipeline.")
-      pipeline = self.load_diffusers_checkpoint()
-
-    return pipeline, opt_state, step
+  def _extract_opt_state(self, restored_checkpoint):
+    if "opt_state" in restored_checkpoint.wan_state.keys():
+      return restored_checkpoint.wan_state["opt_state"]
+    return None
 
   def save_checkpoint(self, train_step, pipeline: WanPipeline2_1, train_states: dict):
     """Saves the training state and model configurations."""
