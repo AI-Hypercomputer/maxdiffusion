@@ -1818,10 +1818,9 @@ class LTX2Pipeline:
     enable_dynamic_vae_sharding = (
         getattr(self.config, "enable_dynamic_vae_sharding", True) if hasattr(self, "config") else True
     )
-
     if enable_dynamic_vae_sharding and batch_size > 2:
       max_logging.log(
-          f"[Tuning] Skipping VAE replication and disabling slicing to prevent HBM OOM for batch_size {batch_size} > 2"
+          f"[Tuning] Disabling VAE slicing and applying dynamic batch sharding to prevent HBM OOM for batch_size {batch_size} > 2"
       )
       try:
         # Disable sequential slicing to avoid JAX concatenating 17GB arrays on the TPU
@@ -1847,6 +1846,13 @@ class LTX2Pipeline:
         mesh = latents.sharding.mesh
         replicated_sharding = NamedSharding(mesh, P())
         latents = jax.lax.with_sharding_constraint(latents, replicated_sharding)
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        max_logging.log(f"[Tuning] Failed to apply replicate VAE latents sharding: {e}")
+
+    if replicate_vae:
+      try:
+        mesh = latents.sharding.mesh
+        replicated_sharding = NamedSharding(mesh, P())
         # Replicate VAE weights
         graphdef, state = nnx.split(self.vae)
         state = jax.tree_util.tree_map(
@@ -1854,7 +1860,7 @@ class LTX2Pipeline:
         )
         self.vae = nnx.merge(graphdef, state)
       except Exception as e:  # pylint: disable=broad-exception-caught
-        max_logging.log(f"[Tuning] Failed to apply sharding constraint: {e}")
+        max_logging.log(f"[Tuning] Failed to replicate VAE weights: {e}")
 
     latent_processing_time += time.perf_counter() - t0_latent_processing
     timings["Latent Processing"] = latent_processing_time
