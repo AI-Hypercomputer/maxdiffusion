@@ -27,6 +27,7 @@ from . import base
 from . import splash_attention_kernel as splash_kernel
 from . import splash_attention_mask as mask_lib
 from . import splash_attention_mask_info as mask_info_lib
+from .. import custom_splash_attention as custom_splash
 
 P = jax.P
 MaskInfo = mask_info_lib.MaskInfo
@@ -711,3 +712,170 @@ def make_ring_attention(
       fwd_mask_sparsity=fwd_mask_sparsity,
       dkv_mask_sparsity=dkv_mask_sparsity,
   )
+
+
+# ---------------------------------------------------------------------------
+# Ring attention backed by the custom (head-dim-minor) splash kernel.
+#
+# This mirrors `_ring_attention_forward` above, but uses the dense custom Pallas
+# kernel (`custom_splash_attention`) as the per-shard compute instead of the
+# splash kernel. The custom kernel is a FullMask / dense kernel: it does not use
+# MaskInfo or in-kernel segment ids (padding is handled by the caller via
+# `_pad_data_for_flash` and the `q_seq_len` / `kv_seq_len` bounds), so this ring
+# variant drops all of the MaskInfo slicing machinery and is forward-only.
+# ---------------------------------------------------------------------------
+
+
+def _custom_ring_attention_forward(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    *,
+    block_sizes: "custom_splash._BlockSizes",
+    bkv_compute_in: int,
+    orig_q_seq_len: int,
+    orig_kv_seq_len: int,
+    use_base2_exp: bool,
+    use_experimental_scheduler: bool,
+    vmem_limit_bytes: int | None,
+    mask_value: float,
+    ring_axis: str,
+    ring_size: int | None = None,
+    perm: list[tuple[int, int]] | None = None,
+) -> jax.Array:
+  """Forward-only ring attention using the custom dense splash kernel.
+
+  Args:
+    q: Query shard, shape `(num_q_heads, q_seq_len, head_dim_qk)`. Stationary
+      across ring steps. Must already be padded (and pre-scaled by LOG2E when
+      `use_base2_exp`) by the caller.
+    k: Key shard, shape `(num_kv_heads, kv_seq_len, head_dim_qk)`. Rotated across
+      the ring axis.
+    v: Value shard, shape `(num_kv_heads, kv_seq_len, head_dim_v)`. Rotated.
+    block_sizes: Custom-kernel block sizes (block_q / block_kv / block_kv_compute).
+    bkv_compute_in: Inner VPU register-tiling step for the custom kernel.
+    orig_q_seq_len: Un-padded local query length (grid bound).
+    orig_kv_seq_len: Un-padded local key/value length (grid bound). Assumed equal
+      across all shards (uniform per-shard padding), matching the
+      `rotate_segment_ids=False` convention of the tokamax ring path.
+    use_base2_exp: Whether the kernel uses base-2 exp (must match the LOG2E
+      pre-scaling applied to `q` by the caller).
+    use_experimental_scheduler: Forwarded to the custom kernel.
+    vmem_limit_bytes: Forwarded to the custom kernel.
+    mask_value: Initial running-max value for the online softmax.
+    ring_axis: Name of the mesh axis to rotate K/V over (e.g. "context").
+    ring_size: Number of ring steps to scan over. Defaults to the full size of
+      `ring_axis`. For a hybrid Ulysses+Ring (USP) split this is the ring
+      sub-group size R (< full axis size), so each device only rotates within its
+      ring sub-group.
+    perm: Explicit `ppermute` permutation. Defaults to a full-axis +1 rotation.
+      For the hybrid split, pass a perm that rotates K/V *within each ring
+      sub-group only* (built by the caller from the U x R factorization).
+
+  Returns:
+    Normalized attention output, shape `(num_q_heads, q_seq_len, head_dim_v)`.
+  """
+  axis_size = lax.axis_size(ring_axis)
+  if ring_size is None:
+    ring_size = axis_size
+  if perm is None:
+    perm = [(i, (i + 1) % axis_size) for i in range(axis_size)]
+
+  shift = partial(lax.ppermute, axis_name=ring_axis, perm=perm)
+
+  exp_fn = jnp.exp2 if use_base2_exp else jnp.exp
+
+  num_q_heads = q.shape[0]
+  head_dim_v = v.shape[-1]
+  o_init = jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32)
+  l_init = jnp.zeros((num_q_heads, orig_q_seq_len), jnp.float32)
+  m_init = jnp.full((num_q_heads, orig_q_seq_len), mask_value, jnp.float32)
+
+  def body(carry, i):
+    m_prev, l_prev, o_prev, k_current, v_current = carry
+    # Prefetch the next shard while we compute on the current one.
+    k_next = shift(k_current)
+    v_next = shift(v_current)
+
+    o_curr, m_curr, l_curr = custom_splash._splash_attention_forward_ring(  # pylint: disable=protected-access
+        q,
+        k_current,
+        v_current,
+        block_sizes,
+        bkv_compute_in,
+        q_seq_len=orig_q_seq_len,
+        kv_seq_len=orig_kv_seq_len,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
+        vmem_limit_bytes=vmem_limit_bytes,
+    )
+    m_curr = m_curr.astype(jnp.float32)
+    l_curr = l_curr.astype(jnp.float32)
+    o_curr = o_curr.astype(jnp.float32)
+
+    m_next = jnp.maximum(m_prev, m_curr)
+    alpha = exp_fn(m_prev - m_next)
+    beta = exp_fn(m_curr - m_next)
+    l_next = alpha * l_prev + beta * l_curr
+    o_next = alpha[..., None] * o_prev + beta[..., None] * o_curr
+    return (m_next, l_next, o_next, k_next, v_next), None
+
+  initial_carry = (m_init, l_init, o_init, k, v)
+  (_, l_final, o_final, _, _), _ = lax.scan(
+      body,
+      initial_carry,
+      xs=jnp.arange(0, ring_size),
+      length=ring_size,
+      unroll=True,
+  )
+
+  l_inv = jnp.where(l_final == 0.0, 0.0, 1.0 / l_final)
+  out = (o_final * l_inv[..., None]).astype(q.dtype)
+  return out
+
+
+def make_custom_ring_attention(
+    *,
+    block_sizes: "custom_splash._BlockSizes",
+    bkv_compute_in: int,
+    orig_q_seq_len: int,
+    orig_kv_seq_len: int,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
+    mask_value: float = base.DEFAULT_MASK_VALUE,
+    ring_axis: str = "context",
+    ring_size: int | None = None,
+    perm: list[tuple[int, int]] | None = None,
+):
+  """Builds a forward-only ring-attention callable around the custom kernel.
+
+  The returned function takes a single (un-batched) `(q, k, v)` triple of shape
+  `(num_heads, seq, head_dim)` and is meant to be `jax.vmap`-ped over the batch
+  axis inside the attention `shard_map` (the `ppermute` rotates over `ring_axis`,
+  which is a mesh axis and independent of the vmap batch axis).
+
+  `ring_size` / `perm` let a caller restrict the rotation to a ring sub-group of
+  the axis (for the hybrid Ulysses+Ring / USP split); when omitted the rotation
+  covers the whole `ring_axis`.
+  """
+
+  def _ring(q, k, v):
+    return _custom_ring_attention_forward(
+        q,
+        k,
+        v,
+        block_sizes=block_sizes,
+        bkv_compute_in=bkv_compute_in,
+        orig_q_seq_len=orig_q_seq_len,
+        orig_kv_seq_len=orig_kv_seq_len,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
+        vmem_limit_bytes=vmem_limit_bytes,
+        mask_value=mask_value,
+        ring_axis=ring_axis,
+        ring_size=ring_size,
+        perm=perm,
+    )
+
+  return _ring
