@@ -50,26 +50,34 @@ class LTX2NNXLoraLoader(LoRABaseMixin):
     def translate_fn(nnx_path_str):
       return lora_conversion_utils.translate_ltx2_nnx_path_to_diffusers_lora(nnx_path_str, scan_layers=scan_layers)
 
-    h_state_dict = None
-    if hasattr(pipeline, "transformer") and transformer_weight_name:
+    if not transformer_weight_name:
+      max_logging.log("No LoRA weight name provided; skipping LoRA load.")
+      return pipeline
+
+    h_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=transformer_weight_name, **kwargs)
+    transformer_state_dict = {}
+    connector_state_dict = {}
+    if hasattr(pipeline, "transformer"):
       max_logging.log(f"Merging LoRA into transformer with rank={rank}")
-      h_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=transformer_weight_name, **kwargs)
       # Filter state dict for transformer keys to avoid confusing warnings
-      transformer_state_dict = {k: v for k, v in h_state_dict.items() if k.startswith("diffusion_model")}
+      transformer_state_dict = {k: v for k, v in h_state_dict.items() if k.startswith("diffusion_model.")}
       merge_fn(pipeline.transformer, transformer_state_dict, rank, scale, translate_fn, dtype=dtype)
     else:
-      max_logging.log("transformer not found or no weight name provided for LoRA.")
+      max_logging.log("transformer not found.")
 
     if hasattr(pipeline, "connectors"):
       max_logging.log(f"Merging LoRA into connectors with rank={rank}")
-      if h_state_dict is None and transformer_weight_name:
-        h_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=transformer_weight_name, **kwargs)
+      connector_state_dict = {k: v for k, v in h_state_dict.items() if k.startswith("text_embedding_projection.")}
+      merge_fn(pipeline.connectors, connector_state_dict, rank, scale, translate_fn, dtype=dtype)
+    else:
+      max_logging.log("connectors not found.")
 
-      if h_state_dict is not None:
-        # Filter state dict for connector keys to avoid confusing warnings
-        connector_state_dict = {k: v for k, v in h_state_dict.items() if k.startswith("text_embedding_projection")}
-        merge_fn(pipeline.connectors, connector_state_dict, rank, scale, translate_fn, dtype=dtype)
-      else:
-        max_logging.log("Could not load LoRA state dict for connectors.")
+    # Warn if there are keys routed to no target.
+    # the merge_fn warns about unmatched keys in each dict, so we only warn about any leftovers
+    unmatched_keys = set(h_state_dict) - set(transformer_state_dict) - set(connector_state_dict)
+    if unmatched_keys:
+      max_logging.log(
+          f"{len(unmatched_keys)} key(s) in LoRA dictionary routed to no merge target: {unmatched_keys}"
+      )
 
     return pipeline
