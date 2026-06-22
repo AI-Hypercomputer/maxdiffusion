@@ -267,6 +267,8 @@ class WanPipeline:
       Variational Auto-Encoder (VAE) Model to encode and decode videos to and from latent representations.
   """
 
+  _transformer_keys = ["transformer"]
+
   def __init__(
       self,
       tokenizer: AutoTokenizer,
@@ -464,6 +466,8 @@ class WanPipeline:
       mesh: Mesh,
   ):
     """Quantizes the transformer model."""
+    if model is None:
+      return None
     q_rules = cls.get_qt_provider(config)
     if not q_rules:
       return model
@@ -726,7 +730,14 @@ class WanPipeline:
     return video
 
   @classmethod
-  def _create_common_components(cls, config, vae_only=False, i2v=False):
+  def _create_common_components(
+      cls,
+      config,
+      load_vae=True,
+      load_text_encoder=True,
+      load_scheduler=True,
+      i2v=False,
+  ):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
 
@@ -753,18 +764,9 @@ class WanPipeline:
     rng = jax.random.key(config.seed)
     rngs = nnx.Rngs(rng)
 
-    with vae_mesh:
-      wan_vae, vae_cache = cls.load_vae(
-          devices_array=devices_array,
-          mesh=vae_mesh,
-          rngs=rngs,
-          config=config,
-          vae_logical_axis_rules=vae_logical_axis_rules,
-      )
-
     components = {
-        "vae": wan_vae,
-        "vae_cache": vae_cache,
+        "vae": None,
+        "vae_cache": None,
         "devices_array": devices_array,
         "rngs": rngs,
         "mesh": mesh,
@@ -778,16 +780,150 @@ class WanPipeline:
         "image_encoder": None,
     }
 
-    if not vae_only:
+    if load_vae:
+      max_logging.log("Loading VAE")
+      components["vae"], components["vae_cache"] = cls.load_vae(
+          devices_array=devices_array,
+          mesh=vae_mesh,
+          rngs=rngs,
+          config=config,
+          vae_logical_axis_rules=vae_logical_axis_rules,
+      )
+
+    if load_text_encoder:
+      max_logging.log("Loading Tokenizer and Text Encoder")
       components["tokenizer"] = cls.load_tokenizer(config=config)
       components["text_encoder"] = cls.load_text_encoder(config=config)
-      components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
       if cls._needs_image_encoder(config, i2v=i2v):
         (
             components["image_processor"],
             components["image_encoder"],
         ) = cls.load_image_encoder(config)
+
+    if load_scheduler:
+      components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
+
     return components
+
+  @classmethod
+  @abstractmethod
+  def _load_and_init(
+      cls,
+      config,
+      restored_checkpoint=None,
+      load_vae=True,
+      load_text_encoder=True,
+      load_transformer=True,
+      load_scheduler=True,
+  ):
+    """Loads and initializes the pipeline components."""
+    raise NotImplementedError
+
+  @classmethod
+  def _resolve_and_validate_load_flags(
+      cls,
+      vae_only=False,
+      load_vae=None,
+      load_text_encoder=None,
+      load_transformer=None,
+      load_scheduler=None,
+  ) -> Tuple[bool, bool, bool, bool]:
+    if vae_only:
+      if load_vae is False:
+        raise ValueError("Conflict: vae_only=True but load_vae=False")
+      if load_text_encoder is True:
+        raise ValueError("Conflict: vae_only=True but load_text_encoder=True")
+      if load_transformer is True:
+        raise ValueError("Conflict: vae_only=True but load_transformer=True")
+      if load_scheduler is True:
+        raise ValueError("Conflict: vae_only=True but load_scheduler=True")
+      return True, False, False, False
+
+    return (
+        True if load_vae is None else load_vae,
+        True if load_text_encoder is None else load_text_encoder,
+        True if load_transformer is None else load_transformer,
+        True if load_scheduler is None else load_scheduler,
+    )
+
+  @classmethod
+  def from_pretrained(
+      cls,
+      config,
+      vae_only=False,
+      load_vae=None,
+      load_text_encoder=None,
+      load_transformer=None,
+      load_scheduler=None,
+  ):
+    (
+        load_vae,
+        load_text_encoder,
+        load_transformer,
+        load_scheduler,
+    ) = cls._resolve_and_validate_load_flags(
+        vae_only=vae_only,
+        load_vae=load_vae,
+        load_text_encoder=load_text_encoder,
+        load_transformer=load_transformer,
+        load_scheduler=load_scheduler,
+    )
+    outputs = cls._load_and_init(
+        config,
+        None,
+        load_vae=load_vae,
+        load_text_encoder=load_text_encoder,
+        load_transformer=load_transformer,
+        load_scheduler=load_scheduler,
+    )
+    pipeline = outputs[0]
+    loaded_transformers = outputs[1:]
+
+    for key, transformer in zip(cls._transformer_keys, loaded_transformers):
+      quantized = cls.quantize_transformer(config, transformer, pipeline, pipeline.mesh)
+      setattr(pipeline, key, quantized)
+
+    return pipeline
+
+  @classmethod
+  def from_checkpoint(
+      cls,
+      config,
+      restored_checkpoint=None,
+      vae_only=False,
+      load_vae=None,
+      load_text_encoder=None,
+      load_transformer=None,
+      load_scheduler=None,
+  ):
+    (
+        load_vae,
+        load_text_encoder,
+        load_transformer,
+        load_scheduler,
+    ) = cls._resolve_and_validate_load_flags(
+        vae_only=vae_only,
+        load_vae=load_vae,
+        load_text_encoder=load_text_encoder,
+        load_transformer=load_transformer,
+        load_scheduler=load_scheduler,
+    )
+    outputs = cls._load_and_init(
+        config,
+        restored_checkpoint=restored_checkpoint,
+        load_vae=load_vae,
+        load_text_encoder=load_text_encoder,
+        load_transformer=load_transformer,
+        load_scheduler=load_scheduler,
+    )
+    pipeline = outputs[0]
+    loaded_transformers = outputs[1:]
+
+    for key, transformer in zip(cls._transformer_keys, loaded_transformers):
+      quantized = cls.quantize_transformer(config, transformer, pipeline, pipeline.mesh)
+      setattr(pipeline, key, quantized)
+
+    return pipeline
 
   @classmethod
   def _needs_image_encoder(cls, config: HyperParameters, i2v: bool = False) -> bool:
@@ -878,68 +1014,66 @@ class WanPipeline:
       latents: jax.Array = None,
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
-      vae_only: bool = False,
   ):
     if max_sequence_length is None:
       max_sequence_length = getattr(self.config, "max_sequence_length", 512)
 
-    if not vae_only:
-      if num_frames % self.vae_scale_factor_temporal != 1:
-        max_logging.log(
-            f"`num_frames -1` has to be divisible by {self.vae_scale_factor_temporal}. Rounding to the nearest number."
-        )
-        num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
-      num_frames = max(num_frames, 1)
+    if num_frames % self.vae_scale_factor_temporal != 1:
+      max_logging.log(
+          f"`num_frames -1` has to be divisible by {self.vae_scale_factor_temporal}. Rounding to the nearest number."
+      )
+      num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
+    num_frames = max(num_frames, 1)
 
-      # 2. Define call parameters
-      if prompt is not None and isinstance(prompt, str):
-        prompt = [prompt]
+    # 2. Define call parameters
+    if prompt is not None and isinstance(prompt, str):
+      prompt = [prompt]
 
-      batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
+    batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
 
-      with jax.named_scope("Encode-Prompt"):
-        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            max_sequence_length=max_sequence_length,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-        )
-
-      num_channel_latents = self._get_num_channel_latents()
-      if latents is None:
-        latents = self.prepare_latents(
-            batch_size=batch_size,
-            vae_scale_factor_temporal=self.vae_scale_factor_temporal,
-            vae_scale_factor_spatial=self.vae_scale_factor_spatial,
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            num_channels_latents=num_channel_latents,
-        )
-
-      data_sharding = NamedSharding(self.mesh, P())
-      # Using global_batch_size_to_train_on so not to create more config variables
-      if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
-        data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
-
-      latents = jax.device_put(latents, data_sharding)
-      prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
-      negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
-
-      scheduler_state = self.scheduler.set_timesteps(
-          self.scheduler_state,
-          num_inference_steps=num_inference_steps,
-          shape=latents.shape,
+    with jax.named_scope("Encode-Prompt"):
+      prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+          prompt=prompt,
+          negative_prompt=negative_prompt,
+          max_sequence_length=max_sequence_length,
+          prompt_embeds=prompt_embeds,
+          negative_prompt_embeds=negative_prompt_embeds,
       )
 
-      return (
-          latents,
-          prompt_embeds,
-          negative_prompt_embeds,
-          scheduler_state,
-          num_frames,
+    num_channel_latents = self._get_num_channel_latents()
+    if latents is None:
+      latents = self.prepare_latents(
+          batch_size=batch_size,
+          vae_scale_factor_temporal=self.vae_scale_factor_temporal,
+          vae_scale_factor_spatial=self.vae_scale_factor_spatial,
+          height=height,
+          width=width,
+          num_frames=num_frames,
+          num_channels_latents=num_channel_latents,
       )
+
+    data_sharding = NamedSharding(self.mesh, P())
+    # Using global_batch_size_to_train_on so not to create more config variables
+    if self.config.global_batch_size_to_train_on // self.config.per_device_batch_size == 0:
+      data_sharding = jax.sharding.NamedSharding(self.mesh, P(*self.config.data_sharding))
+
+    latents = jax.device_put(latents, data_sharding)
+    prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
+    negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
+
+    scheduler_state = self.scheduler.set_timesteps(
+        self.scheduler_state,
+        num_inference_steps=num_inference_steps,
+        shape=latents.shape,
+    )
+
+    return (
+        latents,
+        prompt_embeds,
+        negative_prompt_embeds,
+        scheduler_state,
+        num_frames,
+    )
 
   @abstractmethod
   def __call__(self, **kwargs):

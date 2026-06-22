@@ -277,6 +277,224 @@ class WanVacePipelineTest(unittest.TestCase):
     self.assertEqual(len(video), batch_size)
     self.assertEqual(video[0].shape, (num_frames, height, width, 3))
 
+  @patch("maxdiffusion.pipelines.wan.wan_vace_pipeline_2_1.WanVACEModel.load_config")
+  @patch("maxdiffusion.pipelines.wan.wan_pipeline.AutoencoderKLWan.load_config")
+  @patch("maxdiffusion.pipelines.wan.wan_vace_pipeline_2_1.load_wan_transformer")
+  @patch("maxdiffusion.pipelines.wan.wan_pipeline.load_wan_vae")
+  @patch("maxdiffusion.pipelines.wan.wan_pipeline.WanPipeline.load_tokenizer")
+  @patch("maxdiffusion.pipelines.wan.wan_pipeline.WanPipeline.load_text_encoder")
+  @patch("maxdiffusion.pipelines.wan.wan_pipeline.WanPipeline.load_scheduler")
+  # pylint: disable=too-many-positional-arguments
+  def test_pipeline_load_without_vae_and_text_encoder(
+      self,
+      mock_load_scheduler_fn,
+      mock_load_text_encoder_fn,
+      mock_load_tokenizer_fn,
+      mock_load_wan_vae_fn,
+      mock_load_wan_transformer_fn,
+      mock_vae_load_config_fn,
+      mock_transformer_load_config_fn,
+  ):
+    def mock_transformer_load_config(pretrained_model_name_or_path, return_unused_kwargs=False, **kwargs):
+      config_dict = {
+          "added_kv_proj_dim": None,
+          "attention_head_dim": 128,
+          "cross_attn_norm": True,
+          "eps": 1e-06,
+          "ffn_dim": 8960,
+          "freq_dim": 256,
+          "image_dim": None,
+          "in_channels": 16,
+          "num_attention_heads": 12,
+          "num_layers": 2,
+          "out_channels": 16,
+          "patch_size": [1, 2, 2],
+          "pos_embed_seq_len": None,
+          "qk_norm": "rms_norm_across_heads",
+          "rope_max_seq_len": 1024,
+          "text_dim": 4096,
+          "vace_in_channels": 96,
+          "vace_layers": [0, 1],
+      }
+      if return_unused_kwargs:
+        return config_dict, kwargs
+      return config_dict
+
+    mock_transformer_load_config_fn.side_effect = mock_transformer_load_config
+
+    def mock_load_wan_transformer(pretrained_model_name_or_path, eval_shapes, *args, **kwargs):
+      cpu = jax.local_devices(backend="cpu")[0]
+      flat_shapes = flax.traverse_util.flatten_dict(eval_shapes)
+      flat_params = {}
+      key = jax.random.key(42)
+      for k, shape_struct in flat_shapes.items():
+        dtype = shape_struct.dtype
+        shape = shape_struct.shape
+        key, subkey = jax.random.split(key)
+        val = jax.random.normal(subkey, shape, dtype=dtype)
+        flat_params[k] = jax.device_put(val, device=cpu)
+      return flax.traverse_util.unflatten_dict(flat_params)
+
+    mock_load_wan_transformer_fn.side_effect = mock_load_wan_transformer
+
+    def mock_load_scheduler(config):
+      scheduler = FlaxUniPCMultistepScheduler.from_config({
+          "beta_end": 0.02,
+          "beta_schedule": "linear",
+          "beta_start": 0.0001,
+          "disable_corrector": [],
+          "dynamic_thresholding_ratio": 0.995,
+          "final_sigmas_type": "zero",
+          "flow_shift": config.flow_shift,
+          "lower_order_final": True,
+          "num_train_timesteps": 1000,
+          "predict_x0": True,
+          "prediction_type": "flow_prediction",
+          "rescale_zero_terminal_snr": False,
+          "sample_max_value": 1.0,
+          "solver_order": 2,
+          "solver_p": None,
+          "solver_type": "bh2",
+          "steps_offset": 0,
+          "thresholding": False,
+          "timestep_spacing": "linspace",
+          "trained_betas": None,
+          "use_beta_sigmas": False,
+          "use_exponential_sigmas": False,
+          "use_flow_sigmas": True,
+          "use_karras_sigmas": False,
+      })
+      state = scheduler.create_state()
+      return scheduler, state
+
+    mock_load_scheduler_fn.side_effect = mock_load_scheduler
+
+    # VAE config mock
+    def mock_vae_load_config(pretrained_model_name_or_path, return_unused_kwargs=False, **kwargs):
+      config_dict = {
+          "attn_scales": [],
+          "base_dim": 96,
+          "dim_mult": [1, 2, 4, 4],
+          "dropout": 0.0,
+          "latents_mean": [
+              -0.7571,
+              -0.7089,
+              -0.9113,
+              0.1075,
+              -0.1745,
+              0.9653,
+              -0.1517,
+              1.5508,
+              0.4134,
+              -0.0715,
+              0.5517,
+              -0.3632,
+              -0.1922,
+              -0.9497,
+              0.2503,
+              -0.2921,
+          ],
+          "latents_std": [
+              2.8184,
+              1.4541,
+              2.3275,
+              2.6558,
+              1.2196,
+              1.7708,
+              2.6052,
+              2.0743,
+              3.2687,
+              2.1526,
+              2.8652,
+              1.5579,
+              1.6382,
+              1.1253,
+              2.8251,
+              1.916,
+          ],
+          "num_res_blocks": 2,
+          "temperal_downsample": [False, True, True],
+          "z_dim": 16,
+      }
+      if return_unused_kwargs:
+        return config_dict, kwargs
+      return config_dict
+
+    mock_vae_load_config_fn.side_effect = mock_vae_load_config
+
+    def mock_load_wan_vae(pretrained_model_name_or_path, eval_shapes, *args, **kwargs):
+      cpu = jax.local_devices(backend="cpu")[0]
+      flat_shapes = flax.traverse_util.flatten_dict(eval_shapes)
+      flat_params = {}
+      key = jax.random.key(42)
+      for k, shape_struct in flat_shapes.items():
+        dtype = shape_struct.dtype
+        shape = shape_struct.shape
+        key, subkey = jax.random.split(key)
+        val = jax.random.normal(subkey, shape, dtype=dtype)
+        flat_params[k] = jax.device_put(val, device=cpu)
+      return flax.traverse_util.unflatten_dict(flat_params)
+
+    mock_load_wan_vae_fn.side_effect = mock_load_wan_vae
+
+    def run_scenario(load_vae, load_text_encoder, load_transformer, load_scheduler):
+      mock_load_wan_vae_fn.reset_mock()
+      mock_load_text_encoder_fn.reset_mock()
+      mock_load_tokenizer_fn.reset_mock()
+      mock_load_scheduler_fn.reset_mock()
+      mock_load_wan_transformer_fn.reset_mock()
+
+      pipeline = VaceWanPipeline2_1.from_pretrained(
+          self.config,
+          load_vae=load_vae,
+          load_text_encoder=load_text_encoder,
+          load_transformer=load_transformer,
+          load_scheduler=load_scheduler,
+      )
+
+      if load_vae:
+        self.assertIsNotNone(pipeline.vae)
+        mock_load_wan_vae_fn.assert_called_once()
+      else:
+        self.assertIsNone(pipeline.vae)
+        mock_load_wan_vae_fn.assert_not_called()
+
+      if load_text_encoder:
+        self.assertIsNotNone(pipeline.text_encoder)
+        self.assertIsNotNone(pipeline.tokenizer)
+        mock_load_text_encoder_fn.assert_called_once()
+        mock_load_tokenizer_fn.assert_called_once()
+      else:
+        self.assertIsNone(pipeline.text_encoder)
+        self.assertIsNone(pipeline.tokenizer)
+        mock_load_text_encoder_fn.assert_not_called()
+        mock_load_tokenizer_fn.assert_not_called()
+
+      if load_transformer:
+        self.assertIsNotNone(pipeline.transformer)
+        mock_load_wan_transformer_fn.assert_called_once()
+      else:
+        self.assertIsNone(pipeline.transformer)
+        mock_load_wan_transformer_fn.assert_not_called()
+
+      if load_scheduler:
+        self.assertIsNotNone(pipeline.scheduler)
+        mock_load_scheduler_fn.assert_called_once()
+      else:
+        self.assertIsNone(pipeline.scheduler)
+        mock_load_scheduler_fn.assert_not_called()
+
+    # Scenario 1: Only transformer
+    run_scenario(load_vae=False, load_text_encoder=False, load_transformer=True, load_scheduler=False)
+    # Scenario 2: Only VAE
+    run_scenario(load_vae=True, load_text_encoder=False, load_transformer=False, load_scheduler=False)
+    # Scenario 3: Only text encoder
+    run_scenario(load_vae=False, load_text_encoder=True, load_transformer=False, load_scheduler=False)
+    # Scenario 4: Only scheduler
+    run_scenario(load_vae=False, load_text_encoder=False, load_transformer=False, load_scheduler=True)
+    # Scenario 5: All components
+    run_scenario(load_vae=True, load_text_encoder=True, load_transformer=True, load_scheduler=True)
+
 
 if __name__ == "__main__":
   unittest.main()

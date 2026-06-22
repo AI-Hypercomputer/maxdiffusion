@@ -351,22 +351,28 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       cls,
       config: HyperParameters,
       restored_checkpoint=None,
-      vae_only=False,
+      load_vae=True,
+      load_text_encoder=True,
       load_transformer=True,
+      load_scheduler=True,
   ):
-    common_components = cls._create_common_components(config, vae_only)
+    common_components = cls._create_common_components(
+        config,
+        load_vae=load_vae,
+        load_text_encoder=load_text_encoder,
+        load_scheduler=load_scheduler,
+    )
     transformer = None
 
-    if not vae_only:
-      if load_transformer:
-        transformer = cls.load_transformer(
-            devices_array=common_components["devices_array"],
-            mesh=common_components["mesh"],
-            rngs=common_components["rngs"],
-            config=config,
-            restored_checkpoint=restored_checkpoint,
-            subfolder="transformer",
-        )
+    if load_transformer:
+      transformer = cls.load_transformer(
+          devices_array=common_components["devices_array"],
+          mesh=common_components["mesh"],
+          rngs=common_components["rngs"],
+          config=config,
+          restored_checkpoint=restored_checkpoint,
+          subfolder="transformer",
+      )
 
     pipeline = cls(
         tokenizer=common_components["tokenizer"],
@@ -383,35 +389,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
         config=config,
     )
 
-    return pipeline
-
-  @classmethod
-  def from_pretrained(
-      cls,
-      config: HyperParameters,
-      vae_only=False,
-      load_transformer=True,
-  ):
-    pipeline = cls._load_and_init(config, None, vae_only, load_transformer)
-    pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, pipeline.mesh)
-    return pipeline
-
-  @classmethod
-  def from_checkpoint(
-      cls,
-      config: HyperParameters,
-      restored_checkpoint=None,
-      vae_only=False,
-      load_transformer=True,
-  ):
-    pipeline = cls._load_and_init(
-        config,
-        restored_checkpoint,
-        vae_only,
-        load_transformer,
-    )
-    pipeline.transformer = cls.quantize_transformer(config, pipeline.transformer, pipeline, pipeline.mesh)
-    return pipeline
+    return pipeline, transformer
 
   def check_inputs(
       self,

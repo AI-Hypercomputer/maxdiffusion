@@ -277,12 +277,19 @@ class WanAnimatePipeline(WanPipeline):
       cls,
       config: HyperParameters,
       restored_checkpoint=None,
-      vae_only: bool = False,
+      load_vae: bool = True,
+      load_text_encoder: bool = True,
       load_transformer: bool = True,
+      load_scheduler: bool = True,
   ) -> Tuple["WanAnimatePipeline", Optional[WanAnimateTransformer3DModel]]:
-    common_components = cls._create_common_components(config, vae_only)
+    common_components = cls._create_common_components(
+        config,
+        load_vae=load_vae,
+        load_text_encoder=load_text_encoder,
+        load_scheduler=load_scheduler,
+    )
     transformer = None
-    if not vae_only and load_transformer:
+    if load_transformer:
       transformer = cls.load_animate_transformer(
           devices_array=common_components["devices_array"],
           mesh=common_components["mesh"],
@@ -308,28 +315,6 @@ class WanAnimatePipeline(WanPipeline):
         vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
     )
     return pipeline, transformer
-
-  @classmethod
-  def from_pretrained(
-      cls,
-      config: HyperParameters,
-      vae_only: bool = False,
-      load_transformer: bool = True,
-  ) -> "WanAnimatePipeline":
-    pipeline, transformer = cls._load_and_init(config, None, vae_only, load_transformer)
-    pipeline.transformer = cls.quantize_transformer(config, transformer, pipeline, pipeline.mesh)
-    return pipeline
-
-  @classmethod
-  def from_checkpoint(
-      cls,
-      config: HyperParameters,
-      restored_checkpoint=None,
-      vae_only: bool = False,
-      load_transformer: bool = True,
-  ) -> "WanAnimatePipeline":
-    pipeline, _ = cls._load_and_init(config, restored_checkpoint, vae_only, load_transformer)
-    return pipeline
 
   # ------------------------------------------------------------------
   # Abstract method implementation

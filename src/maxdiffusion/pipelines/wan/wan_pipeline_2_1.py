@@ -35,53 +35,48 @@ class WanPipeline2_1(WanPipeline):
     self.transformer = transformer
 
   @classmethod
-  def _load_and_init(cls, config, restored_checkpoint=None, vae_only=False, load_transformer=True):
-    common_components = cls._create_common_components(config, vae_only)
-    transformer = None
-    if not vae_only:
-      if load_transformer:
-        transformer = super().load_transformer(
-            devices_array=common_components["devices_array"],
-            mesh=common_components["mesh"],
-            rngs=common_components["rngs"],
-            config=config,
-            restored_checkpoint=restored_checkpoint,
-            subfolder="transformer",
-        )
-
-        pipeline = cls(
-            tokenizer=common_components["tokenizer"],
-            text_encoder=common_components["text_encoder"],
-            transformer=transformer,
-            vae=common_components["vae"],
-            vae_cache=common_components["vae_cache"],
-            scheduler=common_components["scheduler"],
-            scheduler_state=common_components["scheduler_state"],
-            devices_array=common_components["devices_array"],
-            mesh=common_components["mesh"],
-            vae_mesh=common_components["vae_mesh"],
-            vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
-            config=config,
-        )
-
-    return pipeline, transformer
-
-  @classmethod
-  def from_pretrained(cls, config: HyperParameters, vae_only=False, load_transformer=True):
-    pipeline, transformer = cls._load_and_init(config, None, vae_only, load_transformer)
-    pipeline.transformer = cls.quantize_transformer(config, transformer, pipeline, pipeline.mesh)
-    return pipeline
-
-  @classmethod
-  def from_checkpoint(
+  def _load_and_init(
       cls,
       config: HyperParameters,
       restored_checkpoint=None,
-      vae_only=False,
+      load_vae=True,
+      load_text_encoder=True,
       load_transformer=True,
+      load_scheduler=True,
   ):
-    pipeline, _ = cls._load_and_init(config, restored_checkpoint, vae_only, load_transformer)
-    return pipeline
+    common_components = cls._create_common_components(
+        config,
+        load_vae=load_vae,
+        load_text_encoder=load_text_encoder,
+        load_scheduler=load_scheduler,
+    )
+    transformer = None
+    if load_transformer:
+      transformer = super().load_transformer(
+          devices_array=common_components["devices_array"],
+          mesh=common_components["mesh"],
+          rngs=common_components["rngs"],
+          config=config,
+          restored_checkpoint=restored_checkpoint,
+          subfolder="transformer",
+      )
+
+    pipeline = cls(
+        tokenizer=common_components["tokenizer"],
+        text_encoder=common_components["text_encoder"],
+        transformer=transformer,
+        vae=common_components["vae"],
+        vae_cache=common_components["vae_cache"],
+        scheduler=common_components["scheduler"],
+        scheduler_state=common_components["scheduler_state"],
+        devices_array=common_components["devices_array"],
+        mesh=common_components["mesh"],
+        vae_mesh=common_components["vae_mesh"],
+        vae_logical_axis_rules=common_components["vae_logical_axis_rules"],
+        config=config,
+    )
+
+    return pipeline, transformer
 
   def _get_num_channel_latents(self) -> int:
     return self.transformer.config.in_channels
@@ -100,7 +95,6 @@ class WanPipeline2_1(WanPipeline):
       latents: Optional[jax.Array] = None,
       prompt_embeds: Optional[jax.Array] = None,
       negative_prompt_embeds: Optional[jax.Array] = None,
-      vae_only: bool = False,
       use_cfg_cache: bool = False,
       use_magcache: bool = False,
       magcache_thresh: Optional[float] = None,
@@ -138,7 +132,6 @@ class WanPipeline2_1(WanPipeline):
         latents,
         prompt_embeds,
         negative_prompt_embeds,
-        vae_only,
     )
     latents.block_until_ready()
     prompt_embeds.block_until_ready()

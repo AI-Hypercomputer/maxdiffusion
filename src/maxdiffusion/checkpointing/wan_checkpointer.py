@@ -16,7 +16,7 @@ limitations under the License.
 
 from abc import ABC, abstractmethod
 import json
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Generic, TypeVar, Type
 import jax
 from flax import nnx
 from maxdiffusion.checkpointing.checkpointing_utils import (
@@ -24,10 +24,7 @@ from maxdiffusion.checkpointing.checkpointing_utils import (
     create_orbax_checkpoint_manager,
     get_cpu_mesh_and_sharding,
 )
-from ..pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
-from ..pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
-from ..pipelines.wan.wan_pipeline_i2v_2p1 import WanPipelineI2V_2_1
-from ..pipelines.wan.wan_pipeline_i2v_2p2 import WanPipelineI2V_2_2
+from ..pipelines.wan.wan_pipeline import WanPipeline
 from .. import max_logging, max_utils
 import orbax.checkpoint as ocp
 
@@ -35,7 +32,11 @@ import orbax.checkpoint as ocp
 WAN_CHECKPOINT = "WAN_CHECKPOINT"
 
 
-class WanCheckpointer(ABC):
+T = TypeVar("T", bound=WanPipeline)
+
+
+class WanCheckpointer(Generic[T], ABC):
+  pipeline_class: Optional[Type[T]] = None
 
   def __init__(self, config, checkpoint_type: str = WAN_CHECKPOINT):
     self.config = config
@@ -176,16 +177,61 @@ class WanCheckpointer(ABC):
   def load_wan_configs_from_orbax(self, step: Optional[int]) -> Tuple[Optional[dict], Optional[int]]:
     raise NotImplementedError
 
-  @abstractmethod
-  def load_diffusers_checkpoint(self):
-    raise NotImplementedError
+  def load_diffusers_checkpoint(
+      self,
+      vae_only=False,
+      load_vae=None,
+      load_text_encoder=None,
+      load_transformer=None,
+      load_scheduler=None,
+  ) -> T:
+    pipeline = self.pipeline_class.from_pretrained(
+        self.config,
+        vae_only=vae_only,
+        load_vae=load_vae,
+        load_text_encoder=load_text_encoder,
+        load_transformer=load_transformer,
+        load_scheduler=load_scheduler,
+    )
+    return pipeline
+
+  def load_checkpoint(
+      self,
+      step=None,
+      vae_only=False,
+      load_vae=None,
+      load_text_encoder=None,
+      load_transformer=None,
+      load_scheduler=None,
+  ) -> Tuple[T, Optional[dict], Optional[int]]:
+    restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
+    opt_state = None
+    if restored_checkpoint:
+      max_logging.log("Loading WAN pipeline from checkpoint")
+      pipeline = self.pipeline_class.from_checkpoint(
+          self.config,
+          restored_checkpoint,
+          vae_only=vae_only,
+          load_vae=load_vae,
+          load_text_encoder=load_text_encoder,
+          load_transformer=load_transformer,
+          load_scheduler=load_scheduler,
+      )
+      opt_state = self._extract_opt_state(restored_checkpoint)
+    else:
+      max_logging.log("No checkpoint found, loading default pipeline.")
+      pipeline = self.load_diffusers_checkpoint(
+          vae_only=vae_only,
+          load_vae=load_vae,
+          load_text_encoder=load_text_encoder,
+          load_transformer=load_transformer,
+          load_scheduler=load_scheduler,
+      )
+
+    return pipeline, opt_state, step
 
   @abstractmethod
-  def load_checkpoint(
-      self, step=None
-  ) -> Tuple[
-      Optional[WanPipeline2_1 | WanPipeline2_2 | WanPipelineI2V_2_1 | WanPipelineI2V_2_2], Optional[dict], Optional[int]
-  ]:
+  def _extract_opt_state(self, restored_checkpoint):
     raise NotImplementedError
 
   @abstractmethod
