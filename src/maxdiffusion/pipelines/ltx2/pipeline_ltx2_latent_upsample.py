@@ -17,6 +17,7 @@ limitations under the License.
 import jax
 import jax.numpy as jnp
 import numpy as np
+import torch
 from flax import nnx
 from flax.core.frozen_dict import FrozenDict
 from typing import Dict, List, Optional, Union
@@ -250,8 +251,9 @@ class FlaxLTX2LatentUpsamplePipeline(FlaxDiffusionPipeline):
     if video.dtype == jnp.bfloat16:
       video = video.astype(jnp.float32)
 
-    video = np.transpose(np.array(video), (0, 4, 1, 2, 3))
-    video = self.video_processor.postprocess_video(video, output_type=output_type)
+    video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
+    video_np = np.transpose(np.array(video), (0, 4, 1, 2, 3))
+    video = self.video_processor.postprocess_video(torch.from_numpy(video_np), output_type=output_type)
 
     if not return_dict:
       return (video,)
