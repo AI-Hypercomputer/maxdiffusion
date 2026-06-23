@@ -850,9 +850,6 @@ def _ulysses_ring_attention(
         f"context shard count {num_context_shards}."
     )
   num_ring_shards = num_context_shards // num_ulysses_shards
-  # Wrap-free (bidirectional) ring schedule for a non-wrapping ring axis (e.g. the
-  # cut size-4 z line of a v7x-16 slice). Set USP_WRAP_FREE_RING=1 to A/B it.
-  wrap_free_ring = os.environ.get("USP_WRAP_FREE_RING", "0") == "1"
 
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
@@ -908,7 +905,6 @@ def _ulysses_ring_attention(
         vmem_limit_bytes=vmem_limit_bytes,
         ring_axis=ring_axis,
         ring_size=num_ring_shards,
-        bidirectional=wrap_free_ring,
     )
     vmapped_ring = jax.vmap(ring_kernel, in_axes=(0, 0, 0))
     attention_output = vmapped_ring(query, key, value)
