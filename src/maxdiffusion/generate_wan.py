@@ -299,6 +299,13 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log(f"compile_time: {compile_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/compile_time", compile_time, global_step=0)
+  # Optional numerical dump of the decoded output for correctness checks
+  # (env WAN_DUMP_OUTPUT=/path/to.npy). Used to A/B attention variants.
+  if os.environ.get("WAN_DUMP_OUTPUT"):
+    import numpy as _np
+
+    _np.save(os.environ["WAN_DUMP_OUTPUT"], _np.asarray(videos[0], dtype=_np.float32))
+    max_logging.log(f"WAN_DUMP_OUTPUT: wrote {os.environ['WAN_DUMP_OUTPUT']}")
   saved_video_path = []
   for i in range(len(videos)):
     video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"

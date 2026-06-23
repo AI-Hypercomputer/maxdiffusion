@@ -766,24 +766,47 @@ def _ulysses_attention(
   return x
 
 
-def _usp_groups(num_shards: int, ulysses_degree: int):
-  """Factorizes the `context` axis into a U x R (Ulysses x Ring) grid.
+INTERNAL_RING_AXIS = "ring"
+INTERNAL_ULYSSES_AXIS = "ulysses"
 
-  Device index along the `context` axis is laid out u-major: `c = u*R + r`, so
-  - the Ulysses all-to-all group (fixed r, varying u) is `[u*R + r for u]`, and
-  - the Ring rotation group (fixed u, varying r) is `[u*R + r for r]`.
 
-  Returns `(U, R, ulysses_groups, ring_perm)` where `ulysses_groups` is the
-  `axis_index_groups` for the all-to-all and `ring_perm` is a `ppermute` perm
-  that rotates K/V by +1 *within each ring sub-group only*.
+def _replace_mesh_axis(axis_spec, old_axis, new_axes):
+  """Replace a mesh-axis name (or one nested inside a tuple) with new_axes."""
+  if axis_spec == old_axis:
+    return new_axes
+  if isinstance(axis_spec, tuple):
+    replacement = []
+    for axis in axis_spec:
+      if axis == old_axis:
+        replacement.extend(new_axes)
+      else:
+        replacement.append(axis)
+    return tuple(replacement)
+  return axis_spec
+
+
+def _replace_mesh_axis_names(axis_names, old_axis, new_axes):
+  return jax.sharding.PartitionSpec(*(_replace_mesh_axis(a, old_axis, new_axes) for a in axis_names))
+
+
+def _create_internal_ulysses_ring_mesh(
+    mesh, ring_shards, ulysses_shards, ring_axis=INTERNAL_RING_AXIS, ulysses_axis=INTERNAL_ULYSSES_AXIS
+):
+  """Split the public `context` mesh axis into private (ring, ulysses) axes.
+
+  Ported from origin/main's tested implementation (commit c104db51). The reshape
+  is `(..., ring_shards, ulysses_shards, ...)` with the Ulysses axis INNERMOST, so
+  for ulysses_shards==2 the Ulysses group is consecutive device ids (the two cores
+  of one chip): the all-to-all stays intra-chip while the ring rotates across chips.
   """
-  U = ulysses_degree
-  if num_shards % U != 0:
-    raise ValueError(f"ulysses_degree={U} must divide context shard count {num_shards}.")
-  R = num_shards // U
-  ulysses_groups = [[u * R + r for u in range(U)] for r in range(R)]
-  ring_perm = [(u * R + r, u * R + (r + 1) % R) for u in range(U) for r in range(R)]
-  return U, R, ulysses_groups, ring_perm
+  mesh_axis_names = tuple(mesh.axis_names)
+  context_axis_index = mesh_axis_names.index("context")
+  devices = mesh.devices
+  new_shape = devices.shape[:context_axis_index] + (ring_shards, ulysses_shards) + devices.shape[context_axis_index + 1 :]
+  new_axis_names = (
+      mesh_axis_names[:context_axis_index] + (ring_axis, ulysses_axis) + mesh_axis_names[context_axis_index + 1 :]
+  )
+  return Mesh(devices.reshape(new_shape), new_axis_names)
 
 
 def _ulysses_ring_attention(
@@ -802,49 +825,66 @@ def _ulysses_ring_attention(
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
 ) -> jax.Array:
-  """Hybrid Ulysses + Ring (USP) sequence parallelism with the custom kernel.
+  """Hybrid Ulysses + Ring (USP) with the CUSTOM splash kernel on main's mesh.
 
-  Splits the single `context` mesh axis into a U x R grid using collective
-  sub-groups (no extra mesh axes needed):
-    1. all-to-all WITHIN each Ulysses group (size U): trade sequence for heads,
-       so each device holds the full sequence of its ring-chunk but heads/U heads;
-    2. ring (ppermute) WITHIN each Ring group (size R): rotate K/V R times and
-       merge via online softmax, using the custom dense kernel per step;
+  Uses origin/main's explicit internal `(ring, ulysses)` mesh
+  (`_create_internal_ulysses_ring_mesh`, commit c104db51) instead of single-axis
+  collective sub-groups: the public `context` axis is reshaped with the Ulysses
+  axis innermost, so the Ulysses all-to-all stays INTRA-chip and the ring rotates
+  ACROSS chips. The per-shard attention is our custom splash kernel
+  (`make_custom_ring_attention`), not the tokamax_ring kernel main uses.
+
+    1. all-to-all over the (intra-chip) Ulysses axis: trade sequence for heads;
+    2. ring (full ppermute) over the (cross-chip) ring axis, online-softmax merge;
     3. all-to-all back to restore the sequence-sharded / full-heads layout.
 
-  U is read from the env var ULYSSES_RING_DEGREE (default 2); R = context // U.
-  U=context reduces to pure Ulysses, U=1 to pure Ring.
+  U = ULYSSES_RING_DEGREE (default 2); R = context // U. U=context -> pure
+  Ulysses, U=1 -> pure Ring (all on the same custom kernel).
   """
   axis_name = "context"
-  num_shards = mesh.shape[axis_name]
-  ulysses_degree = int(os.environ.get("ULYSSES_RING_DEGREE", "2"))
-  U, R, ulysses_groups, ring_perm = _usp_groups(num_shards, ulysses_degree)
+  num_context_shards = mesh.shape[axis_name]
+  num_ulysses_shards = int(os.environ.get("ULYSSES_RING_DEGREE", "2"))
+  if num_ulysses_shards <= 0 or num_context_shards % num_ulysses_shards != 0:
+    raise ValueError(
+        f"ULYSSES_RING_DEGREE={num_ulysses_shards} must be a positive divisor of "
+        f"context shard count {num_context_shards}."
+    )
+  num_ring_shards = num_context_shards // num_ulysses_shards
+  # Wrap-free (bidirectional) ring schedule for a non-wrapping ring axis (e.g. the
+  # cut size-4 z line of a v7x-16 slice). Set USP_WRAP_FREE_RING=1 to A/B it.
+  wrap_free_ring = os.environ.get("USP_WRAP_FREE_RING", "0") == "1"
 
-  query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_shards)
-  key, _ = _reshape_data_for_flash(key, heads, num_shards)
-  value, _ = _reshape_data_for_flash(value, heads, num_shards)
+  query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
+  key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
+  value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
   num_heads = query.shape[1]
-  if num_heads % U != 0:
-    raise ValueError(f"Ulysses+Ring requires heads divisible by the Ulysses degree U={U}, got heads={num_heads}.")
+  if num_heads % num_ulysses_shards != 0:
+    raise ValueError(f"Ulysses+Ring requires heads divisible by U={num_ulysses_shards}, got heads={num_heads}.")
 
   bq, bkv, bkv_compute, bkv_compute_in, heads_per_tile, vmem_limit_bytes = _extract_custom_block_sizes(flash_block_sizes)
   if heads_per_tile > 1:
     raise NotImplementedError("ulysses_ring_custom currently supports heads_per_tile == 1 only.")
 
+  internal_mesh = _create_internal_ulysses_ring_mesh(mesh, num_ring_shards, num_ulysses_shards)
+  ring_axis = INTERNAL_RING_AXIS
+  ulysses_axis = INTERNAL_ULYSSES_AXIS
+
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+  internal_q_axis_names = _replace_mesh_axis_names(q_axis_names, axis_name, (ring_axis, ulysses_axis))
+  internal_kv_axis_names = _replace_mesh_axis_names(kv_axis_names, axis_name, (ring_axis, ulysses_axis))
 
   @functools.partial(
       jax.shard_map,
-      mesh=mesh,
-      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
-      out_specs=q_axis_names,
+      mesh=internal_mesh,
+      in_specs=(internal_q_axis_names, internal_kv_axis_names, internal_kv_axis_names),
+      out_specs=internal_q_axis_names,
       check_vma=False,
   )
   def wrap_ulysses_ring_attention(query, key, value):
-    # (1) Ulysses all-to-all within each U-group: heads -> sequence swap, so each
-    # device now holds the full ring-chunk sequence with heads/U heads.
-    a2a = functools.partial(jax.lax.all_to_all, axis_name=axis_name, axis_index_groups=ulysses_groups, tiled=True)
+    # (1) Ulysses all-to-all over the (intra-chip) ulysses axis: heads -> sequence,
+    # so each device holds the full ring-chunk sequence with heads/U heads.
+    a2a = functools.partial(jax.lax.all_to_all, axis_name=ulysses_axis, tiled=True)
     query = a2a(query, split_axis=1, concat_axis=2)
     key = a2a(key, split_axis=1, concat_axis=2)
     value = a2a(value, split_axis=1, concat_axis=2)
@@ -857,7 +897,7 @@ def _ulysses_ring_attention(
     value, _, _ = _pad_data_for_flash(value, heads, bkv)
 
     bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
-    # (2) Ring over R within each U-group (rotation restricted by ring_perm).
+    # (2) Ring (full ppermute over the cross-chip ring axis) with the custom kernel.
     ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
         block_sizes=bsizes,
         bkv_compute_in=bkv_compute_in,
@@ -866,19 +906,20 @@ def _ulysses_ring_attention(
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
-        ring_axis=axis_name,
-        ring_size=R,
-        perm=ring_perm,
+        ring_axis=ring_axis,
+        ring_size=num_ring_shards,
+        bidirectional=wrap_free_ring,
     )
     vmapped_ring = jax.vmap(ring_kernel, in_axes=(0, 0, 0))
     attention_output = vmapped_ring(query, key, value)
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
-    # (3) Ulysses all-to-all back: sequence -> heads swap, restoring the layout.
+    # (3) Ulysses all-to-all back: sequence -> heads, restoring the layout.
     attention_output = a2a(attention_output, split_axis=2, concat_axis=1)
     return attention_output
 
   x = wrap_ulysses_ring_attention(query, key, value)
+  x = jax.lax.with_sharding_constraint(x, q_axis_names)
   x = x[:, :, :orig_q_seq_len, :]
   x = _reshape_heads_to_head_dim(x)
   return x
