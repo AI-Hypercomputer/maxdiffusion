@@ -174,6 +174,7 @@ def create_sharded_logical_transformer(
       "use_base2_exp": config.use_base2_exp,
       "use_experimental_scheduler": config.use_experimental_scheduler,
       "ulysses_shards": getattr(config, "ulysses_shards", -1),
+      "ulysses_attention_chunks": getattr(config, "ulysses_attention_chunks", 1),
   }
 
   # 2. eval_shape - will not use flops or create weights on device

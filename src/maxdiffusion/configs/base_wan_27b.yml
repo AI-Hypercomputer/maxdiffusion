@@ -94,6 +94,8 @@ use_base2_exp: True
 use_experimental_scheduler: True
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
+# Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
+ulysses_attention_chunks: 1
 flash_min_seq_length: 4096
 dropout: 0.0
 

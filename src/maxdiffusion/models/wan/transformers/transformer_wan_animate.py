@@ -788,6 +788,7 @@ class WanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       enable_jax_named_scopes: bool = False,
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
+      attention_config: Optional[dict] = None,
       face_flash_min_seq_length: int = 0,
       motion_encoder_channel_sizes: Optional[Dict[str, int]] = None,
       motion_encoder_size: int = 512,
@@ -812,6 +813,13 @@ class WanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
     self.names_which_can_be_saved = names_which_can_be_saved or []
     self.names_which_can_be_offloaded = names_which_can_be_offloaded or []
+    attention_config = {
+        "use_base2_exp": use_base2_exp,
+        "use_experimental_scheduler": use_experimental_scheduler,
+        "ulysses_shards": -1,
+        "ulysses_attention_chunks": 1,
+        **(attention_config or {}),
+    }
 
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
 
@@ -903,8 +911,7 @@ class WanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           dropout=dropout,
           mask_padding_tokens=mask_padding_tokens,
           enable_jax_named_scopes=enable_jax_named_scopes,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
+          attention_config=attention_config,
       )
 
     if scan_layers:
@@ -932,8 +939,7 @@ class WanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             dropout=dropout,
             mask_padding_tokens=mask_padding_tokens,
             enable_jax_named_scopes=enable_jax_named_scopes,
-            use_base2_exp=use_base2_exp,
-            use_experimental_scheduler=use_experimental_scheduler,
+            attention_config=attention_config,
         )
         blocks.append(block)
       self.blocks = nnx.List(blocks)
