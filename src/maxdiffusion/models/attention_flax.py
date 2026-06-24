@@ -182,6 +182,42 @@ def _replace_mesh_axis_names(axis_names, old_axis: str, new_axes: tuple[str, ...
   return jax.sharding.PartitionSpec(*(_replace_mesh_axis(axis_name, old_axis, new_axes) for axis_name in axis_names))
 
 
+def _extract_custom_kernel_block_sizes(flash_block_sizes):
+  """Resolve block sizes for the custom Pallas kernel.
+
+  Accepts either a dict or an object exposing the block-size attributes (or
+  ``None``) and falls back to the defaults shared by the Ulysses custom and
+  Ulysses+ring custom paths.
+  """
+  bq = 4864
+  bkv = 1024
+  bkv_compute = 1024
+  bkv_compute_in = 1024
+  heads_per_tile = 1
+  vmem_limit_bytes = None
+
+  if flash_block_sizes is not None:
+    if isinstance(flash_block_sizes, dict):
+      getter = flash_block_sizes.get
+    else:
+      getter = lambda name, default=None: getattr(flash_block_sizes, name, default)
+    bq = getter("block_q", None) or bq
+    bkv = getter("block_kv", None) or bkv
+    bkv_compute = getter("block_kv_compute", None) or bkv_compute
+    bkv_compute_in = getter("block_kv_compute_in", None) or bkv_compute_in
+    heads_per_tile = getter("heads_per_tile", None) or heads_per_tile
+    vmem_limit_bytes = getter("vmem_limit_bytes", None) or vmem_limit_bytes
+
+  return {
+      "block_q": bq,
+      "block_kv": bkv,
+      "block_kv_compute": bkv_compute,
+      "block_kv_compute_in": bkv_compute_in,
+      "heads_per_tile": heads_per_tile,
+      "vmem_limit_bytes": vmem_limit_bytes,
+  }
+
+
 def _create_internal_ulysses_ring_mesh(
     mesh: Mesh,
     ring_shards: int,
@@ -626,28 +662,13 @@ def _ulysses_attention(
     value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
 
     if use_custom_kernel:
-      bq = 4864
-      bkv = 1024
-      bkv_compute = 1024
-      bkv_compute_in = 1024
-      heads_per_tile = 1
-      vmem_limit_bytes = None
-
-      if flash_block_sizes is not None:
-        if isinstance(flash_block_sizes, dict):
-          bq = flash_block_sizes.get("block_q", None) or bq
-          bkv = flash_block_sizes.get("block_kv", None) or bkv
-          bkv_compute = flash_block_sizes.get("block_kv_compute", None) or bkv_compute
-          bkv_compute_in = flash_block_sizes.get("block_kv_compute_in", None) or bkv_compute_in
-          heads_per_tile = flash_block_sizes.get("heads_per_tile", None) or heads_per_tile
-          vmem_limit_bytes = flash_block_sizes.get("vmem_limit_bytes", None) or vmem_limit_bytes
-        else:
-          bq = getattr(flash_block_sizes, "block_q", None) or bq
-          bkv = getattr(flash_block_sizes, "block_kv", None) or bkv
-          bkv_compute = getattr(flash_block_sizes, "block_kv_compute", None) or bkv_compute
-          bkv_compute_in = getattr(flash_block_sizes, "block_kv_compute_in", None) or bkv_compute_in
-          heads_per_tile = getattr(flash_block_sizes, "heads_per_tile", None) or heads_per_tile
-          vmem_limit_bytes = getattr(flash_block_sizes, "vmem_limit_bytes", None) or vmem_limit_bytes
+      custom_block_sizes = _extract_custom_kernel_block_sizes(flash_block_sizes)
+      bq = custom_block_sizes["block_q"]
+      bkv = custom_block_sizes["block_kv"]
+      bkv_compute = custom_block_sizes["block_kv_compute"]
+      bkv_compute_in = custom_block_sizes["block_kv_compute_in"]
+      heads_per_tile = custom_block_sizes["heads_per_tile"]
+      vmem_limit_bytes = custom_block_sizes["vmem_limit_bytes"]
 
       if use_base2_exp:
         query = query * LOG2E
@@ -746,6 +767,8 @@ def _ulysses_ring_attention(
     use_base2_exp: bool = False,
     use_experimental_scheduler: bool = False,
     ulysses_shards: int = -1,
+    use_custom_kernel: bool = False,
+    scale: float | None = None,
 ) -> jax.Array:
   """2D context-parallel attention using a private Ulysses x ring mesh.
 
@@ -788,7 +811,11 @@ def _ulysses_ring_attention(
   key, _ = _reshape_data_for_flash(key, heads, num_sequence_shards)
   value, _ = _reshape_data_for_flash(value, heads, num_sequence_shards)
 
-  block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, "tokamax_ring")
+  # The tokamax ring kernel needs a resolved BlockSizes object; the custom
+  # kernel resolves its own (and accepts a dict for flash_block_sizes).
+  block_sizes = (
+      None if use_custom_kernel else _select_flash_block_sizes(query, key, flash_block_sizes, dtype, "tokamax_ring")
+  )
 
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
@@ -809,55 +836,77 @@ def _ulysses_ring_attention(
     key = jax.lax.all_to_all(key, axis_name=ulysses_axis, split_axis=1, concat_axis=2, tiled=True)
     value = jax.lax.all_to_all(value, axis_name=ulysses_axis, split_axis=1, concat_axis=2, tiled=True)
 
-    uses_fused_kernel = block_sizes.use_fused_bwd_kernel
-    block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv)
-    block_kv_sizes = (block_sizes.block_kv, block_sizes.block_kv_dkv)
-    if uses_fused_kernel:
-      block_q_sizes += (block_sizes.block_q_dkv,)
-      block_kv_sizes += (block_sizes.block_kv_dkv,)
+    if use_custom_kernel:
+      # Custom Pallas ring: rotate K/V over the hidden ring axis and combine the
+      # per-shard online-softmax statistics. The custom kernel applies the
+      # softmax scale and base-2 conversion internally, so K is passed raw.
+      custom_block_sizes = _extract_custom_kernel_block_sizes(flash_block_sizes)
+      attention_output = custom_splash.tpu_custom_ring_attention(
+          query,
+          key,
+          value,
+          ring_axis=ring_axis,
+          scale=scale,
+          block_q=custom_block_sizes["block_q"],
+          block_kv=custom_block_sizes["block_kv"],
+          block_kv_compute=custom_block_sizes["block_kv_compute"],
+          block_kv_compute_in=custom_block_sizes["block_kv_compute_in"],
+          heads_per_tile=custom_block_sizes["heads_per_tile"],
+          use_base2_exp=use_base2_exp,
+          use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=custom_block_sizes["vmem_limit_bytes"],
+      )
+      attention_output = attention_output.astype(query.dtype)
     else:
-      block_q_sizes += (block_sizes.block_q_dq,)
-      block_kv_sizes += (block_sizes.block_kv_dq,)
+      uses_fused_kernel = block_sizes.use_fused_bwd_kernel
+      block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv)
+      block_kv_sizes = (block_sizes.block_kv, block_sizes.block_kv_dkv)
+      if uses_fused_kernel:
+        block_q_sizes += (block_sizes.block_q_dkv,)
+        block_kv_sizes += (block_sizes.block_kv_dkv,)
+      else:
+        block_q_sizes += (block_sizes.block_q_dq,)
+        block_kv_sizes += (block_sizes.block_kv_dq,)
 
-    block_q = max(*block_q_sizes)
-    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_q)
-    block_kv = max(*block_kv_sizes)
-    key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
-    value, _, _ = _pad_data_for_flash(value, heads, block_kv)
+      block_q = max(*block_q_sizes)
+      query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, block_q)
+      block_kv = max(*block_kv_sizes)
+      key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
+      value, _, _ = _pad_data_for_flash(value, heads, block_kv)
 
-    q_padded_len = query.shape[2]
-    kv_padded_len = key.shape[2]
-    total_kv_len = kv_padded_len * num_ring_shards
+      q_padded_len = query.shape[2]
+      kv_padded_len = key.shape[2]
+      total_kv_len = kv_padded_len * num_ring_shards
 
-    # Mask q/kv padding via segment ids, same as the tokamax_ring kernel. Each
-    # ring shard pads identically so every shard shares the same per-shard ids
-    # and rotation is unneeded.
-    segment_ids = _build_padding_segment_ids(
-        query_seq_len, q_padded_len, key_seq_len, kv_padded_len, attention_mask, tokamax_splash_base.SegmentIds
-    )
+      # Mask q/kv padding via segment ids, same as the tokamax_ring kernel. Each
+      # ring shard pads identically so every shard shares the same per-shard ids
+      # and rotation is unneeded.
+      segment_ids = _build_padding_segment_ids(
+          query_seq_len, q_padded_len, key_seq_len, kv_padded_len, attention_mask, tokamax_splash_base.SegmentIds
+      )
 
-    if not mask_padding_tokens:
-      segment_ids = None
+      if not mask_padding_tokens:
+        segment_ids = None
 
-    mask = tokamax_splash_attention_mask.FullMask(_shape=(q_padded_len, total_kv_len))
+      mask = tokamax_splash_attention_mask.FullMask(_shape=(q_padded_len, total_kv_len))
 
-    splash_kernel = tokamax_ring_attention_kernel.make_ring_attention(
-        mask=mask,
-        is_mqa=False,
-        config=convert_to_tokamax_splash_config(
-            block_sizes,
-            residual_checkpoint_name=residual_checkpoint_name,
-            use_base2_exp=use_base2_exp,
-            use_experimental_scheduler=use_experimental_scheduler,
-        ),
-        save_residuals=False,
-        ring_axis=ring_axis,
-        kv_seq_shards=num_ring_shards,
-        rotate_segment_ids=False,
-    )
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
-    attention_output = vmapped_splash(query, key, value, segment_ids)
-    attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
+      splash_kernel = tokamax_ring_attention_kernel.make_ring_attention(
+          mask=mask,
+          is_mqa=False,
+          config=convert_to_tokamax_splash_config(
+              block_sizes,
+              residual_checkpoint_name=residual_checkpoint_name,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+          ),
+          save_residuals=False,
+          ring_axis=ring_axis,
+          kv_seq_shards=num_ring_shards,
+          rotate_segment_ids=False,
+      )
+      vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
+      attention_output = vmapped_splash(query, key, value, segment_ids)
+      attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
     # Restore original layout: head-sharded/full-sequence -> sequence-sharded/full-heads.
     attention_output = jax.lax.all_to_all(
@@ -1068,6 +1117,31 @@ def ulysses_ring_kernel(q, k, v, context):
   )
 
 
+@register_kernel("ulysses_ring_custom")
+def ulysses_ring_custom_kernel(q, k, v, context):
+  # The custom Pallas kernel applies the softmax scale internally, so K is
+  # passed raw (unlike the tokamax ulysses_ring path which pre-scales K).
+  return _ulysses_ring_attention(
+      q,
+      k,
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      ulysses_shards=context["ulysses_shards"],
+      use_custom_kernel=True,
+      scale=context["scale"],
+  )
+
+
 @register_kernel("flash")
 def flash_kernel(q, k, v, context):
   return _tpu_flash_attention(
@@ -1166,7 +1240,7 @@ def _apply_attention(
     seq_len_idx = 2
 
   can_use_flash_attention = True
-  if attention_kernel in ["flash", "tokamax_flash", "ulysses", "ulysses_custom", "ulysses_ring"]:
+  if attention_kernel in ["flash", "tokamax_flash", "ulysses", "ulysses_custom", "ulysses_ring", "ulysses_ring_custom"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -1604,6 +1678,11 @@ class FlaxWanAttention(nnx.Module):
       axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
     if attention_kernel in ("tokamax_ring", "ulysses_ring") and not is_self_attention:
       attention_kernel = "tokamax_flash"
+    # Cross-attention KV (text) is short and context-sharded; rotating it over the
+    # ring axis is unnecessary. Fall back to the Ulysses-only custom kernel, whose
+    # all-to-all already gathers the full KV sequence (same as attention=ulysses_custom).
+    if attention_kernel == "ulysses_ring_custom" and not is_self_attention:
+      attention_kernel = "ulysses_custom"
     self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
     self.image_seq_len = image_seq_len  # New for I2V
     tpu_type = get_tpu_type()

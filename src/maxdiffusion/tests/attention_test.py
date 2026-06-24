@@ -508,6 +508,68 @@ class AttentionTest(unittest.TestCase):
     self.assertEqual(output.shape, query.shape)
     self.assertTrue(jnp.array_equal(output, query))
 
+  @unittest.skipIf(len(jax.devices()) < 4, "Ulysses ring custom attention test requires at least 4 devices.")
+  def test_ulysses_ring_custom_attention_matches_dense_reference(self):
+    """The custom-kernel 2D context-parallel path matches dense attention."""
+    batch = 2
+    length = 2048  # divisible by context (4) and the 512 block sizes -> no padding
+    heads = 8  # divisible by ulysses_shards
+    head_depth = 128
+    scale = 1.0 / np.sqrt(head_depth)
+
+    key1, key2, key3 = jax.random.split(jax.random.PRNGKey(0), 3)
+    q = jax.random.normal(key1, (batch, length, heads * head_depth), jnp.float32)
+    k = jax.random.normal(key2, (batch, length, heads * head_depth), jnp.float32)
+    v = jax.random.normal(key3, (batch, length, heads * head_depth), jnp.float32)
+
+    def to_bhsd(x):
+      return jnp.transpose(x.reshape(batch, length, heads, head_depth), (0, 2, 1, 3))
+
+    logits = jnp.einsum("bhqd,bhkd->bhqk", to_bhsd(q), to_bhsd(k)).astype(jnp.float32) * scale
+    probs = jax.nn.softmax(logits, axis=-1)
+    ref = jnp.einsum("bhqk,bhkd->bhqd", probs, to_bhsd(v).astype(jnp.float32))
+    ref = jnp.transpose(ref, (0, 2, 1, 3)).reshape(batch, length, heads * head_depth)
+
+    block_sizes = {
+        "block_q": 512,
+        "block_kv": 512,
+        "block_kv_compute": 512,
+        "block_kv_compute_in": 512,
+        "heads_per_tile": 1,
+    }
+    mesh = self._ulysses_ring_mesh()  # context=4
+    with mesh, nn_partitioning.axis_rules(self._ulysses_ring_axis_rules()):
+      out = attention_flax._ulysses_ring_attention(
+          q,
+          k,  # custom path applies the softmax scale internally; pass raw K
+          v,
+          heads=heads,
+          mesh=mesh,
+          axis_names_q=(
+              attention_flax.BATCH,
+              attention_flax.SELF_ATTN_HEAD,
+              attention_flax.SELF_ATTN_Q_LENGTH,
+              attention_flax.D_KV,
+          ),
+          axis_names_kv=(
+              attention_flax.BATCH,
+              attention_flax.SELF_ATTN_HEAD,
+              attention_flax.SELF_ATTN_KV_LENGTH,
+              attention_flax.D_KV,
+          ),
+          flash_block_sizes=block_sizes,
+          dtype=jnp.bfloat16,
+          ulysses_shards=2,  # ring shards = context / ulysses = 2
+          use_base2_exp=True,
+          use_custom_kernel=True,
+          scale=scale,
+      )
+
+    out = np.asarray(jax.device_get(out)).astype(np.float32)
+    ref = np.asarray(ref)
+    rel_l2 = np.linalg.norm(out - ref) / np.linalg.norm(ref)
+    self.assertLess(rel_l2, 2e-2)
+
   @unittest.skipIf(len(jax.devices()) < 4, "Ulysses ring attention mask test requires at least 4 devices.")
   def test_ulysses_ring_attention_masks_global_kv_padding(self):
     """Hybrid Ulysses+ring masks padding via segment ids, not a NumpyMask."""
