@@ -1,0 +1,40 @@
+# Official Z-Image-Turbo inference defaults. The base model uses the same
+# transformer; only its recommended denoising-step count differs.
+pretrained_model_name_or_path: "Tongyi-MAI/Z-Image-Turbo"
+prompt: "A red fox reading a book in a quiet library, cinematic light"
+resolution: 1024
+num_inference_steps: 9
+seed: 42
+output_file: "/tmp/zimage-turbo.png"
+weights_dtype: "bfloat16"
+activations_dtype: "bfloat16"
+attention: "flash"
+flash_block_sizes: {}
+hardware: "tpu"
+skip_jax_distributed_system: true
+run_name: "zimage-turbo"
+output_dir: "/tmp/maxdiffusion"
+save_config_to_gcs: false
+jax_cache_dir: ""
+unet_checkpoint: ""
+dataset_name: ""
+dataset_save_location: "/tmp"
+per_device_batch_size: 1
+learning_rate_schedule_steps: 1
+max_train_steps: 1
+compile_topology_num_slices: -1
+quantization_local_shard_count: -1
+use_qwix_quantization: false
+attention_sharding_uniform: true
+logical_axis_rules: [["batch", "data"], ["activation_length", "context"], ["activation_heads", "tensor"], ["heads", "tensor"], ["mlp", "tensor"], ["embed", "fsdp"], ["norm", "tensor"], ["out_channels", "tensor"]]
+data_sharding: [["data", "fsdp", "context", "tensor"]]
+mesh_axes: ["data", "fsdp", "context", "tensor"]
+dcn_data_parallelism: 1
+dcn_fsdp_parallelism: 1
+dcn_context_parallelism: 1
+dcn_tensor_parallelism: 1
+ici_data_parallelism: 1
+ici_fsdp_parallelism: 1
+ici_context_parallelism: 1
+ici_tensor_parallelism: -1
+allow_split_physical_axes: false
