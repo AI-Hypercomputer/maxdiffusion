@@ -142,18 +142,20 @@ enable_lora: False
 
 # Distilled LoRA
 # lora_config: {
-#   lora_model_name_or_path: ["Lightricks/LTX-2"],
-#   weight_name: ["ltx-2-19b-distilled-lora-384.safetensors"],
+#   lora_model_name_or_path: ["Lightricks/LTX-2.3"],
+#   weight_name: ["ltx-2.3-22b-distilled-lora-384.safetensors"],
 #   adapter_name: ["distilled-lora-384"],
+#   # placeholder - the real value is mixed per-layer ranks: 32/128/256/384
+#   # and the loader reads each layer's REAL rank from the LoRA tensor shapes
 #   rank: [384]
 # }
 
 # Standard LoRA
 lora_config: {
-  lora_model_name_or_path: ["Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-In"],
-  weight_name: ["ltx-2-19b-lora-camera-control-dolly-in.safetensors"],
-  adapter_name: ["camera-control-dolly-in"],
-  rank: [32]
+  lora_model_name_or_path: ["Lightricks/LTX-2.3-22b-IC-LoRA-Colorization"],
+  weight_name: ["ltx-2.3-22b-ic-lora-colorization-0.9.safetensors"],
+  adapter_name: ["colorization"],
+  rank: [128]
 }
 
 

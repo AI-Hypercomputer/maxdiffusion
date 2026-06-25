@@ -716,31 +716,37 @@ def translate_ltx2_nnx_path_to_diffusers_lora(nnx_path_str, scan_layers=False):
       "attn1.to_k": "attn1.to_k",
       "attn1.to_v": "attn1.to_v",
       "attn1.to_out": "attn1.to_out.0",
+      "attn1.to_gate_logits": "attn1.to_gate_logits",
       # Audio Self Attention (audio_attn1)
       "audio_attn1.to_q": "audio_attn1.to_q",
       "audio_attn1.to_k": "audio_attn1.to_k",
       "audio_attn1.to_v": "audio_attn1.to_v",
       "audio_attn1.to_out": "audio_attn1.to_out.0",
+      "audio_attn1.to_gate_logits": "audio_attn1.to_gate_logits",
       # Audio Cross Attention (audio_attn2)
       "audio_attn2.to_q": "audio_attn2.to_q",
       "audio_attn2.to_k": "audio_attn2.to_k",
       "audio_attn2.to_v": "audio_attn2.to_v",
       "audio_attn2.to_out": "audio_attn2.to_out.0",
+      "audio_attn2.to_gate_logits": "audio_attn2.to_gate_logits",
       # Cross Attention (attn2)
       "attn2.to_q": "attn2.to_q",
       "attn2.to_k": "attn2.to_k",
       "attn2.to_v": "attn2.to_v",
       "attn2.to_out": "attn2.to_out.0",
+      "attn2.to_gate_logits": "attn2.to_gate_logits",
       # Audio to Video Cross Attention
       "audio_to_video_attn.to_q": "audio_to_video_attn.to_q",
       "audio_to_video_attn.to_k": "audio_to_video_attn.to_k",
       "audio_to_video_attn.to_v": "audio_to_video_attn.to_v",
       "audio_to_video_attn.to_out": "audio_to_video_attn.to_out.0",
+      "audio_to_video_attn.to_gate_logits": "audio_to_video_attn.to_gate_logits",
       # Video to Audio Cross Attention
       "video_to_audio_attn.to_q": "video_to_audio_attn.to_q",
       "video_to_audio_attn.to_k": "video_to_audio_attn.to_k",
       "video_to_audio_attn.to_v": "video_to_audio_attn.to_v",
       "video_to_audio_attn.to_out": "video_to_audio_attn.to_out.0",
+      "video_to_audio_attn.to_gate_logits": "video_to_audio_attn.to_gate_logits",
       # Feed Forward
       "ff.net_0": "ff.net.0.proj",
       "ff.net_2": "ff.net.2",
@@ -778,6 +784,13 @@ def translate_ltx2_nnx_path_to_diffusers_lora(nnx_path_str, scan_layers=False):
       "caption_projection.linear_2": "diffusion_model.caption_projection.linear_2",
       "audio_caption_projection.linear_1": "diffusion_model.audio_caption_projection.linear_1",
       "audio_caption_projection.linear_2": "diffusion_model.audio_caption_projection.linear_2",
+      # Prompt-conditioned AdaLN
+      "prompt_adaln.linear": "diffusion_model.prompt_adaln_single.linear",
+      "prompt_adaln.emb.timestep_embedder.linear_1": "diffusion_model.prompt_adaln_single.emb.timestep_embedder.linear_1",
+      "prompt_adaln.emb.timestep_embedder.linear_2": "diffusion_model.prompt_adaln_single.emb.timestep_embedder.linear_2",
+      "audio_prompt_adaln.linear": "diffusion_model.audio_prompt_adaln_single.linear",
+      "audio_prompt_adaln.emb.timestep_embedder.linear_1": "diffusion_model.audio_prompt_adaln_single.emb.timestep_embedder.linear_1",
+      "audio_prompt_adaln.emb.timestep_embedder.linear_2": "diffusion_model.audio_prompt_adaln_single.emb.timestep_embedder.linear_2",
       # Connectors
       "feature_extractor.linear": "text_embedding_projection.aggregate_embed",
   }
