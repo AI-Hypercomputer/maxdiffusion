@@ -824,6 +824,7 @@ def _ulysses_ring_attention(
     attention_mask: jax.Array = None,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
+    bidirectional: bool = False,
 ) -> jax.Array:
   """Hybrid Ulysses + Ring (USP) with the CUSTOM splash kernel on main's mesh.
 
@@ -894,20 +895,39 @@ def _ulysses_ring_attention(
     value, _, _ = _pad_data_for_flash(value, heads, bkv)
 
     bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
-    # (2) Ring (full ppermute over the cross-chip ring axis) with the custom kernel.
-    ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
-        block_sizes=bsizes,
-        bkv_compute_in=bkv_compute_in,
-        orig_q_seq_len=query_seq_len,
-        orig_kv_seq_len=key_seq_len,
-        use_base2_exp=use_base2_exp,
-        use_experimental_scheduler=use_experimental_scheduler,
-        vmem_limit_bytes=vmem_limit_bytes,
-        ring_axis=ring_axis,
-        ring_size=num_ring_shards,
-    )
-    vmapped_ring = jax.vmap(ring_kernel, in_axes=(0, 0, 0))
-    attention_output = vmapped_ring(query, key, value)
+    if num_ring_shards == 1:
+      # (2a) R=1: the ring is trivial (no rotation) -> use the lighter dedicated
+      # splash kernel (fuse_reciprocal, no fp32 online-softmax residual windows).
+      # Same math as the 1-step ring, and it fits BQ=8448 where the ring kernel
+      # OOMs (its 3x residual windows). make_splash_mha returns [H, D, S].
+      splash_kernel = custom_splash.make_splash_mha(
+          block_sizes=bsizes,
+          bkv_compute_in=bkv_compute_in,
+          orig_q_seq_len=query_seq_len,
+          orig_kv_seq_len=key_seq_len,
+          heads_per_tile=heads_per_tile,
+          use_base2_exp=use_base2_exp,
+          use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=vmem_limit_bytes,
+      )
+      attention_output = jnp.swapaxes(jax.vmap(splash_kernel, in_axes=(0, 0, 0))(query, key, value), 2, 3)
+    else:
+      # (2b) Ring (full ppermute over the cross-chip ring axis) with the custom kernel.
+      # bidirectional=True -> wrap-free schedule (streams K/V both directions one hop
+      # at a time), for a non-wrapping ring axis. Selected by attention=ulysses_ring_custom_bidir.
+      ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
+          block_sizes=bsizes,
+          bkv_compute_in=bkv_compute_in,
+          orig_q_seq_len=query_seq_len,
+          orig_kv_seq_len=key_seq_len,
+          use_base2_exp=use_base2_exp,
+          use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=vmem_limit_bytes,
+          ring_axis=ring_axis,
+          ring_size=num_ring_shards,
+          bidirectional=bidirectional,
+      )
+      attention_output = jax.vmap(ring_kernel, in_axes=(0, 0, 0))(query, key, value)
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
     # (3) Ulysses all-to-all back: sequence -> heads, restoring the layout.
@@ -1084,6 +1104,30 @@ def ulysses_ring_custom_kernel(q, k, v, context):
       attention_mask=context["attention_mask"],
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+  )
+
+
+@register_kernel("ulysses_ring_custom_bidir")
+def ulysses_ring_custom_bidir_kernel(q, k, v, context):
+  """Wrap-free (bidirectional) variant of ulysses_ring_custom: the ring streams
+  K/V both directions one hop at a time, avoiding the diameter-length wrap hop
+  on a non-wrapping ring axis. Same USP split as ulysses_ring_custom otherwise."""
+  return _ulysses_ring_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      bidirectional=True,
   )
 
 
