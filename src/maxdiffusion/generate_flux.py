@@ -32,7 +32,7 @@ from flax.linen import partitioning as nn_partitioning
 from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
 
 from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging, max_utils
-from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+from maxdiffusion.models.flux.transformers.transformer_flux import FluxTransformer2DModel
 from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.max_utils import (
     device_put_replicated,
@@ -314,6 +314,9 @@ def run(config):
         dtype=config.activations_dtype,
         weights_dtype=config.weights_dtype,
         precision=get_precision(config),
+        remat_policy=config.remat_policy,
+        names_which_can_be_saved=config.names_which_can_be_saved,
+        names_which_can_be_offloaded=config.names_which_can_be_offloaded,
     )
 
     num_channels_latents = transformer.in_channels // 4

@@ -27,7 +27,7 @@ from maxdiffusion import (
     FlaxAutoencoderKL,
     max_logging,
 )
-from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+from maxdiffusion.models.flux.transformers.transformer_flux import FluxTransformer2DModel
 from ..pipelines.flux.flux_pipeline import FluxPipeline
 
 from transformers import (CLIPTokenizer, FlaxCLIPTextModel, FlaxT5EncoderModel, AutoTokenizer)
@@ -214,6 +214,11 @@ class FluxCheckpointer(ABC):
           dtype=self.config.activations_dtype,
           weights_dtype=self.config.weights_dtype,
           precision=max_utils.get_precision(self.config),
+          use_base2_exp=self.config.use_base2_exp,
+          use_experimental_scheduler=self.config.use_experimental_scheduler,
+          remat_policy=self.config.remat_policy,
+          names_which_can_be_saved=self.config.names_which_can_be_saved,
+          names_which_can_be_offloaded=self.config.names_which_can_be_offloaded,
       )
       transformer_eval_params = transformer.init_weights(
           rngs=self.rng, max_sequence_length=self.config.max_sequence_length, eval_only=True
@@ -279,6 +284,11 @@ class FluxCheckpointer(ABC):
             weights_dtype=self.config.weights_dtype,
             precision=max_utils.get_precision(self.config),
             from_pt=self.config.from_pt,
+            use_base2_exp=self.config.use_base2_exp,
+            use_experimental_scheduler=self.config.use_experimental_scheduler,
+            remat_policy=self.config.remat_policy,
+            names_which_can_be_saved=self.config.names_which_can_be_saved,
+            names_which_can_be_offloaded=self.config.names_which_can_be_offloaded,
         )
 
         pipeline = FluxPipeline(

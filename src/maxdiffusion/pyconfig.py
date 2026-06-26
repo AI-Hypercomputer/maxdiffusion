@@ -197,34 +197,15 @@ class _HyperParameters:
   @staticmethod
   def user_init(raw_keys):
     """Transformations between the config data and configs used at runtime"""
-    # Set default for use_batched_text_encoder if not present
-    if "use_batched_text_encoder" not in raw_keys:
-      raw_keys["use_batched_text_encoder"] = False
+    if "remat_policy" not in raw_keys:
+      raw_keys["remat_policy"] = "None"
+    if "names_which_can_be_saved" not in raw_keys:
+      raw_keys["names_which_can_be_saved"] = []
+    if "names_which_can_be_offloaded" not in raw_keys:
+      raw_keys["names_which_can_be_offloaded"] = []
 
-    # Validate that use_batched_text_encoder is a boolean
-    if not isinstance(raw_keys["use_batched_text_encoder"], bool):
-      raise TypeError(
-          f"Expected config.use_batched_text_encoder to be a boolean, but got {type(raw_keys['use_batched_text_encoder'])}"
-      )
-    # Set defaults for dtypes if they weren't explicitly provided
-    if "vae_dtype" not in raw_keys:
-      raw_keys["vae_dtype"] = "float32"
-    if "vae_weights_dtype" not in raw_keys:
-      raw_keys["vae_weights_dtype"] = "float32"
-    if "scheduler_dtype" not in raw_keys:
-      raw_keys["scheduler_dtype"] = "float32"
-
-    # Cast all dtype configs to jax.numpy.dtype
-    for dtype_key in [
-        "weights_dtype",
-        "activations_dtype",
-        "scheduler_dtype",
-        "vae_dtype",
-        "vae_weights_dtype",
-        "text_encoder_dtype",
-    ]:
-      if dtype_key in raw_keys:
-        raw_keys[dtype_key] = jax.numpy.dtype(raw_keys[dtype_key])
+    raw_keys["weights_dtype"] = jax.numpy.dtype(raw_keys["weights_dtype"])
+    raw_keys["activations_dtype"] = jax.numpy.dtype(raw_keys["activations_dtype"])
     if raw_keys["run_name"] == "":
       raw_keys["run_name"] = os.environ.get("JOBSET_NAME")  # using XPK default
     run_name = raw_keys["run_name"]

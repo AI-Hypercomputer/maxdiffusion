@@ -398,12 +398,32 @@ After installation completes, run the training script.
 
   | Model | Accelerator | Sharding Strategy | Per Device Batch Size | Global Batch Size | Step Time (secs) |
   | --- | --- | --- | --- | --- | --- |
-  | Flux-dev | v5p-8 | DDP | 1 | 4 | 1.31 |
+  | Flux-dev | v5p-8 | FSDP | 2 | 8 | 1.769 |
 
   Flux finetuning has only been tested on TPU v5p.
 
+  To run the Flux training benchmark on v5p-8, use:
+
   ```bash
-  python src/maxdiffusion/train_flux.py src/maxdiffusion/configs/base_flux_dev.yml run_name="test-flux-train" output_dir="gs://<your-gcs-bucket>/" save_final_checkpoint=True  jax_cache_dir="/tmp/jax_cache"
+  python src/maxdiffusion/train_flux.py src/maxdiffusion/configs/base_flux_dev.yml \
+      run_name="flux-training" \
+      output_dir="gs://<your-gcs-bucket>/" \
+      jax_cache_dir="/tmp/jax_cache" \
+      save_final_checkpoint=False \
+      max_train_steps=100 \
+      dataset_type=synthetic \
+      ici_data_parallelism=1 \
+      ici_fsdp_parallelism=4 \
+      ici_tensor_parallelism=1 \
+      train_new_flux=True \
+      resolution=1024 \
+      attention_sharding_uniform=False \
+      attention=tokamax_flash \
+      per_device_batch_size=2 \
+      enable_profiler=False \
+      reuse_example_batch=True \
+      write_metrics=False \
+      use_base2_exp=True
   ```
 
   To generate images with a finetuned checkpoint, run:
