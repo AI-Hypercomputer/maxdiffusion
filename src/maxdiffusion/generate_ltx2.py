@@ -237,7 +237,9 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
   # Export videos
   for i in range(len(videos)):
-    video_path = f"{filename_prefix}ltx2_output_{getattr(config, 'seed', 0)}_{i}.mp4"
+    model_name = getattr(config, "model_name", "ltx2") or "ltx2"
+    model_name_prefix = model_name.replace(".", "_")
+    video_path = f"{filename_prefix}{model_name_prefix}_output_{getattr(config, 'seed', 0)}_{i}.mp4"
     audio_i = audios[i] if audios is not None else None
 
     audio_format = getattr(config, "audio_format", "s16")

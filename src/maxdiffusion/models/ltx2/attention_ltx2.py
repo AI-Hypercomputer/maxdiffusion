@@ -88,13 +88,8 @@ def apply_split_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
   first_x = split_x[..., 0, :]
   second_x = split_x[..., 1, :]
 
-  cos_u = jnp.expand_dims(cos, axis=-2)
-  sin_u = jnp.expand_dims(sin, axis=-2)
-
-  out = split_x * cos_u
-
-  out_first = out[..., 0, :] - second_x * sin_u.squeeze(-2)
-  out_second = out[..., 1, :] + first_x * sin_u.squeeze(-2)
+  out_first = first_x * cos - second_x * sin
+  out_second = second_x * cos + first_x * sin
 
   out = jnp.stack([out_first, out_second], axis=-2)
   out = out.reshape(*out.shape[:-2], last_dim)
@@ -176,12 +171,6 @@ class LTX2RotaryPosEmbed(nnx.Module):
     patch_ends = grid + patch_size_delta
 
     # Combine start and end coordinates
-    latent_coords = jnp.stack([grid, patch_ends], axis=-1)  # [3, N_F, N_H, N_W, 2]
-    latent_coords = latent_coords.transpose(1, 2, 3, 0, 4)  # [N_F, N_H, N_W, 3, 2]
-    latent_coords = latent_coords.reshape(-1, 3, 2)  # [num_patches, 3, 2]
-    latent_coords = jnp.expand_dims(latent_coords, 0)  # [1, num_patches, 3, 2]
-    latent_coords = jnp.tile(latent_coords, (batch_size, 1, 1, 1))  # [B, num_patches, 3, 2]
-
     latent_coords = jnp.stack([grid, patch_ends], axis=-1)  # [3, N_F, N_H, N_W, 2]
     latent_coords = latent_coords.reshape(3, -1, 2)  # [3, num_patches, 2]
     latent_coords = jnp.expand_dims(latent_coords, 0)  # [1, 3, num_patches, 2]
@@ -485,7 +474,7 @@ class LTX2Attention(nnx.Module):
     # 3. Apply RoPE
     with jax.named_scope("Apply RoPE"):
       if rotary_emb is not None:
-        if hasattr(self, "rope_type") and self.rope_type == "split":
+        if self.rope_type == "split":
           # Split RoPE: passing full freqs [B, H, S, D//2]
           # apply_split_rotary_emb handles reshaping query/key
 

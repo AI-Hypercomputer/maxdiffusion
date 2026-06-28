@@ -1383,7 +1383,7 @@ class NNXAttentionOp(nnx.Module):
       self,
       mesh: Mesh,
       attention_kernel: str,
-      scale: int,
+      scale: float,
       heads: int,
       dim_head: int,
       use_memory_efficient_attention: bool = False,
@@ -1475,7 +1475,7 @@ class NNXAttentionOp(nnx.Module):
 class AttentionOp(nn.Module):
   mesh: Mesh
   attention_kernel: str
-  scale: int
+  scale: float
   heads: int
   dim_head: int
   use_memory_efficient_attention: bool = False

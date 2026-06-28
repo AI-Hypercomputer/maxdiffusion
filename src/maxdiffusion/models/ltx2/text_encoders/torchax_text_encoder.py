@@ -20,10 +20,8 @@ import torch
 import jax
 from torchax import interop, default_env
 
-# --- Monkeypatch transformers masking_utils to avoid torchax integer tracing bug ---
+import contextlib
 import transformers.masking_utils
-
-_orig_sliding_window_overlay = transformers.masking_utils.sliding_window_overlay
 
 
 def _patched_sliding_window_overlay(sliding_window: int):
@@ -44,6 +42,16 @@ def _patched_sliding_window_overlay(sliding_window: int):
   return inner_mask
 
 
+@contextlib.contextmanager
+def patch_sliding_window_overlay():
+  orig = transformers.masking_utils.sliding_window_overlay
+  transformers.masking_utils.sliding_window_overlay = _patched_sliding_window_overlay
+  try:
+    yield
+  finally:
+    transformers.masking_utils.sliding_window_overlay = orig
+
+
 class TorchaxGemma3TextEncoder(interop.JittableModule):
   """
   A jittable Torchax module for wrapping the HuggingFace PyTorch
@@ -57,8 +65,7 @@ class TorchaxGemma3TextEncoder(interop.JittableModule):
       self, input_ids: jax.Array, attention_mask: jax.Array, output_hidden_states: bool = True
   ) -> Tuple[jax.Array, ...]:
     # Dynamically patch transformers.masking_utils only during the duration of this call
-    transformers.masking_utils.sliding_window_overlay = _patched_sliding_window_overlay
-    try:
+    with patch_sliding_window_overlay():
       with default_env():
         input_ids = interop.torch_view(input_ids)
         attention_mask = interop.torch_view(attention_mask)
@@ -72,9 +79,6 @@ class TorchaxGemma3TextEncoder(interop.JittableModule):
             output_hidden_states=output_hidden_states,
         )
       return interop.jax_view(output)
-    finally:
-      # Restore original behavior to prevent side effects on other potential models in same env
-      transformers.masking_utils.sliding_window_overlay = _orig_sliding_window_overlay
 
   @staticmethod
   def _forward_inner(model, input_ids, attention_mask, output_hidden_states=True):

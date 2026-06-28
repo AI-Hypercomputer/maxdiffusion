@@ -59,6 +59,11 @@ from ... import max_utils
 from ...max_utils import get_precision, device_put_replicated, get_flash_block_sizes
 
 
+@partial(jax.jit, static_argnums=(1,))
+def _enforce_layout(x, axes):
+  return jax.lax.with_sharding_constraint(x, axes)
+
+
 TORCH_DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "float16": torch.float16,
@@ -81,6 +86,8 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
   """
   std_text = jnp.std(noise_pred_text, axis=list(range(1, noise_pred_text.ndim)), keepdims=True)
   std_cfg = jnp.std(noise_cfg, axis=list(range(1, noise_cfg.ndim)), keepdims=True)
+  # Prevent division by zero
+  std_cfg = jnp.maximum(std_cfg, 1e-5)
   # rescale the results from guidance (fixes overexposure)
   noise_pred_rescaled = noise_cfg * (std_text / std_cfg)
   # mix with the original results from guidance by factor guidance_rescale to avoid "plain looking" images
@@ -855,6 +862,8 @@ class LTX2Pipeline:
 
     prompt = [p.strip() for p in prompt]
 
+    target_dtype = dtype if dtype is not None else jnp.bfloat16
+
     if self.text_encoder is not None:
       run_text_encoder_on_tpu = getattr(self.config, "run_text_encoder_on_tpu", False) if hasattr(self, "config") else False
       if run_text_encoder_on_tpu:
@@ -872,30 +881,31 @@ class LTX2Pipeline:
 
         # Distribute the batch dimension across available TPUs to prevent Softmax OOM
         # (reduces 512MB allocation down to 64MB per TPU for batch size 16)
-        devices = np.array(jax.devices())
-        num_shards = 1
-        for i in range(len(devices), 0, -1):
-          if text_input_ids.shape[0] % i == 0:
-            num_shards = i
-            break
-
-        if num_shards > 1:
-          mesh = Mesh(devices[:num_shards], axis_names=("batch",))
-          sharding = NamedSharding(mesh, P("batch"))
+        if hasattr(self, "mesh") and self.mesh is not None:
+          data_axis = self.mesh.axis_names[0]
+          sharding = NamedSharding(self.mesh, P(data_axis))
           text_input_ids = jax.device_put(text_input_ids, sharding)
           prompt_attention_mask = jax.device_put(prompt_attention_mask, sharding)
+        else:
+          devices = np.array(jax.devices())
+          num_shards = 1
+          for i in range(len(devices), 0, -1):
+            if text_input_ids.shape[0] % i == 0:
+              num_shards = i
+              break
+
+          if num_shards > 1:
+            mesh = Mesh(devices[:num_shards], axis_names=("batch",))
+            sharding = NamedSharding(mesh, P("batch"))
+            text_input_ids = jax.device_put(text_input_ids, sharding)
+            prompt_attention_mask = jax.device_put(prompt_attention_mask, sharding)
 
         # Torchax wrapper returns tuple of hidden states natively
         text_encoder_hidden_states = self.text_encoder(
             input_ids=text_input_ids, attention_mask=prompt_attention_mask, output_hidden_states=True
         )
 
-        prompt_embeds_list = []
-        # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
-        for state in text_encoder_hidden_states:
-          prompt_embeds_list.append(state.astype(jnp.bfloat16))
-
-        prompt_embeds = prompt_embeds_list
+        prompt_embeds = jax.tree.map(lambda x: x.astype(target_dtype), list(text_encoder_hidden_states))
         del text_encoder_hidden_states  # Free memory
 
         prompt_attention_mask = prompt_attention_mask.astype(jnp.bool_)
@@ -923,24 +933,15 @@ class LTX2Pipeline:
         text_encoder_hidden_states = text_encoder_outputs.hidden_states
         del text_encoder_outputs  # Free memory
 
-        prompt_embeds_list = []
-        # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
-        for state in text_encoder_hidden_states:
-          state_np = state.cpu().to(torch.float32).numpy()
-          prompt_embeds_list.append(jnp.array(state_np, dtype=jnp.bfloat16))
-
-        prompt_embeds = prompt_embeds_list
+        prompt_embeds = jax.tree.map(
+            lambda state: jnp.array(state.cpu().to(torch.float32).numpy(), dtype=target_dtype),
+            list(text_encoder_hidden_states),
+        )
         del text_encoder_hidden_states  # Free PyTorch tensor memory
 
         prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bool_)
     else:
       raise ValueError("`text_encoder` is required to encode prompts.")
-
-    if dtype is not None:
-      if isinstance(prompt_embeds, list):
-        prompt_embeds = [state.astype(dtype) for state in prompt_embeds]
-      else:
-        prompt_embeds = prompt_embeds.astype(dtype)
 
     if isinstance(prompt_embeds, list):
       _, seq_len, _ = prompt_embeds[0].shape
@@ -1235,6 +1236,9 @@ class LTX2Pipeline:
     else:
       # Fallback or expect noise to be handled otherwise?
       # pipeline prepare_latents typically generates noise.
+      max_logging.log(
+          "WARNING: No PRNG generator provided. Falling back to deterministic zero-seed noise (jax.random.key(0))."
+      )
       noise = jax.random.normal(jax.random.key(0), latents.shape, dtype=latents.dtype)  # Default fallback
 
     noised_latents = noise_scale * noise + (1 - noise_scale) * latents
@@ -1617,12 +1621,14 @@ class LTX2Pipeline:
       audio_embeds_sharded = audio_embeds
 
       if not self.transformer.scan_layers:
-        activation_axes = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
-        activation_axes_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
-        spec = NamedSharding(self.mesh, P(*activation_axes))
-        spec_audio = NamedSharding(self.mesh, P(*activation_axes_audio))
-        video_embeds_sharded = jax.device_put(video_embeds, spec)
-        audio_embeds_sharded = jax.device_put(audio_embeds, spec_audio)
+        with nn_partitioning.axis_rules(self.config.logical_axis_rules):
+          activation_axes = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+          activation_axes_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
+
+        latents_jax = _enforce_layout(latents_jax, activation_axes)
+        audio_latents_jax = _enforce_layout(audio_latents_jax, activation_axes_audio)
+        video_embeds_sharded = _enforce_layout(video_embeds_sharded, activation_axes)
+        audio_embeds_sharded = _enforce_layout(audio_embeds_sharded, activation_axes_audio)
       timesteps_jax = jnp.array(timesteps, dtype=jnp.float32)
 
       t0_denoise = time.perf_counter()
@@ -1657,6 +1663,8 @@ class LTX2Pipeline:
             self.scheduler.step,
             tuple(tuple(rule) if isinstance(rule, list) else rule for rule in self.config.logical_axis_rules),
             use_cross_timestep=use_cross_timestep,
+            do_cfg=do_cfg,
+            do_stg=do_stg,
         )
       else:
         # Old Python loop path
@@ -2047,14 +2055,6 @@ def transformer_forward_pass(
 @partial(
     jax.jit,
     static_argnames=(
-        "guidance_scale",
-        "stg_scale",
-        "modality_scale",
-        "guidance_rescale",
-        "audio_guidance_scale",
-        "audio_stg_scale",
-        "audio_modality_scale",
-        "audio_guidance_rescale",
         "latent_num_frames",
         "latent_height",
         "latent_width",
@@ -2065,6 +2065,8 @@ def transformer_forward_pass(
         "scheduler_step",
         "logical_axis_rules",
         "use_cross_timestep",
+        "do_cfg",
+        "do_stg",
     ),
 )
 def run_diffusion_loop(
@@ -2097,14 +2099,13 @@ def run_diffusion_loop(
     logical_axis_rules,
     perturbation_mask=None,
     use_cross_timestep=False,
+    do_cfg=False,
+    do_stg=False,
 ):
   """Runs the diffusion loop."""
   # pylint: disable=too-many-positional-arguments
   latents_jax = latents_jax.astype(jnp.float32)
   audio_latents_jax = audio_latents_jax.astype(jnp.float32)
-
-  do_cfg = guidance_scale > 1.0
-  do_stg = stg_scale > 0.0
 
   # Helper functions matching Diffusers Delta formulation
   def convert_to_x0(lat, vel, sigma_t):
@@ -2123,8 +2124,16 @@ def run_diffusion_loop(
 
       if not scan_layers:
         activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+        activation_axis_names_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
         latents_sharded = jax.lax.with_sharding_constraint(latents, activation_axis_names)
-        audio_latents_sharded = jax.lax.with_sharding_constraint(audio_latents, activation_axis_names)
+        audio_latents_sharded = jax.lax.with_sharding_constraint(audio_latents, activation_axis_names_audio)
+        video_embeds_sharded_constrained = jax.lax.with_sharding_constraint(video_embeds_sharded, activation_axis_names)
+        audio_embeds_sharded_constrained = jax.lax.with_sharding_constraint(
+            audio_embeds_sharded, activation_axis_names_audio
+        )
+      else:
+        video_embeds_sharded_constrained = video_embeds_sharded
+        audio_embeds_sharded_constrained = audio_embeds_sharded
 
       # Forward Pass
       noise_pred, noise_pred_audio = transformer_forward_pass(
@@ -2133,8 +2142,8 @@ def run_diffusion_loop(
           latents_sharded,
           audio_latents_sharded,
           t,
-          video_embeds_sharded,
-          audio_embeds_sharded,
+          video_embeds_sharded_constrained,
+          audio_embeds_sharded_constrained,
           new_attention_mask,
           new_attention_mask,
           latent_num_frames=latent_num_frames,
@@ -2177,8 +2186,11 @@ def run_diffusion_loop(
 
         x0_combined = x0_text + cfg_delta + stg_delta + video_modality_delta
 
-        if guidance_rescale > 0:
-          x0_combined = rescale_noise_cfg(x0_combined, x0_text, guidance_rescale=guidance_rescale)
+        x0_combined = jax.lax.cond(
+            guidance_rescale > 0,
+            lambda: rescale_noise_cfg(x0_combined, x0_text, guidance_rescale=guidance_rescale),
+            lambda: x0_combined,
+        )
 
         noise_pred = convert_to_vel(latents_step, x0_combined, sigma_t)
 
@@ -2204,8 +2216,11 @@ def run_diffusion_loop(
 
         x0_audio_combined = x0_audio_text + cfg_audio_delta + stg_audio_delta + audio_modality_delta
 
-        if audio_guidance_rescale > 0:
-          x0_audio_combined = rescale_noise_cfg(x0_audio_combined, x0_audio_text, guidance_rescale=audio_guidance_rescale)
+        x0_audio_combined = jax.lax.cond(
+            audio_guidance_rescale > 0,
+            lambda: rescale_noise_cfg(x0_audio_combined, x0_audio_text, guidance_rescale=audio_guidance_rescale),
+            lambda: x0_audio_combined,
+        )
 
         noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined, sigma_t)
 
@@ -2240,10 +2255,6 @@ def run_diffusion_loop(
   initial_carry = (latents_jax, audio_latents_jax, scheduler_state)
   scan_inputs = (timesteps_jax, sigmas)
 
-  final_carry, _ = nnx.scan(
-      scan_body,
-      in_axes=(nnx.Carry, 0),
-      out_axes=(nnx.Carry, 0),
-  )(initial_carry, scan_inputs)
+  final_carry, _ = jax.lax.scan(scan_body, initial_carry, scan_inputs)
 
   return final_carry[0], final_carry[1]
