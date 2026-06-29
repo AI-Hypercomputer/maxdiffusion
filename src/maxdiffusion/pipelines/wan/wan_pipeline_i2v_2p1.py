@@ -213,19 +213,17 @@ class WanPipelineI2V_2_1(WanPipeline):
         last_image,
     )
 
-    def _process_image_input(img_input, height, width, num_videos_per_prompt):
+    def _process_image_input(img_input, height, width):
       if img_input is None:
         return None
       tensor = self.video_processor.preprocess(img_input, height=height, width=width)
       jax_array = jnp.array(tensor.cpu().numpy())
       if jax_array.ndim == 3:
         jax_array = jax_array[None, ...]  # Add batch dimension
-      if num_videos_per_prompt > 1:
-        jax_array = jnp.repeat(jax_array, num_videos_per_prompt, axis=0)
       return jax_array
 
-    image_tensor = _process_image_input(image, height, width, effective_batch_size)
-    last_image_tensor = _process_image_input(last_image, height, width, effective_batch_size)
+    image_tensor = _process_image_input(image, height, width)
+    last_image_tensor = _process_image_input(last_image, height, width)
 
     if rng is None:
       rng = jax.random.key(self.config.seed)
@@ -352,6 +350,8 @@ def run_inference_2_1_i2v(
     image_embeds_combined = image_embeds
     condition_combined = condition
 
+  condition_combined = jnp.transpose(condition_combined, (0, 4, 1, 2, 3))
+
   transformer_obj = nnx.merge(graphdef, sharded_state, rest_of_state)
 
   # Compute RoPE once as it only depends on shape
@@ -373,10 +373,9 @@ def run_inference_2_1_i2v(
   )
 
   scan_diffusion_loop = getattr(config, "scan_diffusion_loop", False) if config else False
+  timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
 
   if scan_diffusion_loop and not use_magcache:
-    timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
-
     scheduler_state = scheduler_state.replace(last_sample=jnp.zeros_like(latents), step_index=jnp.array(0, dtype=jnp.int32))
 
     def scan_body(carry, t):
@@ -386,9 +385,9 @@ def run_inference_2_1_i2v(
       if do_cfg:
         latents_input = jnp.concatenate([current_latents, current_latents], axis=0)
 
-      latent_model_input = jnp.concatenate([latents_input, condition_combined], axis=-1)
+      latents_input = jnp.transpose(latents_input, (0, 4, 1, 2, 3))
+      latent_model_input = jnp.concatenate([latents_input, condition_combined], axis=1)
       timestep = jnp.broadcast_to(t, latents_input.shape[0])
-      latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
 
       outputs = transformer_forward_pass(
           graphdef,
@@ -429,7 +428,7 @@ def run_inference_2_1_i2v(
       profiler = max_utils.Profiler(config)
       profiler.start()
 
-    t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+    t = timesteps[step]
 
     skip_blocks = False
     if use_magcache and do_cfg:
@@ -446,9 +445,9 @@ def run_inference_2_1_i2v(
     if do_cfg:
       latents_input = jnp.concatenate([latents, latents], axis=0)
 
-    latent_model_input = jnp.concatenate([latents_input, condition_combined], axis=-1)
+    latents_input = jnp.transpose(latents_input, (0, 4, 1, 2, 3))
+    latent_model_input = jnp.concatenate([latents_input, condition_combined], axis=1)
     timestep = jnp.broadcast_to(t, latents_input.shape[0])
-    latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
 
     outputs = transformer_forward_pass(
         graphdef,

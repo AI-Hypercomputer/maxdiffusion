@@ -237,19 +237,17 @@ class WanPipelineI2V_2_2(WanPipeline):
         last_image,
     )
 
-    def _process_image_input(img_input, height, width, num_videos_per_prompt):
+    def _process_image_input(img_input, height, width):
       if img_input is None:
         return None
       tensor = self.video_processor.preprocess(img_input, height=height, width=width)
       jax_array = jnp.array(tensor.cpu().numpy())
       if jax_array.ndim == 3:
         jax_array = jax_array[None, ...]  # Add batch dimension
-      if num_videos_per_prompt > 1:
-        jax_array = jnp.repeat(jax_array, num_videos_per_prompt, axis=0)
       return jax_array
 
-    image_tensor = _process_image_input(image, height, width, effective_batch_size)
-    last_image_tensor = _process_image_input(last_image, height, width, effective_batch_size)
+    image_tensor = _process_image_input(image, height, width)
+    last_image_tensor = _process_image_input(last_image, height, width)
 
     if rng is None:
       rng = jax.random.key(self.config.seed)
@@ -373,6 +371,19 @@ def run_inference_2_2_i2v(
   do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
   bsz = latents.shape[0]
 
+  data_shards = 1
+  try:
+    if hasattr(latents, "sharding") and hasattr(latents.sharding, "mesh"):
+      data_shards = latents.sharding.mesh.shape["data"] * latents.sharding.mesh.shape.get("fsdp", 1)
+  except Exception:
+    pass
+
+  if use_cfg_cache and do_classifier_free_guidance and bsz % data_shards != 0:
+    max_logging.log(
+        f"Warning: Disabling CFG cache because batch size {bsz} is not divisible by data shards {data_shards}. This often happens with data_parallelism > 1 and per_device_batch_size = 1."
+    )
+    use_cfg_cache = False
+
   prompt_embeds_combined = (
       jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0) if do_classifier_free_guidance else prompt_embeds
   )
@@ -404,6 +415,8 @@ def run_inference_2_2_i2v(
         prompt_embeds_combined, image_embeds_combined
     )
 
+  timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
+
   # ── SenCache path (arXiv:2602.24208) ──
   if use_sen_cache and do_classifier_free_guidance:
     timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
@@ -422,18 +435,21 @@ def run_inference_2_2_i2v(
     num_train_timesteps = float(scheduler.config.num_train_timesteps)
 
     condition_doubled = jnp.concatenate([condition] * 2)
+    condition_doubled = jnp.transpose(condition_doubled, (0, 4, 1, 2, 3))
 
     # SenCache state
-    ref_noise_pred = None
-    ref_latent = None
-    ref_timestep = 0.0
-    accum_dx = 0.0
-    accum_dt = 0.0
-    reuse_count = 0
-    cache_count = 0
+    ref_noise_pred = jnp.zeros(
+        (bsz * 2, latents.shape[1], latents.shape[2], latents.shape[3], latents.shape[4]), dtype=latents.dtype
+    )
+    ref_latent = jnp.zeros_like(latents)
+    ref_timestep = jnp.array(0.0, dtype=jnp.float32)
+    accum_dx = jnp.array(0.0, dtype=jnp.float32)
+    accum_dt = jnp.array(0.0, dtype=jnp.float32)
+    reuse_count = jnp.array(0, dtype=jnp.int32)
+    cache_count = jnp.array(0, dtype=jnp.int32)
 
     for step in range(num_inference_steps):
-      t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+      t = timesteps[step]
       t_float = float(timesteps_np[step]) / num_train_timesteps
 
       if step_uses_high[step]:
@@ -462,8 +478,8 @@ def run_inference_2_2_i2v(
 
       if force_compute:
         latents_doubled = jnp.concatenate([latents, latents], axis=0)
-        latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=-1)
-        latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
+        latents_doubled = jnp.transpose(latents_doubled, (0, 4, 1, 2, 3))
+        latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=1)
         timestep = jnp.broadcast_to(t, bsz * 2)
         noise_pred, _, _ = transformer_forward_pass_full_cfg(
             graphdef,
@@ -481,10 +497,10 @@ def run_inference_2_2_i2v(
         noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
         ref_noise_pred = noise_pred
         ref_latent = latents
-        ref_timestep = t_float
-        accum_dx = 0.0
-        accum_dt = 0.0
-        reuse_count = 0
+        ref_timestep = jnp.array(t_float, dtype=jnp.float32)
+        accum_dx = jnp.array(0.0, dtype=jnp.float32)
+        accum_dt = jnp.array(0.0, dtype=jnp.float32)
+        reuse_count = jnp.array(0, dtype=jnp.int32)
         latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
         continue
 
@@ -501,8 +517,8 @@ def run_inference_2_2_i2v(
         cache_count += 1
       else:
         latents_doubled = jnp.concatenate([latents, latents], axis=0)
-        latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=-1)
-        latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
+        latents_doubled = jnp.transpose(latents_doubled, (0, 4, 1, 2, 3))
+        latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=1)
         timestep = jnp.broadcast_to(t, bsz * 2)
         noise_pred, _, _ = transformer_forward_pass_full_cfg(
             graphdef,
@@ -559,8 +575,9 @@ def run_inference_2_2_i2v(
       image_embeds_cond = None
 
     # Keep condition in both single and doubled forms
-    condition_cond = condition
+    condition_cond = jnp.transpose(condition, (0, 4, 1, 2, 3))
     condition_doubled = jnp.concatenate([condition] * 2)
+    condition_doubled = jnp.transpose(condition_doubled, (0, 4, 1, 2, 3))
 
     # Determine the first low-noise step
     first_low_step = next(
@@ -596,7 +613,7 @@ def run_inference_2_2_i2v(
     cached_noise_uncond = None
 
     for step in range(num_inference_steps):
-      t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+      t = timesteps[step]
       is_cache_step = step_is_cache[step]
 
       if step_uses_high[step]:
@@ -621,9 +638,9 @@ def run_inference_2_2_i2v(
       if is_cache_step:
         # ── Cache step: cond-only forward + FFT frequency compensation ──
         w1, w2 = step_w1w2[step]
-        # Prepare cond-only input: concat condition, transpose BFHWC -> BCFHW
-        latent_model_input = jnp.concatenate([latents, condition_cond], axis=-1)
-        latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
+        # Prepare cond-only input: transpose latents to BCFHW and concat with pre-transposed condition
+        latents_t = jnp.transpose(latents, (0, 4, 1, 2, 3))
+        latent_model_input = jnp.concatenate([latents_t, condition_cond], axis=1)
         timestep = jnp.broadcast_to(t, bsz)
         kv_cache_cond = jax.tree.map(lambda x: x[:, :bsz], kv_cache) if kv_cache is not None else None
         encoder_attention_mask_cond = encoder_attention_mask[:bsz] if encoder_attention_mask is not None else None
@@ -647,8 +664,8 @@ def run_inference_2_2_i2v(
       else:
         # ── Full CFG step: doubled batch, store raw cond/uncond for cache ──
         latents_doubled = jnp.concatenate([latents, latents], axis=0)
-        latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=-1)
-        latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
+        latents_doubled = jnp.transpose(latents_doubled, (0, 4, 1, 2, 3))
+        latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=1)
         timestep = jnp.broadcast_to(t, bsz * 2)
         (
             noise_pred,
@@ -685,7 +702,6 @@ def run_inference_2_2_i2v(
         mask_high,
         _,
     ) = operands
-    latents_input = jnp.transpose(latents_input, (0, 4, 1, 2, 3))
     noise_pred, latents_out = transformer_forward_pass(
         high_noise_graphdef,
         high_noise_state,
@@ -714,7 +730,6 @@ def run_inference_2_2_i2v(
         _,
         mask_low,
     ) = operands
-    latents_input = jnp.transpose(latents_input, (0, 4, 1, 2, 3))
     noise_pred, latents_out = transformer_forward_pass(
         low_noise_graphdef,
         low_noise_state,
@@ -733,6 +748,7 @@ def run_inference_2_2_i2v(
 
   if do_classifier_free_guidance:
     condition = jnp.concatenate([condition] * 2)
+  condition = jnp.transpose(condition, (0, 4, 1, 2, 3))
 
   first_profiling_step = config.skip_first_n_steps_for_profiler if config else 0
   profiler_steps = config.profiler_steps if config else 0
@@ -745,8 +761,6 @@ def run_inference_2_2_i2v(
   scan_diffusion_loop = getattr(config, "scan_diffusion_loop", False) if config else False
 
   if scan_diffusion_loop:
-    timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
-
     scheduler_state = scheduler_state.replace(last_sample=jnp.zeros_like(latents), step_index=jnp.array(0, dtype=jnp.int32))
 
     def scan_body(carry, t):
@@ -755,7 +769,8 @@ def run_inference_2_2_i2v(
       latents_input = current_latents
       if do_classifier_free_guidance:
         latents_input = jnp.concatenate([current_latents, current_latents], axis=0)
-      latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
+      latents_input = jnp.transpose(latents_input, (0, 4, 1, 2, 3))
+      latent_model_input = jnp.concatenate([latents_input, condition], axis=1)
       timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
       use_high_noise = jnp.greater_equal(t, boundary)
@@ -795,11 +810,12 @@ def run_inference_2_2_i2v(
       profiler = max_utils.Profiler(config)
       profiler.start()
 
-    t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+    t = timesteps[step]
     latents_input = latents
     if do_classifier_free_guidance:
       latents_input = jnp.concatenate([latents, latents], axis=0)
-    latent_model_input = jnp.concatenate([latents_input, condition], axis=-1)
+    latents_input = jnp.transpose(latents_input, (0, 4, 1, 2, 3))
+    latent_model_input = jnp.concatenate([latents_input, condition], axis=1)
     timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
     use_high_noise = jnp.greater_equal(t, boundary)

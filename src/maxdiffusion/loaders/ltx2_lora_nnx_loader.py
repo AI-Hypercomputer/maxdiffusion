@@ -76,8 +76,6 @@ class LTX2NNXLoraLoader(LoRABaseMixin):
     # the merge_fn warns about unmatched keys in each dict, so we only warn about any leftovers
     unmatched_keys = set(h_state_dict) - set(transformer_state_dict) - set(connector_state_dict)
     if unmatched_keys:
-      max_logging.log(
-          f"{len(unmatched_keys)} key(s) in LoRA dictionary routed to no merge target: {unmatched_keys}"
-      )
+      max_logging.log(f"{len(unmatched_keys)} key(s) in LoRA dictionary routed to no merge target: {unmatched_keys}")
 
     return pipeline

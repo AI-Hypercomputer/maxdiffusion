@@ -25,6 +25,7 @@ from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepSche
 import numpy as np
 import time
 from ... import max_utils
+from maxdiffusion import max_logging
 
 
 class WanPipeline2_1(WanPipeline):
@@ -101,6 +102,7 @@ class WanPipeline2_1(WanPipeline):
       magcache_K: Optional[int] = None,
       retention_ratio: Optional[float] = None,
       use_kv_cache: bool = False,
+      output_type: str = "pil",
   ):
     config = getattr(self, "config", None)
     if max_sequence_length is None:
@@ -170,6 +172,9 @@ class WanPipeline2_1(WanPipeline):
       latents.block_until_ready()
     trace["denoise_total"] = time.perf_counter() - t_denoise_start
 
+    if output_type == "latent":
+      return latents, trace
+
     t_decode_start = time.perf_counter()
     video = self._decode_latents_to_video(latents, trace=trace)
     if hasattr(video, "block_until_ready"):
@@ -222,6 +227,18 @@ def run_inference_2_1(
   do_cfg = guidance_scale > 1.0
   bsz = latents.shape[0]
 
+  data_shards = 1
+  try:
+    if hasattr(latents, "sharding") and hasattr(latents.sharding, "mesh"):
+      data_shards = latents.sharding.mesh.shape["data"] * latents.sharding.mesh.shape.get("fsdp", 1)
+  except Exception:
+    pass
+
+  if use_cfg_cache and do_cfg and bsz % data_shards != 0:
+    max_logging.log(
+        f"Warning: Disabling CFG cache because batch size {bsz} is not divisible by data shards {data_shards}. This often happens with data_parallelism > 1 and per_device_batch_size = 1."
+    )
+    use_cfg_cache = False
   # Resolution-dependent CFG cache config (FasterCache / MixCache guidance)
   if height >= 720:
     # 720p: conservative — protect last 40%, interval=5
@@ -306,10 +323,9 @@ def run_inference_2_1(
   )
 
   scan_diffusion_loop = getattr(config, "scan_diffusion_loop", False) if config else False
+  timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
 
   if scan_diffusion_loop and not use_magcache and not use_cfg_cache:
-    timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
-
     scheduler_state = scheduler_state.replace(last_sample=jnp.zeros_like(latents), step_index=jnp.array(0, dtype=jnp.int32))
 
     def scan_body(carry, t):
@@ -365,7 +381,7 @@ def run_inference_2_1(
       profiler = max_utils.Profiler(config)
       profiler.start()
 
-    t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+    t = timesteps[step]
 
     if use_magcache and do_cfg:
       timestep = jnp.broadcast_to(t, bsz * 2 if do_cfg else bsz)
