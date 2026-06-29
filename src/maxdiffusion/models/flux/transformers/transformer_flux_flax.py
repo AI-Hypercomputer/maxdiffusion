@@ -36,7 +36,6 @@ LENGTH = common_types.LENGTH
 HEAD = common_types.HEAD
 D_KV = common_types.D_KV
 
-
 @flax.struct.dataclass
 class Transformer2DModelOutput(BaseOutput):
   """
@@ -48,6 +47,43 @@ class Transformer2DModelOutput(BaseOutput):
   """
 
   sample: jnp.ndarray
+
+
+class FlaxSwiGLUFeedForward(nn.Module):
+  dim: int
+  dim_out: int
+  mult: float = 3.0
+  dtype: jnp.dtype = jnp.float32
+  weights_dtype: jnp.dtype = jnp.float32
+  precision: jax.lax.Precision = None
+
+  def setup(self):
+    inner_dim = int(self.dim * self.mult)
+    self.linear_in = nn.Dense(
+        inner_dim * 2,
+        use_bias=False,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+        name="linear_in",
+    )
+    self.linear_out = nn.Dense(
+        self.dim_out,
+        use_bias=False,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+        precision=self.precision,
+        name="linear_out",
+    )
+
+  def __call__(self, x):
+    x = self.linear_in(x)
+    x1, x2 = jnp.split(x, 2, axis=-1)
+    x = nn.silu(x1) * x2
+    x = self.linear_out(x)
+    return x
 
 
 class FluxSingleTransformerBlock(nn.Module):
@@ -75,16 +111,29 @@ class FluxSingleTransformerBlock(nn.Module):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
+  use_global_modulation: bool = False # Added flag!
+  use_swiglu: bool = False # Added flag!
 
   def setup(self):
     self.mlp_hidden_dim = int(self.dim * self.mlp_ratio)
 
-    self.norm = AdaLayerNormZeroSingle(
-        self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
-    )
+    if self.use_global_modulation:
+      self.norm = nn.LayerNorm(
+          use_bias=False,
+          use_scale=False,
+          epsilon=1e-6,
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+      )
+    else:
+      self.norm = AdaLayerNormZeroSingle(
+          self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
+      )
 
+    out_dim = self.dim * 3 + (2 * self.mlp_hidden_dim if self.use_swiglu else self.mlp_hidden_dim)
     self.linear1 = nn.Dense(
-        self.dim * 3 + self.mlp_hidden_dim,
+        out_dim,
+        use_bias=not self.use_swiglu,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
         bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
         dtype=self.dtype,
@@ -95,6 +144,7 @@ class FluxSingleTransformerBlock(nn.Module):
     self.mlp_act = nn.gelu
     self.linear2 = nn.Dense(
         self.dim,
+        use_bias=not self.use_swiglu,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
         bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
         dtype=self.dtype,
@@ -112,9 +162,19 @@ class FluxSingleTransformerBlock(nn.Module):
         flash_block_sizes=self.flash_block_sizes,
     )
 
-  def __call__(self, hidden_states, temb, image_rotary_emb=None):
+  def __call__(self, hidden_states, temb=None, image_rotary_emb=None, temb_mod=None):
     residual = hidden_states
-    norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
+    if self.use_global_modulation:
+      shift_msa, scale_msa, gate = jnp.split(temb_mod, 3, axis=-1)
+      # Unsqueeze sequence dimension for broadcasting when batch_size > 1
+      shift_msa = jnp.expand_dims(shift_msa, axis=1)
+      scale_msa = jnp.expand_dims(scale_msa, axis=1)
+      gate = jnp.expand_dims(gate, axis=1)
+      
+      norm_hidden_states = self.norm(hidden_states)
+      norm_hidden_states = (1 + scale_msa) * norm_hidden_states + shift_msa
+    else:
+      norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
     qkv, mlp = jnp.split(self.linear1(norm_hidden_states), [3 * self.dim], axis=-1)
     mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
     qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
@@ -139,7 +199,13 @@ class FluxSingleTransformerBlock(nn.Module):
 
     attn_output = self.attn.attention_op.apply_attention(q, k, v)
 
-    attn_mlp = jnp.concatenate([attn_output, self.mlp_act(mlp)], axis=2)
+    if self.use_swiglu:
+      mlp1, mlp2 = jnp.split(mlp, 2, axis=-1)
+      mlp_activated = nn.silu(mlp1) * mlp2
+    else:
+      mlp_activated = self.mlp_act(mlp)
+
+    attn_mlp = jnp.concatenate([attn_output, mlp_activated], axis=2)
     attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
     hidden_states = self.linear2(attn_mlp)
     hidden_states = gate * hidden_states
@@ -178,10 +244,16 @@ class FluxTransformerBlock(nn.Module):
   mlp_ratio: float = 4.0
   qkv_bias: bool = False
   attention_kernel: str = "dot_product"
+  use_global_modulation: bool = False # Added flag!
+  use_swiglu: bool = False # Added flag!
 
   def setup(self):
-    self.img_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
-    self.txt_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
+    if self.use_global_modulation:
+      self.img_norm1 = nn.LayerNorm(use_bias=False, use_scale=False, epsilon=self.eps, dtype=self.dtype, param_dtype=self.weights_dtype)
+      self.txt_norm1 = nn.LayerNorm(use_bias=False, use_scale=False, epsilon=self.eps, dtype=self.dtype, param_dtype=self.weights_dtype)
+    else:
+      self.img_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
+      self.txt_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
 
     self.attn = FlaxFluxAttention(
         query_dim=self.dim,
@@ -202,27 +274,38 @@ class FluxTransformerBlock(nn.Module):
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
     )
-    self.img_mlp = nn.Sequential([
-        nn.Dense(
-            int(self.dim * self.mlp_ratio),
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-        nn.gelu,
-        nn.Dense(
-            self.dim,
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-    ])
+    if self.use_swiglu:
+      self.img_mlp = FlaxSwiGLUFeedForward(
+          dim=self.dim,
+          dim_out=self.dim,
+          mult=self.mlp_ratio,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="img_mlp",
+      )
+    else:
+      self.img_mlp = nn.Sequential([
+          nn.Dense(
+              int(self.dim * self.mlp_ratio),
+              use_bias=True,
+              kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+              bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+              dtype=self.dtype,
+              param_dtype=self.weights_dtype,
+              precision=self.precision,
+          ),
+          nn.gelu,
+          nn.Dense(
+              self.dim,
+              use_bias=True,
+              kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+              bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+              dtype=self.dtype,
+              param_dtype=self.weights_dtype,
+              precision=self.precision,
+          ),
+      ], name="img_mlp")
 
     self.txt_norm2 = nn.LayerNorm(
         use_bias=False,
@@ -231,38 +314,74 @@ class FluxTransformerBlock(nn.Module):
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
     )
-    self.txt_mlp = nn.Sequential([
-        nn.Dense(
-            int(self.dim * self.mlp_ratio),
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-        nn.gelu,
-        nn.Dense(
-            self.dim,
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-    ])
+    if self.use_swiglu:
+      self.txt_mlp = FlaxSwiGLUFeedForward(
+          dim=self.dim,
+          dim_out=self.dim,
+          mult=self.mlp_ratio,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="txt_mlp",
+      )
+    else:
+      self.txt_mlp = nn.Sequential([
+          nn.Dense(
+              int(self.dim * self.mlp_ratio),
+              use_bias=True,
+              kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+              bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+              dtype=self.dtype,
+              param_dtype=self.weights_dtype,
+              precision=self.precision,
+          ),
+          nn.gelu,
+          nn.Dense(
+              self.dim,
+              use_bias=True,
+              kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+              bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+              dtype=self.dtype,
+              param_dtype=self.weights_dtype,
+              precision=self.precision,
+          ),
+      ], name="txt_mlp")
 
     # let chunk size default to None
     self._chunk_size = None
     self._chunk_dim = 0
 
-  def __call__(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb=None):
-    norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.img_norm1(hidden_states, emb=temb)
-
-    norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.txt_norm1(
-        encoder_hidden_states, emb=temb
-    )
+  def __call__(self, hidden_states, encoder_hidden_states, temb=None, image_rotary_emb=None,
+               temb_mod_img=None, temb_mod_txt=None):
+    if self.use_global_modulation:
+      (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp) = jnp.split(temb_mod_img, 6, axis=-1)
+      (c_shift_msa, c_scale_msa, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp) = jnp.split(temb_mod_txt, 6, axis=-1)
+      
+      # Unsqueeze sequence dimension for broadcasting when batch_size > 1
+      shift_msa = jnp.expand_dims(shift_msa, axis=1)
+      scale_msa = jnp.expand_dims(scale_msa, axis=1)
+      gate_msa = jnp.expand_dims(gate_msa, axis=1)
+      shift_mlp = jnp.expand_dims(shift_mlp, axis=1)
+      scale_mlp = jnp.expand_dims(scale_mlp, axis=1)
+      gate_mlp = jnp.expand_dims(gate_mlp, axis=1)
+      
+      c_shift_msa = jnp.expand_dims(c_shift_msa, axis=1)
+      c_scale_msa = jnp.expand_dims(c_scale_msa, axis=1)
+      c_gate_msa = jnp.expand_dims(c_gate_msa, axis=1)
+      c_shift_mlp = jnp.expand_dims(c_shift_mlp, axis=1)
+      c_scale_mlp = jnp.expand_dims(c_scale_mlp, axis=1)
+      c_gate_mlp = jnp.expand_dims(c_gate_mlp, axis=1)
+      
+      norm_hidden_states = self.img_norm1(hidden_states)
+      norm_hidden_states = (1 + scale_msa) * norm_hidden_states + shift_msa
+      
+      norm_encoder_hidden_states = self.txt_norm1(encoder_hidden_states)
+      norm_encoder_hidden_states = (1 + c_scale_msa) * norm_encoder_hidden_states + c_shift_msa
+    else:
+      norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.img_norm1(hidden_states, emb=temb)
+      norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.txt_norm1(
+          encoder_hidden_states, emb=temb
+      )
 
     # Attention.
     attn_output, context_attn_output = self.attn(
@@ -342,6 +461,11 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   theta: int = 1000
   attention_kernel: str = "dot_product"
   eps = 1e-6
+  joint_attention_bias: bool = True
+  x_embedder_bias: bool = True
+  proj_out_bias: bool = True
+  use_global_modulation: bool = False # Added config flag!
+  use_swiglu: bool = False # Added config flag!
 
   def setup(self):
     self.out_channels = self.in_channels
@@ -362,6 +486,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     )
     self.txt_in = nn.Dense(
         self.inner_dim,
+        use_bias=self.joint_attention_bias,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), (None, "mlp")),
         bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
         dtype=self.dtype,
@@ -370,12 +495,42 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     )
     self.img_in = nn.Dense(
         self.inner_dim,
+        use_bias=self.x_embedder_bias,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), (None, "mlp")),
         bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         precision=self.precision,
     )
+
+    if self.use_global_modulation:
+      self.double_stream_modulation_img = nn.Dense(
+          6 * self.inner_dim,
+          use_bias=False,
+          kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="double_stream_modulation_img",
+      )
+      self.double_stream_modulation_txt = nn.Dense(
+          6 * self.inner_dim,
+          use_bias=False,
+          kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="double_stream_modulation_txt",
+      )
+      self.single_stream_modulation = nn.Dense(
+          3 * self.inner_dim,
+          use_bias=False,
+          kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="single_stream_modulation",
+      )
 
     double_blocks = []
     for _ in range(self.num_layers):
@@ -392,6 +547,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           precision=self.precision,
           mlp_ratio=self.mlp_ratio,
           qkv_bias=self.qkv_bias,
+          use_global_modulation=self.use_global_modulation,
+          use_swiglu=self.use_swiglu,
       )
       double_blocks.append(double_block)
     self.double_blocks = double_blocks
@@ -410,6 +567,8 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           weights_dtype=self.weights_dtype,
           precision=self.precision,
           mlp_ratio=self.mlp_ratio,
+          use_global_modulation=self.use_global_modulation,
+          use_swiglu=self.use_swiglu,
       )
       single_blocks.append(single_block)
 
@@ -431,7 +590,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         precision=self.precision,
-        use_bias=True,
+        use_bias=self.proj_out_bias,
     )
 
   def timestep_embedding(self, t: jax.Array, dim: int, max_period=10000, time_factor: float = 1000.0) -> jax.Array:
@@ -451,9 +610,9 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     t = time_factor * t
     half = dim // 2
 
-    freqs = jnp.exp(-math.log(max_period) * jnp.arange(start=0, stop=half, dtype=jnp.bfloat16) / half).astype(dtype=t.dtype)
+    freqs = jnp.exp(-math.log(max_period) * jnp.arange(start=0, stop=half, dtype=t.dtype) / half)
 
-    args = t[:, None].astype(jnp.bfloat16) * freqs[None]
+    args = t[:, None] * freqs[None]
     embedding = jnp.concatenate([jnp.cos(args), jnp.sin(args)], axis=-1)
 
     if dim % 2:
@@ -475,14 +634,15 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       guidance,
       return_dict: bool = True,
       train: bool = False,
+      return_intermediates: bool = False,
   ):
     hidden_states = self.img_in(hidden_states)
-    timestep = self.timestep_embedding(timestep, 256)
+    timestep = self.timestep_embedding(timestep, 256, time_factor=1.0)
 
     timestep = nn.with_logical_constraint(timestep, ("activation_batch", None))
 
     if self.guidance_embeds:
-      guidance = self.timestep_embedding(guidance, 256)
+      guidance = self.timestep_embedding(guidance, 256, time_factor=1.0)
     else:
       guidance = None
     temb = (
@@ -492,6 +652,14 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     )
 
     temb = nn.with_logical_constraint(temb, ("activation_batch", None))
+
+    if self.use_global_modulation:
+      temb_silu = nn.silu(temb)
+      double_stream_mod_img = self.double_stream_modulation_img(temb_silu)
+      double_stream_mod_txt = self.double_stream_modulation_txt(temb_silu)
+      single_stream_mod = self.single_stream_modulation(temb_silu)
+    else:
+      double_stream_mod_img, double_stream_mod_txt, single_stream_mod = None, None, None
 
     encoder_hidden_states = self.txt_in(encoder_hidden_states)
     if txt_ids.ndim == 3:
@@ -504,21 +672,52 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     image_rotary_emb = self.pe_embedder(ids)
     image_rotary_emb = nn.with_logical_constraint(image_rotary_emb, (None, None))
 
+    # Initialize intermediates collection if requested
+    intermediates = {}
+    if return_intermediates:
+      intermediates["temb"] = temb
+      intermediates["global_modulation"] = (double_stream_mod_img, double_stream_mod_txt, single_stream_mod)
+      intermediates["double_block_inputs"] = []
+      intermediates["double_block_outputs"] = []
+      intermediates["single_block_outputs"] = []
+
     for double_block in self.double_blocks:
+      if return_intermediates:
+        intermediates["double_block_inputs"].append((hidden_states, encoder_hidden_states))
       hidden_states, encoder_hidden_states = double_block(
           hidden_states=hidden_states,
           encoder_hidden_states=encoder_hidden_states,
           temb=temb,
           image_rotary_emb=image_rotary_emb,
+          temb_mod_img=double_stream_mod_img,
+          temb_mod_txt=double_stream_mod_txt,
       )
+      if return_intermediates:
+        intermediates["double_block_outputs"].append((hidden_states, encoder_hidden_states))
+
     hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
     hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
+    
     for single_block in self.single_blocks:
-      hidden_states = single_block(hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb)
+      hidden_states = single_block(
+          hidden_states=hidden_states,
+          temb=temb,
+          image_rotary_emb=image_rotary_emb,
+          temb_mod=single_stream_mod,
+      )
+      if return_intermediates:
+        intermediates["single_block_outputs"].append(hidden_states)
+
+    if return_intermediates:
+      intermediates["before_split"] = hidden_states
+
     hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
     hidden_states = self.norm_out(hidden_states, temb)
     output = self.proj_out(hidden_states)
+
+    if return_intermediates:
+      return output, intermediates
 
     if not return_dict:
       return (output,)

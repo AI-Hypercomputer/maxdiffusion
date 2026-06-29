@@ -93,6 +93,8 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
       inverse_timesteps: bool = False,
       extra_one_step: bool = False,
       reverse_sigmas: bool = False,
+      use_dynamic_shifting: bool = False,
+      time_shift_type: str = "linear",
       dtype: jnp.dtype = jnp.float32,
   ):
     self.dtype = dtype
