@@ -32,6 +32,23 @@ from maxdiffusion.models.vae_flax import FlaxAutoencoderKL
 from maxdiffusion.models.qwen3_flax import FlaxQwen3Config, FlaxQwen3Model, load_and_convert_qwen3_weights
 
 # -----------------------------------------------------------------------------
+# FlowMatch Scheduler Helpers
+# -----------------------------------------------------------------------------
+
+def compute_empirical_mu(image_seq_len: int, num_steps: int) -> float:
+    a1, b1 = 8.73809524e-05, 1.89833333
+    a2, b2 = 0.00016927, 0.45666666
+    if image_seq_len > 4300:
+        mu = a2 * image_seq_len + b2
+        return float(mu)
+    m_200 = a2 * image_seq_len + b2
+    m_10 = a1 * image_seq_len + b1
+    a = (m_200 - m_10) / 190.0
+    b = m_200 - 200.0 * a
+    mu = a * num_steps + b
+    return float(mu)
+
+# -----------------------------------------------------------------------------
 # Latent Packing & Unpacking Helpers
 # -----------------------------------------------------------------------------
 
@@ -875,7 +892,6 @@ def main(argv):
 
     # 8. Set up Flow Match Scheduler
     from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler
-    from diffusers.pipelines.flux2.pipeline_flux2 import compute_empirical_mu
     
     print("Setting up FlowMatch Scheduler...")
     num_inference_steps = 4
