@@ -661,9 +661,16 @@ def main(argv):
     )
     
     # 6. Locate cached PyTorch weights
-    cache_dir = "/mnt/data/hf_cache/hub/models--black-forest-labs--FLUX.2-klein-4B/snapshots"
+    hf_home = os.environ.get("HF_HOME")
+    if not hf_home:
+        if os.path.exists("/mnt/data/hf_cache"):
+            hf_home = "/mnt/data/hf_cache"
+        else:
+            hf_home = os.path.expanduser("~/.cache/huggingface")
+            
+    cache_dir = os.path.join(hf_home, "hub", "models--black-forest-labs--FLUX.2-klein-4B", "snapshots")
     if not os.path.exists(cache_dir):
-        raise FileNotFoundError(f"Hugging Face cache directory not found: {cache_dir}")
+        raise FileNotFoundError(f"Hugging Face cache directory not found: {cache_dir}. Please ensure HF_HOME is set correctly.")
     snapshots = os.listdir(cache_dir)
     if not snapshots:
         raise FileNotFoundError("No snapshots found in Hugging Face cache directory.")
