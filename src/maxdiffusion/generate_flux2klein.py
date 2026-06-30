@@ -22,6 +22,7 @@ import flax
 from flax.linen import partitioning as nn_partitioning
 
 from maxdiffusion import pyconfig
+import flax.linen as nn
 from maxdiffusion.max_utils import create_device_mesh
 from jax.sharding import Mesh
 
@@ -251,8 +252,8 @@ def encode_prompt(
 
 def encode_prompt_jax(
     prompt: Union[str, List[str]],
-    qwen3_model,
     qwen3_params,
+    jitted_qwen3_fn,
     repo_id: str = "black-forest-labs/FLUX.2-klein-4B",
     max_sequence_length: int = 512,
 ):
@@ -295,15 +296,7 @@ def encode_prompt_jax(
     input_ids = jnp.array(inputs["input_ids"])
     attention_mask = jnp.array(inputs["attention_mask"])
     
-    @jax.jit
-    def jitted_qwen3(q_params, ids, mask):
-        return qwen3_model.apply(
-            {"params": q_params},
-            input_ids=ids,
-            attention_mask=mask,
-        )
-        
-    hidden_states, all_hidden_states = jitted_qwen3(qwen3_params, input_ids, attention_mask)
+    hidden_states, all_hidden_states = jitted_qwen3_fn(qwen3_params, input_ids, attention_mask)
     
     # Extract layers 8, 17, 26 (indices 9, 18, 27 in all_hidden_states)
     h_9 = all_hidden_states[9]
@@ -678,29 +671,90 @@ def main(argv):
     safetensors_path = os.path.join(snapshot_dir, "transformer", "diffusion_pytorch_model.safetensors")
     vae_safetensors_path = os.path.join(snapshot_dir, "vae", "diffusion_pytorch_model.safetensors")
     
-    # 7. Initialize JAX parameters and load weights for all models (Flux, VAE, Qwen3)
-    print("Initializing JAX parameters and loading PyTorch weights...")
+    # 7. Evaluate shapes and extract TPU shardings using jax.eval_shape
+    print("Evaluating shapes and extracting TPU shardings...")
+    
+    # Determine sequence lengths based on resolution
+    h_packed = height // 16
+    w_packed = width // 16
+    seq_len_img = h_packed * w_packed
+    seq_len_txt = config.max_sequence_length
+
+    # Define dummy inputs once for reuse
+    img_dummy = jnp.zeros((batch_size, seq_len_img, 128))
+    img_ids_dummy = jnp.zeros((batch_size, seq_len_img, 4))
+    txt_dummy = jnp.zeros((batch_size, seq_len_txt, 7680))
+    txt_ids_dummy = jnp.zeros((batch_size, seq_len_txt, 4))
+    vec_dummy = jnp.zeros((batch_size, 768))
+    t_vec_dummy = jnp.zeros((batch_size,))
+    guidance_vec_dummy = jnp.zeros((batch_size,))
+    dummy_img = jnp.zeros((batch_size, 3, 512, 512)) # for VAE
+    
+    # Initialize JAX Qwen3 Config & Model (needed for shape eval)
+    from transformers import AutoConfig
+    text_encoder_path = os.path.join(snapshot_dir, "text_encoder")
+    print(f"Loading Qwen3 config from text_encoder path: {text_encoder_path}...")
+    pt_config = AutoConfig.from_pretrained(text_encoder_path, local_files_only=True)
+
+    qwen3_config = FlaxQwen3Config(
+        vocab_size=pt_config.vocab_size,
+        hidden_size=pt_config.hidden_size,
+        intermediate_size=pt_config.intermediate_size,
+        num_hidden_layers=pt_config.num_hidden_layers,
+        num_attention_heads=pt_config.num_attention_heads,
+        num_key_value_heads=pt_config.num_key_value_heads,
+        max_position_embeddings=pt_config.max_position_embeddings,
+        rms_norm_eps=pt_config.rms_norm_eps,
+        rope_theta=pt_config.rope_theta,
+        dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
+    )
+    qwen3_model = FlaxQwen3Model(qwen3_config)
+
+    # Dummy inputs for Qwen3 init
+    dummy_ids = jnp.zeros((batch_size, seq_len_txt), dtype=jnp.int32)
+    dummy_mask = jnp.zeros((batch_size, seq_len_txt), dtype=jnp.int32)
+
+    key = jax.random.PRNGKey(0)
+    key, vae_key, qwen_key = jax.random.split(key, 3)
+
+    def transformer_init_fn():
+        return transformer.init(
+            key,
+            hidden_states=img_dummy,
+            img_ids=img_ids_dummy,
+            encoder_hidden_states=txt_dummy,
+            txt_ids=txt_ids_dummy,
+            pooled_projections=vec_dummy,
+            timestep=t_vec_dummy,
+            guidance=guidance_vec_dummy,
+        )
+    def vae_init_fn():
+        return vae.init(vae_key, dummy_img)
+    def qwen3_init_fn():
+        return qwen3_model.init(qwen_key, dummy_ids, dummy_mask)
+
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+        abstract_transformer_vars = jax.eval_shape(transformer_init_fn)
+        abstract_vae_vars = jax.eval_shape(vae_init_fn)
+        abstract_qwen3_vars = jax.eval_shape(qwen3_init_fn)
+        
+        logical_transformer_specs = nn.get_partition_spec(abstract_transformer_vars)
+        logical_vae_specs = nn.get_partition_spec(abstract_vae_vars)
+        logical_qwen3_specs = nn.get_partition_spec(abstract_qwen3_vars)
+        
+        transformer_mesh_shardings = nn.logical_to_mesh_sharding(logical_transformer_specs, mesh, config.logical_axis_rules)
+        vae_mesh_shardings = nn.logical_to_mesh_sharding(logical_vae_specs, mesh, config.logical_axis_rules)
+        qwen3_mesh_shardings = nn.logical_to_mesh_sharding(logical_qwen3_specs, mesh, config.logical_axis_rules)
+        
+    transformer_shardings = flax.core.freeze(transformer_mesh_shardings['params'])
+    vae_shardings = flax.core.freeze(vae_mesh_shardings['params'])
+    qwen3_shardings = flax.core.freeze(qwen3_mesh_shardings['params'])
+
+    # 8. Initialize JAX parameters on CPU
+    print("Initializing JAX parameters on CPU...")
     cpu_device = jax.devices("cpu")[0]
     with jax.default_device(cpu_device):
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-            # Determine sequence lengths based on resolution
-            h_packed = height // 16
-            w_packed = width // 16
-            seq_len_img = h_packed * w_packed
-            seq_len_txt = config.max_sequence_length
-
-            # Dummy inputs for transformer init
-            img_dummy = jnp.zeros((batch_size, seq_len_img, 128))
-            img_ids_dummy = jnp.zeros((batch_size, seq_len_img, 4))
-            txt_dummy = jnp.zeros((batch_size, seq_len_txt, 7680))
-            txt_ids_dummy = jnp.zeros((batch_size, seq_len_txt, 4))
-            vec_dummy = jnp.zeros((batch_size, 768))
-            t_vec_dummy = jnp.zeros((batch_size,))
-            guidance_vec_dummy = jnp.zeros((batch_size,))
-
-            key = jax.random.PRNGKey(0)
-            key, vae_key, qwen_key = jax.random.split(key, 3)
-
             # Initialize Transformer
             variables = transformer.init(
                 key,
@@ -715,35 +769,11 @@ def main(argv):
             params = variables["params"]
 
             # Initialize VAE
-            dummy_img = jnp.zeros((batch_size, 3, 512, 512))
             vae_variables = vae.init(vae_key, dummy_img)
             vae_params = vae_variables["params"]
 
-            # Initialize JAX Qwen3 Config & Model
-            from transformers import AutoConfig
-            text_encoder_path = os.path.join(snapshot_dir, "text_encoder")
-            print(f"Loading Qwen3 config from text_encoder path: {text_encoder_path}...")
-            pt_config = AutoConfig.from_pretrained(text_encoder_path, local_files_only=True)
-
-            qwen3_config = FlaxQwen3Config(
-                vocab_size=pt_config.vocab_size,
-                hidden_size=pt_config.hidden_size,
-                intermediate_size=pt_config.intermediate_size,
-                num_hidden_layers=pt_config.num_hidden_layers,
-                num_attention_heads=pt_config.num_attention_heads,
-                num_key_value_heads=pt_config.num_key_value_heads,
-                max_position_embeddings=pt_config.max_position_embeddings,
-                rms_norm_eps=pt_config.rms_norm_eps,
-                rope_theta=pt_config.rope_theta,
-                dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
-            )
-
-            qwen3_model = FlaxQwen3Model(qwen3_config)
-
             # Initialize Qwen3 parameters
             print("Initializing JAX Qwen3 parameters...")
-            dummy_ids = jnp.zeros((batch_size, seq_len_txt), dtype=jnp.int32)
-            dummy_mask = jnp.zeros((batch_size, seq_len_txt), dtype=jnp.int32)
             qwen3_variables = qwen3_model.init(qwen_key, dummy_ids, dummy_mask)
             qwen3_params = qwen3_variables["params"]
 
@@ -789,6 +819,8 @@ def main(argv):
             vae_params = flax.core.freeze(vae_params)
             qwen3_params = flax.core.freeze(qwen3_params)
 
+
+
             # Dynamic Offloading Auto-Detection
             device = jax.devices()[0]
             device_kind = device.device_kind
@@ -814,10 +846,9 @@ def main(argv):
                 print("\n" + "="*80)
                 print("🚀 Dynamic parameter offloading disabled. Moving all parameters to TPU HBM permanently...")
                 print("="*80 + "\n")
-                tpu_device = jax.devices("tpu")[0]
-                params = jax.device_put(params, tpu_device)
-                vae_params = jax.device_put(vae_params, tpu_device)
-                qwen3_params = jax.device_put(qwen3_params, tpu_device)
+                params = jax.device_put(params, transformer_shardings)
+                vae_params = jax.device_put(vae_params, vae_shardings)
+                qwen3_params = jax.device_put(qwen3_params, qwen3_shardings)
                 
                 import gc
                 gc.collect()
@@ -878,6 +909,14 @@ def main(argv):
             latents=latents_unpatched,
             method=vae.decode,
         )
+
+    @jax.jit
+    def jitted_qwen3(q_params, ids, mask):
+        return qwen3_model.apply(
+            {"params": q_params},
+            input_ids=ids,
+            attention_mask=mask,
+        )
         
     # Define a reusable generation function
     def run_generation(current_prompts: List[str], output_name: str, measure_time: bool = False):
@@ -896,16 +935,16 @@ def main(argv):
             
         if dynamic_offload:
             print("  Moving Qwen3 parameters to TPU HBM...")
-            q_params_tpu = jax.device_put(qwen3_params, tpu_device)
+            q_params_tpu = jax.device_put(qwen3_params, qwen3_shardings)
         else:
             q_params_tpu = qwen3_params
             
         # Run JAX Qwen3 forward pass
         prompt_embeds_jax = encode_prompt_jax(
             current_prompts,
-            qwen3_model=qwen3_model,
             qwen3_params=q_params_tpu,
-            repo_id=config.pretrained_model_name_or_path,
+            jitted_qwen3_fn=jitted_qwen3,
+            repo_id=snapshot_dir,
             max_sequence_length=config.max_sequence_length,
         )
         
@@ -931,7 +970,7 @@ def main(argv):
             
         if dynamic_offload:
             print("  Moving Flux Transformer parameters to TPU HBM...")
-            t_params_tpu = jax.device_put(params, tpu_device)
+            t_params_tpu = jax.device_put(params, transformer_shardings)
         else:
             t_params_tpu = params
             
@@ -1003,7 +1042,7 @@ def main(argv):
             
         if dynamic_offload:
             print("  Moving VAE parameters to TPU HBM...")
-            v_params_tpu = jax.device_put(vae_params, tpu_device)
+            v_params_tpu = jax.device_put(vae_params, vae_shardings)
         else:
             v_params_tpu = vae_params
             
