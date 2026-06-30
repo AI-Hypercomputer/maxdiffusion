@@ -660,20 +660,32 @@ def main(argv):
         dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
     )
     
-    # 6. Locate cached PyTorch weights
+    # 6. Locate cached PyTorch weights (with automatic download if missing)
     hf_home = os.environ.get("HF_HOME")
     if not hf_home:
         if os.path.exists("/mnt/data/hf_cache"):
             hf_home = "/mnt/data/hf_cache"
+            # Set it in the environment so downstream HF loaders use it
+            os.environ["HF_HOME"] = hf_home
         else:
             hf_home = os.path.expanduser("~/.cache/huggingface")
             
-    cache_dir = os.path.join(hf_home, "hub", "models--black-forest-labs--FLUX.2-klein-4B", "snapshots")
+    repo_id = "black-forest-labs/FLUX.2-klein-4B"
+    cache_dir = os.path.join(hf_home, "hub", f"models--{repo_id.replace('/', '--')}", "snapshots")
+    
+    if not os.path.exists(cache_dir) or not os.listdir(cache_dir):
+        print(f"\n📢 Model cache not found at {cache_dir}.")
+        print(f"🚀 Downloading '{repo_id}' from Hugging Face Hub (this may take a few minutes)...")
+        from huggingface_hub import snapshot_download
+        # This will automatically use the resolved HF_HOME env var
+        snapshot_download(repo_id=repo_id, local_files_only=False)
+        
     if not os.path.exists(cache_dir):
-        raise FileNotFoundError(f"Hugging Face cache directory not found: {cache_dir}. Please ensure HF_HOME is set correctly.")
+        raise FileNotFoundError(f"Hugging Face cache directory still not found after download: {cache_dir}")
+        
     snapshots = os.listdir(cache_dir)
     if not snapshots:
-        raise FileNotFoundError("No snapshots found in Hugging Face cache directory.")
+        raise FileNotFoundError(f"No snapshots found in Hugging Face cache directory: {cache_dir}")
     snapshot_dir = os.path.join(cache_dir, snapshots[0])
     safetensors_path = os.path.join(snapshot_dir, "transformer", "diffusion_pytorch_model.safetensors")
     vae_safetensors_path = os.path.join(snapshot_dir, "vae", "diffusion_pytorch_model.safetensors")
