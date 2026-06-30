@@ -83,7 +83,13 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom, ulysses_ring
+attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, tokamax_ring_custom, ulysses, ulysses_custom, ulysses_ring, ulysses_ring_custom, ulysses_ring_custom_bidir
+#
+# Best 2D-ring / USP (Ulysses x ring) configs for WAN2.2-T2V-A14B (720x1280, 81 frames)
+# Set attention=ulysses_ring_custom and ulysses_shards=U (ring degree R=CP/U):
+#   CP4  (v7x-8):  ulysses_shards=2 (R=2), BQ=9472
+#   CP8  (v7x-8):  ulysses_shards=4 (R=2), BQ=9472
+#   CP16 (v7x-16): ulysses_shards=8 (R=2), BQ=9472
 use_base2_exp: True
 use_experimental_scheduler: True
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
