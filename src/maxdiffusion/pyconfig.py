@@ -368,5 +368,7 @@ def initialize(argv, **kwargs):
 
 if __name__ == "__main__":
   initialize(sys.argv)
-  print(config.steps)
+  from maxdiffusion import max_logging
+
+  max_logging.log(config.steps)
   r = range(config.steps)
