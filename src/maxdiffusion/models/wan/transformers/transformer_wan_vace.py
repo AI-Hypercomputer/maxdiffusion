@@ -100,6 +100,7 @@ class WanVACETransformerBlock(nnx.Module):
         "use_base2_exp": False,
         "use_experimental_scheduler": False,
         "ulysses_shards": -1,
+        "ulysses_attention_chunks": 1,
         **(attention_config or {}),
     }
 
@@ -348,6 +349,7 @@ class WanVACEModel(WanModel):
         "use_base2_exp": False,
         "use_experimental_scheduler": False,
         "ulysses_shards": -1,
+        "ulysses_attention_chunks": 1,
         **(attention_config or {}),
     }
 

@@ -235,6 +235,26 @@ class AttentionTest(unittest.TestCase):
     self.assertIsNone(cross_attention_block_sizes.block_kv_dq)
     self.assertTrue(cross_attention_block_sizes.use_fused_bwd_kernel)
 
+  def test_ulysses_head_chunk_ranges_preserve_head_layout_with_remainder(self):
+    ranges = attention_flax._ulysses_head_chunk_ranges(num_heads=40, ulysses_shards=8, num_chunks=2)
+
+    self.assertEqual(ranges, [(0, 16), (16, 40)])
+    self.assertEqual(
+        attention_flax._ulysses_head_chunk_ranges(num_heads=40, ulysses_shards=8, num_chunks=5),
+        [(0, 8), (8, 16), (16, 24), (24, 32), (32, 40)],
+    )
+    self.assertEqual(
+        attention_flax._ulysses_head_chunk_ranges(num_heads=40, ulysses_shards=8, num_chunks=3), [(0, 8), (8, 16), (16, 40)]
+    )
+    self.assertEqual(attention_flax._ulysses_head_chunk_ranges(num_heads=40, ulysses_shards=8, num_chunks=1), [(0, 40)])
+
+    head_major = jnp.arange(40 * 3, dtype=jnp.float32).reshape(40, 3)
+    reconstructed = jnp.concatenate((head_major[0:16], head_major[16:40]), axis=0)
+    self.assertTrue(jnp.array_equal(reconstructed, head_major))
+
+    ranges_array = jnp.array(ranges)
+    self.assertTrue(jnp.all((ranges_array[:, 1] - ranges_array[:, 0]) % 8 == 0))
+
   def test_ulysses_attention_round_trips_query_when_heads_are_divisible(self):
     """Ulysses attention should preserve the query layout after its collectives."""
     batch = 2
@@ -286,6 +306,65 @@ class AttentionTest(unittest.TestCase):
 
     self.assertEqual(output.shape, query.shape)
     self.assertTrue(jnp.array_equal(output, query))
+
+  def test_ulysses_attention_chunk_counts_are_numerically_equivalent(self):
+    """Chunked all-to-all should preserve the same head/sequence layout as one-shot all-to-all."""
+    batch = 2
+    length = 6
+    heads = 8
+    head_depth = 3
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    key = query + 1000.0
+    value = query + 2000.0
+    mesh = self._ulysses_mesh()
+
+    def fake_make_splash_mha(**unused_kwargs):
+      def fake_kernel(q, k, v, segment_ids):
+        del k, segment_ids
+        return q + jnp.mean(v, axis=1, keepdims=True)
+
+      return fake_kernel
+
+    def run_with_chunks(num_chunks):
+      with (
+          mesh,
+          nn_partitioning.axis_rules(self._ulysses_axis_rules()),
+          mock.patch.object(
+              attention_flax.splash_attention_kernel,
+              "make_splash_mha",
+              side_effect=fake_make_splash_mha,
+          ),
+      ):
+        return attention_flax._ulysses_attention(
+            query,
+            key,
+            value,
+            heads=heads,
+            mesh=mesh,
+            axis_names_q=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_Q_LENGTH,
+                attention_flax.D_KV,
+            ),
+            axis_names_kv=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_KV_LENGTH,
+                attention_flax.D_KV,
+            ),
+            flash_block_sizes=self._ulysses_block_sizes(),
+            dtype=jnp.float32,
+            ulysses_attention_chunks=num_chunks,
+        )
+
+    one_chunk = run_with_chunks(1)
+    two_chunks = run_with_chunks(2)
+    three_chunks_with_remainder = run_with_chunks(3)
+
+    self.assertEqual(one_chunk.shape, query.shape)
+    self.assertTrue(jnp.array_equal(one_chunk, two_chunks))
+    self.assertTrue(jnp.array_equal(one_chunk, three_chunks_with_remainder))
 
   def test_ulysses_attention_raises_when_heads_are_not_divisible_by_context_shards(self):
     """Ulysses attention should fail fast when heads cannot be evenly sharded."""
@@ -507,6 +586,67 @@ class AttentionTest(unittest.TestCase):
 
     self.assertEqual(output.shape, query.shape)
     self.assertTrue(jnp.array_equal(output, query))
+
+  @unittest.skipIf(len(jax.devices()) < 4, "Ulysses ring chunk equivalence test requires at least 4 devices.")
+  def test_ulysses_ring_attention_chunk_counts_are_numerically_equivalent(self):
+    """Chunked Ulysses+ring all-to-all should match the one-shot layout and numerics."""
+    batch = 2
+    length = 8
+    heads = 8
+    head_depth = 3
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    key = query + 1000.0
+    value = query + 2000.0
+    mesh = self._ulysses_ring_mesh()
+
+    def fake_make_ring_attention(**unused_kwargs):
+      def fake_kernel(q, k, v, segment_ids):
+        del k, segment_ids
+        return q + jnp.mean(v, axis=1, keepdims=True)
+
+      return fake_kernel
+
+    def run_with_chunks(num_chunks):
+      with (
+          mesh,
+          nn_partitioning.axis_rules(self._ulysses_ring_axis_rules()),
+          mock.patch.object(
+              attention_flax.tokamax_ring_attention_kernel,
+              "make_ring_attention",
+              side_effect=fake_make_ring_attention,
+          ),
+      ):
+        return attention_flax._ulysses_ring_attention(
+            query,
+            key,
+            value,
+            heads=heads,
+            mesh=mesh,
+            axis_names_q=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_Q_LENGTH,
+                attention_flax.D_KV,
+            ),
+            axis_names_kv=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_KV_LENGTH,
+                attention_flax.D_KV,
+            ),
+            flash_block_sizes=self._ulysses_block_sizes(),
+            dtype=jnp.float32,
+            ulysses_shards=2,
+            ulysses_attention_chunks=num_chunks,
+        )
+
+    one_chunk = run_with_chunks(1)
+    two_chunks = run_with_chunks(2)
+    three_chunks_with_remainder = run_with_chunks(3)
+
+    self.assertEqual(one_chunk.shape, query.shape)
+    self.assertTrue(jnp.array_equal(one_chunk, two_chunks))
+    self.assertTrue(jnp.array_equal(one_chunk, three_chunks_with_remainder))
 
   @unittest.skipIf(len(jax.devices()) < 4, "Ulysses ring attention mask test requires at least 4 devices.")
   def test_ulysses_ring_attention_masks_global_kv_padding(self):
