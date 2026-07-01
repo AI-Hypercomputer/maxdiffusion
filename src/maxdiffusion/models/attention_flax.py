@@ -460,10 +460,11 @@ def _tpu_flash_attention(
       key_local, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
       value_local, _, _ = _pad_data_for_flash(value, heads, bkv)
 
-      bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
+      bsizes = custom_splash._BlockSizes(
+          block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute, block_kv_compute_in=bkv_compute_in
+      )
       ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
           block_sizes=bsizes,
-          bkv_compute_in=bkv_compute_in,
           orig_q_seq_len=query_seq_len,
           orig_kv_seq_len=key_seq_len,
           use_base2_exp=use_base2_exp,
@@ -697,11 +698,12 @@ def _ulysses_attention(
       key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
       value, _, _ = _pad_data_for_flash(value, heads, bkv)
 
-      bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
+      bsizes = custom_splash._BlockSizes(
+          block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute, block_kv_compute_in=bkv_compute_in
+      )
 
       splash_kernel = custom_splash.make_splash_mha(
           block_sizes=bsizes,
-          bkv_compute_in=bkv_compute_in,
           orig_q_seq_len=query_seq_len,
           orig_kv_seq_len=key_seq_len,
           heads_per_tile=heads_per_tile,
@@ -1017,7 +1019,9 @@ def _ulysses_ring_custom_attention(
     key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
     value, _, _ = _pad_data_for_flash(value, heads, bkv)
 
-    bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
+    bsizes = custom_splash._BlockSizes(
+        block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute, block_kv_compute_in=bkv_compute_in
+    )
     if num_ring_shards == 1:
       # (2a) R=1: the ring is trivial (no rotation) -> use the lighter dedicated
       # splash kernel (fuse_reciprocal, no fp32 online-softmax residual windows).
@@ -1025,7 +1029,6 @@ def _ulysses_ring_custom_attention(
       # OOMs (its 3x residual windows). make_splash_mha returns [H, D, S].
       splash_kernel = custom_splash.make_splash_mha(
           block_sizes=bsizes,
-          bkv_compute_in=bkv_compute_in,
           orig_q_seq_len=query_seq_len,
           orig_kv_seq_len=key_seq_len,
           heads_per_tile=heads_per_tile,
@@ -1040,7 +1043,6 @@ def _ulysses_ring_custom_attention(
       # at a time), for a non-wrapping ring axis. Selected by attention=ulysses_ring_custom_bidir.
       ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
           block_sizes=bsizes,
-          bkv_compute_in=bkv_compute_in,
           orig_q_seq_len=query_seq_len,
           orig_kv_seq_len=key_seq_len,
           use_base2_exp=use_base2_exp,
