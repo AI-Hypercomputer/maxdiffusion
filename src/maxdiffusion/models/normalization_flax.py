@@ -29,6 +29,7 @@ class AdaLayerNormContinuous(nn.Module):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
+  scale_shift_order: str = "shift_scale"
 
   @nn.compact
   def __call__(self, x, conditioning_embedding):
@@ -42,9 +43,16 @@ class AdaLayerNormContinuous(nn.Module):
         param_dtype=self.weights_dtype,
         precision=self.precision,
     )(nn.silu(conditioning_embedding))
-    shift, scale = jnp.split(emb, 2, axis=1)
-    shift = nn.with_logical_constraint(shift, ("activation_batch", "activation_embed"))
+
+    if self.scale_shift_order == "scale_shift":
+      scale, shift = jnp.split(emb, 2, axis=1)
+    elif self.scale_shift_order == "shift_scale":
+      shift, scale = jnp.split(emb, 2, axis=1)
+    else:
+      raise ValueError(f"Unsupported scale_shift_order: {self.scale_shift_order}")
+
     scale = nn.with_logical_constraint(scale, ("activation_batch", "activation_embed"))
+    shift = nn.with_logical_constraint(shift, ("activation_batch", "activation_embed"))
     x = nn.LayerNorm(epsilon=self.eps, use_bias=self.elementwise_affine, use_scale=self.elementwise_affine)(x)
     x = (1 + scale[:, None, :]) * x + shift[:, None, :]
     return x

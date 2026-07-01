@@ -81,6 +81,7 @@ MaxDiffusion supports
     - [LTX-2 Video](#ltx-2-video)
     - [Flux](#flux)
       - [Fused Attention for GPU](#fused-attention-for-gpu)
+    - [Flux.2-klein-4B](#flux2-klein-4b)
     - [SDXL](#stable-diffusion-xl)
     - [SD 2 base](#stable-diffusion-2-base)
     - [SD 2.1](#stable-diffusion-21)
@@ -674,6 +675,46 @@ We added ring attention support for Wan models. Below are the stats for one `720
 
   ```bash
   python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
+  ```
+
+  ## Flux.2-klein-4B
+
+  MaxDiffusion supports JAX+TPU inference for the **Flux.2-klein-4B** model. We provide both a standard one-shot generation script and an **interactive generation mode** that reuses the JAX/XLA compiled graphs for instant subsequent runs.
+
+  ### Running Inference
+
+  To generate images, run the following command:
+
+  ```bash
+  python src/maxdiffusion/generate_flux2klein.py src/maxdiffusion/configs/base_flux2klein.yml
+  ```
+
+  To enable **interactive mode** (reusing the compiled graphs to avoid JIT compilation latency on subsequent prompts):
+
+  ```bash
+  python src/maxdiffusion/generate_flux2klein.py src/maxdiffusion/configs/base_flux2klein.yml interactive=True
+  ```
+
+  ### Running Tests & Verification
+
+  All tests and verification scripts are located in `src/maxdiffusion/tests/flux2klein/`.
+
+  To run the 19-point mathematical parity verification suite against PyTorch CPU:
+
+  ```bash
+  python src/maxdiffusion/tests/flux2klein/verify_blockwise_parity.py
+  ```
+
+  To run the pure TPU latency benchmark (permanent HBM residence):
+
+  ```bash
+  python src/maxdiffusion/tests/flux2klein/benchmark_tpu_pure.py
+  ```
+
+  To run all unit and integration tests:
+
+  ```bash
+  pytest src/maxdiffusion/tests/flux2klein/
   ```
   ## Fused Attention for GPU:
   Fused Attention for GPU is supported via TransformerEngine. Installation instructions:
