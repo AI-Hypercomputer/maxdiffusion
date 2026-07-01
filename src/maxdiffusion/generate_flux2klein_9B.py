@@ -651,15 +651,43 @@ def main(argv):
     latents_packed = pack_latents(latents_unpacked)
     print(f"Packed latents shape: {latents_packed.shape}")
     
-    # 5. Instantiate JAX FluxTransformer2DModel
-    print("Instantiating JAX FluxTransformer2DModel for Flux.2-klein-4B...")
+    # 5. Locate cached PyTorch weights (with automatic download if missing)
+    hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+            
+    repo_id = config.pretrained_model_name_or_path
+    cache_dir = os.path.join(hf_home, "hub", f"models--{repo_id.replace('/', '--')}", "snapshots")
+    
+    if not os.path.exists(cache_dir) or not os.listdir(cache_dir):
+        print(f"\n📢 Model cache not found at {cache_dir}.")
+        print(f"🚀 Downloading '{repo_id}' from Hugging Face Hub (this may take a few minutes)...")
+        from huggingface_hub import snapshot_download
+        snapshot_download(repo_id=repo_id, local_files_only=False)
+        
+    if not os.path.exists(cache_dir):
+        raise FileNotFoundError(f"Hugging Face cache directory still not found after download: {cache_dir}")
+        
+    snapshots = os.listdir(cache_dir)
+    if not snapshots:
+        raise FileNotFoundError(f"No snapshots found in Hugging Face cache directory: {cache_dir}")
+    snapshot_dir = os.path.join(cache_dir, snapshots[0])
+    safetensors_path = os.path.join(snapshot_dir, "transformer")
+    vae_safetensors_path = os.path.join(snapshot_dir, "vae", "diffusion_pytorch_model.safetensors")
+
+    # Load Qwen3 configuration early to get the correct hidden size
+    from transformers import AutoConfig
+    text_encoder_path = os.path.join(snapshot_dir, "text_encoder")
+    print(f"Loading Qwen3 config from text_encoder path: {text_encoder_path}...")
+    pt_config = AutoConfig.from_pretrained(text_encoder_path, local_files_only=True)
+    
+    # 6. Instantiate JAX FluxTransformer2DModel
+    print("Instantiating JAX FluxTransformer2DModel for Flux.2-klein-9B...")
     transformer = FluxTransformer2DModel(
         in_channels=128,
-        num_layers=5,                # 5 double blocks
-        num_single_layers=20,        # 20 single blocks
+        num_layers=config.num_double_layers,
+        num_single_layers=config.depth,
         attention_head_dim=128,
-        num_attention_heads=24,
-        joint_attention_dim=7680,    # Qwen3 raw hidden dim
+        num_attention_heads=config.num_attention_heads,
+        joint_attention_dim=3 * pt_config.hidden_size,  # concatenated 3 layers
         pooled_projection_dim=768,   # CFG pooled dim
         mlp_ratio=3.0,
         qkv_bias=False,
@@ -676,7 +704,7 @@ def main(argv):
         attention_kernel=config.attention,
     )
     
-    # 5b. Instantiate JAX FlaxAutoencoderKL VAE
+    # 6b. Instantiate JAX FlaxAutoencoderKL VAE
     print("Instantiating JAX FlaxAutoencoderKL VAE...")
     vae = FlaxAutoencoderKL(
         in_channels=3,
@@ -694,29 +722,6 @@ def main(argv):
         dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
     )
     
-    # 6. Locate cached PyTorch weights (with automatic download if missing)
-    hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-            
-    repo_id = config.pretrained_model_name_or_path
-    cache_dir = os.path.join(hf_home, "hub", f"models--{repo_id.replace('/', '--')}", "snapshots")
-    
-    if not os.path.exists(cache_dir) or not os.listdir(cache_dir):
-        print(f"\n📢 Model cache not found at {cache_dir}.")
-        print(f"🚀 Downloading '{repo_id}' from Hugging Face Hub (this may take a few minutes)...")
-        from huggingface_hub import snapshot_download
-        # This will automatically use the resolved HF_HOME env var
-        snapshot_download(repo_id=repo_id, local_files_only=False)
-        
-    if not os.path.exists(cache_dir):
-        raise FileNotFoundError(f"Hugging Face cache directory still not found after download: {cache_dir}")
-        
-    snapshots = os.listdir(cache_dir)
-    if not snapshots:
-        raise FileNotFoundError(f"No snapshots found in Hugging Face cache directory: {cache_dir}")
-    snapshot_dir = os.path.join(cache_dir, snapshots[0])
-    safetensors_path = os.path.join(snapshot_dir, "transformer")
-    vae_safetensors_path = os.path.join(snapshot_dir, "vae", "diffusion_pytorch_model.safetensors")
-    
     # 7. Evaluate shapes and extract TPU shardings using jax.eval_shape
     print("Evaluating shapes and extracting TPU shardings...")
     
@@ -729,19 +734,14 @@ def main(argv):
     # Define dummy inputs once for reuse
     img_dummy = jnp.zeros((batch_size, seq_len_img, 128))
     img_ids_dummy = jnp.zeros((batch_size, seq_len_img, 4))
-    txt_dummy = jnp.zeros((batch_size, seq_len_txt, 7680))
+    txt_dummy = jnp.zeros((batch_size, seq_len_txt, 3 * pt_config.hidden_size))
     txt_ids_dummy = jnp.zeros((batch_size, seq_len_txt, 4))
     vec_dummy = jnp.zeros((batch_size, 768))
     t_vec_dummy = jnp.zeros((batch_size,))
     guidance_vec_dummy = jnp.zeros((batch_size,))
     dummy_img = jnp.zeros((batch_size, 3, 512, 512)) # for VAE
     
-    # Initialize JAX Qwen3 Config & Model (needed for shape eval)
-    from transformers import AutoConfig
-    text_encoder_path = os.path.join(snapshot_dir, "text_encoder")
-    print(f"Loading Qwen3 config from text_encoder path: {text_encoder_path}...")
-    pt_config = AutoConfig.from_pretrained(text_encoder_path, local_files_only=True)
-
+    # Initialize JAX Qwen3 Model (config already loaded)
     qwen3_config = FlaxQwen3Config(
         vocab_size=pt_config.vocab_size,
         hidden_size=pt_config.hidden_size,
@@ -869,8 +869,8 @@ def main(argv):
 
             # Dynamic Offloading Auto-Detection
             device = jax.devices()[0]
-            device_kind = device.device_kind
-            default_offload = "v6e" in device_kind or "v5e" in device_kind or "v4" in device_kind
+            device_kind = device.device_kind.lower()
+            default_offload = "v6e" in device_kind or "v5e" in device_kind or "v4" in device_kind or "lite" in device_kind or "v6" in device_kind
             dynamic_offload = getattr(config, "dynamic_offload", default_offload)
 
             if dynamic_offload:
