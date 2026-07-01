@@ -134,6 +134,8 @@ class GenerateFlux2KleinTest(unittest.TestCase):
                 "run_name=flux_test",
                 "output_dir=/tmp/",
                 "jax_cache_dir=/tmp/cache_dir",
+                "ici_data_parallelism=1",
+                "ici_fsdp_parallelism=1",
             ], unittest=True)
         config = pyconfig.config
         
@@ -372,6 +374,8 @@ class GenerateFlux2KleinTest(unittest.TestCase):
                 "run_name=flux_test",
                 "output_dir=/tmp/",
                 "jax_cache_dir=/tmp/cache_dir",
+                "ici_data_parallelism=1",
+                "ici_fsdp_parallelism=1",
             ], unittest=True)
         config = pyconfig.config
         
@@ -626,6 +630,8 @@ class GenerateFlux2KleinTest(unittest.TestCase):
                 "run_name=flux_test",
                 "output_dir=/tmp/",
                 "jax_cache_dir=/tmp/cache_dir",
+                "ici_data_parallelism=1",
+                "ici_fsdp_parallelism=1",
             ], unittest=True)
         config = pyconfig.config
 

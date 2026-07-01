@@ -33,6 +33,7 @@ t5xxl_model_name_or_path: 'ariG23498/t5-v1-1-xxl-flax'
 
 # Flux params
 flux_name: "flux2klein_9B"
+scale_shift_order: "scale_shift"
 use_latents: False
 max_sequence_length: 512
 time_shift: True

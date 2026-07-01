@@ -453,6 +453,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   flash_min_seq_length: int = 4096
   flash_block_sizes: BlockSizes = None
   mesh: jax.sharding.Mesh = None
+  scale_shift_order: str = "shift_scale"
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
@@ -581,6 +582,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
+        scale_shift_order=self.scale_shift_order,
     )
 
     self.proj_out = nn.Dense(

@@ -135,6 +135,7 @@ class GenerateFlux2KleinE2ETest(unittest.TestCase):
             theta=2000,
             mesh=mesh,
             dtype=jnp.float32,
+            scale_shift_order=getattr(config, "scale_shift_order", "shift_scale"),
         )
         
         # VAE Config

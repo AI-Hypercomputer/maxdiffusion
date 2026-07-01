@@ -233,6 +233,7 @@ class GenerateFlux2Klein9BParityTest(unittest.TestCase):
             theta=2000,
             mesh=mesh,
             dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
+            scale_shift_order=getattr(config, "scale_shift_order", "shift_scale"),
         )
         
         vae = FlaxAutoencoderKL(

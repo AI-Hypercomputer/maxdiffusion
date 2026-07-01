@@ -137,6 +137,10 @@ def load_or_generate_latents(config):
     """
     Loads saved latents if use_latents is True, otherwise generates random latents.
     """
+    if isinstance(config, dict):
+        from types import SimpleNamespace
+        config = SimpleNamespace(**config)
+        
     batch_size = config.batch_size
     height = config.height
     width = config.width
@@ -193,10 +197,21 @@ def get_qwen3_models(repo_id="black-forest-labs/FLUX.2-klein-4B"):
     """
     global _tokenizer, _text_encoder
     if _tokenizer is None:
+        import os
         import torch
         from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
         
-        print(f"Loading Qwen3 models from cached repo: {repo_id}...")
+        # Resolve absolute local path from HF cache if it exists to bypass buggy from_pretrained resolving
+        hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+        cache_dir = os.path.join(hf_home, "hub", f"models--{repo_id.replace('/', '--')}", "snapshots")
+        if os.path.exists(cache_dir):
+            snapshots = os.listdir(cache_dir)
+            if snapshots:
+                snapshot_dir = os.path.join(cache_dir, snapshots[0])
+                print(f"Detected local cache directory: {snapshot_dir}")
+                repo_id = snapshot_dir
+
+        print(f"Loading Qwen3 models from repo path: {repo_id}...")
         try:
             _tokenizer = Qwen2TokenizerFast.from_pretrained(repo_id, local_files_only=True)
         except Exception:
@@ -702,6 +717,7 @@ def main(argv):
         dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
         weights_dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
         attention_kernel=config.attention,
+        scale_shift_order=getattr(config, "scale_shift_order", "shift_scale"),
     )
     
     # 6b. Instantiate JAX FlaxAutoencoderKL VAE
