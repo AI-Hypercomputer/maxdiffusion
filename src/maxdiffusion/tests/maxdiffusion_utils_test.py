@@ -15,7 +15,9 @@ limitations under the License.
 """
 
 import os
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 from jax.sharding import Mesh
 
@@ -34,6 +36,39 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
 
   def setUp(self):
     MaxDiffusionUtilsTest.dummy_data = {}
+
+  def test_get_dummy_wan_inputs_generates_latents_without_pipeline_prepare_latents(self):
+    config = SimpleNamespace(height=64, width=80, num_frames=9, seed=0)
+    pipeline = SimpleNamespace(
+        transformer=SimpleNamespace(config=SimpleNamespace(in_channels=16)),
+        vae_scale_factor_temporal=4,
+        vae_scale_factor_spatial=8,
+        prepare_latents=Mock(side_effect=AssertionError("prepare_latents should not be called")),
+    )
+
+    latents, prompt_embeds, timesteps = maxdiffusion_utils.get_dummy_wan_inputs(config, pipeline, batch_size=2)
+
+    pipeline.prepare_latents.assert_not_called()
+    self.assertEqual(latents.shape, (2, 16, 3, 8, 10))
+    self.assertEqual(prompt_embeds.shape, (2, 512, 4096))
+    self.assertEqual(timesteps.shape, (2,))
+
+  def test_get_dummy_wan_inputs_supports_two_expert_pipeline(self):
+    config = SimpleNamespace(height=64, width=80, num_frames=9, seed=0)
+    pipeline = SimpleNamespace(
+        low_noise_transformer=SimpleNamespace(config=SimpleNamespace(in_channels=48)),
+        high_noise_transformer=SimpleNamespace(config=SimpleNamespace(in_channels=48)),
+        vae_scale_factor_temporal=4,
+        vae_scale_factor_spatial=8,
+        prepare_latents=Mock(side_effect=AssertionError("prepare_latents should not be called")),
+    )
+
+    latents, prompt_embeds, timesteps = maxdiffusion_utils.get_dummy_wan_inputs(config, pipeline, batch_size=2)
+
+    pipeline.prepare_latents.assert_not_called()
+    self.assertEqual(latents.shape, (2, 48, 3, 8, 10))
+    self.assertEqual(prompt_embeds.shape, (2, 512, 4096))
+    self.assertEqual(timesteps.shape, (2,))
 
   def test_create_scheduler(self):
     """Test create scheduler with different schedulers"""
