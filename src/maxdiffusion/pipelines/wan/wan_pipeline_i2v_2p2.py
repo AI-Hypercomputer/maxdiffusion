@@ -18,6 +18,7 @@ from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_for
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
 from ...pyconfig import HyperParameters
+import concurrent.futures
 from functools import partial
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
@@ -25,7 +26,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import time
-from jax.sharding import NamedSharding, PartitionSpec as P
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 from ... import max_utils
 
@@ -57,7 +58,12 @@ class WanPipelineI2V_2_2(WanPipeline):
       load_transformer=True,
       load_scheduler=True,
   ):
-    common_components = cls._create_common_components(
+    # Same overlap as WanPipeline2_2._load_and_init: VAE/text-encoder/
+    # scheduler load in a background thread while the main thread converts
+    # the two 14B transformers (mesh/rngs are deterministic duplicates).
+    common_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    common_future = common_executor.submit(
+        cls._create_common_components,
         config,
         load_vae=load_vae,
         load_text_encoder=load_text_encoder,
@@ -65,23 +71,43 @@ class WanPipelineI2V_2_2(WanPipeline):
         i2v=True,
     )
     low_noise_transformer, high_noise_transformer = None, None
-    if load_transformer:
-      high_noise_transformer = super().load_transformer(
-          devices_array=common_components["devices_array"],
-          mesh=common_components["mesh"],
-          rngs=common_components["rngs"],
-          config=config,
-          restored_checkpoint=restored_checkpoint,
-          subfolder="transformer",
-      )
-      low_noise_transformer = super().load_transformer(
-          devices_array=common_components["devices_array"],
-          mesh=common_components["mesh"],
-          rngs=common_components["rngs"],
-          config=config,
-          restored_checkpoint=restored_checkpoint,
-          subfolder="transformer_2",
-      )
+    transformer_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    try:
+      if load_transformer:
+        devices_array = max_utils.create_device_mesh(config)
+        transformer_mesh = Mesh(devices_array, config.mesh_axes)
+        # Per-load Rngs: nnx.Rngs is stateful, so the two concurrent loads
+        # can't share one. Output is unchanged (weights come from ckpt).
+        high_key, low_key = jax.random.split(jax.random.key(config.seed))
+        high_rngs = nnx.Rngs(high_key)
+        low_rngs = nnx.Rngs(low_key)
+        load_transformer_fn = super().load_transformer
+        # The two 14B transformers load concurrently: host-side conversion
+        # shares CPU cores while their device transfers interleave on PCIe.
+        high_future = transformer_executor.submit(
+            load_transformer_fn,
+            devices_array=devices_array,
+            mesh=transformer_mesh,
+            rngs=high_rngs,
+            config=config,
+            restored_checkpoint=restored_checkpoint,
+            subfolder="transformer",
+        )
+        low_future = transformer_executor.submit(
+            load_transformer_fn,
+            devices_array=devices_array,
+            mesh=transformer_mesh,
+            rngs=low_rngs,
+            config=config,
+            restored_checkpoint=restored_checkpoint,
+            subfolder="transformer_2",
+        )
+        high_noise_transformer = high_future.result()
+        low_noise_transformer = low_future.result()
+      common_components = common_future.result()
+    finally:
+      transformer_executor.shutdown(wait=True)
+      common_executor.shutdown(wait=True)
 
     pipeline = cls(
         tokenizer=common_components["tokenizer"],
