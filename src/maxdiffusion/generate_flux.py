@@ -314,6 +314,9 @@ def run(config):
         dtype=config.activations_dtype,
         weights_dtype=config.weights_dtype,
         precision=get_precision(config),
+        remat_policy=config.remat_policy,
+        names_which_can_be_saved=config.names_which_can_be_saved,
+        names_which_can_be_offloaded=config.names_which_can_be_offloaded,
     )
 
     num_channels_latents = transformer.in_channels // 4

@@ -63,6 +63,8 @@ jit_initializers: True
 from_pt: True
 split_head_dim: True
 attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
+use_base2_exp: False
+use_experimental_scheduler: False
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
 # Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
 # However, when padding tokens are significant, this will lead to worse quality and should be set to True.
@@ -73,18 +75,18 @@ mask_padding_tokens: True
 #    in cross attention q.
 attention_sharding_uniform: True 
 
-flash_block_sizes: {}
+#flash_block_sizes: {}
 # Use the following flash_block_sizes on v6e (Trillium) due to larger vmem.
-# flash_block_sizes: {
-#   "block_q" : 1536,
-#   "block_kv_compute" : 1536,
-#   "block_kv" : 1536,
-#   "block_q_dkv" : 1536,
-#   "block_kv_dkv" : 1536,
-#   "block_kv_dkv_compute" : 1536,
-#   "block_q_dq" : 1536,
-#   "block_kv_dq" : 1536
-# }
+flash_block_sizes: {
+  "block_q" : 1536,
+  "block_kv_compute" : 1536,
+  "block_kv" : 1536,
+  "block_q_dkv" : 1536,
+  "block_kv_dkv" : 1536,
+  "block_kv_dkv_compute" : 1536,
+  "block_q_dq" : 1536,
+  "block_kv_dq" : 1536
+}
 # GroupNorm groups
 norm_num_groups: 32
 
@@ -147,9 +149,11 @@ mesh_axes: ['data', 'fsdp', 'context', 'tensor']
 # conv_in : conv.shape[2] weight
 # conv_out : conv.shape[-1] weight
 logical_axis_rules: [
-                      ['batch', 'data'],
+                      ['batch', ['data','fsdp']],
                       ['activation_batch', ['data','fsdp']],
                       ['activation_heads', 'tensor'],
+                      ['activation_length', 'context'],
+                      ['activation_kv_length', 'context'],
                       ['activation_kv', 'tensor'],
                       ['mlp','tensor'],
                       ['embed','fsdp'],
@@ -188,7 +192,7 @@ dataset_type: 'tfrecord'  # Options: 'tfrecord', 'hf', 'tf', 'grain', 'synthetic
 # 2. Optionally set synthetic_num_samples (null=infinite, or a number like 10000)
 # 3. Optionally override dimensions
 #
-# synthetic_num_samples: null  # null for infinite, or set a number
+synthetic_num_samples: 1000  # null for infinite, or set a number
 #
 # Optional dimension overrides:
 # resolution: 512
@@ -217,6 +221,21 @@ tokenize_captions_num_proc: 4
 transform_images_num_proc: 4
 reuse_example_batch: False
 enable_data_shuffling: True
+
+# Defines the type of gradient checkpoint to enable.
+# NONE - means no gradient checkpoint
+# FULL - means full gradient checkpoint, whenever possible (minimum memory usage)
+# MATMUL_WITHOUT_BATCH - means gradient checkpoint for every linear/matmul operation,
+# except for ones that involve batch dimension - that means that all attention and projection
+# layers will have gradient checkpoint, but not the backward with respect to the parameters.
+# OFFLOAD_MATMUL_WITHOUT_BATCH - same as MATMUL_WITHOUT_BATCH but offload instead of recomputing.
+# CUSTOM - set names to offload and save.
+remat_policy: "FLUX_OPTIMIZED"
+# For CUSTOM policy set below, current annotations are for: attn_output, query_proj, key_proj, value_proj
+# xq_out, xk_out, ffn_activation
+names_which_can_be_saved: []
+names_which_can_be_offloaded: []
+flash_min_seq_length: 0
 
 # checkpoint every number of samples, -1 means don't checkpoint.
 checkpoint_every: -1
