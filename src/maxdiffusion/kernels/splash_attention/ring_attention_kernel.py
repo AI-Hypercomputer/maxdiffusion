@@ -846,6 +846,8 @@ def _custom_ring_attention_forward(
     ring_size: int | None = None,
     perm: list[tuple[int, int]] | None = None,
     bidirectional: bool = False,
+    use_fixed_m: bool = False,
+    mk: jax.Array | None = None,
 ) -> jax.Array:
   """Forward-only ring attention using the custom dense splash kernel.
 
@@ -886,6 +888,8 @@ def _custom_ring_attention_forward(
           "bidirectional (wrap-free) ring requires perm=None and ring_size==axis_size "
           "(it operates on the full real ring axis)."
       )
+    if use_fixed_m:
+      raise NotImplementedError("fixed-m is not yet supported on the bidirectional ring path.")
     return _custom_bidirectional_ring_forward(
         q,
         k,
@@ -932,6 +936,8 @@ def _custom_ring_attention_forward(
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
+        use_fixed_m=use_fixed_m,
+        mk=mk,
     )
     m_curr = m_curr.astype(jnp.float32)
     l_curr = l_curr.astype(jnp.float32)
@@ -972,6 +978,8 @@ def make_custom_ring_attention(
     ring_size: int | None = None,
     perm: list[tuple[int, int]] | None = None,
     bidirectional: bool = False,
+    use_fixed_m: bool = False,
+    mk: jax.Array | None = None,
 ):
   """Builds a forward-only ring-attention callable around the custom kernel.
 
@@ -1006,6 +1014,8 @@ def make_custom_ring_attention(
         ring_size=ring_size,
         perm=perm,
         bidirectional=bidirectional,
+        use_fixed_m=use_fixed_m,
+        mk=mk,
     )
 
   return _ring
