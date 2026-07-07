@@ -357,16 +357,29 @@ def get_dummy_ltx2_inputs(config, pipeline, batch_size):
   )
 
 
-def get_dummy_wan_inputs(config, pipeline, batch_size):
-  latents = pipeline.prepare_latents(
-      batch_size,
-      vae_scale_factor_temporal=pipeline.vae_scale_factor_temporal,
-      vae_scale_factor_spatial=pipeline.vae_scale_factor_spatial,
-      height=config.height,
-      width=config.width,
-      num_frames=config.num_frames,
-      num_channels_latents=pipeline.transformer.config.in_channels,
+def _get_wan_transformer_for_dummy_inputs(pipeline):
+  for transformer_attr in ("transformer", "low_noise_transformer", "high_noise_transformer"):
+    transformer = getattr(pipeline, transformer_attr, None)
+    if transformer is not None:
+      return transformer
+  raise ValueError("WAN dummy inputs require a transformer, low_noise_transformer, or high_noise_transformer.")
+
+
+def _get_dummy_wan_latents(config, pipeline, batch_size):
+  transformer = _get_wan_transformer_for_dummy_inputs(pipeline)
+  num_channels_latents = transformer.config.in_channels
+  num_latent_frames = (int(config.num_frames) - 1) // pipeline.vae_scale_factor_temporal + 1
+  latent_height = int(config.height) // pipeline.vae_scale_factor_spatial
+  latent_width = int(config.width) // pipeline.vae_scale_factor_spatial
+  return jax.random.normal(
+      jax.random.key(config.seed),
+      (batch_size, num_channels_latents, num_latent_frames, latent_height, latent_width),
+      dtype=jnp.float32,
   )
+
+
+def get_dummy_wan_inputs(config, pipeline, batch_size):
+  latents = _get_dummy_wan_latents(config, pipeline, batch_size)
   bsz = latents.shape[0]
   prompt_embeds = jax.random.normal(jax.random.key(config.seed), (batch_size, 512, 4096))
   timesteps = jnp.array([0] * bsz, dtype=jnp.int32)
