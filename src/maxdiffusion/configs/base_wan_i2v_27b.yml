@@ -337,7 +337,7 @@ width: 1280
 num_frames: 81
 flow_shift: 5.0
 
-# Reference for below guidance scale and boundary values: https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_t2v_A14B.py
+# Reference for below guidance scale and boundary values: https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_i2v_A14B.py
 # guidance scale factor for low noise transformer
 guidance_scale_low: 3.0
 
@@ -346,8 +346,10 @@ guidance_scale_high: 4.0
 
 # The timestep threshold. If `t` is at or above this value,
 # the `high_noise_model` is considered as the required model.
-# timestep to switch between low noise and high noise transformer
-boundary_ratio: 0.875
+# timestep to switch between low noise and high noise transformer.
+# Official Wan2.2 I2V-A14B uses boundary=0.900 (vs 0.875 for T2V); this sets
+# the high->low expert switch the MagCache ratios below are calibrated against.
+boundary_ratio: 0.900
 
 # Diffusion CFG cache (FasterCache-style)
 use_cfg_cache: False
@@ -358,6 +360,20 @@ use_batched_text_encoder: False
 use_kv_cache: False
 # SenCache: Sensitivity-Aware Caching (arXiv:2602.24208)
 use_sen_cache: False
+
+# ── MagCache (Ma et al., https://github.com/Zehong-Ma/MagCache) ──
+# Skips the transformer blocks on steps whose accumulated magnitude-ratio error
+# stays below `magcache_thresh`, reusing the cached block residual. Official
+# Wan2.2 I2V recommendation: thresh 0.06, K 2, retention 0.1-0.2.
+use_magcache: False
+magcache_thresh: 0.06
+magcache_K: 2
+retention_ratio: 0.2
+# Average magnitude ratios, interleaved [cond, uncond, ...], length
+# num_inference_steps*2 (= 80 for 40 steps). Single curve spanning both phases;
+# the dip near step 15 marks the high->low boundary (boundary=0.900, flow_shift=5).
+# Official Wan2.2 I2V-A14B ratios (upstream MagCache, WanI2V branch).
+mag_ratios_base: [1.0, 1.0, 0.99191, 0.99144, 0.99356, 0.99337, 0.99326, 0.99285, 0.99251, 0.99264, 0.99393, 0.99366, 0.9943, 0.9943, 0.99276, 0.99288, 0.99389, 0.99393, 0.99274, 0.99289, 0.99316, 0.9931, 0.99379, 0.99377, 0.99268, 0.99271, 0.99222, 0.99227, 0.99175, 0.9916, 0.91076, 0.91046, 0.98931, 0.98933, 0.99087, 0.99088, 0.98852, 0.98855, 0.98895, 0.98896, 0.98806, 0.98808, 0.9871, 0.98711, 0.98613, 0.98618, 0.98434, 0.98435, 0.983, 0.98307, 0.98185, 0.98187, 0.98131, 0.98131, 0.9783, 0.97835, 0.97619, 0.9762, 0.97264, 0.9727, 0.97088, 0.97098, 0.96568, 0.9658, 0.96045, 0.96055, 0.95322, 0.95335, 0.94579, 0.94594, 0.93297, 0.93311, 0.91699, 0.9172, 0.89174, 0.89202, 0.8541, 0.85446, 0.79823, 0.79902]
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0

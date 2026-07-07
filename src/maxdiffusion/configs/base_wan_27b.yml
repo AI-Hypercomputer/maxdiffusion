@@ -342,7 +342,11 @@ do_classifier_free_guidance: True
 height: 720
 width: 1280
 num_frames: 81
-flow_shift: 5.0
+# Official Wan2.2 T2V A14B sampling shift (wan_t2v_A14B.py: sample_shift=12.0). This sets where the
+# high->low transformer boundary falls in the step schedule (~step 26 of 40 at boundary_ratio 0.875),
+# which must match the schedule the seeded mag_ratios_base was calibrated at. (A smaller shift moves
+# the boundary earlier, which both degrades the base sample and misaligns MagCache's skip schedule.)
+flow_shift: 12.0
 
 # Reference for below guidance scale and boundary values: https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_t2v_A14B.py
 # guidance scale factor for low noise transformer
@@ -366,6 +370,20 @@ use_kv_cache: False
 # SenCache: Sensitivity-Aware Caching (arXiv:2602.24208) — skip forward pass
 # when predicted output change (based on accumulated latent/timestep drift) is small
 use_sen_cache: False
+
+# MagCache (https://github.com/Zehong-Ma/MagCache) — skip transformer blocks when
+# the accumulated magnitude-ratio error stays below `magcache_thresh`, reusing the
+# cached block residual. `magcache_K` caps consecutive skips; `retention_ratio` is
+# the fraction at the start of each phase that always computes in full.
+use_magcache: False
+magcache_thresh: 0.04
+magcache_K: 2
+retention_ratio: 0.2
+# Calibrated average magnitude ratios, interleaved [cond, uncond, ...], length
+# num_inference_steps*2 (= 80 for 40 steps). Single curve spanning both phases;
+# the dip near the middle marks the high->low boundary. Seeded from the official
+# WAN 2.2 T2V ratios — recalibrate for this setup to tune the speedup/quality.
+mag_ratios_base: [1.0, 1.0, 1.00124, 1.00155, 0.99822, 0.99851, 0.99696, 0.99687, 0.99703, 0.99732, 0.9966, 0.99679, 0.99602, 0.99658, 0.99578, 0.99664, 0.99484, 0.9949, 0.99633, 0.996, 0.99659, 0.99683, 0.99534, 0.99549, 0.99584, 0.99577, 0.99681, 0.99694, 0.99563, 0.99554, 0.9944, 0.99473, 0.99594, 0.9964, 0.99466, 0.99461, 0.99453, 0.99481, 0.99389, 0.99365, 0.99391, 0.99406, 0.99354, 0.99361, 0.99283, 0.99278, 0.99268, 0.99263, 0.99057, 0.99091, 0.99125, 0.99126, 0.65523, 0.65252, 0.98808, 0.98852, 0.98765, 0.98736, 0.9851, 0.98535, 0.98311, 0.98339, 0.9805, 0.9806, 0.97776, 0.97771, 0.97278, 0.97286, 0.96731, 0.96728, 0.95857, 0.95855, 0.94385, 0.94385, 0.92118, 0.921, 0.88108, 0.88076, 0.80263, 0.80181]
 
 # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
 guidance_rescale: 0.0

@@ -627,6 +627,18 @@ To generate images, run the following command:
   | --- | --- | --- | --- | --- |
   | **CFG Cache** | `use_cfg_cache: True` | Wan 2.1 T2V, Wan 2.2 T2V/I2V | ~1.2x | FasterCache-style: caches the unconditional branch and applies FFT frequency-domain compensation on skipped steps. |
   | **SenCache** | `use_sen_cache: True` | Wan 2.2 T2V/I2V | ~1.4x | Sensitivity-Aware Caching ([arXiv:2602.24208](https://arxiv.org/abs/2602.24208)): predicts output change via first-order sensitivity S = α_x·‖Δx‖ + α_t·\|Δt\|. Skips the full CFG forward pass when predicted change is below tolerance ε. |
+  | **MagCache** | `use_magcache: True` | Wan 2.1 T2V, Wan 2.2 T2V/I2V | ~1.75–1.9x | [MagCache](https://github.com/Zehong-Ma/MagCache): skips the transformer blocks and reuses the cached block residual when the accumulated magnitude-ratio error stays below `magcache_thresh`, capped at `magcache_K` consecutive skips. Uses a precalibrated per-step `mag_ratios_base` curve, so the skip schedule is deterministic (no data-dependent control flow). |
+
+  For Wan 2.2 (dual-transformer), MagCache uses a single `mag_ratios_base` curve across both phases, forces a full recompute for the first `retention_ratio` fraction of each phase, and resets the cached residual at the high→low boundary. The shipped curves are seeded from the official Wan2.2 values (`base_wan_27b.yml` for T2V, `base_wan_i2v_27b.yml` for I2V); recalibrate for your dtype/attention kernel to tighten the quality gap.
+
+  > **Wan 2.2 T2V requires `flow_shift=12.0`** — it sets where the high→low boundary lands, which is what `mag_ratios_base` is calibrated against. A lower shift (e.g. `5.0`) moves the boundary out of phase, so MagCache skips at the wrong steps and quality drops.
+
+  Benchmarks (7x, A14B, 720×1280, 81 frames, 40 steps, vs dense — SSIM/PSNR largely reflect trajectory divergence, not visible degradation):
+
+  | Variant | Settings | Speedup | SSIM / PSNR |
+  | --- | --- | --- | --- |
+  | T2V | `flow_shift=12.0`, `magcache_thresh=0.04`, `magcache_K=2` | ~1.82× (18/40 skipped) | 0.72 / 21.8 dB |
+  | I2V | `flow_shift=5.0`, `boundary_ratio=0.900`, `magcache_thresh=0.06`, `magcache_K=2` | ~1.75× (17/40 skipped) | 0.91 / 25.4 dB |
 
   To enable a caching mechanism, set the corresponding flag in your config YAML or pass it as a command-line override:
 
@@ -642,7 +654,23 @@ To generate images, run the following command:
     src/maxdiffusion/configs/base_wan_i2v_27b.yml \
     use_cfg_cache=True \
     ...
-  ```
+
+# Example: enable MagCache for Wan 2.2 T2V
+python src/maxdiffusion/generate_wan.py \
+  src/maxdiffusion/configs/base_wan_27b.yml \
+  use_magcache=True \
+  magcache_thresh=0.04 \
+  magcache_K=2 \
+  ...
+
+# Example: enable MagCache for Wan 2.2 I2V
+python src/maxdiffusion/generate_wan.py \
+  src/maxdiffusion/configs/base_wan_i2v_27b.yml \
+  use_magcache=True \
+  magcache_thresh=0.06 \
+  magcache_K=2 \
+  ...
+```
 
 ### Ring Attention
 We added ring attention support for Wan models. Below are the stats for one `720p` (81 frames) video generation (with CFG DP):
