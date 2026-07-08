@@ -133,6 +133,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         FlaxStableDiffusionPipeline,
     )
     from .stable_diffusion_xl import FlaxStableDiffusionXLPipeline
+    from .ideogram.ideogram_pipeline import IdeogramPipeline
 
   try:
     if not (is_torch_available() and is_note_seq_available()):

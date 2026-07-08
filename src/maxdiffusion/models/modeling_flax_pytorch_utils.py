@@ -58,9 +58,12 @@ def validate_flax_state_dict(expected_pytree: dict, new_pytree: dict):
 
 def torch2jax(torch_tensor: torch.Tensor) -> Array:
   is_bfloat16 = torch_tensor.dtype == torch.bfloat16
-  if is_bfloat16:
+  is_float8 = torch_tensor.dtype in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
+  if is_bfloat16 or is_float8:
     # upcast the tensor to fp32
     torch_tensor = torch_tensor.float()
+    if is_float8:
+      is_bfloat16 = True
 
   if torch.device.type != "cpu":
     torch_tensor = torch_tensor.to("cpu")
@@ -137,7 +140,7 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
   # embedding
   if pt_tuple_key[-1] == "weight" and pt_tuple_key[:-1] + ("embedding",) in random_flax_state_dict:
     pt_tuple_key = pt_tuple_key[:-1] + ("embedding",)
-    return renamed_pt_tuple_key, pt_tensor
+    return pt_tuple_key, pt_tensor
 
   # conv layer
   renamed_pt_tuple_key = pt_tuple_key[:-1] + ("kernel",)
@@ -150,6 +153,10 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
   if pt_tuple_key[-1] == "weight" and pt_tensor.ndim == 5:
     pt_tensor = pt_tensor.transpose(2, 3, 4, 1, 0)
     return renamed_pt_tuple_key, pt_tensor
+
+  # direct match
+  if pt_tuple_key in random_flax_state_dict:
+    return pt_tuple_key, pt_tensor
 
   # linear layer
   renamed_pt_tuple_key = pt_tuple_key[:-1] + ("kernel",)
