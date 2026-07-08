@@ -386,7 +386,7 @@ class ConfigMixin:
     else:
       try:
         # Load from URL or cache if already cached
-        config_file = hf_hub_download(
+        config_file = hf_hub_download(  # pyrefly: ignore[no-matching-overload]
             pretrained_model_name_or_path,
             filename=cls.config_name,
             cache_dir=cache_dir,
@@ -461,7 +461,7 @@ class ConfigMixin:
     if return_commit_hash:
       outputs += (commit_hash,)
 
-    return outputs
+    return outputs  # pyrefly: ignore[bad-return]
 
   @staticmethod
   def _get_init_keys(cls):
@@ -496,7 +496,7 @@ class ConfigMixin:
     diffusers_library = importlib.import_module(__name__.split(".")[0])
 
     if cls.has_compatibles:
-      compatible_classes = [c for c in cls._get_compatibles() if not isinstance(c, DummyObject)]
+      compatible_classes = [c for c in cls._get_compatibles() if not isinstance(c, DummyObject)]  # pyrefly: ignore[missing-attribute]
     else:
       compatible_classes = []
 
@@ -691,7 +691,7 @@ def flax_register_to_config(cls):
     init_kwargs = dict(kwargs.items())
 
     # Retrieve default values
-    fields = dataclasses.fields(self)
+    fields = dataclasses.fields(self)  # pyrefly: ignore[bad-argument-type]
     default_kwargs = {}
     for field in fields:
       # ignore flax specific attributes
