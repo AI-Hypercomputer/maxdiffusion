@@ -29,8 +29,6 @@ from ...embeddings_flax import (FluxPosEmbed, CombinedTimestepGuidanceTextProjEm
 from .... import common_types
 from ....common_types import BlockSizes
 from ....utils import BaseOutput
-from ...gradient_checkpoint import GradientCheckpointType, SKIP_GRADIENT_CHECKPOINT_KEY
-from jax.ad_checkpoint import checkpoint_name
 
 AxisNames = common_types.AxisNames
 BATCH = common_types.BATCH
@@ -52,42 +50,41 @@ class Transformer2DModelOutput(BaseOutput):
   sample: jnp.ndarray
 
 
-class MlpAndOutputBlock(nn.Module):
+class FlaxSwiGLUFeedForward(nn.Module):
   dim: int
-  mlp_ratio: float = 4.0
+  dim_out: int
+  mult: float = 3.0
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
 
   def setup(self):
-    self.mlp_hidden_dim = int(self.dim * self.mlp_ratio)
-    self.lin_mlp = nn.Dense(
-        self.mlp_hidden_dim,
+    inner_dim = int(self.dim * self.mult)
+    self.linear_in = nn.Dense(
+        inner_dim * 2,
+        use_bias=False,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
-        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         precision=self.precision,
+        name="linear_in",
     )
-    self.mlp_act = nn.gelu
-    self.linear2 = nn.Dense(
-        self.dim,
+    self.linear_out = nn.Dense(
+        self.dim_out,
+        use_bias=False,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         precision=self.precision,
+        name="linear_out",
     )
 
-  def __call__(self, x, attn_output, gate, residual):
-    mlp = self.lin_mlp(x)
-    attn_mlp = jnp.concatenate([attn_output, self.mlp_act(mlp)], axis=2)
-    attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", None, "mlp"))
-    hidden_states = self.linear2(attn_mlp)
-    hidden_states = checkpoint_name(hidden_states, "lin2_hidden_states")
-    hidden_states = gate * hidden_states
-    hidden_states = residual + hidden_states
-    return hidden_states
+  def __call__(self, x):
+    x = self.linear_in(x)
+    x1, x2 = jnp.split(x, 2, axis=-1)
+    x = nn.silu(x1) * x2
+    x = self.linear_out(x)
+    return x
 
 
 class FluxSingleTransformerBlock(nn.Module):
@@ -115,18 +112,29 @@ class FluxSingleTransformerBlock(nn.Module):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
-  use_base2_exp: bool = False
-  use_experimental_scheduler: bool = False
+  use_global_modulation: bool = False  # Added flag!
+  use_swiglu: bool = False  # Added flag!
 
   def setup(self):
     self.mlp_hidden_dim = int(self.dim * self.mlp_ratio)
 
-    self.norm = AdaLayerNormZeroSingle(
-        self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
-    )
+    if self.use_global_modulation:
+      self.norm = nn.LayerNorm(
+          use_bias=False,
+          use_scale=False,
+          epsilon=1e-6,
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+      )
+    else:
+      self.norm = AdaLayerNormZeroSingle(
+          self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
+      )
 
-    self.lin_qkv = nn.Dense(
-        self.dim * 3,
+    out_dim = self.dim * 3 + (2 * self.mlp_hidden_dim if self.use_swiglu else self.mlp_hidden_dim)
+    self.linear1 = nn.Dense(
+        out_dim,
+        use_bias=not self.use_swiglu,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
         bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
         dtype=self.dtype,
@@ -134,14 +142,16 @@ class FluxSingleTransformerBlock(nn.Module):
         precision=self.precision,
     )
 
-    self.mlp_and_out = nn.remat(MlpAndOutputBlock, prevent_cse=True)(
-        dim=self.dim,
-        mlp_ratio=self.mlp_ratio,
+    self.mlp_act = nn.gelu
+    self.linear2 = nn.Dense(
+        self.dim,
+        use_bias=not self.use_swiglu,
+        kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+        bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
         dtype=self.dtype,
-        weights_dtype=self.weights_dtype,
+        param_dtype=self.weights_dtype,
         precision=self.precision,
     )
-
     self.attn = FlaxFluxAttention(
         query_dim=self.dim,
         heads=self.num_attention_heads,
@@ -151,35 +161,36 @@ class FluxSingleTransformerBlock(nn.Module):
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
         flash_block_sizes=self.flash_block_sizes,
-        use_base2_exp=self.use_base2_exp,
-        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
-  def __call__(self, hidden_states, temb, image_rotary_emb=None):
+  def __call__(self, hidden_states, temb=None, image_rotary_emb=None, temb_mod=None):
     residual = hidden_states
+    if self.use_global_modulation:
+      shift_msa, scale_msa, gate = jnp.split(temb_mod, 3, axis=-1)
+      # Unsqueeze sequence dimension for broadcasting when batch_size > 1
+      shift_msa = jnp.expand_dims(shift_msa, axis=1)
+      scale_msa = jnp.expand_dims(scale_msa, axis=1)
+      gate = jnp.expand_dims(gate, axis=1)
 
-    # FIX: Constrain inputs using valid config parameters (None skips sequence length axis parsing)
-    hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", None, "mlp"))
-
-    norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
-
-    qkv = self.lin_qkv(norm_hidden_states)
-    qkv = checkpoint_name(qkv, "lin1_norm_hidden_states")
-    qkv = nn.with_logical_constraint(qkv, ("activation_batch", None, "mlp"))
+      norm_hidden_states = self.norm(hidden_states)
+      norm_hidden_states = (1 + scale_msa) * norm_hidden_states + shift_msa
+    else:
+      norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
+    qkv, mlp = jnp.split(self.linear1(norm_hidden_states), [3 * self.dim], axis=-1)
+    mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
+    qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
 
     B, L = hidden_states.shape[:2]
     H, D, K = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3), 3
-
-    qkv_proj = qkv.reshape(B, L, K, H, D)
-    q, k, v = jnp.split(qkv_proj, 3, axis=2)
-    q = q.squeeze(2).swapaxes(1, 2)
-    k = k.squeeze(2).swapaxes(1, 2)
-    v = v.squeeze(2).swapaxes(1, 2)
+    qkv_proj = qkv.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
+    q, k, v = qkv_proj
 
     q = self.attn.query_norm(q)
     k = self.attn.key_norm(k)
 
     if image_rotary_emb is not None:
+      # since this function returns image_rotary_emb and passes it between layers,
+      # we do not want to modify it
       image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
       q, k = apply_rope(q, k, image_rotary_emb_reordered)
 
@@ -188,10 +199,18 @@ class FluxSingleTransformerBlock(nn.Module):
     v = v.transpose(0, 2, 1, 3).reshape(v.shape[0], v.shape[2], -1)
 
     attn_output = self.attn.attention_op.apply_attention(q, k, v)
-    attn_output = checkpoint_name(attn_output, "attn_output")
 
-    hidden_states = self.mlp_and_out(norm_hidden_states, attn_output, gate, residual)
+    if self.use_swiglu:
+      mlp1, mlp2 = jnp.split(mlp, 2, axis=-1)
+      mlp_activated = nn.silu(mlp1) * mlp2
+    else:
+      mlp_activated = self.mlp_act(mlp)
 
+    attn_mlp = jnp.concatenate([attn_output, mlp_activated], axis=2)
+    attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
+    hidden_states = self.linear2(attn_mlp)
+    hidden_states = gate * hidden_states
+    hidden_states = residual + hidden_states
     if hidden_states.dtype == jnp.float16:
       hidden_states = jnp.clip(hidden_states, -65504, 65504)
 
@@ -211,11 +230,12 @@ class FluxTransformerBlock(nn.Module):
       context_pre_only (`bool`): Boolean to determine if we should add some blocks associated with the
           processing of `context` conditions.
   """
+
   dim: int
   num_attention_heads: int
   attention_head_dim: int
   qk_norm: str = "rms_norm"
-  eps: float = 1e-6
+  eps: int = 1e-6
   flash_min_seq_length: int = 4096
   flash_block_sizes: BlockSizes = None
   mesh: jax.sharding.Mesh = None
@@ -225,13 +245,24 @@ class FluxTransformerBlock(nn.Module):
   mlp_ratio: float = 4.0
   qkv_bias: bool = False
   attention_kernel: str = "dot_product"
-  use_base2_exp: bool = False
-  use_experimental_scheduler: bool = False
+  use_global_modulation: bool = False  # Added flag!
+  use_swiglu: bool = False  # Added flag!
 
   def setup(self):
-    # These contain the parameter projections ("lin"), optimize them using your updated AdaLayerNorm class
-    self.img_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
-    self.txt_norm1 = AdaLayerNormZero(self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision)
+    if self.use_global_modulation:
+      self.img_norm1 = nn.LayerNorm(
+          use_bias=False, use_scale=False, epsilon=self.eps, dtype=self.dtype, param_dtype=self.weights_dtype
+      )
+      self.txt_norm1 = nn.LayerNorm(
+          use_bias=False, use_scale=False, epsilon=self.eps, dtype=self.dtype, param_dtype=self.weights_dtype
+      )
+    else:
+      self.img_norm1 = AdaLayerNormZero(
+          self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
+      )
+      self.txt_norm1 = AdaLayerNormZero(
+          self.dim, dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
+      )
 
     self.attn = FlaxFluxAttention(
         query_dim=self.dim,
@@ -243,150 +274,188 @@ class FluxTransformerBlock(nn.Module):
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
         flash_block_sizes=self.flash_block_sizes,
-        use_base2_exp=self.use_base2_exp,
-        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
-    # REMOVED: self.img_norm2 and self.txt_norm2 completely to stop HBM memory spilling.
-    # The mathematical reductions are handled natively below.
-
-    self.img_mlp = nn.Sequential([
-        nn.Dense(
-            int(self.dim * self.mlp_ratio),
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-        nn.gelu,
-        nn.Dense(
-            self.dim,
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-    ])
-
-    self.txt_mlp = nn.Sequential([
-        nn.Dense(
-            int(self.dim * self.mlp_ratio),
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-        nn.gelu,
-        nn.Dense(
-            self.dim,
-            use_bias=True,
-            kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
-            bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
-            dtype=self.dtype,
-            param_dtype=self.weights_dtype,
-            precision=self.precision,
-        ),
-    ])
-
-  def __call__(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb=None):
-    # Enforce active partitioning based on your FSDP setup config
-    hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", None, "mlp"))
-    encoder_hidden_states = nn.with_logical_constraint(encoder_hidden_states, ("activation_batch", None, "mlp"))
-
-    # 1. First Adaptive Normalization Pass
-    norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.img_norm1(hidden_states, emb=temb)
-    norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.txt_norm1(
-        encoder_hidden_states, emb=temb
+    self.img_norm2 = nn.LayerNorm(
+        use_bias=False,
+        use_scale=False,
+        epsilon=self.eps,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
     )
+    if self.use_swiglu:
+      self.img_mlp = FlaxSwiGLUFeedForward(
+          dim=self.dim,
+          dim_out=self.dim,
+          mult=self.mlp_ratio,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="img_mlp",
+      )
+    else:
+      self.img_mlp = nn.Sequential(
+          [
+              nn.Dense(
+                  int(self.dim * self.mlp_ratio),
+                  use_bias=True,
+                  kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+                  bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+                  dtype=self.dtype,
+                  param_dtype=self.weights_dtype,
+                  precision=self.precision,
+              ),
+              nn.gelu,
+              nn.Dense(
+                  self.dim,
+                  use_bias=True,
+                  kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+                  bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+                  dtype=self.dtype,
+                  param_dtype=self.weights_dtype,
+                  precision=self.precision,
+              ),
+          ],
+          name="img_mlp",
+      )
 
-    # 2. Attention Mechanics
+    self.txt_norm2 = nn.LayerNorm(
+        use_bias=False,
+        use_scale=False,
+        epsilon=self.eps,
+        dtype=self.dtype,
+        param_dtype=self.weights_dtype,
+    )
+    if self.use_swiglu:
+      self.txt_mlp = FlaxSwiGLUFeedForward(
+          dim=self.dim,
+          dim_out=self.dim,
+          mult=self.mlp_ratio,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="txt_mlp",
+      )
+    else:
+      self.txt_mlp = nn.Sequential(
+          [
+              nn.Dense(
+                  int(self.dim * self.mlp_ratio),
+                  use_bias=True,
+                  kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+                  bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+                  dtype=self.dtype,
+                  param_dtype=self.weights_dtype,
+                  precision=self.precision,
+              ),
+              nn.gelu,
+              nn.Dense(
+                  self.dim,
+                  use_bias=True,
+                  kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
+                  bias_init=nn.with_logical_partitioning(nn.initializers.zeros, (None,)),
+                  dtype=self.dtype,
+                  param_dtype=self.weights_dtype,
+                  precision=self.precision,
+              ),
+          ],
+          name="txt_mlp",
+      )
+
+    # let chunk size default to None
+    self._chunk_size = None
+    self._chunk_dim = 0
+
+  def __call__(
+      self, hidden_states, encoder_hidden_states, temb=None, image_rotary_emb=None, temb_mod_img=None, temb_mod_txt=None
+  ):
+    if self.use_global_modulation:
+      (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp) = jnp.split(temb_mod_img, 6, axis=-1)
+      (c_shift_msa, c_scale_msa, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp) = jnp.split(temb_mod_txt, 6, axis=-1)
+
+      # Unsqueeze sequence dimension for broadcasting when batch_size > 1
+      shift_msa = jnp.expand_dims(shift_msa, axis=1)
+      scale_msa = jnp.expand_dims(scale_msa, axis=1)
+      gate_msa = jnp.expand_dims(gate_msa, axis=1)
+      shift_mlp = jnp.expand_dims(shift_mlp, axis=1)
+      scale_mlp = jnp.expand_dims(scale_mlp, axis=1)
+      gate_mlp = jnp.expand_dims(gate_mlp, axis=1)
+
+      c_shift_msa = jnp.expand_dims(c_shift_msa, axis=1)
+      c_scale_msa = jnp.expand_dims(c_scale_msa, axis=1)
+      c_gate_msa = jnp.expand_dims(c_gate_msa, axis=1)
+      c_shift_mlp = jnp.expand_dims(c_shift_mlp, axis=1)
+      c_scale_mlp = jnp.expand_dims(c_scale_mlp, axis=1)
+      c_gate_mlp = jnp.expand_dims(c_gate_mlp, axis=1)
+
+      norm_hidden_states = self.img_norm1(hidden_states)
+      norm_hidden_states = (1 + scale_msa) * norm_hidden_states + shift_msa
+
+      norm_encoder_hidden_states = self.txt_norm1(encoder_hidden_states)
+      norm_encoder_hidden_states = (1 + c_scale_msa) * norm_encoder_hidden_states + c_shift_msa
+    else:
+      norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.img_norm1(hidden_states, emb=temb)
+      norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.txt_norm1(
+          encoder_hidden_states, emb=temb
+      )
+
+    # Attention.
     attn_output, context_attn_output = self.attn(
         hidden_states=norm_hidden_states,
         encoder_hidden_states=norm_encoder_hidden_states,
         image_rotary_emb=image_rotary_emb,
     )
 
-    # --- IMAGE STREAM OPTIMIZATION (img_norm2) ---
     attn_output = gate_msa * attn_output
     hidden_states = hidden_states + attn_output
-
-    # Fully fused LayerNorm + scale_mlp + shift_mlp compilation block
-    img_mean = jnp.mean(hidden_states, axis=-1, keepdims=True)
-    img_var = jnp.mean(jnp.square(hidden_states - img_mean), axis=-1, keepdims=True)
-    img_inv_std = jax.lax.rsqrt(img_var + self.eps)
-
-    norm_hidden_states = (hidden_states - img_mean) * img_inv_std * (1 + scale_mlp) + shift_mlp
-    norm_hidden_states = nn.with_logical_constraint(norm_hidden_states, ("activation_batch", None, "mlp"))
+    norm_hidden_states = self.img_norm2(hidden_states)
+    norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
 
     ff_output = self.img_mlp(norm_hidden_states)
-    hidden_states = hidden_states + gate_mlp * ff_output
+    ff_output = gate_mlp * ff_output
 
-    # --- TEXT STREAM OPTIMIZATION (txt_norm2) ---
+    hidden_states = hidden_states + ff_output
+    # Process attention outputs for the `encoder_hidden_states`.
     context_attn_output = c_gate_msa * context_attn_output
     encoder_hidden_states = encoder_hidden_states + context_attn_output
 
-    # Fully fused LayerNorm + c_scale_mlp + c_shift_mlp compilation block
-    txt_mean = jnp.mean(encoder_hidden_states, axis=-1, keepdims=True)
-    txt_var = jnp.mean(jnp.square(encoder_hidden_states - txt_mean), axis=-1, keepdims=True)
-    txt_inv_std = jax.lax.rsqrt(txt_var + self.eps)
-
-    norm_encoder_hidden_states = (encoder_hidden_states - txt_mean) * txt_inv_std * (1 + c_scale_mlp) + c_shift_mlp
-    norm_encoder_hidden_states = nn.with_logical_constraint(norm_encoder_hidden_states, ("activation_batch", None, "mlp"))
+    norm_encoder_hidden_states = self.txt_norm2(encoder_hidden_states)
+    norm_encoder_hidden_states = norm_encoder_hidden_states * (1 + c_scale_mlp) + c_shift_mlp
 
     context_ff_output = self.txt_mlp(norm_encoder_hidden_states)
     encoder_hidden_states = encoder_hidden_states + c_gate_mlp * context_ff_output
-
-    # Safe numerical clipping limits for half precision math execution
-    if encoder_hidden_states.dtype == jnp.float16 or encoder_hidden_states.dtype == jnp.bfloat16:
+    if encoder_hidden_states.dtype == jnp.float16:
       encoder_hidden_states = encoder_hidden_states.clip(-65504, 65504)
-      hidden_states = hidden_states.clip(-65504, 65504)
-
     return hidden_states, encoder_hidden_states
-
-
-class ScannedDoubleBlockWrapper(nn.Module):
-  block_kwargs: dict
-
-  @nn.compact
-  def __call__(self, carry, _):
-    hidden_states, encoder_hidden_states, temb, image_rotary_emb = carry
-
-    # Instantiate the pure block (no remat here)
-    block = FluxTransformerBlock(**self.block_kwargs)
-
-    h_out, e_out = block(
-        hidden_states=hidden_states,
-        encoder_hidden_states=encoder_hidden_states,
-        temb=temb,
-        image_rotary_emb=image_rotary_emb,
-    )
-    return (h_out, e_out, temb, image_rotary_emb), None
-
-
-class ScannedSingleBlockWrapper(nn.Module):
-  block_kwargs: dict
-
-  @nn.compact
-  def __call__(self, carry, _):
-    hidden_states, temb, image_rotary_emb = carry
-
-    # Instantiate the pure block
-    block = FluxSingleTransformerBlock(**self.block_kwargs)
-    h_out = block(hidden_states=hidden_states, temb=temb, image_rotary_emb=image_rotary_emb)
-    return (h_out, temb, image_rotary_emb), None
 
 
 @flax_register_to_config
 class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   r"""
   The Transformer model introduced in Flux.
+
+  Reference: https://blackforestlabs.ai/announcing-black-forest-labs/
+
+  This model inherits from [`FlaxModelMixin`]. Check the superclass documentation for it's generic methods
+  implemented for all models (such as downloading or saving).
+
+  This model is also a Flax Linen [flax.linen.Module](https://flax.readthedocs.io/en/latest/flax.linen.html#module)
+  subclass. Use it as a regular Flax Linen module and refer to the Flax documentation for all matters related to its
+  general usage and behavior.
+
+  Parameters:
+      patch_size (`int`): Patch size to turn the input data into small patches.
+      in_channels (`int`, *optional*, defaults to 16): The number of channels in the input.
+      num_layers (`int`, *optional*, defaults to 18): The number of layers of MMDiT blocks to use.
+      num_single_layers (`int`, *optional*, defaults to 18): The number of layers of single DiT blocks to use.
+      attention_head_dim (`int`, *optional*, defaults to 64): The number of channels in each head.
+      num_attention_heads (`int`, *optional*, defaults to 18): The number of heads to use for multi-head attention.
+      joint_attention_dim (`int`, *optional*): The number of `encoder_hidden_states` dimensions to use.
+      pooled_projection_dim (`int`): Number of dimensions to use when projecting the `pooled_projections`.
+      guidance_embeds (`bool`, defaults to False): Whether to use guidance embeddings.
+
   """
+
   patch_size: int = 1
   in_channels: int = 64
   num_layers: int = 19
@@ -400,6 +469,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   flash_min_seq_length: int = 4096
   flash_block_sizes: BlockSizes = None
   mesh: jax.sharding.Mesh = None
+  scale_shift_order: str = "shift_scale"
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
@@ -407,12 +477,12 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   qkv_bias: bool = True
   theta: int = 1000
   attention_kernel: str = "dot_product"
-  eps: float = 1e-6
-  remat_policy: str = "None"
-  names_which_can_be_saved: tuple = ()
-  names_which_can_be_offloaded: tuple = ()
-  use_base2_exp: bool = False
-  use_experimental_scheduler: bool = False
+  eps = 1e-6
+  joint_attention_bias: bool = True
+  x_embedder_bias: bool = True
+  proj_out_bias: bool = True
+  use_global_modulation: bool = False  # Added config flag!
+  use_swiglu: bool = False  # Added config flag!
 
   def setup(self):
     self.out_channels = self.in_channels
@@ -433,6 +503,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     )
     self.txt_in = nn.Dense(
         self.inner_dim,
+        use_bias=self.joint_attention_bias,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), (None, "mlp")),
         bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
         dtype=self.dtype,
@@ -441,6 +512,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     )
     self.img_in = nn.Dense(
         self.inner_dim,
+        use_bias=self.x_embedder_bias,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), (None, "mlp")),
         bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
         dtype=self.dtype,
@@ -448,85 +520,76 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         precision=self.precision,
     )
 
-    self.gradient_checkpoint = GradientCheckpointType.from_str(self.remat_policy)
+    if self.use_global_modulation:
+      self.double_stream_modulation_img = nn.Dense(
+          6 * self.inner_dim,
+          use_bias=False,
+          kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="double_stream_modulation_img",
+      )
+      self.double_stream_modulation_txt = nn.Dense(
+          6 * self.inner_dim,
+          use_bias=False,
+          kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="double_stream_modulation_txt",
+      )
+      self.single_stream_modulation = nn.Dense(
+          3 * self.inner_dim,
+          use_bias=False,
+          kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+          precision=self.precision,
+          name="single_stream_modulation",
+      )
 
-    # 2. Apply the policy to the Module classes
-    # RematDoubleBlock = self.gradient_checkpoint.apply_linen(FluxTransformerBlock)
-    # RematSingleBlock = self.gradient_checkpoint.apply_linen(FluxSingleTransformerBlock)
+    double_blocks = []
+    for _ in range(self.num_layers):
+      double_block = FluxTransformerBlock(
+          dim=self.inner_dim,
+          num_attention_heads=self.num_attention_heads,
+          attention_head_dim=self.attention_head_dim,
+          attention_kernel=self.attention_kernel,
+          flash_min_seq_length=self.flash_min_seq_length,
+          flash_block_sizes=self.flash_block_sizes,
+          mesh=self.mesh,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+          precision=self.precision,
+          mlp_ratio=self.mlp_ratio,
+          qkv_bias=self.qkv_bias,
+          use_global_modulation=self.use_global_modulation,
+          use_swiglu=self.use_swiglu,
+      )
+      double_blocks.append(double_block)
+    self.double_blocks = double_blocks
 
-    # 1. Prepare the kwargs for the double blocks
-    double_kwargs = {
-        "dim": self.inner_dim,
-        "num_attention_heads": self.num_attention_heads,
-        "attention_head_dim": self.attention_head_dim,
-        "attention_kernel": self.attention_kernel,
-        "flash_min_seq_length": self.flash_min_seq_length,
-        "flash_block_sizes": self.flash_block_sizes,
-        "mesh": self.mesh,
-        "dtype": self.dtype,
-        "weights_dtype": self.weights_dtype,
-        "precision": self.precision,
-        "mlp_ratio": self.mlp_ratio,
-        "qkv_bias": self.qkv_bias,
-        "use_base2_exp": self.use_base2_exp,
-        "use_experimental_scheduler": self.use_experimental_scheduler,
-    }
+    single_blocks = []
+    for _ in range(self.num_single_layers):
+      single_block = FluxSingleTransformerBlock(
+          dim=self.inner_dim,
+          num_attention_heads=self.num_attention_heads,
+          attention_head_dim=self.attention_head_dim,
+          attention_kernel=self.attention_kernel,
+          flash_min_seq_length=self.flash_min_seq_length,
+          flash_block_sizes=self.flash_block_sizes,
+          mesh=self.mesh,
+          dtype=self.dtype,
+          weights_dtype=self.weights_dtype,
+          precision=self.precision,
+          mlp_ratio=self.mlp_ratio,
+          use_global_modulation=self.use_global_modulation,
+          use_swiglu=self.use_swiglu,
+      )
+      single_blocks.append(single_block)
 
-    double_policy = self.gradient_checkpoint.to_jax_policy(
-        names_which_can_be_saved=self.names_which_can_be_saved,
-        names_which_can_be_offloaded=self.names_which_can_be_offloaded,
-        block_type="double",
-    )
-
-    if double_policy == SKIP_GRADIENT_CHECKPOINT_KEY:
-      RemattedDoubleWrapper = ScannedDoubleBlockWrapper
-    else:
-      RemattedDoubleWrapper = nn.remat(ScannedDoubleBlockWrapper, prevent_cse=True, policy=double_policy)
-
-    self.scanned_double_blocks = nn.scan(
-        RemattedDoubleWrapper,
-        variable_axes={"params": 0},
-        split_rngs={"params": True, "dropout": True},
-        length=self.num_layers,
-        metadata_params={"partition_name": None},
-    )(block_kwargs=double_kwargs)
-
-    # 3. Define pure kwargs for single blocks
-    single_kwargs = {
-        "dim": self.inner_dim,
-        "num_attention_heads": self.num_attention_heads,
-        "attention_head_dim": self.attention_head_dim,
-        "attention_kernel": self.attention_kernel,
-        "flash_min_seq_length": self.flash_min_seq_length,
-        "flash_block_sizes": self.flash_block_sizes,
-        "mesh": self.mesh,
-        "dtype": self.dtype,
-        "weights_dtype": self.weights_dtype,
-        "precision": self.precision,
-        "mlp_ratio": self.mlp_ratio,
-        "use_base2_exp": self.use_base2_exp,
-        "use_experimental_scheduler": self.use_experimental_scheduler,
-    }
-
-    # 4. Force strict checkpointing on the Single Wrapper
-    single_policy = self.gradient_checkpoint.to_jax_policy(
-        names_which_can_be_saved=self.names_which_can_be_saved,
-        names_which_can_be_offloaded=self.names_which_can_be_offloaded,
-        block_type="single",
-    )
-
-    if single_policy == SKIP_GRADIENT_CHECKPOINT_KEY:
-      RemattedSingleWrapper = ScannedSingleBlockWrapper
-    else:
-      RemattedSingleWrapper = nn.remat(ScannedSingleBlockWrapper, prevent_cse=True, policy=single_policy)
-
-    self.scanned_single_blocks = nn.scan(
-        RemattedSingleWrapper,
-        variable_axes={"params": 0},
-        split_rngs={"params": True, "dropout": True},
-        length=self.num_single_layers,
-        metadata_params={"partition_name": None},
-    )(block_kwargs=single_kwargs)
+    self.single_blocks = single_blocks
 
     self.norm_out = AdaLayerNormContinuous(
         self.inner_dim,
@@ -535,6 +598,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
+        scale_shift_order=self.scale_shift_order,
     )
 
     self.proj_out = nn.Dense(
@@ -544,7 +608,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         param_dtype=self.weights_dtype,
         precision=self.precision,
-        use_bias=True,
+        use_bias=self.proj_out_bias,
     )
 
   def timestep_embedding(self, t: jax.Array, dim: int, max_period=10000, time_factor: float = 1000.0) -> jax.Array:
@@ -564,9 +628,9 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     t = time_factor * t
     half = dim // 2
 
-    freqs = jnp.exp(-math.log(max_period) * jnp.arange(start=0, stop=half, dtype=jnp.bfloat16) / half).astype(dtype=t.dtype)
+    freqs = jnp.exp(-math.log(max_period) * jnp.arange(start=0, stop=half, dtype=t.dtype) / half)
 
-    args = t[:, None].astype(jnp.bfloat16) * freqs[None]
+    args = t[:, None] * freqs[None]
     embedding = jnp.concatenate([jnp.cos(args), jnp.sin(args)], axis=-1)
 
     if dim % 2:
@@ -588,13 +652,15 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       guidance,
       return_dict: bool = True,
       train: bool = False,
+      return_intermediates: bool = False,
   ):
     hidden_states = self.img_in(hidden_states)
-    timestep = self.timestep_embedding(timestep, 256)
+    timestep = self.timestep_embedding(timestep, 256, time_factor=1.0)
+
     timestep = nn.with_logical_constraint(timestep, ("activation_batch", None))
 
     if self.guidance_embeds:
-      guidance = self.timestep_embedding(guidance, 256)
+      guidance = self.timestep_embedding(guidance, 256, time_factor=1.0)
     else:
       guidance = None
     temb = (
@@ -604,6 +670,14 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     )
 
     temb = nn.with_logical_constraint(temb, ("activation_batch", None))
+
+    if self.use_global_modulation:
+      temb_silu = nn.silu(temb)
+      double_stream_mod_img = self.double_stream_modulation_img(temb_silu)
+      double_stream_mod_txt = self.double_stream_modulation_txt(temb_silu)
+      single_stream_mod = self.single_stream_modulation(temb_silu)
+    else:
+      double_stream_mod_img, double_stream_mod_txt, single_stream_mod = None, None, None
 
     encoder_hidden_states = self.txt_in(encoder_hidden_states)
     if txt_ids.ndim == 3:
@@ -616,22 +690,52 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     image_rotary_emb = self.pe_embedder(ids)
     image_rotary_emb = nn.with_logical_constraint(image_rotary_emb, (None, None))
 
-    carry = (hidden_states, encoder_hidden_states, temb, image_rotary_emb)
-    carry, _ = self.scanned_double_blocks(carry, None)
-    hidden_states, encoder_hidden_states, _, _ = carry
+    # Initialize intermediates collection if requested
+    intermediates = {}
+    if return_intermediates:
+      intermediates["temb"] = temb
+      intermediates["global_modulation"] = (double_stream_mod_img, double_stream_mod_txt, single_stream_mod)
+      intermediates["double_block_inputs"] = []
+      intermediates["double_block_outputs"] = []
+      intermediates["single_block_outputs"] = []
+
+    for double_block in self.double_blocks:
+      if return_intermediates:
+        intermediates["double_block_inputs"].append((hidden_states, encoder_hidden_states))
+      hidden_states, encoder_hidden_states = double_block(
+          hidden_states=hidden_states,
+          encoder_hidden_states=encoder_hidden_states,
+          temb=temb,
+          image_rotary_emb=image_rotary_emb,
+          temb_mod_img=double_stream_mod_img,
+          temb_mod_txt=double_stream_mod_txt,
+      )
+      if return_intermediates:
+        intermediates["double_block_outputs"].append((hidden_states, encoder_hidden_states))
 
     hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
     hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
 
-    # Execute the 38 Single Blocks
-    carry = (hidden_states, temb, image_rotary_emb)
-    carry, _ = self.scanned_single_blocks(carry, None)
-    hidden_states, _, _ = carry
+    for single_block in self.single_blocks:
+      hidden_states = single_block(
+          hidden_states=hidden_states,
+          temb=temb,
+          image_rotary_emb=image_rotary_emb,
+          temb_mod=single_stream_mod,
+      )
+      if return_intermediates:
+        intermediates["single_block_outputs"].append(hidden_states)
+
+    if return_intermediates:
+      intermediates["before_split"] = hidden_states
 
     hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
     hidden_states = self.norm_out(hidden_states, temb)
     output = self.proj_out(hidden_states)
+
+    if return_intermediates:
+      return output, intermediates
 
     if not return_dict:
       return (output,)
@@ -643,30 +747,26 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     resolution = 1024
     num_devices = len(jax.devices())
     batch_size = 1 * num_devices
-    in_channels = self.in_channels // 4
-    joint_attention_dim = self.joint_attention_dim
-    pos_id_dim = 3
-    pooled_projection_dim = self.pooled_projection_dim
-
     batch_image_shape = (
         batch_size,
-        in_channels,
+        16,  # 16 to match jflux.get_noise
         2 * resolution // scale_factor,
         2 * resolution // scale_factor,
     )
+    # bs, encoder_input, seq_length
     text_shape = (
         batch_size,
         max_sequence_length,
-        joint_attention_dim,
+        4096,  # Sequence length of text encoder, how to get this programmatically?
     )
     text_ids_shape = (
         batch_size,
         max_sequence_length,
-        pos_id_dim,
+        3,  # Hardcoded to match jflux.prepare
     )
     vec_shape = (
         batch_size,
-        pooled_projection_dim,
+        768,  # Sequence length of clip, how to get this programmatically?
     )
     img = jnp.zeros(batch_image_shape, dtype=self.dtype)
     bs, _, h, w = img.shape
@@ -678,8 +778,11 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     txt = jnp.zeros(text_shape, dtype=self.dtype)
     txt_ids = jnp.zeros(text_ids_shape, dtype=self.dtype)
+
     t_vec = jnp.full(bs, 0, dtype=self.dtype)
+
     vec = jnp.zeros(vec_shape, dtype=self.dtype)
+
     guidance_vec = jnp.full(bs, 4.0, dtype=self.dtype)
 
     if eval_only:

@@ -154,17 +154,9 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
           tensors[k] = torch2jax(f.get_tensor(k))
       flax_state_dict = {}
       cpu = jax.local_devices(backend="cpu")[0]
-
-      double_blocks_tensors = {}
-      single_blocks_tensors = {}
-
       for pt_key, tensor in tensors.items():
-        if pt_key.startswith("double_blocks."):
-          parts = pt_key.split(".")
-          layer_idx = int(parts[1])
-          pt_key_without_idx = "double_blocks." + ".".join(parts[2:])
-          renamed_pt_key = rename_key(pt_key_without_idx)
-          renamed_pt_key = renamed_pt_key.replace("double_blocks", "scanned_double_blocks.FluxTransformerBlock_0")
+        renamed_pt_key = rename_key(pt_key)
+        if "double_blocks" in renamed_pt_key:
           renamed_pt_key = renamed_pt_key.replace("img_mlp_", "img_mlp.layers_")
           renamed_pt_key = renamed_pt_key.replace("txt_mlp_", "txt_mlp.layers_")
           renamed_pt_key = renamed_pt_key.replace("img_mod", "img_norm1")
@@ -176,65 +168,14 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
           renamed_pt_key = renamed_pt_key.replace("txt_attn.proj", "attn.e_proj")
           renamed_pt_key = renamed_pt_key.replace("txt_attn.norm.key_norm", "attn.encoder_key_norm")
           renamed_pt_key = renamed_pt_key.replace("txt_attn.norm.query_norm", "attn.encoder_query_norm")
-
-          pt_tuple_key = tuple(renamed_pt_key.split("."))
-          flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, eval_shapes, scan_layers=True)
-          if flax_key not in double_blocks_tensors:
-            double_blocks_tensors[flax_key] = {}
-          double_blocks_tensors[flax_key][layer_idx] = flax_tensor
-          continue
-
-        elif pt_key.startswith("single_blocks."):
-          parts = pt_key.split(".")
-          layer_idx = int(parts[1])
-          pt_key_without_idx = "single_blocks." + ".".join(parts[2:])
-          renamed_pt_key = rename_key(pt_key_without_idx)
-          renamed_pt_key = renamed_pt_key.replace("single_blocks", "scanned_single_blocks.FluxSingleTransformerBlock_0")
-          renamed_pt_key = renamed_pt_key.replace("modulation", "norm")
-          renamed_pt_key = renamed_pt_key.replace("norm.key_norm", "attn.key_norm")
-          renamed_pt_key = renamed_pt_key.replace("norm.query_norm", "attn.query_norm")
-
-          if "linear1" in renamed_pt_key:
-            if tensor.ndim == 2:
-              qkv_tensor = tensor[:9216, :]
-              mlp_tensor = tensor[9216:, :]
-            else:
-              qkv_tensor = tensor[:9216]
-              mlp_tensor = tensor[9216:]
-            qkv_pt_key = renamed_pt_key.replace("linear1", "lin_qkv")
-            mlp_pt_key = renamed_pt_key.replace("linear1", "mlp_and_out.lin_mlp")
-
-            flax_key_qkv, flax_tensor_qkv = rename_key_and_reshape_tensor(
-                tuple(qkv_pt_key.split(".")), qkv_tensor, eval_shapes, scan_layers=True
-            )
-            flax_key_mlp, flax_tensor_mlp = rename_key_and_reshape_tensor(
-                tuple(mlp_pt_key.split(".")), mlp_tensor, eval_shapes, scan_layers=True
-            )
-
-            if flax_key_qkv not in single_blocks_tensors:
-              single_blocks_tensors[flax_key_qkv] = {}
-            single_blocks_tensors[flax_key_qkv][layer_idx] = flax_tensor_qkv
-
-            if flax_key_mlp not in single_blocks_tensors:
-              single_blocks_tensors[flax_key_mlp] = {}
-            single_blocks_tensors[flax_key_mlp][layer_idx] = flax_tensor_mlp
-            continue
-
-          elif "linear2" in renamed_pt_key:
-            renamed_pt_key = renamed_pt_key.replace("linear2", "mlp_and_out.linear2")
-
-          pt_tuple_key = tuple(renamed_pt_key.split("."))
-          flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, eval_shapes, scan_layers=True)
-          if flax_key not in single_blocks_tensors:
-            single_blocks_tensors[flax_key] = {}
-          single_blocks_tensors[flax_key][layer_idx] = flax_tensor
-          continue
-
-        renamed_pt_key = rename_key(pt_key)
-        if "guidance_in" in renamed_pt_key:
+        elif "guidance_in" in renamed_pt_key:
           renamed_pt_key = renamed_pt_key.replace("guidance_in", "time_text_embed.FlaxTimestepEmbedding_1")
           renamed_pt_key = renamed_pt_key.replace("in_layer", "linear_1")
           renamed_pt_key = renamed_pt_key.replace("out_layer", "linear_2")
+        elif "single_blocks" in renamed_pt_key:
+          renamed_pt_key = renamed_pt_key.replace("modulation", "norm")
+          renamed_pt_key = renamed_pt_key.replace("norm.key_norm", "attn.key_norm")
+          renamed_pt_key = renamed_pt_key.replace("norm.query_norm", "attn.query_norm")
         elif "vector_in" in renamed_pt_key or "time_in" in renamed_pt_key:
           renamed_pt_key = renamed_pt_key.replace("vector_in", "time_text_embed.PixArtAlphaTextProjection_0")
           renamed_pt_key = renamed_pt_key.replace("time_in", "time_text_embed.FlaxTimestepEmbedding_0")
@@ -243,25 +184,379 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
         elif "final_layer" in renamed_pt_key:
           renamed_pt_key = renamed_pt_key.replace("final_layer.linear", "proj_out")
           renamed_pt_key = renamed_pt_key.replace("final_layer.adaLN_modulation_1", "norm_out.Dense_0")
-
         pt_tuple_key = tuple(renamed_pt_key.split("."))
         flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, eval_shapes)
         flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
-
-      # Stack double blocks
-      for flax_key, layers in double_blocks_tensors.items():
-        sorted_indices = sorted(layers.keys())
-        stacked_tensor = jnp.stack([layers[i] for i in sorted_indices], axis=0)
-        flax_state_dict[flax_key] = jax.device_put(stacked_tensor, device=cpu)
-
-      # Stack single blocks
-      for flax_key, layers in single_blocks_tensors.items():
-        sorted_indices = sorted(layers.keys())
-        stacked_tensor = jnp.stack([layers[i] for i in sorted_indices], axis=0)
-        flax_state_dict[flax_key] = jax.device_put(stacked_tensor, device=cpu)
-
       validate_flax_state_dict(eval_shapes, flax_state_dict)
       flax_state_dict = unflatten_dict(flax_state_dict)
       del tensors
       jax.clear_caches()
   return flax_state_dict
+
+
+# -----------------------------------------------------------------------------
+# Latent Packing & Unpacking Helpers
+# -----------------------------------------------------------------------------
+
+
+def pack_latents(latents):
+  """
+  Groups spatial 2x2 latent neighborhoods into a single channel dimension.
+  Transforms unpacked shape (batch_size, channels, height, width)
+  to packed sequence shape (batch_size, (height//2)*(width//2), channels*4).
+  """
+  import numpy as np
+  import jax.numpy as jnp
+
+  batch_size, channels, height, width = latents.shape
+  latents = np.reshape(latents, (batch_size, channels, height // 2, 2, width // 2, 2))
+  latents = np.transpose(latents, (0, 2, 4, 1, 3, 5))
+  latents = np.reshape(latents, (batch_size, (height // 2) * (width // 2), channels * 4))
+  return jnp.array(latents)
+
+
+def unpack_latents(latents, batch_size, num_channels_latents, height, width):
+  """
+  Unpacks packed sequence of shape (batch_size, (height//16)*(width//16), channels*4)
+  back to the unpacked spatial grid shape (batch_size, channels, height//8, width//8).
+  """
+  import numpy as np
+
+  h_latent = height // 8
+  w_latent = width // 8
+
+  # 1. Reshape to split spatial grid and packed channel blocks
+  latents = np.reshape(latents, (batch_size, h_latent // 2, w_latent // 2, num_channels_latents, 2, 2))
+  # 2. Permute dimensions back to unpacked order
+  latents = np.transpose(latents, (0, 3, 1, 4, 2, 5))
+  # 3. Flatten back to 4D unpacked latent shape
+  latents = np.reshape(latents, (batch_size, num_channels_latents, h_latent, w_latent))
+  return latents
+
+
+def unpack_latents_with_ids(x, x_ids, height, width):
+  """[B, H*W, C] -> [B, C, H, W] using coordinate IDs."""
+  import jax.numpy as jnp
+
+  batch_size, seq_len, ch = x.shape
+  x_list = []
+  for b in range(batch_size):
+    data = x[b]
+    pos = x_ids[b]
+    h_ids = pos[:, 1].astype(jnp.int32)
+    w_ids = pos[:, 2].astype(jnp.int32)
+    flat_ids = h_ids * width + w_ids
+    out = jnp.zeros((height * width, ch), dtype=x.dtype)
+    out = out.at[flat_ids].set(data)
+    out = jnp.transpose(jnp.reshape(out, (height, width, ch)), (2, 0, 1))
+    x_list.append(out)
+  return jnp.stack(x_list, axis=0)
+
+
+def unpatchify_latents(latents):
+  """Reverses the 2x2 spatial patch grouping: [B, C, H, W] -> [B, C/4, H*2, W*2]"""
+  import jax.numpy as jnp
+
+  batch_size, num_channels_latents, height, width = latents.shape
+  x = jnp.reshape(latents, (batch_size, num_channels_latents // 4, 2, 2, height, width))
+  x = jnp.transpose(x, (0, 1, 4, 2, 5, 3))
+  x = jnp.reshape(x, (batch_size, num_channels_latents // 4, height * 2, width * 2))
+  return x
+
+
+# -----------------------------------------------------------------------------
+# 4D RoPE Position Grid Helpers
+# -----------------------------------------------------------------------------
+
+
+def prepare_latent_image_ids(batch_size, height, width):
+  """
+  Generates positional identifiers (Height and Width coordinates) for images to build RoPE grids.
+  Shape: (batch_size, height * width, 4)
+  """
+  import jax.numpy as jnp
+
+  grid = jnp.zeros((height, width, 4), dtype=jnp.int32)
+  grid = grid.at[..., 1].set(jnp.arange(height)[:, None])
+  grid = grid.at[..., 2].set(jnp.arange(width)[None, :])
+  latent_image_ids = grid.reshape(-1, 4)
+  return jnp.tile(latent_image_ids[None, ...], (batch_size, 1, 1))
+
+
+def prepare_text_ids(batch_size, seq_len):
+  """
+  Generates sequence index coordinate identifiers for text prompt tokens to build RoPE grids.
+  Shape: (batch_size, seq_len, 4)
+  """
+  import jax.numpy as jnp
+
+  # Text ids: [batch, seq_len, 4]. Fill text token index.
+  text_ids = jnp.zeros((seq_len, 4))
+  # The first element is the frame index (0). The 4th is text sequence index.
+  text_ids = text_ids.at[..., 3].set(jnp.arange(seq_len))
+  return jnp.tile(text_ids[None, ...], (batch_size, 1, 1))
+
+
+# -----------------------------------------------------------------------------
+# Parameter In-place Casting Helper
+# -----------------------------------------------------------------------------
+
+
+def cast_dict_to_bfloat16_inplace(d):
+  """Casts a nested dictionary of JAX/numpy arrays to bfloat16 in-place, freeing memory immediately."""
+  import gc
+  import jax.numpy as jnp
+
+  for k, v in list(d.items()):
+    if isinstance(v, dict):
+      cast_dict_to_bfloat16_inplace(v)
+    elif hasattr(v, "astype"):
+      d[k] = jnp.array(v, dtype=jnp.bfloat16)
+      if hasattr(d[k], "block_until_ready"):
+        d[k].block_until_ready()
+      del v
+      gc.collect()
+
+
+# -----------------------------------------------------------------------------
+# Safetensors Weight Loader & Key Converter Functions
+# -----------------------------------------------------------------------------
+
+
+def load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, num_single_layers):
+  """
+  Loads PyTorch weights from safetensors and converts them to JAX parameter dictionary.
+  Supports dynamic layer counts (double and single stream blocks) and sharded safetensors directories.
+  """
+  from safetensors.torch import load_file
+  import torch
+  import numpy as np
+  import jax.numpy as jnp
+  import glob
+  import os
+  import gc
+
+  pt_state_dict = {}
+  if os.path.isdir(safetensors_path):
+    shards = glob.glob(os.path.join(safetensors_path, "*.safetensors"))
+    print(f"Loading sharded PyTorch weights from directory: {safetensors_path} (Found {len(shards)} shards)...")
+    for shard in sorted(shards):
+      print(f"Loading shard: {shard}...")
+      pt_state_dict.update(load_file(shard, device="cpu"))
+  else:
+    print(f"Loading PyTorch weights from: {safetensors_path}")
+    pt_state_dict = load_file(safetensors_path, device="cpu")
+
+  print("Mapping PyTorch weights to JAX parameters...")
+
+  first_leaf = jax.tree_util.tree_leaves(params)[0]
+  target_dtype = first_leaf.dtype
+
+  def cvt(tensor, transpose=False):
+    if transpose:
+      tensor = tensor.T
+    return jnp.array(tensor.to(torch.float32).cpu().numpy(), dtype=target_dtype)
+
+  # Global layers
+  params["txt_in"]["kernel"] = cvt(pt_state_dict.pop("context_embedder.weight"), transpose=True)
+  params["img_in"]["kernel"] = cvt(pt_state_dict.pop("x_embedder.weight"), transpose=True)
+  params["double_stream_modulation_img"]["kernel"] = cvt(
+      pt_state_dict.pop("double_stream_modulation_img.linear.weight"), transpose=True
+  )
+  params["double_stream_modulation_txt"]["kernel"] = cvt(
+      pt_state_dict.pop("double_stream_modulation_txt.linear.weight"), transpose=True
+  )
+  params["single_stream_modulation"]["kernel"] = cvt(
+      pt_state_dict.pop("single_stream_modulation.linear.weight"), transpose=True
+  )
+  params["proj_out"]["kernel"] = cvt(pt_state_dict.pop("proj_out.weight"), transpose=True)
+
+  # norm_out
+  params["norm_out"]["Dense_0"]["kernel"] = cvt(pt_state_dict.pop("norm_out.linear.weight"), transpose=True)
+
+  # time_text_embed (Timestep Embedding)
+  if "time_guidance_embed.timestep_embedder.linear_1.weight" in pt_state_dict:
+    params["time_text_embed"]["FlaxTimestepEmbedding_0"]["linear_1"]["kernel"] = cvt(
+        pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_1.weight"), transpose=True
+    )
+  if "time_guidance_embed.timestep_embedder.linear_1.bias" in pt_state_dict:
+    params["time_text_embed"]["FlaxTimestepEmbedding_0"]["linear_1"]["bias"] = cvt(
+        pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_1.bias")
+    )
+  if "time_guidance_embed.timestep_embedder.linear_2.weight" in pt_state_dict:
+    params["time_text_embed"]["FlaxTimestepEmbedding_0"]["linear_2"]["kernel"] = cvt(
+        pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_2.weight"), transpose=True
+    )
+  if "time_guidance_embed.timestep_embedder.linear_2.bias" in pt_state_dict:
+    params["time_text_embed"]["FlaxTimestepEmbedding_0"]["linear_2"]["bias"] = cvt(
+        pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_2.bias")
+    )
+
+  # Double Blocks
+  print(f"Mapping {num_double_layers} double-stream attention blocks...")
+  for block_idx in range(num_double_layers):
+    jax_db = params[f"double_blocks_{block_idx}"]
+    prefix = f"transformer_blocks.{block_idx}."
+
+    # Concatenate QKV projections
+    to_q = pt_state_dict.pop(prefix + "attn.to_q.weight").to(torch.float32).T.cpu().numpy()
+    to_k = pt_state_dict.pop(prefix + "attn.to_k.weight").to(torch.float32).T.cpu().numpy()
+    to_v = pt_state_dict.pop(prefix + "attn.to_v.weight").to(torch.float32).T.cpu().numpy()
+    jax_db["attn"]["i_qkv"]["kernel"] = jnp.array(np.concatenate([to_q, to_k, to_v], axis=1), dtype=target_dtype)
+
+    add_q = pt_state_dict.pop(prefix + "attn.add_q_proj.weight").to(torch.float32).T.cpu().numpy()
+    add_k = pt_state_dict.pop(prefix + "attn.add_k_proj.weight").to(torch.float32).T.cpu().numpy()
+    add_v = pt_state_dict.pop(prefix + "attn.add_v_proj.weight").to(torch.float32).T.cpu().numpy()
+    jax_db["attn"]["e_qkv"]["kernel"] = jnp.array(np.concatenate([add_q, add_k, add_v], axis=1), dtype=target_dtype)
+
+    # Projections out
+    jax_db["attn"]["i_proj"]["kernel"] = cvt(pt_state_dict.pop(prefix + "attn.to_out.0.weight"), transpose=True)
+    jax_db["attn"]["e_proj"]["kernel"] = cvt(pt_state_dict.pop(prefix + "attn.to_add_out.weight"), transpose=True)
+
+    # Norm scales
+    jax_db["attn"]["query_norm"]["scale"] = cvt(pt_state_dict.pop(prefix + "attn.norm_q.weight"))
+    jax_db["attn"]["key_norm"]["scale"] = cvt(pt_state_dict.pop(prefix + "attn.norm_k.weight"))
+    jax_db["attn"]["encoder_query_norm"]["scale"] = cvt(pt_state_dict.pop(prefix + "attn.norm_added_q.weight"))
+    jax_db["attn"]["encoder_key_norm"]["scale"] = cvt(pt_state_dict.pop(prefix + "attn.norm_added_k.weight"))
+
+    # SwiGLU MLPs
+    jax_db["img_mlp"]["linear_in"]["kernel"] = cvt(pt_state_dict.pop(prefix + "ff.linear_in.weight"), transpose=True)
+    jax_db["img_mlp"]["linear_out"]["kernel"] = cvt(pt_state_dict.pop(prefix + "ff.linear_out.weight"), transpose=True)
+    jax_db["txt_mlp"]["linear_in"]["kernel"] = cvt(pt_state_dict.pop(prefix + "ff_context.linear_in.weight"), transpose=True)
+    jax_db["txt_mlp"]["linear_out"]["kernel"] = cvt(
+        pt_state_dict.pop(prefix + "ff_context.linear_out.weight"), transpose=True
+    )
+
+  # Single Blocks
+  print(f"Mapping {num_single_layers} single-stream attention blocks...")
+  for block_idx in range(num_single_layers):
+    jax_sb = params[f"single_blocks_{block_idx}"]
+    s_prefix = f"single_transformer_blocks.{block_idx}."
+
+    # Joint projections
+    jax_sb["linear1"]["kernel"] = cvt(pt_state_dict.pop(s_prefix + "attn.to_qkv_mlp_proj.weight"), transpose=True)
+    jax_sb["linear2"]["kernel"] = cvt(pt_state_dict.pop(s_prefix + "attn.to_out.weight"), transpose=True)
+
+    # Norm scales
+    jax_sb["attn"]["query_norm"]["scale"] = cvt(pt_state_dict.pop(s_prefix + "attn.norm_q.weight"))
+    jax_sb["attn"]["key_norm"]["scale"] = cvt(pt_state_dict.pop(s_prefix + "attn.norm_k.weight"))
+
+  params = jax.tree_util.tree_map(
+      lambda leaf: jnp.zeros(leaf.shape, dtype=leaf.dtype) if isinstance(leaf, jax.ShapeDtypeStruct) else leaf, params
+  )
+  del pt_state_dict
+  gc.collect()
+  print("Weight conversion complete!")
+  return params
+
+
+def load_and_convert_vae_weights(safetensors_path, jax_params):
+  """Loads PyTorch VAE weights from safetensors, maps them to JAX, and extracts BN stats."""
+  from safetensors.torch import load_file
+  import torch
+  import flax
+  import jax.numpy as jnp
+
+  print(f"Loading PyTorch VAE weights from: {safetensors_path}")
+  pt_state_dict = load_file(safetensors_path)
+
+  # Helper to safely convert PyTorch bfloat16 tensors to numpy float32
+  def get_w(key):
+    return pt_state_dict[key].to(torch.float32).cpu().numpy()
+
+  # Unfreeze JAX params so we can load the weights
+  jax_params = flax.core.unfreeze(jax_params)
+
+  # Map weights
+  print("Mapping VAE decoder weights to JAX parameters...")
+
+  # post_quant_conv
+  jax_params["post_quant_conv"]["kernel"] = jnp.array(get_w("post_quant_conv.weight").transpose(2, 3, 1, 0))
+  jax_params["post_quant_conv"]["bias"] = jnp.array(get_w("post_quant_conv.bias"))
+
+  # decoder.conv_in
+  jax_params["decoder"]["conv_in"]["kernel"] = jnp.array(get_w("decoder.conv_in.weight").transpose(2, 3, 1, 0))
+  jax_params["decoder"]["conv_in"]["bias"] = jnp.array(get_w("decoder.conv_in.bias"))
+
+  # decoder.mid_block
+  # resnets
+  for idx in [0, 1]:
+    res_jax = jax_params["decoder"]["mid_block"][f"resnets_{idx}"]
+    res_pt_prefix = f"decoder.mid_block.resnets.{idx}"
+
+    res_jax["norm1"]["scale"] = jnp.array(get_w(f"{res_pt_prefix}.norm1.weight"))
+    res_jax["norm1"]["bias"] = jnp.array(get_w(f"{res_pt_prefix}.norm1.bias"))
+    res_jax["conv1"]["kernel"] = jnp.array(get_w(f"{res_pt_prefix}.conv1.weight").transpose(2, 3, 1, 0))
+    res_jax["conv1"]["bias"] = jnp.array(get_w(f"{res_pt_prefix}.conv1.bias"))
+
+    res_jax["norm2"]["scale"] = jnp.array(get_w(f"{res_pt_prefix}.norm2.weight"))
+    res_jax["norm2"]["bias"] = jnp.array(get_w(f"{res_pt_prefix}.norm2.bias"))
+    res_jax["conv2"]["kernel"] = jnp.array(get_w(f"{res_pt_prefix}.conv2.weight").transpose(2, 3, 1, 0))
+    res_jax["conv2"]["bias"] = jnp.array(get_w(f"{res_pt_prefix}.conv2.bias"))
+
+  # attentions
+  attn_pt_prefix = "decoder.mid_block.attentions.0"
+  attn_jax = jax_params["decoder"]["mid_block"]["attentions_0"]
+
+  attn_jax["group_norm"]["scale"] = jnp.array(get_w(f"{attn_pt_prefix}.group_norm.weight"))
+  attn_jax["group_norm"]["bias"] = jnp.array(get_w(f"{attn_pt_prefix}.group_norm.bias"))
+
+  attn_jax["query"]["kernel"] = jnp.array(get_w(f"{attn_pt_prefix}.to_q.weight").T)
+  attn_jax["query"]["bias"] = jnp.array(get_w(f"{attn_pt_prefix}.to_q.bias"))
+  attn_jax["key"]["kernel"] = jnp.array(get_w(f"{attn_pt_prefix}.to_k.weight").T)
+  attn_jax["key"]["bias"] = jnp.array(get_w(f"{attn_pt_prefix}.to_k.bias"))
+  attn_jax["value"]["kernel"] = jnp.array(get_w(f"{attn_pt_prefix}.to_v.weight").T)
+  attn_jax["value"]["bias"] = jnp.array(get_w(f"{attn_pt_prefix}.to_v.bias"))
+
+  attn_jax["proj_attn"]["kernel"] = jnp.array(get_w(f"{attn_pt_prefix}.to_out.0.weight").T)
+  attn_jax["proj_attn"]["bias"] = jnp.array(get_w(f"{attn_pt_prefix}.to_out.0.bias"))
+
+  # decoder.up_blocks
+  for b_idx in range(4):
+    up_block_jax = jax_params["decoder"][f"up_blocks_{b_idx}"]
+    up_block_pt = f"decoder.up_blocks.{b_idx}"
+
+    for r_idx in range(3):
+      res_jax = up_block_jax[f"resnets_{r_idx}"]
+      res_pt = f"{up_block_pt}.resnets.{r_idx}"
+
+      res_jax["norm1"]["scale"] = jnp.array(get_w(f"{res_pt}.norm1.weight"))
+      res_jax["norm1"]["bias"] = jnp.array(get_w(f"{res_pt}.norm1.bias"))
+      res_jax["conv1"]["kernel"] = jnp.array(get_w(f"{res_pt}.conv1.weight").transpose(2, 3, 1, 0))
+      res_jax["conv1"]["bias"] = jnp.array(get_w(f"{res_pt}.conv1.bias"))
+
+      res_jax["norm2"]["scale"] = jnp.array(get_w(f"{res_pt}.norm2.weight"))
+      res_jax["norm2"]["bias"] = jnp.array(get_w(f"{res_pt}.norm2.bias"))
+      res_jax["conv2"]["kernel"] = jnp.array(get_w(f"{res_pt}.conv2.weight").transpose(2, 3, 1, 0))
+      res_jax["conv2"]["bias"] = jnp.array(get_w(f"{res_pt}.conv2.bias"))
+
+      shortcut_key = f"{res_pt}.conv_shortcut.weight"
+      if shortcut_key in pt_state_dict:
+        res_jax["conv_shortcut"]["kernel"] = jnp.array(get_w(shortcut_key).transpose(2, 3, 1, 0))
+        res_jax["conv_shortcut"]["bias"] = jnp.array(get_w(f"{res_pt}.conv_shortcut.bias"))
+
+    if b_idx < 3:
+      upsampler_jax = up_block_jax["upsamplers_0"]
+      upsampler_pt = f"{up_block_pt}.upsamplers.0"
+
+      upsampler_jax["conv"]["kernel"] = jnp.array(get_w(f"{upsampler_pt}.conv.weight").transpose(2, 3, 1, 0))
+      upsampler_jax["conv"]["bias"] = jnp.array(get_w(f"{upsampler_pt}.conv.bias"))
+
+  # decoder.conv_norm_out & conv_out
+  jax_params["decoder"]["conv_norm_out"]["scale"] = jnp.array(get_w("decoder.conv_norm_out.weight"))
+  jax_params["decoder"]["conv_norm_out"]["bias"] = jnp.array(get_w("decoder.conv_norm_out.bias"))
+  jax_params["decoder"]["conv_out"]["kernel"] = jnp.array(get_w("decoder.conv_out.weight").transpose(2, 3, 1, 0))
+  jax_params["decoder"]["conv_out"]["bias"] = jnp.array(get_w("decoder.conv_out.bias"))
+
+  # Freeze parameters
+  jax_params = flax.core.freeze(jax_params)
+
+  # Extract Batch Normalization running stats
+  print("Extracting VAE Batch Normalization running stats...")
+  bn_mean = jnp.array(get_w("bn.running_mean")).reshape(1, -1, 1, 1)
+  bn_var = jnp.array(get_w("bn.running_var")).reshape(1, -1, 1, 1)
+  batch_norm_eps = 0.0001
+  bn_std = jnp.sqrt(bn_var + batch_norm_eps)
+
+  print("VAE weights and BN stats loaded successfully!")
+  return jax_params, bn_mean, bn_std
