@@ -446,7 +446,7 @@ class FluxPosEmbed(nn.Module):
     pos = ids.astype(self.dtype)
     freqs_dtype = self.dtype
     for i in range(n_axes):
-      out = get_1d_rotary_pos_embed(self.axes_dim[i], pos[..., i], freqs_dtype=freqs_dtype)
+      out = get_1d_rotary_pos_embed(self.axes_dim[i], pos[..., i], theta=self.theta, freqs_dtype=freqs_dtype)
       out_freqs.append(out)
 
     out_freqs = jnp.concatenate(out_freqs, axis=1)

@@ -29,6 +29,7 @@ class AdaLayerNormContinuous(nn.Module):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
+  scale_shift_order: str = "shift_scale"
 
   @nn.compact
   def __call__(self, x, conditioning_embedding):
@@ -42,9 +43,16 @@ class AdaLayerNormContinuous(nn.Module):
         param_dtype=self.weights_dtype,
         precision=self.precision,
     )(nn.silu(conditioning_embedding))
-    shift, scale = jnp.split(emb, 2, axis=1)
-    shift = nn.with_logical_constraint(shift, ("activation_batch", "activation_embed"))
+
+    if self.scale_shift_order == "scale_shift":
+      scale, shift = jnp.split(emb, 2, axis=1)
+    elif self.scale_shift_order == "shift_scale":
+      shift, scale = jnp.split(emb, 2, axis=1)
+    else:
+      raise ValueError(f"Unsupported scale_shift_order: {self.scale_shift_order}")
+
     scale = nn.with_logical_constraint(scale, ("activation_batch", "activation_embed"))
+    shift = nn.with_logical_constraint(shift, ("activation_batch", "activation_embed"))
     x = nn.LayerNorm(epsilon=self.eps, use_bias=self.elementwise_affine, use_scale=self.elementwise_affine)(x)
     x = (1 + scale[:, None, :]) * x + shift[:, None, :]
     return x
@@ -58,6 +66,7 @@ class AdaLayerNormZero(nn.Module):
       embedding_dim (`int`): The size of each embedding vector.
       num_embeddings (`int`): The size of the embeddings dictionary.
   """
+
   embedding_dim: int
   norm_type: str = "layer_norm"
   bias: bool = True
@@ -67,10 +76,6 @@ class AdaLayerNormZero(nn.Module):
 
   @nn.compact
   def __call__(self, x, emb):
-    emb = nn.silu(emb)
-
-    # Pretrained Flux checks: The dual block variant projects to 6 * dim
-    # to unpack: shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp
     emb = nn.Dense(
         6 * self.embedding_dim,
         use_bias=self.bias,
@@ -80,30 +85,38 @@ class AdaLayerNormZero(nn.Module):
         param_dtype=self.weights_dtype,
         precision=self.precision,
         name="lin",
-    )(emb)
-
-    emb = emb[:, None, :]
-
-    # Explicit MaxDiffusion 3D axis alignment mapping to your 'mlp' layout rule
-    emb = nn.with_logical_constraint(emb, ("activation_batch", None, "mlp"))
-
-    # Slicing the 6 chunks safely within your fsdp:8, tensor:1 configuration
-    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(emb, 6, axis=-1)
+    )(nn.silu(emb))
+    (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp) = jnp.split(emb[:, None, :], 6, axis=-1)
+    shift_msa = nn.with_logical_constraint(shift_msa, ("activation_batch", "activation_embed"))
+    scale_msa = nn.with_logical_constraint(scale_msa, ("activation_batch", "activation_embed"))
+    gate_msa = nn.with_logical_constraint(gate_msa, ("activation_batch", "activation_embed"))
+    shift_mlp = nn.with_logical_constraint(shift_mlp, ("activation_batch", "activation_embed"))
+    scale_mlp = nn.with_logical_constraint(scale_mlp, ("activation_batch", "activation_embed"))
+    gate_mlp = nn.with_logical_constraint(gate_mlp, ("activation_batch", "activation_embed"))
 
     if self.norm_type == "layer_norm":
-      # Fused mathematical reduction loop
-      mean = jnp.mean(x, axis=-1, keepdims=True)
-      variance = jnp.mean(jnp.square(x - mean), axis=-1, keepdims=True)
-      inv_std = jax.lax.rsqrt(variance + 1e-6)
-
-      x = (x - mean) * inv_std * (1.0 + scale_msa) + shift_msa
+      x = nn.LayerNorm(
+          epsilon=1e-6,
+          use_bias=False,
+          use_scale=False,
+          dtype=self.dtype,
+          param_dtype=self.weights_dtype,
+      )(x)
     else:
       raise ValueError(f"Unsupported `norm_type` ({self.norm_type}) provided. Supported ones are: 'layer_norm'.")
-
+    x = x * (1 + scale_msa) + shift_msa
     return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
 class AdaLayerNormZeroSingle(nn.Module):
+  r"""
+  Norm layer adaptive layer norm zero (adaLN-Zero).
+
+  Parameters:
+      embedding_dim (`int`): The size of each embedding vector.
+      num_embeddings (`int`): The size of the embeddings dictionary.
+  """
+
   embedding_dim: int
   norm_type: str = "layer_norm"
   bias: bool = True
@@ -114,8 +127,6 @@ class AdaLayerNormZeroSingle(nn.Module):
   @nn.compact
   def __call__(self, x, emb):
     emb = nn.silu(emb)
-
-    # Matches your config layout precisely
     emb = nn.Dense(
         3 * self.embedding_dim,
         use_bias=self.bias,
@@ -126,27 +137,24 @@ class AdaLayerNormZeroSingle(nn.Module):
         precision=self.precision,
         name="lin",
     )(emb)
-
-    # 1. Expand layout safely to a 3D Tensor
-    emb = emb[:, None, :]
-
-    # 2. FIX: Apply verified MaxDiffusion logical rules to match the 3D footprint
-    # We map the channels to 'mlp' because that matches the output layout dimension of the dense layer
-    emb = nn.with_logical_constraint(emb, ("activation_batch", None, "mlp"))
-
-    # 3. Slicing now happens safely within known sharding rules
-    shift_msa, scale_msa, gate_msa = jnp.split(emb, 3, axis=-1)
-
+    shift_msa, scale_msa, gate_msa = jnp.split(emb[:, None, :], 3, axis=-1)
+    shift_msa = nn.with_logical_constraint(shift_msa, ("activation_batch", "activation_embed"))
+    scale_msa = nn.with_logical_constraint(scale_msa, ("activation_batch", "activation_embed"))
+    gate_msa = nn.with_logical_constraint(gate_msa, ("activation_batch", "activation_embed"))
     if self.norm_type == "layer_norm":
-      # Fused optimization math keeping exact pretrained weight compatibility
-      mean = jnp.mean(x, axis=-1, keepdims=True)
-      variance = jnp.mean(jnp.square(x - mean), axis=-1, keepdims=True)
-      inv_std = jax.lax.rsqrt(variance + 1e-6)
-
-      x = (x - mean) * inv_std * (1.0 + scale_msa) + shift_msa
+      x = (
+          nn.LayerNorm(
+              epsilon=1e-6,
+              use_bias=False,
+              use_scale=False,
+              dtype=self.dtype,
+              param_dtype=self.weights_dtype,
+          )(x)
+          * (1 + scale_msa)
+          + shift_msa
+      )
     else:
       raise ValueError(f"Unsupported `norm_type` ({self.norm_type}) provided. Supported ones are: 'layer_norm'.")
-
     return x, gate_msa
 
 
