@@ -89,9 +89,11 @@ def get_git_commit_hash():
 jax.config.update("jax_use_shardy_partitioner", True)
 
 
-def call_pipeline(config, pipeline, prompt, negative_prompt):
+def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=None):
   model_key = config.model_name
   model_type = config.model_type
+  if num_inference_steps is None:
+    num_inference_steps = config.num_inference_steps
   if model_type == "I2V":
     image = load_image(config.image_url)
     if model_key == WAN2_1:
@@ -102,7 +104,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
+          num_inference_steps=num_inference_steps,
           guidance_scale=config.guidance_scale,
           use_magcache=config.use_magcache,
           magcache_thresh=config.magcache_thresh,
@@ -118,7 +120,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
+          num_inference_steps=num_inference_steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
           use_cfg_cache=config.use_cfg_cache,
@@ -139,7 +141,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
+          num_inference_steps=num_inference_steps,
           guidance_scale=config.guidance_scale,
           use_cfg_cache=config.use_cfg_cache,
           use_magcache=config.use_magcache,
@@ -155,7 +157,7 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
           height=config.height,
           width=config.width,
           num_frames=config.num_frames,
-          num_inference_steps=config.num_inference_steps,
+          num_inference_steps=num_inference_steps,
           guidance_scale_low=config.guidance_scale_low,
           guidance_scale_high=config.guidance_scale_high,
           use_cfg_cache=config.use_cfg_cache,
@@ -290,9 +292,20 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
   )
-  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+  # Warmup with 2 denoising steps instead of a full run: step 0 runs the
+  # high-noise transformer and step 1 crosses the boundary to the low-noise
+  # one (WAN 2.2), so every executable of the full run (both transformers,
+  # text encoder, VAE decode) gets compiled at a fraction of the cost. The
+  # step count only changes the Python loop trip count, not traced shapes.
+  warmup_steps = min(2, config.num_inference_steps)
+  max_logging.log(f"Compile warmup: {warmup_steps} denoising steps")
+  videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=warmup_steps)
   if isinstance(videos, tuple):
-    videos = videos[0]
+    videos, warmup_trace = videos
+    max_logging.log(
+        "Warmup breakdown: "
+        + ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in warmup_trace.items())
+    )
 
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")
@@ -307,13 +320,6 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log(f"compile_time: {compile_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/compile_time", compile_time, global_step=0)
-  saved_video_path = []
-  for i in range(len(videos)):
-    video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
-    export_to_video(videos[i], video_path, fps=config.fps)
-    saved_video_path.append(video_path)
-    if config.output_dir.startswith("gs://"):
-      upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
 
   s0 = time.perf_counter()
   outputs = call_pipeline(config, pipeline, prompt, negative_prompt)
@@ -323,6 +329,13 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     videos = outputs
     trace = {}
   generation_time = time.perf_counter() - s0
+  saved_video_path = []
+  for i in range(len(videos)):
+    video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
+    export_to_video(videos[i], video_path, fps=config.fps)
+    saved_video_path.append(video_path)
+    if config.output_dir.startswith("gs://"):
+      upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
   max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/generation_time", generation_time, global_step=0)
