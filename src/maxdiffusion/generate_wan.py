@@ -302,10 +302,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=warmup_steps)
   if isinstance(videos, tuple):
     videos, warmup_trace = videos
-    max_logging.log(
-        "Warmup breakdown: "
-        + ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in warmup_trace.items())
-    )
+    max_logging.log("Warmup breakdown: " + ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in warmup_trace.items()))
 
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")

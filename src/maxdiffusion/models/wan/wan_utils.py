@@ -383,9 +383,7 @@ def load_base_wan_transformer(
 
         # rename_key_and_reshape_tensor only reindexes/transposes views; the
         # single real copy happens on assignment into the target buffer below.
-        flax_key, flax_tensor = rename_key_and_reshape_tensor(
-            pt_tuple_key, tensor, random_flax_state_dict, scan_layers
-        )
+        flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
         flax_key = rename_for_nnx(flax_key)
         flax_key = _tuple_str_to_int(flax_key)
 
@@ -428,9 +426,7 @@ def load_base_wan_transformer(
 
   validate_flax_state_dict(eval_shapes, flax_state_dict)
   flax_state_dict = unflatten_dict(flax_state_dict)
-  max_logging.log(
-      f"Converted {subfolder or 'transformer'} weights to host arrays in {time.perf_counter() - t_start:.1f}s"
-  )
+  max_logging.log(f"Converted {subfolder or 'transformer'} weights to host arrays in {time.perf_counter() - t_start:.1f}s")
   return flax_state_dict
 
 

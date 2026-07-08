@@ -1113,9 +1113,7 @@ def _ulysses_ring_custom_attention(
           use_fixed_m=use_fixed_m,
       )
       if use_fixed_m:
-        attention_output = jnp.swapaxes(
-            jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))(query, key, value, mk_arr), 2, 3
-        )
+        attention_output = jnp.swapaxes(jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))(query, key, value, mk_arr), 2, 3)
       else:
         attention_output = jnp.swapaxes(jax.vmap(splash_kernel, in_axes=(0, 0, 0))(query, key, value), 2, 3)
     else:
