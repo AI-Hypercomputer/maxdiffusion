@@ -279,15 +279,11 @@ def create_sharded_logical_transformer(
 
     put_arrays = [None] * len(put_specs)
     if staged_ids:
-      staged = jax.device_put(
-          [put_specs[i][1] for i in staged_ids], [dim0_sharding] * len(staged_ids)
-      )
+      staged = jax.device_put([put_specs[i][1] for i in staged_ids], [dim0_sharding] * len(staged_ids))
       # out_shardings must be the exact target sharding objects (not an
       # equivalent P()): downstream jit cache keys include arg shardings, so
       # a different-but-equivalent spec would force a full recompile.
-      replicate_fn = jax.jit(
-          lambda xs: xs, out_shardings=[put_specs[i][2] for i in staged_ids]
-      )
+      replicate_fn = jax.jit(lambda xs: xs, out_shardings=[put_specs[i][2] for i in staged_ids])
       for i, replicated in zip(staged_ids, replicate_fn(staged)):
         put_arrays[i] = replicated
     if direct_ids:
