@@ -160,5 +160,84 @@ class RingAttentionTest(test_utils.SplashAttentionTestCase):
       self._assert_allclose(dv, dv_ref, rtol=1e-2, atol=1e-2)
 
 
+class RingAttentionHeadsPerTileTest(test_utils.SplashAttentionTestCase):
+  """`heads_per_tile` (multi-head-per-tile) invariance for ring attention.
+
+  heads_per_tile is a pure tiling/scheduling choice for the forward kernel: for a
+  fixed input, running with heads_per_tile=N must produce the same output as
+  heads_per_tile=1. This guards against the block-index class of bug (a wrong
+  head-tile mapping compiles and runs but silently returns garbage).
+  """
+
+  def setUp(self):
+    if jax.default_backend() != "tpu":
+      self.skipTest("Multi-head-per-tile ring attention runs on TPU.")
+    super().setUp()
+
+  @parameterized.product(
+      heads_per_tile=[2, 4],
+      head_dim=[128],
+      dtype=[jnp.bfloat16],
+  )
+  def test_heads_per_tile_matches_single_head(self, heads_per_tile, head_dim, dtype):
+    ring_size = 2
+    num_heads = 4  # MHA (num_q_heads == num_kv_heads); divisible by heads_per_tile.
+    if len(jax.devices()) < ring_size:
+      self.skipTest(f"This test requires {ring_size} devices, but has only {len(jax.devices())}.")
+
+    ring_axis = "ring"
+    devices = np.asarray(jax.devices()[:ring_size]).reshape(1, ring_size)
+    mesh = jax.sharding.Mesh(devices, ("heads", ring_axis))
+    seq_len = 1024 * ring_size
+
+    k1, k2, k3 = random.split(random.key(0), 3)
+    scale = head_dim**-0.5
+    q = random.normal(k1, (num_heads, seq_len, head_dim), dtype=dtype) * scale
+    k = random.normal(k2, (num_heads, seq_len, head_dim), dtype=dtype) * scale
+    v = random.normal(k3, (num_heads, seq_len, head_dim), dtype=dtype) * scale
+
+    # The mhpt fast path supports full MHA + static FullMask + HEAD_DIM_MINOR only.
+    mask = mask_lib.FullMask(_shape=(seq_len, seq_len))
+    q_spec = P(None, ring_axis, None)
+    kv_spec = q_spec
+
+    def run(hpt):
+      config = splash.SplashConfig.get_default()
+      config = dataclasses.replace(
+          config,
+          use_base2_exp=False,
+          fuse_reciprocal=True,
+          heads_per_tile=hpt,
+      )
+      ring_kernel = ring_attention_kernel.make_ring_attention(
+          mask,
+          is_mqa=False,
+          ring_axis=ring_axis,
+          config=config,
+          save_residuals=False,
+          q_seq_shards=ring_size,
+          kv_seq_shards=ring_size,
+      )
+      kernel_spec = ring_kernel.manual_sharding_spec()
+
+      @partial(
+          jax.shard_map,
+          mesh=mesh,
+          in_specs=(kernel_spec, q_spec, kv_spec, kv_spec, None),
+          out_specs=q_spec,
+          check_vma=False,
+      )
+      def ring_attn(ring_kernel, q, k, v, segment_ids):
+        return ring_kernel(q, k, v, segment_ids)
+
+      return ring_attn(ring_kernel, q, k, v, None)
+
+    out_ref = run(1)  # baseline: single head per tile (flash_attention_kernel)
+    out_mhpt = run(heads_per_tile)  # multi-head-per-tile (flash_attention_kernel_mhpt)
+
+    # Pure tiling => numerically equivalent to the single-head-per-tile baseline.
+    self._assert_allclose(out_mhpt, out_ref, rtol=5e-3, atol=5e-3)
+
+
 if __name__ == "__main__":
   absltest.main()
