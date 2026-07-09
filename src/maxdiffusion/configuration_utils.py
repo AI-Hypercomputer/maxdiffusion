@@ -496,7 +496,9 @@ class ConfigMixin:
     diffusers_library = importlib.import_module(__name__.split(".")[0])
 
     if cls.has_compatibles:
-      compatible_classes = [c for c in cls._get_compatibles() if not isinstance(c, DummyObject)]  # pyrefly: ignore[missing-attribute]
+      compatible_classes = [
+          c for c in cls._get_compatibles() if not isinstance(c, DummyObject)
+      ]  # pyrefly: ignore[missing-attribute]
     else:
       compatible_classes = []
 
