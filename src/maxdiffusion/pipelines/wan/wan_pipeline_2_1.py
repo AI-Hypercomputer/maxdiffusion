@@ -16,9 +16,11 @@ from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_for
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
+import concurrent.futures
 from functools import partial
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
+from jax.sharding import Mesh
 import jax
 import jax.numpy as jnp
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
@@ -44,22 +46,37 @@ class WanPipeline2_1(WanPipeline):
       load_transformer=True,
       load_scheduler=True,
   ):
-    common_components = cls._create_common_components(
+    # Load VAE/tokenizer/text-encoder/scheduler in a background thread while
+    # the main thread converts the 14B transformer: the small components and
+    # the text-encoder torch.compile warmup (compile_text_encoder) are hidden
+    # behind the transformer conversion time. The mesh/rngs built here are
+    # deterministic duplicates of the ones _create_common_components builds
+    # (same devices, same seed).
+    common_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    common_future = common_executor.submit(
+        cls._create_common_components,
         config,
         load_vae=load_vae,
         load_text_encoder=load_text_encoder,
         load_scheduler=load_scheduler,
     )
     transformer = None
-    if load_transformer:
-      transformer = super().load_transformer(
-          devices_array=common_components["devices_array"],
-          mesh=common_components["mesh"],
-          rngs=common_components["rngs"],
-          config=config,
-          restored_checkpoint=restored_checkpoint,
-          subfolder="transformer",
-      )
+    try:
+      if load_transformer:
+        devices_array = max_utils.create_device_mesh(config)
+        mesh = Mesh(devices_array, config.mesh_axes)
+        rngs = nnx.Rngs(jax.random.key(config.seed))
+        transformer = super().load_transformer(
+            devices_array=devices_array,
+            mesh=mesh,
+            rngs=rngs,
+            config=config,
+            restored_checkpoint=restored_checkpoint,
+            subfolder="transformer",
+        )
+      common_components = common_future.result()
+    finally:
+      common_executor.shutdown(wait=True)
 
     pipeline = cls(
         tokenizer=common_components["tokenizer"],
@@ -273,13 +290,15 @@ def run_inference_2_1(
   transformer_obj = nnx.merge(graphdef, sharded_state, rest_of_state)
 
   # Compute RoPE once as it only depends on shape
-  dummy_hidden_states = jnp.zeros((
-      latents.shape[0],
-      latents.shape[2],
-      latents.shape[3],
-      latents.shape[4],
-      latents.shape[1],
-  ))
+  dummy_hidden_states = jnp.zeros(
+      (
+          latents.shape[0],
+          latents.shape[2],
+          latents.shape[3],
+          latents.shape[4],
+          latents.shape[1],
+      )
+  )
   rotary_emb = transformer_obj.rope(dummy_hidden_states)
 
   kv_cache = None

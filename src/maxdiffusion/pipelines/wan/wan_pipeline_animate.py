@@ -31,7 +31,6 @@ from copy import deepcopy
 from functools import partial
 from typing import List, Optional, Tuple, Union
 
-import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
@@ -43,13 +42,13 @@ from flax.linen import partitioning as nn_partitioning
 from jax.sharding import NamedSharding, PartitionSpec as P
 from maxdiffusion import max_logging
 from maxdiffusion.image_processor import PipelineImageInput, VaeImageProcessor
-from maxdiffusion.max_utils import device_put_replicated, get_flash_block_sizes, get_precision
+from maxdiffusion.max_utils import get_flash_block_sizes, get_precision
 from maxdiffusion.video_processor import VideoProcessor
 
 from ...models.wan.transformers.transformer_wan_animate import WanAnimateTransformer3DModel
 from ...models.wan.wan_utils import load_wan_animate_transformer
 from ...pyconfig import HyperParameters
-from .wan_pipeline import WanPipeline, cast_with_exclusion
+from .wan_pipeline import WanPipeline, cast_with_exclusion, put_params_into_state
 
 
 def create_sharded_animate_transformer(
@@ -124,11 +123,14 @@ def create_sharded_animate_transformer(
   params = jax.tree_util.tree_map_with_path(
       lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
   )
-  for path, val in flax.traverse_util.flatten_dict(params).items():
-    if restored_checkpoint:
-      path = path[:-1]
-    sharding = logical_state_sharding[path].value
-    state[path].value = device_put_replicated(val, sharding)
+  state = put_params_into_state(
+      state,
+      params,
+      logical_state_sharding,
+      mesh,
+      restored_checkpoint=restored_checkpoint,
+      subfolder=subfolder,
+  )
   state = nnx.from_flat_state(state)
 
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
