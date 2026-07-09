@@ -15,7 +15,6 @@
 import contextlib
 import functools
 import math
-import os
 from typing import Optional, Callable, Tuple, Any, Dict
 import flax.linen as nn
 from flax import nnx
@@ -348,42 +347,6 @@ def convert_to_tokamax_splash_config(
   )
 
 
-def _extract_custom_block_sizes(flash_block_sizes):
-  """Pulls custom-kernel block sizes out of the (dict or BlockSizes-like) config.
-
-  Mirrors the extraction used by the `ulysses_custom` path so the custom ring
-  kernel honors the same `flash_block_sizes={...}` knobs.
-  """
-  bq = 4864
-  bkv = 1024
-  bkv_compute = 1024
-  bkv_compute_in = 1024
-  heads_per_tile = 1
-  vmem_limit_bytes = None
-  if flash_block_sizes is not None:
-    if isinstance(flash_block_sizes, dict):
-      get = flash_block_sizes.get
-      bq = get("block_q", bq)
-      bkv = get("block_kv", bkv)
-      bkv_compute = get("block_kv_compute", bkv_compute)
-      bkv_compute_in = get("block_kv_compute_in", bkv_compute_in)
-      heads_per_tile = get("heads_per_tile", heads_per_tile)
-      vmem_limit_bytes = get("vmem_limit_bytes", vmem_limit_bytes)
-    else:
-      bq = getattr(flash_block_sizes, "block_q", bq)
-      bkv = getattr(flash_block_sizes, "block_kv", bkv)
-      bkv_compute = getattr(flash_block_sizes, "block_kv_compute", bkv_compute)
-      bkv_compute_in = getattr(flash_block_sizes, "block_kv_compute_in", bkv_compute_in)
-      heads_per_tile = getattr(flash_block_sizes, "heads_per_tile", heads_per_tile)
-      vmem_limit_bytes = getattr(flash_block_sizes, "vmem_limit_bytes", vmem_limit_bytes)
-  # A BlockSizes object carries heads_per_tile=None when the config dict omitted
-  # it; getattr then returns that None instead of the default, so coerce it back
-  # to 1 (the custom-kernel default) to keep the `heads_per_tile > 1` guards safe.
-  if heads_per_tile is None:
-    heads_per_tile = 1
-  return bq, bkv, bkv_compute, bkv_compute_in, heads_per_tile, vmem_limit_bytes
-
-
 def _build_padding_segment_ids(
     query_seq_len: int,
     q_padded_len: int,
@@ -455,32 +418,6 @@ def _tpu_flash_attention(
       check_rep=False,
   )
   def wrap_flash_attention(query, key, value):
-    if attention_kernel == "tokamax_ring_custom":
-      # Ring attention backed by the custom dense splash kernel. q stays local,
-      # k/v rotate over the "context" axis (handled inside the ring kernel).
-      bq, bkv, bkv_compute, bkv_compute_in, heads_per_tile, vmem_limit_bytes = _extract_custom_block_sizes(flash_block_sizes)
-      if heads_per_tile > 1:
-        raise NotImplementedError("tokamax_ring_custom currently supports heads_per_tile == 1 only.")
-      query_local = query * LOG2E if use_base2_exp else query
-      query_local, kv_size, query_seq_len = _pad_data_for_flash(query_local, heads, bq)
-      key_local, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
-      value_local, _, _ = _pad_data_for_flash(value, heads, bkv)
-
-      bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
-      ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
-          block_sizes=bsizes,
-          bkv_compute_in=bkv_compute_in,
-          orig_q_seq_len=query_seq_len,
-          orig_kv_seq_len=key_seq_len,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
-          vmem_limit_bytes=vmem_limit_bytes,
-          ring_axis="context",
-      )
-      vmapped_ring = jax.vmap(ring_kernel, in_axes=(0, 0, 0))
-      attention_output = vmapped_ring(query_local, key_local, value_local)
-      return attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
-
     uses_fused_kernel = block_sizes.use_fused_bwd_kernel
     block_q_sizes = (
         block_sizes.block_q,
@@ -646,7 +583,6 @@ def _ulysses_attention(
     use_custom_kernel: bool = False,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
-    use_fixed_m: bool = False,
 ) -> jax.Array:
   """Ulysses sequence-parallel attention.
 
@@ -690,37 +626,35 @@ def _ulysses_attention(
     value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
 
     if use_custom_kernel:
-      if attention_mask is not None:
-        raise NotImplementedError(
-            "The custom dense splash kernel (use_custom_kernel) does not support attention_mask "
-            "(it only handles padding via orig_seq_len); got a non-None attention_mask."
-        )
-      bq, bkv, bkv_compute, bkv_compute_in, heads_per_tile, vmem_limit_bytes = _extract_custom_block_sizes(flash_block_sizes)
+      bq = 4864
+      bkv = 1024
+      bkv_compute = 1024
+      bkv_compute_in = 1024
+      heads_per_tile = 1
+      vmem_limit_bytes = None
+
+      if flash_block_sizes is not None:
+        if isinstance(flash_block_sizes, dict):
+          bq = flash_block_sizes.get("block_q", None) or bq
+          bkv = flash_block_sizes.get("block_kv", None) or bkv
+          bkv_compute = flash_block_sizes.get("block_kv_compute", None) or bkv_compute
+          bkv_compute_in = flash_block_sizes.get("block_kv_compute_in", None) or bkv_compute_in
+          heads_per_tile = flash_block_sizes.get("heads_per_tile", None) or heads_per_tile
+          vmem_limit_bytes = flash_block_sizes.get("vmem_limit_bytes", None) or vmem_limit_bytes
+        else:
+          bq = getattr(flash_block_sizes, "block_q", None) or bq
+          bkv = getattr(flash_block_sizes, "block_kv", None) or bkv
+          bkv_compute = getattr(flash_block_sizes, "block_kv_compute", None) or bkv_compute
+          bkv_compute_in = getattr(flash_block_sizes, "block_kv_compute_in", None) or bkv_compute_in
+          heads_per_tile = getattr(flash_block_sizes, "heads_per_tile", None) or heads_per_tile
+          vmem_limit_bytes = getattr(flash_block_sizes, "vmem_limit_bytes", None) or vmem_limit_bytes
 
       if use_base2_exp:
         query = query * LOG2E
 
-      if use_fixed_m:
-        # k-smoothing (output-invariant): subtracting the per-row key mean
-        # forces every logit row to have mean 0, hence row-max >= 0 — the
-        # precondition that keeps the fixed-m Cauchy-Schwarz bound flush-free.
-        key = key - jnp.mean(key, axis=2, keepdims=True)
-
       query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
       key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
       value, _, _ = _pad_data_for_flash(value, heads, bkv)
-
-      mk_arr = None
-      if use_fixed_m:
-        # Per-(local-)head Cauchy-Schwarz inputs over the (batch, seq) slice;
-        # padded rows have zero norm and never raise the max. mk[0] feeds the
-        # in-kernel per-query bound, mk[1] flags heads within the no-flush gate.
-        qf = query.astype(jnp.float32)
-        kf = key.astype(jnp.float32)
-        qn_max = jnp.sqrt((qf * qf).sum(-1)).max(axis=(0, 2))  # (local_heads,)
-        mk_h = jnp.sqrt((kf * kf).sum(-1)).max(axis=(0, 2))  # (local_heads,)
-        fixed_ok = (qn_max * mk_h <= custom_splash._FIXED_M_SAFE_BOUND).astype(jnp.float32)
-        mk_arr = jnp.stack([mk_h, fixed_ok])  # (2, local_heads)
 
       bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
 
@@ -733,15 +667,10 @@ def _ulysses_attention(
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
           vmem_limit_bytes=vmem_limit_bytes,
-          use_fixed_m=use_fixed_m,
       )
 
-      if use_fixed_m:
-        vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
-        attention_output = vmapped_splash(query, key, value, mk_arr)
-      else:
-        vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
-        attention_output = vmapped_splash(query, key, value)
+      vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
+      attention_output = vmapped_splash(query, key, value)
       attention_output = jnp.swapaxes(attention_output, 2, 3)
       attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
     else:
@@ -792,26 +721,7 @@ def _ulysses_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_batch_sharding: {devices_in_batch_sharding}"
     )
-
-  # Fold the (CFG) batch into the heads axis around the Ulysses exchange.
-  # Each (batch, head) pair is an independent attention problem, so
-  # [B, H, S, D] -> [1, B*H, S, D] is mathematically identity — but it makes
-  # XLA compile the attention path as the batch=1 case. At batch=2 XLA
-  # otherwise places the size-2 batch in the tile sublanes ({3,0,1,2:T(2,128)}
-  # instead of T(8,128)) which quadruples the cost of every op touching the
-  # a2a tensors inside the scanned layers (measured 7.0 -> expected ~3.5
-  # s/step at 720p 81f cp8 CFG).
-  batch = query.shape[0]
-  fold_batch = batch > 1 and (batch * num_heads) % num_shards == 0
-  if fold_batch:
-    query = query.reshape(1, batch * num_heads, *query.shape[2:])
-    key = key.reshape(1, batch * num_heads, *key.shape[2:])
-    value = value.reshape(1, batch * num_heads, *value.shape[2:])
-
   x = wrap_ulysses_attention(query, key, value)
-
-  if fold_batch:
-    x = x.reshape(batch, num_heads, *x.shape[2:])
   x = x[:, :, :orig_q_seq_len, :]
   x = _reshape_heads_to_head_dim(x)
 
@@ -973,181 +883,6 @@ def _ulysses_ring_attention(
   return x
 
 
-def _ulysses_ring_custom_attention(
-    query: jax.Array,
-    key: jax.Array,
-    value: jax.Array,
-    heads: int,
-    mesh: Mesh,
-    axis_names_q: AxisNames,
-    axis_names_kv: AxisNames,
-    flash_block_sizes: BlockSizes,
-    dtype: jnp.dtype = jnp.float32,
-    mask_padding_tokens: bool = True,
-    residual_checkpoint_name: str | None = None,
-    attention_mask: jax.Array = None,
-    ulysses_shards: int = -1,
-    use_base2_exp: bool = True,
-    use_experimental_scheduler: bool = False,
-    bidirectional: bool = False,
-    use_fixed_m: bool = False,
-) -> jax.Array:
-  """Hybrid Ulysses + Ring (USP) with the CUSTOM splash kernel on main's mesh.
-
-  Uses origin/main's explicit internal `(ring, ulysses)` mesh
-  (`_create_internal_ulysses_ring_mesh`, commit c104db51) instead of single-axis
-  collective sub-groups: the public `context` axis is reshaped with the Ulysses
-  axis innermost, so the Ulysses all-to-all stays INTRA-chip and the ring rotates
-  ACROSS chips. The per-shard attention is our custom splash kernel
-  (`make_custom_ring_attention`), not the tokamax_ring kernel main uses.
-
-    1. all-to-all over the (intra-chip) Ulysses axis: trade sequence for heads;
-    2. ring (full ppermute) over the (cross-chip) ring axis, online-softmax merge;
-    3. all-to-all back to restore the sequence-sharded / full-heads layout.
-
-  U = ulysses_shards (from config); R = context // U. U=context -> pure
-  Ulysses, U=1 -> pure Ring (all on the same custom kernel).
-  """
-  if attention_mask is not None:
-    raise NotImplementedError(
-        "ulysses_ring_custom does not support attention_mask (the custom splash kernels only "
-        "handle padding via orig_seq_len); got a non-None attention_mask."
-    )
-  axis_name = "context"
-  num_context_shards = mesh.shape[axis_name]
-  num_ulysses_shards = ulysses_shards
-  if num_ulysses_shards <= 0:
-    raise ValueError("ulysses_ring_custom requires ulysses_shards to be set from config or command line.")
-  if num_context_shards % num_ulysses_shards != 0:
-    raise ValueError(
-        f"ulysses_ring_custom requires ulysses_shards to divide the context shard count, "
-        f"got context_shards={num_context_shards} and ulysses_shards={num_ulysses_shards}."
-    )
-  num_ring_shards = num_context_shards // num_ulysses_shards
-
-  query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
-  key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
-  value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
-  num_heads = query.shape[1]
-  if num_heads % num_ulysses_shards != 0:
-    raise ValueError(f"Ulysses+Ring requires heads divisible by U={num_ulysses_shards}, got heads={num_heads}.")
-
-  bq, bkv, bkv_compute, bkv_compute_in, heads_per_tile, vmem_limit_bytes = _extract_custom_block_sizes(flash_block_sizes)
-  if heads_per_tile > 1:
-    raise NotImplementedError("ulysses_ring_custom currently supports heads_per_tile == 1 only.")
-
-  internal_mesh = _create_internal_ulysses_ring_mesh(mesh, num_ring_shards, num_ulysses_shards)
-  ring_axis = INTERNAL_RING_AXIS
-  ulysses_axis = INTERNAL_ULYSSES_AXIS
-
-  q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
-  kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
-  internal_q_axis_names = _replace_mesh_axis_names(q_axis_names, axis_name, (ring_axis, ulysses_axis))
-  internal_kv_axis_names = _replace_mesh_axis_names(kv_axis_names, axis_name, (ring_axis, ulysses_axis))
-
-  @functools.partial(
-      jax.shard_map,
-      mesh=internal_mesh,
-      in_specs=(internal_q_axis_names, internal_kv_axis_names, internal_kv_axis_names),
-      out_specs=internal_q_axis_names,
-      check_vma=False,
-  )
-  def wrap_ulysses_ring_attention(query, key, value):
-    # (1) Ulysses all-to-all over the (intra-chip) ulysses axis: heads -> sequence,
-    # so each device holds the full ring-chunk sequence with heads/U heads.
-    a2a = functools.partial(jax.lax.all_to_all, axis_name=ulysses_axis, tiled=True)
-    query = a2a(query, split_axis=1, concat_axis=2)
-    key = a2a(key, split_axis=1, concat_axis=2)
-    value = a2a(value, split_axis=1, concat_axis=2)
-
-    if use_base2_exp:
-      query = query * LOG2E
-
-    if use_fixed_m:
-      # K-smoothing precondition for fixed-m, computed PER SHARD (no ring pmean).
-      # A global mean would be a perfectly-uniform per-query logit shift, but the
-      # per-shard local mean differs from it by only O(1/sqrt(local_seq)), and the
-      # ring's outer online-softmax merge re-normalizes across shards anyway, so we
-      # drop the per-layer ring collective and accept the negligible shift error.
-      kbar = jnp.mean(key, axis=2, keepdims=True)
-      key = key - kbar
-
-    query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
-    key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
-    value, _, _ = _pad_data_for_flash(value, heads, bkv)
-
-    mk_arr = None
-    if use_fixed_m:
-      # Per-(local-)head Cauchy-Schwarz inputs, all LOCAL to this ring shard. The
-      # outer ring merge does an online softmax across shards, so each shard's
-      # kernel may use its own local max||k|| as the fixed-m bound for its own
-      # local keys -- no global ring pmax is needed for correctness. This removes
-      # the second per-layer ring collective.
-      qf = query.astype(jnp.float32)
-      kf = key.astype(jnp.float32)
-      qn_max = jnp.sqrt((qf * qf).sum(-1)).max(axis=(0, 2))  # (local_heads,)
-      mk_h = jnp.sqrt((kf * kf).sum(-1)).max(axis=(0, 2))  # (local_heads,) local
-      fixed_ok = (qn_max * mk_h <= custom_splash._FIXED_M_SAFE_BOUND).astype(jnp.float32)
-      if os.environ.get("FIXED_M_FORCE_ALL", "0") == "1":
-        # PERF PROBE ONLY (unsafe): force every head onto the fixed-m fast path,
-        # bypassing the safety gate, to measure fixed-m's speed CEILING on the
-        # ring kernel. Output may be garbage; timing is still valid.
-        fixed_ok = jnp.ones_like(fixed_ok)
-      mk_arr = jnp.stack([mk_h, fixed_ok])  # (2, local_heads)
-
-    bsizes = custom_splash._BlockSizes(block_q=bq, block_kv=bkv, block_kv_compute=bkv_compute)
-    if num_ring_shards == 1:
-      # (2a) R=1: the ring is trivial (no rotation) -> use the lighter dedicated
-      # splash kernel (fuse_reciprocal, no fp32 online-softmax residual windows).
-      # Same math as the 1-step ring, and it fits BQ=8448 where the ring kernel
-      # OOMs (its 3x residual windows). make_splash_mha returns [H, D, S].
-      splash_kernel = custom_splash.make_splash_mha(
-          block_sizes=bsizes,
-          bkv_compute_in=bkv_compute_in,
-          orig_q_seq_len=query_seq_len,
-          orig_kv_seq_len=key_seq_len,
-          heads_per_tile=heads_per_tile,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
-          vmem_limit_bytes=vmem_limit_bytes,
-          use_fixed_m=use_fixed_m,
-      )
-      if use_fixed_m:
-        attention_output = jnp.swapaxes(jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))(query, key, value, mk_arr), 2, 3)
-      else:
-        attention_output = jnp.swapaxes(jax.vmap(splash_kernel, in_axes=(0, 0, 0))(query, key, value), 2, 3)
-    else:
-      # (2b) Ring (full ppermute over the cross-chip ring axis) with the custom kernel.
-      # bidirectional=True -> wrap-free schedule (streams K/V both directions one hop
-      # at a time), for a non-wrapping ring axis. Selected by attention=ulysses_ring_custom_bidir.
-      ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
-          block_sizes=bsizes,
-          bkv_compute_in=bkv_compute_in,
-          orig_q_seq_len=query_seq_len,
-          orig_kv_seq_len=key_seq_len,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
-          vmem_limit_bytes=vmem_limit_bytes,
-          ring_axis=ring_axis,
-          ring_size=num_ring_shards,
-          bidirectional=bidirectional,
-          use_fixed_m=use_fixed_m,
-          mk=mk_arr,
-      )
-      attention_output = jax.vmap(ring_kernel, in_axes=(0, 0, 0))(query, key, value)
-    attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
-
-    # (3) Ulysses all-to-all back: sequence -> heads, restoring the layout.
-    attention_output = a2a(attention_output, split_axis=2, concat_axis=1)
-    return attention_output
-
-  x = wrap_ulysses_ring_attention(query, key, value)
-  x = jax.lax.with_sharding_constraint(x, q_axis_names)
-  x = x[:, :, :orig_q_seq_len, :]
-  x = _reshape_heads_to_head_dim(x)
-  return x
-
-
 def _apply_attention_dot(
     query: Array,
     key: Array,
@@ -1294,101 +1029,6 @@ def ulysses_custom_kernel(q, k, v, context):
   )
 
 
-@register_kernel("ulysses_ring_custom")
-def ulysses_ring_custom_kernel(q, k, v, context):
-  return _ulysses_ring_custom_attention(
-      q,
-      k * context["scale"],
-      v,
-      context["heads"],
-      context["mesh"],
-      context["axis_names_q"],
-      context["axis_names_kv"],
-      context["flash_block_sizes"],
-      context["dtype"],
-      mask_padding_tokens=context["mask_padding_tokens"],
-      residual_checkpoint_name=context["residual_checkpoint_name"],
-      attention_mask=context["attention_mask"],
-      ulysses_shards=context["ulysses_shards"],
-      use_base2_exp=context.get("use_base2_exp", True),
-      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
-  )
-
-
-@register_kernel("ulysses_ring_custom_fixed_m")
-def ulysses_ring_custom_fixed_m_kernel(q, k, v, context):
-  """fixed-m variant of ulysses_ring_custom: the per-shard custom splash kernel
-  uses the Cauchy-Schwarz fixed-m softmax bound (no in-kernel running-max
-  rescale). max||k|| and the K-smoothing mean are taken LOCALLY per ring shard
-  (no per-layer ring collective); the outer ring online-softmax merge still
-  re-normalizes across shards, so per-shard bounds stay correct."""
-  return _ulysses_ring_custom_attention(
-      q,
-      k * context["scale"],
-      v,
-      context["heads"],
-      context["mesh"],
-      context["axis_names_q"],
-      context["axis_names_kv"],
-      context["flash_block_sizes"],
-      context["dtype"],
-      mask_padding_tokens=context["mask_padding_tokens"],
-      residual_checkpoint_name=context["residual_checkpoint_name"],
-      attention_mask=context["attention_mask"],
-      ulysses_shards=context["ulysses_shards"],
-      use_base2_exp=context.get("use_base2_exp", True),
-      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
-      use_fixed_m=True,
-  )
-
-
-@register_kernel("ulysses_ring_custom_bidir")
-def ulysses_ring_custom_bidir_kernel(q, k, v, context):
-  """Wrap-free (bidirectional) variant of ulysses_ring_custom: the ring streams
-  K/V both directions one hop at a time, avoiding the diameter-length wrap hop
-  on a non-wrapping ring axis. Same USP split as ulysses_ring_custom otherwise."""
-  return _ulysses_ring_custom_attention(
-      q,
-      k * context["scale"],
-      v,
-      context["heads"],
-      context["mesh"],
-      context["axis_names_q"],
-      context["axis_names_kv"],
-      context["flash_block_sizes"],
-      context["dtype"],
-      mask_padding_tokens=context["mask_padding_tokens"],
-      residual_checkpoint_name=context["residual_checkpoint_name"],
-      attention_mask=context["attention_mask"],
-      ulysses_shards=context["ulysses_shards"],
-      use_base2_exp=context.get("use_base2_exp", True),
-      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
-      bidirectional=True,
-  )
-
-
-@register_kernel("ulysses_custom_fixed_m")
-def ulysses_custom_fixed_m_kernel(q, k, v, context):
-  return _ulysses_attention(
-      q,
-      k * context["scale"],
-      v,
-      context["heads"],
-      context["mesh"],
-      context["axis_names_q"],
-      context["axis_names_kv"],
-      context["flash_block_sizes"],
-      context["dtype"],
-      mask_padding_tokens=context["mask_padding_tokens"],
-      residual_checkpoint_name=context["residual_checkpoint_name"],
-      attention_mask=context["attention_mask"],
-      use_custom_kernel=True,
-      use_base2_exp=context.get("use_base2_exp", True),
-      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
-      use_fixed_m=True,
-  )
-
-
 @register_kernel("ulysses")
 def ulysses_kernel(q, k, v, context):
   return _ulysses_attention(
@@ -1488,26 +1128,6 @@ def tokamax_ring_kernel(q, k, v, context):
   )
 
 
-@register_kernel("tokamax_ring_custom")
-def tokamax_ring_custom_kernel(q, k, v, context):
-  return _tpu_flash_attention(
-      q,
-      k * context["scale"],
-      v,
-      context["heads"],
-      context["mesh"],
-      context["axis_names_q"],
-      context["axis_names_kv"],
-      context["flash_block_sizes"],
-      context["dtype"],
-      attention_kernel="tokamax_ring_custom",
-      mask_padding_tokens=context["mask_padding_tokens"],
-      attention_mask=context["attention_mask"],
-      use_base2_exp=context.get("use_base2_exp", True),
-      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
-  )
-
-
 @register_kernel("cudnn_flash_te")
 def cudnn_flash_te_kernel(q, k, v, context):
   return _cudnn_flash_attention(q, k, v, context["heads"], context["mesh"], context["dpa_layer"])
@@ -1546,7 +1166,7 @@ def _apply_attention(
     seq_len_idx = 2
 
   can_use_flash_attention = True
-  if attention_kernel in ["flash", "tokamax_flash", "ulysses", "ulysses_custom", "ulysses_custom_fixed_m", "ulysses_ring"]:
+  if attention_kernel in ["flash", "tokamax_flash", "ulysses", "ulysses_custom", "ulysses_ring"]:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -1693,7 +1313,26 @@ def jax_memory_efficient_attention(
   return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
 
 
-def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
+def apply_rope(xq: Array, xk: Array, freqs_cis: Any) -> tuple[Array, Array]:
+  if isinstance(freqs_cis, (tuple, list)):
+    cos, sin = freqs_cis
+    if cos.ndim == 2:
+      cos = cos[None, None, :, :]
+      sin = sin[None, None, :, :]
+    elif cos.ndim == 3 and cos.shape[0] == 1:
+      cos = cos[None, :, :, :]
+      sin = sin[None, :, :, :]
+
+    def _rotate(x):
+      x_reshaped = x.reshape(*x.shape[:-1], -1, 2)
+      x_real = x_reshaped[..., 0]
+      x_imag = x_reshaped[..., 1]
+      return jnp.stack([-x_imag, x_real], axis=-1).reshape(*x.shape)
+
+    xq_out = xq * cos + _rotate(xq) * sin
+    xk_out = xk * cos + _rotate(xk) * sin
+    return xq_out.astype(xq.dtype), xk_out.astype(xk.dtype)
+
   xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)
   xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)
 
@@ -1982,10 +1621,8 @@ class FlaxWanAttention(nnx.Module):
     else:
       axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
       axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
-    if attention_kernel in ("tokamax_ring", "tokamax_ring_custom", "ulysses_ring") and not is_self_attention:
-      attention_kernel = "tokamax_flash"  # do not use ring attention for cross attention
-    if attention_kernel in ("ulysses_ring_custom", "ulysses_ring_custom_bidir") and not is_self_attention:
-      attention_kernel = "ulysses_custom"  # plain ulysses (no ring) for cross attention
+    if attention_kernel in ("tokamax_ring", "ulysses_ring") and not is_self_attention:
+      attention_kernel = "tokamax_flash"
     self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
     self.image_seq_len = image_seq_len  # New for I2V
     tpu_type = get_tpu_type()
@@ -2416,8 +2053,6 @@ class FlaxFluxAttention(nn.Module):
   out_axis_names: AxisNames = (BATCH, LENGTH, EMBED)
   precision: jax.lax.Precision = None
   qkv_bias: bool = False
-  use_base2_exp: bool = False
-  use_experimental_scheduler: bool = False
 
   def setup(self):
     if self.attention_kernel in {"flash", "cudnn_flash_te"} and self.mesh is None:
@@ -2437,8 +2072,6 @@ class FlaxFluxAttention(nn.Module):
         flash_block_sizes=self.flash_block_sizes,
         dtype=self.dtype,
         float32_qk_product=False,
-        use_base2_exp=self.use_base2_exp,
-        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
     kernel_axes = ("embed", "heads")
@@ -2519,59 +2152,41 @@ class FlaxFluxAttention(nn.Module):
       attention_mask=None,
       image_rotary_emb=None,
   ):
-    B, L = hidden_states.shape[:2]
-    # Deduce dimensions cleanly from class attributes
-    H, D = self.heads, self.dim_head
-
     qkv_proj = self.qkv(hidden_states)
-    qkv_proj = checkpoint_name(qkv_proj, "img_qkv_proj")
-
-    qkv_proj = qkv_proj.reshape(B, L, 3, H, D)
-    query_proj, key_proj, value_proj = jnp.split(qkv_proj, 3, axis=2)
-    query_proj = query_proj.squeeze(2)
-    key_proj = key_proj.squeeze(2)
-    value_proj = value_proj.squeeze(2)
+    B, L = hidden_states.shape[:2]
+    H, D, K = self.heads, qkv_proj.shape[-1] // (self.heads * 3), 3
+    qkv_proj = qkv_proj.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
+    query_proj, key_proj, value_proj = qkv_proj
 
     query_proj = self.query_norm(query_proj)
+
     key_proj = self.key_norm(key_proj)
 
     if encoder_hidden_states is not None:
-      B_enc, L_txt = encoder_hidden_states.shape[:2]
       encoder_qkv_proj = self.encoder_qkv(encoder_hidden_states)
-      encoder_qkv_proj = checkpoint_name(encoder_qkv_proj, "txt_qkv_proj")
-      encoder_qkv_proj = encoder_qkv_proj.reshape(B_enc, L_txt, 3, H, D)
-      enc_query_proj, enc_key_proj, enc_value_proj = jnp.split(encoder_qkv_proj, 3, axis=2)
-      enc_query_proj = enc_query_proj.squeeze(2)
-      enc_key_proj = enc_key_proj.squeeze(2)
-      enc_value_proj = enc_value_proj.squeeze(2)
+      B, L = encoder_hidden_states.shape[:2]
+      H, D, K = self.heads, encoder_qkv_proj.shape[-1] // (self.heads * 3), 3
+      encoder_qkv_proj = encoder_qkv_proj.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
+      encoder_query_proj, encoder_key_proj, encoder_value_proj = encoder_qkv_proj
 
-      encoder_query_proj = self.encoder_query_norm(enc_query_proj)
-      encoder_key_proj = self.encoder_key_norm(enc_key_proj)
+      encoder_query_proj = self.encoder_query_norm(encoder_query_proj)
+      encoder_key_proj = self.encoder_key_norm(encoder_key_proj)
 
-      query_proj = jnp.concatenate((encoder_query_proj, query_proj), axis=1)
-      key_proj = jnp.concatenate((encoder_key_proj, key_proj), axis=1)
-      value_proj = jnp.concatenate((enc_value_proj, value_proj), axis=1)
+      query_proj = jnp.concatenate((encoder_query_proj, query_proj), axis=2)
+      key_proj = jnp.concatenate((encoder_key_proj, key_proj), axis=2)
+      value_proj = jnp.concatenate((encoder_value_proj, value_proj), axis=2)
 
-      # query_proj = nn.with_logical_constraint(query_proj, self.query_axis_names)
-      # key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
-      # value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
-
-    image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-
-    query_proj = query_proj.swapaxes(1, 2)
-    key_proj = key_proj.swapaxes(1, 2)
-    query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb)
-    query_proj = query_proj.swapaxes(1, 2)
-    key_proj = key_proj.swapaxes(1, 2)
-
-    query_proj = query_proj.reshape(B, -1, H * D)
-    key_proj = key_proj.reshape(B, -1, H * D)
-    value_proj = value_proj.reshape(B, -1, H * D)
-
-    if encoder_hidden_states is not None:
       query_proj = nn.with_logical_constraint(query_proj, self.query_axis_names)
       key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
       value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
+
+    if not isinstance(image_rotary_emb, (tuple, list)):
+      image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+    query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb)
+
+    query_proj = query_proj.transpose(0, 2, 1, 3).reshape(query_proj.shape[0], query_proj.shape[2], -1)
+    key_proj = key_proj.transpose(0, 2, 1, 3).reshape(key_proj.shape[0], key_proj.shape[2], -1)
+    value_proj = value_proj.transpose(0, 2, 1, 3).reshape(value_proj.shape[0], value_proj.shape[2], -1)
 
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj, attention_mask=attention_mask)
     context_attn_output = None
