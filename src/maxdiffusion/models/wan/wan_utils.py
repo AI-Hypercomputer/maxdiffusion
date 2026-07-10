@@ -14,8 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-import os
+import concurrent.futures
 import json
+import os
+import threading
+import time
+from typing import Callable, Optional
+
+import ml_dtypes
+import numpy as np
 import torch
 import jax
 import jax.numpy as jnp
@@ -27,6 +34,11 @@ from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_te
 
 CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH = "lightx2v/Wan2.1-T2V-14B-CausVid"
 WAN_21_FUSION_X_MODEL_NAME_OR_PATH = "vrgamedevgirl84/Wan14BT2VFusioniX"
+
+# WAN 2.2 transformer and transformer_2 have byte-identical index.json files,
+# i.e. ONE blob in the HF hub cache. hf_hub revalidates and rewrites cached
+# blobs, so parallel transformer loads must not resolve metadata concurrently.
+_HF_METADATA_LOCK = threading.Lock()
 
 
 def _tuple_str_to_int(in_tuple):
@@ -273,6 +285,7 @@ def load_wan_transformer(
     num_layers: int = 40,
     scan_layers: bool = True,
     subfolder: str = "",
+    cast_dtype_fn: Optional[Callable] = None,
 ):
   if pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
     return load_causvid_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
@@ -280,8 +293,19 @@ def load_wan_transformer(
     return load_fusionx_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
   else:
     return load_base_wan_transformer(
-        pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers, subfolder
+        pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers, subfolder, cast_dtype_fn
     )
+
+
+def _torch_tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
+  """Converts a CPU torch tensor to numpy without copying or upcasting.
+
+  bfloat16 has no native numpy dtype, so it is reinterpreted through uint16
+  into ml_dtypes.bfloat16 (bit-identical, zero-copy).
+  """
+  if tensor.dtype == torch.bfloat16:
+    return tensor.view(torch.uint16).numpy().view(ml_dtypes.bfloat16)
+  return tensor.numpy()
 
 
 def load_base_wan_transformer(
@@ -292,8 +316,25 @@ def load_base_wan_transformer(
     num_layers: int = 40,
     scan_layers: bool = True,
     subfolder: str = "",
+    cast_dtype_fn: Optional[Callable] = None,
 ):
-  device = jax.local_devices(backend=device)[0]
+  """Loads WAN transformer weights from diffusers safetensors shards.
+
+  Fast path compared to the historical implementation:
+    - tensors are read zero-copy from the safetensors mmap (no bf16->f32
+      round trip through torch.float()),
+    - scanned block weights are written in place into one preallocated
+      (num_layers, ...) numpy buffer per param (the old jnp
+      ``at[block].set`` rebuilt the full stacked array once per layer,
+      i.e. O(num_layers^2) copies),
+    - the optional ``cast_dtype_fn(flax_key) -> np.dtype`` casts each param
+      to its final dtype during this single copy, so no later full-tree
+      cast pass is needed,
+    - shard files are converted in parallel threads (numpy copies release
+      the GIL).
+  Returns a nested dict of numpy arrays (host memory).
+  """
+  del device  # weights stay in plain host numpy until device_put by the caller
   filename = "diffusion_pytorch_model.safetensors.index.json"
   local_files = False
   if os.path.isdir(pretrained_model_name_or_path):
@@ -303,55 +344,90 @@ def load_base_wan_transformer(
     local_files = True
   elif hf_download:
     # download the index file for sharded models.
-    index_file_path = hf_hub_download(
-        pretrained_model_name_or_path,
-        subfolder=subfolder,
-        filename=filename,
-    )
-  with jax.default_device(device):
-    # open the index file.
-    with open(index_file_path, "r") as f:
-      index_dict = json.load(f)
-    model_files = set()
-    for key in index_dict["weight_map"].keys():
-      model_files.add(index_dict["weight_map"][key])
-
-    model_files = list(model_files)
-    tensors = {}
-    for model_file in model_files:
-      if local_files:
-        ckpt_shard_path = os.path.join(pretrained_model_name_or_path, subfolder, model_file)
-      else:
-        ckpt_shard_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
-      # now get all the filenames for the model that need downloading
-      max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device}")
-
-      if ckpt_shard_path is not None:
-        with safe_open(ckpt_shard_path, framework="pt") as f:
-          for k in f.keys():
-            tensors[k] = torch2jax(f.get_tensor(k))
-    flax_state_dict = {}
-    cpu = jax.local_devices(backend="cpu")[0]
-    # turn all block numbers to strings just for matching weights.
-    # Later they will be turned back to ints.
-    random_flax_state_dict = _build_random_flax_state_dict(eval_shapes)
-    for pt_key, tensor in tensors.items():
-      # The diffusers implementation explicitly describes this key in keys to be ignored.
-      if "norm_added_q" in pt_key:
-        continue
-      renamed_pt_key = rename_key(pt_key)
-      renamed_pt_key = _rename_common_wan_transformer_key(renamed_pt_key)
-      pt_tuple_key = tuple(renamed_pt_key.split("."))
-      flax_key, flax_tensor = get_key_and_value(
-          pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
+    with _HF_METADATA_LOCK:
+      index_file_path = hf_hub_download(
+          pretrained_model_name_or_path,
+          subfolder=subfolder,
+          filename=filename,
       )
-      flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+  t_start = time.perf_counter()
+  with open(index_file_path, "r") as f:
+    index_dict = json.load(f)
+  model_files = sorted(set(index_dict["weight_map"].values()))
 
-    validate_flax_state_dict(eval_shapes, flax_state_dict)
-    flax_state_dict = unflatten_dict(flax_state_dict)
-    del tensors
-    jax.clear_caches()
-    return flax_state_dict
+  # turn all block numbers to strings just for matching weights.
+  # Later they will be turned back to ints.
+  random_flax_state_dict = _build_random_flax_state_dict(eval_shapes)
+  flax_state_dict = {}
+  dict_lock = threading.Lock()
+
+  def resolve_shard_path(model_file):
+    if local_files:
+      return os.path.join(pretrained_model_name_or_path, subfolder, model_file)
+    return hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
+
+  def convert_chunk(ckpt_shard_path, chunk_keys):
+    # Each task opens its own handle: safetensors mmap open is cheap and
+    # per-thread handles avoid serializing get_tensor calls.
+    with safe_open(ckpt_shard_path, framework="pt") as f:
+      for pt_key in chunk_keys:
+        tensor = _torch_tensor_to_numpy(f.get_tensor(pt_key))
+        renamed_pt_key = rename_key(pt_key)
+        renamed_pt_key = _rename_common_wan_transformer_key(renamed_pt_key)
+        pt_tuple_key = tuple(renamed_pt_key.split("."))
+
+        block_index = None
+        if scan_layers and len(pt_tuple_key) >= 2 and pt_tuple_key[0] == "blocks":
+          block_index = int(pt_tuple_key[1])
+          pt_tuple_key = ("blocks",) + pt_tuple_key[2:]
+
+        # rename_key_and_reshape_tensor only reindexes/transposes views; the
+        # single real copy happens on assignment into the target buffer below.
+        flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
+        flax_key = rename_for_nnx(flax_key)
+        flax_key = _tuple_str_to_int(flax_key)
+
+        if block_index is not None:
+          with dict_lock:
+            stacked = flax_state_dict.get(flax_key)
+            if stacked is None:
+              stacked_dtype = cast_dtype_fn(flax_key) if cast_dtype_fn else flax_tensor.dtype
+              stacked = np.empty((num_layers,) + flax_tensor.shape, dtype=stacked_dtype)
+              flax_state_dict[flax_key] = stacked
+          # Rows are disjoint per block, so concurrent writes need no lock.
+          # This assignment fuses transpose + dtype cast (RTNE, matching XLA
+          # convert semantics) into one pass.
+          stacked[block_index] = flax_tensor
+        else:
+          target_dtype = cast_dtype_fn(flax_key) if cast_dtype_fn else flax_tensor.dtype
+          # Copy (never keep a view) so nothing references the shard mmap.
+          value = np.array(flax_tensor, dtype=target_dtype, copy=True, order="C")
+          with dict_lock:
+            flax_state_dict[flax_key] = value
+
+  # Chunk keys per shard so conversion parallelizes across tensors, not just
+  # across the ~12 shard files. norm_added_q is explicitly ignored by the
+  # diffusers implementation.
+  chunk_size = 16
+  tasks = []
+  for model_file in model_files:
+    ckpt_shard_path = resolve_shard_path(model_file)
+    with safe_open(ckpt_shard_path, framework="pt") as f:
+      shard_keys = [k for k in f.keys() if "norm_added_q" not in k]
+    for i in range(0, len(shard_keys), chunk_size):
+      tasks.append((ckpt_shard_path, shard_keys[i : i + chunk_size]))
+  max_logging.log(
+      f"Load and port {pretrained_model_name_or_path} {subfolder}: {len(model_files)} shards, {len(tasks)} chunks"
+  )
+  with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+    futures = [executor.submit(convert_chunk, path, keys) for path, keys in tasks]
+    for future in concurrent.futures.as_completed(futures):
+      future.result()  # re-raise conversion errors
+
+  validate_flax_state_dict(eval_shapes, flax_state_dict)
+  flax_state_dict = unflatten_dict(flax_state_dict)
+  max_logging.log(f"Converted {subfolder or 'transformer'} weights to host arrays in {time.perf_counter() - t_start:.1f}s")
+  return flax_state_dict
 
 
 def _is_motion_encoder_custom_weight(pt_key: str) -> bool:

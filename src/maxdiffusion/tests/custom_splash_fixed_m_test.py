@@ -47,13 +47,9 @@ class CustomSplashFixedMTest(unittest.TestCase):
   def setUp(self):
     super().setUp()
     self.scale = 1.0 / math.sqrt(self.head_dim)
-    self.block_sizes = custom_splash._BlockSizes(
-        block_q=2048, block_kv=1024, block_kv_compute=512
-    )
+    self.block_sizes = custom_splash._BlockSizes(block_q=2048, block_kv=1024, block_kv_compute=512)
 
-  def _random_qkv(
-      self, q_gain: float = 1.0, k_gain: float = 1.0
-  ) -> tuple[jax.Array, jax.Array, jax.Array]:
+  def _random_qkv(self, q_gain: float = 1.0, k_gain: float = 1.0) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Returns bf16 (q, k, v), optionally amplifying head 0 of q and k."""
     shape = (self.num_heads, self.seq_len, self.head_dim)
     q = jax.random.normal(jax.random.PRNGKey(0), shape, jnp.bfloat16)
@@ -63,18 +59,14 @@ class CustomSplashFixedMTest(unittest.TestCase):
     k = k.at[0].multiply(k_gain)
     return q, k, v
 
-  def _reference(
-      self, q: jax.Array, k: jax.Array, v: jax.Array
-  ) -> jax.Array:
+  def _reference(self, q: jax.Array, k: jax.Array, v: jax.Array) -> jax.Array:
     """Per-head f32 softmax attention reference."""
     qf, kf, vf = (x.astype(jnp.float32) for x in (q, k, v))
     logits = jnp.einsum("hsd,htd->hst", qf, kf) * self.scale
     probs = jax.nn.softmax(logits, axis=-1)
     return jnp.einsum("hst,htd->hsd", probs, vf)
 
-  def _run_kernel(
-      self, q: jax.Array, k: jax.Array, v: jax.Array, use_fixed_m: bool
-  ) -> tuple[jax.Array, jax.Array | None]:
+  def _run_kernel(self, q: jax.Array, k: jax.Array, v: jax.Array, use_fixed_m: bool) -> tuple[jax.Array, jax.Array | None]:
     """Runs the custom kernel using the production scaling convention.
 
     Args:
@@ -95,9 +87,7 @@ class CustomSplashFixedMTest(unittest.TestCase):
       k_in = k_in - jnp.mean(k_in, axis=1, keepdims=True)
       qn = jnp.sqrt((q_in.astype(jnp.float32) ** 2).sum(-1)).max(axis=1)
       mk_h = jnp.sqrt((k_in.astype(jnp.float32) ** 2).sum(-1)).max(axis=1)
-      eligible = (qn * mk_h <= custom_splash._FIXED_M_SAFE_BOUND).astype(
-          jnp.float32
-      )
+      eligible = (qn * mk_h <= custom_splash._FIXED_M_SAFE_BOUND).astype(jnp.float32)
       mk = jnp.stack([mk_h, eligible])
     kernel = custom_splash.make_splash_mha(
         block_sizes=self.block_sizes,

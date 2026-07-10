@@ -20,6 +20,7 @@ import numpy as np
 import math
 import jax
 import jax.numpy as jnp
+import threading
 import time
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import flax
@@ -61,25 +62,50 @@ TORCH_DTYPE_MAP = {
 }
 
 
+# The two WAN 2.2 transformers share identical config.json contents, i.e.
+# ONE blob file in the HF hub cache. hf_hub revalidates and rewrites cached
+# blobs, so concurrent load_config calls from the parallel transformer loads
+# can read a half-written file. Serialize metadata resolution.
+_HF_METADATA_LOCK = threading.Lock()
+
+# Params whose path matches any of these keywords are kept in float32 by
+# cast_with_exclusion / _final_param_dtype regardless of weights_dtype.
+_CAST_EXCLUSION_KEYWORDS = (
+    "norm",  # For all LayerNorm/GroupNorm layers
+    "condition_embedder",  # The entire time/text conditioning module
+    "scale_shift_table",  # Catches both the final and the AdaLN tables
+)
+
+
+def _is_cast_excluded(path_str: str) -> bool:
+  return any(keyword in path_str.lower() for keyword in _CAST_EXCLUSION_KEYWORDS)
+
+
+def _final_param_dtype(flax_key: tuple, dtype_to_cast) -> np.dtype:
+  """Final dtype for a param addressed by a flat key tuple (loader-side twin
+  of cast_with_exclusion, so weights are cast once at read time)."""
+  path_str = ".".join(str(k) for k in flax_key)
+  if _is_cast_excluded(path_str):
+    return np.dtype(jnp.float32)
+  return np.dtype(dtype_to_cast)
+
+
 def cast_with_exclusion(path, x, dtype_to_cast):
   """
   Casts arrays to dtype_to_cast, but keeps params from any 'norm' layer in float32.
   """
-
-  exclusion_keywords = [
-      "norm",  # For all LayerNorm/GroupNorm layers
-      "condition_embedder",  # The entire time/text conditioning module
-      "scale_shift_table",  # Catches both the final and the AdaLN tables
-  ]
-
   path_str = ".".join(str(k.key) if isinstance(k, jax.tree_util.DictKey) else str(k) for k in path)
 
-  if any(keyword in path_str.lower() for keyword in exclusion_keywords):
+  if _is_cast_excluded(path_str):
     # Keep LayerNorm/GroupNorm weights and biases in full precision
-    return x.astype(jnp.float32)
+    target_dtype = jnp.float32
   else:
     # Cast everything else to dtype_to_cast
-    return x.astype(dtype_to_cast)
+    target_dtype = dtype_to_cast
+  if x.dtype == np.dtype(target_dtype):
+    # Already final (e.g. cast during weight loading) - avoid a full copy.
+    return x
+  return x.astype(target_dtype)
 
 
 def basic_clean(text):
@@ -148,7 +174,8 @@ def create_sharded_logical_transformer(
   if restored_checkpoint:
     wan_config = restored_checkpoint["wan_config"]
   else:
-    wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
+    with _HF_METADATA_LOCK:
+      wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)
   if config.model_type == "I2V":
     # WAN 2.1 I2V uses image embeddings via CLIP encoder (image_dim and added_kv_proj_dim are set)
     # WAN 2.2 I2V uses VAE-encoded latent conditioning (image_dim and added_kv_proj_dim are None in the transformer config)
@@ -206,12 +233,17 @@ def create_sharded_logical_transformer(
         num_layers=wan_config["num_layers"],
         scan_layers=config.scan_layers,
         subfolder=subfolder,
+        cast_dtype_fn=partial(_final_param_dtype, dtype_to_cast=config.weights_dtype),
     )
 
+  # No-op (returns leaves unchanged) when the loader already cast to the
+  # final dtypes; still needed for restored orbax checkpoints.
   params = jax.tree_util.tree_map_with_path(
       lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype),
       params,
   )
+  t_put_start = time.perf_counter()
+  put_specs = []
   for path, val in flax.traverse_util.flatten_dict(params).items():
     if restored_checkpoint:
       if path[-1] == "value":
@@ -223,15 +255,57 @@ def create_sharded_logical_transformer(
       except Exception:
         pass
 
-    sharding = logical_state_sharding[path].value
-    try:
-      state[path].value = device_put_replicated(val, sharding)
-    except Exception as e:
-      max_logging.log(f"Failed to device_put_replicated {path}: {e}")
-      max_logging.log(f"Trying to use process_allgather for {path}")
-      val_on_host = jax.experimental.multihost_utils.process_allgather(val, tiled=True)
-      state[path].value = device_put_replicated(val_on_host, sharding)
-      del val_on_host
+    put_specs.append((path, val, logical_state_sharding[path].value))
+
+  if jax.process_count() == 1:
+    # Replicated params are the bulk of the bytes; a direct device_put
+    # broadcasts the same bytes over every device's PCIe stream (~2GB/s
+    # each). Instead, stage them sharded along dim0 (each device receives
+    # only 1/n of the bytes over PCIe) and replicate on-device through ICI,
+    # which is an order of magnitude faster than host links.
+    n_devices = mesh.devices.size
+    dim0_sharding = NamedSharding(mesh, P(mesh.axis_names))
+
+    def stages_via_ici(val, sharding) -> bool:
+      return (
+          sharding.is_fully_replicated
+          and val.ndim > 0
+          and val.shape[0] % n_devices == 0
+          and val.nbytes >= 1 << 26  # 64MB: below this, staging overhead wins
+      )
+
+    staged_ids = [i for i, (_, val, sharding) in enumerate(put_specs) if stages_via_ici(val, sharding)]
+    direct_ids = [i for i in range(len(put_specs)) if i not in set(staged_ids)]
+
+    put_arrays = [None] * len(put_specs)
+    if staged_ids:
+      staged = jax.device_put([put_specs[i][1] for i in staged_ids], [dim0_sharding] * len(staged_ids))
+      # out_shardings must be the exact target sharding objects (not an
+      # equivalent P()): downstream jit cache keys include arg shardings, so
+      # a different-but-equivalent spec would force a full recompile.
+      replicate_fn = jax.jit(lambda xs: xs, out_shardings=[put_specs[i][2] for i in staged_ids])
+      for i, replicated in zip(staged_ids, replicate_fn(staged)):
+        put_arrays[i] = replicated
+    if direct_ids:
+      for i, put_array in zip(
+          direct_ids,
+          jax.device_put([put_specs[i][1] for i in direct_ids], [put_specs[i][2] for i in direct_ids]),
+      ):
+        put_arrays[i] = put_array
+    for (path, _, _), put_array in zip(put_specs, put_arrays):
+      state[path].value = put_array
+  else:
+    for path, val, sharding in put_specs:
+      try:
+        state[path].value = device_put_replicated(val, sharding)
+      except Exception as e:
+        max_logging.log(f"Failed to device_put_replicated {path}: {e}")
+        max_logging.log(f"Trying to use process_allgather for {path}")
+        val_on_host = jax.experimental.multihost_utils.process_allgather(val, tiled=True)
+        state[path].value = device_put_replicated(val_on_host, sharding)
+        del val_on_host
+  jax.block_until_ready([state[path].value for path, _, _ in put_specs])
+  max_logging.log(f"Transformer {subfolder or 'transformer'} weights on device in {time.perf_counter() - t_put_start:.1f}s")
   state = nnx.from_flat_state(state)
 
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
@@ -794,6 +868,8 @@ class WanPipeline:
       max_logging.log("Loading Tokenizer and Text Encoder")
       components["tokenizer"] = cls.load_tokenizer(config=config)
       components["text_encoder"] = cls.load_text_encoder(config=config)
+      if getattr(config, "compile_text_encoder", False):
+        cls._warm_text_encoder(config, components["tokenizer"], components["text_encoder"])
       if cls._needs_image_encoder(config, i2v=i2v):
         (
             components["image_processor"],
@@ -804,6 +880,37 @@ class WanPipeline:
       components["scheduler"], components["scheduler_state"] = cls.load_scheduler(config=config)
 
     return components
+
+  @classmethod
+  def _warm_text_encoder(cls, config, tokenizer, text_encoder) -> None:
+    """Runs one dummy forward through the torch.compile'd text encoder.
+
+    torch.compile pays its (~30s CPU) inductor compilation on the first
+    call; doing it here means it happens during weight loading (hidden
+    behind the transformer conversion when loading runs in a background
+    thread) instead of inside the first pipeline call. The dummy batch
+    matches the shapes encode_prompt will use, so no recompilation later.
+    """
+    t_start = time.perf_counter()
+    batch_size = int(getattr(config, "global_batch_size_to_train_on", 1))
+    if getattr(config, "use_batched_text_encoder", False):
+      # encode_prompt batches prompt + negative prompt into one call.
+      batch_size *= 2
+    dummy_inputs = tokenizer(
+        [""] * batch_size,
+        padding="max_length",
+        max_length=getattr(config, "max_sequence_length", 512),
+        truncation=True,
+        add_special_tokens=True,
+        return_attention_mask=True,
+        return_tensors="pt",
+    )
+    # Deliberately NOT under torch.no_grad(): grad mode is a dynamo guard,
+    # and the pipeline's encode call runs with grad enabled. The warmup must
+    # compile the exact same graph (also keeps numerics identical to the
+    # historical encode path).
+    text_encoder(dummy_inputs.input_ids, dummy_inputs.attention_mask)
+    max_logging.log(f"Text encoder compile warmup in {time.perf_counter() - t_start:.1f}s")
 
   @classmethod
   @abstractmethod
