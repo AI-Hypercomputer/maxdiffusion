@@ -510,21 +510,26 @@ class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
     )(timesteps_proj.astype(dtype))
 
     if self.guidance_embeds and guidance is not None:
-        guidance_proj = FlaxTimesteps(dim=256, flip_sin_to_cos=True, freq_shift=0)(guidance)
-        guidance_emb = FlaxTimestepEmbedding(
-            time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
-        )(guidance_proj.astype(dtype))
-        time_guidance_emb = timestep_emb + guidance_emb
+      guidance_proj = FlaxTimesteps(dim=256, flip_sin_to_cos=True, freq_shift=0)(guidance)
+      guidance_emb = FlaxTimestepEmbedding(
+          time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
+      )(guidance_proj.astype(dtype))
+      time_guidance_emb = timestep_emb + guidance_emb
     else:
-        time_guidance_emb = timestep_emb
+      time_guidance_emb = timestep_emb
 
-    if pooled_projection is not None and hasattr(self, "pooled_projection_dim") and self.pooled_projection_dim and self.pooled_projection_dim > 0:
-        pooled_projections = PixArtAlphaTextProjection(
-            self.embedding_dim, act_fn="silu", dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
-        )(pooled_projection)
-        conditioning = time_guidance_emb + pooled_projections
+    if (
+        pooled_projection is not None
+        and hasattr(self, "pooled_projection_dim")
+        and self.pooled_projection_dim
+        and self.pooled_projection_dim > 0
+    ):
+      pooled_projections = PixArtAlphaTextProjection(
+          self.embedding_dim, act_fn="silu", dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
+      )(pooled_projection)
+      conditioning = time_guidance_emb + pooled_projections
     else:
-        conditioning = time_guidance_emb
+      conditioning = time_guidance_emb
 
     return conditioning
 

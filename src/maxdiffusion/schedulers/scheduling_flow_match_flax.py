@@ -414,18 +414,18 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
 
 
 def compute_empirical_mu(image_seq_len: int, num_steps: int) -> float:
-    """
-    Computes the empirical time shift parameter (mu) used by Flux models
-    to offset sigmas dynamically based on resolution sequence length.
-    """
-    a1, b1 = 8.73809524e-05, 1.89833333
-    a2, b2 = 0.00016927, 0.45666666
-    if image_seq_len > 4300:
-        mu = a2 * image_seq_len + b2
-        return float(mu)
-    m_200 = a2 * image_seq_len + b2
-    m_10 = a1 * image_seq_len + b1
-    a = (m_200 - m_10) / 190.0
-    b = m_200 - 200.0 * a
-    mu = a * num_steps + b
+  """
+  Computes the empirical time shift parameter (mu) used by Flux models
+  to offset sigmas dynamically based on resolution sequence length.
+  """
+  a1, b1 = 8.73809524e-05, 1.89833333
+  a2, b2 = 0.00016927, 0.45666666
+  if image_seq_len > 4300:
+    mu = a2 * image_seq_len + b2
     return float(mu)
+  m_200 = a2 * image_seq_len + b2
+  m_10 = a1 * image_seq_len + b1
+  a = (m_200 - m_10) / 190.0
+  b = m_200 - 200.0 * a
+  mu = a * num_steps + b
+  return float(mu)
