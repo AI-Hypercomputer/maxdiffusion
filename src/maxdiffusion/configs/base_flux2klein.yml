@@ -35,12 +35,13 @@ t5xxl_model_name_or_path: 'ariG23498/t5-v1-1-xxl-flax'
 flux_name: "flux2klein"
 scale_shift_order: "scale_shift"
 use_latents: False
+latents_path: ""
 max_sequence_length: 512
 time_shift: True
 base_shift: 0.5
 max_shift: 1.15
 # offloads t5 encoder after text encoding to save memory.
-offload_encoders: True
+offload_encoders: False
 
 
 unet_checkpoint: ''
@@ -160,9 +161,9 @@ dcn_fsdp_parallelism: -1
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_fsdp_parallelism: 1
 ici_context_parallelism: 1
-ici_tensor_parallelism: 1
+ici_tensor_parallelism: 4
 
 allow_split_physical_axes: False
 
@@ -203,6 +204,7 @@ max_train_steps: 1500
 num_train_epochs: 1
 seed: 0
 output_dir: 'output/'
+output_name: "flux2klein_generated_image.png"
 per_device_batch_size: 1
 
 warmup_steps_fraction: 0.1
@@ -224,7 +226,7 @@ profiler_steps: 10
 profiler: ""
 
 # Generation parameters
-prompt: "A detailed vector illustration of a robotic hummingbird || A cinematic shot of a neon-lit cyberpunk street"
+prompt: "a car jumping off of a cliff with a crowd cheering"
 prompt_2: "A detailed vector illustration of a robotic hummingbird || A cinematic shot of a neon-lit cyberpunk street"
 negative_prompt: ""
 do_classifier_free_guidance: True

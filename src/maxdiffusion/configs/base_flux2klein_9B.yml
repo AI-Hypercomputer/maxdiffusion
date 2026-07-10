@@ -35,12 +35,13 @@ t5xxl_model_name_or_path: 'ariG23498/t5-v1-1-xxl-flax'
 flux_name: "flux2klein_9B"
 scale_shift_order: "scale_shift"
 use_latents: False
+latents_path: ""
 max_sequence_length: 512
 time_shift: True
 base_shift: 0.5
 max_shift: 1.15
 # offloads t5 encoder after text encoding to save memory.
-offload_encoders: True
+offload_encoders: False
 
 
 unet_checkpoint: ''
@@ -203,6 +204,7 @@ max_train_steps: 1500
 num_train_epochs: 1
 seed: 0
 output_dir: 'output/'
+output_name: "flux2klein_generated_image.png"
 per_device_batch_size: 1
 
 warmup_steps_fraction: 0.1

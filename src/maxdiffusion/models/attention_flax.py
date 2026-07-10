@@ -28,6 +28,8 @@ from maxdiffusion.kernels.splash_attention import splash_attention_mask as tokam
 from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
 from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
+
+_attn_call_counter = 0
 from einops import rearrange
 from .. import common_types, max_logging
 from maxdiffusion.tpu_utils import get_tpu_type, TpuType
@@ -1313,7 +1315,26 @@ def jax_memory_efficient_attention(
   return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
 
 
-def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
+def apply_rope(xq: Array, xk: Array, freqs_cis: Any) -> tuple[Array, Array]:
+  if isinstance(freqs_cis, (tuple, list)):
+    cos, sin = freqs_cis
+    if cos.ndim == 2:
+      cos = cos[None, None, :, :]
+      sin = sin[None, None, :, :]
+    elif cos.ndim == 3 and cos.shape[0] == 1:
+      cos = cos[None, :, :, :]
+      sin = sin[None, :, :, :]
+
+    def _rotate(x):
+      x_reshaped = x.reshape(*x.shape[:-1], -1, 2)
+      x_real = x_reshaped[..., 0]
+      x_imag = x_reshaped[..., 1]
+      return jnp.stack([-x_imag, x_real], axis=-1).reshape(*x.shape)
+
+    xq_out = xq * cos + _rotate(xq) * sin
+    xk_out = xk * cos + _rotate(xk) * sin
+    return xq_out.astype(xq.dtype), xk_out.astype(xk.dtype)
+
   xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)
   xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)
 
@@ -2151,7 +2172,6 @@ class FlaxFluxAttention(nn.Module):
       encoder_query_proj, encoder_key_proj, encoder_value_proj = encoder_qkv_proj
 
       encoder_query_proj = self.encoder_query_norm(encoder_query_proj)
-
       encoder_key_proj = self.encoder_key_norm(encoder_key_proj)
 
       query_proj = jnp.concatenate((encoder_query_proj, query_proj), axis=2)
@@ -2162,7 +2182,8 @@ class FlaxFluxAttention(nn.Module):
       key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
       value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
 
-    image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+    if not isinstance(image_rotary_emb, (tuple, list)):
+      image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
     query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb)
 
     query_proj = query_proj.transpose(0, 2, 1, 3).reshape(query_proj.shape[0], query_proj.shape[2], -1)

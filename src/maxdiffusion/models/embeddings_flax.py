@@ -435,22 +435,38 @@ class PixArtAlphaTextProjection(nn.Module):
 
 
 class FluxPosEmbed(nn.Module):
-  theta: int
-  axes_dim: List[int]
+  theta: int = 10000
+  axes_dim: List[int] = (16, 56, 56)
   dtype: jnp.dtype = jnp.float32
+  return_tuple: bool = False
 
   @nn.compact
   def __call__(self, ids):
-    n_axes = ids.shape[-1]
-    out_freqs = []
+    n_axes = len(self.axes_dim)
     pos = ids.astype(self.dtype)
     freqs_dtype = self.dtype
-    for i in range(n_axes):
-      out = get_1d_rotary_pos_embed(self.axes_dim[i], pos[..., i], theta=self.theta, freqs_dtype=freqs_dtype)
-      out_freqs.append(out)
 
-    out_freqs = jnp.concatenate(out_freqs, axis=1)
-    return out_freqs
+    if self.return_tuple:
+      cos_out = []
+      sin_out = []
+      for i in range(n_axes):
+        dim = self.axes_dim[i]
+        p = pos[..., i]
+        freqs = 1.0 / (self.theta ** (jnp.arange(0, dim, 2, dtype=freqs_dtype) / dim))
+        freqs = jnp.outer(p, freqs)
+        freqs = jnp.repeat(freqs, 2, axis=-1)
+        cos_out.append(jnp.cos(freqs))
+        sin_out.append(jnp.sin(freqs))
+      freqs_cos = jnp.concatenate(cos_out, axis=-1)
+      freqs_sin = jnp.concatenate(sin_out, axis=-1)
+      return freqs_cos, freqs_sin
+    else:
+      out_freqs = []
+      for i in range(n_axes):
+        out = get_1d_rotary_pos_embed(self.axes_dim[i], pos[..., i], theta=self.theta, freqs_dtype=freqs_dtype)
+        out_freqs.append(out)
+      out_freqs = jnp.concatenate(out_freqs, axis=1)
+      return out_freqs
 
 
 class CombinedTimestepTextProjEmbeddings(nn.Module):
@@ -480,28 +496,35 @@ class CombinedTimestepTextProjEmbeddings(nn.Module):
 class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
   embedding_dim: int
   pooled_projection_dim: int
+  guidance_embeds: bool = True
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
 
   @nn.compact
-  def __call__(self, timestep, guidance, pooled_projection):
-    timesteps_proj = timestep
+  def __call__(self, timestep, guidance, pooled_projection=None):
+    timesteps_proj = FlaxTimesteps(dim=256, flip_sin_to_cos=True, freq_shift=0)(timestep)
+    dtype = pooled_projection.dtype if pooled_projection is not None else jnp.float32
     timestep_emb = FlaxTimestepEmbedding(
         time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
-    )(timesteps_proj.astype(pooled_projection.dtype))
+    )(timesteps_proj.astype(dtype))
 
-    guidance_proj = guidance
-    guidance_emb = FlaxTimestepEmbedding(
-        time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
-    )(guidance_proj.astype(pooled_projection.dtype))
+    if self.guidance_embeds and guidance is not None:
+        guidance_proj = FlaxTimesteps(dim=256, flip_sin_to_cos=True, freq_shift=0)(guidance)
+        guidance_emb = FlaxTimestepEmbedding(
+            time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
+        )(guidance_proj.astype(dtype))
+        time_guidance_emb = timestep_emb + guidance_emb
+    else:
+        time_guidance_emb = timestep_emb
 
-    time_guidance_emb = timestep_emb + guidance_emb
-
-    pooled_projections = PixArtAlphaTextProjection(
-        self.embedding_dim, act_fn="silu", dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
-    )(pooled_projection)
-    conditioning = time_guidance_emb + pooled_projections
+    if pooled_projection is not None and hasattr(self, "pooled_projection_dim") and self.pooled_projection_dim and self.pooled_projection_dim > 0:
+        pooled_projections = PixArtAlphaTextProjection(
+            self.embedding_dim, act_fn="silu", dtype=self.dtype, weights_dtype=self.weights_dtype, precision=self.precision
+        )(pooled_projection)
+        conditioning = time_guidance_emb + pooled_projections
+    else:
+        conditioning = time_guidance_emb
 
     return conditioning
 

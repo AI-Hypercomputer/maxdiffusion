@@ -210,7 +210,7 @@ class GenerateFlux2KleinTest(unittest.TestCase):
     from maxdiffusion import pyconfig
     from maxdiffusion.max_utils import create_device_mesh
     from diffusers.models.transformers.transformer_flux2 import Flux2TransformerBlock
-    from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformerBlock
+    from maxdiffusion.models.flux.transformers.transformer_flux2klein_flax import Flux2KleinTransformerBlock as FluxTransformerBlock
 
     pyconfig._config = None
     pyconfig.initialize([
@@ -227,7 +227,9 @@ class GenerateFlux2KleinTest(unittest.TestCase):
     devices_array = create_device_mesh(config)
     mesh = Mesh(devices_array[:1, :1], config.mesh_axes)
 
-    pt_block = Flux2TransformerBlock(dim=3072, num_attention_heads=24, attention_head_dim=128, mlp_ratio=3.0)
+    pt_block = Flux2TransformerBlock(
+        dim=3072, num_attention_heads=24, attention_head_dim=128, mlp_ratio=3.0
+    )
     pt_block.eval()
 
     jax_block = FluxTransformerBlock(
@@ -319,7 +321,7 @@ class GenerateFlux2KleinTest(unittest.TestCase):
     from maxdiffusion import pyconfig
     from maxdiffusion.max_utils import create_device_mesh
     from diffusers.models.transformers.transformer_flux2 import Flux2SingleTransformerBlock
-    from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxSingleTransformerBlock
+    from maxdiffusion.models.flux.transformers.transformer_flux2klein_flax import Flux2KleinSingleTransformerBlock as FluxSingleTransformerBlock
 
     pyconfig._config = None
     pyconfig.initialize([
@@ -369,8 +371,8 @@ class GenerateFlux2KleinTest(unittest.TestCase):
       pt_sd = pt_block.state_dict()
       params["linear1"]["kernel"] = pt_sd["attn.to_qkv_mlp_proj.weight"].T.numpy()
       params["linear2"]["kernel"] = pt_sd["attn.to_out.weight"].T.numpy()
-      params["attn"]["query_norm"]["scale"] = pt_sd["attn.norm_q.weight"].numpy()
-      params["attn"]["key_norm"]["scale"] = pt_sd["attn.norm_k.weight"].numpy()
+      params["norm_q"]["scale"] = pt_sd["attn.norm_q.weight"].numpy()
+      params["norm_k"]["scale"] = pt_sd["attn.norm_k.weight"].numpy()
       params = flax.core.freeze(params)
 
       np.random.seed(42)
@@ -387,7 +389,9 @@ class GenerateFlux2KleinTest(unittest.TestCase):
       jax_rope = np.concatenate([jax_cos, jax_sin], axis=-1)
 
       with torch.no_grad():
-        pt_out = pt_block(hidden_states=pt_img, encoder_hidden_states=pt_txt, temb_mod=pt_mod, image_rotary_emb=pt_rope)
+        pt_out = pt_block(
+            hidden_states=pt_img, encoder_hidden_states=pt_txt, temb_mod=pt_mod, image_rotary_emb=pt_rope
+        )
 
       jax_input = jnp.concatenate([jnp.array(pt_txt.numpy()), jnp.array(pt_img.numpy())], axis=1)
       jax_out = jax_block.apply(

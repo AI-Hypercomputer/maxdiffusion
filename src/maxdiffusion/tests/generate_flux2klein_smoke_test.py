@@ -27,7 +27,7 @@ from maxdiffusion import generate_flux2klein
 
 IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-PROMPT = "an anime corgi eating sushi in the mountains"
+PROMPT = "anime corgi eating sushi in the mountains"
 
 
 class GenerateFlux2KleinSmokeTest(unittest.TestCase):
@@ -56,10 +56,13 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
         "jax_cache_dir=/tmp/cache_dir",
         "skip_jax_distributed_system=True",
         f"prompt={PROMPT}",
-        "height=1024",
-        "width=1024",
+        "height=512",
+        "width=512",
         "batch_size=1",
-        "seed=0",
+        "seed=42",
+        "weights_dtype=bfloat16",
+        "activations_dtype=bfloat16",
+        "precision=DEFAULT",
     ]
 
     generate_flux2klein.main(args)
@@ -70,7 +73,7 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
     self.assertEqual(base_image.shape, test_image.shape)
     ssim_compare = ssim(base_image, test_image, channel_axis=-1, data_range=255)
     print(f"\n[SMOKE TEST 4B] SSIM Score: {ssim_compare:.6f}")
-    self.assertGreaterEqual(ssim_compare, 0.90)
+    self.assertGreaterEqual(ssim_compare, 0.98)
 
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions (requires TPU HBM)")
   def test_flux2klein_9b_smoke(self):
@@ -95,10 +98,13 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
         "jax_cache_dir=/tmp/cache_dir",
         "skip_jax_distributed_system=True",
         f"prompt={PROMPT}",
-        "height=1024",
-        "width=1024",
+        "height=512",
+        "width=512",
         "batch_size=1",
-        "seed=0",
+        "seed=42",
+        "weights_dtype=bfloat16",
+        "activations_dtype=bfloat16",
+        "precision=DEFAULT",
     ]
 
     generate_flux2klein.main(args)
@@ -109,4 +115,4 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
     self.assertEqual(base_image.shape, test_image.shape)
     ssim_compare = ssim(base_image, test_image, channel_axis=-1, data_range=255)
     print(f"\n[SMOKE TEST 9B] SSIM Score: {ssim_compare:.6f}")
-    self.assertGreaterEqual(ssim_compare, 0.90)
+    self.assertGreaterEqual(ssim_compare, 0.98)

@@ -189,9 +189,10 @@ class FluxSingleTransformerBlock(nn.Module):
     k = self.attn.key_norm(k)
 
     if image_rotary_emb is not None:
-      # since this function returns image_rotary_emb and passes it between layers,
-      # we do not want to modify it
-      image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+      if isinstance(image_rotary_emb, (tuple, list)):
+        image_rotary_emb_reordered = image_rotary_emb
+      else:
+        image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
       q, k = apply_rope(q, k, image_rotary_emb_reordered)
 
     q = q.transpose(0, 2, 1, 3).reshape(q.shape[0], q.shape[2], -1)
