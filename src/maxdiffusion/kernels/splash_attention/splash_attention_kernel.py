@@ -526,6 +526,21 @@ def flash_attention_kernel_mhpt(
     heads_per_tile: int,
     config: SplashConfig,
 ):
+  """Multi-head-per-tile (mhpt) forward kernel for ring splash attention.
+
+  Processes `heads_per_tile` heads per grid program (a Python loop over `h_local`)
+  instead of one, amortizing per-tile launch/prefetch/pipelining overhead. Each head
+  keeps its own online-softmax scratch slice `(heads_per_tile, bq, ...)` and, on the
+  last kv step, writes the raw residuals (`o`, `l_linear`, `max_logits`) that the ring
+  wrapper merges across shards.
+
+  This is a lean, dedicated kernel rather than a branch inside `flash_attention_kernel`
+  on purpose: mhpt supports only a narrow regime (full MHA, static FullMask,
+  HEAD_DIM_MINOR, no sinks / max-logit / soft-cap), so keeping it separate avoids adding
+  a head loop crossed with all of `flash_attention_kernel`'s branches to the hot path.
+  Mirrors `custom_splash_attention._flash_attention_kernel_mhpt` (the non-ring mhpt path).
+  Supported regime is enforced by guards in `_splash_attention_forward_ring_raw`.
+  """
   del active_rows_ref, active_cols_ref, mask_next_ref
   del bounds_start_ref, bounds_end_ref, block_mask_ref
   del sinks_ref, mask_ref, q_sequence_ref, max_logit_value_ref
@@ -1253,6 +1268,11 @@ def _splash_attention_forward_ring_raw(
     grid = (head_programs, kv_steps * (q_seq_len // bq))
     is_empty_attention_block = False
 
+  # Dispatch to the dedicated mhpt kernel when tiling >1 head per program. The mhpt
+  # path is a guarded branch *inside* this forward (rather than a separate forward like
+  # custom_splash_attention._splash_attention_forward_mhpt) so it reuses all the shared
+  # setup below/above -- index maps, in/out specs, mask & segment plumbing -- and only
+  # the kernel fn, scratch shapes, and head-dim block size differ.
   kernel = flash_attention_kernel_mhpt if use_heads_per_tile else flash_attention_kernel
   kernel_kwargs = {
       "mask_value": mask_value,
