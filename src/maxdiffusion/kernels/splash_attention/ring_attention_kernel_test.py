@@ -236,7 +236,10 @@ class RingAttentionHeadsPerTileTest(test_utils.SplashAttentionTestCase):
     out_mhpt = run(heads_per_tile)  # multi-head-per-tile (flash_attention_kernel_mhpt)
 
     # Pure tiling => numerically equivalent to the single-head-per-tile baseline.
-    self._assert_allclose(out_mhpt, out_ref, rtol=5e-3, atol=5e-3)
+    # The ring mesh is jax.devices()[:ring_size] (all on process 0), so the
+    # outputs are only addressable there; use the multi-controller-safe compare
+    # so this passes on every host, not just the owner.
+    self.assert_allclose_mcjax(out_mhpt, out_ref, rtol=5e-3, atol=5e-3)
 
 
 if __name__ == "__main__":
