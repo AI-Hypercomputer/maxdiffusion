@@ -194,8 +194,50 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
   return
 
 
+def maybe_tune_block_sizes(config):
+  """If enable_tile_search, run a fast one-DiT-block tile-size grid search and overwrite
+  flash_block_sizes' block_q/block_kv/block_kv_compute with the winner IN PLACE, before the
+  transformer (which bakes block sizes in at construction) is built.
+
+  Flags are read defensively so this is a safe no-op (grid search OFF) for any config that
+  doesn't declare them -- not every WAN yaml carries the tile_search_* keys."""
+  keys = config.get_keys()
+  if not keys.get("enable_tile_search", False):
+    return
+  from maxdiffusion.utils.tile_size_grid_search import grid_search
+  from maxdiffusion.utils.wan_block_benchmark import WanBlockBenchmark
+
+  mesh = jax.sharding.Mesh(max_utils.create_device_mesh(config), config.mesh_axes)
+  bench = WanBlockBenchmark.from_config(config, mesh)
+  max_logging.log(f"[tile-search] tuning block sizes for {bench.label} before inference...")
+  result = grid_search(
+      bench,
+      mode=keys.get("tile_search_mode", "smart"),
+      iters=keys.get("tile_search_iters", 10),
+      out_dir=(keys.get("tile_search_out", "") or None),
+      log=max_logging.log,
+  )
+  if result.best is None:
+    max_logging.log("[tile-search] no config succeeded; keeping configured flash_block_sizes")
+    return
+  fbs = dict(config.flash_block_sizes)
+  fbs.update({
+      "block_q": result.best.bq,
+      "block_kv": result.best.bkv,
+      "block_kv_compute": result.best.bkv_compute,
+      "block_kv_compute_in": result.best.bkv_compute,
+  })
+  config.get_keys()["flash_block_sizes"] = fbs  # config is immutable via setattr; mutate raw dict
+  max_logging.log(
+      f"[tile-search] using block_q={result.best.bq} block_kv={result.best.bkv} "
+      f"(block-bench {result.best.mean_ms:.2f} ms)"
+  )
+
+
 def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   model_key = config.model_name
+  if pipeline is None:
+    maybe_tune_block_sizes(config)
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
@@ -236,7 +278,10 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       pipeline, _, _ = checkpoint_loader.load_checkpoint(checkpoint_step)
     else:
       pipeline = checkpoint_loader.load_pretrained_pipeline_or_diffusers(
-          config, pipeline_cls, pretrained_state_sources, pretrained_config_transformer_attr
+          config,
+          pipeline_cls,
+          pretrained_state_sources,
+          pretrained_config_transformer_attr,
       )
     load_time = time.perf_counter() - load_start
     max_logging.log(f"load_time: {load_time:.1f}s")
@@ -340,7 +385,11 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     num_videos = num_devices * config.per_device_batch_size
     if num_videos > 0:
       generation_time_per_video = generation_time / num_videos
-      writer.add_scalar("inference/generation_time_per_video", generation_time_per_video, global_step=0)
+      writer.add_scalar(
+          "inference/generation_time_per_video",
+          generation_time_per_video,
+          global_step=0,
+      )
       max_logging.log(f"generation time per video: {generation_time_per_video}")
     else:
       max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
@@ -384,7 +433,11 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     generation_time_with_profiler = time.perf_counter() - s0
     max_logging.log(f"generation_time_with_profiler: {generation_time_with_profiler}")
     if writer and jax.process_index() == 0:
-      writer.add_scalar("inference/generation_time_with_profiler", generation_time_with_profiler, global_step=0)
+      writer.add_scalar(
+          "inference/generation_time_with_profiler",
+          generation_time_with_profiler,
+          global_step=0,
+      )
 
   return saved_video_path
 
