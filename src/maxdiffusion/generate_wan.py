@@ -390,17 +390,15 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     vae_decode_total = trace.get("vae_decode", 0.0)
     vae_decode_tpu = trace.get("vae_decode_tpu", 0.0)
     vae_decode_post = vae_decode_total - vae_decode_tpu
-    summary.extend(
-        [
-            f"  {'─' * 40}",
-            f"  Conditioning:        {trace.get('conditioning', 0.0):>7.1f}s",
-            f"    - VAE Encode:      {trace.get('vae_encode', 0.0):>7.1f}s",
-            f"  Denoise Total:       {trace.get('denoise_total', 0.0):>7.1f}s",
-            f"  VAE Decode:          {vae_decode_total:>7.1f}s",
-            f"    - TPU Compute:     {vae_decode_tpu:>7.1f}s",
-            f"    - Host Formatting: {vae_decode_post:>7.1f}s",
-        ]
-    )
+    summary.extend([
+        f"  {'─' * 40}",
+        f"  Conditioning:        {trace.get('conditioning', 0.0):>7.1f}s",
+        f"    - VAE Encode:      {trace.get('vae_encode', 0.0):>7.1f}s",
+        f"  Denoise Total:       {trace.get('denoise_total', 0.0):>7.1f}s",
+        f"  VAE Decode:          {vae_decode_total:>7.1f}s",
+        f"    - TPU Compute:     {vae_decode_tpu:>7.1f}s",
+        f"    - Host Formatting: {vae_decode_post:>7.1f}s",
+    ])
   summary.append(f"{'=' * 50}")
   max_logging.log("\n".join(summary))
 

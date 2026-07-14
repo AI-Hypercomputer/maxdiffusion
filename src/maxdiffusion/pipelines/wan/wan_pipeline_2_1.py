@@ -290,15 +290,13 @@ def run_inference_2_1(
   transformer_obj = nnx.merge(graphdef, sharded_state, rest_of_state)
 
   # Compute RoPE once as it only depends on shape
-  dummy_hidden_states = jnp.zeros(
-      (
-          latents.shape[0],
-          latents.shape[2],
-          latents.shape[3],
-          latents.shape[4],
-          latents.shape[1],
-      )
-  )
+  dummy_hidden_states = jnp.zeros((
+      latents.shape[0],
+      latents.shape[2],
+      latents.shape[3],
+      latents.shape[4],
+      latents.shape[1],
+  ))
   rotary_emb = transformer_obj.rope(dummy_hidden_states)
 
   kv_cache = None

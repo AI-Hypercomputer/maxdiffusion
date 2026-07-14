@@ -971,19 +971,17 @@ def run_inference_2_2_i2v(
     # tracing both 14B branches per step and keeps the AOT cache usable.
     use_high_noise = bool(np.asarray(scheduler_state.timesteps)[step] >= np.asarray(boundary))
     branch = high_noise_branch if use_high_noise else low_noise_branch
-    noise_pred, _ = branch(
-        (
-            latent_model_input,
-            timestep,
-            prompt_embeds_combined,
-            image_embeds_combined,
-            kv_cache_high,
-            kv_cache_low,
-            rotary_emb,
-            encoder_attention_mask_high,
-            encoder_attention_mask_low,
-        )
-    )
+    noise_pred, _ = branch((
+        latent_model_input,
+        timestep,
+        prompt_embeds_combined,
+        image_embeds_combined,
+        kv_cache_high,
+        kv_cache_low,
+        rotary_emb,
+        encoder_attention_mask_high,
+        encoder_attention_mask_low,
+    ))
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
