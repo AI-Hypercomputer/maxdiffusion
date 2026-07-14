@@ -419,6 +419,86 @@ def _build_padding_segment_ids(
   return segment_ids_cls(q=q_segment_ids, kv=kv_segment_ids)
 
 
+def _ulysses_head_chunk_ranges(num_heads: int, ulysses_shards: int, num_chunks: int):
+  """Build head-axis ranges for chunked Ulysses all-to-all.
+
+  The Ulysses all-to-all splits each local chunk's head axis over
+  `ulysses_shards`, so every returned range length is a multiple of
+  `ulysses_shards`. When `num_chunks` does not evenly divide the number of
+  Ulysses-sized head groups, earlier chunks get the floor-sized range and the
+  final chunk carries the remainder.
+
+  Returns:
+    A list of `(start, end)` half-open ranges over the head axis. Concatenating
+    tensors sliced with these ranges along the head axis restores the original
+    head layout. For `num_chunks <= 1`, returns `[(0, num_heads)]`, which is the
+    unchunked all-to-all path.
+  """
+  if num_chunks <= 1:
+    return [(0, num_heads)]
+  if num_heads % ulysses_shards != 0:
+    raise ValueError(
+        "Ulysses attention requires the number of heads to be divisible by the Ulysses shard count, "
+        f"got heads={num_heads} and ulysses_shards={ulysses_shards}."
+    )
+
+  head_groups = num_heads // ulysses_shards
+  num_chunks = min(num_chunks, head_groups)
+  regular_groups_per_chunk = max(1, head_groups // num_chunks)
+
+  ranges = []
+  start_group = 0
+  for chunk_idx in range(num_chunks):
+    end_group = head_groups if chunk_idx == num_chunks - 1 else min(start_group + regular_groups_per_chunk, head_groups)
+    if start_group >= end_group:
+      break
+    ranges.append((start_group * ulysses_shards, end_group * ulysses_shards))
+    start_group = end_group
+  return ranges
+
+
+def _run_chunked_ulysses_attention(
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    num_heads: int,
+    ulysses_shards: int,
+    ulysses_attention_chunks: int,
+    attention_fn,
+) -> jax.Array:
+  """Runs Ulysses attention chunked or unchunked along the head axis.
+
+  Splits the attention compute and communication into head-group chunks so XLA
+  can overlap communication and compute.
+
+  Args:
+    query: The query tensor, [B, H, S, D].
+    key: The key tensor, [B, H, S, D].
+    value: The value tensor, [B, H, S, D].
+    num_heads: The number of heads in query.
+    ulysses_shards: The Ulysses/context shard count.
+    ulysses_attention_chunks: Number of head-group chunks to split into.
+    attention_fn: The local Ulysses attention function to call on each chunk,
+      taking (query, key, value) and returning the attention output.
+
+  Returns:
+    The concatenated attention output tensor.
+  """
+  head_chunk_ranges = _ulysses_head_chunk_ranges(num_heads, ulysses_shards, ulysses_attention_chunks)
+  if len(head_chunk_ranges) > 1:
+    chunk_outputs = [
+        attention_fn(
+            query[:, start:end],
+            key[:, start:end],
+            value[:, start:end],
+        )
+        for start, end in head_chunk_ranges
+    ]
+    return jnp.concatenate(chunk_outputs, axis=1)
+  else:
+    return attention_fn(query, key, value)
+
+
 def _tpu_flash_attention(
     query: jax.Array,
     key: jax.Array,
@@ -546,7 +626,9 @@ def _tpu_flash_attention(
           ),
           save_residuals=False,
           ring_axis=CONTEXT,
-          rotate_segment_ids=False,  # We don't rotate segment ids in tokamax ring attention because our segment ids is for padding each kv shard has same segment ids
+          # We don't rotate segment ids in tokamax ring attention because our
+          # segment ids is for padding each kv shard has same segment ids
+          rotate_segment_ids=False,
       )
     else:
       splash_kernel = splash_attention_kernel.make_splash_mha(
@@ -647,6 +729,7 @@ def _ulysses_attention(
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
     use_fixed_m: bool = False,
+    ulysses_attention_chunks: int = 1,
 ) -> jax.Array:
   """Ulysses sequence-parallel attention.
 
@@ -669,6 +752,7 @@ def _ulysses_attention(
         "Ulysses attention requires the number of heads to be divisible by the context shard count, "
         f"got heads={num_heads} and context_shards={num_shards}."
     )
+
   if not use_custom_kernel:
     block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, "flash")
 
@@ -792,7 +876,6 @@ def _ulysses_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_batch_sharding: {devices_in_batch_sharding}"
     )
-
   # Fold the (CFG) batch into the heads axis around the Ulysses exchange.
   # Each (batch, head) pair is an independent attention problem, so
   # [B, H, S, D] -> [1, B*H, S, D] is mathematically identity — but it makes
@@ -807,8 +890,19 @@ def _ulysses_attention(
     query = query.reshape(1, batch * num_heads, *query.shape[2:])
     key = key.reshape(1, batch * num_heads, *key.shape[2:])
     value = value.reshape(1, batch * num_heads, *value.shape[2:])
+    effective_num_heads = batch * num_heads
+  else:
+    effective_num_heads = num_heads
 
-  x = wrap_ulysses_attention(query, key, value)
+  x = _run_chunked_ulysses_attention(
+      query,
+      key,
+      value,
+      effective_num_heads,
+      num_shards,
+      ulysses_attention_chunks,
+      wrap_ulysses_attention,
+  )
 
   if fold_batch:
     x = x.reshape(batch, num_heads, *x.shape[2:])
@@ -836,6 +930,7 @@ def _ulysses_ring_attention(
     use_base2_exp: bool = False,
     use_experimental_scheduler: bool = False,
     ulysses_shards: int = -1,
+    ulysses_attention_chunks: int = 1,
 ) -> jax.Array:
   """2D context-parallel attention using a private Ulysses x ring mesh.
 
@@ -877,6 +972,7 @@ def _ulysses_ring_attention(
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_sequence_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_sequence_shards)
   value, _ = _reshape_data_for_flash(value, heads, num_sequence_shards)
+  num_heads = query.shape[1]
 
   block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, "tokamax_ring")
 
@@ -965,7 +1061,15 @@ def _ulysses_ring_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_batch_sharding: {devices_in_batch_sharding}"
     )
-  x = wrap_ulysses_ring_attention(query, key, value)
+  x = _run_chunked_ulysses_attention(
+      query,
+      key,
+      value,
+      num_heads,
+      num_ulysses_shards,
+      ulysses_attention_chunks,
+      wrap_ulysses_ring_attention,
+  )
   x = jax.lax.with_sharding_constraint(x, q_axis_names)
   x = x[:, :, :orig_q_seq_len, :]
   x = _reshape_heads_to_head_dim(x)
@@ -991,6 +1095,7 @@ def _ulysses_ring_custom_attention(
     use_experimental_scheduler: bool = False,
     bidirectional: bool = False,
     use_fixed_m: bool = False,
+    ulysses_attention_chunks: int = 1,
 ) -> jax.Array:
   """Hybrid Ulysses + Ring (USP) with the CUSTOM splash kernel on main's mesh.
 
@@ -1141,7 +1246,15 @@ def _ulysses_ring_custom_attention(
     attention_output = a2a(attention_output, split_axis=2, concat_axis=1)
     return attention_output
 
-  x = wrap_ulysses_ring_attention(query, key, value)
+  x = _run_chunked_ulysses_attention(
+      query,
+      key,
+      value,
+      num_heads,
+      num_ulysses_shards,
+      ulysses_attention_chunks,
+      wrap_ulysses_ring_attention,
+  )
   x = jax.lax.with_sharding_constraint(x, q_axis_names)
   x = x[:, :, :orig_q_seq_len, :]
   x = _reshape_heads_to_head_dim(x)
@@ -1291,6 +1404,7 @@ def ulysses_custom_kernel(q, k, v, context):
       use_custom_kernel=True,
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
   )
 
 
@@ -1312,6 +1426,7 @@ def ulysses_ring_custom_kernel(q, k, v, context):
       ulysses_shards=context["ulysses_shards"],
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
   )
 
 
@@ -1364,6 +1479,7 @@ def ulysses_ring_custom_bidir_kernel(q, k, v, context):
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       bidirectional=True,
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
   )
 
 
@@ -1404,6 +1520,7 @@ def ulysses_kernel(q, k, v, context):
       mask_padding_tokens=context["mask_padding_tokens"],
       residual_checkpoint_name=context["residual_checkpoint_name"],
       attention_mask=context["attention_mask"],
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
   )
 
 
@@ -1425,6 +1542,7 @@ def ulysses_ring_kernel(q, k, v, context):
       use_base2_exp=context["use_base2_exp"],
       use_experimental_scheduler=context["use_experimental_scheduler"],
       ulysses_shards=context["ulysses_shards"],
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
   )
 
 
@@ -1537,6 +1655,7 @@ def _apply_attention(
     use_base2_exp: bool = False,
     use_experimental_scheduler: bool = False,
     ulysses_shards: int = -1,
+    ulysses_attention_chunks: int = 1,
 ):
   """Routes to different attention kernels using a module-level registry."""
 
@@ -1568,6 +1687,7 @@ def _apply_attention(
       "use_base2_exp": use_base2_exp,
       "use_experimental_scheduler": use_experimental_scheduler,
       "ulysses_shards": ulysses_shards,
+      "ulysses_attention_chunks": ulysses_attention_chunks,
       "dim_head": dim_head,
       "split_head_dim": split_head_dim,
       "float32_qk_product": float32_qk_product,
@@ -1781,11 +1901,13 @@ class NNXAttentionOp(nnx.Module):
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
       ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
   ):
     self.dpa_layer = None
     self.use_base2_exp = use_base2_exp
     self.use_experimental_scheduler = use_experimental_scheduler
     self.ulysses_shards = ulysses_shards
+    self.ulysses_attention_chunks = ulysses_attention_chunks
     if attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
 
@@ -1849,6 +1971,7 @@ class NNXAttentionOp(nnx.Module):
         use_base2_exp=self.use_base2_exp if hasattr(self, "use_base2_exp") else False,
         use_experimental_scheduler=self.use_experimental_scheduler if hasattr(self, "use_experimental_scheduler") else False,
         ulysses_shards=(self.ulysses_shards if hasattr(self, "ulysses_shards") else -1),
+        ulysses_attention_chunks=(self.ulysses_attention_chunks if hasattr(self, "ulysses_attention_chunks") else 1),
     )
 
 
@@ -1870,6 +1993,7 @@ class AttentionOp(nn.Module):
   use_base2_exp: bool = False
   use_experimental_scheduler: bool = False
   ulysses_shards: int = -1
+  ulysses_attention_chunks: int = 1
 
   def setup(self):
     self.dpa_layer = None
@@ -1918,6 +2042,7 @@ class AttentionOp(nn.Module):
         use_base2_exp=self.use_base2_exp,
         use_experimental_scheduler=self.use_experimental_scheduler,
         ulysses_shards=self.ulysses_shards,
+        ulysses_attention_chunks=self.ulysses_attention_chunks,
     )
 
 
@@ -1960,6 +2085,7 @@ class FlaxWanAttention(nnx.Module):
         "use_base2_exp": False,
         "use_experimental_scheduler": False,
         "ulysses_shards": -1,
+        "ulysses_attention_chunks": 1,
         **(attention_config or {}),
     }
 
@@ -2011,6 +2137,7 @@ class FlaxWanAttention(nnx.Module):
         use_base2_exp=attention_config["use_base2_exp"],
         use_experimental_scheduler=attention_config["use_experimental_scheduler"],
         ulysses_shards=attention_config["ulysses_shards"],
+        ulysses_attention_chunks=attention_config["ulysses_attention_chunks"],
     )
     # None axes corresponds to the stacked weights across all blocks
     # because of the use of nnx.vmap and nnx.scan.

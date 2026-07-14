@@ -178,7 +178,8 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
   negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
 
   max_logging.log(
-      f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}, video: {filename_prefix}"
+      f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width},"
+      f" frames: {config.num_frames}, video: {filename_prefix}"
   )
 
   videos = call_pipeline(config, pipeline, prompt, negative_prompt)
@@ -314,7 +315,8 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
 
   max_logging.log(
-      f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
+      f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width},"
+      f" frames: {config.num_frames}"
   )
   # Warmup with 2 denoising steps instead of a full run: step 0 runs the
   # high-noise transformer and step 1 crosses the boundary to the low-noise
@@ -331,7 +333,8 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=warmup_steps)
   if isinstance(videos, tuple):
     videos, warmup_trace = videos
-    max_logging.log("Warmup breakdown: " + ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in warmup_trace.items()))
+    warmup_str = ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in warmup_trace.items())
+    max_logging.log(f"Warmup breakdown: {warmup_str}")
 
   # Serialize any newly-compiled shapes synchronously while still inside
   # warmup-accounted time; a background save would compete with the first
@@ -390,17 +393,15 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     vae_decode_total = trace.get("vae_decode", 0.0)
     vae_decode_tpu = trace.get("vae_decode_tpu", 0.0)
     vae_decode_post = vae_decode_total - vae_decode_tpu
-    summary.extend(
-        [
-            f"  {'─' * 40}",
-            f"  Conditioning:        {trace.get('conditioning', 0.0):>7.1f}s",
-            f"    - VAE Encode:      {trace.get('vae_encode', 0.0):>7.1f}s",
-            f"  Denoise Total:       {trace.get('denoise_total', 0.0):>7.1f}s",
-            f"  VAE Decode:          {vae_decode_total:>7.1f}s",
-            f"    - TPU Compute:     {vae_decode_tpu:>7.1f}s",
-            f"    - Host Formatting: {vae_decode_post:>7.1f}s",
-        ]
-    )
+    summary.extend([
+        f"  {'─' * 40}",
+        f"  Conditioning:        {trace.get('conditioning', 0.0):>7.1f}s",
+        f"    - VAE Encode:      {trace.get('vae_encode', 0.0):>7.1f}s",
+        f"  Denoise Total:       {trace.get('denoise_total', 0.0):>7.1f}s",
+        f"  VAE Decode:          {vae_decode_total:>7.1f}s",
+        f"    - TPU Compute:     {vae_decode_tpu:>7.1f}s",
+        f"    - Host Formatting: {vae_decode_post:>7.1f}s",
+    ])
   summary.append(f"{'=' * 50}")
   max_logging.log("\n".join(summary))
 

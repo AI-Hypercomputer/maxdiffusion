@@ -137,25 +137,23 @@ class AotCacheTest(unittest.TestCase):
     import subprocess
     import sys
 
-    snippet = "\n".join(
-        (
-            "import os",
-            "os.environ['JAX_PLATFORMS'] = 'cpu'",
-            "import jax",
-            "import jax.numpy as jnp",
-            "from flax import nnx",
-            "from maxdiffusion import aot_cache",
-            "",
-            "class T(nnx.Module):",
-            "  def __init__(self, rngs):",
-            "    self.lin = nnx.Linear(4, 4, rngs=rngs)",
-            "",
-            "graphdef, state = nnx.split(T(nnx.Rngs(0)))",
-            "sig = aot_cache._dynamic_signature(",
-            "    (graphdef, state.to_pure_dict(), jnp.ones((2, 4))), {})",
-            "print(sig)",
-        )
-    )
+    snippet = "\n".join((
+        "import os",
+        "os.environ['JAX_PLATFORMS'] = 'cpu'",
+        "import jax",
+        "import jax.numpy as jnp",
+        "from flax import nnx",
+        "from maxdiffusion import aot_cache",
+        "",
+        "class T(nnx.Module):",
+        "  def __init__(self, rngs):",
+        "    self.lin = nnx.Linear(4, 4, rngs=rngs)",
+        "",
+        "graphdef, state = nnx.split(T(nnx.Rngs(0)))",
+        "sig = aot_cache._dynamic_signature(",
+        "    (graphdef, state.to_pure_dict(), jnp.ones((2, 4))), {})",
+        "print(sig)",
+    ))
     outs = [
         subprocess.run(
             [sys.executable, "-c", snippet],

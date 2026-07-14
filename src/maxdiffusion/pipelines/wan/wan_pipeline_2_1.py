@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache, init_magcache, magcache_step
+from .wan_pipeline import (
+    WanPipeline,
+    transformer_forward_pass,
+    transformer_forward_pass_full_cfg,
+    transformer_forward_pass_cfg_cache,
+    init_magcache,
+    magcache_step,
+)
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
@@ -290,15 +297,13 @@ def run_inference_2_1(
   transformer_obj = nnx.merge(graphdef, sharded_state, rest_of_state)
 
   # Compute RoPE once as it only depends on shape
-  dummy_hidden_states = jnp.zeros(
-      (
-          latents.shape[0],
-          latents.shape[2],
-          latents.shape[3],
-          latents.shape[4],
-          latents.shape[1],
-      )
-  )
+  dummy_hidden_states = jnp.zeros((
+      latents.shape[0],
+      latents.shape[2],
+      latents.shape[3],
+      latents.shape[4],
+      latents.shape[1],
+  ))
   rotary_emb = transformer_obj.rope(dummy_hidden_states)
 
   kv_cache = None
