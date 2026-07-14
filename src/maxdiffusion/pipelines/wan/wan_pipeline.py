@@ -18,6 +18,7 @@ from functools import partial
 from maxdiffusion.image_processor import PipelineImageInput
 import numpy as np
 import math
+import os
 import jax
 import jax.numpy as jnp
 import threading
@@ -28,6 +29,7 @@ import flax.linen as nn
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from ...pyconfig import HyperParameters
+from ... import aot_cache
 from ... import max_logging
 from ... import max_utils
 from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
@@ -157,6 +159,149 @@ def _select_restored_transformer_state(restored_checkpoint, subfolder: str):
   raise ValueError(f"Unsupported WAN checkpoint transformer subfolder `{subfolder}`.")
 
 
+# Concurrent transformer loads (WAN 2.2's two experts) must not interleave
+# their device transfers: shared PCIe lanes degrade ~50% under contention.
+_DEVICE_PUT_LOCK = threading.Lock()
+
+
+def converted_weights_cache_dir(config, subfolder: str) -> str:
+  """Per-(model, subfolder, dtype, scan) dir for memoized converted weights."""
+  base = getattr(config, "converted_weights_dir", "")
+  if not base:
+    return ""
+  model_tag = (config.wan_transformer_pretrained_model_name_or_path or config.pretrained_model_name_or_path).replace(
+      "/", "--"
+  )
+  return os.path.join(base, f"{model_tag}--{subfolder or 'transformer'}--{config.weights_dtype}--scan{config.scan_layers}")
+
+
+def put_params_into_state(
+    state: dict,
+    params: dict,
+    logical_state_sharding: dict,
+    mesh: Mesh,
+    restored_checkpoint=None,
+    subfolder: str = "",
+) -> dict:
+  """Moves host params into the flat nnx state on device.
+
+  Shared by the WAN 2.x and VACE pipelines. Single-process: replicated
+  params are the bulk of the bytes; a direct device_put broadcasts the same
+  bytes over every device's PCIe stream (~2GB/s each). Instead, stage them
+  sharded along dim0 (each device receives only 1/n of the bytes over PCIe)
+  and replicate on-device through ICI, which is an order of magnitude
+  faster than host links. Multi-process: per-param device_put_replicated
+  with a process_allgather fallback.
+
+  Args:
+    state: Flat nnx state dict (path tuple -> VariableState) to fill.
+    params: Host-side param tree with final dtypes.
+    logical_state_sharding: Flat dict of target NamedShardings per path.
+    mesh: Device mesh the shardings refer to.
+    restored_checkpoint: If set, params came from an orbax restore and
+      paths need 'value' suffix / block-index normalization.
+    subfolder: Label used only for logging.
+
+  Returns:
+    The same `state` dict with `.value` set to on-device arrays.
+  """
+  t_put_start = time.perf_counter()
+  put_specs = []
+  for path, val in flax.traverse_util.flatten_dict(params).items():
+    if restored_checkpoint:
+      if path[-1] == "value":
+        path = path[:-1]  # remove 'value'
+
+      try:
+        # Convert block indices to integers, as they might have been loaded as strings from the checkpoint.
+        path = path[:1] + (int(path[1]),) + path[2:]
+      except Exception:
+        pass
+
+    put_specs.append((path, val, logical_state_sharding[path].value))
+
+  if jax.process_count() == 1:
+    n_devices = mesh.devices.size
+    dim0_sharding = NamedSharding(mesh, P(mesh.axis_names))
+
+    def stages_via_ici(val, sharding) -> bool:
+      return (
+          sharding.is_fully_replicated
+          and val.ndim > 0
+          and val.shape[0] % n_devices == 0
+          and val.nbytes >= 1 << 26  # 64MB: below this, staging overhead wins
+      )
+
+    staged_ids = [i for i, (_, val, sharding) in enumerate(put_specs) if stages_via_ici(val, sharding)]
+    direct_ids = [i for i in range(len(put_specs)) if i not in set(staged_ids)]
+
+    put_arrays = [None] * len(put_specs)
+    # Lock through block_until_ready: puts are async, and concurrent expert
+    # transfers on shared PCIe lanes degrade ~50%.
+    with _DEVICE_PUT_LOCK:
+      if staged_ids:
+        # Per-device slice puts run each device's PCIe lane in parallel
+        # (a sharded device_put of the whole list serializes near single-
+        # lane speed). Gathers go in ~6GB chunks: chunk N replicates over
+        # ICI while chunk N+1's host transfers stream, and the transient
+        # HBM reservation stays bounded.
+        chunk_limit_bytes = 6 << 30
+        chunks, current, current_bytes = [], [], 0
+        for i in staged_ids:
+          current.append(i)
+          current_bytes += put_specs[i][1].nbytes
+          if current_bytes >= chunk_limit_bytes:
+            chunks.append(current)
+            current, current_bytes = [], 0
+        if current:
+          chunks.append(current)
+        for chunk in chunks:
+          # One batched put per device: per-tensor-per-device calls pay
+          # dispatch overhead 8x per tensor and defeat lane pipelining.
+          slices_by_device = {}
+          index_maps = []
+          for i in chunk:
+            val = put_specs[i][1]
+            indices_map = dim0_sharding.addressable_devices_indices_map(val.shape)
+            index_maps.append(list(indices_map.items()))
+            for d, index in indices_map.items():
+              slices_by_device.setdefault(d, []).append(val[index])
+          shards_by_device = {d: iter(jax.device_put(slices, d)) for d, slices in slices_by_device.items()}
+          sharded_arrays = []
+          for i, device_indices in zip(chunk, index_maps):
+            val = put_specs[i][1]
+            shards = [next(shards_by_device[d]) for d, _ in device_indices]
+            sharded_arrays.append(jax.make_array_from_single_device_arrays(val.shape, dim0_sharding, shards))
+          # out_shardings must be the exact target sharding objects (not an
+          # equivalent P()): downstream jit cache keys include arg shardings,
+          # so a different-but-equivalent spec would force a full recompile.
+          replicate_fn = jax.jit(lambda xs: xs, out_shardings=[put_specs[i][2] for i in chunk])
+          for i, replicated in zip(chunk, replicate_fn(sharded_arrays)):
+            put_arrays[i] = replicated
+      if direct_ids:
+        for i, put_array in zip(
+            direct_ids,
+            jax.device_put([put_specs[i][1] for i in direct_ids], [put_specs[i][2] for i in direct_ids]),
+        ):
+          put_arrays[i] = put_array
+      jax.block_until_ready([a for a in put_arrays if a is not None])
+    for (path, _, _), put_array in zip(put_specs, put_arrays):
+      state[path].value = put_array
+  else:
+    for path, val, sharding in put_specs:
+      try:
+        state[path].value = device_put_replicated(val, sharding)
+      except Exception as e:
+        max_logging.log(f"Failed to device_put_replicated {path}: {e}")
+        max_logging.log(f"Trying to use process_allgather for {path}")
+        val_on_host = jax.experimental.multihost_utils.process_allgather(val, tiled=True)
+        state[path].value = device_put_replicated(val_on_host, sharding)
+        del val_on_host
+  jax.block_until_ready([state[path].value for path, _, _ in put_specs])
+  max_logging.log(f"Transformer {subfolder or 'transformer'} weights on device in {time.perf_counter() - t_put_start:.1f}s")
+  return state
+
+
 # For some reason, jitting this function increases the memory significantly, so instead manually move weights to device.
 def create_sharded_logical_transformer(
     devices_array: np.array,
@@ -234,6 +379,7 @@ def create_sharded_logical_transformer(
         scan_layers=config.scan_layers,
         subfolder=subfolder,
         cast_dtype_fn=partial(_final_param_dtype, dtype_to_cast=config.weights_dtype),
+        converted_cache_dir=converted_weights_cache_dir(config, subfolder),
     )
 
   # No-op (returns leaves unchanged) when the loader already cast to the
@@ -242,70 +388,14 @@ def create_sharded_logical_transformer(
       lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype),
       params,
   )
-  t_put_start = time.perf_counter()
-  put_specs = []
-  for path, val in flax.traverse_util.flatten_dict(params).items():
-    if restored_checkpoint:
-      if path[-1] == "value":
-        path = path[:-1]  # remove 'value'
-
-      try:
-        # Convert block indices to integers, as they might have been loaded as strings from the checkpoint.
-        path = path[:1] + (int(path[1]),) + path[2:]
-      except Exception:
-        pass
-
-    put_specs.append((path, val, logical_state_sharding[path].value))
-
-  if jax.process_count() == 1:
-    # Replicated params are the bulk of the bytes; a direct device_put
-    # broadcasts the same bytes over every device's PCIe stream (~2GB/s
-    # each). Instead, stage them sharded along dim0 (each device receives
-    # only 1/n of the bytes over PCIe) and replicate on-device through ICI,
-    # which is an order of magnitude faster than host links.
-    n_devices = mesh.devices.size
-    dim0_sharding = NamedSharding(mesh, P(mesh.axis_names))
-
-    def stages_via_ici(val, sharding) -> bool:
-      return (
-          sharding.is_fully_replicated
-          and val.ndim > 0
-          and val.shape[0] % n_devices == 0
-          and val.nbytes >= 1 << 26  # 64MB: below this, staging overhead wins
-      )
-
-    staged_ids = [i for i, (_, val, sharding) in enumerate(put_specs) if stages_via_ici(val, sharding)]
-    direct_ids = [i for i in range(len(put_specs)) if i not in set(staged_ids)]
-
-    put_arrays = [None] * len(put_specs)
-    if staged_ids:
-      staged = jax.device_put([put_specs[i][1] for i in staged_ids], [dim0_sharding] * len(staged_ids))
-      # out_shardings must be the exact target sharding objects (not an
-      # equivalent P()): downstream jit cache keys include arg shardings, so
-      # a different-but-equivalent spec would force a full recompile.
-      replicate_fn = jax.jit(lambda xs: xs, out_shardings=[put_specs[i][2] for i in staged_ids])
-      for i, replicated in zip(staged_ids, replicate_fn(staged)):
-        put_arrays[i] = replicated
-    if direct_ids:
-      for i, put_array in zip(
-          direct_ids,
-          jax.device_put([put_specs[i][1] for i in direct_ids], [put_specs[i][2] for i in direct_ids]),
-      ):
-        put_arrays[i] = put_array
-    for (path, _, _), put_array in zip(put_specs, put_arrays):
-      state[path].value = put_array
-  else:
-    for path, val, sharding in put_specs:
-      try:
-        state[path].value = device_put_replicated(val, sharding)
-      except Exception as e:
-        max_logging.log(f"Failed to device_put_replicated {path}: {e}")
-        max_logging.log(f"Trying to use process_allgather for {path}")
-        val_on_host = jax.experimental.multihost_utils.process_allgather(val, tiled=True)
-        state[path].value = device_put_replicated(val_on_host, sharding)
-        del val_on_host
-  jax.block_until_ready([state[path].value for path, _, _ in put_specs])
-  max_logging.log(f"Transformer {subfolder or 'transformer'} weights on device in {time.perf_counter() - t_put_start:.1f}s")
+  state = put_params_into_state(
+      state,
+      params,
+      logical_state_sharding,
+      mesh,
+      restored_checkpoint=restored_checkpoint,
+      subfolder=subfolder,
+  )
   state = nnx.from_flat_state(state)
 
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
@@ -379,6 +469,9 @@ class WanPipeline:
     self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
 
     self.p_run_inference = None
+    # encode_prompt result cache: same-prompt calls (warmup + real run,
+    # repeated serving requests) skip the ~10s/call CPU text encoder.
+    self._prompt_embeds_cache = {}
 
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
@@ -659,6 +752,15 @@ class WanPipeline:
     elif isinstance(negative_prompt, str):
       negative_prompt = [negative_prompt] * batch_size
 
+    # Same-prompt calls (warmup then the real generation, or repeated
+    # serving requests) should not re-run the ~10s/call CPU text encoder.
+    cache_key = None
+    if prompt is not None and prompt_embeds is None and negative_prompt_embeds is None:
+      cache_key = (tuple(prompt), tuple(negative_prompt), num_videos_per_prompt, max_sequence_length)
+      cached = self._prompt_embeds_cache.get(cache_key)
+      if cached is not None:
+        return cached
+
     use_batched_text_encoder = self.config.use_batched_text_encoder
     if use_batched_text_encoder and prompt_embeds is None and negative_prompt_embeds is None:
       # Batch both together
@@ -691,6 +793,11 @@ class WanPipeline:
             max_sequence_length=max_sequence_length,
         )
         negative_prompt_embeds = jnp.array(negative_prompt_embeds.detach().float().numpy(), dtype=jnp.float32)
+
+    if cache_key is not None:
+      if len(self._prompt_embeds_cache) >= 16:  # bound long-serving growth
+        self._prompt_embeds_cache.pop(next(iter(self._prompt_embeds_cache)))
+      self._prompt_embeds_cache[cache_key] = (prompt_embeds, negative_prompt_embeds)
 
     return prompt_embeds, negative_prompt_embeds
 
@@ -763,7 +870,8 @@ class WanPipeline:
     video_condition = video_condition.astype(vae_dtype)
     t_vae_encode_start = time.perf_counter()
     with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
-      encoded_output = self.vae.encode(video_condition, self.vae_cache)[0].mode()
+      graphdef, state, rest_of_state = nnx.split(self.vae, nnx.Param, ...)
+      encoded_output = vae_encode_pass(graphdef, state, rest_of_state, video_condition)
       if hasattr(encoded_output, "block_until_ready"):
         encoded_output.block_until_ready()
 
@@ -791,10 +899,8 @@ class WanPipeline:
     """Decodes latents to video frames and postprocesses."""
     t_vae_tpu_start = time.perf_counter()
     with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
-      video = self.vae.decode(latents, self.vae_cache)[0]
-      video = (video / 2.0) + 0.5
-      video = jnp.clip(video, 0.0, 1.0)
-      video = (video * 255.0).astype(jnp.uint8)
+      graphdef, state, rest_of_state = nnx.split(self.vae, nnx.Param, ...)
+      video = vae_decode_pass(graphdef, state, rest_of_state, latents)
       video.block_until_ready()
     if trace is not None:
       trace["vae_decode_tpu"] = time.perf_counter() - t_vae_tpu_start
@@ -1138,6 +1244,8 @@ class WanPipeline:
 
     batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
 
+    debug_timers = bool(os.environ.get("WAN_DEBUG_COND_TIMERS"))
+    t_probe = time.perf_counter()
     with jax.named_scope("Encode-Prompt"):
       prompt_embeds, negative_prompt_embeds = self.encode_prompt(
           prompt=prompt,
@@ -1146,6 +1254,9 @@ class WanPipeline:
           prompt_embeds=prompt_embeds,
           negative_prompt_embeds=negative_prompt_embeds,
       )
+    if debug_timers:
+      max_logging.log(f"[cond] encode_prompt {time.perf_counter() - t_probe:.1f}s")
+      t_probe = time.perf_counter()
 
     num_channel_latents = self._get_num_channel_latents()
     if latents is None:
@@ -1158,6 +1269,9 @@ class WanPipeline:
           num_frames=num_frames,
           num_channels_latents=num_channel_latents,
       )
+    if debug_timers:
+      max_logging.log(f"[cond] prepare_latents {time.perf_counter() - t_probe:.1f}s")
+      t_probe = time.perf_counter()
 
     data_sharding = NamedSharding(self.mesh, P())
     # Using global_batch_size_to_train_on so not to create more config variables
@@ -1167,12 +1281,18 @@ class WanPipeline:
     latents = jax.device_put(latents, data_sharding)
     prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
     negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
+    if debug_timers:
+      jax.block_until_ready([latents, prompt_embeds, negative_prompt_embeds])
+      max_logging.log(f"[cond] device_put {time.perf_counter() - t_probe:.1f}s")
+      t_probe = time.perf_counter()
 
     scheduler_state = self.scheduler.set_timesteps(
         self.scheduler_state,
         num_inference_steps=num_inference_steps,
         shape=latents.shape,
     )
+    if debug_timers:
+      max_logging.log(f"[cond] set_timesteps {time.perf_counter() - t_probe:.1f}s")
 
     return (
         latents,
@@ -1189,7 +1309,7 @@ class WanPipeline:
 
 
 @partial(
-    jax.jit,
+    aot_cache.cached_jit,
     static_argnames=(
         "do_classifier_free_guidance",
         "guidance_scale",
@@ -1246,7 +1366,30 @@ def transformer_forward_pass(
   return noise_pred, latents
 
 
-@partial(jax.jit, static_argnames=("guidance_scale",))
+@aot_cache.cached_jit
+def vae_encode_pass(graphdef, state, rest_of_state, video):
+  """Encodes conditioning video to its deterministic latent (I2V path)."""
+  wan_vae = nnx.merge(graphdef, state, rest_of_state)
+  return wan_vae.encode(video, AutoencoderKLWanCache(wan_vae), return_dict=False)[0].mode()
+
+
+@aot_cache.cached_jit
+def vae_decode_pass(graphdef, state, rest_of_state, latents):
+  """Decodes latents and postprocesses to uint8 frames as ONE executable.
+
+  Wrapped in the AOT cache so warm processes deserialize instead of paying
+  the deep conv-stack trace + compile-cache lookup, and zero-exec warmup
+  skips the decode compute entirely. The feat cache is rebuilt from the
+  merged module — it is pure per-call temporary state.
+  """
+  wan_vae = nnx.merge(graphdef, state, rest_of_state)
+  video = wan_vae.decode(latents, AutoencoderKLWanCache(wan_vae), return_dict=False)[0]
+  video = (video / 2.0) + 0.5
+  video = jnp.clip(video, 0.0, 1.0)
+  return (video * 255.0).astype(jnp.uint8)
+
+
+@partial(aot_cache.cached_jit, static_argnames=("guidance_scale",))
 def transformer_forward_pass_full_cfg(
     graphdef,
     sharded_state,
@@ -1287,7 +1430,7 @@ def transformer_forward_pass_full_cfg(
   return noise_pred_merged, noise_cond, noise_uncond
 
 
-@partial(jax.jit, static_argnames=("guidance_scale",))
+@partial(aot_cache.cached_jit, static_argnames=("guidance_scale",))
 def transformer_forward_pass_cfg_cache(
     graphdef,
     sharded_state,

@@ -18,19 +18,19 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-import flax
 import flax.linen as nn
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from ...pyconfig import HyperParameters
+from ... import aot_cache
 from ... import max_logging
 from ...image_processor import PipelineImageInput
-from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
+from ...max_utils import get_flash_block_sizes, get_precision
 from ...models.wan.wan_utils import load_wan_transformer
 from ...models.wan.transformers.transformer_wan_vace import WanVACEModel
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 from ...models.modeling_flax_pytorch_utils import torch2jax
-from .wan_pipeline import cast_with_exclusion
+from .wan_pipeline import _final_param_dtype, cast_with_exclusion, converted_weights_cache_dir, put_params_into_state
 from .wan_pipeline_2_1 import WanPipeline2_1
 import torch
 import PIL
@@ -123,31 +123,23 @@ def create_sharded_logical_transformer(
         num_layers=wan_config["num_layers"],
         scan_layers=config.scan_layers,
         subfolder=subfolder,
+        cast_dtype_fn=partial(_final_param_dtype, dtype_to_cast=config.weights_dtype),
+        converted_cache_dir=converted_weights_cache_dir(config, subfolder),
     )
 
+  # No-op (returns leaves unchanged) when the loader already cast to the
+  # final dtypes; still needed for restored orbax checkpoints.
   params = jax.tree_util.tree_map_with_path(
       lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
   )
-  for path, val in flax.traverse_util.flatten_dict(params).items():
-    if restored_checkpoint:
-      if path[-1] == "value":
-        path = path[:-1]  # remove 'value'
-
-      try:
-        # Convert block indices to integers, as they might have been loaded as strings from the checkpoint.
-        path = path[:1] + (int(path[1]),) + path[2:]
-      except Exception:
-        pass
-
-    sharding = logical_state_sharding[path].value
-    try:
-      state[path].value = device_put_replicated(val, sharding)
-    except Exception as e:
-      max_logging.log(f"Failed to device_put_replicated {path}: {e}")
-      max_logging.log(f"Trying to use process_allgather for {path}")
-      val_on_host = jax.experimental.multihost_utils.process_allgather(val, tiled=True)
-      state[path].value = device_put_replicated(val_on_host, sharding)
-      del val_on_host
+  state = put_params_into_state(
+      state,
+      params,
+      logical_state_sharding,
+      mesh,
+      restored_checkpoint=restored_checkpoint,
+      subfolder=subfolder,
+  )
   state = nnx.from_flat_state(state)
 
   wan_transformer = nnx.merge(graphdef, state, rest_of_state)
@@ -716,7 +708,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
     return jnp.stack(latent_list)
 
 
-@partial(jax.jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
+@partial(aot_cache.cached_jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
 def transformer_forward_pass(
     graphdef: nnx.graph.GraphDef,
     sharded_state: nnx.State,

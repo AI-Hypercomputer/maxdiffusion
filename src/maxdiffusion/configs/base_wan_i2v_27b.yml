@@ -241,6 +241,10 @@ load_tfrecord_cached: True
 train_data_dir: ''
 dataset_config_name: ''
 jax_cache_dir: ''
+# Directory for per-shape AOT serialized executables ('' = disabled).
+aot_cache_dir: ''
+# Directory for memoized torch->flax converted weights ('' = disabled).
+converted_weights_dir: ''
 hf_data_dir: ''
 hf_train_files: ''
 hf_access_token: ''
