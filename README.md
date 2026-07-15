@@ -619,6 +619,31 @@ To generate images, run the following command:
 
   In our Wan2.2 I2V benchmarks at 40 inference steps, 81 frames, and `720x1280` resolution, Ulysses improved inference time by roughly `~10%` compared with flash attention, with about `~20s` lower latency on the v6e-8 and v7x-8 TPU setup.
 
+  #### Chunked Ulysses Attention (Overlapping Communication and Compute)
+
+  If you observe a major `all-to-all` communication bottleneck (especially when communication overhead is more pronounced compared to attention computation), you can enable **Chunked Ulysses Attention**.
+
+  By setting `ulysses_attention_chunks` greater than 1, MaxDiffusion splits the Ulysses all-to-all communication and attention computation into head-group passes (chunks). This allows XLA to overlap the all-to-all communication of one chunk with the head-parallel local attention compute of another chunk, significantly mitigating the communication bottleneck.
+
+  This chunking technique is supported and works for both plain Ulysses attention (`attention="ulysses"`) and hybrid Ulysses+Ring 2D attention/context parallelism (`attention="ulysses_ring"`).
+
+  To enable chunked Ulysses attention, set the corresponding override (e.g. `ulysses_attention_chunks=2` or `ulysses_attention_chunks=5`) in your config YAML or command line:
+
+  ```bash
+  python src/maxdiffusion/generate_wan.py \
+  src/maxdiffusion/configs/base_wan_i2v_27b.yml \
+  attention="ulysses" \
+  ici_context_parallelism=4 \
+  ulysses_attention_chunks=2 \
+  ...
+  ```
+
+  > [!IMPORTANT]
+  > For communication-compute overlap to be effective on TPUs, you must enable the following XLA flags before running:
+  > ```bash
+  > export XLA_FLAGS="--xla_tpu_enable_async_all_to_all=true --xla_tpu_overlap_compute_collective_tc=true"
+  > ```
+
   ### Caching Mechanisms
 
   Wan 2.x pipelines support several caching strategies to accelerate inference by skipping redundant transformer forward passes. These are **mutually exclusive** — enable only one at a time.

@@ -425,9 +425,10 @@ def run_inference_2_2_i2v(
   do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
   bsz = latents.shape[0]
 
-  prompt_embeds_combined = (
-      jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0) if do_classifier_free_guidance else prompt_embeds
-  )
+  if do_classifier_free_guidance:
+    prompt_embeds_combined = jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0)
+  else:
+    prompt_embeds_combined = prompt_embeds
   if image_embeds is not None:
     image_embeds_combined = (
         jnp.concatenate([image_embeds, image_embeds], axis=0) if do_classifier_free_guidance else image_embeds

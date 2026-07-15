@@ -91,6 +91,12 @@ def create_sharded_animate_transformer(
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
   wan_config["use_base2_exp"] = config.use_base2_exp
   wan_config["use_experimental_scheduler"] = config.use_experimental_scheduler
+  wan_config["attention_config"] = {
+      "use_base2_exp": config.use_base2_exp,
+      "use_experimental_scheduler": config.use_experimental_scheduler,
+      "ulysses_shards": getattr(config, "ulysses_shards", -1),
+      "ulysses_attention_chunks": getattr(config, "ulysses_attention_chunks", 1),
+  }
 
   # 2. eval_shape – creates the model structure without allocating HBM.
   p_model_factory = partial(_create_model, wan_config=wan_config)
@@ -384,7 +390,8 @@ class WanAnimatePipeline(WanPipeline):
       )
     if negative_prompt is not None and negative_prompt_embeds is not None:
       raise ValueError(
-          f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`: {negative_prompt_embeds}. Please make sure to"
+          f"Cannot forward both `negative_prompt`: {negative_prompt} and"
+          f" `negative_prompt_embeds`: {negative_prompt_embeds}. Please make sure to"
           " only forward one of the two."
       )
     if prompt is None and prompt_embeds is None:

@@ -346,6 +346,7 @@ def create_sharded_logical_transformer(
       "use_base2_exp": config.use_base2_exp,
       "use_experimental_scheduler": config.use_experimental_scheduler,
       "ulysses_shards": getattr(config, "ulysses_shards", -1),
+      "ulysses_attention_chunks": getattr(config, "ulysses_attention_chunks", 1),
   }
 
   # 2. eval_shape - will not use flops or create weights on device
@@ -581,7 +582,8 @@ class WanPipeline:
     """
     fp8 config rules with per-tensor calibration.
     FLAX API (https://flax-linen.readthedocs.io/en/v0.10.6/guides/quantization/fp8_basics.html#flax-low-level-api):
-    The autodiff does not automatically use E5M2 for gradients and E4M3 for activations/weights during training, which is the recommended practice.
+    The autodiff does not automatically use E5M2 for gradients and E4M3 for
+    activations/weights during training, which is the recommended practice.
     """
     rules = [
         qwix.QtRule(

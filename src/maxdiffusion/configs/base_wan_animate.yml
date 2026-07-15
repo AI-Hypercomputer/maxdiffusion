@@ -86,6 +86,12 @@ use_base2_exp: True
 use_experimental_scheduler: True
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
+# Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
+# For communication-compute overlap to be effective, enable the following XLA flags:
+#   --xla_tpu_enable_async_all_to_all=true
+#   --xla_tpu_overlap_compute_collective_tc=true
+# (Refer to README.md for the full recommended XLA_FLAGS list)
+ulysses_attention_chunks: 1
 flash_min_seq_length: 4096
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
 # Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.

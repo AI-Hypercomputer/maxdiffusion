@@ -90,6 +90,7 @@ def create_sharded_logical_transformer(
       "use_base2_exp": config.use_base2_exp,
       "use_experimental_scheduler": config.use_experimental_scheduler,
       "ulysses_shards": getattr(config, "ulysses_shards", -1),
+      "ulysses_attention_chunks": getattr(config, "ulysses_attention_chunks", 1),
   }
 
   wan_config["scan_layers"] = False
@@ -414,7 +415,8 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       )
     elif negative_prompt is not None and negative_prompt_embeds is not None:
       raise ValueError(
-          f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`: {negative_prompt_embeds}. Please make sure to"
+          f"Cannot forward both `negative_prompt`: {negative_prompt} and"
+          f" `negative_prompt_embeds`: {negative_prompt_embeds}. Please make sure to"
           " only forward one of the two."
       )
     elif prompt is None and prompt_embeds is None:
@@ -552,7 +554,8 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       if isinstance(conditioning_scale, jax.Array):
         if conditioning_scale.shape[0] != len(vace_layers):
           raise ValueError(
-              f"Length of `conditioning_scale` {conditioning_scale.shape[0]} does not match number of layers {len(vace_layers)}."
+              f"Length of `conditioning_scale` {conditioning_scale.shape[0]}"
+              f" does not match number of layers {len(vace_layers)}."
           )
 
       video, mask, reference_images = self.preprocess_conditions(
@@ -658,7 +661,8 @@ class VaceWanPipeline2_1(WanPipeline2_1):
     else:
       if video.shape[0] != len(reference_images):
         raise ValueError(
-            f"Batch size of `video` {video.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
+            f"Batch size of `video` {video.shape[0]} and length of"
+            f" `reference_images` {len(reference_images)} does not match."
         )
 
     if video.shape[0] != 1:

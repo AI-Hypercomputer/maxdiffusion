@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .wan_pipeline import WanPipeline, transformer_forward_pass, transformer_forward_pass_full_cfg, transformer_forward_pass_cfg_cache, init_magcache, magcache_step
+from .wan_pipeline import (
+    WanPipeline,
+    transformer_forward_pass,
+    transformer_forward_pass_full_cfg,
+    transformer_forward_pass_cfg_cache,
+    init_magcache,
+    magcache_step,
+)
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
