@@ -1212,7 +1212,8 @@ class WanPipeline:
 
     prompt_embeds = jax.device_put(prompt_embeds, data_sharding)
     negative_prompt_embeds = jax.device_put(negative_prompt_embeds, data_sharding)
-    image_embeds = jax.device_put(image_embeds, data_sharding)
+    if image_embeds is not None:
+      image_embeds = jax.device_put(image_embeds, data_sharding)
 
     return prompt_embeds, negative_prompt_embeds, image_embeds, effective_batch_size
 
