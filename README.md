@@ -723,6 +723,22 @@ We added ring attention support for Wan models. Below are the stats for one `720
   ```bash
   python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_schnell.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1 ici_data_parallelism=1 ici_fsdp_parallelism=-1 offload_encoders=False
   ```
+
+  ### Flux.2-Klein (4B & 9B)
+
+  Flux.2-Klein provides ultra-fast 4-step image generation using Qwen3 text embeddings and FLUX.2 transformer blocks.
+
+  Flux.2-Klein 4B:
+
+  ```bash
+  python src/maxdiffusion/generate_flux2klein.py src/maxdiffusion/configs/base_flux2klein.yml run_name=flux2klein_4b prompt="A detailed vector illustration of a robotic hummingbird"
+  ```
+
+  Flux.2-Klein 9B:
+
+  ```bash
+  python src/maxdiffusion/generate_flux2klein.py src/maxdiffusion/configs/base_flux2klein_9B.yml run_name=flux2klein_9b prompt="A detailed vector illustration of a robotic hummingbird"
+  ```
   ## Fused Attention for GPU:
   Fused Attention for GPU is supported via TransformerEngine. Installation instructions:
 

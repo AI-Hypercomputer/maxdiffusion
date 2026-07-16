@@ -16,9 +16,10 @@
 
 import math
 from functools import partial
-from typing import Tuple
+from typing import Optional, Tuple
 
 import flax
+from flax import nnx
 import flax.linen as nn
 import jax
 from jax import tree_util
@@ -958,3 +959,65 @@ tree_util.register_pytree_node(
     _wan_diag_gauss_dist_flatten,
     _wan_diag_gauss_dist_unflatten,
 )
+
+
+class NNXFlaxAutoencoderKL(nnx.Module):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      in_channels: int = 3,
+      out_channels: int = 3,
+      down_block_types: Tuple[str, ...] = ("FlaxDownEncoderBlock2D",),
+      up_block_types: Tuple[str, ...] = ("FlaxUpDecoderBlock2D",),
+      block_out_channels: Tuple[int, ...] = (64,),
+      layers_per_block: int = 1,
+      act_fn: str = "silu",
+      latent_channels: int = 4,
+      norm_num_groups: int = 32,
+      sample_size: int = 32,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+  ):
+    self.in_channels = in_channels
+    self.out_channels = out_channels
+    self.latent_channels = latent_channels
+    self.dtype = dtype
+
+    self.decoder = FlaxDecoder(
+        in_channels=latent_channels,
+        out_channels=out_channels,
+        up_block_types=up_block_types,
+        block_out_channels=block_out_channels,
+        layers_per_block=layers_per_block,
+        norm_num_groups=norm_num_groups,
+        act_fn=act_fn,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+    )
+    self.post_quant_conv = nnx.Conv(
+        in_features=latent_channels,
+        out_features=latent_channels,
+        kernel_size=(1, 1),
+        strides=(1, 1),
+        padding="VALID",
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+
+  def decode(
+      self, latents: jax.Array, decoder_params: Optional[dict] = None, deterministic: bool = True, return_dict: bool = True
+  ):
+    if latents.shape[-1] != self.latent_channels:
+      latents = jnp.transpose(latents, (0, 2, 3, 1))
+
+    hidden_states = self.post_quant_conv(latents)
+    if decoder_params is not None:
+      hidden_states = self.decoder.apply({"params": decoder_params}, hidden_states, deterministic=deterministic)
+    hidden_states = jnp.transpose(hidden_states, (0, 3, 1, 2))
+
+    if not return_dict:
+      return (hidden_states,)
+
+    return FlaxDecoderOutput(sample=hidden_states)

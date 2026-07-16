@@ -1,18 +1,16 @@
-"""
-Copyright 2024 Google LLC
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-     https://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-"""
+#  Copyright 2024 Google LLC
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#       https://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
 import jax
 import jax.numpy as jnp
@@ -26,6 +24,7 @@ class AdaLayerNormContinuous(nn.Module):
   eps: float = 1e-5
   bias: bool = True
   norm_type: str = "layer_norm"
+  scale_shift_order: str = "scale_shift"
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: jax.lax.Precision = None
@@ -35,6 +34,7 @@ class AdaLayerNormContinuous(nn.Module):
     assert self.norm_type == "layer_norm"
     emb = nn.Dense(
         self.embedding_dim * 2,
+        name="linear",
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
         bias_init=nn.with_logical_partitioning(nn.initializers.zeros, ("mlp",)),
         use_bias=self.bias,
@@ -42,7 +42,14 @@ class AdaLayerNormContinuous(nn.Module):
         param_dtype=self.weights_dtype,
         precision=self.precision,
     )(nn.silu(conditioning_embedding))
-    shift, scale = jnp.split(emb, 2, axis=1)
+
+    if self.scale_shift_order == "scale_shift":
+      scale, shift = jnp.split(emb, 2, axis=1)
+    elif self.scale_shift_order == "shift_scale":
+      shift, scale = jnp.split(emb, 2, axis=1)
+    else:
+      raise ValueError(f"Unsupported scale_shift_order: {self.scale_shift_order}")
+
     shift = nn.with_logical_constraint(shift, ("activation_batch", "activation_embed"))
     scale = nn.with_logical_constraint(scale, ("activation_batch", "activation_embed"))
     x = nn.LayerNorm(epsilon=self.eps, use_bias=self.elementwise_affine, use_scale=self.elementwise_affine)(x)
@@ -166,3 +173,80 @@ class FP32LayerNorm(nnx.Module):
   def __call__(self, inputs: jax.Array) -> jax.Array:
     origin_dtype = inputs.dtype
     return self.layer_norm(inputs.astype(dtype=jnp.float32)).astype(dtype=origin_dtype)
+
+
+# =============================================================================
+# FLAX NNX ADALAYERNORM IMPLEMENTATIONS FOR FLUX.2-KLEIN
+# =============================================================================
+
+
+class NNXAdaLayerNormContinuous(nnx.Module):
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      embedding_dim: int,
+      eps: float = 1e-6,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+  ):
+    self.embedding_dim = embedding_dim
+    self.eps = eps
+    self.dtype = dtype
+    self.layer_norm = nnx.LayerNorm(
+        num_features=embedding_dim, epsilon=eps, use_bias=False, use_scale=False, dtype=dtype, rngs=rngs
+    )
+    self.linear = nnx.Linear(
+        in_features=embedding_dim,
+        out_features=embedding_dim * 2,
+        use_bias=True,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+
+  def __call__(self, x: jax.Array, conditioning_embedding: jax.Array) -> jax.Array:
+    emb = self.linear(jax.nn.silu(conditioning_embedding))
+    scale, shift = jnp.split(emb, 2, axis=-1)
+    x_norm = self.layer_norm(x)
+    return (1.0 + scale[:, None, :]) * x_norm + shift[:, None, :]
+
+
+class NNXAdaLayerNormZero(nnx.Module):
+
+  def __init__(
+      self, embedding_dim: int, eps: float = 1e-6, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32
+  ):
+    self.embedding_dim = embedding_dim
+    self.eps = eps
+    self.dtype = dtype
+
+  def __call__(self, x: jax.Array, emb: jax.Array):
+    if emb.ndim == 2:
+      emb = emb[:, None, :]
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(emb, 6, axis=-1)
+    mean = jnp.mean(x, axis=-1, keepdims=True)
+    variance = jnp.mean(jnp.square(x - mean), axis=-1, keepdims=True)
+    inv_std = jax.lax.rsqrt(variance + self.eps)
+    normed_x = (x - mean) * inv_std * (1.0 + scale_msa) + shift_msa
+    return normed_x, gate_msa, shift_mlp, scale_mlp, gate_mlp
+
+
+class NNXAdaLayerNormZeroSingle(nnx.Module):
+
+  def __init__(
+      self, embedding_dim: int, eps: float = 1e-6, dtype: jnp.dtype = jnp.float32, weights_dtype: jnp.dtype = jnp.float32
+  ):
+    self.embedding_dim = embedding_dim
+    self.eps = eps
+    self.dtype = dtype
+
+  def __call__(self, x: jax.Array, emb: jax.Array):
+    if emb.ndim == 2:
+      emb = emb[:, None, :]
+    shift_msa, scale_msa, gate_msa = jnp.split(emb, 3, axis=-1)
+    mean = jnp.mean(x, axis=-1, keepdims=True)
+    variance = jnp.mean(jnp.square(x - mean), axis=-1, keepdims=True)
+    inv_std = jax.lax.rsqrt(variance + self.eps)
+    normed_x = (x - mean) * inv_std * (1.0 + scale_msa) + shift_msa
+    return normed_x, gate_msa

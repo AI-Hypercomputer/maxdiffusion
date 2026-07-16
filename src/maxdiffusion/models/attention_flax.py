@@ -1693,7 +1693,36 @@ def jax_memory_efficient_attention(
   return jnp.concatenate(res, axis=-3)  # fuse the chunked result back
 
 
-def apply_rope(xq: Array, xk: Array, freqs_cis: Array) -> tuple[Array, Array]:
+def apply_rope(xq: Array, xk: Array, freqs_cis: Any) -> tuple[Array, Array]:
+  if isinstance(freqs_cis, (tuple, list)):
+    cos, sin = freqs_cis
+    if cos.ndim == 2:
+      seq_len = cos.shape[0]
+      if xq.ndim == 4 and xq.shape[2] == seq_len:
+        cos = cos[None, None, :, :]
+        sin = sin[None, None, :, :]
+      else:
+        cos = cos[None, :, None, :]
+        sin = sin[None, :, None, :]
+    elif cos.ndim == 3 and cos.shape[0] == 1:
+      seq_len = cos.shape[1]
+      if xq.ndim == 4 and xq.shape[2] == seq_len:
+        cos = cos[:, None, :, :]
+        sin = sin[:, None, :, :]
+      else:
+        cos = cos[:, :, None, :]
+        sin = sin[:, :, None, :]
+
+    def _rotate(x):
+      x_reshaped = x.reshape(*x.shape[:-1], -1, 2)
+      x_real = x_reshaped[..., 0]
+      x_imag = x_reshaped[..., 1]
+      return jnp.stack([-x_imag, x_real], axis=-1).reshape(*x.shape)
+
+    xq_out = xq * cos + _rotate(xq) * sin
+    xk_out = xk * cos + _rotate(xk) * sin
+    return xq_out.astype(xq.dtype), xk_out.astype(xk.dtype)
+
   xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)
   xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)
 
@@ -2556,7 +2585,8 @@ class FlaxFluxAttention(nn.Module):
       # key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
       # value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
 
-    image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+    if not isinstance(image_rotary_emb, (tuple, list)):
+      image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
 
     query_proj = query_proj.swapaxes(1, 2)
     key_proj = key_proj.swapaxes(1, 2)
