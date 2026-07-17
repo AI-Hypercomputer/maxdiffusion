@@ -21,6 +21,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import jax
 from jax import random
+from jax.experimental import multihost_utils
 import jax.numpy as jnp
 import numpy as np
 from . import base
@@ -180,13 +181,17 @@ class RingAttentionHeadsPerTileTest(test_utils.SplashAttentionTestCase):
       dtype=[jnp.bfloat16],
   )
   def test_heads_per_tile_matches_single_head(self, heads_per_tile, head_dim, dtype):
-    ring_size = 2
-    num_heads = 4  # MHA (num_q_heads == num_kv_heads); divisible by heads_per_tile.
-    if len(jax.devices()) < ring_size:
-      self.skipTest(f"This test requires {ring_size} devices, but has only {len(jax.devices())}.")
+    # Use ALL devices so the sharded outputs are addressable on every process
+    # (a subset mesh like jax.devices()[:2] lives only on process 0, making the
+    # result non-addressable on the other hosts). jax.devices() is itself a
+    # global barrier, so every host must launch this test together regardless.
+    ring_size = jax.device_count()
+    num_heads = 8  # MHA (num_q_heads == num_kv_heads); divisible by heads_per_tile.
+    if ring_size < 2:
+      self.skipTest(f"This test needs at least 2 devices, but has {ring_size}.")
 
     ring_axis = "ring"
-    devices = np.asarray(jax.devices()[:ring_size]).reshape(1, ring_size)
+    devices = np.asarray(jax.devices()).reshape(1, ring_size)
     mesh = jax.sharding.Mesh(devices, ("heads", ring_axis))
     seq_len = 1024 * ring_size
 
@@ -236,10 +241,11 @@ class RingAttentionHeadsPerTileTest(test_utils.SplashAttentionTestCase):
     out_mhpt = run(heads_per_tile)  # multi-head-per-tile (flash_attention_kernel_mhpt)
 
     # Pure tiling => numerically equivalent to the single-head-per-tile baseline.
-    # The ring mesh is jax.devices()[:ring_size] (all on process 0), so the
-    # outputs are only addressable there; use the multi-controller-safe compare
-    # so this passes on every host, not just the owner.
-    self.assert_allclose_mcjax(out_mhpt, out_ref, rtol=5e-3, atol=5e-3)
+    # Outputs are sharded across all hosts; all-gather to a fully-replicated host
+    # array on every process, then compare with the standard helper.
+    out_mhpt = multihost_utils.process_allgather(out_mhpt, tiled=True)
+    out_ref = multihost_utils.process_allgather(out_ref, tiled=True)
+    self._assert_allclose(out_mhpt, out_ref, rtol=5e-3, atol=5e-3)
 
 
 if __name__ == "__main__":

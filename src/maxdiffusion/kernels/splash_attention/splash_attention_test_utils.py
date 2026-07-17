@@ -16,7 +16,6 @@
 import unittest
 from absl.testing import parameterized
 import jax
-from jax.experimental import multihost_utils
 import jax.numpy as jnp
 import numpy as np
 
@@ -76,43 +75,6 @@ class SplashAttentionTestCase(parameterized.TestCase):
     self.assertEqual(x.dtype, y.dtype)
     self.assertTupleEqual(x.shape, y.shape)
     np.testing.assert_allclose(x, y, **kwargs)
-
-  def assert_allclose_mcjax(self, x, y, *, rtol, atol):
-    """`allclose` that is safe under multi-controller (multi-host) JAX.
-
-    Some tests build their device mesh from a subset of the global devices --
-    e.g. `jax.devices()[:ring_size]`, which all live on process 0 -- so the
-    result `jax.Array`s are only addressable on that one process. Pulling them
-    to host with `np.testing.assert_allclose` (as `_assert_allclose` does)
-    raises `RuntimeError: ... spans non-addressable devices` on every *other*
-    process, failing the test on all but one host.
-
-    Instead, evaluate the comparison on-device (works on all processes, no host
-    fetch), read the scalar verdict only on the owning process (process 0, which
-    holds `jax.devices()[:ring_size]`), and broadcast it to every process with a
-    single collective. Every process runs the same two `broadcast_one_to_all`
-    calls in the same order, so there is no collective-participation mismatch /
-    deadlock. The result is identical on all hosts and genuinely reflects the
-    owner's computation.
-
-    Only use this for tests whose mesh is a subset of one process's devices; for
-    fully-sharded (every-process-owns-a-shard) arrays use `_assert_allclose`.
-    """
-    if x.dtype == np.dtype(jnp.bfloat16):
-      x = x.astype(jnp.float32)
-    if y.dtype == np.dtype(jnp.bfloat16):
-      y = y.astype(jnp.float32)
-    self.assertTupleEqual(x.shape, y.shape)
-    ok = jnp.all(jnp.abs(x - y) <= atol + rtol * jnp.abs(y))
-    max_err = jnp.max(jnp.abs(x - y))
-    is_owner = jax.process_index() == 0
-    local_ok = np.asarray(ok) if is_owner else np.array(True)
-    local_err = np.asarray(max_err) if is_owner else np.array(0.0, np.float32)
-    global_err = float(multihost_utils.broadcast_one_to_all(local_err))
-    self.assertTrue(
-        bool(multihost_utils.broadcast_one_to_all(local_ok)),
-        f"arrays differ: max abs err {global_err:.3e} exceeds rtol={rtol} atol={atol}",
-    )
 
 
 def create_segment_ids(seq_len: int, num_breaks: int = 2) -> base.SegmentIds:
