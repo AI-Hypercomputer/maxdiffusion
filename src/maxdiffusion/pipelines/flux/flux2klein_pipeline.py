@@ -97,13 +97,64 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
           guidance=guidance,
       )
 
-    @jax.jit
+    @jax.jit(donate_argnums=(1,))
     def vae_decode(v_params, latents_unpatched):
       return self.vae.apply({"params": v_params}, latents=latents_unpatched, method=self.vae.decode)
 
     self._jitted_qwen3_forward = qwen3_forward
     self._jitted_transformer_step = transformer_step
     self._jitted_vae_decode = vae_decode
+
+  def compile_aot_async(self, params, vae_params, qwen3_params, batch_size=1, height=1024, width=1024):
+    """Triggers AOT compilation for Qwen3, Flux Transformer, and VAE concurrently using ThreadPoolExecutor."""
+    self._setup_jit_functions()
+    max_logging.log("🚀 Pre-compiling XLA graphs for Qwen3, Flux Transformer, and VAE concurrently...")
+    from concurrent.futures import ThreadPoolExecutor
+
+    seq_len_img = (height // 16) * (width // 16)
+    seq_len_txt = self._config.max_sequence_length
+
+    dummy_ids = jnp.zeros((batch_size, seq_len_txt), dtype=jnp.int32)
+    dummy_mask = jnp.ones((batch_size, seq_len_txt), dtype=jnp.int32)
+
+    dummy_latents = jnp.zeros((batch_size, seq_len_img, 128), dtype=jnp.float32)
+    dummy_img_ids = jnp.zeros((batch_size, seq_len_img, 4), dtype=jnp.int32)
+    dummy_prompt_embeds = jnp.zeros((batch_size, seq_len_txt, 12288), dtype=jnp.bfloat16)
+    dummy_txt_ids = jnp.zeros((batch_size, seq_len_txt, 4), dtype=jnp.float32)
+    dummy_t_vec = jnp.zeros((batch_size,), dtype=jnp.float32)
+
+    dummy_unpacked_latents = jnp.zeros((batch_size, 32, height // 8, width // 8), dtype=jnp.float32)
+
+    def compile_qwen3():
+      t0 = time.perf_counter()
+      with self.mesh, nn_partitioning.axis_rules(self._config.logical_axis_rules):
+        self._jitted_qwen3_forward.lower(qwen3_params, dummy_ids, dummy_mask).compile()
+      max_logging.log(f" -> [AOT COMPILED] Qwen3 Text Encoder in {time.perf_counter() - t0:.2f}s")
+
+    def compile_transformer():
+      t0 = time.perf_counter()
+      with self.mesh, nn_partitioning.axis_rules(self._config.logical_axis_rules):
+        self._jitted_transformer_step.lower(
+            params, dummy_latents, dummy_img_ids, prompt_embeds=dummy_prompt_embeds, txt_ids=dummy_txt_ids, vec=None, timestep=dummy_t_vec, guidance=None
+        ).compile()
+      max_logging.log(f" -> [AOT COMPILED] Flux Transformer Step in {time.perf_counter() - t0:.2f}s")
+
+    def compile_vae():
+      t0 = time.perf_counter()
+      with self.mesh, nn_partitioning.axis_rules(self._config.logical_axis_rules):
+        self._jitted_vae_decode.lower(vae_params, dummy_unpacked_latents).compile()
+      max_logging.log(f" -> [AOT COMPILED] VAE Decoder in {time.perf_counter() - t0:.2f}s")
+
+    t_start = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=3) as executor:
+      futures = [
+          executor.submit(compile_qwen3),
+          executor.submit(compile_transformer),
+          executor.submit(compile_vae),
+      ]
+      for future in futures:
+        future.result()
+    max_logging.log(f"⚡ [AOT CONCURRENT COMPILATION COMPLETE] Total AOT compile time: {time.perf_counter() - t_start:.2f}s")
 
   def _prepare_latents(self, config, batch_size, height, width):
     num_channels_latents = 32
@@ -147,6 +198,7 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       use_latents: bool = False,
       latents: Optional[Any] = None,
       measure_time: bool = False,
+      warmup: bool = False,
       output_dir: str = "output/",
       output_name: str = "flux2klein_generated_image.png",
   ):
@@ -293,8 +345,9 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       # ---------------------------------------------------------------------
       # PHASE B: Denoising Loop (Flux Transformer - Standalone Step JIT)
       # ---------------------------------------------------------------------
+      steps_to_run = 1 if warmup else num_inference_steps
       print(
-          f"{host_prefix} [PHASE B] Running {num_inference_steps}-step E2E Denoising Loop on a batch of {batch_size} images...",
+          f"{host_prefix} [PHASE B] Running {steps_to_run}-step E2E Denoising Loop on a batch of {batch_size} images (warmup={warmup})...",
           flush=True,
       )
       t0 = time.perf_counter()
@@ -303,7 +356,7 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         guidance_vec_val = None
         vec_val = None
 
-        for step_idx in range(num_inference_steps):
+        for step_idx in range(steps_to_run):
           timestep = scheduler_state.timesteps[step_idx]
           t_vec = jnp.full((batch_size,), timestep / 1000.0, dtype=latents_jax.dtype)
 

@@ -398,11 +398,12 @@ def cast_dict_to_bfloat16_inplace(d, device=None, exclude_keywords=None, parent_
       is_excluded = exclude_keywords and any(kw.lower() in current_key.lower() for kw in exclude_keywords)
       target_dtype = jnp.float32 if is_excluded else jnp.bfloat16
 
-      d[k] = v.astype(target_dtype)
-      if hasattr(d[k], "block_until_ready"):
-        d[k].block_until_ready()
-      del v
-      gc.collect()
+      if v.dtype != target_dtype:
+        d[k] = v.astype(target_dtype)
+        if hasattr(d[k], "block_until_ready"):
+          d[k].block_until_ready()
+        del v
+        gc.collect()
 
 
 # -----------------------------------------------------------------------------
@@ -571,11 +572,15 @@ def load_and_convert_vae_weights(safetensors_path, jax_params):
   max_logging.log(f"Loading VAE weights from: {safetensors_path}")
   pt_state_dict = load_file(safetensors_path)
 
-  def get_pytorch_weight_tensor(key):
-    return pt_state_dict[key]
-
   # Unfreeze JAX params so we can load the weights
   jax_params = flax.core.unfreeze(jax_params)
+
+  first_leaf = jax.tree_util.tree_leaves(jax_params)[0]
+  target_dtype = first_leaf.dtype
+
+  def get_pytorch_weight_tensor(key, dtype=target_dtype):
+    tensor = pt_state_dict[key]
+    return jnp.array(tensor, dtype=dtype)
 
   # Map weights
   max_logging.log("Mapping VAE decoder weights to JAX parameters...")

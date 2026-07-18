@@ -648,15 +648,18 @@ def load_and_convert_qwen3_weights(safetensors_path: str, jax_params: dict, conf
     torch_weights = load_file(safetensors_path)
   max_logging.log("Safetensors weights loaded successfully. Starting JAX parameter mapping...")
 
-  # Helper to transpose and cast weight
-  def get_w(name: str, transpose: bool = True) -> np.ndarray:
+  first_leaf = jax.tree_util.tree_leaves(jax_params)[0]
+  target_dtype = first_leaf.dtype
+
+  # Helper to transpose and cast weight directly to target_dtype
+  def get_w(name: str, transpose: bool = True):
     nonlocal torch_weights
     if name not in torch_weights:
       raise KeyError(f"Weight '{name}' not found in safetensors!")
     t = torch_weights[name]
     if len(t.shape) == 2 and transpose:
       t = t.T
-    return t
+    return jnp.array(t, dtype=target_dtype)
 
   # Create mutable copy of JAX params to populate
   import flax

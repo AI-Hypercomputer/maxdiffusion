@@ -341,6 +341,7 @@ def main(argv):
       def unbox_fn(x):
         return x.unbox() if isinstance(x, flax_spmd.LogicallyPartitioned) else x
 
+      t_sub0 = time.time()
       params = jax.tree_util.tree_map(
           unbox_fn, abstract_transformer_vars["params"], is_leaf=lambda k: isinstance(k, flax_spmd.LogicallyPartitioned)
       )
@@ -356,10 +357,15 @@ def main(argv):
       )
       qwen3_params = flax.core.unfreeze(qwen3_params)
 
+      max_logging.log(f" -> [SUB-TIMING 1/3] PyTree unboxing template setup: {time.time() - t_sub0:.2f}s")
+      t_sub1 = time.time()
+
       params = load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, depth)
       vae_params, vae_bn_mean, vae_bn_std = load_and_convert_vae_weights(vae_safetensors_path, vae_params)
       qwen3_params = load_and_convert_qwen3_weights(text_encoder_path, qwen3_params, qwen3_config)
+      max_logging.log(f" -> [SUB-TIMING 2/3] Safetensors loading & key mapping: {time.time() - t_sub1:.2f}s")
 
+      t_sub2 = time.time()
       if config.weights_dtype == "bfloat16":
         max_logging.log("Casting JAX parameters to bfloat16 in-place...")
         cast_dict_to_bfloat16_inplace(params, exclude_keywords=("norm",))
@@ -367,6 +373,7 @@ def main(argv):
         cast_dict_to_bfloat16_inplace(qwen3_params, exclude_keywords=("norm",))
         vae_bn_mean = vae_bn_mean.astype(jnp.bfloat16)
         vae_bn_std = vae_bn_std.astype(jnp.bfloat16)
+        max_logging.log(f" -> [SUB-TIMING 2b/3] bfloat16 in-place casting: {time.time() - t_sub2:.2f}s")
 
       params = flax.core.freeze(params)
       vae_params = flax.core.freeze(vae_params)
@@ -375,6 +382,7 @@ def main(argv):
       max_logging.log("\n" + "=" * 80)
       max_logging.log("🚀 Pinning all parameters to TPU HBM permanently...")
       max_logging.log("=" * 80 + "\n")
+      t_sub3 = time.time()
       max_logging.log("Putting params on TPU HBM...")
       with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         try:
@@ -393,6 +401,7 @@ def main(argv):
         vae_params = jax.tree_util.tree_map(max_utils.device_put_replicated, vae_params, vae_shardings)
         max_logging.log("Putting qwen3_params on TPU HBM...")
         qwen3_params = jax.tree_util.tree_map(max_utils.device_put_replicated, qwen3_params, qwen3_shardings)
+      max_logging.log(f" -> [SUB-TIMING 3/3] TPU HBM device_put placement: {time.time() - t_sub3:.2f}s")
       max_logging.log("All parameters placed on TPU HBM successfully!")
       gc.collect()
       jax.effects_barrier()
@@ -482,6 +491,7 @@ def main(argv):
     max_logging.log("\n" + "=" * 80)
     max_logging.log("🚀 Running initial dry run (Warmup Pass) to compile XLA graphs...")
     max_logging.log("=" * 80)
+    pipeline.compile_aot_async(params, vae_params, qwen3_params, batch_size=config.batch_size, height=config.height, width=config.width)
     _, warmup_trace = pipeline(
         prompt=active_prompts,
         params=params,
@@ -498,6 +508,7 @@ def main(argv):
         batch_size=config.batch_size,
         use_latents=use_latents_flag,
         latents=latents_to_use,
+        warmup=True,
         output_dir=config.output_dir,
         output_name="flux2klein_warmup.png",
     )
