@@ -360,20 +360,12 @@ def main(argv):
       max_logging.log(f" -> [SUB-TIMING 1/3] PyTree unboxing template setup: {time.time() - t_sub0:.2f}s")
       t_sub1 = time.time()
 
-      params = load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, depth)
-      vae_params, vae_bn_mean, vae_bn_std = load_and_convert_vae_weights(vae_safetensors_path, vae_params)
-      qwen3_params = load_and_convert_qwen3_weights(text_encoder_path, qwen3_params, qwen3_config)
-      max_logging.log(f" -> [SUB-TIMING 2/3] Safetensors loading & key mapping: {time.time() - t_sub1:.2f}s")
+      weight_dtype = jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32
 
-      t_sub2 = time.time()
-      if config.weights_dtype == "bfloat16":
-        max_logging.log("Casting JAX parameters to bfloat16 in-place...")
-        cast_dict_to_bfloat16_inplace(params, exclude_keywords=("norm",))
-        cast_dict_to_bfloat16_inplace(vae_params, exclude_keywords=("norm",))
-        cast_dict_to_bfloat16_inplace(qwen3_params, exclude_keywords=("norm",))
-        vae_bn_mean = vae_bn_mean.astype(jnp.bfloat16)
-        vae_bn_std = vae_bn_std.astype(jnp.bfloat16)
-        max_logging.log(f" -> [SUB-TIMING 2b/3] bfloat16 in-place casting: {time.time() - t_sub2:.2f}s")
+      params = load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, depth, dtype=weight_dtype)
+      vae_params, vae_bn_mean, vae_bn_std = load_and_convert_vae_weights(vae_safetensors_path, vae_params, dtype=weight_dtype)
+      qwen3_params = load_and_convert_qwen3_weights(text_encoder_path, qwen3_params, qwen3_config, dtype=weight_dtype)
+      max_logging.log(f" -> [SUB-TIMING 2/3] Safetensors loading & key mapping (in target dtype): {time.time() - t_sub1:.2f}s")
 
       params = flax.core.freeze(params)
       vae_params = flax.core.freeze(vae_params)

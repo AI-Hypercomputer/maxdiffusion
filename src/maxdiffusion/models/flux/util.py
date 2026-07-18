@@ -411,7 +411,7 @@ def cast_dict_to_bfloat16_inplace(d, device=None, exclude_keywords=None, parent_
 # -----------------------------------------------------------------------------
 
 
-def load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, num_single_layers):
+def load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, num_single_layers, dtype=None):
   """
   Loads weights from safetensors via zero-copy safetensors.numpy and converts them to JAX parameter dictionary.
   Supports dynamic layer counts (double and single stream blocks) and sharded safetensors directories.
@@ -439,12 +439,13 @@ def load_and_convert_flux_klein_weights(safetensors_path, params, num_double_lay
   expected_pytree = jax.tree_util.tree_map(lambda leaf: leaf, params)
 
   first_leaf = jax.tree_util.tree_leaves(params)[0]
-  target_dtype = first_leaf.dtype
+  target_dtype = dtype if dtype is not None else first_leaf.dtype
 
-  def convert_and_transpose_tensor(tensor, transpose=False):
+  def convert_and_transpose_tensor(tensor, transpose=False, is_norm=False):
     if transpose and len(tensor.shape) == 2:
       tensor = tensor.T
-    return jnp.array(tensor, dtype=target_dtype)
+    leaf_dtype = jnp.float32 if is_norm else target_dtype
+    return jnp.array(tensor, dtype=leaf_dtype)
 
   # Global layers
   params["context_embedder"]["kernel"] = convert_and_transpose_tensor(
@@ -563,7 +564,7 @@ def load_and_convert_flux_klein_weights(safetensors_path, params, num_double_lay
   return params
 
 
-def load_and_convert_vae_weights(safetensors_path, jax_params):
+def load_and_convert_vae_weights(safetensors_path, jax_params, dtype=None):
   """Loads VAE weights from safetensors via zero-copy safetensors.numpy, maps them to JAX, and extracts BN stats."""
   from safetensors.numpy import load_file
   import flax
@@ -576,11 +577,13 @@ def load_and_convert_vae_weights(safetensors_path, jax_params):
   jax_params = flax.core.unfreeze(jax_params)
 
   first_leaf = jax.tree_util.tree_leaves(jax_params)[0]
-  target_dtype = first_leaf.dtype
+  target_dtype = dtype if dtype is not None else first_leaf.dtype
 
-  def get_pytorch_weight_tensor(key, dtype=target_dtype):
+  def get_pytorch_weight_tensor(key, dtype_val=target_dtype):
     tensor = pt_state_dict[key]
-    return jnp.array(tensor, dtype=dtype)
+    is_norm = any(kw in key.lower() for kw in ("norm", "layernorm", "rmsnorm", "groupnorm"))
+    leaf_dtype = jnp.float32 if is_norm else dtype_val
+    return jnp.array(tensor, dtype=leaf_dtype)
 
   # Map weights
   max_logging.log("Mapping VAE decoder weights to JAX parameters...")

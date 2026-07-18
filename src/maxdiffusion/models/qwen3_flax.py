@@ -626,7 +626,7 @@ class NNXFlaxQwen3Model(nnx.Module):
 # -----------------------------------------------------------------------------
 
 
-def load_and_convert_qwen3_weights(safetensors_path: str, jax_params: dict, config: FlaxQwen3Config) -> dict:
+def load_and_convert_qwen3_weights(safetensors_path: str, jax_params: dict, config: FlaxQwen3Config, dtype=None) -> dict:
   """
   Loads weights from safetensors via zero-copy safetensors.numpy and converts them to JAX parameter dictionary.
   """
@@ -649,7 +649,7 @@ def load_and_convert_qwen3_weights(safetensors_path: str, jax_params: dict, conf
   max_logging.log("Safetensors weights loaded successfully. Starting JAX parameter mapping...")
 
   first_leaf = jax.tree_util.tree_leaves(jax_params)[0]
-  target_dtype = first_leaf.dtype
+  target_dtype = dtype if dtype is not None else first_leaf.dtype
 
   # Helper to transpose and cast weight directly to target_dtype
   def get_w(name: str, transpose: bool = True):
@@ -659,7 +659,9 @@ def load_and_convert_qwen3_weights(safetensors_path: str, jax_params: dict, conf
     t = torch_weights[name]
     if len(t.shape) == 2 and transpose:
       t = t.T
-    return jnp.array(t, dtype=target_dtype)
+    is_norm = any(kw in name.lower() for kw in ("norm", "layernorm", "rmsnorm", "groupnorm"))
+    leaf_dtype = jnp.float32 if is_norm else target_dtype
+    return jnp.array(t, dtype=leaf_dtype)
 
   # Create mutable copy of JAX params to populate
   import flax
