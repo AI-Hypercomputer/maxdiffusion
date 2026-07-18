@@ -98,7 +98,6 @@ class CustomSplashFixedMTest(unittest.TestCase):
         use_fixed_m=use_fixed_m,
     )
     out = kernel(q_in, k_in, v, mk) if use_fixed_m else kernel(q_in, k_in, v)
-    out = jnp.swapaxes(out, 1, 2)  # (heads, dim, seq) -> (heads, seq, dim)
     return out.astype(jnp.float32), mk
 
   def test_online_matches_reference(self):

@@ -237,12 +237,12 @@ def _flash_attention_kernel(
     l = l_scratch_ref[...]
     if fuse_reciprocal:
       l_inv = jnp.tile(1.0 / l, (head_dim_v_repeats, 1))
-      o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
+      o_ref[...] = (o_scratch_ref[...] * l_inv).T.astype(o_ref.dtype)
     else:
       # Ring path: emit the un-normalized numerator plus the running softmax
       # stats (max logit `m` and linear denominator `l`) so the outer ring loop
       # can merge shard contributions and normalize only once at the very end.
-      o_ref[...] = o_scratch_ref[...].astype(o_ref.dtype)
+      o_ref[...] = o_scratch_ref[...].T.astype(o_ref.dtype)
     if l_ring_ref is not None:
       l_ring_ref[...] = l.astype(l_ring_ref.dtype)
     if m_ring_ref is not None:
@@ -399,7 +399,7 @@ def _flash_attention_kernel_mhpt(
     for h_local in range(heads_per_tile):
       l = l_scratch_ref[h_local]
       l_inv = jnp.tile(1.0 / l, (head_dim_v_repeats, 1))
-      o_ref[h_local] = (o_scratch_ref[h_local] * l_inv).astype(o_ref.dtype)
+      o_ref[h_local] = (o_scratch_ref[h_local] * l_inv).T.astype(o_ref.dtype)
 
 
 def _splash_attention_forward(
@@ -436,7 +436,7 @@ def _splash_attention_forward(
     return (h, i, 0)
 
   def out_index_map(h, i, j, *_):
-    return h, 0, i
+    return h, i, 0
 
   def k_index_map(h, i, j, *_):
     return (h // q_heads_per_kv_head, j, 0)
@@ -453,13 +453,13 @@ def _splash_attention_forward(
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), q.dtype),
+      jax.ShapeDtypeStruct((num_q_heads, actual_q_seq_len, head_dim_v), q.dtype),
   ]
   out_specs = [
       pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
       pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
       pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
-      pl.BlockSpec((None, head_dim_v, bq), out_index_map),
+      pl.BlockSpec((None, bq, head_dim_v), out_index_map),
   ]
   grid_width = (actual_kv_seq_len + bkv - 1) // bkv
   grid_height = (actual_q_seq_len + bq - 1) // bq
@@ -540,7 +540,10 @@ def _splash_attention_forward_ring(
   def q_index_map(h, i, j, *_):
     return (h, i, 0)
 
-  def out_index_map(h, i, j, *_):
+  def out_index_map_o(h, i, j, *_):
+    return h, i, 0
+
+  def out_index_map_stats(h, i, j, *_):
     return h, 0, i
 
   def k_index_map(h, i, j, *_):
@@ -558,7 +561,7 @@ def _splash_attention_forward_ring(
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), jnp.float32),
+      jax.ShapeDtypeStruct((num_q_heads, actual_q_seq_len, head_dim_v), jnp.float32),
       jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
       jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
   ]
@@ -566,9 +569,9 @@ def _splash_attention_forward_ring(
       pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
       pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
       pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
-      pl.BlockSpec((None, head_dim_v, bq), out_index_map),
-      pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map),
-      pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map),
+      pl.BlockSpec((None, bq, head_dim_v), out_index_map_o),
+      pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map_stats),
+      pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map_stats),
   ]
   grid_width = (actual_kv_seq_len + bkv - 1) // bkv
   grid_height = (actual_q_seq_len + bq - 1) // bq
@@ -612,7 +615,7 @@ def _splash_attention_forward_ring(
       ),
       out_shape=out_shapes,
   )(mk, q, k, v)
-  out = jnp.swapaxes(all_out[3], 1, 2)  # (h, head_dim_v, s) -> (h, s, head_dim_v)
+  out = all_out[3]
   l = all_out[4][:, 0, :]  # (h, s)
   m = all_out[5][:, 0, :]  # (h, s)
   return out, m, l
@@ -653,7 +656,7 @@ def _splash_attention_forward_mhpt(
     return (h, j, 0)
 
   def out_index_map(h, i, j, *_):
-    return (h, 0, i)
+    return (h, i, 0)
 
   in_specs = [
       pl.BlockSpec((hpt, bq, head_dim_qk), q_index_map),
@@ -664,13 +667,13 @@ def _splash_attention_forward_mhpt(
       jax.ShapeDtypeStruct((hpt, NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((hpt, NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((hpt, head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), q.dtype),
+      jax.ShapeDtypeStruct((num_q_heads, actual_q_seq_len, head_dim_v), q.dtype),
   ]
   out_specs = [
       pl.BlockSpec((hpt, NUM_SUBLANES, bq), lambda *_: (0, 0, 0)),
       pl.BlockSpec((hpt, NUM_SUBLANES, bq), lambda *_: (0, 0, 0)),
       pl.BlockSpec((hpt, head_dim_v, bq), lambda *_: (0, 0, 0)),
-      pl.BlockSpec((hpt, head_dim_v, bq), out_index_map),
+      pl.BlockSpec((hpt, bq, head_dim_v), out_index_map),
   ]
   grid_width = (actual_kv_seq_len + bkv - 1) // bkv
   grid_height = (actual_q_seq_len + bq - 1) // bq

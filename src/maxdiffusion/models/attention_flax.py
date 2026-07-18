@@ -826,7 +826,6 @@ def _ulysses_attention(
       else:
         vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
         attention_output = vmapped_splash(query, key, value)
-      attention_output = jnp.swapaxes(attention_output, 2, 3)
       attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
     else:
       # Run the same local splash kernel as standard TPU flash attention, but now
@@ -907,6 +906,8 @@ def _ulysses_attention(
   if fold_batch:
     x = x.reshape(batch, num_heads, *x.shape[2:])
   x = x[:, :, :orig_q_seq_len, :]
+  if use_custom_kernel:
+    return x
   x = _reshape_heads_to_head_dim(x)
 
   return x
@@ -1218,9 +1219,9 @@ def _ulysses_ring_custom_attention(
           use_fixed_m=use_fixed_m,
       )
       if use_fixed_m:
-        attention_output = jnp.swapaxes(jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))(query, key, value, mk_arr), 2, 3)
+        attention_output = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))(query, key, value, mk_arr)
       else:
-        attention_output = jnp.swapaxes(jax.vmap(splash_kernel, in_axes=(0, 0, 0))(query, key, value), 2, 3)
+        attention_output = jax.vmap(splash_kernel, in_axes=(0, 0, 0))(query, key, value)
     else:
       # (2b) Ring (full ppermute over the cross-chip ring axis) with the custom kernel.
       # bidirectional=True -> wrap-free schedule (streams K/V both directions one hop
@@ -1257,7 +1258,6 @@ def _ulysses_ring_custom_attention(
   )
   x = jax.lax.with_sharding_constraint(x, q_axis_names)
   x = x[:, :, :orig_q_seq_len, :]
-  x = _reshape_heads_to_head_dim(x)
   return x
 
 
@@ -2460,7 +2460,17 @@ class FlaxWanAttention(nnx.Module):
     attn_output = checkpoint_name(attn_output, "attn_output")
 
     with jax.named_scope("proj_attn"):
-      hidden_states = self.proj_attn(attn_output)
+      if attn_output.ndim == 4:
+        kernel = self.proj_attn.kernel.value.reshape(self.heads, self.dim_head, -1)
+        hidden_states = jax.lax.dot_general(
+            attn_output,
+            kernel,
+            (((1, 3), (0, 1)), ((), ())),
+        )
+        if self.proj_attn.bias is not None:
+          hidden_states = hidden_states + self.proj_attn.bias.value
+      else:
+        hidden_states = self.proj_attn(attn_output)
       if self.drop_out.rate > 0:
         hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     return hidden_states
