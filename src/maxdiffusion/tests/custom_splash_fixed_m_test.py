@@ -47,7 +47,7 @@ class CustomSplashFixedMTest(unittest.TestCase):
   def setUp(self):
     super().setUp()
     self.scale = 1.0 / math.sqrt(self.head_dim)
-    self.block_sizes = custom_splash._BlockSizes(block_q=2048, block_kv=1024, block_kv_compute=512)
+    self.block_sizes = custom_splash._BlockSizes(block_q=2048, block_kv=1024, block_kv_compute=512, block_kv_compute_in=256)
 
   def _random_qkv(self, q_gain: float = 1.0, k_gain: float = 1.0) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Returns bf16 (q, k, v), optionally amplifying head 0 of q and k."""
@@ -91,7 +91,6 @@ class CustomSplashFixedMTest(unittest.TestCase):
       mk = jnp.stack([mk_h, eligible])
     kernel = custom_splash.make_splash_mha(
         block_sizes=self.block_sizes,
-        bkv_compute_in=256,
         orig_q_seq_len=self.seq_len,
         orig_kv_seq_len=self.seq_len,
         use_base2_exp=True,
