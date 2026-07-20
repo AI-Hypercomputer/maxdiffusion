@@ -93,6 +93,8 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
       inverse_timesteps: bool = False,
       extra_one_step: bool = False,
       reverse_sigmas: bool = False,
+      use_dynamic_shifting: bool = False,
+      time_shift_type: str = "linear",
       dtype: jnp.dtype = jnp.float32,
   ):
     self.dtype = dtype
@@ -142,7 +144,13 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
     if self.config.inverse_timesteps:
       sigmas = jnp.flip(sigmas, dims=[0])
 
-    sigmas = current_shift * sigmas / (1 + (current_shift - 1) * sigmas)
+    if getattr(self.config, "use_dynamic_shifting", False):
+      if getattr(self.config, "time_shift_type", "exponential") == "exponential":
+        sigmas = jnp.exp(current_shift) / (jnp.exp(current_shift) + (1 / jnp.clip(sigmas, 1e-7, 1.0) - 1))
+      else:
+        sigmas = current_shift * sigmas / (1 + (current_shift - 1) * sigmas)
+    else:
+      sigmas = current_shift * sigmas / (1 + (current_shift - 1) * sigmas)
 
     if self.config.reverse_sigmas:
       sigmas = 1 - sigmas
@@ -321,7 +329,8 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
       return state.sigmas[timestep_id + 1]
 
     def get_final_sigma():
-      return jnp.array(1.0 if (self.config.inverse_timesteps or self.config.reverse_sigmas) else 0.0, dtype=sigma.dtype)
+      val = 1.0 if (self.config.inverse_timesteps or self.config.reverse_sigmas) else 0.0
+      return jnp.full_like(state.sigmas[timestep_id + 1], val, dtype=sigma.dtype)
 
     is_final_step = to_final or jnp.all(timestep_id + 1 >= state.timesteps.shape[0])
     sigma_next = jax.lax.cond(is_final_step, get_final_sigma, get_next_sigma)
@@ -402,3 +411,21 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
 
   def __len__(self) -> int:
     return self.config.num_train_timesteps
+
+
+def compute_empirical_mu(image_seq_len: int, num_steps: int) -> float:
+  """
+  Computes the empirical time shift parameter (mu) used by Flux models
+  to offset sigmas dynamically based on resolution sequence length.
+  """
+  a1, b1 = 8.73809524e-05, 1.89833333
+  a2, b2 = 0.00016927, 0.45666666
+  if image_seq_len > 4300:
+    mu = a2 * image_seq_len + b2
+    return float(mu)
+  m_200 = a2 * image_seq_len + b2
+  m_10 = a1 * image_seq_len + b1
+  a = (m_200 - m_10) / 190.0
+  b = m_200 - 200.0 * a
+  mu = a * num_steps + b
+  return float(mu)
