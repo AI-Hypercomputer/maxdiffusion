@@ -17,6 +17,8 @@
 [![Unit Tests](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2026/07/14`**: Automatic attention tile-size (`block_q`/`block_kv`) search for Wan is now supported.
+- **`2026/06/26`**: 2D ring (USP) attention with a custom splash kernel is now supported for Wan (`ulysses_ring_custom`), splitting context parallelism into an intra-chip Ulysses axis and a cross-chip ring axis.
 - **`2026/04/16`**: Support for Tokamax Ring Attention kernel is now added.
 - **`2026/03/31`**: Wan2.2 SenCache inference is now supported for T2V and I2V (up to 1.4x speedup)
 - **`2026/03/25`**: Wan2.1 and Wan2.2 Magcache inference is now supported
@@ -714,6 +716,10 @@ We added ring attention support for Wan models. Below are the stats for one `720
 | v7x-16 | WAN 2.2 | Tokamax Ring | 40 | dp2-fsdp1-context8-tp1 | 137.5 |
 
 (* There are some known stability issues for ring attention on 16 TPUs, please use `tokamax_flash` attention instead.)
+
+### Automatic Tile-Size Search
+
+The optimal attention tile sizes (`block_q` / `block_kv`) depend on the sequence length, VMEM, sharding, and accelerator, and the feasibility edge is a VMEM OOM with no clean closed form — so we tune them empirically. Passing `enable_tile_search=true` to `generate_wan.py` runs a fast one-DiT-block grid search before inference and injects the winning block sizes into `flash_block_sizes` (`tile_search_mode=smart` by default; the search is opt-in and off by default).  The core is model-agnostic (`utils/tile_size_grid_search.py`) with a per-model plug (`utils/wan_block_benchmark.py`), which also runs standalone via `python -m maxdiffusion.utils.wan_block_benchmark ... --smart-search`.
 
   ## Flux
 

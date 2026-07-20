@@ -137,6 +137,14 @@ flash_block_sizes: {
 #   "use_fused_bwd_kernel": False,
 # }
 # GroupNorm groups
+# Tile-size auto-tuning. When enable_tile_search: True, generate_wan runs a fast one-DiT-block
+# grid search (maxdiffusion/utils/tile_size_grid_search.py) before inference and overwrites
+# flash_block_sizes' block_q/block_kv/block_kv_compute with the winner. Default off (no-op).
+enable_tile_search: False
+tile_search_mode: 'smart'   # 'smart' (VMEM-capped candidate ladders) | 'full' (2D sweep)
+tile_search_iters: 10
+tile_search_out: ''         # dir for the results CSV; '' -> print only
+
 norm_num_groups: 32
 
 # train text_encoder - Currently not supported for SDXL
