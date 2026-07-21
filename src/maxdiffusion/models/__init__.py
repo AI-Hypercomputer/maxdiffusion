@@ -30,6 +30,8 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
   from .lora import *
   from .flux.transformers.transformer_flux_flax import FluxTransformer2DModel
   from .ltx_video.transformers.transformer3d import Transformer3DModel
+  from .ideogram.transformer_ideogram import Ideogram4Transformer
+  from .ideogram.autoencoder_ideogram import AutoEncoder
 
 else:
   import sys
