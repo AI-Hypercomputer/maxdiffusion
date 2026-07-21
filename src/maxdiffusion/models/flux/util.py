@@ -300,17 +300,17 @@ def unpack_latents(latents, batch_size, num_channels_latents, height, width):
   Unpacks packed sequence of shape (batch_size, (height//16)*(width//16), channels*4)
   back to the unpacked spatial grid shape (batch_size, channels, height//8, width//8).
   """
-  import numpy as np
+  import jax.numpy as jnp
 
   h_latent = height // 8
   w_latent = width // 8
 
   # 1. Reshape to split spatial grid and packed channel blocks
-  latents = np.reshape(latents, (batch_size, h_latent // 2, w_latent // 2, num_channels_latents, 2, 2))
+  latents = jnp.reshape(latents, (batch_size, h_latent // 2, w_latent // 2, num_channels_latents, 2, 2))
   # 2. Permute dimensions back to unpacked order
-  latents = np.transpose(latents, (0, 3, 1, 4, 2, 5))
+  latents = jnp.transpose(latents, (0, 3, 1, 4, 2, 5))
   # 3. Flatten back to 4D unpacked latent shape
-  latents = np.reshape(latents, (batch_size, num_channels_latents, h_latent, w_latent))
+  latents = jnp.reshape(latents, (batch_size, num_channels_latents, h_latent, w_latent))
   return latents
 
 
@@ -411,7 +411,7 @@ def cast_dict_to_bfloat16_inplace(d, device=None, exclude_keywords=None, parent_
 # -----------------------------------------------------------------------------
 
 
-def load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, num_single_layers, dtype=None):
+def load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, num_single_layers, dtype=None, pt_state_dict=None):
   """
   Loads weights from safetensors via zero-copy safetensors.numpy and converts them to JAX parameter dictionary.
   Supports dynamic layer counts (double and single stream blocks) and sharded safetensors directories.
@@ -423,16 +423,17 @@ def load_and_convert_flux_klein_weights(safetensors_path, params, num_double_lay
   import os
   import gc
 
-  pt_state_dict = {}
-  if os.path.isdir(safetensors_path):
-    shards = glob.glob(os.path.join(safetensors_path, "*.safetensors"))
-    max_logging.log(f"Loading sharded weights from directory: {safetensors_path} (Found {len(shards)} shards)...")
-    for shard in sorted(shards):
-      max_logging.log(f"Loading shard: {shard}...")
-      pt_state_dict.update(load_file(shard))
-  else:
-    max_logging.log(f"Loading weights from: {safetensors_path}")
-    pt_state_dict = load_file(safetensors_path)
+  if pt_state_dict is None:
+    pt_state_dict = {}
+    if os.path.isdir(safetensors_path):
+      shards = glob.glob(os.path.join(safetensors_path, "*.safetensors"))
+      max_logging.log(f"Loading sharded weights from directory: {safetensors_path} (Found {len(shards)} shards)...")
+      for shard in sorted(shards):
+        max_logging.log(f"Loading shard: {shard}...")
+        pt_state_dict.update(load_file(shard))
+    else:
+      max_logging.log(f"Loading weights from: {safetensors_path}")
+      pt_state_dict = load_file(safetensors_path)
 
   max_logging.log("Mapping weights to JAX parameters...")
 
@@ -564,14 +565,15 @@ def load_and_convert_flux_klein_weights(safetensors_path, params, num_double_lay
   return params
 
 
-def load_and_convert_vae_weights(safetensors_path, jax_params, dtype=None):
+def load_and_convert_vae_weights(safetensors_path, jax_params, dtype=None, pt_state_dict=None):
   """Loads VAE weights from safetensors via zero-copy safetensors.numpy, maps them to JAX, and extracts BN stats."""
   from safetensors.numpy import load_file
   import flax
   import jax.numpy as jnp
 
-  max_logging.log(f"Loading VAE weights from: {safetensors_path}")
-  pt_state_dict = load_file(safetensors_path)
+  if pt_state_dict is None:
+    max_logging.log(f"Loading VAE weights from: {safetensors_path}")
+    pt_state_dict = load_file(safetensors_path)
 
   # Unfreeze JAX params so we can load the weights
   jax_params = flax.core.unfreeze(jax_params)

@@ -21,7 +21,7 @@ from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
-from maxdiffusion import aot_cache, pyconfig, max_logging, max_utils
+from maxdiffusion import pyconfig, max_logging, max_utils
 from absl import app
 from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.utils import export_to_video
@@ -279,30 +279,6 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
             dtype=config.weights_dtype,
         )
 
-  # Per-shape AOT executable cache: deserialization starts on background
-  # threads now and overlaps the remaining setup; unknown shapes silently
-  # fall back to jit and are serialized by save_pending() after warmup.
-  aot_cache.install(
-      getattr(config, "aot_cache_dir", ""),
-      meta={
-          "model": config.pretrained_model_name_or_path,
-          "attention": config.attention,
-          # Kernel block sizes change the lowered graph, not the input
-          # shapes — they must key the executable or a re-tuned config
-          # would silently hit stale binaries.
-          "flash_block_sizes": str(config.flash_block_sizes),
-          "mesh_shape": str(pipeline.mesh.shape),
-          "weights_dtype": str(config.weights_dtype),
-          "activations_dtype": str(config.activations_dtype),
-          "scan_layers": str(config.scan_layers),
-          "jax": jax.__version__,
-      },
-      mesh=pipeline.mesh,
-  )
-  # Deserialization is seconds and warmup must see the loaded executables
-  # to hit them; without this the first call races the loader threads.
-  aot_cache.wait_for_loads()
-
   s0 = time.perf_counter()
 
   # Disable profiler for the first two runs to avoid duplicate uploads
@@ -323,20 +299,10 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   # step count only changes the Python loop trip count, not traced shapes.
   warmup_steps = min(2, config.num_inference_steps)
   max_logging.log(f"Compile warmup: {warmup_steps} denoising steps")
-  # Zero-execution warmup: wrapped transformer passes lower+compile (or
-  # reuse the deserialized AOT executable) and return sharded zeros, so
-  # the warmup pays compile time only, never real denoise compute. The
-  # returned videos are garbage by design and are discarded below.
-  with aot_cache.warmup_mode():
-    videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=warmup_steps)
+  videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=warmup_steps)
   if isinstance(videos, tuple):
     videos, warmup_trace = videos
     max_logging.log("Warmup breakdown: " + ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in warmup_trace.items()))
-
-  # Serialize any newly-compiled shapes synchronously while still inside
-  # warmup-accounted time; a background save would compete with the first
-  # real generation (DiffusionServing PR#39 first-generation-stall lesson).
-  aot_cache.save_pending()
 
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")

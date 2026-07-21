@@ -62,7 +62,7 @@ def partition_prompts(prompt_str: str, batch_size: int) -> List[str]:
     max_logging.log(
         f"⚠️ Warning: Found {num_prompts} prompts, but batch_size is {batch_size}. Truncating to the first {batch_size}."
     )
-    return raw_prompts[:batch_size]
+
 
 
 def encode_prompt(prompt: str, snapshot_dir: str = None, repo_id: str = "black-forest-labs/FLUX.2-klein-4B"):
@@ -78,8 +78,18 @@ def encode_prompt(prompt: str, snapshot_dir: str = None, repo_id: str = "black-f
 
   text_encoder_path = os.path.join(snapshot_dir, "text_encoder")
   tokenizer_path = os.path.join(snapshot_dir, "tokenizer")
-  if not os.path.exists(tokenizer_path):
-    tokenizer_path = text_encoder_path
+
+  if not os.path.exists(os.path.join(text_encoder_path, "config.json")) or not os.path.exists(tokenizer_path):
+    try:
+      fb_dir = snapshot_download(repo_id=repo_id, local_files_only=True)
+      if not os.path.exists(os.path.join(text_encoder_path, "config.json")):
+        text_encoder_path = os.path.join(fb_dir, "text_encoder")
+      if not os.path.exists(tokenizer_path):
+        tokenizer_path = os.path.join(fb_dir, "tokenizer") if os.path.exists(os.path.join(fb_dir, "tokenizer")) else os.path.join(fb_dir, "text_encoder")
+    except Exception as e:
+      if not os.path.exists(tokenizer_path):
+        tokenizer_path = text_encoder_path
+
   tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
   text_encoder = AutoModelForCausalLM.from_pretrained(text_encoder_path, torch_dtype=torch.float32)
   text_encoder.eval()
@@ -183,8 +193,13 @@ def main(argv):
   else:
     from huggingface_hub import snapshot_download
 
-    max_logging.log(f"Resolving snapshot directory for model '{repo_id}' from HF Hub...")
-    snapshot_dir = snapshot_download(repo_id=repo_id)
+    rev = getattr(config, "revision", None)
+    if not rev or rev == "refs/pr/95":
+      rev = "main"
+    try:
+      snapshot_dir = snapshot_download(repo_id=repo_id, revision=rev, local_files_only=True)
+    except Exception:
+      snapshot_dir = snapshot_download(repo_id=repo_id, local_files_only=True)
 
   max_logging.log(f"Host {jax.process_index()} using HF snapshot directory: {snapshot_dir}")
   safetensors_path = os.path.join(snapshot_dir, "transformer")
@@ -194,8 +209,13 @@ def main(argv):
   # 4. Load Qwen3 Config & Setup model layout
   from transformers import AutoConfig
 
-  max_logging.log(f"Loading Qwen3 config from text_encoder path: {text_encoder_path}...")
-  pt_config = AutoConfig.from_pretrained(text_encoder_path, local_files_only=True)
+  try:
+    pt_config = AutoConfig.from_pretrained(text_encoder_path, local_files_only=True)
+  except Exception as e:
+    depth_val = getattr(config, "depth", 24)
+    hf_repo = "black-forest-labs/FLUX.2-klein-9B" if depth_val in (24, -1) else "black-forest-labs/FLUX.2-klein-4B"
+    max_logging.log(f"ℹ️ Config not found in {text_encoder_path}. Resolving from HF cache: {hf_repo}")
+    pt_config = AutoConfig.from_pretrained(hf_repo, subfolder="text_encoder", local_files_only=True)
 
   qwen3_config = FlaxQwen3Config(
       vocab_size=pt_config.vocab_size,
@@ -216,9 +236,25 @@ def main(argv):
 
   transformer_config_json = os.path.join(safetensors_path, "config.json")
   transformer_pt_cfg = {}
+  loaded_cfg = False
   if os.path.exists(transformer_config_json):
-    with open(transformer_config_json, "r") as f:
-      transformer_pt_cfg = json.load(f)
+    try:
+      with open(transformer_config_json, "r") as f:
+        transformer_pt_cfg = json.load(f)
+        loaded_cfg = True
+    except Exception as e:
+      max_logging.log(f"ℹ️ Could not parse {transformer_config_json}: {e}. Falling back to HF cache...")
+
+  if not loaded_cfg:
+    depth_val = getattr(config, "depth", 24)
+    hf_repo = "black-forest-labs/FLUX.2-klein-9B" if depth_val in (24, -1) else "black-forest-labs/FLUX.2-klein-4B"
+    try:
+      from huggingface_hub import hf_hub_download
+      cfg_file = hf_hub_download(repo_id=hf_repo, filename="transformer/config.json", local_files_only=True)
+      with open(cfg_file, "r") as f:
+        transformer_pt_cfg = json.load(f)
+    except Exception as e:
+      max_logging.log(f"⚠️ Warning resolving transformer config fallback: {e}")
 
   num_double_layers = getattr(config, "num_double_layers", -1)
   if num_double_layers is None or num_double_layers <= 0:
@@ -481,9 +517,22 @@ def main(argv):
       max_logging.log(f" -> Custom latents shape: {latents_to_use.shape} | sum: {latents_to_use.sum():.6f}")
 
     max_logging.log("\n" + "=" * 80)
-    max_logging.log("🚀 Running initial dry run (Warmup Pass) to compile XLA graphs...")
+    max_logging.log("🚀 Pre-compiling XLA graphs concurrently (AOT Compilation)...")
     max_logging.log("=" * 80)
-    pipeline.compile_aot_async(params, vae_params, qwen3_params, batch_size=config.batch_size, height=config.height, width=config.width)
+    aot_time = pipeline.compile_aot_async(
+        params=params,
+        vae_params=vae_params,
+        qwen3_params=qwen3_params,
+        vae_bn_mean=vae_bn_mean,
+        vae_bn_std=vae_bn_std,
+        batch_size=config.batch_size,
+        height=config.height,
+        width=config.width,
+    )
+
+    max_logging.log("\n" + "=" * 80)
+    max_logging.log("🚀 Running initial dry run (Warmup Pass) to verify compiled graph execution...")
+    max_logging.log("=" * 80)
     _, warmup_trace = pipeline(
         prompt=active_prompts,
         params=params,
@@ -500,7 +549,6 @@ def main(argv):
         batch_size=config.batch_size,
         use_latents=use_latents_flag,
         latents=latents_to_use,
-        warmup=True,
         output_dir=config.output_dir,
         output_name="flux2klein_warmup.png",
     )
@@ -536,15 +584,19 @@ def main(argv):
         main_trace.get("prompt_encoding", 0.0) + main_trace.get("denoise_loop", 0.0) + main_trace.get("vae_decode", 0.0)
     )
 
+    total_cold_start = load_time + aot_time + warmup_time
+
     max_logging.log("\n" + "=" * 80)
-    max_logging.log("📊 FLUX.2-KLEIN LATENCY & TIMING BREAKDOWN (PURE MODEL INFERENCE)")
+    max_logging.log("📊 FLUX.2-KLEIN COMPLETE LATENCY & TIMING BREAKDOWN")
     max_logging.log("=" * 80)
-    max_logging.log(f"1) Total Model Loading & Placement Time:  {load_time:.2f} seconds ⏱️")
-    max_logging.log(f"2) Cold-Start / Warmup Pass (XLA Compilation): {warmup_time:.2f} seconds ⏱️")
+    max_logging.log(f"1) Model Loading & Placement Time:              {load_time:.2f} seconds ⏱️")
+    max_logging.log(f"2) Concurrent AOT XLA Compilation Time:         {aot_time:.2f} seconds ⚡")
+    max_logging.log(f"3) Warmup Pass Execution Time:                   {warmup_time:.2f} seconds ⏱️")
     max_logging.log(f"   - Qwen3 Encoding:  {warmup_trace.get('prompt_encoding', 0.0):.2f}s")
     max_logging.log(f"   - Flux Denoising:  {warmup_trace.get('denoise_loop', 0.0):.2f}s")
     max_logging.log(f"   - VAE Decoding:    {warmup_trace.get('vae_decode', 0.0):.2f}s")
-    max_logging.log(f"3) Main Warmed-Up Pass (Pure Model Inference): {main_time:.2f} seconds ⏱️")
+    max_logging.log(f"👉 TOTAL COLD-START TIME (Loading + AOT + Warmup): {total_cold_start:.2f} seconds 🎯")
+    max_logging.log(f"4) Main Warmed-Up Pass (Pure Inference Latency): {main_time:.2f} seconds ⏱️")
     max_logging.log(f"   - Qwen3 Encoding:  {main_trace.get('prompt_encoding', 0.0):.2f}s")
     max_logging.log(f"   - Flux Denoising:  {main_trace.get('denoise_loop', 0.0):.2f}s")
     max_logging.log(f"   - VAE Decoding:    {main_trace.get('vae_decode', 0.0):.2f}s")

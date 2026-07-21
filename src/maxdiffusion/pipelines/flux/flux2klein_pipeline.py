@@ -97,15 +97,28 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
           guidance=guidance,
       )
 
-    @jax.jit(donate_argnums=(1,))
-    def vae_decode(v_params, latents_unpatched):
-      return self.vae.apply({"params": v_params}, latents=latents_unpatched, method=self.vae.decode)
+    @jax.jit(static_argnums=(4, 5))
+    def vae_decode(v_params, latents_packed, vae_bn_mean, vae_bn_std, height, width):
+      # 1. Denormalize packed sequence latents (128 channels)
+      vae_bn_mean_seq = vae_bn_mean.reshape(1, 1, 128)
+      vae_bn_std_seq = vae_bn_std.reshape(1, 1, 128)
+      latents_bn = latents_packed * vae_bn_std_seq + vae_bn_mean_seq
+
+      # 2. Unpack 128-channel sequence to 32-channel 2D spatial grid (height//8, width//8)
+      h_latent = height // 8
+      w_latent = width // 8
+      latents_unpacked = jnp.reshape(latents_bn, (latents_bn.shape[0], h_latent // 2, w_latent // 2, 32, 2, 2))
+      latents_unpacked = jnp.transpose(latents_unpacked, (0, 3, 1, 4, 2, 5))
+      latents_unpacked = jnp.reshape(latents_unpacked, (latents_bn.shape[0], 32, h_latent, w_latent))
+
+      # 3. Apply FlaxAutoencoderKL decoder
+      return self.vae.apply({"params": v_params}, latents=latents_unpacked, method=self.vae.decode)
 
     self._jitted_qwen3_forward = qwen3_forward
     self._jitted_transformer_step = transformer_step
     self._jitted_vae_decode = vae_decode
 
-  def compile_aot_async(self, params, vae_params, qwen3_params, batch_size=1, height=1024, width=1024):
+  def compile_aot_async(self, params, vae_params, qwen3_params, vae_bn_mean, vae_bn_std, batch_size=1, height=1024, width=1024):
     """Triggers AOT compilation for Qwen3, Flux Transformer, and VAE concurrently using ThreadPoolExecutor."""
     self._setup_jit_functions()
     max_logging.log("🚀 Pre-compiling XLA graphs for Qwen3, Flux Transformer, and VAE concurrently...")
@@ -123,7 +136,27 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
     dummy_txt_ids = jnp.zeros((batch_size, seq_len_txt, 4), dtype=jnp.float32)
     dummy_t_vec = jnp.zeros((batch_size,), dtype=jnp.float32)
 
-    dummy_unpacked_latents = jnp.zeros((batch_size, 32, height // 8, width // 8), dtype=jnp.float32)
+    dummy_bn_mean = jnp.array(vae_bn_mean, dtype=jnp.float32)
+    dummy_bn_std = jnp.array(vae_bn_std, dtype=jnp.float32)
+
+    data_sharding = jax.sharding.NamedSharding(self.mesh, P("data"))
+
+    def put_data_on_devices(x, sharding):
+      if isinstance(x, jax.Array) and hasattr(x, "sharding") and not x.sharding.is_fully_addressable:
+        return x
+      if hasattr(sharding, "is_fully_addressable") and sharding.is_fully_addressable:
+        return jax.device_put(x, sharding)
+      return device_put_replicated(x, sharding)
+
+    dummy_ids = put_data_on_devices(dummy_ids, data_sharding)
+    dummy_mask = put_data_on_devices(dummy_mask, data_sharding)
+    dummy_latents = put_data_on_devices(dummy_latents, data_sharding)
+    dummy_img_ids = put_data_on_devices(dummy_img_ids, data_sharding)
+    dummy_prompt_embeds = put_data_on_devices(dummy_prompt_embeds, data_sharding)
+    dummy_txt_ids = put_data_on_devices(dummy_txt_ids, data_sharding)
+    dummy_t_vec = put_data_on_devices(dummy_t_vec, data_sharding)
+    dummy_bn_mean = put_data_on_devices(dummy_bn_mean, data_sharding)
+    dummy_bn_std = put_data_on_devices(dummy_bn_std, data_sharding)
 
     def compile_qwen3():
       t0 = time.perf_counter()
@@ -135,14 +168,14 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       t0 = time.perf_counter()
       with self.mesh, nn_partitioning.axis_rules(self._config.logical_axis_rules):
         self._jitted_transformer_step.lower(
-            params, dummy_latents, dummy_img_ids, prompt_embeds=dummy_prompt_embeds, txt_ids=dummy_txt_ids, vec=None, timestep=dummy_t_vec, guidance=None
+            params, dummy_latents, dummy_img_ids, dummy_prompt_embeds, dummy_txt_ids, None, dummy_t_vec, None
         ).compile()
       max_logging.log(f" -> [AOT COMPILED] Flux Transformer Step in {time.perf_counter() - t0:.2f}s")
 
     def compile_vae():
       t0 = time.perf_counter()
       with self.mesh, nn_partitioning.axis_rules(self._config.logical_axis_rules):
-        self._jitted_vae_decode.lower(vae_params, dummy_unpacked_latents).compile()
+        self._jitted_vae_decode.lower(vae_params, dummy_latents, dummy_bn_mean, dummy_bn_std, height, width).compile()
       max_logging.log(f" -> [AOT COMPILED] VAE Decoder in {time.perf_counter() - t0:.2f}s")
 
     t_start = time.perf_counter()
@@ -154,7 +187,9 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       ]
       for future in futures:
         future.result()
-    max_logging.log(f"⚡ [AOT CONCURRENT COMPILATION COMPLETE] Total AOT compile time: {time.perf_counter() - t_start:.2f}s")
+    aot_duration = time.perf_counter() - t_start
+    max_logging.log(f"⚡ [AOT CONCURRENT COMPILATION COMPLETE] Total AOT compile time: {aot_duration:.2f}s")
+    return aot_duration
 
   def _prepare_latents(self, config, batch_size, height, width):
     num_channels_latents = 32
@@ -251,6 +286,16 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       proc_cnt = jax.process_count()
       host_prefix = f"[HOST {proc_id}/{proc_cnt}] "
 
+      # Shard pipeline batch inputs across data axis ("data") for SPMD multi-host execution
+      data_sharding = jax.sharding.NamedSharding(self.mesh, P("data"))
+
+      def put_data_on_devices(x, sharding):
+        if isinstance(x, jax.Array) and hasattr(x, "sharding") and not x.sharding.is_fully_addressable:
+          return x
+        if hasattr(sharding, "is_fully_addressable") and sharding.is_fully_addressable:
+          return jax.device_put(x, sharding)
+        return device_put_replicated(x, sharding)
+
       # ---------------------------------------------------------------------
       # PHASE A: Encode Prompt (Qwen3)
       # ---------------------------------------------------------------------
@@ -284,7 +329,9 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         prompt_ids = jnp.array(inputs["input_ids"])
         prompt_mask = jnp.array(inputs["attention_mask"])
 
-        # Run Text Encoding
+        # Run Text Encoding with sharded input arrays matching compile_aot_async
+        prompt_ids = put_data_on_devices(prompt_ids, data_sharding)
+        prompt_mask = put_data_on_devices(prompt_mask, data_sharding)
         hidden_states, all_hidden_states = self._jitted_qwen3_forward(qwen3_params, prompt_ids, prompt_mask)
 
         # Stack layers 9, 18, 27 to form prompt embeddings
@@ -313,16 +360,6 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       # Stage Sync 1: Phase A Complete
       multihost_utils.sync_global_devices("phase_a_complete")
       print(f"{host_prefix} Passed Phase A Sync Barrier (phase_a_complete) successfully! ✅", flush=True)
-
-      # Shard pipeline batch inputs across data axis ("data") for SPMD multi-host execution
-      data_sharding = jax.sharding.NamedSharding(self.mesh, P("data"))
-
-      def put_data_on_devices(x, sharding):
-        if isinstance(x, jax.Array) and hasattr(x, "sharding") and not x.sharding.is_fully_addressable:
-          return x
-        if hasattr(sharding, "is_fully_addressable") and sharding.is_fully_addressable:
-          return jax.device_put(x, sharding)
-        return device_put_replicated(x, sharding)
 
       latents_jax = put_data_on_devices(latents_jax, data_sharding)
       prompt_embeds_jax = put_data_on_devices(prompt_embeds_jax, data_sharding)
@@ -357,8 +394,10 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         vec_val = None
 
         for step_idx in range(steps_to_run):
+          t_step_start = time.perf_counter()
           timestep = scheduler_state.timesteps[step_idx]
           t_vec = jnp.full((batch_size,), timestep / 1000.0, dtype=latents_jax.dtype)
+          t_vec = put_data_on_devices(t_vec, data_sharding)
 
           model_output = self._jitted_transformer_step(
               params, latents_jax, img_ids_val, prompt_embeds_jax, txt_ids_val, vec_val, t_vec, guidance_vec_val
@@ -371,9 +410,11 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
               sample=latents_jax,
               return_dict=False,
           )
-          latents_jax = prev_sample
+          latents_jax = put_data_on_devices(prev_sample, data_sharding)
+          latents_jax.block_until_ready()
+          t_step_duration = time.perf_counter() - t_step_start
+          print(f"{host_prefix}  -> Step {step_idx+1}/{steps_to_run} complete in {t_step_duration:.4f}s | latents_sharding={getattr(latents_jax, 'sharding', None)}", flush=True)
 
-        latents_jax.block_until_ready()
       except Exception as e:
         print(f"❌ {host_prefix} EXCEPTION IN DENOISE LOOP: {e}", flush=True)
         import traceback
@@ -395,17 +436,8 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
     max_logging.log("[PHASE C] Decoding final latents to RGB image using JAX VAE decoder on TPU...")
     t0 = time.perf_counter()
 
-    # Apply Channel-wise Batch Normalization Scaling in packed sequence format (denormalize)
-    vae_bn_mean_seq = vae_bn_mean.reshape(1, 1, 128)
-    vae_bn_std_seq = vae_bn_std.reshape(1, 1, 128)
-    latents_bn = latents_jax * vae_bn_std_seq + vae_bn_mean_seq
-
-    # Unpack packed latents back to spatial grid
-    latents_unpacked = unpack_latents(latents_bn, batch_size, 32, height, width)
-
-    # Decode VAE latents to RGB pixels
-    decoded_out = self._jitted_vae_decode(vae_params, latents_unpacked)
-    # VAE output is in decoded_out.sample
+    # Decode VAE latents to RGB pixels using fused JIT vae_decode
+    decoded_out = self._jitted_vae_decode(vae_params, latents_jax, vae_bn_mean, vae_bn_std, height, width)
     images_rgb = decoded_out.sample
     images_rgb.block_until_ready()
 

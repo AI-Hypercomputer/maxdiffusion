@@ -626,7 +626,7 @@ class NNXFlaxQwen3Model(nnx.Module):
 # -----------------------------------------------------------------------------
 
 
-def load_and_convert_qwen3_weights(safetensors_path: str, jax_params: dict, config: FlaxQwen3Config, dtype=None) -> dict:
+def load_and_convert_qwen3_weights(safetensors_path: str, jax_params: dict, config: FlaxQwen3Config, dtype=None, torch_weights: dict = None) -> dict:
   """
   Loads weights from safetensors via zero-copy safetensors.numpy and converts them to JAX parameter dictionary.
   """
@@ -634,18 +634,19 @@ def load_and_convert_qwen3_weights(safetensors_path: str, jax_params: dict, conf
   import os
   from safetensors.numpy import load_file
 
-  torch_weights: dict = {}
-  if os.path.isdir(safetensors_path):
-    # Find all safetensors shards
-    shards = glob.glob(os.path.join(safetensors_path, "*.safetensors"))
-    max_logging.log(f"Loading sharded Qwen3 weights from directory: {safetensors_path} (Found {len(shards)} shards)...")
-    for shard in sorted(shards):
-      max_logging.log(f"Loading shard: {shard}...")
-      torch_weights.update(load_file(shard))
-  else:
-    # Single file path
-    max_logging.log(f"Loading Qwen3 weights from file: {safetensors_path}...")
-    torch_weights = load_file(safetensors_path)
+  if torch_weights is None:
+    torch_weights = {}
+    if os.path.isdir(safetensors_path):
+      # Find all safetensors shards
+      shards = glob.glob(os.path.join(safetensors_path, "*.safetensors"))
+      max_logging.log(f"Loading sharded Qwen3 weights from directory: {safetensors_path} (Found {len(shards)} shards)...")
+      for shard in sorted(shards):
+        max_logging.log(f"Loading shard: {shard}...")
+        torch_weights.update(load_file(shard))
+    else:
+      # Single file path
+      max_logging.log(f"Loading Qwen3 weights from file: {safetensors_path}...")
+      torch_weights = load_file(safetensors_path)
   max_logging.log("Safetensors weights loaded successfully. Starting JAX parameter mapping...")
 
   first_leaf = jax.tree_util.tree_leaves(jax_params)[0]

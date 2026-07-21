@@ -17,7 +17,6 @@ limitations under the License.
 import concurrent.futures
 import json
 import os
-import shutil
 import threading
 import time
 from typing import Callable, Optional
@@ -287,7 +286,6 @@ def load_wan_transformer(
     scan_layers: bool = True,
     subfolder: str = "",
     cast_dtype_fn: Optional[Callable] = None,
-    converted_cache_dir: str = "",
 ):
   if pretrained_model_name_or_path == CAUSVID_TRANSFORMER_MODEL_NAME_OR_PATH:
     return load_causvid_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
@@ -295,15 +293,7 @@ def load_wan_transformer(
     return load_fusionx_transformer(pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers)
   else:
     return load_base_wan_transformer(
-        pretrained_model_name_or_path,
-        eval_shapes,
-        device,
-        hf_download,
-        num_layers,
-        scan_layers,
-        subfolder,
-        cast_dtype_fn,
-        converted_cache_dir,
+        pretrained_model_name_or_path, eval_shapes, device, hf_download, num_layers, scan_layers, subfolder, cast_dtype_fn
     )
 
 
@@ -318,76 +308,6 @@ def _torch_tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
   return tensor.numpy()
 
 
-def _converted_key_to_filename(flax_key: tuple) -> str:
-  return ".".join(str(k) for k in flax_key) + ".npy"
-
-
-def try_load_converted_weights(cache_dir: str, eval_shapes: dict, cast_dtype_fn: Optional[Callable]) -> Optional[dict]:
-  """Loads a converted-weights cache as mmapped arrays, or None on mismatch.
-
-  The torch->flax conversion (transpose + scan-stack + cast) is a pure
-  function of the checkpoint, so it is paid once and memoized on disk.
-  Keys/shapes are validated against eval_shapes and dtypes against
-  cast_dtype_fn, so a policy or model change falls back to a fresh
-  conversion (which re-saves).
-  """
-  manifest_path = os.path.join(cache_dir, "manifest.json")
-  if not os.path.isfile(manifest_path):
-    return None
-  try:
-    with open(manifest_path, "r") as f:
-      manifest = json.load(f)
-    expected_keys = set(flatten_dict(eval_shapes).keys())
-
-    def load_one(key_str, meta):
-      flax_key = _tuple_str_to_int(tuple(key_str.split(".")))
-      logical_dtype = np.dtype(meta["dtype"])
-      if cast_dtype_fn is not None and logical_dtype != np.dtype(cast_dtype_fn(flax_key)):
-        raise ValueError(f"dtype policy changed for {key_str}")
-      # Eager parallel read (page-cache/RAM speed): an mmap would defer the
-      # read into the device_put as serial page faults, halving put speed.
-      value = np.load(os.path.join(cache_dir, meta["file"]))
-      if meta.get("bitview"):
-        # Non-native dtypes (bf16/fp8) are stored as same-width uints:
-        # npy cannot resolve ml_dtypes descriptors on all paths.
-        value = value.view(logical_dtype)
-      if tuple(value.shape) != tuple(meta["shape"]):
-        raise ValueError(f"shape changed for {key_str}")
-      return flax_key, value
-
-    flax_state_dict = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-      for flax_key, value in executor.map(lambda kv: load_one(*kv), manifest.items()):
-        flax_state_dict[flax_key] = value
-    if set(flax_state_dict.keys()) != expected_keys:
-      return None
-    return unflatten_dict(flax_state_dict)
-  except (OSError, ValueError, KeyError, TypeError) as e:
-    max_logging.log(f"Converted-weights cache unusable ({e}); reconverting")
-    return None
-
-
-def save_converted_weights(cache_dir: str, flat_state_dict: dict) -> None:
-  """Writes the converted tree as per-tensor .npy + manifest, atomically."""
-  tmp_dir = f"{cache_dir}.tmp.{os.getpid()}"
-  os.makedirs(tmp_dir, exist_ok=True)
-  manifest = {}
-  uint_by_width = {1: np.uint8, 2: np.uint16, 4: np.uint32}
-  for flax_key, value in flat_state_dict.items():
-    filename = _converted_key_to_filename(flax_key)
-    bitview = value.dtype.kind not in "fiub"  # ml_dtypes (bf16/fp8) etc.
-    stored = value.view(uint_by_width[value.dtype.itemsize]) if bitview else value
-    np.save(os.path.join(tmp_dir, filename), stored)
-    key_str = ".".join(str(k) for k in flax_key)
-    manifest[key_str] = {"file": filename, "shape": list(value.shape), "dtype": str(value.dtype), "bitview": bitview}
-  with open(os.path.join(tmp_dir, "manifest.json"), "w") as f:
-    json.dump(manifest, f)
-  try:
-    os.rename(tmp_dir, cache_dir)
-  except OSError:
-    shutil.rmtree(tmp_dir, ignore_errors=True)  # another process won the race
-
-
 def load_base_wan_transformer(
     pretrained_model_name_or_path: str,
     eval_shapes: dict,
@@ -397,7 +317,6 @@ def load_base_wan_transformer(
     scan_layers: bool = True,
     subfolder: str = "",
     cast_dtype_fn: Optional[Callable] = None,
-    converted_cache_dir: str = "",
 ):
   """Loads WAN transformer weights from diffusers safetensors shards.
 
@@ -416,14 +335,6 @@ def load_base_wan_transformer(
   Returns a nested dict of numpy arrays (host memory).
   """
   del device  # weights stay in plain host numpy until device_put by the caller
-  if converted_cache_dir:
-    t_start = time.perf_counter()
-    cached = try_load_converted_weights(converted_cache_dir, eval_shapes, cast_dtype_fn)
-    if cached is not None:
-      max_logging.log(
-          f"Loaded converted {subfolder or 'transformer'} weights (mmap) in {time.perf_counter() - t_start:.1f}s"
-      )
-      return cached
   filename = "diffusion_pytorch_model.safetensors.index.json"
   local_files = False
   if os.path.isdir(pretrained_model_name_or_path):
@@ -514,10 +425,6 @@ def load_base_wan_transformer(
       future.result()  # re-raise conversion errors
 
   validate_flax_state_dict(eval_shapes, flax_state_dict)
-  if converted_cache_dir and not os.path.isdir(converted_cache_dir):
-    t_save = time.perf_counter()
-    save_converted_weights(converted_cache_dir, flax_state_dict)
-    max_logging.log(f"Saved converted-weights cache to {converted_cache_dir} in {time.perf_counter() - t_save:.1f}s")
   flax_state_dict = unflatten_dict(flax_state_dict)
   max_logging.log(f"Converted {subfolder or 'transformer'} weights to host arrays in {time.perf_counter() - t_start:.1f}s")
   return flax_state_dict
