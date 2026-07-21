@@ -119,7 +119,7 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
 
     dummy_latents = jnp.zeros((batch_size, seq_len_img, 128), dtype=jnp.float32)
     dummy_img_ids = jnp.zeros((batch_size, seq_len_img, 4), dtype=jnp.int32)
-    dummy_prompt_embeds = jnp.zeros((batch_size, seq_len_txt, 12288), dtype=jnp.bfloat16)
+    dummy_prompt_embeds = jnp.zeros((batch_size, seq_len_txt, self.transformer.joint_attention_dim), dtype=jnp.bfloat16)
     dummy_txt_ids = jnp.zeros((batch_size, seq_len_txt, 4), dtype=jnp.float32)
     dummy_t_vec = jnp.zeros((batch_size,), dtype=jnp.float32)
 
