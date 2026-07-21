@@ -25,6 +25,7 @@ import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_flatten_with_path, tree_unflatten
 from typing import Tuple, Sequence
+from maxdiffusion import max_logging
 
 # Params used to define mixed precision quantization configs
 DEFAULT = "__default__"  # default config
@@ -139,7 +140,7 @@ def _get_quant_config(config):
     else:
       drhs_bits = 8
       drhs_accumulator_dtype = jnp.int32
-      print(config.quantization_local_shard_count)  # -1
+      max_logging.log(config.quantization_local_shard_count)  # -1
       drhs_local_aqt = aqt_config.LocalAqt(contraction_axis_shard_count=config.quantization_local_shard_count)
     return aqt_config.config_v4(
         fwd_bits=8,

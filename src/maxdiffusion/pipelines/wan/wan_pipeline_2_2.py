@@ -158,8 +158,12 @@ class WanPipeline2_2(WanPipeline):
       magcache_thresh: float = 0.04,
       magcache_K: int = 2,
       retention_ratio: float = 0.2,
+      output_type: str = "np",
   ):
     config = getattr(self, "config", None)
+    if output_type not in ["np", "latent"]:
+      raise ValueError(f"output_type must be one of ['np', 'latent'], got {output_type}")
+
     if max_sequence_length is None:
       max_sequence_length = getattr(config, "max_sequence_length", 512)
 
@@ -254,6 +258,9 @@ class WanPipeline2_2(WanPipeline):
       latents.block_until_ready()
     trace["denoise_total"] = time.perf_counter() - t_denoise_start
 
+    if output_type == "latent":
+      return latents, trace
+
     t_decode_start = time.perf_counter()
     video = self._decode_latents_to_video(latents, trace=trace)
     if hasattr(video, "block_until_ready"):
@@ -307,6 +314,19 @@ def run_inference_2_2(
   do_classifier_free_guidance = guidance_scale_low > 1.0 or guidance_scale_high > 1.0
   bsz = latents.shape[0]
 
+  data_shards = 1
+  try:
+    if hasattr(latents, "sharding") and hasattr(latents.sharding, "mesh"):
+      data_shards = latents.sharding.mesh.shape["data"] * latents.sharding.mesh.shape.get("fsdp", 1)
+  except Exception:
+    pass
+
+  if use_cfg_cache and do_classifier_free_guidance and bsz % data_shards != 0:
+    max_logging.log(
+        f"Warning: Disabling CFG cache because batch size {bsz} is not divisible by data shards {data_shards}. This often happens with data_parallelism > 1 and per_device_batch_size = 1."
+    )
+    use_cfg_cache = False
+
   prompt_embeds_combined = (
       jnp.concatenate([prompt_embeds, negative_prompt_embeds], axis=0) if do_classifier_free_guidance else prompt_embeds
   )
@@ -333,7 +353,6 @@ def run_inference_2_2(
 
     high_transformer = nnx.merge(high_noise_graphdef, high_noise_state, high_noise_rest)
     kv_cache_high, encoder_attention_mask_high = high_transformer.compute_kv_cache(prompt_embeds_combined)
-
   # ── MagCache path (Ma et al., https://github.com/Zehong-Ma/MagCache) ──
   # Skips the transformer blocks on steps whose accumulated magnitude-ratio error
   # stays below `magcache_thresh`, reusing the cached block residual instead.
@@ -439,6 +458,8 @@ def run_inference_2_2(
     )
     return latents
 
+  timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
+
   # ── SenCache path (arXiv:2602.24208) ──
   if use_sen_cache and do_classifier_free_guidance:
     timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
@@ -463,16 +484,18 @@ def run_inference_2_2(
     num_train_timesteps = float(scheduler.config.num_train_timesteps)
 
     # SenCache state
-    ref_noise_pred = None  # y^r: cached denoiser output
-    ref_latent = None  # x^r: latent at last cache refresh
-    ref_timestep = 0.0  # t^r: timestep (normalized to [0,1]) at last cache refresh
-    accum_dx = 0.0  # accumulated ||Δx|| since last refresh
-    accum_dt = 0.0  # accumulated |Δt| since last refresh
-    reuse_count = 0  # consecutive cache reuses
-    cache_count = 0
+    ref_noise_pred = jnp.zeros(
+        (bsz * 2, latents.shape[1], latents.shape[2], latents.shape[3], latents.shape[4]), dtype=latents.dtype
+    )
+    ref_latent = jnp.zeros_like(latents)
+    ref_timestep = jnp.array(0.0, dtype=jnp.float32)
+    accum_dx = jnp.array(0.0, dtype=jnp.float32)
+    accum_dt = jnp.array(0.0, dtype=jnp.float32)
+    reuse_count = jnp.array(0, dtype=jnp.int32)
+    cache_count = jnp.array(0, dtype=jnp.int32)
 
     for step in range(num_inference_steps):
-      t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+      t = timesteps[step]
       t_float = float(timesteps_np[step]) / num_train_timesteps  # normalize to [0, 1]
 
       # Select transformer and guidance scale
@@ -518,10 +541,10 @@ def run_inference_2_2(
         )
         ref_noise_pred = noise_pred
         ref_latent = latents
-        ref_timestep = t_float
-        accum_dx = 0.0
-        accum_dt = 0.0
-        reuse_count = 0
+        ref_timestep = jnp.array(t_float, dtype=jnp.float32)
+        accum_dx = jnp.array(0.0, dtype=jnp.float32)
+        accum_dt = jnp.array(0.0, dtype=jnp.float32)
+        reuse_count = jnp.array(0, dtype=jnp.int32)
         latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
         continue
 
@@ -535,12 +558,10 @@ def run_inference_2_2(
       score = alpha_x * accum_dx + alpha_t * accum_dt
 
       if score <= sen_epsilon and reuse_count < max_reuse:
-        # Cache hit: reuse previous output
         noise_pred = ref_noise_pred
         reuse_count += 1
         cache_count += 1
       else:
-        # Cache miss: full CFG forward pass
         latents_doubled = jnp.concatenate([latents] * 2)
         timestep = jnp.broadcast_to(t, bsz * 2)
         noise_pred, _, _ = transformer_forward_pass_full_cfg(
@@ -630,7 +651,7 @@ def run_inference_2_2(
     cached_noise_uncond = None
 
     for step in range(num_inference_steps):
-      t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+      t = timesteps[step]
       is_cache_step = step_is_cache[step]
 
       # Select transformer and guidance scale based on precomputed schedule
@@ -767,8 +788,6 @@ def run_inference_2_2(
     )
 
   if scan_diffusion_loop:
-    timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
-
     scheduler_state = scheduler_state.replace(last_sample=jnp.zeros_like(latents), step_index=jnp.array(0, dtype=jnp.int32))
 
     def scan_body(carry, t):
@@ -817,7 +836,7 @@ def run_inference_2_2(
       profiler = max_utils.Profiler(config)
       profiler.start()
 
-    t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
+    t = timesteps[step]
 
     if step_uses_high[step]:
       graphdef, state, rest = (
