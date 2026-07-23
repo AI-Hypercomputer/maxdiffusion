@@ -1,0 +1,160 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Official Z-Image inference defaults. Z-Image and Z-Image-Turbo share the
+# denoiser; only the recommended denoising-step count differs (see
+# base_zimage_turbo.yml).
+
+run_name: 'zimage'
+
+# If true save config to GCS in {base_output_directory}/{run_name}/
+save_config_to_gcs: False
+
+pretrained_model_name_or_path: 'Tongyi-MAI/Z-Image'
+model_name: z_image
+model_type: 'T2I'
+
+unet_checkpoint: ''
+# This will convert the weights to this dtype.
+# When running inference on TPUv5e, use weights_dtype: 'bfloat16'
+weights_dtype: 'bfloat16'
+# This sets the layer's dtype in the model. Ex: nn.Dense(dtype=activations_dtype)
+activations_dtype: 'bfloat16'
+
+# Maximum sequence length for the text encoder
+max_sequence_length: 512
+# offloads text encoder after text encoding to save memory.
+offload_encoders: False
+
+# Attention
+attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom, ulysses_ring
+# Maxdiffusion has 2 types of attention sharding strategies:
+# 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
+# 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is
+#    sharded in cross attention q.
+attention_sharding_uniform: True
+# Empty dict lets the kernel pick defaults. Example v6e override:
+# flash_block_sizes: {
+#   "block_q" : 1024,
+#   "block_kv_compute" : 1024,
+#   "block_kv" : 1024,
+#   "block_q_dkv" : 1024,
+#   "block_kv_dkv" : 1024,
+#   "block_kv_dkv_compute" : 1024,
+#   "block_q_dq" : 1024,
+#   "block_kv_dq" : 1024,
+#   "use_fused_bwd_kernel": False,
+# }
+flash_block_sizes: {}
+
+# Output directory
+# Create a GCS bucket, e.g. my-maxdiffusion-outputs and set this to "gs://my-maxdiffusion-outputs/"
+base_output_directory: ""
+output_dir: "/mnt/disks/data/tmp/maxdiffusion"
+# Local path for the generated image. If empty, an image named
+# {run_name}_output_{seed}.png is written to the working directory.
+output_file: "/mnt/disks/data/tmp/zimage.png"
+
+# Hardware
+hardware: 'tpu' # Supported hardware types are 'tpu', 'gpu'
+skip_jax_distributed_system: True
+
+# Parallelism
+mesh_axes: ['data', 'fsdp', 'context', 'tensor']
+# Z-Image runs sequence parallel (activations sharded over `context`) with
+# data parallelism; the tensor axis is left at 1. `attention_sharding_uniform`
+# adds the matching q/kv sequence rules on top of these.
+logical_axis_rules: [
+                      ['batch', ['data', 'fsdp']],
+                      ['activation_batch', ['data', 'fsdp']],
+                      ['activation_length', 'context'],
+                      ['activation_heads', 'tensor'],
+                      ['heads', 'tensor'],
+                      ['mlp', 'tensor'],
+                      ['embed', 'fsdp'],
+                      ['norm', 'tensor'],
+                      ['out_channels', 'tensor'],
+                    ]
+data_sharding: [['data', 'fsdp', 'context', 'tensor']]
+
+sharding:
+  transformer: 'default'
+
+# One axis for each parallelism type may hold a placeholder (-1)
+# value to auto-shard based on available slices and devices.
+#
+# Measured on v6e-8, Turbo, 1024x1024, 9 steps, 8 images (per_device_batch_size 1.0):
+#   data=8          2.45s   0.307s/image   <- default
+#   data=4 ctx=2    2.60s   0.325s/image
+#   data=2 ctx=4    3.13s   0.391s/image
+#   ctx=8           4.15s   0.519s/image
+#   fsdp=8          9.43s   1.179s/image
+# The 12B of weights fit in HBM, so replicating them and giving each chip a
+# whole image beats every sharded layout: no collectives at all. fsdp re-gathers
+# every weight on all 9 denoising steps with no backward pass to amortize it.
+#
+# For single-image *latency* instead of throughput, generate one image
+# (per_device_batch_size: 0.125) with ici_data_parallelism: 1 and
+# ici_context_parallelism: -1, which splits one image's sequence 8 ways: 0.587s.
+dcn_data_parallelism: 1
+dcn_fsdp_parallelism: 1
+dcn_context_parallelism: 1
+dcn_tensor_parallelism: 1
+ici_data_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_fsdp_parallelism: 1
+ici_context_parallelism: 1
+ici_tensor_parallelism: 1
+
+allow_split_physical_axes: False
+
+# Generation parameters
+prompt: "A red fox reading a book in a quiet library, cinematic light"
+height: 1024
+width: 1024
+num_inference_steps: 50
+# The released Z-Image configuration runs without classifier free guidance.
+guidance_scale: 0.0
+seed: 42
+# Images per device. Fractional values are allowed: on 8 devices,
+# 0.125 generates a single image.
+per_device_batch_size: 1.0
+# Latents decoded per VAE call. The decoder is replicated and its
+# activations are full-resolution, so raising this trades memory for speed.
+vae_decode_chunk: 1
+
+# Profiling
+# generate_zimage runs an un-profiled warmup pass (compile), then a clean
+# generation pass, and only then a profiled pass of profiler_steps steps.
+enable_profiler: False
+profiler_steps: 5
+
+# ML Diagnostics settings
+enable_ml_diagnostics: False
+profiler_gcs_path: ""
+enable_ondemand_xprof: False
+
+# Directory for the Orbax cache of the converted pipeline (transformer + VAE +
+# text encoder). '' disables it. The first run loads from Diffusers and writes
+# the cache; later runs restore from it and skip the torch -> flax conversion.
+pretrained_orbax_dir: ""
+
+# Keys below are required by pyconfig but unused for Z-Image inference.
+jax_cache_dir: ""
+dataset_name: ""
+dataset_save_location: "/mnt/disks/data/tmp"
+learning_rate_schedule_steps: 1
+max_train_steps: 1
+compile_topology_num_slices: -1
+quantization_local_shard_count: -1
+use_qwix_quantization: False

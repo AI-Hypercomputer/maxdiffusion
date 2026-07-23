@@ -16,7 +16,6 @@ from typing import Sequence
 import jax
 import time
 import os
-import subprocess
 from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
@@ -26,7 +25,6 @@ from absl import app
 from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.utils import export_to_video
 from maxdiffusion.utils.loading_utils import load_image
-from google.cloud import storage
 import flax
 from maxdiffusion.common_types import WAN2_1, WAN2_2
 from maxdiffusion.loaders.wan_lora_nnx_loader import Wan2_1NNXLoraLoader, Wan2_2NNXLoraLoader
@@ -34,56 +32,6 @@ from maxdiffusion.pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
 from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
 from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p1 import WanPipelineI2V_2_1
 from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p2 import WanPipelineI2V_2_2
-
-
-def upload_video_to_gcs(output_dir: str, video_path: str):
-  """
-  Uploads a local video file to a specified Google Cloud Storage bucket.
-  """
-  try:
-    path_without_scheme = output_dir.removeprefix("gs://")
-    parts = path_without_scheme.split("/", 1)
-    bucket_name = parts[0]
-    folder_name = parts[1] if len(parts) > 1 else ""
-
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-
-    source_file_path = f"./{video_path}"
-    destination_blob_name = os.path.join(folder_name, "videos", video_path)
-
-    blob = bucket.blob(destination_blob_name)
-
-    max_logging.log(f"Uploading {source_file_path} to {bucket_name}/{destination_blob_name}...")
-    blob.upload_from_filename(source_file_path)
-    max_logging.log(f"Upload complete {source_file_path}.")
-
-  except Exception as e:
-    max_logging.log(f"An error occurred: {e}")
-
-
-def delete_file(file_path: str):
-  if os.path.exists(file_path):
-    try:
-      os.remove(file_path)
-      max_logging.log(f"Successfully deleted file: {file_path}")
-    except OSError as e:
-      max_logging.log(f"Error deleting file '{file_path}': {e}")
-  else:
-    max_logging.log(f"The file '{file_path}' does not exist.")
-
-
-def get_git_commit_hash():
-  """Tries to get the current Git commit hash."""
-  try:
-    commit_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).strip().decode("utf-8")
-    return commit_hash
-  except subprocess.CalledProcessError:
-    max_logging.log("Warning: 'git rev-parse HEAD' failed. Not running in a git repo?")
-    return None
-  except FileNotFoundError:
-    max_logging.log("Warning: 'git' command not found.")
-    return None
 
 
 jax.config.update("jax_use_shardy_partitioner", True)
@@ -189,9 +137,9 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
     video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
     export_to_video(videos[i], video_path, fps=config.fps)
     if config.output_dir.startswith("gs://"):
-      upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
+      max_utils.upload_file_to_gcs(os.path.join(config.output_dir, config.run_name), video_path, subdir="videos")
       # Delete local files to avoid storing too manys videos
-      delete_file(f"./{video_path}")
+      max_utils.delete_file(f"./{video_path}")
   return
 
 
@@ -414,7 +362,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     export_to_video(videos[i], video_path, fps=config.fps)
     saved_video_path.append(video_path)
     if config.output_dir.startswith("gs://"):
-      upload_video_to_gcs(os.path.join(config.output_dir, config.run_name), video_path)
+      max_utils.upload_file_to_gcs(os.path.join(config.output_dir, config.run_name), video_path, subdir="videos")
   max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/generation_time", generation_time, global_step=0)
@@ -480,7 +428,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
 
 def main(argv: Sequence[str]) -> None:
-  commit_hash = get_git_commit_hash()
+  commit_hash = max_utils.get_git_commit_hash()
   pyconfig.initialize(argv)
   try:
     flax.config.update("flax_always_shard_variable", False)

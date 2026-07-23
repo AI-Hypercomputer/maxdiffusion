@@ -296,6 +296,70 @@ def upload_blob(destination_gcs_name, source_file_name):
   blob.upload_from_filename(source_file_name)
 
 
+def save_images(config, images):
+  """Writes each image locally, and to GCS when output_dir is a bucket."""
+  stem, extension = os.path.splitext(config.output_file or f"{config.run_name}_output_{config.seed}.png")
+  paths = []
+  for index, image in enumerate(images):
+    path = f"{stem}{extension}" if len(images) == 1 else f"{stem}_{index}{extension}"
+    parent_dir = os.path.dirname(path)
+    if parent_dir:
+      os.makedirs(parent_dir, exist_ok=True)
+    image.save(path)
+    paths.append(path)
+    if config.output_dir.startswith("gs://"):
+      upload_file_to_gcs(os.path.join(config.output_dir, config.run_name), path, subdir="images")
+  max_logging.log(f"Saved {len(paths)} image(s), first: {paths[0]}")
+  return paths
+
+
+def upload_file_to_gcs(output_dir: str, file_path: str, subdir: str = ""):
+  """Uploads one generated file to {output_dir}/{subdir}/, logging failures.
+
+  Shared by the generate_* drivers, which each write their own media type.
+  """
+  try:
+    path_without_scheme = output_dir.removeprefix("gs://")
+    parts = path_without_scheme.split("/", 1)
+    bucket_name = parts[0]
+    folder_name = parts[1] if len(parts) > 1 else ""
+    destination_blob_name = os.path.join(folder_name, subdir, os.path.basename(file_path))
+
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(destination_blob_name)
+
+    max_logging.log(f"Uploading {file_path} to {bucket_name}/{destination_blob_name}...")
+    blob.upload_from_filename(file_path)
+    max_logging.log(f"Upload complete {file_path}.")
+  except Exception as e:  # pylint: disable=broad-except
+    max_logging.log(f"An error occurred: {e}")
+
+
+def delete_file(file_path: str):
+  """Removes a local file, e.g. after it has been uploaded to GCS."""
+  if os.path.exists(file_path):
+    try:
+      os.remove(file_path)
+      max_logging.log(f"Successfully deleted file: {file_path}")
+    except OSError as e:
+      max_logging.log(f"Error deleting file '{file_path}': {e}")
+  else:
+    max_logging.log(f"The file '{file_path}' does not exist.")
+
+
+def get_git_commit_hash():
+  """Tries to get the current Git commit hash, for run provenance."""
+  try:
+    return subprocess.check_output(["git", "rev-parse", "HEAD"]).strip().decode("utf-8")
+  except subprocess.CalledProcessError:
+    max_logging.log("Warning: 'git rev-parse HEAD' failed. Not running in a git repo?")
+    return None
+  except FileNotFoundError:
+    max_logging.log("Warning: 'git' command not found.")
+    return None
+
+
 def walk_and_upload_blobs(config, output_dir):
   user_dir = os.path.expanduser("~")
   uploaded_files = set()
