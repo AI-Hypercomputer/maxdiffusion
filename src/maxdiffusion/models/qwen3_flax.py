@@ -20,9 +20,6 @@ from flax import nnx
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import numpy as np
-
-from maxdiffusion import max_logging
 
 # -----------------------------------------------------------------------------
 # Qwen3 Configuration
@@ -67,12 +64,13 @@ class FlaxQwen3RMSNorm(nn.Module):
   dim: int
   eps: float = 1e-6
   dtype: Any = jnp.float32
+  param_dtype: Any = jnp.float32
 
   @nn.compact
   def __call__(self, x):
     x_float = x.astype(jnp.float32)
     variance = jnp.mean(jnp.square(x_float), axis=-1, keepdims=True)
-    scale = self.param("weight", nn.initializers.ones, (self.dim,), self.dtype)
+    scale = self.param("weight", nn.initializers.ones, (self.dim,), self.param_dtype)
     normed = x_float * jax.lax.rsqrt(variance + self.eps)
     return (normed.astype(self.dtype)) * scale
 
@@ -87,6 +85,7 @@ class FlaxQwen3MLP(nn.Module):
         use_bias=False,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
         dtype=self.config.dtype,
+        param_dtype=self.config.dtype,
         name="gate_proj",
     )
     up_proj = nn.Dense(
@@ -94,6 +93,7 @@ class FlaxQwen3MLP(nn.Module):
         use_bias=False,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "mlp")),
         dtype=self.config.dtype,
+        param_dtype=self.config.dtype,
         name="up_proj",
     )
     down_proj = nn.Dense(
@@ -101,6 +101,7 @@ class FlaxQwen3MLP(nn.Module):
         use_bias=False,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("mlp", "embed")),
         dtype=self.config.dtype,
+        param_dtype=self.config.dtype,
         name="down_proj",
     )
 
@@ -178,6 +179,7 @@ class FlaxQwen3Attention(nn.Module):
         use_bias=False,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "heads")),
         dtype=self.config.dtype,
+        param_dtype=self.config.dtype,
         name="q_proj",
     )
     k_proj = nn.Dense(
@@ -185,6 +187,7 @@ class FlaxQwen3Attention(nn.Module):
         use_bias=False,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "heads")),
         dtype=self.config.dtype,
+        param_dtype=self.config.dtype,
         name="k_proj",
     )
     v_proj = nn.Dense(
@@ -192,6 +195,7 @@ class FlaxQwen3Attention(nn.Module):
         use_bias=False,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("embed", "heads")),
         dtype=self.config.dtype,
+        param_dtype=self.config.dtype,
         name="v_proj",
     )
     o_proj = nn.Dense(
@@ -199,6 +203,7 @@ class FlaxQwen3Attention(nn.Module):
         use_bias=False,
         kernel_init=nn.with_logical_partitioning(nn.initializers.lecun_normal(), ("heads", "embed")),
         dtype=self.config.dtype,
+        param_dtype=self.config.dtype,
         name="o_proj",
     )
 
@@ -359,6 +364,7 @@ class FlaxQwen3Model(nn.Module):
             nn.initializers.normal(stddev=self.config.hidden_size**-0.5), ("vocab", "embed")
         ),
         dtype=self.config.dtype,
+        param_dtype=self.config.dtype,
         name="embed_tokens",
     )
     hidden_states = embed_tokens(input_ids)
@@ -408,10 +414,18 @@ class FlaxQwen3Model(nn.Module):
 
 class NNXFlaxQwen3RMSNorm(nnx.Module):
 
-  def __init__(self, rngs: nnx.Rngs, dim: int, eps: float = 1e-6, dtype: jnp.dtype = jnp.float32):
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      dim: int,
+      eps: float = 1e-6,
+      dtype: jnp.dtype = jnp.float32,
+      param_dtype: jnp.dtype = jnp.float32,
+  ):
     self.eps = eps
     self.dtype = dtype
-    self.weight = nnx.Param(jnp.ones((dim,), dtype=dtype))
+    # Held in float32 for the same reason as the Linen variant above.
+    self.weight = nnx.Param(jnp.ones((dim,), dtype=param_dtype))
 
   def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
     x_float = x.astype(jnp.float32)
@@ -430,6 +444,7 @@ class NNXFlaxQwen3MLP(nnx.Module):
         use_bias=False,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
         dtype=config.dtype,
+        param_dtype=config.dtype,
         rngs=rngs,
     )
     self.up_proj = nnx.Linear(
@@ -438,6 +453,7 @@ class NNXFlaxQwen3MLP(nnx.Module):
         use_bias=False,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
         dtype=config.dtype,
+        param_dtype=config.dtype,
         rngs=rngs,
     )
     self.down_proj = nnx.Linear(
@@ -446,6 +462,7 @@ class NNXFlaxQwen3MLP(nnx.Module):
         use_bias=False,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
         dtype=config.dtype,
+        param_dtype=config.dtype,
         rngs=rngs,
     )
 
@@ -467,6 +484,7 @@ class NNXFlaxQwen3Attention(nnx.Module):
         use_bias=False,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
         dtype=config.dtype,
+        param_dtype=config.dtype,
         rngs=rngs,
     )
     self.k_proj = nnx.Linear(
@@ -475,6 +493,7 @@ class NNXFlaxQwen3Attention(nnx.Module):
         use_bias=False,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
         dtype=config.dtype,
+        param_dtype=config.dtype,
         rngs=rngs,
     )
     self.v_proj = nnx.Linear(
@@ -483,6 +502,7 @@ class NNXFlaxQwen3Attention(nnx.Module):
         use_bias=False,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
         dtype=config.dtype,
+        param_dtype=config.dtype,
         rngs=rngs,
     )
     self.o_proj = nnx.Linear(
@@ -491,6 +511,7 @@ class NNXFlaxQwen3Attention(nnx.Module):
         use_bias=False,
         kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
         dtype=config.dtype,
+        param_dtype=config.dtype,
         rngs=rngs,
     )
 
@@ -531,14 +552,28 @@ class NNXFlaxQwen3Attention(nnx.Module):
     k = jnp.transpose(k, (0, 2, 1, 3))
     v = jnp.transpose(v, (0, 2, 1, 3))
 
-    scale = 1.0 / math.sqrt(self.head_dim)
-    scores = jnp.matmul(q, jnp.transpose(k, (0, 1, 3, 2))) * scale
+    # TODO: this upcasts both matmuls to float32 only to stay bit-comparable
+    # with the Linen implementation above. Upstream (transformers' Qwen3) runs
+    # the QK and probs@V matmuls in the model dtype and casts only the softmax
+    # to float32, which is the part that actually needs the range. Doing the
+    # same here would keep both matmuls on the MXU at full bfloat16 rate; it is
+    # left alone for now so the two implementations stay comparable.
+    q_f = q.astype(jnp.float32)
+    k_f = k.astype(jnp.float32)
+    v_f = v.astype(jnp.float32)
+    scores = jnp.matmul(q_f, jnp.transpose(k_f, (0, 1, 3, 2))) / math.sqrt(self.head_dim)
 
+    # Qwen3 is a causal LM: without this every token attends to the future.
+    causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+    scores = jnp.where(causal_mask, scores, -1e4)
+
+    # `attention_mask` is a 0/1 padding mask, not an additive one.
     if attention_mask is not None:
-      scores = scores + attention_mask
+      p_mask = attention_mask[:, jnp.newaxis, jnp.newaxis, :].astype(jnp.bool_)
+      scores = jnp.where(p_mask, scores, -1e4)
 
     attn_probs = jax.nn.softmax(scores, axis=-1)
-    output = jnp.matmul(attn_probs, v)
+    output = jnp.matmul(attn_probs, v_f).astype(self.config.dtype)
     output = jnp.transpose(output, (0, 2, 1, 3))
     output = output.reshape(batch_size, seq_len, -1)
     output = self.o_proj(output)
@@ -589,6 +624,7 @@ class NNXFlaxQwen3Model(nnx.Module):
         features=config.hidden_size,
         embedding_init=nnx.with_partitioning(nnx.initializers.normal(stddev=config.hidden_size**-0.5), ("vocab", "embed")),
         dtype=config.dtype,
+        param_dtype=config.dtype,
         rngs=rngs,
     )
     self.layers = nnx.List([NNXFlaxQwen3DecoderLayer(rngs=rngs, config=config) for _ in range(config.num_hidden_layers)])
@@ -619,103 +655,3 @@ class NNXFlaxQwen3Model(nnx.Module):
 
     hidden_states = self.norm(hidden_states)
     return hidden_states, all_hidden_states
-
-
-# -----------------------------------------------------------------------------
-# Weight Mapping & Conversion Utilities
-# -----------------------------------------------------------------------------
-
-
-def load_and_convert_qwen3_weights(safetensors_path: str, jax_params: dict, config: FlaxQwen3Config) -> dict:
-  """
-  Loads weights from safetensors via zero-copy safetensors.numpy and converts them to JAX parameter dictionary.
-  """
-  import glob
-  import os
-  from safetensors.numpy import load_file
-
-  torch_weights: dict = {}
-  if os.path.isdir(safetensors_path):
-    # Find all safetensors shards
-    shards = glob.glob(os.path.join(safetensors_path, "*.safetensors"))
-    max_logging.log(f"Loading sharded Qwen3 weights from directory: {safetensors_path} (Found {len(shards)} shards)...")
-    for shard in sorted(shards):
-      max_logging.log(f"Loading shard: {shard}...")
-      torch_weights.update(load_file(shard))
-  else:
-    # Single file path
-    max_logging.log(f"Loading Qwen3 weights from file: {safetensors_path}...")
-    torch_weights = load_file(safetensors_path)
-  max_logging.log("Safetensors weights loaded successfully. Starting JAX parameter mapping...")
-
-  # Helper to transpose and cast weight
-  def get_w(name: str, transpose: bool = True) -> np.ndarray:
-    nonlocal torch_weights
-    if name not in torch_weights:
-      raise KeyError(f"Weight '{name}' not found in safetensors!")
-    t = torch_weights[name]
-    if len(t.shape) == 2 and transpose:
-      t = t.T
-    return t
-
-  # Create mutable copy of JAX params to populate
-  import flax
-
-  flat_params = flax.traverse_util.flatten_dict(jax_params)
-  converted_flat = {}
-
-  for k, v in flat_params.items():
-    # Reconstruct path string for debugging/matching
-    path_str = ".".join(k)
-
-    # 1. Token Embeddings
-    if k[0] == "embed_tokens" and k[1] == "embedding":
-      converted_flat[k] = get_w("model.embed_tokens.weight", transpose=False)
-
-    # 2. Decoder Layer Normalizations (RMSNorm)
-    elif "input_layernorm" in path_str and k[-1] == "weight":
-      layer_idx = k[0].split("_")[1]
-      converted_flat[k] = get_w(f"model.layers.{layer_idx}.input_layernorm.weight")
-
-    elif "post_attention_layernorm" in path_str and k[-1] == "weight":
-      layer_idx = k[0].split("_")[1]
-      converted_flat[k] = get_w(f"model.layers.{layer_idx}.post_attention_layernorm.weight")
-
-    # 3. Attention Projections & QK-Norm
-    elif "self_attn" in path_str and k[-1] == "kernel":
-      layer_idx = k[0].split("_")[1]
-      proj_name = k[2]  # q_proj, k_proj, v_proj, o_proj
-      converted_flat[k] = get_w(f"model.layers.{layer_idx}.self_attn.{proj_name}.weight")
-
-    elif "self_attn" in path_str and "q_norm" in path_str and k[-1] == "weight":
-      layer_idx = k[0].split("_")[1]
-      converted_flat[k] = get_w(f"model.layers.{layer_idx}.self_attn.q_norm.weight")
-
-    elif "self_attn" in path_str and "k_norm" in path_str and k[-1] == "weight":
-      layer_idx = k[0].split("_")[1]
-      converted_flat[k] = get_w(f"model.layers.{layer_idx}.self_attn.k_norm.weight")
-
-    # 4. MLP Block
-    elif "mlp" in path_str and k[-1] == "kernel":
-      layer_idx = k[0].split("_")[1]
-      proj_name = k[2]  # gate_proj, up_proj, down_proj
-      converted_flat[k] = get_w(f"model.layers.{layer_idx}.mlp.{proj_name}.weight")
-
-    # 5. Final RMSNorm
-    elif k[0] == "norm" and k[1] == "weight":
-      converted_flat[k] = get_w("model.norm.weight")
-
-    else:
-      max_logging.log(f"WARNING: JAX parameter '{path_str}' did not match any PyTorch weights!")
-      converted_flat[k] = np.zeros(v.shape, dtype=np.float32) if hasattr(v, "shape") and not isinstance(v, np.ndarray) else v
-
-  # Clean up PyTorch memory immediately
-  del torch_weights
-  import gc
-
-  gc.collect()
-
-  res = flax.traverse_util.unflatten_dict(converted_flat)
-  return jax.tree_util.tree_map(
-      lambda leaf: jnp.zeros(leaf.shape, dtype=leaf.dtype) if isinstance(leaf, jax.ShapeDtypeStruct) else leaf, res
-  )

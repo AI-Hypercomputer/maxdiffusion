@@ -37,7 +37,8 @@ from maxdiffusion.train_utils import transformer_engine_context
 
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import Flux2KleinTransformer2DModel
 from maxdiffusion.models.vae_flax import FlaxAutoencoderKL
-from maxdiffusion.models.qwen3_flax import FlaxQwen3Config, FlaxQwen3Model, load_and_convert_qwen3_weights
+from maxdiffusion.models.qwen3_flax import FlaxQwen3Config, FlaxQwen3Model
+from maxdiffusion.models.qwen3_utils import load_and_convert_qwen3_weights
 from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler
 
 

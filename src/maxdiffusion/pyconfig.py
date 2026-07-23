@@ -35,13 +35,14 @@ from maxdiffusion.common_types import (
     WAN2_2,
     LTX2_VIDEO,
     LTX2_3,
+    Z_IMAGE,
     RING_ATTENTION_AXIS_RULES,
     SEQUENCE_PARALLEL_AXIS_RULES,
     ULYSSES_ATTENTION_AXIS_RULES,
     ULYSSES_RING_ATTENTION_AXIS_RULES,
 )
 
-_ALLOWED_MODEL_NAMES = {WAN2_1, WAN2_2, LTX2_VIDEO, LTX2_3}
+_ALLOWED_MODEL_NAMES = {WAN2_1, WAN2_2, LTX2_VIDEO, LTX2_3, Z_IMAGE}
 _ALLOWED_TRAINING_MODEL_NAMES = {WAN2_1}
 
 
@@ -203,6 +204,8 @@ class _HyperParameters:
       raw_keys["names_which_can_be_saved"] = []
     if "names_which_can_be_offloaded" not in raw_keys:
       raw_keys["names_which_can_be_offloaded"] = []
+    if "offload_encoders" not in raw_keys:
+      raw_keys["offload_encoders"] = False
 
     raw_keys["weights_dtype"] = jax.numpy.dtype(raw_keys["weights_dtype"])
     raw_keys["activations_dtype"] = jax.numpy.dtype(raw_keys["activations_dtype"])
@@ -354,7 +357,5 @@ def initialize(argv, **kwargs):
 
 if __name__ == "__main__":
   initialize(sys.argv)
-  from maxdiffusion import max_logging
-
-  max_logging.log(config.steps)
+  print(config.steps)
   r = range(config.steps)
