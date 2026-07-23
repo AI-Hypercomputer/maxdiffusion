@@ -19,7 +19,7 @@ import time
 import os
 import subprocess
 from maxdiffusion.checkpointing.ltx2_checkpointer import LTX2Checkpointer
-from maxdiffusion import pyconfig, max_logging, max_utils
+from maxdiffusion import aot_cache, pyconfig, max_logging, max_utils
 from absl import app
 from google.cloud import storage
 from google.api_core.exceptions import GoogleAPIError
@@ -113,7 +113,57 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
   return out
 
 
+def maybe_tune_block_sizes(config):
+  """If enable_tile_search, run a fast one-DiT-block tile-size grid search and overwrite
+  flash_block_sizes' block_q/block_kv/block_kv_compute with the winner IN PLACE.
+  """
+  keys = config.get_keys()
+  val = keys.get("enable_tile_search", False)
+  if str(val).lower() not in ("true", "1", "yes"):
+    return
+  from maxdiffusion.utils.tile_size_grid_search import grid_search
+  from maxdiffusion.utils.ltx2_block_benchmark import LTX2BlockBenchmark
+
+  vmem = config.flash_block_sizes.get("vmem_limit_bytes", None) if config.flash_block_sizes else None
+  if vmem is None:
+    import os
+    import re
+
+    m = re.search(r"--xla_tpu_scoped_vmem_limit_kib=(\d+)", os.environ.get("LIBTPU_INIT_ARGS", ""))
+    vmem = int(m.group(1)) * 1024 if m else 32 * 1024 * 1024
+
+  mesh = jax.sharding.Mesh(max_utils.create_device_mesh(config), config.mesh_axes)
+  bench = LTX2BlockBenchmark.from_config(config, mesh, vmem_limit_bytes=vmem)
+  max_logging.log(f"[tile-search] tuning block sizes for {bench.label} (vmem={vmem/1024/1024:.1f}MB) before inference...")
+  result = grid_search(
+      bench,
+      mode=keys.get("tile_search_mode", "smart"),
+      iters=keys.get("tile_search_iters", 10),
+      out_dir=(keys.get("tile_search_out", "") or None),
+      log=max_logging.log,
+  )
+  if result.best is None:
+    max_logging.log("[tile-search] no config succeeded; keeping configured flash_block_sizes")
+    return
+  fbs = dict(config.flash_block_sizes) if config.flash_block_sizes else {}
+  fbs.update({
+      "block_q": result.best.bq,
+      "block_kv": result.best.bkv,
+      "block_kv_compute": result.best.bkv_compute,
+      "block_kv_compute_in": result.best.bkv_compute,
+      "vmem_limit_bytes": vmem,
+  })
+  config.get_keys()["flash_block_sizes"] = fbs
+  max_logging.log(
+      f"[tile-search] using block_q={result.best.bq} block_kv={result.best.bkv} "
+      f"(block-bench {result.best.mean_ms:.2f} ms)"
+  )
+
+
 def run(config, pipeline=None, filename_prefix="", commit_hash=None):
+  if pipeline is None:
+    maybe_tune_block_sizes(config)
+
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
@@ -189,14 +239,37 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   original_enable_mld = config.get_keys().get("enable_ml_diagnostics", False)
   original_num_steps = config.get_keys().get("num_inference_steps", 40)
 
+  # Per-shape AOT executable cache
+  aot_cache.install(
+      getattr(config, "aot_cache_dir", ""),
+      meta={
+          "model": config.pretrained_model_name_or_path,
+          "attention": getattr(config, "attention", ""),
+          "flash_block_sizes": str(getattr(config, "flash_block_sizes", "")),
+          "mesh_shape": str(pipeline.mesh.shape) if pipeline and hasattr(pipeline, "mesh") and pipeline.mesh else "",
+          "weights_dtype": str(getattr(config, "weights_dtype", "bfloat16")),
+          "activations_dtype": str(getattr(config, "activations_dtype", "bfloat16")),
+          "scan_layers": str(getattr(config, "scan_layers", True)),
+          "jax": jax.__version__,
+      },
+      mesh=pipeline.mesh if pipeline else None,
+  )
+  aot_cache.wait_for_loads()
+
   # ---------------------------------------------------------
   # Run 1: Warmup Compilation (Original steps, NO profiling)
   # ---------------------------------------------------------
   config.get_keys()["enable_profiler"] = False
   config.get_keys()["enable_ml_diagnostics"] = False
+  warmup_steps = min(2, original_num_steps)
+  config.get_keys()["num_inference_steps"] = warmup_steps
 
-  max_logging.log(f"🚀 Starting warmup compilation pass ({original_num_steps} steps)...")
-  _ = call_pipeline(config, pipeline, prompt, negative_prompt)
+  max_logging.log(f"🚀 Starting warmup compilation pass ({warmup_steps} steps)...")
+  with aot_cache.warmup_mode():
+    _ = call_pipeline(config, pipeline, prompt, negative_prompt)
+
+  aot_cache.save_pending()
+  config.get_keys()["num_inference_steps"] = original_num_steps
 
   compile_time = time.perf_counter() - s0
   max_logging.log(f"compile_time: {compile_time}")
@@ -237,7 +310,9 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
   # Export videos
   for i in range(len(videos)):
-    video_path = f"{filename_prefix}ltx2_output_{getattr(config, 'seed', 0)}_{i}.mp4"
+    model_name = getattr(config, "model_name", "ltx2") or "ltx2"
+    model_name_prefix = model_name.replace(".", "_")
+    video_path = f"{filename_prefix}{model_name_prefix}_output_{getattr(config, 'seed', 0)}_{i}.mp4"
     audio_i = audios[i] if audios is not None else None
 
     audio_format = getattr(config, "audio_format", "s16")

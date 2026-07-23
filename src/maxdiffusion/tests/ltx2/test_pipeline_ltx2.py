@@ -188,13 +188,16 @@ class LTX2PipelineTest(unittest.TestCase):
     self.assertIsNone(n_e)
     self.assertIsNone(n_a)
 
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.Mesh")
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.max_utils.create_device_mesh")
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.load_transformer")
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline._create_common_components")
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.quantize_transformer")
-  def test_load_and_init(self, mock_quantize, mock_create_common, mock_load_transformer):
+  def test_load_and_init(self, mock_quantize, mock_create_common, mock_load_transformer, mock_create_device_mesh, mock_Mesh):
     """Test that pipeline loading correctly wires all the dependencies down to __init__."""
     mock_config = MagicMock()
     mock_mesh = MagicMock()
+    mock_Mesh.return_value = mock_mesh
 
     mock_common = {
         "vae": MagicMock(),

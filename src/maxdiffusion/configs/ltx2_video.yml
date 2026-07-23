@@ -1,7 +1,13 @@
 #hardware
 hardware: 'tpu'
 skip_jax_distributed_system: False
-attention: 'flash'
+attention: 'flash'  # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom, ulysses_ring 
+use_base2_exp: False
+use_experimental_scheduler: False
+# For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
+ulysses_shards: -1
+# Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
+ulysses_attention_chunks: 1
 a2v_attention_kernel: 'dot_product'
 v2a_attention_kernel: 'dot_product'
 attention_sharding_uniform: True 
@@ -111,6 +117,10 @@ enable_ondemand_xprof: True
 skip_first_n_steps_for_profiler: 0
 profiler_steps: 5
 
+# Enable JAX named scopes for detailed profiling and debugging
+# When enabled, adds named scopes around key operations in transformer and attention layers
+enable_jax_named_scopes: False
+
 replicate_vae: False
 use_bwe: False
 
@@ -171,3 +181,15 @@ upsampler_adain_factor: 0.0
 upsampler_tone_map_compression_ratio: 0.0
 upsampler_rational_spatial_scale: 2.0
 upsampler_output_type: "pil"
+
+aot_cache_dir: ''
+converted_weights_dir: ''
+
+
+# Tile-size auto-tuning. When enable_tile_search: True, generate_ltx2 runs a fast one-DiT-block
+# grid search (maxdiffusion/utils/tile_size_grid_search.py) before inference and overwrites
+# flash_block_sizes' block_q/block_kv/block_kv_compute with the winner. Default off (no-op).
+enable_tile_search: False
+tile_search_mode: 'smart'   # 'smart' (VMEM-capped candidate ladders) | 'full' (2D sweep)
+tile_search_iters: 10
+tile_search_out: ''         # dir for the results CSV; '' -> print only

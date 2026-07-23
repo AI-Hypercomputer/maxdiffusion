@@ -17,6 +17,7 @@ limitations under the License.
 import json
 from typing import Optional
 import torch
+import numpy as np
 import jax
 import jax.numpy as jnp
 from maxdiffusion import max_logging
@@ -184,6 +185,14 @@ def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, fi
   return tensors
 
 
+def _torch_tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
+  import ml_dtypes
+
+  if tensor.dtype == torch.bfloat16:
+    return tensor.view(torch.uint16).numpy().view(ml_dtypes.bfloat16)
+  return tensor.numpy()
+
+
 def load_transformer_weights(
     pretrained_model_name_or_path: str,
     eval_shapes: dict,
@@ -193,38 +202,110 @@ def load_transformer_weights(
     scan_layers: bool = True,
     subfolder: str = "transformer",
 ):
+  import threading
+  import concurrent.futures
+  import time
+
   device = jax.local_devices(backend=device)[0]
   max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device}")
 
-  with jax.default_device(device):
-    # Support sharded loading
-    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
+  index_file = "diffusion_pytorch_model.safetensors.index.json"
+  try:
+    index_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=index_file)
+    with open(index_path, "r") as f:
+      index_data = json.load(f)
+    weight_map = index_data["weight_map"]
+    shards = sorted(set(weight_map.values()))
 
-    flax_state_dict = {}
-    cpu = jax.local_devices(backend="cpu")[0]
-    flattened_dict = flatten_dict(eval_shapes)
+    def resolve_shard_path(model_file):
+      return hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
 
-    random_flax_state_dict = {}
-    for key in flattened_dict:
-      random_flax_state_dict[tuple(str(item) for item in key)] = flattened_dict[key]
+  except EntryNotFoundError:
+    shards = ["diffusion_pytorch_model.safetensors"]
 
-    for pt_key, tensor in tensors.items():
-      renamed_pt_key = rename_key(pt_key)
-      renamed_pt_key = rename_for_ltx2_transformer(renamed_pt_key)
+    def resolve_shard_path(model_file):
+      try:
+        return hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
+      except EntryNotFoundError:
+        return hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename="diffusion_pytorch_model.bin")
 
-      pt_tuple_key = tuple(renamed_pt_key.split("."))
+  t_start = time.perf_counter()
 
-      flax_key, flax_tensor = get_key_and_value(
-          pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
-      )
+  flattened_dict = flatten_dict(eval_shapes)
+  random_flax_state_dict = {}
+  for key in flattened_dict:
+    random_flax_state_dict[tuple(str(item) for item in key)] = flattened_dict[key]
 
-      flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+  flax_state_dict = {}
+  dict_lock = threading.Lock()
 
-    validate_flax_state_dict(eval_shapes, flax_state_dict)
-    flax_state_dict = unflatten_dict(flax_state_dict)
-    del tensors
-    jax.clear_caches()
-    return flax_state_dict
+  def convert_chunk(ckpt_shard_path, chunk_keys):
+    if ckpt_shard_path.endswith(".safetensors"):
+      with safe_open(ckpt_shard_path, framework="pt") as f:
+        for pt_key in chunk_keys:
+          tensor = _torch_tensor_to_numpy(f.get_tensor(pt_key))
+          process_tensor(pt_key, tensor)
+    else:
+      loaded_state_dict = torch.load(ckpt_shard_path, map_location="cpu")
+      for pt_key in chunk_keys:
+        tensor = _torch_tensor_to_numpy(loaded_state_dict[pt_key])
+        process_tensor(pt_key, tensor)
+
+  def process_tensor(pt_key, tensor):
+    renamed_pt_key = rename_key(pt_key)
+    renamed_pt_key = rename_for_ltx2_transformer(renamed_pt_key)
+    pt_tuple_key = tuple(renamed_pt_key.split("."))
+
+    block_index = None
+    if scan_layers and len(pt_tuple_key) > 0 and "transformer_blocks_" in pt_tuple_key[0]:
+      import re
+
+      m = re.match(r"transformer_blocks_(\d+)", pt_tuple_key[0])
+      if m:
+        block_index = int(m.group(1))
+        pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[1:]
+
+    flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
+    flax_key_str = [str(k) for k in flax_key]
+    if "scale_shift_table" in flax_key_str and flax_key_str[-1] in ["kernel", "weight"]:
+      flax_key_str.pop()
+    flax_key = tuple(flax_key_str)
+    flax_key = _tuple_str_to_int(flax_key)
+
+    if block_index is not None:
+      with dict_lock:
+        stacked = flax_state_dict.get(flax_key)
+        if stacked is None:
+          stacked = np.empty((num_layers,) + flax_tensor.shape, dtype=flax_tensor.dtype)
+          flax_state_dict[flax_key] = stacked
+      stacked[block_index] = flax_tensor
+    else:
+      value = np.array(flax_tensor, dtype=flax_tensor.dtype, copy=True, order="C")
+      with dict_lock:
+        flax_state_dict[flax_key] = value
+
+  chunk_size = 32
+  tasks = []
+  for model_file in shards:
+    ckpt_shard_path = resolve_shard_path(model_file)
+    if ckpt_shard_path.endswith(".safetensors"):
+      with safe_open(ckpt_shard_path, framework="pt") as f:
+        shard_keys = list(f.keys())
+    else:
+      loaded_state_dict = torch.load(ckpt_shard_path, map_location="cpu")
+      shard_keys = list(loaded_state_dict.keys())
+    for i in range(0, len(shard_keys), chunk_size):
+      tasks.append((ckpt_shard_path, shard_keys[i : i + chunk_size]))
+
+  with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+    futures = [executor.submit(convert_chunk, path, keys) for path, keys in tasks]
+    for future in concurrent.futures.as_completed(futures):
+      future.result()
+
+  validate_flax_state_dict(eval_shapes, flax_state_dict)
+  flax_state_dict = unflatten_dict(flax_state_dict)
+  max_logging.log(f"Converted weights in {time.perf_counter() - t_start:.1f}s")
+  return flax_state_dict
 
 
 def load_vae_weights(

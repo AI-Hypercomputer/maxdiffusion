@@ -56,7 +56,13 @@ from ...video_processor import VideoProcessor
 from ...pyconfig import HyperParameters
 from ... import max_logging
 from ... import max_utils
+from ... import aot_cache
 from ...max_utils import get_precision, device_put_replicated, get_flash_block_sizes
+
+
+@partial(jax.jit, static_argnums=(1,))
+def _enforce_layout(x, axes):
+  return jax.lax.with_sharding_constraint(x, axes)
 
 
 TORCH_DTYPE_MAP = {
@@ -81,6 +87,8 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
   """
   std_text = jnp.std(noise_pred_text, axis=list(range(1, noise_pred_text.ndim)), keepdims=True)
   std_cfg = jnp.std(noise_cfg, axis=list(range(1, noise_cfg.ndim)), keepdims=True)
+  # Prevent division by zero
+  std_cfg = jnp.maximum(std_cfg, 1e-5)
   # rescale the results from guidance (fixes overexposure)
   noise_pred_rescaled = noise_cfg * (std_text / std_cfg)
   # mix with the original results from guidance by factor guidance_rescale to avoid "plain looking" images
@@ -148,6 +156,8 @@ def create_sharded_logical_transformer(
   ltx2_config["precision"] = get_precision(config)
   ltx2_config["flash_block_sizes"] = get_flash_block_sizes(config)
   ltx2_config["flash_min_seq_length"] = getattr(config, "flash_min_seq_length", 4096)
+  ltx2_config["ulysses_shards"] = getattr(config, "ulysses_shards", -1)
+  ltx2_config["ulysses_attention_chunks"] = getattr(config, "ulysses_attention_chunks", 1)
   ltx2_config["remat_policy"] = config.remat_policy
   ltx2_config["names_which_can_be_saved"] = config.names_which_can_be_saved
   ltx2_config["names_which_can_be_offloaded"] = config.names_which_can_be_offloaded
@@ -188,11 +198,58 @@ def create_sharded_logical_transformer(
   params = jax.tree_util.tree_map_with_path(
       lambda path, x: cast_with_exclusion(path, x, dtype_to_cast=config.weights_dtype), params
   )
+
+  t_put_start = time.perf_counter()
+  put_specs = []
   for path, val in flax.traverse_util.flatten_dict(params).items():
     if restored_checkpoint:
       path = path[:-1]
     sharding = logical_state_sharding[path].get_value()
-    state[path].set_value(device_put_replicated(val, sharding))
+    put_specs.append((path, val, sharding))
+
+  if jax.process_count() == 1:
+    n_devices = mesh.devices.size
+    dim0_sharding = NamedSharding(mesh, P(mesh.axis_names))
+
+    def stages_via_ici(val, sharding) -> bool:
+      return (
+          sharding.is_fully_replicated
+          and val.ndim > 0
+          and val.shape[0] % n_devices == 0
+          and val.nbytes >= 1 << 26  # 64MB: below this, staging overhead wins
+      )
+
+    staged_ids = [i for i, (_, val, sharding) in enumerate(put_specs) if stages_via_ici(val, sharding)]
+    direct_ids = [i for i in range(len(put_specs)) if i not in set(staged_ids)]
+
+    put_arrays = [None] * len(put_specs)
+    if staged_ids:
+      staged = jax.device_put([put_specs[i][1] for i in staged_ids], [dim0_sharding] * len(staged_ids))
+      replicate_fn = jax.jit(lambda xs: xs, out_shardings=[put_specs[i][2] for i in staged_ids])
+      for i, replicated in zip(staged_ids, replicate_fn(staged)):
+        put_arrays[i] = replicated
+    if direct_ids:
+      for i, put_array in zip(
+          direct_ids,
+          jax.device_put([put_specs[i][1] for i in direct_ids], [put_specs[i][2] for i in direct_ids]),
+      ):
+        put_arrays[i] = put_array
+    for (path, _, _), put_array in zip(put_specs, put_arrays):
+      state[path].set_value(put_array)
+  else:
+    for path, val, sharding in put_specs:
+      try:
+        state[path].set_value(device_put_replicated(val, sharding))
+      except Exception as e:
+        max_logging.log(f"Failed to device_put_replicated {path}: {e}")
+        max_logging.log(f"Trying to use process_allgather for {path}")
+        val_on_host = jax.experimental.multihost_utils.process_allgather(val, tiled=True)
+        state[path].set_value(device_put_replicated(val_on_host, sharding))
+        del val_on_host
+
+  jax.block_until_ready([state[path].value for path, _, _ in put_specs])
+  max_logging.log(f"Transformer {subfolder or 'transformer'} weights on device in {time.perf_counter() - t_put_start:.1f}s")
+
   state = nnx.from_flat_state(state)
 
   transformer = nnx.merge(graphdef, state, rest_of_state)
@@ -716,25 +773,38 @@ class LTX2Pipeline:
   def _load_and_init(
       cls, config: HyperParameters, restored_checkpoint, vae_only=False, load_transformer=True, load_upsampler=False
   ):
-    components = cls._create_common_components(config, vae_only)
+    import concurrent.futures
+
+    common_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    common_future = common_executor.submit(cls._create_common_components, config, vae_only)
 
     transformer = None
-    if load_transformer:
-      max_logging.log("Loading Transformer...")
-      transformer = cls.load_transformer(
-          devices_array=components["devices_array"],
-          mesh=components["mesh"],
-          rngs=components["rngs"],
-          config=config,
-          restored_checkpoint=restored_checkpoint,
-      )
-
     latent_upsampler = None
     latent_upsampler_params = None
-    if load_upsampler:
-      latent_upsampler, latent_upsampler_params = cls.load_upsampler(
-          devices_array=components["devices_array"], mesh=components["mesh"], rngs=components["rngs"], config=config
-      )
+
+    if load_transformer or load_upsampler:
+      # Need mesh and devices to load these
+      devices_array = max_utils.create_device_mesh(config)
+      mesh = Mesh(devices_array, config.mesh_axes)
+      rngs = nnx.Rngs(jax.random.key(config.seed))
+
+      if load_transformer:
+        max_logging.log("Loading Transformer...")
+        transformer = cls.load_transformer(
+            devices_array=devices_array,
+            mesh=mesh,
+            rngs=rngs,
+            config=config,
+            restored_checkpoint=restored_checkpoint,
+        )
+
+      if load_upsampler:
+        latent_upsampler, latent_upsampler_params = cls.load_upsampler(
+            devices_array=devices_array, mesh=mesh, rngs=rngs, config=config
+        )
+
+    components = common_future.result()
+    common_executor.shutdown()
 
     pipeline = cls(
         scheduler=components["scheduler"],
@@ -855,6 +925,8 @@ class LTX2Pipeline:
 
     prompt = [p.strip() for p in prompt]
 
+    target_dtype = dtype if dtype is not None else jnp.bfloat16
+
     if self.text_encoder is not None:
       run_text_encoder_on_tpu = getattr(self.config, "run_text_encoder_on_tpu", False) if hasattr(self, "config") else False
       if run_text_encoder_on_tpu:
@@ -872,30 +944,31 @@ class LTX2Pipeline:
 
         # Distribute the batch dimension across available TPUs to prevent Softmax OOM
         # (reduces 512MB allocation down to 64MB per TPU for batch size 16)
-        devices = np.array(jax.devices())
-        num_shards = 1
-        for i in range(len(devices), 0, -1):
-          if text_input_ids.shape[0] % i == 0:
-            num_shards = i
-            break
-
-        if num_shards > 1:
-          mesh = Mesh(devices[:num_shards], axis_names=("batch",))
-          sharding = NamedSharding(mesh, P("batch"))
+        if hasattr(self, "mesh") and self.mesh is not None:
+          data_axis = self.mesh.axis_names[0]
+          sharding = NamedSharding(self.mesh, P(data_axis))
           text_input_ids = jax.device_put(text_input_ids, sharding)
           prompt_attention_mask = jax.device_put(prompt_attention_mask, sharding)
+        else:
+          devices = np.array(jax.devices())
+          num_shards = 1
+          for i in range(len(devices), 0, -1):
+            if text_input_ids.shape[0] % i == 0:
+              num_shards = i
+              break
+
+          if num_shards > 1:
+            mesh = Mesh(devices[:num_shards], axis_names=("batch",))
+            sharding = NamedSharding(mesh, P("batch"))
+            text_input_ids = jax.device_put(text_input_ids, sharding)
+            prompt_attention_mask = jax.device_put(prompt_attention_mask, sharding)
 
         # Torchax wrapper returns tuple of hidden states natively
         text_encoder_hidden_states = self.text_encoder(
             input_ids=text_input_ids, attention_mask=prompt_attention_mask, output_hidden_states=True
         )
 
-        prompt_embeds_list = []
-        # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
-        for state in text_encoder_hidden_states:
-          prompt_embeds_list.append(state.astype(jnp.bfloat16))
-
-        prompt_embeds = prompt_embeds_list
+        prompt_embeds = jax.tree.map(lambda x: x.astype(target_dtype), list(text_encoder_hidden_states))
         del text_encoder_hidden_states  # Free memory
 
         prompt_attention_mask = prompt_attention_mask.astype(jnp.bool_)
@@ -923,24 +996,15 @@ class LTX2Pipeline:
         text_encoder_hidden_states = text_encoder_outputs.hidden_states
         del text_encoder_outputs  # Free memory
 
-        prompt_embeds_list = []
-        # Iterate instead of stacking eagerly to avoid 5.7+ GB HBM allocations outside JIT
-        for state in text_encoder_hidden_states:
-          state_np = state.cpu().to(torch.float32).numpy()
-          prompt_embeds_list.append(jnp.array(state_np, dtype=jnp.bfloat16))
-
-        prompt_embeds = prompt_embeds_list
+        prompt_embeds = jax.tree.map(
+            lambda state: jnp.array(state.cpu().to(torch.float32).numpy(), dtype=target_dtype),
+            list(text_encoder_hidden_states),
+        )
         del text_encoder_hidden_states  # Free PyTorch tensor memory
 
         prompt_attention_mask = jnp.array(prompt_attention_mask.cpu().to(torch.float32).numpy(), dtype=jnp.bool_)
     else:
       raise ValueError("`text_encoder` is required to encode prompts.")
-
-    if dtype is not None:
-      if isinstance(prompt_embeds, list):
-        prompt_embeds = [state.astype(dtype) for state in prompt_embeds]
-      else:
-        prompt_embeds = prompt_embeds.astype(dtype)
 
     if isinstance(prompt_embeds, list):
       _, seq_len, _ = prompt_embeds[0].shape
@@ -1235,6 +1299,9 @@ class LTX2Pipeline:
     else:
       # Fallback or expect noise to be handled otherwise?
       # pipeline prepare_latents typically generates noise.
+      max_logging.log(
+          "WARNING: No PRNG generator provided. Falling back to deterministic zero-seed noise (jax.random.key(0))."
+      )
       noise = jax.random.normal(jax.random.key(0), latents.shape, dtype=latents.dtype)  # Default fallback
 
     noised_latents = noise_scale * noise + (1 - noise_scale) * latents
@@ -1617,12 +1684,14 @@ class LTX2Pipeline:
       audio_embeds_sharded = audio_embeds
 
       if not self.transformer.scan_layers:
-        activation_axes = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
-        activation_axes_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
-        spec = NamedSharding(self.mesh, P(*activation_axes))
-        spec_audio = NamedSharding(self.mesh, P(*activation_axes_audio))
-        video_embeds_sharded = jax.device_put(video_embeds, spec)
-        audio_embeds_sharded = jax.device_put(audio_embeds, spec_audio)
+        with nn_partitioning.axis_rules(self.config.logical_axis_rules):
+          activation_axes = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+          activation_axes_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
+
+        latents_jax = _enforce_layout(latents_jax, P(*activation_axes))
+        audio_latents_jax = _enforce_layout(audio_latents_jax, P(*activation_axes_audio))
+        video_embeds_sharded = _enforce_layout(video_embeds_sharded, P(*activation_axes))
+        audio_embeds_sharded = _enforce_layout(audio_embeds_sharded, P(*activation_axes_audio))
       timesteps_jax = jnp.array(timesteps, dtype=jnp.float32)
 
       t0_denoise = time.perf_counter()
@@ -1657,6 +1726,8 @@ class LTX2Pipeline:
             self.scheduler.step,
             tuple(tuple(rule) if isinstance(rule, list) else rule for rule in self.config.logical_axis_rules),
             use_cross_timestep=use_cross_timestep,
+            do_cfg=do_cfg,
+            do_stg=do_stg,
         )
       else:
         # Old Python loop path
@@ -1668,8 +1739,9 @@ class LTX2Pipeline:
           audio_latents_jax_sharded = audio_latents_jax
 
           if not self.transformer.scan_layers:
-            activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
-            activation_axis_names_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
+            with nn_partitioning.axis_rules(self.config.logical_axis_rules):
+              activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
+              activation_axis_names_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
             latents_jax_sharded = jax.lax.with_sharding_constraint(latents_jax, activation_axis_names)
             audio_latents_jax_sharded = jax.lax.with_sharding_constraint(audio_latents_jax, activation_axis_names_audio)
 
@@ -1956,7 +2028,7 @@ class LTX2Pipeline:
 
 
 @partial(
-    jax.jit,
+    aot_cache.cached_jit,
     static_argnames=(
         "latent_num_frames",
         "latent_height",
@@ -2045,16 +2117,8 @@ def transformer_forward_pass(
 
 
 @partial(
-    jax.jit,
+    aot_cache.cached_jit,
     static_argnames=(
-        "guidance_scale",
-        "stg_scale",
-        "modality_scale",
-        "guidance_rescale",
-        "audio_guidance_scale",
-        "audio_stg_scale",
-        "audio_modality_scale",
-        "audio_guidance_rescale",
         "latent_num_frames",
         "latent_height",
         "latent_width",
@@ -2065,6 +2129,8 @@ def transformer_forward_pass(
         "scheduler_step",
         "logical_axis_rules",
         "use_cross_timestep",
+        "do_cfg",
+        "do_stg",
     ),
 )
 def run_diffusion_loop(
@@ -2097,14 +2163,13 @@ def run_diffusion_loop(
     logical_axis_rules,
     perturbation_mask=None,
     use_cross_timestep=False,
+    do_cfg=False,
+    do_stg=False,
 ):
   """Runs the diffusion loop."""
   # pylint: disable=too-many-positional-arguments
   latents_jax = latents_jax.astype(jnp.float32)
   audio_latents_jax = audio_latents_jax.astype(jnp.float32)
-
-  do_cfg = guidance_scale > 1.0
-  do_stg = stg_scale > 0.0
 
   # Helper functions matching Diffusers Delta formulation
   def convert_to_x0(lat, vel, sigma_t):
@@ -2117,133 +2182,139 @@ def run_diffusion_loop(
     t, sigma_t = inputs
     latents, audio_latents, s_state = carry
 
-    with nn_partitioning.axis_rules(logical_axis_rules):
-      latents_sharded = latents
-      audio_latents_sharded = audio_latents
+    latents_sharded = latents
+    audio_latents_sharded = audio_latents
 
-      if not scan_layers:
+    if not scan_layers:
+      with nn_partitioning.axis_rules(logical_axis_rules):
         activation_axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
-        latents_sharded = jax.lax.with_sharding_constraint(latents, activation_axis_names)
-        audio_latents_sharded = jax.lax.with_sharding_constraint(audio_latents, activation_axis_names)
+        activation_axis_names_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
+      latents_sharded = jax.lax.with_sharding_constraint(latents, activation_axis_names)
+      audio_latents_sharded = jax.lax.with_sharding_constraint(audio_latents, activation_axis_names_audio)
+      video_embeds_sharded_constrained = jax.lax.with_sharding_constraint(video_embeds_sharded, activation_axis_names)
+      audio_embeds_sharded_constrained = jax.lax.with_sharding_constraint(audio_embeds_sharded, activation_axis_names_audio)
+    else:
+      video_embeds_sharded_constrained = video_embeds_sharded
+      audio_embeds_sharded_constrained = audio_embeds_sharded
 
-      # Forward Pass
-      noise_pred, noise_pred_audio = transformer_forward_pass(
-          graphdef,
-          state,
-          latents_sharded,
-          audio_latents_sharded,
-          t,
-          video_embeds_sharded,
-          audio_embeds_sharded,
-          new_attention_mask,
-          new_attention_mask,
-          latent_num_frames=latent_num_frames,
-          latent_height=latent_height,
-          latent_width=latent_width,
-          audio_num_frames=audio_num_frames,
-          fps=fps,
-          global_batch_size=batch_size,
-          sigma=t,
-          audio_sigma=t,
-          use_cross_timestep=use_cross_timestep,
-          is_cfg_stg_mode=do_cfg and do_stg,
+    # Forward Pass
+    noise_pred, noise_pred_audio = transformer_forward_pass(
+        graphdef,
+        state,
+        latents_sharded,
+        audio_latents_sharded,
+        t,
+        video_embeds_sharded_constrained,
+        audio_embeds_sharded_constrained,
+        new_attention_mask,
+        new_attention_mask,
+        latent_num_frames=latent_num_frames,
+        latent_height=latent_height,
+        latent_width=latent_width,
+        audio_num_frames=audio_num_frames,
+        fps=fps,
+        global_batch_size=batch_size,
+        sigma=t,
+        audio_sigma=t,
+        use_cross_timestep=use_cross_timestep,
+        is_cfg_stg_mode=do_cfg and do_stg,
+    )
+
+    # Extract latents_step based on stacking strategy
+    if do_cfg and do_stg:
+      latents_step = latents[batch_size : 2 * batch_size]
+      audio_latents_step = audio_latents[batch_size : 2 * batch_size]
+    elif do_cfg:
+      latents_step = latents[batch_size:]
+      audio_latents_step = audio_latents[batch_size:]
+    else:
+      latents_step = latents
+      audio_latents_step = audio_latents
+
+    # Apply Diffusers STG + CFG + Modality Delta Logic
+    if do_cfg and do_stg:
+      noise_pred_uncond, noise_pred_text, noise_pred_perturb, noise_pred_isolated = jnp.split(noise_pred, 4, axis=0)
+
+      # Convert to x0
+      x0_uncond = convert_to_x0(latents_step, noise_pred_uncond, sigma_t)
+      x0_text = convert_to_x0(latents_step, noise_pred_text, sigma_t)
+      x0_perturb = convert_to_x0(latents_step, noise_pred_perturb, sigma_t)
+      x0_isolated = convert_to_x0(latents_step, noise_pred_isolated, sigma_t)
+
+      # Delta formulation
+      cfg_delta = (guidance_scale - 1) * (x0_text - x0_uncond)
+      stg_delta = stg_scale * (x0_text - x0_perturb)
+      video_modality_delta = (modality_scale - 1) * (x0_text - x0_isolated)
+
+      x0_combined = x0_text + cfg_delta + stg_delta + video_modality_delta
+
+      x0_combined = jax.lax.cond(
+          guidance_rescale > 0,
+          lambda: rescale_noise_cfg(x0_combined, x0_text, guidance_rescale=guidance_rescale),
+          lambda: x0_combined,
       )
 
-      # Extract latents_step based on stacking strategy
-      if do_cfg and do_stg:
-        latents_step = latents[batch_size : 2 * batch_size]
-        audio_latents_step = audio_latents[batch_size : 2 * batch_size]
-      elif do_cfg:
-        latents_step = latents[batch_size:]
-        audio_latents_step = audio_latents[batch_size:]
-      else:
-        latents_step = latents
-        audio_latents_step = audio_latents
+      noise_pred = convert_to_vel(latents_step, x0_combined, sigma_t)
 
-      # Apply Diffusers STG + CFG + Modality Delta Logic
-      if do_cfg and do_stg:
-        noise_pred_uncond, noise_pred_text, noise_pred_perturb, noise_pred_isolated = jnp.split(noise_pred, 4, axis=0)
+      # Audio guidance
+      noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb, noise_pred_audio_isolated = jnp.split(
+          noise_pred_audio, 4, axis=0
+      )
 
-        # Convert to x0
-        x0_uncond = convert_to_x0(latents_step, noise_pred_uncond, sigma_t)
-        x0_text = convert_to_x0(latents_step, noise_pred_text, sigma_t)
-        x0_perturb = convert_to_x0(latents_step, noise_pred_perturb, sigma_t)
-        x0_isolated = convert_to_x0(latents_step, noise_pred_isolated, sigma_t)
+      x0_audio_uncond = convert_to_x0(audio_latents_step, noise_pred_audio_uncond, sigma_t)
+      x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text, sigma_t)
+      x0_audio_perturb = convert_to_x0(audio_latents_step, noise_pred_audio_perturb, sigma_t)
+      x0_audio_isolated = convert_to_x0(audio_latents_step, noise_pred_audio_isolated, sigma_t)
 
-        # Delta formulation
-        cfg_delta = (guidance_scale - 1) * (x0_text - x0_uncond)
-        stg_delta = stg_scale * (x0_text - x0_perturb)
-        video_modality_delta = (modality_scale - 1) * (x0_text - x0_isolated)
+      cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (
+          x0_audio_text - x0_audio_uncond
+      )
+      stg_audio_delta = (audio_stg_scale if audio_stg_scale is not None else stg_scale) * (x0_audio_text - x0_audio_perturb)
+      audio_modality_delta = (audio_modality_scale - 1 if audio_modality_scale is not None else modality_scale - 1) * (
+          x0_audio_text - x0_audio_isolated
+      )
 
-        x0_combined = x0_text + cfg_delta + stg_delta + video_modality_delta
+      x0_audio_combined = x0_audio_text + cfg_audio_delta + stg_audio_delta + audio_modality_delta
 
-        if guidance_rescale > 0:
-          x0_combined = rescale_noise_cfg(x0_combined, x0_text, guidance_rescale=guidance_rescale)
+      x0_audio_combined = jax.lax.cond(
+          audio_guidance_rescale > 0,
+          lambda: rescale_noise_cfg(x0_audio_combined, x0_audio_text, guidance_rescale=audio_guidance_rescale),
+          lambda: x0_audio_combined,
+      )
 
-        noise_pred = convert_to_vel(latents_step, x0_combined, sigma_t)
+      noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined, sigma_t)
 
-        # Audio guidance
-        noise_pred_audio_uncond, noise_pred_audio_text, noise_pred_audio_perturb, noise_pred_audio_isolated = jnp.split(
-            noise_pred_audio, 4, axis=0
-        )
+    # ... (Standard CFG paths can be added here, but for brevity and since LTX2.3 runs with STG this handles the core logic)
+    elif do_cfg:
+      noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
+      noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-        x0_audio_uncond = convert_to_x0(audio_latents_step, noise_pred_audio_uncond, sigma_t)
-        x0_audio_text = convert_to_x0(audio_latents_step, noise_pred_audio_text, sigma_t)
-        x0_audio_perturb = convert_to_x0(audio_latents_step, noise_pred_audio_perturb, sigma_t)
-        x0_audio_isolated = convert_to_x0(audio_latents_step, noise_pred_audio_isolated, sigma_t)
+      noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
+      noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
 
-        cfg_audio_delta = (audio_guidance_scale - 1 if audio_guidance_scale is not None else guidance_scale - 1) * (
-            x0_audio_text - x0_audio_uncond
-        )
-        stg_audio_delta = (audio_stg_scale if audio_stg_scale is not None else stg_scale) * (
-            x0_audio_text - x0_audio_perturb
-        )
-        audio_modality_delta = (audio_modality_scale - 1 if audio_modality_scale is not None else modality_scale - 1) * (
-            x0_audio_text - x0_audio_isolated
-        )
+    # Step scheduler
+    latents_step, _ = scheduler_step(s_state, noise_pred, t, latents_step, return_dict=False)
+    latents_step = latents_step.astype(latents.dtype)
 
-        x0_audio_combined = x0_audio_text + cfg_audio_delta + stg_audio_delta + audio_modality_delta
+    audio_latents_step, _ = scheduler_step(s_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
+    audio_latents_step = audio_latents_step.astype(audio_latents.dtype)
 
-        if audio_guidance_rescale > 0:
-          x0_audio_combined = rescale_noise_cfg(x0_audio_combined, x0_audio_text, guidance_rescale=audio_guidance_rescale)
+    if do_cfg and do_stg:
+      latents_next = jnp.concatenate([latents_step] * 4, axis=0)
+      audio_latents_next = jnp.concatenate([audio_latents_step] * 4, axis=0)
+    elif do_cfg:
+      latents_next = jnp.concatenate([latents_step] * 2, axis=0)
+      audio_latents_next = jnp.concatenate([audio_latents_step] * 2, axis=0)
+    else:
+      latents_next = latents_step
+      audio_latents_next = audio_latents_step
 
-        noise_pred_audio = convert_to_vel(audio_latents_step, x0_audio_combined, sigma_t)
-
-      # ... (Standard CFG paths can be added here, but for brevity and since LTX2.3 runs with STG this handles the core logic)
-      elif do_cfg:
-        noise_pred_uncond, noise_pred_text = jnp.split(noise_pred, 2, axis=0)
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-        noise_pred_audio_uncond, noise_pred_audio_text = jnp.split(noise_pred_audio, 2, axis=0)
-        noise_pred_audio = noise_pred_audio_uncond + guidance_scale * (noise_pred_audio_text - noise_pred_audio_uncond)
-
-      # Step scheduler
-      latents_step, _ = scheduler_step(s_state, noise_pred, t, latents_step, return_dict=False)
-      latents_step = latents_step.astype(latents.dtype)
-
-      audio_latents_step, _ = scheduler_step(s_state, noise_pred_audio, t, audio_latents_step, return_dict=False)
-      audio_latents_step = audio_latents_step.astype(audio_latents.dtype)
-
-      if do_cfg and do_stg:
-        latents_next = jnp.concatenate([latents_step] * 4, axis=0)
-        audio_latents_next = jnp.concatenate([audio_latents_step] * 4, axis=0)
-      elif do_cfg:
-        latents_next = jnp.concatenate([latents_step] * 2, axis=0)
-        audio_latents_next = jnp.concatenate([audio_latents_step] * 2, axis=0)
-      else:
-        latents_next = latents_step
-        audio_latents_next = audio_latents_step
-
-      new_carry = (latents_next, audio_latents_next, s_state)
-      return new_carry, None
+    new_carry = (latents_next, audio_latents_next, s_state)
+    return new_carry, None
 
   initial_carry = (latents_jax, audio_latents_jax, scheduler_state)
   scan_inputs = (timesteps_jax, sigmas)
 
-  final_carry, _ = nnx.scan(
-      scan_body,
-      in_axes=(nnx.Carry, 0),
-      out_axes=(nnx.Carry, 0),
-  )(initial_carry, scan_inputs)
+  final_carry, _ = jax.lax.scan(scan_body, initial_carry, scan_inputs)
 
   return final_carry[0], final_carry[1]
