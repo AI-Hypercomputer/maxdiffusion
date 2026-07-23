@@ -27,6 +27,33 @@ from maxdiffusion.models.gradient_checkpoint import GradientCheckpointType
 from maxdiffusion.configuration_utils import ConfigMixin, register_to_config
 from maxdiffusion.common_types import BlockSizes
 from .logical_sharding_ltx2 import get_sharding_specs, LTX2DiTShardingSpecs
+from flax import struct
+
+
+@struct.dataclass
+class LTX2BlockContext:
+  hidden_states: jax.Array
+  audio_hidden_states: jax.Array
+  encoder_hidden_states: jax.Array
+  audio_encoder_hidden_states: jax.Array
+  temb: jax.Array
+  temb_audio: jax.Array
+  temb_ca_scale_shift: jax.Array
+  temb_ca_audio_scale_shift: jax.Array
+  temb_ca_gate: jax.Array
+  temb_ca_audio_gate: jax.Array
+  temb_prompt: Optional[jax.Array] = None
+  temb_prompt_audio: Optional[jax.Array] = None
+  modality_mask: Optional[jax.Array] = None
+  video_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None
+  audio_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None
+  ca_video_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None
+  ca_audio_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None
+  encoder_attention_mask: Optional[jax.Array] = None
+  audio_encoder_attention_mask: Optional[jax.Array] = None
+  a2v_cross_attention_mask: Optional[jax.Array] = None
+  v2a_cross_attention_mask: Optional[jax.Array] = None
+  perturbation_mask: Optional[jax.Array] = None
 
 
 class LTX2AdaLayerNormSingle(nnx.Module):
@@ -128,6 +155,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
       flash_min_seq_length: int = 4096,
       sharding_specs: Optional[LTX2DiTShardingSpecs] = None,
       perturbed_attn: bool = False,
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
   ):
     self.dim = dim
     self.norm_eps = norm_eps
@@ -166,6 +195,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
         flash_min_seq_length=flash_min_seq_length,
         sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
     )
 
     self.audio_norm1 = nnx.RMSNorm(
@@ -194,6 +225,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
         flash_min_seq_length=flash_min_seq_length,
         sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
     )
 
     # 2. Prompt Cross-Attention
@@ -223,6 +256,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
         flash_block_sizes=flash_block_sizes,
         sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
     )
 
     self.audio_norm2 = nnx.RMSNorm(
@@ -252,6 +287,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
         flash_min_seq_length=flash_min_seq_length,
         sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
     )
 
     # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
@@ -279,9 +316,11 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_kernel=a2v_attention_kernel,
         rope_type=rope_type,
         flash_block_sizes=flash_block_sizes,
-        flash_min_seq_length=0,
+        flash_min_seq_length=flash_min_seq_length,
         sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
     )
 
     self.video_to_audio_norm = nnx.RMSNorm(
@@ -311,6 +350,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
         flash_min_seq_length=flash_min_seq_length,
         sharding_specs=self.sharding_specs,
         gated_attn=gated_attn,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
     )
 
     # 4. Feed Forward
@@ -399,31 +440,49 @@ class LTX2VideoTransformerBlock(nnx.Module):
 
   def __call__(
       self,
-      hidden_states: jax.Array,  # Video
-      audio_hidden_states: jax.Array,  # Audio
-      encoder_hidden_states: jax.Array,  # Context (Text)
-      audio_encoder_hidden_states: jax.Array,  # Audio Context
-      # Timestep embeddings for AdaLN
-      temb: jax.Array,
-      temb_audio: jax.Array,
-      temb_ca_scale_shift: jax.Array,
-      temb_ca_audio_scale_shift: jax.Array,
-      temb_ca_gate: jax.Array,
-      temb_ca_audio_gate: jax.Array,
-      temb_prompt: Optional[jax.Array] = None,
-      temb_prompt_audio: Optional[jax.Array] = None,
-      modality_mask: Optional[jax.Array] = None,
-      # RoPE
-      video_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
-      audio_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
-      ca_video_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
-      ca_audio_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
-      encoder_attention_mask: Optional[jax.Array] = None,
-      audio_encoder_attention_mask: Optional[jax.Array] = None,
-      a2v_cross_attention_mask: Optional[jax.Array] = None,
-      v2a_cross_attention_mask: Optional[jax.Array] = None,
-      perturbation_mask: Optional[jax.Array] = None,
+      ctx: "LTX2BlockContext",
   ) -> Tuple[jax.Array, jax.Array]:
+    """
+    Forward pass of the LTX2 video/audio transformer block.
+
+    This block handles complex multi-modal attention including:
+      - Video Self-Attention (video -> video)
+      - Audio Self-Attention (audio -> audio)
+      - Video Cross-Attention (video -> text caption)
+      - Audio Cross-Attention (audio -> text caption)
+      - Video-to-Audio Cross-Attention
+      - Audio-to-Video Cross-Attention
+
+    Args:
+      ctx: An `LTX2BlockContext` object containing all hidden states, timestep
+           embeddings, attention masks, rotary embeddings, and modulation
+           parameters needed for this layer's forward pass.
+
+    Returns:
+      A tuple of `(output_hidden_states, output_audio_hidden_states)`.
+    """
+    hidden_states = ctx.hidden_states
+    audio_hidden_states = ctx.audio_hidden_states
+    encoder_hidden_states = ctx.encoder_hidden_states
+    audio_encoder_hidden_states = ctx.audio_encoder_hidden_states
+    temb = ctx.temb
+    temb_audio = ctx.temb_audio
+    temb_ca_scale_shift = ctx.temb_ca_scale_shift
+    temb_ca_audio_scale_shift = ctx.temb_ca_audio_scale_shift
+    temb_ca_gate = ctx.temb_ca_gate
+    temb_ca_audio_gate = ctx.temb_ca_audio_gate
+    temb_prompt = ctx.temb_prompt
+    temb_prompt_audio = ctx.temb_prompt_audio
+    modality_mask = ctx.modality_mask
+    video_rotary_emb = ctx.video_rotary_emb
+    audio_rotary_emb = ctx.audio_rotary_emb
+    ca_video_rotary_emb = ctx.ca_video_rotary_emb
+    ca_audio_rotary_emb = ctx.ca_audio_rotary_emb
+    encoder_attention_mask = ctx.encoder_attention_mask
+    audio_encoder_attention_mask = ctx.audio_encoder_attention_mask
+    a2v_cross_attention_mask = ctx.a2v_cross_attention_mask
+    v2a_cross_attention_mask = ctx.v2a_cross_attention_mask
+    perturbation_mask = ctx.perturbation_mask
     batch_size = hidden_states.shape[0]
 
     axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
@@ -695,6 +754,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       use_prompt_embeddings: bool = True,
       perturbed_attn: bool = False,
       spatio_temporal_guidance_blocks: Tuple[int, ...] = (),
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
       **kwargs,
   ):
     self.spatio_temporal_guidance_blocks = spatio_temporal_guidance_blocks
@@ -879,6 +940,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
     # 3. Output Layer Scale/Shift Modulation parameters
     param_rng = rngs.params()
+    audio_param_rng = rngs.params()
     table_sharding = self.sharding_specs.scale_shift_table
     self.scale_shift_table = nnx.Param(
         nnx.with_partitioning(
@@ -889,7 +951,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         nnx.with_partitioning(
             lambda key, shape: jax.random.normal(key, shape, dtype=self.weights_dtype) / jnp.sqrt(audio_inner_dim),
             table_sharding,
-        )(param_rng, (2, audio_inner_dim))
+        )(audio_param_rng, (2, audio_inner_dim))
     )
 
     # 4. Rotary Positional Embeddings (RoPE)
@@ -990,6 +1052,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           flash_block_sizes=flash_block_sizes,
           flash_min_seq_length=self.flash_min_seq_length,
           perturbed_attn=self.perturbed_attn,
+          ulysses_shards=ulysses_shards,
+          ulysses_attention_chunks=ulysses_attention_chunks,
       )
 
     if self.scan_layers:
@@ -999,6 +1063,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       for _ in range(self.num_layers):
         block = LTX2VideoTransformerBlock(
             rngs=rngs,
+            sharding_specs=self.sharding_specs,
             dim=inner_dim,
             num_attention_heads=self.num_attention_heads,
             attention_head_dim=self.attention_head_dim,
@@ -1028,6 +1093,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             flash_block_sizes=flash_block_sizes,
             flash_min_seq_length=self.flash_min_seq_length,
             perturbed_attn=self.perturbed_attn,
+            ulysses_shards=ulysses_shards,
+            ulysses_attention_chunks=ulysses_attention_chunks,
         )
         blocks.append(block)
       self.transformer_blocks = nnx.List(blocks)
@@ -1085,8 +1152,44 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       return_dict: bool = True,
       perturbation_mask: Optional[jax.Array] = None,
   ) -> Any:
+    """
+    Forward pass for the full LTX2 Video/Audio Diffusion Transformer.
+
+    Args:
+      hidden_states: Video latent patches of shape `(batch, seq_len, in_channels)`.
+      audio_hidden_states: Audio latent patches of shape `(batch, audio_seq_len, audio_in_channels)`.
+      encoder_hidden_states: Text embeddings for video generation.
+      audio_encoder_hidden_states: Text embeddings for audio generation.
+      timestep: Timestep array for video diffusion.
+      audio_timestep: Optional timestep array for audio diffusion. If None, uses `timestep`.
+      sigma: Optional noise scale for video (for flow matching).
+      audio_sigma: Optional noise scale for audio.
+      encoder_attention_mask: Mask for video text embeddings.
+      audio_encoder_attention_mask: Mask for audio text embeddings.
+      num_frames: Number of video frames.
+      height: Height of the video frames.
+      width: Width of the video frames.
+      fps: Frames per second.
+      audio_num_frames: Number of audio frames.
+      video_coords: Optional pre-computed 3D coordinates for video RoPE.
+      audio_coords: Optional pre-computed 1D coordinates for audio RoPE.
+      attention_kwargs: Additional kwargs for the attention mechanisms.
+      use_cross_timestep: Whether to use a cross-modal timestep interaction.
+      modality_mask: Mask indicating which modality to drop/keep.
+      return_dict: If True, returns a dictionary. Otherwise, returns a tuple.
+      perturbation_mask: Optional mask for perturbing attention.
+
+    Returns:
+      Output dict containing `sample` (video) and `audio_sample` (audio).
+    """
     # Determine timestep for audio.
     audio_timestep = audio_timestep if audio_timestep is not None else timestep
+
+    a2v_cross_attention_mask = None
+    v2a_cross_attention_mask = None
+    if attention_kwargs is not None:
+      a2v_cross_attention_mask = attention_kwargs.get("a2v_cross_attention_mask", None)
+      v2a_cross_attention_mask = attention_kwargs.get("v2a_cross_attention_mask", None)
 
     if self.attention_kernel == "dot_product":
       if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
@@ -1096,6 +1199,14 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       if audio_encoder_attention_mask is not None and audio_encoder_attention_mask.ndim == 2:
         audio_encoder_attention_mask = (1 - audio_encoder_attention_mask.astype(self.dtype)) * -10000.0
         audio_encoder_attention_mask = jnp.expand_dims(audio_encoder_attention_mask, axis=1)
+
+      if a2v_cross_attention_mask is not None and a2v_cross_attention_mask.ndim == 2:
+        a2v_cross_attention_mask = (1 - a2v_cross_attention_mask.astype(self.dtype)) * -10000.0
+        a2v_cross_attention_mask = jnp.expand_dims(a2v_cross_attention_mask, axis=1)
+
+      if v2a_cross_attention_mask is not None and v2a_cross_attention_mask.ndim == 2:
+        v2a_cross_attention_mask = (1 - v2a_cross_attention_mask.astype(self.dtype)) * -10000.0
+        v2a_cross_attention_mask = jnp.expand_dims(v2a_cross_attention_mask, axis=1)
 
     batch_size = hidden_states.shape[0]
 
@@ -1152,9 +1263,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         temb_prompt_audio = None
 
       if use_cross_timestep:
-        assert (
-            sigma is not None and audio_sigma is not None
-        ), "sigma and audio_sigma must be provided when use_cross_timestep is True"
+        if sigma is None or audio_sigma is None:
+          raise ValueError("sigma and audio_sigma must be provided when use_cross_timestep is True")
         video_ca_timestep = audio_sigma.flatten()
         audio_ca_timestep = sigma.flatten()
       else:
@@ -1195,38 +1305,48 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
     # 5. Run transformer blocks
     with jax.named_scope("Transformer Blocks"):
+      base_context = LTX2BlockContext(
+          hidden_states=hidden_states,
+          audio_hidden_states=audio_hidden_states,
+          encoder_hidden_states=encoder_hidden_states,
+          audio_encoder_hidden_states=audio_encoder_hidden_states,
+          temb=temb,
+          temb_audio=temb_audio,
+          temb_ca_scale_shift=video_cross_attn_scale_shift,
+          temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
+          temb_ca_gate=video_cross_attn_a2v_gate,
+          temb_ca_audio_gate=audio_cross_attn_v2a_gate,
+          temb_prompt=temb_prompt,
+          temb_prompt_audio=temb_prompt_audio,
+          video_rotary_emb=video_rotary_emb,
+          audio_rotary_emb=audio_rotary_emb,
+          ca_video_rotary_emb=video_cross_attn_rotary_emb,
+          ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
+          encoder_attention_mask=encoder_attention_mask,
+          audio_encoder_attention_mask=audio_encoder_attention_mask,
+          a2v_cross_attention_mask=a2v_cross_attention_mask,
+          v2a_cross_attention_mask=v2a_cross_attention_mask,
+          modality_mask=modality_mask,
+      )
+
+      def apply_block(block, context: LTX2BlockContext, mask):
+        orig_perturbation_mask = context.perturbation_mask
+        context = context.replace(perturbation_mask=mask)
+        with jax.named_scope("Transformer Layer"):
+          hidden_states_out, audio_hidden_states_out = block(context)
+        context = context.replace(
+            hidden_states=hidden_states_out.astype(context.hidden_states.dtype),
+            audio_hidden_states=audio_hidden_states_out.astype(context.audio_hidden_states.dtype),
+            perturbation_mask=orig_perturbation_mask,
+        )
+        return context
+
       if perturbation_mask is None:
-        # Fast-path: No perturbation masking (standard LTX-2 or disabled STG)
+
         def scan_fn_ltx2(carry, block):
-          hidden_states, audio_hidden_states, rngs_carry = carry
-          with jax.named_scope("Transformer Layer"):
-            hidden_states_out, audio_hidden_states_out = block(
-                hidden_states=hidden_states,
-                audio_hidden_states=audio_hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                audio_encoder_hidden_states=audio_encoder_hidden_states,
-                temb=temb,
-                temb_audio=temb_audio,
-                temb_ca_scale_shift=video_cross_attn_scale_shift,
-                temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
-                temb_ca_gate=video_cross_attn_a2v_gate,
-                temb_ca_audio_gate=audio_cross_attn_v2a_gate,
-                temb_prompt=temb_prompt,
-                temb_prompt_audio=temb_prompt_audio,
-                video_rotary_emb=video_rotary_emb,
-                audio_rotary_emb=audio_rotary_emb,
-                ca_video_rotary_emb=video_cross_attn_rotary_emb,
-                ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
-                encoder_attention_mask=encoder_attention_mask,
-                audio_encoder_attention_mask=audio_encoder_attention_mask,
-                perturbation_mask=None,
-                modality_mask=modality_mask,
-            )
-          return (
-              hidden_states_out.astype(hidden_states.dtype),
-              audio_hidden_states_out.astype(audio_hidden_states.dtype),
-              rngs_carry,
-          ), None
+          context, rngs_carry = carry
+          context = apply_block(block, context, None)
+          return (context, rngs_carry), None
 
         if self.scan_layers:
           rematted_scan_fn = self.gradient_checkpoint.apply(
@@ -1235,40 +1355,23 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
               self.names_which_can_be_offloaded,
               prevent_cse=not self.scan_layers,
           )
-          carry = (hidden_states, audio_hidden_states, nnx.Rngs(0))
-          (hidden_states, audio_hidden_states, _), _ = nnx.scan(
+          carry = (base_context, nnx.Rngs(0))
+          (final_context, _), _ = nnx.scan(
               rematted_scan_fn,
               length=self.num_layers,
               in_axes=(nnx.Carry, 0),
               out_axes=(nnx.Carry, 0),
               transform_metadata={nnx.PARTITION_NAME: "layers"},
           )(carry, self.transformer_blocks)
+          hidden_states = final_context.hidden_states
+          audio_hidden_states = final_context.audio_hidden_states
         else:
+          current_context = base_context
           for block in self.transformer_blocks:
-            hidden_states, audio_hidden_states = block(
-                hidden_states=hidden_states,
-                audio_hidden_states=audio_hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                audio_encoder_hidden_states=audio_encoder_hidden_states,
-                temb=temb,
-                temb_audio=temb_audio,
-                temb_ca_scale_shift=video_cross_attn_scale_shift,
-                temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
-                temb_ca_gate=video_cross_attn_a2v_gate,
-                temb_ca_audio_gate=audio_cross_attn_v2a_gate,
-                temb_prompt=temb_prompt,
-                temb_prompt_audio=temb_prompt_audio,
-                video_rotary_emb=video_rotary_emb,
-                audio_rotary_emb=audio_rotary_emb,
-                ca_video_rotary_emb=video_cross_attn_rotary_emb,
-                ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
-                encoder_attention_mask=encoder_attention_mask,
-                audio_encoder_attention_mask=audio_encoder_attention_mask,
-                perturbation_mask=None,
-                modality_mask=modality_mask,
-            )
+            current_context = apply_block(block, current_context, None)
+          hidden_states = current_context.hidden_states
+          audio_hidden_states = current_context.audio_hidden_states
       else:
-        # Slow-path: Dynamic perturbation masking (LTX-2.3 STG enabled)
         masks = jnp.ones((self.num_layers, batch_size, 1, 1), dtype=self.dtype)
         for i in self.spatio_temporal_guidance_blocks:
           if i < self.num_layers:
@@ -1277,35 +1380,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
         def scan_fn_ltx23(carry, block_and_mask):
           block, mask = block_and_mask
-          hidden_states, audio_hidden_states, rngs_carry = carry
-          with jax.named_scope("Transformer Layer"):
-            hidden_states_out, audio_hidden_states_out = block(
-                hidden_states=hidden_states,
-                audio_hidden_states=audio_hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                audio_encoder_hidden_states=audio_encoder_hidden_states,
-                temb=temb,
-                temb_audio=temb_audio,
-                temb_ca_scale_shift=video_cross_attn_scale_shift,
-                temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
-                temb_ca_gate=video_cross_attn_a2v_gate,
-                temb_ca_audio_gate=audio_cross_attn_v2a_gate,
-                temb_prompt=temb_prompt,
-                temb_prompt_audio=temb_prompt_audio,
-                video_rotary_emb=video_rotary_emb,
-                audio_rotary_emb=audio_rotary_emb,
-                ca_video_rotary_emb=video_cross_attn_rotary_emb,
-                ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
-                encoder_attention_mask=encoder_attention_mask,
-                audio_encoder_attention_mask=audio_encoder_attention_mask,
-                perturbation_mask=mask,
-                modality_mask=modality_mask,
-            )
-          return (
-              hidden_states_out.astype(hidden_states.dtype),
-              audio_hidden_states_out.astype(audio_hidden_states.dtype),
-              rngs_carry,
-          ), None
+          context, rngs_carry = carry
+          context = apply_block(block, context, mask)
+          return (context, rngs_carry), None
 
         if self.scan_layers:
           rematted_scan_fn = self.gradient_checkpoint.apply(
@@ -1314,39 +1391,23 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
               self.names_which_can_be_offloaded,
               prevent_cse=not self.scan_layers,
           )
-          carry = (hidden_states, audio_hidden_states, nnx.Rngs(0))
-          (hidden_states, audio_hidden_states, _), _ = nnx.scan(
+          carry = (base_context, nnx.Rngs(0))
+          (final_context, _), _ = nnx.scan(
               rematted_scan_fn,
               length=self.num_layers,
               in_axes=(nnx.Carry, 0),
               out_axes=(nnx.Carry, 0),
               transform_metadata={nnx.PARTITION_NAME: "layers"},
           )(carry, (self.transformer_blocks, perturbation_mask_per_layer))
+          hidden_states = final_context.hidden_states
+          audio_hidden_states = final_context.audio_hidden_states
         else:
+          current_context = base_context
           for i, block in enumerate(self.transformer_blocks):
             mask = perturbation_mask_per_layer[i] if perturbation_mask_per_layer is not None else None
-            hidden_states, audio_hidden_states = block(
-                hidden_states=hidden_states,
-                audio_hidden_states=audio_hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                audio_encoder_hidden_states=audio_encoder_hidden_states,
-                temb=temb,
-                temb_audio=temb_audio,
-                temb_ca_scale_shift=video_cross_attn_scale_shift,
-                temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
-                temb_ca_gate=video_cross_attn_a2v_gate,
-                temb_ca_audio_gate=audio_cross_attn_v2a_gate,
-                temb_prompt=temb_prompt,
-                temb_prompt_audio=temb_prompt_audio,
-                video_rotary_emb=video_rotary_emb,
-                audio_rotary_emb=audio_rotary_emb,
-                ca_video_rotary_emb=video_cross_attn_rotary_emb,
-                ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
-                encoder_attention_mask=encoder_attention_mask,
-                audio_encoder_attention_mask=audio_encoder_attention_mask,
-                perturbation_mask=mask,
-                modality_mask=modality_mask,
-            )
+            current_context = apply_block(block, current_context, mask)
+          hidden_states = current_context.hidden_states
+          audio_hidden_states = current_context.audio_hidden_states
 
     # 6. Output layers
     with jax.named_scope("Output Projection & Norm"):

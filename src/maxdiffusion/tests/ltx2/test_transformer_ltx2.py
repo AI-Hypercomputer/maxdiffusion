@@ -25,6 +25,7 @@ from flax.linen import partitioning as nn_partitioning
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import create_device_mesh
 from maxdiffusion.models.ltx2.transformer_ltx2 import (
+    LTX2BlockContext,
     LTX2VideoTransformerBlock,
     LTX2VideoTransformer3DModel,
     LTX2AdaLayerNormSingle,
@@ -203,7 +204,7 @@ class LTX2TransformerTest(unittest.TestCase):
       temb_ca_gate = jnp.zeros((batch_size, 1 * dim))
       temb_ca_audio_gate = jnp.zeros((batch_size, 1 * audio_dim))
 
-      output_hidden, output_audio = block(
+      ctx = LTX2BlockContext(
           hidden_states=hidden_states,
           audio_hidden_states=audio_hidden_states,
           encoder_hidden_states=encoder_hidden_states,
@@ -215,6 +216,8 @@ class LTX2TransformerTest(unittest.TestCase):
           temb_ca_gate=temb_ca_gate,
           temb_ca_audio_gate=temb_ca_audio_gate,
       )
+
+      output_hidden, output_audio = block(ctx)
 
       self.assertEqual(output_hidden.shape, hidden_states.shape)
       self.assertEqual(output_audio.shape, audio_hidden_states.shape)

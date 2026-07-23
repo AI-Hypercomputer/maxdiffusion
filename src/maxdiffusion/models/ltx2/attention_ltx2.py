@@ -88,13 +88,8 @@ def apply_split_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
   first_x = split_x[..., 0, :]
   second_x = split_x[..., 1, :]
 
-  cos_u = jnp.expand_dims(cos, axis=-2)
-  sin_u = jnp.expand_dims(sin, axis=-2)
-
-  out = split_x * cos_u
-
-  out_first = out[..., 0, :] - second_x * sin_u.squeeze(-2)
-  out_second = out[..., 1, :] + first_x * sin_u.squeeze(-2)
+  out_first = first_x * cos - second_x * sin
+  out_second = second_x * cos + first_x * sin
 
   out = jnp.stack([out_first, out_second], axis=-2)
   out = out.reshape(*out.shape[:-2], last_dim)
@@ -176,12 +171,6 @@ class LTX2RotaryPosEmbed(nnx.Module):
     patch_ends = grid + patch_size_delta
 
     # Combine start and end coordinates
-    latent_coords = jnp.stack([grid, patch_ends], axis=-1)  # [3, N_F, N_H, N_W, 2]
-    latent_coords = latent_coords.transpose(1, 2, 3, 0, 4)  # [N_F, N_H, N_W, 3, 2]
-    latent_coords = latent_coords.reshape(-1, 3, 2)  # [num_patches, 3, 2]
-    latent_coords = jnp.expand_dims(latent_coords, 0)  # [1, num_patches, 3, 2]
-    latent_coords = jnp.tile(latent_coords, (batch_size, 1, 1, 1))  # [B, num_patches, 3, 2]
-
     latent_coords = jnp.stack([grid, patch_ends], axis=-1)  # [3, N_F, N_H, N_W, 2]
     latent_coords = latent_coords.reshape(3, -1, 2)  # [3, num_patches, 2]
     latent_coords = jnp.expand_dims(latent_coords, 0)  # [1, 3, num_patches, 2]
@@ -352,6 +341,8 @@ class LTX2Attention(nnx.Module):
       flash_min_seq_length: int = 4096,
       sharding_specs: Optional[LTX2DiTShardingSpecs] = None,
       gated_attn: bool = False,
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
   ):
     self.heads = heads
     self.rope_type = rope_type
@@ -445,6 +436,24 @@ class LTX2Attention(nnx.Module):
           dtype=dtype,
       )
 
+    is_self_attention = context_dim is None
+    if not is_self_attention:
+      if attention_kernel in ("tokamax_ring", "tokamax_ring_custom", "ulysses_ring"):
+        attention_kernel = "tokamax_flash"  # do not use ring attention for cross attention
+      if attention_kernel in ("ulysses_ring_custom", "ulysses_ring_custom_bidir"):
+        attention_kernel = "ulysses_custom"  # plain ulysses (no ring) for cross attention
+
+      axis_names_q = (common_types.BATCH, common_types.CROSS_ATTN_HEAD, common_types.CROSS_ATTN_Q_LENGTH, common_types.D_KV)
+      axis_names_kv = (
+          common_types.BATCH,
+          common_types.CROSS_ATTN_HEAD,
+          common_types.CROSS_ATTN_KV_LENGTH,
+          common_types.D_KV,
+      )
+    else:
+      axis_names_q = (common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_Q_LENGTH, common_types.D_KV)
+      axis_names_kv = (common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_KV_LENGTH, common_types.D_KV)
+
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
         attention_kernel=attention_kernel,
@@ -452,10 +461,12 @@ class LTX2Attention(nnx.Module):
         heads=heads,
         dim_head=dim_head,
         dtype=dtype,
-        axis_names_q=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_Q_LENGTH, common_types.D_KV),
-        axis_names_kv=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_KV_LENGTH, common_types.D_KV),
+        axis_names_q=axis_names_q,
+        axis_names_kv=axis_names_kv,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
     )
 
   def __call__(
@@ -485,7 +496,7 @@ class LTX2Attention(nnx.Module):
     # 3. Apply RoPE
     with jax.named_scope("Apply RoPE"):
       if rotary_emb is not None:
-        if hasattr(self, "rope_type") and self.rope_type == "split":
+        if self.rope_type == "split":
           # Split RoPE: passing full freqs [B, H, S, D//2]
           # apply_split_rotary_emb handles reshaping query/key
 
