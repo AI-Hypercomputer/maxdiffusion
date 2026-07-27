@@ -425,3 +425,23 @@ def warmup_mode():
     yield
   finally:
     _STATE.warmup_only = False
+
+
+def in_warmup() -> bool:
+  """True inside `warmup_mode()`, so callers can add warmup-only work."""
+  return _STATE.warmup_only
+
+
+@contextlib.contextmanager
+def real_execution():
+  """Temporarily suspends zero-execution warmup so a call really runs.
+
+  Warmup skips execution, leaving first-execution costs to the first real
+  request. Wrap a targeted priming call in this to pay them during warmup.
+  """
+  previous = _STATE.warmup_only
+  _STATE.warmup_only = False
+  try:
+    yield
+  finally:
+    _STATE.warmup_only = previous

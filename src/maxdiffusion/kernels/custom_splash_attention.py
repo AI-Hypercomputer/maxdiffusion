@@ -34,7 +34,13 @@ NT_DIM_NUMBERS = (((1,), (1,)), ((), ()))
 class _BlockSizes:
   __slots__ = ("block_q", "block_kv", "block_kv_compute", "block_kv_compute_in")
 
-  def __init__(self, block_q: int, block_kv: int, block_kv_compute: int | None = None, block_kv_compute_in: int = 256):
+  def __init__(
+      self,
+      block_q: int,
+      block_kv: int,
+      block_kv_compute: int | None = None,
+      block_kv_compute_in: int = 256,
+  ):
     self.block_q = block_q
     self.block_kv = block_kv
     self.block_kv_compute = block_kv_compute if block_kv_compute is not None else block_kv
@@ -52,6 +58,12 @@ class _BlockSizes:
 # exceeds the gate fall back to online softmax (the "sink" heads).
 _FIXED_M_RECENTER = 88.0
 _FIXED_M_SAFE_BOUND = 213.0
+# Ring-path gate: the ring processes UN-smoothed K shards (no ring rank holds
+# the full K to compute a mean, and a per-shard mean would shift each hop's
+# logits differently, breaking the cross-shard merge). Without k-smoothing the
+# per-row max logit has no >=0 guarantee, so the safe bound halves (calibrated
+# for ring_size=2, matching DiffusionServing's ring gate).
+_FIXED_M_RING_SAFE_BOUND = _FIXED_M_SAFE_BOUND / 2.0
 
 
 def _flash_attention_kernel(
@@ -76,6 +88,7 @@ def _flash_attention_kernel(
     use_base2_exp: bool = True,
     fuse_reciprocal: bool = True,
     use_fixed_m: bool = False,
+    uniform_fixed_m: bool = False,
 ):
   float32 = jnp.float32
   head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
@@ -86,24 +99,45 @@ def _flash_attention_kernel(
   exp = jnp.exp2 if use_base2_exp else jnp.exp
   sv_dims = (((0,), (0,)), ((), ()))
 
+  # `uniform_fixed_m` is the caller's compile-time promise that EVERY head
+  # passed the gate (the ring's accumulate merge runs under exactly that
+  # predicate). It buys two things at once: the per-head dispatch collapses to
+  # a single body per block, and the fixed bound stays PINNED through the
+  # ragged last KV block, so every hop reports the identical m and the hops
+  # combine by plain accumulation.
+  #
+  # Both must move together. Pinning without the uniform promise needs a
+  # SECOND body in the last block (fixed and online), and a two-body last
+  # block degrades the instruction schedule of the WHOLE grid -- measured 3x
+  # slower end to end, which is the cliff the design doc's D3 warns about.
+  # Keeping this one flag rather than two makes that combination unspellable.
+  fixed_only = use_fixed_m and uniform_fixed_m
+  if uniform_fixed_m and not use_fixed_m:
+    raise ValueError("uniform_fixed_m requires use_fixed_m.")
+
   # Per-head dispatch: heads inside the no-flush window run fixed-m, the rest
   # keep online softmax. Branch once per head (body level), never per step.
-  is_fixed = (mk_ref[1, h] > 0.5) if use_fixed_m else False
+  is_fixed = (mk_ref[1, h] > 0.5) if (use_fixed_m and not fixed_only) else False
+
+  def _write_fixed_m():
+    # Per-query Cauchy-Schwarz bound m_i = ceil(||q_i|| * max_j||k_j||) - C.
+    qf = q_ref[...].astype(float32)
+    qn = jnp.sqrt((qf * qf).sum(axis=1))[None, :]  # (1, bq) per-query norm
+    bound = qn * mk_ref[0, h]
+    m_fixed = jnp.ceil(bound) - _FIXED_M_RECENTER
+    m_scratch_ref[...] = jnp.broadcast_to(m_fixed, m_scratch_ref.shape)
 
   @pl.when(j == 0)
   def init():
     o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
     l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
-    if use_fixed_m:
+    if fixed_only:
+      _write_fixed_m()
+    elif use_fixed_m:
 
       @pl.when(is_fixed)
       def _init_fixed():
-        # Per-query Cauchy-Schwarz bound m_i = ceil(||q_i|| * max_j||k_j||) - C.
-        qf = q_ref[...].astype(float32)
-        qn = jnp.sqrt((qf * qf).sum(axis=1))[None, :]  # (1, bq) per-query norm
-        bound = qn * mk_ref[0, h]
-        m_fixed = jnp.ceil(bound) - _FIXED_M_RECENTER
-        m_scratch_ref[...] = jnp.broadcast_to(m_fixed, m_scratch_ref.shape)
+        _write_fixed_m()
 
       @pl.when(jnp.logical_not(is_fixed))
       def _init_online():
@@ -185,9 +219,28 @@ def _flash_attention_kernel(
     m_scratch_ref[...], l_scratch_ref[...] = m_prev, l_prev
     o_scratch_ref[:] = o_prev
 
+  def last_compute_body_fixed(kv_compute_index):
+    # Ragged tail for the pinned fixed-m path: exact slice (padded keys are
+    # never touched -- with a pinned m their exp2(0 - m_fixed) would be huge
+    # garbage, so slicing, not masking, is load-bearing here).
+    q = q_ref[...]
+    slice_k_len = kv_seq_len % bkv_compute
+    slice_k = pl.ds(kv_compute_index * bkv_compute, slice_k_len)
+    qk = lax.dot_general(k_ref[slice_k, :], q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    v_chunk = v_ref[slice_k, :]
+    l_prev, o_prev = _fixed_inner(qk, v_chunk, m_scratch_ref[...], l_scratch_ref[...], o_scratch_ref[:])
+    l_scratch_ref[...] = l_prev
+    o_scratch_ref[:] = o_prev
+
   assert bkv % bkv_compute == 0
 
-  if use_fixed_m:
+  if fixed_only:
+
+    @pl.when(j != grid_width - 1)
+    def _body_uniform_fixed():
+      lax.fori_loop(0, (bkv // bkv_compute), compute_body_fixed, None, unroll=True)
+
+  elif use_fixed_m:
 
     @pl.when((j != grid_width - 1) & is_fixed)
     def _body_fixed():
@@ -203,11 +256,16 @@ def _flash_attention_kernel(
     def body():
       lax.fori_loop(0, (bkv // bkv_compute), compute_body_online, None, unroll=True)
 
-  # The final KV block always runs online for every head. Fixed-m heads arrive
-  # with m_scratch = ceil(bound) - C and o/l at that reference; the online
-  # alpha = exp2(m_prev - m_next) rescale renormalizes them transparently.
-  @pl.when(j == grid_width - 1)
-  def last_body():
+  # Exactly ONE of these runs in the final KV block -- never both (see the
+  # note on `uniform_fixed_m` above).
+  #
+  # `_last_online` is the hybrid default: a fixed-m head arrives with
+  # m_scratch = ceil(bound) - C, and since that is an upper bound on every
+  # logit the online step's max leaves it unchanged and its rescale factor is
+  # exp2(0) = 1, so running the last block online is exact for fixed heads too.
+  # `_last_fixed` keeps the bound pinned instead, which is what lets the ring's
+  # accumulate merge assume every hop reports the identical m.
+  def _last_online():
     if kv_seq_len % bkv == 0:
       iter_num = bkv // bkv_compute
       lax.fori_loop(0, iter_num, compute_body_online, None, unroll=True)
@@ -219,6 +277,31 @@ def _flash_attention_kernel(
       else:
         lax.fori_loop(0, iter_num - 1, compute_body_online, None, unroll=True)
         last_compute_body_online(iter_num - 1)
+
+  def _last_fixed():
+    if kv_seq_len % bkv == 0:
+      iter_num = bkv // bkv_compute
+      lax.fori_loop(0, iter_num, compute_body_fixed, None, unroll=True)
+    else:
+      remain_kv_seq_len = kv_seq_len % bkv
+      iter_num = (remain_kv_seq_len + bkv_compute - 1) // bkv_compute
+      if remain_kv_seq_len % bkv_compute == 0:
+        lax.fori_loop(0, iter_num, compute_body_fixed, None, unroll=True)
+      else:
+        lax.fori_loop(0, iter_num - 1, compute_body_fixed, None, unroll=True)
+        last_compute_body_fixed(iter_num - 1)
+
+  if fixed_only:
+    # ONE body in the last block (the whole point of uniform mode).
+    @pl.when(j == grid_width - 1)
+    def last_body_uniform_fixed():
+      _last_fixed()
+
+  else:
+
+    @pl.when(j == grid_width - 1)
+    def last_body():
+      _last_online()
 
   @pl.when(j == grid_width - 1)
   def end():
@@ -494,6 +577,7 @@ def _splash_attention_forward_ring(
     vmem_limit_bytes: int | None = None,
     use_fixed_m: bool = False,
     mk: jax.Array | None = None,
+    uniform_fixed_m: bool = False,
 ):
   """Ring-specific forward path that returns pre-reciprocal fp32 accumulators.
 
@@ -578,6 +662,7 @@ def _splash_attention_forward_ring(
           use_base2_exp=use_base2_exp,
           fuse_reciprocal=False,
           use_fixed_m=use_fixed_m,
+          uniform_fixed_m=uniform_fixed_m,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=1,
