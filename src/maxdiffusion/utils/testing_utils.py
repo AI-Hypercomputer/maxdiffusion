@@ -229,6 +229,31 @@ def require_flax(test_case):
   return unittest.skipUnless(is_flax_available(), "test requires JAX & Flax")(test_case)
 
 
+def cpu_only(target):
+  """Force this test (or every test_* method on a TestCase) to run on CPU.
+
+  `JAX_PLATFORMS=cpu` at a module's top is a no-op once any other module in the
+  same pytest process has imported jax. Unlike the env var, `jax.default_device`
+  is scoped, so it can't strand an unrelated test that needs the accelerator.
+  """
+  import jax
+
+  def _wrap(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+      with jax.default_device(jax.devices("cpu")[0]):
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+  if isinstance(target, type):
+    for name, value in list(vars(target).items()):
+      if name.startswith("test") and callable(value):
+        setattr(target, name, _wrap(value))
+    return target
+  return _wrap(target)
+
+
 def require_compel(test_case):
   """
   Decorator marking a test that requires compel: https://github.com/damian0815/compel. These tests are skipped when

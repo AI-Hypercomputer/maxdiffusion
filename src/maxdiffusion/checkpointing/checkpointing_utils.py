@@ -36,6 +36,7 @@ STABLE_DIFFUSION_CHECKPOINT = "STABLE_DIFFUSION_CHECKPOINT"
 STABLE_DIFFUSION_XL_CHECKPOINT = "STABLE_DIFUSSION_XL_CHECKPOINT"
 FLUX_CHECKPOINT = "FLUX_CHECKPOINT"
 WAN_CHECKPOINT = "WAN_CHECKPOINT"
+Z_IMAGE_CHECKPOINT = "Z_IMAGE_CHECKPOINT"
 
 
 def create_orbax_checkpoint_manager(
@@ -62,6 +63,16 @@ def create_orbax_checkpoint_manager(
   item_handlers = None
   if checkpoint_type == FLUX_CHECKPOINT:
     item_names = ("flux_state", "flux_config", "vae_state", "vae_config", "scheduler", "scheduler_config")
+  elif checkpoint_type == Z_IMAGE_CHECKPOINT:
+    # Only `transformer_state` is trainable; the VAE and the Qwen3 text encoder
+    # are frozen and kept as separate non-trainable items.
+    item_names = ("transformer_state", "vae_state", "text_encoder_state", "z_image_config")
+    item_handlers = {
+        "z_image_config": ocp.JsonCheckpointHandler(),
+        "transformer_state": ocp.StandardCheckpointHandler(),
+        "vae_state": ocp.StandardCheckpointHandler(),
+        "text_encoder_state": ocp.StandardCheckpointHandler(),
+    }
   elif checkpoint_type == WAN_CHECKPOINT:
     item_names = ("low_noise_transformer_state", "high_noise_transformer_state", "wan_state", "wan_config")
     item_handlers = {

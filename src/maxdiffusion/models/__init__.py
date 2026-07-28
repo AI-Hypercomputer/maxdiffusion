@@ -21,12 +21,14 @@ _import_structure = {}
 _import_structure["controlnet_flax"] = ["FlaxControlNetModel"]
 _import_structure["unet_2d_condition_flax"] = ["FlaxUNet2DConditionModel"]
 _import_structure["vae_flax"] = ["FlaxAutoencoderKL"]
+_import_structure["z_image.transformer_z_image"] = ["ZImageTransformer2DModel"]
 
 
 if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
   from .controlnet_flax import FlaxControlNetModel
   from .unet_2d_condition_flax import FlaxUNet2DConditionModel
   from .vae_flax import FlaxAutoencoderKL
+  from .z_image.transformer_z_image import ZImageTransformer2DModel
   from .lora import *
   from .flux.transformers.transformer_flux_flax import FluxTransformer2DModel
   from .ltx_video.transformers.transformer3d import Transformer3DModel
