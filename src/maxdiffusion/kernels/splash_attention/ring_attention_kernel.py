@@ -123,7 +123,9 @@ def _ring_attention_forward(
   l_init = jnp.zeros((o_shape[0], o_shape[1]), jnp.float32)
   m_init = jnp.full_like(l_init, mask_value, dtype=jnp.float32)
 
-  def body(carry, i: int) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, SegmentIds | None], None]:
+  def body(
+      carry, i: int
+  ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, SegmentIds | None], None,]:
     m_prev, l_prev, o_prev, k_current, v_current, segment_ids_current = carry
 
     current_kv_shard_idx = (ring_axis_idx - i) % ring_axis_size
@@ -784,14 +786,26 @@ def _custom_bidirectional_ring_forward(
     m_next = jnp.maximum(m, mc)
     alpha = exp_fn(m - m_next)
     beta = exp_fn(mc - m_next)
-    return m_next, alpha * l + beta * lc, alpha[..., None] * o + beta[..., None] * oc
+    return (
+        m_next,
+        alpha * l + beta * lc,
+        alpha[..., None] * o + beta[..., None] * oc,
+    )
 
   # t=0: own shard (always valid). _attn returns (o, m, l).
   o, m, l = _attn(k, v)
 
   # Non-wrapping one-hop shifts (line ends send/receive nothing).
-  shift_r = partial(lax.ppermute, axis_name=ring_axis, perm=[(i, i + 1) for i in range(axis_size - 1)])
-  shift_l = partial(lax.ppermute, axis_name=ring_axis, perm=[(i, i - 1) for i in range(1, axis_size)])
+  shift_r = partial(
+      lax.ppermute,
+      axis_name=ring_axis,
+      perm=[(i, i + 1) for i in range(axis_size - 1)],
+  )
+  shift_l = partial(
+      lax.ppermute,
+      axis_name=ring_axis,
+      perm=[(i, i - 1) for i in range(1, axis_size)],
+  )
 
   # Prime buffers for t=1 (one hop each direction): device i -> KV_{i-1}, KV_{i+1}.
   kr, vr = shift_r(k), shift_r(v)
@@ -844,7 +858,7 @@ def _custom_ring_attention_forward(
     perm: list[tuple[int, int]] | None = None,
     bidirectional: bool = False,
     use_fixed_m: bool = False,
-    mk: jax.Array | None = None,
+    fixed_m_norms: tuple[jax.Array, jax.Array] | None = None,
 ) -> jax.Array:
   """Forward-only ring attention using the custom dense splash kernel.
 
@@ -911,15 +925,182 @@ def _custom_ring_attention_forward(
 
   num_q_heads = q.shape[0]
   head_dim_v = v.shape[-1]
+
+  if use_fixed_m:
+    # Fixed-m ring: each hop gates PER (head, K-shard) against the halved
+    # un-smoothed bound, so a head can be fixed on one shard and online on
+    # another. A fixed hop returns m = the Cauchy-Schwarz upper bound (not the
+    # rowmax); the naive (m, l) merge below would then flush the other hop's
+    # partial (exp(m_other - m_bound) underflows once the overshoot exceeds
+    # the f32 window). Merge in LSE space instead: lse = m + log(l) is
+    # invariant to the kernel's m convention, so overshoot cancels exactly.
+    # The K-shard norms rotate WITH K/V (a (heads,)-sized ppermute) instead of
+    # being re-reduced per hop, which would stall the kernel's scalar prefetch.
+    if fixed_m_norms is None:
+      raise ValueError("use_fixed_m on the ring path requires fixed_m_norms=(qn_max, mk_h).")
+    log_fn = jnp.log2 if use_base2_exp else jnp.log
+    qn_max, mk_h_init = fixed_m_norms
+    tiny = jnp.finfo(jnp.float32).tiny
+    # Finite (not -inf) init: the first merge computes exp(init - lse_new) = 0.0
+    # exactly; a -inf init meeting an empty partial would produce inf - inf = NaN.
+    lse_init = -1e30
+
+    # Every rank's K-shard norms, gathered ONCE before the scan: (R, heads).
+    # Rotating mk alongside K/V instead (a third per-hop ppermute feeding the
+    # kernel's scalar prefetch) serialized the K/V rotation against the kernel
+    # (trace: collective-permute-done 0.004s -> 0.467s per window); a local
+    # index into a pre-gathered array keeps the per-hop gate collective-free.
+    # A caller holding the full table already (e.g. a static weight-derived
+    # bound, identical on every rank) passes it as (ring_size, heads) and
+    # skips the gather -- an all_gather of a constant is NOT folded by XLA
+    # and would still occupy the async-collective machinery every call.
+    if mk_h_init.ndim == 2:
+      mk_all = mk_h_init
+    else:
+      mk_all = lax.all_gather(mk_h_init, ring_axis)  # (axis_size, heads)
+    my_ring_index = lax.axis_index(ring_axis)
+
+    # GLOBAL bound = max over every shard's mk. When ALL local heads pass the
+    # gate at this single bound, every hop's pinned m is IDENTICAL (it depends
+    # only on the stationary q rows and the global bound), so hop partials
+    # combine by PURE ACCUMULATION: o += o_hop, l += l_hop, one normalize at
+    # the end -- no per-hop LSE math or [H,S,D] divides. The predicate is
+    # device-uniform ALONG THE RING (the caller pmaxes qn over the ring axis
+    # and mk_all is a gathered table), so every ppermute participant takes the
+    # same lax.cond branch; ulysses ranks may diverge freely (no ulysses
+    # collective lives inside the branches).
+    mk_global = mk_all.max(axis=0)  # (heads,)
+    all_fixed_global = jnp.all(
+        qn_max * mk_global <= custom_splash._FIXED_M_RING_SAFE_BOUND  # pylint: disable=protected-access
+    )
+
+    def _accumulate_scan(_):
+      mk_arr = jnp.stack([mk_global, jnp.ones_like(mk_global)])
+      o_sum = jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32)
+      l_sum = jnp.zeros((num_q_heads, orig_q_seq_len), jnp.float32)
+      k_current, v_current = k, v
+      # Python loop over the (static) ring size rather than a scan: it lets the
+      # LAST hop skip its rotation. A scan body must rotate unconditionally, and
+      # the trailing ppermute is NOT dead-code-eliminated (collectives carry
+      # cross-device pairing), so a scan pays ring_size rotations to consume
+      # ring_size - 1 shards. At 2 x 387MB/hop over ~16 GB/s of unidirectional
+      # ICI that wasted hop is ~24ms/layer of wire time -- enough to make the
+      # ring ICI-bound and hide any kernel-side win.
+      for hop in range(ring_size):
+        is_last_hop = hop == ring_size - 1
+        if not is_last_hop:
+          # Issue the next shard's rotation before computing on this one so the
+          # transfer overlaps the kernel.
+          k_next = shift(k_current)
+          v_next = shift(v_current)
+        o_curr, _, l_curr = custom_splash._splash_attention_forward_ring(  # pylint: disable=protected-access
+            q,
+            k_current,
+            v_current,
+            block_sizes,
+            q_seq_len=orig_q_seq_len,
+            kv_seq_len=orig_kv_seq_len,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            use_fixed_m=True,
+            mk=mk_arr,
+            # This branch only runs under `all_fixed_global`, so the kernel is
+            # told at compile time that every head is fixed: no per-head scalar
+            # dispatch, and -- load-bearing -- a single body in the ragged last
+            # KV block instead of two (a two-body last block is what triggers
+            # the Mosaic scheduler cliff on the whole grid).
+            uniform_fixed_m=True,
+        )
+        o_sum = o_sum + o_curr.astype(jnp.float32)
+        l_sum = l_sum + l_curr.astype(jnp.float32)
+        if not is_last_hop:
+          k_current, v_current = k_next, v_next
+      l_inv = jnp.where(l_sum == 0.0, 0.0, 1.0 / l_sum)
+      # Narrow INSIDE the branch: lax.cond has to move its output between the
+      # branch buffer and its own, and this array is [heads, seq, head_dim] --
+      # 387MB in f32. Casting here halves that copy (measured 1.04ms/layer for
+      # the conditional, ~half of fixed-m's whole kernel win).
+      return (o_sum * l_inv[..., None]).astype(q.dtype)
+
+    def fixed_body(carry, hop, is_last_hop):
+      o_run, lse_run, k_current, v_current = carry
+      # Prefetch the next shard while computing on this one. The last hop skips
+      # it: nothing consumes the rotated shard, and the collective would still
+      # occupy ICI (see the accumulate path's note).
+      if is_last_hop:
+        k_next, v_next = k_current, v_current
+      else:
+        k_next = shift(k_current)
+        v_next = shift(v_current)
+
+      # perm src i -> dst i+1: after `hop` shifts this rank holds the K shard
+      # of ring rank (my_index - hop) mod R; its norms come from the local table.
+      mk_h = jax.lax.dynamic_index_in_dim(mk_all, (my_ring_index - hop) % axis_size, keepdims=False)
+      fixed_ok = (qn_max * mk_h <= custom_splash._FIXED_M_RING_SAFE_BOUND).astype(  # pylint: disable=protected-access
+          jnp.float32
+      )
+      mk_arr = jnp.stack([mk_h, fixed_ok])
+
+      o_curr, m_curr, l_curr = custom_splash._splash_attention_forward_ring(  # pylint: disable=protected-access
+          q,
+          k_current,
+          v_current,
+          block_sizes,
+          q_seq_len=orig_q_seq_len,
+          kv_seq_len=orig_kv_seq_len,
+          use_base2_exp=use_base2_exp,
+          use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=vmem_limit_bytes,
+          use_fixed_m=True,
+          mk=mk_arr,
+      )
+      m_curr = m_curr.astype(jnp.float32)
+      l_curr = l_curr.astype(jnp.float32)
+      o_curr = o_curr.astype(jnp.float32)
+
+      # Partial -> (normalized output, LSE); empty rows map to lse = -inf.
+      l_safe = jnp.maximum(l_curr, tiny)
+      lse_curr = jnp.where(l_curr > 0.0, m_curr + log_fn(l_safe), -jnp.inf)
+      o_norm = o_curr / l_safe[..., None]
+
+      # LSE-space merge of two normalized partials over disjoint KV sets.
+      lse_new = jnp.maximum(lse_run, lse_curr)
+      w_run = exp_fn(lse_run - lse_new)
+      w_curr = exp_fn(lse_curr - lse_new)
+      denom = w_run + w_curr
+      o_new = (w_run[..., None] * o_run + w_curr[..., None] * o_norm) / denom[..., None]
+      return (o_new, lse_new + log_fn(denom), k_next, v_next), None
+
+    fixed_init = (
+        jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32),
+        jnp.full((num_q_heads, orig_q_seq_len), lse_init, jnp.float32),
+        k,
+        v,
+    )
+
+    def _lse_scan(_):
+      carry = fixed_init
+      for hop in range(ring_size):
+        carry, _ = fixed_body(carry, hop, hop == ring_size - 1)
+      return carry[0].astype(q.dtype)
+
+    return lax.cond(all_fixed_global, _accumulate_scan, _lse_scan, None)
+
   o_init = jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32)
   l_init = jnp.zeros((num_q_heads, orig_q_seq_len), jnp.float32)
   m_init = jnp.full((num_q_heads, orig_q_seq_len), mask_value, jnp.float32)
 
-  def body(carry, i):
-    m_prev, l_prev, o_prev, k_current, v_current = carry
-    # Prefetch the next shard while we compute on the current one.
-    k_next = shift(k_current)
-    v_next = shift(v_current)
+  m_final, l_final, o_final = m_init, l_init, o_init
+  k_current, v_current = k, v
+  # Static python loop, not lax.scan: the last hop must not rotate (see the
+  # fixed-m accumulate path -- a trailing ppermute survives DCE and burns a full
+  # shard's worth of ICI bandwidth per layer).
+  for hop in range(ring_size):
+    if hop != ring_size - 1:
+      # Prefetch the next shard while we compute on the current one.
+      k_next = shift(k_current)
+      v_next = shift(v_current)
 
     o_curr, m_curr, l_curr = custom_splash._splash_attention_forward_ring(  # pylint: disable=protected-access
         q,
@@ -931,28 +1112,19 @@ def _custom_ring_attention_forward(
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
-        use_fixed_m=use_fixed_m,
-        mk=mk,
     )
     m_curr = m_curr.astype(jnp.float32)
     l_curr = l_curr.astype(jnp.float32)
     o_curr = o_curr.astype(jnp.float32)
 
-    m_next = jnp.maximum(m_prev, m_curr)
-    alpha = exp_fn(m_prev - m_next)
+    m_next = jnp.maximum(m_final, m_curr)
+    alpha = exp_fn(m_final - m_next)
     beta = exp_fn(m_curr - m_next)
-    l_next = alpha * l_prev + beta * l_curr
-    o_next = alpha[..., None] * o_prev + beta[..., None] * o_curr
-    return (m_next, l_next, o_next, k_next, v_next), None
-
-  initial_carry = (m_init, l_init, o_init, k, v)
-  (_, l_final, o_final, _, _), _ = lax.scan(
-      body,
-      initial_carry,
-      xs=jnp.arange(0, ring_size),
-      length=ring_size,
-      unroll=True,
-  )
+    l_final = alpha * l_final + beta * l_curr
+    o_final = alpha[..., None] * o_final + beta[..., None] * o_curr
+    m_final = m_next
+    if hop != ring_size - 1:
+      k_current, v_current = k_next, v_next
 
   l_inv = jnp.where(l_final == 0.0, 0.0, 1.0 / l_final)
   out = (o_final * l_inv[..., None]).astype(q.dtype)
@@ -973,7 +1145,7 @@ def make_custom_ring_attention(
     perm: list[tuple[int, int]] | None = None,
     bidirectional: bool = False,
     use_fixed_m: bool = False,
-    mk: jax.Array | None = None,
+    fixed_m_norms: tuple[jax.Array, jax.Array] | None = None,
 ):
   """Builds a forward-only ring-attention callable around the custom kernel.
 
@@ -1008,7 +1180,7 @@ def make_custom_ring_attention(
         perm=perm,
         bidirectional=bidirectional,
         use_fixed_m=use_fixed_m,
-        mk=mk,
+        fixed_m_norms=fixed_m_norms,
     )
 
   return _ring
