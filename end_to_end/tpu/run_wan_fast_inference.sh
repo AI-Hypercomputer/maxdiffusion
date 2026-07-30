@@ -23,6 +23,13 @@
 #   ./run_wan_fast_inference.sh [21|22] [steps] ["prompt..."]
 # Env overrides:
 #   WAN_CACHE_ROOT   cache root (default ~/.cache/maxdiffusion_wan)
+#   JAX_CACHE_DIR    JAX persistent compilation cache. Defaults to an
+#                    already-configured JAX_COMPILATION_CACHE_DIR, then to
+#                    $WAN_CACHE_ROOT/jax -- this script must not silently
+#                    redirect a cache the caller already set.
+#   WAN_AOT_DIR      serialized AOT executables (default $WAN_CACHE_ROOT/aot_wan$MODEL)
+#   WAN_CONVERTED_DIR converted torch->flax weights, tens of GB
+#                    (default $WAN_CACHE_ROOT/converted)
 #   OUTPUT_DIR       video/metrics output (default /tmp/wan_out)
 #   COMPILE_TE=true  torch.compile the text encoder (adds ~30s to load,
 #                    saves ~10s/encode; worth it for long-lived processes)
@@ -40,7 +47,13 @@ export TORCHINDUCTOR_FX_GRAPH_CACHE=1
 
 CACHE_ROOT=${WAN_CACHE_ROOT:-$HOME/.cache/maxdiffusion_wan}
 OUTPUT_DIR=${OUTPUT_DIR:-/tmp/wan_out}
-mkdir -p "$CACHE_ROOT/jax" "$CACHE_ROOT/aot_wan$MODEL" "$CACHE_ROOT/converted" "$OUTPUT_DIR"
+# jax_cache_dir on the command line wins over both the yml and
+# JAX_COMPILATION_CACHE_DIR (pyconfig calls jax.config.update), so honor an
+# existing setting instead of hijacking it to our own root.
+JAX_CACHE=${JAX_CACHE_DIR:-${JAX_COMPILATION_CACHE_DIR:-$CACHE_ROOT/jax}}
+AOT_DIR=${WAN_AOT_DIR:-$CACHE_ROOT/aot_wan$MODEL}
+CONVERTED_DIR=${WAN_CONVERTED_DIR:-$CACHE_ROOT/converted}
+mkdir -p "$JAX_CACHE" "$AOT_DIR" "$CONVERTED_DIR" "$OUTPUT_DIR"
 
 # Tuned collective/scheduler flag set for v7 (from the PR #430 2D-ring
 # baseline). One line: libtpu stops parsing at a literal backslash.
@@ -63,9 +76,9 @@ RUN_NAME="wan${MODEL}_fast_$(date +%m%d-%H%M%S)"
 python src/maxdiffusion/generate_wan.py "$CONFIG" \
   run_name="$RUN_NAME" \
   output_dir="$OUTPUT_DIR" \
-  jax_cache_dir="$CACHE_ROOT/jax" \
-  aot_cache_dir="$CACHE_ROOT/aot_wan$MODEL" \
-  converted_weights_dir="$CACHE_ROOT/converted" \
+  jax_cache_dir="$JAX_CACHE" \
+  aot_cache_dir="$AOT_DIR" \
+  converted_weights_dir="$CONVERTED_DIR" \
   attention=ulysses_ring_custom \
   ulysses_shards=2 \
   ici_data_parallelism=2 ici_fsdp_parallelism=1 \
