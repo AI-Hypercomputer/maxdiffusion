@@ -85,7 +85,7 @@ def _jax_profiler_enabled(config):
 
 
 def _ml_diagnostics_profiler_enabled(config):
-  return "enable_ml_diagnostics" in config.get_keys() and config.enable_ml_diagnostics and jax.process_index() == 0
+  return "enable_ml_diagnostics" in config.get_keys() and config.enable_ml_diagnostics
 
 
 def profiler_enabled(config):
@@ -120,22 +120,27 @@ class Profiler:
   def __init__(self, config, session_name=None):
     self.config = config
     self.session_name = session_name
+    self.mld_xprof = None
+    self._active = None  # "mld" | "jax" | None
 
   def start(self):
-    if _jax_profiler_enabled(self.config) and _ml_diagnostics_profiler_enabled(self.config):
-      max_logging.log(
-          "Warning: Both ML Diagnostics profiler and JAX profiler are enabled. "
-          "This may cause increased overhead and duplicate profiling data. It "
-          "is recommended to enable only one profiler at a time for accurate "
-          "performance analysis."
-      )
+    use_mld = _ml_diagnostics_profiler_enabled(self.config) and xprof is not None
+    use_jax = _jax_profiler_enabled(self.config)
 
-    if _ml_diagnostics_profiler_enabled(self.config) and xprof is not None:
+    if use_mld and use_jax:
+      max_logging.log(
+          "Both ML Diagnostics and JAX profilers are enabled. They share the same "
+          "underlying JAX tracer and cannot run concurrently. Using ML Diagnostics "
+          "and skipping the standalone JAX profiler."
+      )
+      use_jax = False
+
+    if use_mld:
       ensure_machinelearning_job_runs(self.config)
       self.mld_xprof = xprof()
       self.mld_xprof.start(self.session_name)
-
-    if _jax_profiler_enabled(self.config):
+      self._active = "mld"
+    elif use_jax:
       log_dir = self.config.tensorboard_dir
       if log_dir.startswith("gs://"):
         log_dir = os.path.join("/tmp/profiler_traces", self.config.run_name)
@@ -144,14 +149,13 @@ class Profiler:
       os.makedirs(log_dir, exist_ok=True)
       max_logging.log(f"Starting profiler trace in: {log_dir}")
       jax.profiler.start_trace(log_dir)
+      self._active = "jax"
 
   def stop(self):
-    if _ml_diagnostics_profiler_enabled(self.config) and xprof is not None:
-      ensure_machinelearning_job_runs(self.config)
+    if self._active == "mld":
       if self.mld_xprof is not None:
         self.mld_xprof.stop()
-
-    if _jax_profiler_enabled(self.config):
+    elif self._active == "jax":
       jax.profiler.stop_trace()
 
       trace_dir = self.config.tensorboard_dir
@@ -171,6 +175,7 @@ class Profiler:
               blob = bucket.blob(blob_name)
               blob.upload_from_filename(local_file)
               max_logging.log(f"Uploaded {local_file} to gs://{bucket_name}/{blob_name}")
+    self._active = None
 
   def __enter__(self):
     self.start()
