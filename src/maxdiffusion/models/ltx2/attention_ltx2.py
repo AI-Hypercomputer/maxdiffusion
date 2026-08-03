@@ -14,8 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import contextlib
 from typing import Optional, Tuple
 from flax import nnx
+
 import jax
 import jax.numpy as jnp
 from ... import common_types
@@ -88,13 +90,8 @@ def apply_split_rotary_emb(x: Array, freqs: Tuple[Array, Array]) -> Array:
   first_x = split_x[..., 0, :]
   second_x = split_x[..., 1, :]
 
-  cos_u = jnp.expand_dims(cos, axis=-2)
-  sin_u = jnp.expand_dims(sin, axis=-2)
-
-  out = split_x * cos_u
-
-  out_first = out[..., 0, :] - second_x * sin_u.squeeze(-2)
-  out_second = out[..., 1, :] + first_x * sin_u.squeeze(-2)
+  out_first = first_x * cos - second_x * sin
+  out_second = second_x * cos + first_x * sin
 
   out = jnp.stack([out_first, out_second], axis=-2)
   out = out.reshape(*out.shape[:-2], last_dim)
@@ -177,12 +174,6 @@ class LTX2RotaryPosEmbed(nnx.Module):
 
     # Combine start and end coordinates
     latent_coords = jnp.stack([grid, patch_ends], axis=-1)  # [3, N_F, N_H, N_W, 2]
-    latent_coords = latent_coords.transpose(1, 2, 3, 0, 4)  # [N_F, N_H, N_W, 3, 2]
-    latent_coords = latent_coords.reshape(-1, 3, 2)  # [num_patches, 3, 2]
-    latent_coords = jnp.expand_dims(latent_coords, 0)  # [1, num_patches, 3, 2]
-    latent_coords = jnp.tile(latent_coords, (batch_size, 1, 1, 1))  # [B, num_patches, 3, 2]
-
-    latent_coords = jnp.stack([grid, patch_ends], axis=-1)  # [3, N_F, N_H, N_W, 2]
     latent_coords = latent_coords.reshape(3, -1, 2)  # [3, num_patches, 2]
     latent_coords = jnp.expand_dims(latent_coords, 0)  # [1, 3, num_patches, 2]
     latent_coords = jnp.tile(latent_coords, (batch_size, 1, 1, 1))  # [B, 3, num_patches, 2]
@@ -257,7 +248,10 @@ class LTX2RotaryPosEmbed(nnx.Module):
 
     # 2. Fractions
     if self.modality == "video":
-      max_positions = jnp.array((self.base_num_frames, self.base_height, self.base_width), dtype=coords.dtype)
+      max_positions = jnp.array(
+          (self.base_num_frames, self.base_height, self.base_width),
+          dtype=coords.dtype,
+      )
     elif self.modality == "audio":
       max_positions = jnp.array((self.base_num_frames,), dtype=coords.dtype)
 
@@ -275,11 +269,11 @@ class LTX2RotaryPosEmbed(nnx.Module):
     # linspace 0..1
     steps = self.dim // num_rope_elems
     pow_indices = jnp.power(self.theta, jnp.linspace(0.0, 1.0, steps, dtype=freqs_dtype))
-    base_freqs = (pow_indices * jnp.pi / 2.0).astype(jnp.float32)  # [steps]
+    base_freqs = pow_indices * jnp.pi / 2.0  # [steps], keep in freqs_dtype for precision
 
     # 4. Outer product
     # Map grid [0, 1] -> [-1, 1]
-    scaled_grid = grid * 2.0 - 1.0  # [B, num_patches, num_pos_dims]
+    scaled_grid = grid.astype(freqs_dtype) * 2.0 - 1.0  # [B, num_patches, num_pos_dims]
 
     # [B, num_patches, num_pos_dims, 1] * [steps] -> [B, num_patches, num_pos_dims, steps]
     freqs = jnp.expand_dims(scaled_grid, -1) * base_freqs
@@ -291,8 +285,9 @@ class LTX2RotaryPosEmbed(nnx.Module):
     freqs = freqs.reshape(*freqs.shape[:2], -1)
 
     # 5. Cos/Sin
-    cos_freqs = jnp.cos(freqs)
-    sin_freqs = jnp.sin(freqs)
+    # Compute in higher precision, then cast to float32
+    cos_freqs = jnp.cos(freqs).astype(jnp.float32)
+    sin_freqs = jnp.sin(freqs).astype(jnp.float32)
 
     if self.rope_type == "interleaved":
       # repeat interleave: [c1, c2] -> [c1, c1, c2, c2]
@@ -352,12 +347,18 @@ class LTX2Attention(nnx.Module):
       flash_min_seq_length: int = 4096,
       sharding_specs: Optional[LTX2DiTShardingSpecs] = None,
       gated_attn: bool = False,
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
+      use_base2_exp: bool = False,
+      use_experimental_scheduler: bool = False,
+      enable_jax_named_scopes: bool = False,
   ):
     self.heads = heads
     self.rope_type = rope_type
     self.dim_head = dim_head
     self.inner_dim = dim_head * heads
     self.dropout_rate = dropout
+    self.enable_jax_named_scopes = enable_jax_named_scopes
 
     if sharding_specs is None:
       specs = get_sharding_specs("default", "ltx2_dit")
@@ -392,10 +393,22 @@ class LTX2Attention(nnx.Module):
     # Handle Self vs Cross Attention input dims
     kv_dim = context_dim if context_dim is not None else query_dim
     self.to_k = nnx.Linear(
-        kv_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype
+        kv_dim,
+        self.inner_dim,
+        use_bias=bias,
+        kernel_init=qkv_kernel_init,
+        bias_init=qkv_bias_init,
+        rngs=rngs,
+        dtype=dtype,
     )
     self.to_v = nnx.Linear(
-        kv_dim, self.inner_dim, use_bias=bias, kernel_init=qkv_kernel_init, bias_init=qkv_bias_init, rngs=rngs, dtype=dtype
+        kv_dim,
+        self.inner_dim,
+        use_bias=bias,
+        kernel_init=qkv_kernel_init,
+        bias_init=qkv_bias_init,
+        rngs=rngs,
+        dtype=dtype,
     )
 
     # 3. Normalization (Applied to full inner_dim, NOT per-head)
@@ -445,6 +458,50 @@ class LTX2Attention(nnx.Module):
           dtype=dtype,
       )
 
+    is_self_attention = context_dim is None
+    cross_attention_remapped_to_flash = not is_self_attention and attention_kernel in (
+        "tokamax_ring",
+        "tokamax_ring_custom",
+        "ulysses_ring",
+        "ulysses_ring_custom",
+        "ulysses_ring_custom_fixed_m",
+        "ulysses_ring_custom_bidir",
+        "ulysses_custom",
+        "ulysses_custom_fixed_m",
+    )
+    cross_attention_uses_local_kv = not is_self_attention and (
+        cross_attention_remapped_to_flash or attention_kernel in ("flash", "tokamax_flash", "cudnn_flash_te")
+    )
+    if not is_self_attention:
+      if cross_attention_remapped_to_flash:
+        attention_kernel = "tokamax_flash"
+
+      axis_names_q = (
+          common_types.BATCH,
+          common_types.CROSS_ATTN_HEAD,
+          common_types.CROSS_ATTN_Q_LENGTH,
+          common_types.D_KV,
+      )
+      axis_names_kv = (
+          common_types.BATCH,
+          common_types.CROSS_ATTN_HEAD,
+          None if cross_attention_uses_local_kv else common_types.CROSS_ATTN_KV_LENGTH,
+          common_types.D_KV,
+      )
+    else:
+      axis_names_q = (
+          common_types.BATCH,
+          common_types.SELF_ATTN_HEAD,
+          common_types.SELF_ATTN_Q_LENGTH,
+          common_types.D_KV,
+      )
+      axis_names_kv = (
+          common_types.BATCH,
+          common_types.SELF_ATTN_HEAD,
+          common_types.SELF_ATTN_KV_LENGTH,
+          common_types.D_KV,
+      )
+
     self.attention_op = NNXAttentionOp(
         mesh=mesh,
         attention_kernel=attention_kernel,
@@ -452,11 +509,29 @@ class LTX2Attention(nnx.Module):
         heads=heads,
         dim_head=dim_head,
         dtype=dtype,
-        axis_names_q=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_Q_LENGTH, common_types.D_KV),
-        axis_names_kv=(common_types.BATCH, common_types.SELF_ATTN_HEAD, common_types.SELF_ATTN_KV_LENGTH, common_types.D_KV),
+        axis_names_q=axis_names_q,
+        axis_names_kv=axis_names_kv,
         flash_block_sizes=flash_block_sizes,
         flash_min_seq_length=flash_min_seq_length,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
     )
+
+  def compute_kv(self, context: Array) -> Tuple[Array, Array]:
+    key = self.to_k(context)
+    value = self.to_v(context)
+    key = self.norm_k(key)
+    return key, value
+
+  @contextlib.contextmanager
+  def named_scope(self, name: str):
+    if getattr(self, "enable_jax_named_scopes", False):
+      with jax.named_scope(name):
+        yield
+    else:
+      yield
 
   def __call__(
       self,
@@ -466,26 +541,31 @@ class LTX2Attention(nnx.Module):
       rotary_emb: Optional[Tuple[Array, Array]] = None,
       k_rotary_emb: Optional[Tuple[Array, Array]] = None,
       perturbation_mask: Optional[Array] = None,
+      cached_kv: Optional[Tuple[Array, Array]] = None,
   ) -> Array:
     # Determine context (Self or Cross)
     context = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
 
     # 1. Project and Norm
-    with jax.named_scope("QKV Projection"):
+    with self.named_scope("QKV Projection"):
       query = self.to_q(hidden_states)
-      key = self.to_k(context)
-      value = self.to_v(context)
+      if cached_kv is not None:
+        key, value = cached_kv
+      else:
+        key = self.to_k(context)
+        value = self.to_v(context)
 
-    with jax.named_scope("QKV Norm"):
+    with self.named_scope("QKV Norm"):
       query = self.norm_q(query)
-      key = self.norm_k(key)
+      if cached_kv is None:
+        key = self.norm_k(key)
 
     # 3. Apply RoPE to tensors of shape [B, S, InnerDim]
     # Frequencies are shape [B, S, InnerDim]
     # 3. Apply RoPE
-    with jax.named_scope("Apply RoPE"):
+    with self.named_scope("Apply RoPE"):
       if rotary_emb is not None:
-        if hasattr(self, "rope_type") and self.rope_type == "split":
+        if self.rope_type == "split":
           # Split RoPE: passing full freqs [B, H, S, D//2]
           # apply_split_rotary_emb handles reshaping query/key
 
@@ -504,7 +584,7 @@ class LTX2Attention(nnx.Module):
           elif encoder_hidden_states is None:
             key = apply_rotary_emb(key, rotary_emb)
 
-    with jax.named_scope("Attention and Output Project"):
+    with self.named_scope("Attention and Output Project"):
       # 4. Attention
       # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
       attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)

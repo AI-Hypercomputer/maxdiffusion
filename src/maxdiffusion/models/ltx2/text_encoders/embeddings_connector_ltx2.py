@@ -176,8 +176,8 @@ class Embeddings1DConnector(nnx.Module):
     output = jnp.where(shifted_mask[..., None] == 1, shifted_hidden_states, registers)
 
     # Padding has been filled with valid register tokens. The entire sequence
-    # must now be attended to, so return an all-ones mask (matching diffusers).
-    new_mask = jnp.ones((b, t), dtype=jnp.int32)
+    # must now be attended to, so return an all-True mask.
+    new_mask = jnp.ones((b, t), dtype=jnp.bool_)
 
     return output, new_mask
 

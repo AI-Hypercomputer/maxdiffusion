@@ -697,6 +697,46 @@ class CustomFlashBlockSizes:
   vmem_limit_bytes: int | None = None
 
 
+def flash_block_sizes_for_candidate(
+    flash_block_sizes: Dict[str, int],
+    attention: str,
+    block_q: int,
+    block_kv: int,
+    block_kv_compute: int | None = None,
+    *,
+    vmem_limit_bytes: int | None = None,
+) -> Dict[str, int]:
+  """Returns a production-compatible block-size mapping for a tuned candidate.
+
+  Splash uses forward and backward block-size fields even for inference-time
+  padding decisions. Tokamax also derives its effective forward ``block_q``
+  from ``block_q_dkv``. Updating only ``block_q`` therefore does not faithfully
+  apply or benchmark a candidate.
+  """
+  block_kv_compute = block_kv if block_kv_compute is None else block_kv_compute
+  candidate = dict(flash_block_sizes)
+  candidate.update({
+      "block_q": block_q,
+      "block_kv": block_kv,
+      "block_kv_compute": block_kv_compute,
+      "block_kv_compute_in": block_kv_compute,
+      "block_q_dkv": block_q,
+      "block_kv_dkv": block_kv,
+      "block_kv_dkv_compute": block_kv_compute,
+  })
+
+  if not candidate.get("use_fused_bwd_kernel", False):
+    candidate["block_q_dq"] = block_q
+    candidate["block_kv_dq"] = block_kv
+
+  if "custom" in attention:
+    candidate.setdefault("heads_per_tile", 1)
+    if vmem_limit_bytes is not None:
+      candidate["vmem_limit_bytes"] = vmem_limit_bytes
+
+  return candidate
+
+
 def get_flash_block_sizes(config):
   """Create custom flash attention BlockSizes."""
   flash_block_sizes = None

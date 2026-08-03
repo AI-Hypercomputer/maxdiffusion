@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import unittest
+from unittest import mock
 import torch
 import numpy as np
 import jax
@@ -22,7 +23,248 @@ import jax.numpy as jnp
 from flax import nnx
 import pandas as pd
 from jax.sharding import Mesh
+from maxdiffusion.models.attention_flax import (
+    KERNEL_REGISTRY,
+    FlaxWanAttention,
+    _apply_attention,
+    _build_padding_segment_ids,
+)
 from maxdiffusion.models.ltx2.attention_ltx2 import LTX2Attention, LTX2RotaryPosEmbed
+from maxdiffusion.models.ltx2.transformer_ltx2 import _canonicalize_attention_mask
+
+
+class LTX2AttentionMaskContractTest(unittest.TestCase):
+
+  def test_dot_product_and_flash_fallback_apply_per_example_masks(self):
+    query = jnp.zeros((2, 1, 2), dtype=jnp.float32)
+    key = jnp.zeros((2, 2, 2), dtype=jnp.float32)
+    value = jnp.array(
+        [
+            [[1.0, 0.0], [0.0, 1.0]],
+            [[1.0, 0.0], [0.0, 1.0]],
+        ],
+        dtype=jnp.float32,
+    )
+    attention_mask = jnp.array([[True, False], [False, True]])
+
+    for attention_kernel in ("dot_product", "flash"):
+      with self.subTest(attention_kernel=attention_kernel):
+        output = _apply_attention(
+            query=query,
+            key=key,
+            value=value,
+            heads=1,
+            dim_head=2,
+            split_head_dim=True,
+            float32_qk_product=True,
+            attention_kernel=attention_kernel,
+            flash_min_seq_length=8,
+            use_memory_efficient_attention=False,
+            scale=1.0,
+            dtype=jnp.float32,
+            mesh=None,
+            axis_names_q=(None, None, None, None),
+            axis_names_kv=(None, None, None, None),
+            flash_block_sizes=None,
+            dpa_layer=None,
+            attention_mask=attention_mask,
+        )
+        np.testing.assert_allclose(
+            np.asarray(output),
+            np.array([[[1.0, 0.0]], [[0.0, 1.0]]], dtype=np.float32),
+            atol=1e-6,
+        )
+
+  def test_padding_segment_ids_preserve_each_batch_mask(self):
+    attention_mask = jnp.array([[True, False, True], [False, True, True]])
+    segment_ids = _build_padding_segment_ids(
+        query_seq_len=2,
+        q_padded_len=4,
+        key_seq_len=4,
+        kv_padded_len=5,
+        attention_mask=attention_mask,
+    )
+
+    np.testing.assert_array_equal(np.asarray(segment_ids.q), np.array([[1, 1, 0, 0], [1, 1, 0, 0]]))
+    np.testing.assert_array_equal(np.asarray(segment_ids.kv), np.array([[1, 0, 1, 0, 0], [0, 1, 1, 0, 0]]))
+
+  def test_dot_product_all_masked_row_returns_zero(self):
+    query = jnp.zeros((1, 1, 2), dtype=jnp.float32)
+    key = jnp.zeros((1, 2, 2), dtype=jnp.float32)
+    value = jnp.ones((1, 2, 2), dtype=jnp.float32)
+    output = _apply_attention(
+        query=query,
+        key=key,
+        value=value,
+        heads=1,
+        dim_head=2,
+        split_head_dim=True,
+        float32_qk_product=True,
+        attention_kernel="dot_product",
+        flash_min_seq_length=0,
+        use_memory_efficient_attention=False,
+        scale=1.0,
+        dtype=jnp.float32,
+        mesh=None,
+        axis_names_q=(None, None, None, None),
+        axis_names_kv=(None, None, None, None),
+        flash_block_sizes=None,
+        dpa_layer=None,
+        attention_mask=jnp.array([[False, False]]),
+    )
+
+    np.testing.assert_array_equal(np.asarray(output), np.zeros((1, 1, 2), dtype=np.float32))
+
+  def test_forced_flash_receives_boolean_keep_mask(self):
+    query = jnp.zeros((2, 2, 2), dtype=jnp.float32)
+    attention_mask = jnp.array([[1, 0], [0, 1]], dtype=jnp.int32)
+
+    def capture_flash_mask(q, _key, _value, context):
+      self.assertEqual(context["attention_mask"].dtype, jnp.bool_)
+      np.testing.assert_array_equal(np.asarray(context["attention_mask"]), np.asarray(attention_mask, dtype=bool))
+      return q
+
+    with mock.patch.dict(KERNEL_REGISTRY, {"flash": capture_flash_mask}):
+      output = _apply_attention(
+          query=query,
+          key=query,
+          value=query,
+          heads=1,
+          dim_head=2,
+          split_head_dim=True,
+          float32_qk_product=True,
+          attention_kernel="flash",
+          flash_min_seq_length=0,
+          use_memory_efficient_attention=False,
+          scale=1.0,
+          dtype=jnp.float32,
+          mesh=None,
+          axis_names_q=(None, None, None, None),
+          axis_names_kv=(None, None, None, None),
+          flash_block_sizes=None,
+          dpa_layer=None,
+          attention_mask=attention_mask,
+      )
+
+    np.testing.assert_array_equal(np.asarray(output), np.asarray(query))
+
+  def test_transformer_boundary_canonicalizes_keep_masks(self):
+    with self.assertRaisesRegex(ValueError, "test_mask must have shape"):
+      _canonicalize_attention_mask(
+          jnp.array([[[1, 0, 1]], [[0, 1, 1]]], dtype=jnp.bool_),
+          batch_size=2,
+          name="test_mask",
+      )
+
+  def test_transformer_boundary_rejects_legacy_additive_masks(self):
+    with self.assertRaisesRegex(ValueError, "test_mask must be a boolean mask"):
+      _canonicalize_attention_mask(
+          jnp.array([[0.0, -10000.0, 0.0], [0.0, 0.0, 0.0]], dtype=jnp.float32),
+          batch_size=2,
+          name="test_mask",
+      )
+
+  def test_rank2_all_zero_float_mask_rejects_non_bool(self):
+    with self.assertRaisesRegex(ValueError, "test_mask must be a boolean mask"):
+      _canonicalize_attention_mask(
+          jnp.zeros((2, 3), dtype=jnp.float32),
+          batch_size=2,
+          name="test_mask",
+      )
+
+  def test_ring_cross_attention_uses_global_kv_and_wires_kernel_flags(self):
+    remapped_kernels = (
+        "tokamax_ring",
+        "tokamax_ring_custom",
+        "ulysses_ring",
+        "ulysses_ring_custom",
+        "ulysses_ring_custom_fixed_m",
+        "ulysses_ring_custom_bidir",
+        "ulysses_custom",
+        "ulysses_custom_fixed_m",
+    )
+
+    for attention_kernel in remapped_kernels:
+      with self.subTest(module="ltx2", attention_kernel=attention_kernel):
+        attention = LTX2Attention(
+            query_dim=4,
+            context_dim=4,
+            heads=1,
+            dim_head=4,
+            rngs=nnx.Rngs(0),
+            attention_kernel=attention_kernel,
+            flash_min_seq_length=0,
+            use_base2_exp=True,
+            use_experimental_scheduler=True,
+        )
+        self.assertEqual(attention.attention_op.attention_kernel, "tokamax_flash")
+        self.assertIsNone(attention.attention_op.axis_names_kv[2])
+        self.assertTrue(attention.attention_op.use_base2_exp)
+        self.assertTrue(attention.attention_op.use_experimental_scheduler)
+
+      with self.subTest(module="wan", attention_kernel=attention_kernel):
+        wan_attention = FlaxWanAttention(
+            rngs=nnx.Rngs(0),
+            query_dim=4,
+            cross_attention_dim=4,
+            heads=1,
+            dim_head=4,
+            attention_kernel=attention_kernel,
+            is_self_attention=False,
+        )
+        self.assertEqual(wan_attention.attention_op.attention_kernel, "tokamax_flash")
+        self.assertIsNone(wan_attention.attention_op.axis_names_kv[2])
+
+    local_flash_attention = LTX2Attention(
+        query_dim=4,
+        context_dim=4,
+        heads=1,
+        dim_head=4,
+        rngs=nnx.Rngs(0),
+        attention_kernel="flash",
+    )
+    self.assertEqual(local_flash_attention.attention_op.attention_kernel, "flash")
+    self.assertIsNone(local_flash_attention.attention_op.axis_names_kv[2])
+
+    distributed_ulysses_attention = LTX2Attention(
+        query_dim=4,
+        context_dim=4,
+        heads=1,
+        dim_head=4,
+        rngs=nnx.Rngs(0),
+        attention_kernel="ulysses",
+    )
+    self.assertEqual(distributed_ulysses_attention.attention_op.attention_kernel, "ulysses")
+    self.assertIsNotNone(distributed_ulysses_attention.attention_op.axis_names_kv[2])
+
+  def test_tokamax_ring_registry_forwards_kernel_flags(self):
+    query = jnp.zeros((1, 2, 2), dtype=jnp.float32)
+    context = {
+        "scale": 1.0,
+        "heads": 1,
+        "mesh": None,
+        "axis_names_q": (None, None, None, None),
+        "axis_names_kv": (None, None, None, None),
+        "flash_block_sizes": None,
+        "dtype": jnp.float32,
+        "mask_padding_tokens": True,
+        "residual_checkpoint_name": "ring_residual",
+        "attention_mask": None,
+        "use_base2_exp": True,
+        "use_experimental_scheduler": True,
+    }
+
+    with mock.patch(
+        "maxdiffusion.models.attention_flax._tpu_flash_attention",
+        return_value=query,
+    ) as mocked_flash:
+      KERNEL_REGISTRY["tokamax_ring"](query, query, query, context)
+
+    call_kwargs = mocked_flash.call_args.kwargs
+    self.assertEqual(call_kwargs["residual_checkpoint_name"], "ring_residual")
+    self.assertTrue(call_kwargs["use_base2_exp"])
+    self.assertTrue(call_kwargs["use_experimental_scheduler"])
+
 
 # ==========================================
 # 1. PyTorch Reference Implementations

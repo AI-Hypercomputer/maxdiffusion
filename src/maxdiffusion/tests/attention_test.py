@@ -235,6 +235,29 @@ class AttentionTest(unittest.TestCase):
     self.assertIsNone(cross_attention_block_sizes.block_kv_dq)
     self.assertTrue(cross_attention_block_sizes.use_fused_bwd_kernel)
 
+  def test_select_flash_block_sizes_coerces_custom_carrier_for_local_flash(self):
+    custom_sizes = max_utils.CustomFlashBlockSizes(
+        block_q=16,
+        block_kv=16,
+        block_kv_compute=16,
+        block_kv_compute_in=16,
+        heads_per_tile=1,
+    )
+    query = jnp.zeros((1, 32, 64), dtype=jnp.bfloat16)
+
+    block_sizes = _select_flash_block_sizes(
+        query=query,
+        key=query,
+        flash_block_sizes=custom_sizes,
+        dtype=jnp.bfloat16,
+        attention_kernel="tokamax_flash",
+    )
+
+    self.assertTrue(block_sizes.use_fused_bwd_kernel)
+    self.assertEqual(block_sizes.block_q, 16)
+    self.assertEqual(block_sizes.block_kv, 16)
+    self.assertEqual(block_sizes.block_kv_compute, 16)
+
   def test_ulysses_head_chunk_ranges_preserve_head_layout_with_remainder(self):
     ranges = attention_flax._ulysses_head_chunk_ranges(num_heads=40, ulysses_shards=8, num_chunks=2)
 
@@ -486,7 +509,7 @@ class AttentionTest(unittest.TestCase):
     query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
     key = query + 100.0
     value = query + 200.0
-    attention_mask = jnp.array([[1, 0, 1, 0, 1]], dtype=jnp.int32)
+    attention_mask = jnp.array([[1, 0, 1, 0, 1], [0, 1, 0, 1, 0]], dtype=jnp.int32)
     mesh = self._ulysses_mesh()
 
     def fake_make_splash_mha(**unused_kwargs):
@@ -532,6 +555,86 @@ class AttentionTest(unittest.TestCase):
     expected = query + jnp.broadcast_to(attention_mask[:, :, None], query.shape)
     self.assertEqual(output.shape, query.shape)
     self.assertTrue(jnp.array_equal(output, expected))
+
+  @unittest.skipIf(len(jax.devices()) < 4, "Mask shard_map test requires at least 4 devices.")
+  def test_flash_and_ulysses_shard_distinct_masks_over_batch_and_sequence(self):
+    """Masks must follow data sharding and Ulysses must gather their KV axis."""
+    batch = 2
+    length = 6
+    heads = 4
+    head_depth = 3
+    query = jnp.arange(batch * length * heads * head_depth, dtype=jnp.float32).reshape(batch, length, heads * head_depth)
+    attention_mask = jnp.array(
+        [[1, 0, 1, 0, 1, 0], [0, 1, 1, 1, 0, 1]],
+        dtype=jnp.int32,
+    )
+    devices = np.array(jax.devices()[:4]).reshape(2, 1, 2, 1)
+    mesh = Mesh(devices, ("data", "fsdp", "context", "tensor"))
+
+    def fake_make_splash_mha(**unused_kwargs):
+      def fake_kernel(q, k, v, segment_ids):
+        del k, v
+        return q + jnp.sum(segment_ids.kv).astype(q.dtype)
+
+      return fake_kernel
+
+    with mock.patch.object(
+        attention_flax.splash_attention_kernel,
+        "make_splash_mha",
+        side_effect=fake_make_splash_mha,
+    ):
+      with mesh, nn_partitioning.axis_rules(self._flash_axis_rules()):
+        flash_output = attention_flax._tpu_flash_attention(
+            query,
+            query,
+            query,
+            heads=heads,
+            mesh=mesh,
+            axis_names_q=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_Q_LENGTH,
+                attention_flax.D_KV,
+            ),
+            axis_names_kv=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_KV_LENGTH,
+                attention_flax.D_KV,
+            ),
+            flash_block_sizes=self._ulysses_block_sizes(),
+            dtype=jnp.float32,
+            attention_kernel="flash",
+            attention_mask=attention_mask,
+        )
+
+      with mesh, nn_partitioning.axis_rules(self._ulysses_axis_rules()):
+        ulysses_output = attention_flax._ulysses_attention(
+            query,
+            query,
+            query,
+            heads=heads,
+            mesh=mesh,
+            axis_names_q=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_Q_LENGTH,
+                attention_flax.D_KV,
+            ),
+            axis_names_kv=(
+                attention_flax.BATCH,
+                attention_flax.SELF_ATTN_HEAD,
+                attention_flax.SELF_ATTN_KV_LENGTH,
+                attention_flax.D_KV,
+            ),
+            flash_block_sizes=self._ulysses_block_sizes(),
+            dtype=jnp.float32,
+            attention_mask=attention_mask,
+        )
+
+    expected = query + jnp.sum(attention_mask, axis=1)[:, None, None]
+    self.assertTrue(jnp.array_equal(flash_output, expected))
+    self.assertTrue(jnp.array_equal(ulysses_output, expected))
 
   @unittest.skipIf(len(jax.devices()) < 4, "Ulysses ring attention layout test requires at least 4 devices.")
   def test_ulysses_ring_attention_round_trips_query_when_heads_are_divisible(self):
@@ -767,8 +870,8 @@ class AttentionTest(unittest.TestCase):
 
     self.assertEqual(output.shape, query.shape)
     self.assertTrue(jnp.array_equal(output, query))
-    # Same convention as the tokamax_ring kernel: shards pad identically, no rotation.
-    self.assertEqual(seen, [False])
+    # Explicit per-token IDs must rotate with their corresponding K/V shard.
+    self.assertEqual(seen, [True])
 
   def test_ulysses_ring_attention_raises_when_heads_are_not_divisible_by_ulysses_shards(self):
     """The hidden all-to-all head split still requires divisible heads."""

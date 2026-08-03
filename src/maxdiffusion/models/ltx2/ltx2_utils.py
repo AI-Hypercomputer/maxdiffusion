@@ -15,16 +15,85 @@ limitations under the License.
 """
 
 import json
-from typing import Optional
+import os
+import time
+import concurrent.futures
+from typing import Optional, Callable
 import torch
+import numpy as np
+import re
+import ml_dtypes
 import jax
 import jax.numpy as jnp
 from maxdiffusion import max_logging
 from huggingface_hub import hf_hub_download
+import uuid
 from huggingface_hub.utils import EntryNotFoundError
 from safetensors import safe_open
+from safetensors.flax import load_file, save_file
 from flax.traverse_util import unflatten_dict, flatten_dict
 from ..modeling_flax_pytorch_utils import (rename_key, rename_key_and_reshape_tensor, torch2jax, validate_flax_state_dict)
+
+
+def _tuple_str_to_int(in_tuple):
+  out_list = []
+  for item in in_tuple:
+    try:
+      out_list.append(int(item))
+    except ValueError:
+      out_list.append(item)
+  return tuple(out_list)
+
+
+def try_load_converted_weights(cache_dir: str, eval_shapes: dict, cast_dtype_fn: Optional[Callable]) -> Optional[dict]:
+  cache_file = cache_dir + ".safetensors"
+  if not os.path.isfile(cache_file):
+    return None
+  try:
+    expected_keys = set(flatten_dict(eval_shapes).keys())
+    tensors = load_file(cache_file)
+    flax_state_dict = {}
+
+    flat_shapes = flatten_dict(eval_shapes)
+    for key_str, value in tensors.items():
+      flax_key = _tuple_str_to_int(tuple(key_str.split(".")))
+
+      expected_dtype = np.dtype(cast_dtype_fn(flax_key)) if cast_dtype_fn is not None else np.dtype(value.dtype)
+      if np.dtype(value.dtype) != expected_dtype:
+        raise ValueError(f"dtype policy changed for {key_str}")
+
+      expected_shape = flat_shapes[flax_key].shape
+      if tuple(value.shape) != tuple(expected_shape):
+        raise ValueError(f"shape changed for {key_str}")
+
+      flax_state_dict[flax_key] = value
+
+    if set(flax_state_dict.keys()) != expected_keys:
+      return None
+    return unflatten_dict(flax_state_dict)
+  except Exception as e:
+    max_logging.log(f"Converted-weights cache unusable ({e}); reconverting")
+    return None
+
+
+def save_converted_weights(cache_dir: str, flat_state_dict: dict) -> None:
+  cache_file = cache_dir + ".safetensors"
+  tmp_file = f"{cache_file}.tmp.{uuid.uuid4().hex}"
+
+  string_dict = {}
+  for flax_key, value in flat_state_dict.items():
+    key_str = ".".join(str(k) for k in flax_key)
+    string_dict[key_str] = np.array(value)
+
+  save_file(string_dict, tmp_file)
+  try:
+    os.replace(tmp_file, cache_file)
+  except OSError:
+    try:
+      os.remove(tmp_file)
+    except OSError:
+      pass
+
 
 KNOWN_UPSAMPLER_CONFIGS = {
     "ltx-2.3-spatial-upscaler-x2-1.0.safetensors": {
@@ -48,16 +117,6 @@ KNOWN_UPSAMPLER_CONFIGS = {
         "rational_spatial_scale": None,
     },
 }
-
-
-def _tuple_str_to_int(in_tuple):
-  out_list = []
-  for item in in_tuple:
-    try:
-      out_list.append(int(item))
-    except ValueError:
-      out_list.append(item)
-  return tuple(out_list)
 
 
 def rename_for_ltx2_transformer(key):
@@ -94,8 +153,6 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
 
   # Handle transformer_blocks_N (underscore) produced by rename_key
   if len(pt_tuple_key) > 0 and "transformer_blocks_" in pt_tuple_key[0]:
-    import re
-
     m = re.match(r"transformer_blocks_(\d+)", pt_tuple_key[0])
     if m:
       block_index = int(m.group(1))
@@ -184,47 +241,255 @@ def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, fi
   return tensors
 
 
+def _torch_tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
+  if tensor.dtype == torch.bfloat16:
+    return tensor.view(torch.uint16).numpy().view(ml_dtypes.bfloat16)
+  return tensor.numpy()
+
+
+def _get_eval_shape(value) -> tuple[int, ...]:
+  if hasattr(value, "shape"):
+    return tuple(value.shape)
+  if hasattr(value, "value") and hasattr(value.value, "shape"):
+    return tuple(value.value.shape)
+  raise ValueError(f"Unable to determine the initialized shape for {type(value).__name__}")
+
+
+def _get_eval_dtype(value) -> np.dtype:
+  if hasattr(value, "dtype"):
+    return np.dtype(value.dtype)
+  if hasattr(value, "value") and hasattr(value.value, "dtype"):
+    return np.dtype(value.value.dtype)
+  raise ValueError(f"Unable to determine the initialized dtype for {type(value).__name__}")
+
+
+def _get_scanned_layer_shapes(flattened_eval_shapes):
+  scanned_layer_shapes = {}
+  for key, value in flattened_eval_shapes.items():
+    normalized_key = _tuple_str_to_int(tuple(str(item) for item in key))
+    if not normalized_key or normalized_key[0] != "transformer_blocks":
+      continue
+
+    shape = _get_eval_shape(value)
+    if not shape:
+      raise ValueError(f"Scanned parameter {'.'.join(map(str, normalized_key))} has no layer axis")
+    scanned_layer_shapes[normalized_key] = shape
+
+  if not scanned_layer_shapes:
+    raise ValueError("scan_layers=True, but eval_shapes contains no transformer_blocks parameters")
+
+  layer_counts = {shape[0] for shape in scanned_layer_shapes.values()}
+  if len(layer_counts) != 1:
+    raise ValueError(f"Inconsistent scanned layer counts in eval_shapes: {sorted(layer_counts)}")
+
+  scanned_num_layers = next(iter(layer_counts))
+  if scanned_num_layers <= 0:
+    raise ValueError(f"Invalid scanned layer count derived from eval_shapes: {scanned_num_layers}")
+  return scanned_num_layers, scanned_layer_shapes
+
+
 def load_transformer_weights(
     pretrained_model_name_or_path: str,
     eval_shapes: dict,
     device: str,
     hf_download: bool = True,
-    num_layers: int = 48,
+    num_layers: Optional[int] = None,
     scan_layers: bool = True,
     subfolder: str = "transformer",
+    cast_dtype_fn=None,
+    converted_cache_dir: str = "",
 ):
+  """Loads and converts an LTX2 transformer checkpoint into host arrays.
+
+  When ``converted_cache_dir`` is set, the final-dtype flat tree is cached
+  under a content-addressed identity derived from the resolved checkpoint,
+  converter ABI, scan mode, and exact initialized parameter schema.
+  """
   device = jax.local_devices(backend=device)[0]
   max_logging.log(f"Load and port {pretrained_model_name_or_path} {subfolder} on {device}")
 
-  with jax.default_device(device):
-    # Support sharded loading
-    tensors = load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device)
+  flattened_dict = flatten_dict(eval_shapes)
+  random_flax_state_dict = {}
+  for key in flattened_dict:
+    random_flax_state_dict[tuple(str(item) for item in key)] = flattened_dict[key]
 
-    flax_state_dict = {}
-    cpu = jax.local_devices(backend="cpu")[0]
-    flattened_dict = flatten_dict(eval_shapes)
+  scanned_num_layers = None
+  scanned_layer_shapes = {}
+  if scan_layers:
+    scanned_num_layers, scanned_layer_shapes = _get_scanned_layer_shapes(flattened_dict)
+    if num_layers is not None and num_layers != scanned_num_layers:
+      raise ValueError(f"num_layers={num_layers} does not match the {scanned_num_layers} layers derived from eval_shapes")
 
-    random_flax_state_dict = {}
-    for key in flattened_dict:
-      random_flax_state_dict[tuple(str(item) for item in key)] = flattened_dict[key]
+  index_file = "diffusion_pytorch_model.safetensors.index.json"
+  try:
+    index_path = hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=index_file)
+    with open(index_path, "r") as f:
+      index_data = json.load(f)
+    weight_map = index_data["weight_map"]
+    shards = sorted(set(weight_map.values()))
 
-    for pt_key, tensor in tensors.items():
-      renamed_pt_key = rename_key(pt_key)
-      renamed_pt_key = rename_for_ltx2_transformer(renamed_pt_key)
+    def resolve_shard_path(model_file):
+      return hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
 
-      pt_tuple_key = tuple(renamed_pt_key.split("."))
+  except EntryNotFoundError:
+    shards = ["diffusion_pytorch_model.safetensors"]
 
-      flax_key, flax_tensor = get_key_and_value(
-          pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
+    def resolve_shard_path(model_file):
+      try:
+        return hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename=model_file)
+      except EntryNotFoundError:
+        return hf_hub_download(pretrained_model_name_or_path, subfolder=subfolder, filename="diffusion_pytorch_model.bin")
+
+  checkpoint_files = [resolve_shard_path(model_file) for model_file in shards]
+
+  expected_dtypes = {
+      tuple(key): np.dtype(cast_dtype_fn(tuple(key))) if cast_dtype_fn is not None else _get_eval_dtype(value)
+      for key, value in flattened_dict.items()
+  }
+
+  if converted_cache_dir:
+    t_cache_load = time.perf_counter()
+    cached = try_load_converted_weights(converted_cache_dir, unflatten_dict(flattened_dict), cast_dtype_fn)
+    if cached is not None:
+      max_logging.log(
+          f"Loaded converted {subfolder or 'transformer'} weights from {converted_cache_dir} "
+          f"in {time.perf_counter() - t_cache_load:.1f}s"
       )
+      return cached
 
-      flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
+  t_start = time.perf_counter()
 
-    validate_flax_state_dict(eval_shapes, flax_state_dict)
-    flax_state_dict = unflatten_dict(flax_state_dict)
-    del tensors
-    jax.clear_caches()
-    return flax_state_dict
+  flax_state_dict = {}
+  populated_layer_indices = {}
+
+  def convert_safetensors_chunk(ckpt_shard_path, chunk_keys):
+    results = []
+    with safe_open(ckpt_shard_path, framework="pt") as f:
+      for pt_key in chunk_keys:
+        tensor = _torch_tensor_to_numpy(f.get_tensor(pt_key))
+        results.append(process_tensor(pt_key, tensor))
+    return results
+
+  def convert_bin(ckpt_shard_path):
+    results = []
+    loaded_state_dict = torch.load(ckpt_shard_path, map_location="cpu")
+    for pt_key, pt_tensor in loaded_state_dict.items():
+      tensor = _torch_tensor_to_numpy(pt_tensor)
+      results.append(process_tensor(pt_key, tensor))
+    return results
+
+  def process_tensor(pt_key, tensor):
+    renamed_pt_key = rename_key(pt_key)
+    renamed_pt_key = rename_for_ltx2_transformer(renamed_pt_key)
+    pt_tuple_key = tuple(renamed_pt_key.split("."))
+
+    block_index = None
+    if len(pt_tuple_key) > 0 and "transformer_blocks_" in pt_tuple_key[0]:
+      m = re.match(r"transformer_blocks_(\d+)", pt_tuple_key[0])
+      if m:
+        if scan_layers:
+          block_index = int(m.group(1))
+          pt_tuple_key = ("transformer_blocks",) + pt_tuple_key[1:]
+        else:
+          # For nnx.List, NNX uses string indices ('0', '1', etc.)
+          pt_tuple_key = ("transformer_blocks", m.group(1)) + pt_tuple_key[1:]
+
+    flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
+    flax_key_str = [str(k) for k in flax_key]
+    if "scale_shift_table" in flax_key_str and flax_key_str[-1] in ["kernel", "weight"]:
+      flax_key_str.pop()
+    flax_key = tuple(flax_key_str)
+    flax_key = _tuple_str_to_int(flax_key)
+
+    if block_index is not None:
+      key_name = ".".join(map(str, flax_key))
+      if block_index < 0 or block_index >= scanned_num_layers:
+        raise ValueError(f"Scanned layer index {block_index} for {key_name} is out of range [0, {scanned_num_layers})")
+      if flax_key not in scanned_layer_shapes:
+        raise ValueError(f"Checkpoint tensor {pt_key!r} maps to unexpected scanned parameter {key_name}")
+
+      expected_shape = scanned_layer_shapes[flax_key]
+      if tuple(flax_tensor.shape) != expected_shape[1:]:
+        raise ValueError(
+            f"Shape mismatch for scanned parameter {key_name}: "
+            f"expected per-layer shape {expected_shape[1:]}, got {tuple(flax_tensor.shape)}"
+        )
+
+      return (True, pt_key, flax_key, block_index, flax_tensor)
+    else:
+      target_dtype = (
+          np.dtype(cast_dtype_fn(flax_key))
+          if cast_dtype_fn is not None
+          else expected_dtypes.get(flax_key, np.dtype(flax_tensor.dtype))
+      )
+      value = np.array(flax_tensor, dtype=target_dtype, copy=True, order="C")
+      return (False, pt_key, flax_key, None, value)
+
+  def apply_result(is_scanned, pt_key, flax_key, block_index, value):
+    if is_scanned:
+      key_name = ".".join(map(str, flax_key))
+      populated = populated_layer_indices.setdefault(flax_key, set())
+      if block_index in populated:
+        raise ValueError(f"Duplicate scanned layer index {block_index} for {key_name}")
+
+      stacked = flax_state_dict.get(flax_key)
+      if stacked is None:
+        expected_shape = scanned_layer_shapes[flax_key]
+        target_dtype = (
+            np.dtype(cast_dtype_fn(flax_key))
+            if cast_dtype_fn is not None
+            else expected_dtypes.get(flax_key, np.dtype(value.dtype))
+        )
+        stacked = np.zeros(expected_shape, dtype=target_dtype)
+        flax_state_dict[flax_key] = stacked
+      stacked[block_index] = value
+      populated.add(block_index)
+    else:
+      flax_state_dict[flax_key] = value
+
+  chunk_size = 32
+  safetensors_tasks = []
+  all_results = []
+  for ckpt_shard_path in checkpoint_files:
+    if ckpt_shard_path.endswith(".safetensors"):
+      with safe_open(ckpt_shard_path, framework="pt") as f:
+        shard_keys = list(f.keys())
+      for i in range(0, len(shard_keys), chunk_size):
+        safetensors_tasks.append((ckpt_shard_path, shard_keys[i : i + chunk_size]))
+    else:
+      all_results.extend(convert_bin(ckpt_shard_path))
+
+  if safetensors_tasks:
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+      futures = [executor.submit(convert_safetensors_chunk, path, keys) for path, keys in safetensors_tasks]
+      for future in concurrent.futures.as_completed(futures):
+        all_results.extend(future.result())
+
+  for result in all_results:
+    apply_result(*result)
+
+  if scan_layers:
+    expected_indices = set(range(scanned_num_layers))
+    missing_layers = []
+    for flax_key in scanned_layer_shapes:
+      missing = sorted(expected_indices - populated_layer_indices.get(flax_key, set()))
+      if missing:
+        missing_layers.append(f"{'.'.join(map(str, flax_key))}: {missing}")
+    if missing_layers:
+      raise ValueError(f"Missing scanned layer indices: {'; '.join(missing_layers)}")
+
+  validate_flax_state_dict(eval_shapes, flax_state_dict)
+  if converted_cache_dir and not os.path.isdir(converted_cache_dir):
+    t_cache_save = time.perf_counter()
+    if jax.process_index() == 0:
+      save_converted_weights(converted_cache_dir, flax_state_dict)
+      max_logging.log(
+          f"Saved converted {subfolder or 'transformer'} weights to {converted_cache_dir} "
+          f"in {time.perf_counter() - t_cache_save:.1f}s"
+      )
+  flax_state_dict = unflatten_dict(flax_state_dict)
+  max_logging.log(f"Converted weights in {time.perf_counter() - t_start:.1f}s")
+  return flax_state_dict
 
 
 def load_vae_weights(

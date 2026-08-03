@@ -16,15 +16,18 @@ limitations under the License.
 
 import time
 import unittest
+import numpy as np
 
 from maxdiffusion.utils.tile_size_grid_search import (
     MXU_TILE,
     VPU_LANE,
+    _aggregate_process_measurements,
     BenchResult,
     BlockBenchmark,
     bkv_candidates,
     bq_candidates,
     grid_search,
+    local_tiled_seq_len,
     padding_of,
     smart_grid,
     time_callable,
@@ -97,6 +100,19 @@ class CandidateTest(unittest.TestCase):
     bkvs = bkv_candidates(RING_SEQ, k=3, max_block=vmem_bkv_ceiling(9472, vmem_bytes=VMEM_64MB))
     self.assertTrue(any(b % MXU_TILE != 0 for b in bkvs))
 
+  def test_ring_sequence_length_uses_actual_ring_shards(self):
+    self.assertEqual(local_tiled_seq_len(6144, "tokamax_ring", context_shards=8, ulysses_shards=-1), 768)
+    self.assertEqual(local_tiled_seq_len(6144, "ulysses_ring", context_shards=8, ulysses_shards=2), 1536)
+    self.assertEqual(local_tiled_seq_len(6144, "flash", context_shards=8, ulysses_shards=-1), 6144)
+
+  def test_ring_sequence_length_matches_production_padding(self):
+    self.assertEqual(local_tiled_seq_len(10, "tokamax_ring", context_shards=4, ulysses_shards=-1), 3)
+    self.assertEqual(local_tiled_seq_len(10, "ulysses_ring", context_shards=4, ulysses_shards=2), 6)
+
+  def test_hybrid_ring_requires_compatible_shards(self):
+    with self.assertRaisesRegex(ValueError, "must be divisible"):
+      local_tiled_seq_len(6144, "ulysses_ring_custom", context_shards=8, ulysses_shards=3)
+
 
 class TimingTest(unittest.TestCase):
 
@@ -115,6 +131,26 @@ class TimingTest(unittest.TestCase):
 
 
 class OrchestratorTest(unittest.TestCase):
+
+  def test_process_measurements_use_slowest_successful_host(self):
+    status, mean_ms, std_ms, compile_ms = _aggregate_process_measurements(
+        np.asarray([
+            [0, 10.0, 0.5, 100.0],
+            [0, 12.0, 0.7, 120.0],
+        ])
+    )
+    self.assertEqual(status, "ok")
+    self.assertEqual((mean_ms, std_ms, compile_ms), (12.0, 0.7, 120.0))
+
+  def test_process_measurements_reject_candidate_if_any_host_fails(self):
+    status, mean_ms, _, _ = _aggregate_process_measurements(
+        np.asarray([
+            [0, 10.0, 0.5, 100.0],
+            [1, np.inf, np.inf, np.inf],
+        ])
+    )
+    self.assertEqual(status, "oom")
+    self.assertIsNone(mean_ms)
 
   def test_smart_search_picks_measured_winner(self):
     res = grid_search(_MockRingBench(), mode="smart", iters=10, log=lambda *a, **k: None)

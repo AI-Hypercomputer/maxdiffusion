@@ -225,12 +225,15 @@ class _HyperParameters:
       raw_keys["vae_logical_axis_rules"] = _lists_to_tuples(raw_keys["vae_logical_axis_rules"])
     # Verify qkv is sharded across sequence.
     attention = raw_keys["attention"]
-    if (
-        attention in ["ulysses_ring", "ulysses_ring_custom", "ulysses_ring_custom_bidir"]
-        and raw_keys.get("ulysses_shards", -1) <= 0
-    ):
+    ulysses_ring_attentions = {
+        "ulysses_ring",
+        "ulysses_ring_custom",
+        "ulysses_ring_custom_fixed_m",
+        "ulysses_ring_custom_bidir",
+    }
+    if attention in ulysses_ring_attentions and raw_keys.get("ulysses_shards", -1) <= 0:
       raise ValueError(f"{attention} requires ulysses_shards to be set from config or command line.")
-    uses_ulysses_ring_attention = attention == "ulysses_ring"
+    uses_ulysses_ring_attention = attention in ulysses_ring_attentions
     uses_ring_attention = "ring" in attention and not uses_ulysses_ring_attention
     uses_ulysses_attention = "ulysses" in attention and not uses_ulysses_ring_attention
     uses_uniform_sequence_sharding = raw_keys["attention_sharding_uniform"]

@@ -1,7 +1,18 @@
 #hardware
 hardware: 'tpu'
 skip_jax_distributed_system: False
+# Supported attention kernels:
+# dot_product, flash, tokamax_flash, tokamax_ring, tokamax_ring_custom,
+# ulysses, ulysses_custom, ulysses_custom_fixed_m, ulysses_ring,
+# ulysses_ring_custom, ulysses_ring_custom_fixed_m, ulysses_ring_custom_bidir,
+# and cudnn_flash_te (GPU only).
 attention: 'flash'
+use_base2_exp: False
+use_experimental_scheduler: False
+# For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
+ulysses_shards: -1
+# Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
+ulysses_attention_chunks: 1
 a2v_attention_kernel: 'flash'
 v2a_attention_kernel: 'dot_product'
 attention_sharding_uniform: True 
@@ -12,6 +23,8 @@ names_which_can_be_offloaded: []
 remat_policy: "NONE"
 
 jax_cache_dir: ''
+# Local/shared filesystem directory for content-addressed PyTorch->Flax transformer weights ('' = disabled).
+converted_weights_dir: ''
 weights_dtype: 'bfloat16'
 activations_dtype: 'bfloat16'
 text_encoder_dtype: 'bfloat16'
@@ -94,7 +107,7 @@ flash_min_seq_length: 4096
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_parallelism: 1  
+ici_fsdp_parallelism: 1
 ici_context_parallelism: -1 # recommended ICI axis to be auto-sharded
 ici_tensor_parallelism: 1
 enable_profiler: False
@@ -105,6 +118,10 @@ profiler_gcs_path: ""
 enable_ondemand_xprof: True
 skip_first_n_steps_for_profiler: 0
 profiler_steps: 5
+
+# Enable JAX named scopes for detailed profiling and debugging
+# When enabled, adds named scopes around key operations in transformer and attention layers
+enable_jax_named_scopes: False
 
 replicate_vae: False
 
@@ -173,4 +190,17 @@ upsampler_temporal_patch_size: 1
 upsampler_adain_factor: 0.0
 upsampler_tone_map_compression_ratio: 0.0
 upsampler_rational_spatial_scale: 2.0
-upsampler_output_type: "pil"
+upsampler_output_type: "np_uint8"
+
+aot_cache_dir: ''
+# Immutable package/build revision used when Git metadata is unavailable.
+aot_build_revision: ''
+# Tile-size auto-tuning. When enable_tile_search: True, generate_ltx2 runs a fast one-DiT-block
+# grid search (maxdiffusion/utils/tile_size_grid_search.py) before inference and updates every
+# effective flash_block_sizes field with the winner. Default off (no-op).
+enable_tile_search: False
+tile_search_mode: 'smart'   # 'smart' (VMEM-capped candidate ladders) | 'full' (2D sweep)
+tile_search_iters: 10
+tile_search_out: ''         # dir for the results CSV; '' -> print only
+tile_search_vmem_limit_bytes: 67108864  # 64 MiB; shared by benchmark and production custom kernels
+use_kv_cache: False

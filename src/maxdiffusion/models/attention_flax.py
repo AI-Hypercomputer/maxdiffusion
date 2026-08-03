@@ -286,6 +286,13 @@ def _select_flash_block_sizes(
   else:
     kv_max_block_size = q_max_block_size
 
+  # Custom kernels use a lightweight carrier that omits the standard Splash
+  # backward fields. A remapped/local standard kernel still needs a complete
+  # BlockSizes object, including when cross-attention happens to have q_len ==
+  # kv_len.
+  if flash_block_sizes is not None and not hasattr(flash_block_sizes, "use_fused_bwd_kernel"):
+    flash_block_sizes = _coerce_tokamax_block_sizes(flash_block_sizes)
+
   # Keep configured block sizes for self-attention, but let
   # cross-attention derive safe KV-aware sizes when q_len != kv_len.
   if flash_block_sizes and key_seq_len == query_seq_len:
@@ -394,9 +401,9 @@ def _build_padding_segment_ids(
   """Build splash segment ids that mask q/kv padding and the attention mask.
 
   Padding tokens get segment id 0, valid tokens 1. An optional attention_mask
-  (batch, kv_len) is folded into the kv segment ids; positions beyond the mask
-  but within key_seq_len default to valid, and positions beyond key_seq_len are
-  padding. Shared by flash, ulysses, and ulysses+ring kernels.
+  (batch, kv_len) is folded into the kv segment ids. Positions beyond an
+  explicit mask are invalid, including sequence padding introduced before the
+  local flash kernel. Shared by flash, Ulysses, and Ulysses+ring kernels.
   """
   q_indices = jax.lax.broadcasted_iota(jnp.int32, (q_padded_len,), 0)
   q_segment_ids = (q_indices < query_seq_len).astype(jnp.int32)
@@ -405,26 +412,75 @@ def _build_padding_segment_ids(
   kv_segment_ids = (kv_indices < key_seq_len).astype(jnp.int32)
 
   if attention_mask is not None:
+    if attention_mask.ndim != 2:
+      raise ValueError(f"attention_mask must have shape [batch, kv_length], got {attention_mask.shape}.")
     mask_len = min(key_seq_len, attention_mask.shape[1])
-    kv_mask_for_batch = attention_mask[0, :mask_len]
-    # Tokens past the mask but within key_seq_len are assumed valid.
+    kv_mask_for_batch = attention_mask[:, :mask_len].astype(jnp.int32)
+    # An explicit mask is authoritative. This also masks sequence padding
+    # introduced before shard_map to make the KV length context-divisible.
     if key_seq_len > mask_len:
       kv_mask_for_batch = jnp.concatenate(
-          [kv_mask_for_batch, jnp.ones((key_seq_len - mask_len,), jnp.int32)],
-          axis=0,
+          [
+              kv_mask_for_batch,
+              jnp.zeros((attention_mask.shape[0], key_seq_len - mask_len), jnp.int32),
+          ],
+          axis=1,
       )
     # Tokens past key_seq_len are padding.
     if kv_padded_len > key_seq_len:
       kv_mask_for_batch = jnp.concatenate(
           [
               kv_mask_for_batch,
-              jnp.zeros((kv_padded_len - key_seq_len,), jnp.int32),
+              jnp.zeros((attention_mask.shape[0], kv_padded_len - key_seq_len), jnp.int32),
           ],
-          axis=0,
+          axis=1,
       )
-    kv_segment_ids = (kv_segment_ids * kv_mask_for_batch).astype(jnp.int32)
+    kv_segment_ids = (kv_segment_ids[None, :] * kv_mask_for_batch).astype(jnp.int32)
+    q_segment_ids = jnp.broadcast_to(q_segment_ids[None, :], (attention_mask.shape[0], q_padded_len))
 
   return segment_ids_cls(q=q_segment_ids, kv=kv_segment_ids)
+
+
+def _prepare_attention_mask_for_shard_map(
+    attention_mask: jax.Array | None,
+    batch_size: int,
+    padded_kv_len: int,
+) -> jax.Array | None:
+  """Broadcasts and pads a canonical keep mask before entering shard_map."""
+  if attention_mask is None:
+    return None
+  if attention_mask.ndim != 2:
+    raise ValueError(f"attention_mask must have shape [batch, kv_length], got {attention_mask.shape}.")
+  if attention_mask.shape[0] == 1 and batch_size != 1:
+    attention_mask = jnp.broadcast_to(attention_mask, (batch_size, attention_mask.shape[1]))
+  elif attention_mask.shape[0] != batch_size:
+    raise ValueError(
+        f"attention_mask batch dimension must be 1 or match the attention batch ({batch_size}), "
+        f"got {attention_mask.shape[0]}."
+    )
+
+  attention_mask = attention_mask.astype(jnp.bool_)
+
+  # `attention_mask.shape[1]` represents the true original sequence length of the KV states,
+  # while `padded_kv_len` represents the padded sequence length required for XLA compilation/divisibility.
+  # We pad the mask with `False` (masked out) to cover the padded dummy tokens.
+  if attention_mask.shape[1] < padded_kv_len:
+    attention_mask = jnp.pad(
+        attention_mask,
+        ((0, 0), (0, padded_kv_len - attention_mask.shape[1])),
+        constant_values=False,
+    )
+  elif attention_mask.shape[1] > padded_kv_len:
+    # If the user-provided mask exceeds the required length, we truncate it.
+    attention_mask = attention_mask[:, :padded_kv_len]
+  return attention_mask
+
+
+def _mesh_axis_in_spec(axis_spec, mesh_axis: str) -> bool:
+  """Returns whether a logical-to-mesh axis entry contains mesh_axis."""
+  if isinstance(axis_spec, tuple):
+    return mesh_axis in axis_spec
+  return axis_spec == mesh_axis
 
 
 def _ulysses_head_chunk_ranges(num_heads: int, ulysses_shards: int, num_chunks: int):
@@ -530,19 +586,16 @@ def _tpu_flash_attention(
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
   value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
+  attention_mask = _prepare_attention_mask_for_shard_map(attention_mask, query.shape[0], key.shape[2])
+  if attention_mask is not None and attention_kernel == "tokamax_ring_custom":
+    raise NotImplementedError("tokamax_ring_custom does not support attention_mask.")
   block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, attention_kernel)
 
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+  mask_axis_names = nn.logical_to_mesh_axes((axis_names_kv[0], axis_names_kv[2]))
 
-  @functools.partial(
-      shard_map.shard_map,
-      mesh=mesh,
-      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
-      out_specs=q_axis_names,
-      check_rep=False,
-  )
-  def wrap_flash_attention(query, key, value):
+  def wrap_flash_attention(query, key, value, attention_mask):
     if attention_kernel == "tokamax_ring_custom":
       # Ring attention backed by the custom dense splash kernel. q stays local,
       # k/v rotate over the "context" axis (handled inside the ring kernel).
@@ -650,9 +703,9 @@ def _tpu_flash_attention(
           ),
           save_residuals=False,
           ring_axis=CONTEXT,
-          # We don't rotate segment ids in tokamax ring attention because our
-          # segment ids is for padding each kv shard has same segment ids
-          rotate_segment_ids=False,
+          # Padding-only IDs are identical on each shard. Explicit masks differ
+          # by KV shard and must rotate together with K/V.
+          rotate_segment_ids=attention_mask is not None,
       )
     else:
       splash_kernel = splash_attention_kernel.make_splash_mha(
@@ -664,9 +717,10 @@ def _tpu_flash_attention(
           residual_checkpoint_name=residual_checkpoint_name,
       )
 
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
+    segment_ids_in_axes = 0 if attention_mask is not None else None
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, segment_ids_in_axes))
 
-    if not mask_padding_tokens:
+    if not mask_padding_tokens and attention_mask is None:
       segment_ids = None
     if attention_kernel in ["flash", "tokamax_flash", "tokamax_ring"]:
       attention_output = vmapped_splash(query, key, value, segment_ids)
@@ -723,7 +777,24 @@ def _tpu_flash_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_batch_sharding: {devices_in_batch_sharding}"
     )
-  x = wrap_flash_attention(query, key, value)
+  if attention_mask is None:
+    sharded_flash_attention = shard_map.shard_map(
+        lambda q, k, v: wrap_flash_attention(q, k, v, None),
+        mesh=mesh,
+        in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
+        out_specs=q_axis_names,
+        check_rep=False,
+    )
+    x = sharded_flash_attention(query, key, value)
+  else:
+    sharded_flash_attention = shard_map.shard_map(
+        wrap_flash_attention,
+        mesh=mesh,
+        in_specs=(q_axis_names, kv_axis_names, kv_axis_names, mask_axis_names),
+        out_specs=q_axis_names,
+        check_rep=False,
+    )
+    x = sharded_flash_attention(query, key, value, attention_mask)
   # Trim back to original sequence length after context-axis padding.
   x = x[:, :, :orig_q_seq_len, :]
   x = _reshape_heads_to_head_dim(x)
@@ -768,6 +839,12 @@ def _ulysses_attention(
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_shards)
   value, _ = _reshape_data_for_flash(value, heads, num_shards)
+  attention_mask = _prepare_attention_mask_for_shard_map(attention_mask, query.shape[0], key.shape[2])
+  if attention_mask is not None and use_custom_kernel:
+    raise NotImplementedError(
+        "The custom dense splash kernel (use_custom_kernel) does not support attention_mask "
+        "(it only handles padding via orig_seq_len); got a non-None attention_mask."
+    )
   num_heads = query.shape[1]
   # Ulysses only redistributes existing heads across the context mesh; unlike
   # the earlier draft, we fail fast instead of padding synthetic heads.
@@ -782,20 +859,17 @@ def _ulysses_attention(
 
   q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+  mask_axis_names = nn.logical_to_mesh_axes((axis_names_kv[0], axis_names_kv[2]))
+  mask_needs_ulysses_gather = _mesh_axis_in_spec(kv_axis_names[2], axis_name)
 
-  @functools.partial(
-      jax.shard_map,
-      mesh=mesh,
-      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
-      out_specs=q_axis_names,
-      check_vma=False,
-  )
-  def wrap_ulysses_attention(query, key, value):
+  def wrap_ulysses_attention(query, key, value, attention_mask):
     # Swap sharding: each device gives up a slice of heads and gathers
     # a slice of sequence, so the local kernel sees the full sequence.
     query = jax.lax.all_to_all(query, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
     key = jax.lax.all_to_all(key, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
     value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+    if attention_mask is not None and mask_needs_ulysses_gather:
+      attention_mask = jax.lax.all_gather(attention_mask, axis_name=axis_name, axis=1, tiled=True)
 
     if use_custom_kernel:
       if attention_mask is not None:
@@ -803,14 +877,7 @@ def _ulysses_attention(
             "The custom dense splash kernel (use_custom_kernel) does not support attention_mask "
             "(it only handles padding via orig_seq_len); got a non-None attention_mask."
         )
-      (
-          bq,
-          bkv,
-          bkv_compute,
-          bkv_compute_in,
-          heads_per_tile,
-          vmem_limit_bytes,
-      ) = _extract_custom_block_sizes(flash_block_sizes)
+      bq, bkv, bkv_compute, bkv_compute_in, heads_per_tile, vmem_limit_bytes = _extract_custom_block_sizes(flash_block_sizes)
 
       if use_base2_exp:
         query = query * LOG2E
@@ -886,7 +953,7 @@ def _ulysses_attention(
       multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
 
       segment_ids = _build_padding_segment_ids(query_seq_len, query.shape[2], key_seq_len, key.shape[2], attention_mask)
-      if not mask_padding_tokens:
+      if not mask_padding_tokens and attention_mask is None:
         segment_ids = None
 
       splash_kernel = splash_attention_kernel.make_splash_mha(
@@ -897,7 +964,8 @@ def _ulysses_attention(
           save_residuals=False,
           residual_checkpoint_name=residual_checkpoint_name,
       )
-      vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
+      segment_ids_in_axes = 0 if attention_mask is not None else None
+      vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, segment_ids_in_axes))
       attention_output = vmapped_splash(query, key, value, segment_ids)
       attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
@@ -931,7 +999,11 @@ def _ulysses_attention(
   # batch is not divisible by them. Those configs are already batch=1 per
   # device inside the shard_map, so they never hit the T(2,128) tiling problem
   # the fold exists to avoid.
-  fold_batch = batch > 1 and devices_in_batch_sharding == 1 and (batch * num_heads) % num_shards == 0
+  # Folding batch into heads destroys the one-mask-per-example association.
+  # Keep the optimization for the common unmasked path only.
+  fold_batch = (
+      attention_mask is None and batch > 1 and devices_in_batch_sharding == 1 and (batch * num_heads) % num_shards == 0
+  )
   if fold_batch:
     query = query.reshape(1, batch * num_heads, *query.shape[2:])
     key = key.reshape(1, batch * num_heads, *key.shape[2:])
@@ -940,6 +1012,30 @@ def _ulysses_attention(
   else:
     effective_num_heads = num_heads
 
+  if attention_mask is None:
+    sharded_ulysses_attention = jax.shard_map(
+        lambda q, k, v: wrap_ulysses_attention(q, k, v, None),
+        mesh=mesh,
+        in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
+        out_specs=q_axis_names,
+        check_vma=False,
+    )
+
+    def run_ulysses_attention(q, k, v):
+      return sharded_ulysses_attention(q, k, v)
+
+  else:
+    sharded_ulysses_attention = jax.shard_map(
+        wrap_ulysses_attention,
+        mesh=mesh,
+        in_specs=(q_axis_names, kv_axis_names, kv_axis_names, mask_axis_names),
+        out_specs=q_axis_names,
+        check_vma=False,
+    )
+
+    def run_ulysses_attention(q, k, v):
+      return sharded_ulysses_attention(q, k, v, attention_mask)
+
   x = _run_chunked_ulysses_attention(
       query,
       key,
@@ -947,7 +1043,7 @@ def _ulysses_attention(
       effective_num_heads,
       num_shards,
       ulysses_attention_chunks,
-      wrap_ulysses_attention,
+      run_ulysses_attention,
   )
 
   if fold_batch:
@@ -1018,6 +1114,7 @@ def _ulysses_ring_attention(
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_sequence_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_sequence_shards)
   value, _ = _reshape_data_for_flash(value, heads, num_sequence_shards)
+  attention_mask = _prepare_attention_mask_for_shard_map(attention_mask, query.shape[0], key.shape[2])
   num_heads = query.shape[1]
 
   block_sizes = _select_flash_block_sizes(query, key, flash_block_sizes, dtype, "tokamax_ring")
@@ -1026,24 +1123,18 @@ def _ulysses_ring_attention(
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
   internal_q_axis_names = _replace_mesh_axis_names(q_axis_names, context_axis, internal_sequence_axes)
   internal_kv_axis_names = _replace_mesh_axis_names(kv_axis_names, context_axis, internal_sequence_axes)
+  mask_axis_names = nn.logical_to_mesh_axes((axis_names_kv[0], axis_names_kv[2]))
+  internal_mask_axis_names = _replace_mesh_axis_names(mask_axis_names, context_axis, internal_sequence_axes)
+  mask_needs_ulysses_gather = _mesh_axis_in_spec(internal_mask_axis_names[1], ulysses_axis)
 
-  @functools.partial(
-      jax.shard_map,
-      mesh=internal_mesh,
-      in_specs=(
-          internal_q_axis_names,
-          internal_kv_axis_names,
-          internal_kv_axis_names,
-      ),
-      out_specs=internal_q_axis_names,
-      check_vma=False,
-  )
-  def wrap_ulysses_ring_attention(query, key, value):
+  def wrap_ulysses_ring_attention(query, key, value, attention_mask):
     # Swap sharding: each device gives up a slice of heads and gathers
     # a slice of sequence, so the local kernel sees the full sequence.
     query = jax.lax.all_to_all(query, axis_name=ulysses_axis, split_axis=1, concat_axis=2, tiled=True)
     key = jax.lax.all_to_all(key, axis_name=ulysses_axis, split_axis=1, concat_axis=2, tiled=True)
     value = jax.lax.all_to_all(value, axis_name=ulysses_axis, split_axis=1, concat_axis=2, tiled=True)
+    if attention_mask is not None and mask_needs_ulysses_gather:
+      attention_mask = jax.lax.all_gather(attention_mask, axis_name=ulysses_axis, axis=1, tiled=True)
 
     uses_fused_kernel = block_sizes.use_fused_bwd_kernel
     block_q_sizes = (block_sizes.block_q, block_sizes.block_q_dkv)
@@ -1065,9 +1156,8 @@ def _ulysses_ring_attention(
     kv_padded_len = key.shape[2]
     total_kv_len = kv_padded_len * num_ring_shards
 
-    # Mask q/kv padding via segment ids, same as the tokamax_ring kernel. Each
-    # ring shard pads identically so every shard shares the same per-shard ids
-    # and rotation is unneeded.
+    # Mask q/kv padding via segment ids, same as the tokamax_ring kernel.
+    # Padding-only IDs are identical per shard; explicit KV masks rotate.
     segment_ids = _build_padding_segment_ids(
         query_seq_len,
         q_padded_len,
@@ -1077,7 +1167,7 @@ def _ulysses_ring_attention(
         tokamax_splash_base.SegmentIds,
     )
 
-    if not mask_padding_tokens:
+    if not mask_padding_tokens and attention_mask is None:
       segment_ids = None
 
     mask = tokamax_splash_attention_mask.FullMask(_shape=(q_padded_len, total_kv_len))
@@ -1094,9 +1184,10 @@ def _ulysses_ring_attention(
         save_residuals=False,
         ring_axis=ring_axis,
         kv_seq_shards=num_ring_shards,
-        rotate_segment_ids=False,
+        rotate_segment_ids=attention_mask is not None,
     )
-    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
+    segment_ids_in_axes = 0 if attention_mask is not None else None
+    vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, segment_ids_in_axes))
     attention_output = vmapped_splash(query, key, value, segment_ids)
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
@@ -1116,6 +1207,30 @@ def _ulysses_ring_attention(
         "Warning, batch dimension should be shardable among the devices in data and fsdp"
         f" axis, batch dimension: {query.shape[0]}, devices_in_batch_sharding: {devices_in_batch_sharding}"
     )
+  if attention_mask is None:
+    sharded_ulysses_ring_attention = jax.shard_map(
+        lambda q, k, v: wrap_ulysses_ring_attention(q, k, v, None),
+        mesh=internal_mesh,
+        in_specs=(internal_q_axis_names, internal_kv_axis_names, internal_kv_axis_names),
+        out_specs=internal_q_axis_names,
+        check_vma=False,
+    )
+
+    def run_ulysses_ring_attention(q, k, v):
+      return sharded_ulysses_ring_attention(q, k, v)
+
+  else:
+    sharded_ulysses_ring_attention = jax.shard_map(
+        wrap_ulysses_ring_attention,
+        mesh=internal_mesh,
+        in_specs=(internal_q_axis_names, internal_kv_axis_names, internal_kv_axis_names, internal_mask_axis_names),
+        out_specs=internal_q_axis_names,
+        check_vma=False,
+    )
+
+    def run_ulysses_ring_attention(q, k, v):
+      return sharded_ulysses_ring_attention(q, k, v, attention_mask)
+
   x = _run_chunked_ulysses_attention(
       query,
       key,
@@ -1123,7 +1238,7 @@ def _ulysses_ring_attention(
       num_heads,
       num_ulysses_shards,
       ulysses_attention_chunks,
-      wrap_ulysses_ring_attention,
+      run_ulysses_ring_attention,
   )
   x = jax.lax.with_sharding_constraint(x, q_axis_names)
   x = x[:, :, :orig_q_seq_len, :]
@@ -1373,6 +1488,7 @@ def _apply_attention_dot(
     split_head_dim: bool,
     float32_qk_product: bool,
     use_memory_efficient_attention: bool,
+    attention_mask: Array = None,
 ):
   """Apply Attention."""
   if split_head_dim:
@@ -1389,7 +1505,7 @@ def _apply_attention_dot(
     query_states = query_states.astype(jnp.float32)
     key_states = key_states.astype(jnp.float32)
 
-  if use_memory_efficient_attention:
+  if use_memory_efficient_attention and attention_mask is None:
     query_states = query_states.transpose(1, 0, 2)
     key_states = key_states.transpose(1, 0, 2)
     value_states = value_states.transpose(1, 0, 2)
@@ -1423,7 +1539,12 @@ def _apply_attention_dot(
       attention_scores = jnp.einsum("b i d, b j d->b i j", query_states, key_states)
 
     attention_scores = attention_scores * scale
+    if attention_mask is not None:
+      attention_scores = attention_scores + attention_mask.astype(attention_scores.dtype)
     attention_probs = nn.softmax(attention_scores, axis=-1 if split_head_dim else 2)
+    if attention_mask is not None:
+      has_valid_key = jnp.any(attention_mask == 0, axis=-1, keepdims=True)
+      attention_probs = jnp.where(has_valid_key, attention_probs, 0)
 
     attention_probs = attention_probs.astype(dtype)
 
@@ -1484,6 +1605,7 @@ def dot_product_kernel(q, k, v, context):
       context["split_head_dim"],
       context["float32_qk_product"],
       context["use_memory_efficient_attention"],
+      context["attention_mask"],
   )
 
 
@@ -1703,7 +1825,10 @@ def tokamax_ring_kernel(q, k, v, context):
       context["dtype"],
       attention_kernel="tokamax_ring",
       mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
       attention_mask=context["attention_mask"],
+      use_base2_exp=context["use_base2_exp"],
+      use_experimental_scheduler=context["use_experimental_scheduler"],
   )
 
 
@@ -1780,7 +1905,28 @@ def _apply_attention(
         and value.shape[seq_len_idx] >= flash_min_seq_length
     )
 
-  # Fallback logic
+  effective_attention_kernel = attention_kernel
+  if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
+    effective_attention_kernel = "dot_product"
+
+  # Masks enter the dispatcher as canonical [B, K] keep masks. Adapt them
+  # only after fallback selection because a configured flash kernel may use
+  # dot-product attention for short sequences.
+  if attention_mask is not None:
+    if attention_mask.ndim != 2:
+      raise ValueError(f"attention_mask must have shape [batch, kv_length], got {attention_mask.shape}.")
+    attention_mask = attention_mask.astype(jnp.bool_)
+    if effective_attention_kernel == "dot_product":
+      attention_bias = jnp.where(
+          attention_mask,
+          jnp.asarray(0.0, dtype=dtype),
+          jnp.asarray(-10000.0, dtype=dtype),
+      )
+      if split_head_dim:
+        attention_mask = attention_bias[:, None, None, :]
+      else:
+        attention_mask = jnp.repeat(attention_bias, heads, axis=0)[:, None, :]
+
   context = {
       "heads": heads,
       "mesh": mesh,
@@ -1803,14 +1949,11 @@ def _apply_attention(
       "dpa_layer": dpa_layer,
   }
 
-  if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
-    return KERNEL_REGISTRY["dot_product"](query, key, value, context)
-
   # Module-level Registry lookup
-  if attention_kernel in KERNEL_REGISTRY:
-    return KERNEL_REGISTRY[attention_kernel](query, key, value, context)
+  if effective_attention_kernel in KERNEL_REGISTRY:
+    return KERNEL_REGISTRY[effective_attention_kernel](query, key, value, context)
 
-  raise ValueError(f"Unexpected attention kernel {attention_kernel=}.")
+  raise ValueError(f"Unexpected attention kernel {effective_attention_kernel=}.")
 
 
 def _query_chunk_attention(query, key, value, precision, key_chunk_size: int = 4096):
@@ -2020,7 +2163,7 @@ class NNXAttentionOp(nnx.Module):
       self,
       mesh: Mesh,
       attention_kernel: str,
-      scale: int,
+      scale: float,
       heads: int,
       dim_head: int,
       use_memory_efficient_attention: bool = False,
@@ -2121,7 +2264,7 @@ class NNXAttentionOp(nnx.Module):
 class AttentionOp(nn.Module):
   mesh: Mesh
   attention_kernel: str
-  scale: int
+  scale: float
   heads: int
   dim_head: int
   use_memory_efficient_attention: bool = False
@@ -2245,15 +2388,35 @@ class FlaxWanAttention(nnx.Module):
     self.out_axis_names = out_axis_names
     self.enable_jax_named_scopes = enable_jax_named_scopes
 
+    cross_attention_remapped_to_flash = not is_self_attention and attention_kernel in (
+        "tokamax_ring",
+        "tokamax_ring_custom",
+        "ulysses_ring",
+        "ulysses_ring_custom",
+        "ulysses_ring_custom_fixed_m",
+        "ulysses_ring_custom_bidir",
+        "ulysses_custom",
+        "ulysses_custom_fixed_m",
+    )
+    cross_attention_uses_local_kv = not is_self_attention and (
+        cross_attention_remapped_to_flash or attention_kernel in ("flash", "tokamax_flash", "cudnn_flash_te")
+    )
     if is_self_attention:
       axis_names_q = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_Q_LENGTH, D_KV)
       axis_names_kv = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_KV_LENGTH, D_KV)
     else:
       axis_names_q = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_Q_LENGTH, D_KV)
-      axis_names_kv = (BATCH, CROSS_ATTN_HEAD, CROSS_ATTN_KV_LENGTH, D_KV)
-    if attention_kernel in ("tokamax_ring", "tokamax_ring_custom", "ulysses_ring") and not is_self_attention:
+      axis_names_kv = (
+          BATCH,
+          CROSS_ATTN_HEAD,
+          None if cross_attention_uses_local_kv else CROSS_ATTN_KV_LENGTH,
+          D_KV,
+      )
+    if cross_attention_remapped_to_flash:
+      attention_kernel = "tokamax_flash"
+    elif attention_kernel in ("tokamax_ring", "tokamax_ring_custom", "ulysses_ring") and not is_self_attention:
       attention_kernel = "tokamax_flash"  # do not use ring attention for cross attention
-    if (
+    elif (
         attention_kernel in ("ulysses_ring_custom", "ulysses_ring_custom_bidir", "ulysses_ring_custom_fixed_m")
         and not is_self_attention
     ):

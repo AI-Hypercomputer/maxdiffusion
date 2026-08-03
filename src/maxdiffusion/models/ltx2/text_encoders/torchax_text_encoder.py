@@ -20,10 +20,8 @@ import torch
 import jax
 from torchax import interop, default_env
 
-# --- Monkeypatch transformers masking_utils to avoid torchax integer tracing bug ---
+from maxdiffusion import max_logging
 import transformers.masking_utils
-
-_orig_sliding_window_overlay = transformers.masking_utils.sliding_window_overlay
 
 
 def _patched_sliding_window_overlay(sliding_window: int):
@@ -44,6 +42,13 @@ def _patched_sliding_window_overlay(sliding_window: int):
   return inner_mask
 
 
+# TODO(maxdiffusion-team): Remove this monkeypatch once upstream HuggingFace fixes
+# the integer tracing bug with sliding window overlays in Torchax.
+# Tracking issue: https://github.com/huggingface/transformers/issues/32578
+max_logging.log("WARNING: Globally monkeypatching transformers.masking_utils.sliding_window_overlay to fix Torchax tracing.")
+transformers.masking_utils.sliding_window_overlay = _patched_sliding_window_overlay
+
+
 class TorchaxGemma3TextEncoder(interop.JittableModule):
   """
   A jittable Torchax module for wrapping the HuggingFace PyTorch
@@ -56,25 +61,19 @@ class TorchaxGemma3TextEncoder(interop.JittableModule):
   def __call__(
       self, input_ids: jax.Array, attention_mask: jax.Array, output_hidden_states: bool = True
   ) -> Tuple[jax.Array, ...]:
-    # Dynamically patch transformers.masking_utils only during the duration of this call
-    transformers.masking_utils.sliding_window_overlay = _patched_sliding_window_overlay
-    try:
-      with default_env():
-        input_ids = interop.torch_view(input_ids)
-        attention_mask = interop.torch_view(attention_mask)
+    with default_env():
+      input_ids = interop.torch_view(input_ids)
+      attention_mask = interop.torch_view(attention_mask)
 
-        output = self.functional_call(
-            self._forward_inner,
-            params=self.params,
-            buffers=self.buffers,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=output_hidden_states,
-        )
-      return interop.jax_view(output)
-    finally:
-      # Restore original behavior to prevent side effects on other potential models in same env
-      transformers.masking_utils.sliding_window_overlay = _orig_sliding_window_overlay
+      output = self.functional_call(
+          self._forward_inner,
+          params=self.params,
+          buffers=self.buffers,
+          input_ids=input_ids,
+          attention_mask=attention_mask,
+          output_hidden_states=output_hidden_states,
+      )
+    return interop.jax_view(output)
 
   @staticmethod
   def _forward_inner(model, input_ids, attention_mask, output_hidden_states=True):

@@ -58,6 +58,7 @@ import glob
 import hashlib
 import inspect
 import os
+import json
 import pickle
 import re
 import threading
@@ -70,6 +71,12 @@ from jax.experimental import serialize_executable
 from maxdiffusion import max_logging
 
 _FORMAT_VERSION = 1
+
+
+def _metadata_fingerprint(meta: dict[str, Any]) -> str:
+  """Returns the stable filename fingerprint for install-time metadata."""
+  serialized = json.dumps(meta, sort_keys=True, default=str)
+  return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
 
 
 def _dynamic_signature(args: tuple, kwargs: dict) -> str:
@@ -372,21 +379,30 @@ def install(cache_dir: str, meta: dict[str, Any], mesh: Any) -> None:
     mesh: The pipeline mesh; pins device order for deserialization and
       provides the context for re-lowering at save time.
   """
-  if not cache_dir:
-    return
-  os.makedirs(cache_dir, exist_ok=True)
-  _STATE.cache_dir = cache_dir
-  _STATE.fingerprint = hashlib.sha256(repr(sorted(meta.items())).encode()).hexdigest()[:12]
-  _STATE.mesh = mesh
-  _STATE.enabled = True
+  # A process may construct multiple pipelines with different cache settings.
+  # Finish any previous loads, then reset all install-scoped state even when
+  # the new cache directory is empty.
+  wait_for_loads()
+  _STATE.cache_dir = ""
+  _STATE.fingerprint = ""
+  _STATE.mesh = None
+  _STATE.enabled = False
   for entry in _REGISTRY:
     with entry._lock:
-      # Cached state belongs to the previous install's dir/fingerprint.
       entry._compiled.clear()
       entry._out_specs.clear()
       entry._pending.clear()
       entry._adapters.clear()
       entry._on_disk.clear()
+
+  if not cache_dir:
+    return
+  os.makedirs(cache_dir, exist_ok=True)
+  _STATE.cache_dir = cache_dir
+  _STATE.fingerprint = _metadata_fingerprint(meta)
+  _STATE.mesh = mesh
+  _STATE.enabled = True
+  for entry in _REGISTRY:
     thread = threading.Thread(target=entry.load_from_disk, name=f"aot-load-{entry.name}", daemon=True)
     thread.start()
     _LOAD_THREADS.append(thread)

@@ -25,6 +25,8 @@ from flax.linen import partitioning as nn_partitioning
 from maxdiffusion import pyconfig
 from maxdiffusion.max_utils import create_device_mesh
 from maxdiffusion.models.ltx2.transformer_ltx2 import (
+    LTX2StaticContext,
+    LTX2BlockContext,
     LTX2VideoTransformerBlock,
     LTX2VideoTransformer3DModel,
     LTX2AdaLayerNormSingle,
@@ -137,6 +139,113 @@ class LTX2TransformerTest(unittest.TestCase):
     self.assertEqual(cos.shape, (1, 32, 10, 16))
     self.assertEqual(sin.shape, (1, 32, 10, 16))
 
+  def test_video_coords_use_channel_first_layout(self):
+    """Video coordinate axes remain [batch, axis, sequence, start_or_end]."""
+    rope = LTX2RotaryPosEmbed(
+        dim=self.dim,
+        patch_size=self.patch_size,
+        patch_size_t=self.patch_size_t,
+        base_num_frames=8,
+        base_height=32,
+        base_width=32,
+        modality="video",
+    )
+
+    coords = rope.prepare_video_coords(batch_size=2, num_frames=2, height=3, width=4, fps=24.0)
+
+    self.assertEqual(coords.shape, (2, 3, 24, 2))
+
+  def test_kv_cache_rejects_timestep_modulated_prompt_embeddings(self):
+    """Caching must not bypass the per-timestep LTX2.3 prompt modulation."""
+    model = Mock(cross_attn_mod=True)
+
+    with self.assertRaisesRegex(ValueError, "KV caching is incompatible with cross_attn_mod=True"):
+      LTX2VideoTransformer3DModel.compute_kv_cache(
+          model,
+          encoder_hidden_states=None,
+          audio_encoder_hidden_states=None,
+          num_frames=1,
+          height=1,
+          width=1,
+          fps=24.0,
+          audio_num_frames=1,
+      )
+
+  def test_kv_cache_matches_uncached_output_with_and_without_layer_scan(self):
+    """Layer-scanned KV inputs must be equivalent to normal cross-attention projections."""
+    batch_size = 1
+    seq_len = jax.device_count()
+    num_frames, height, width = seq_len, 2, 2
+    audio_num_frames = seq_len
+    video_dim, audio_dim, caption_dim = 64, 64, 32
+    hidden_states = jnp.ones((batch_size, num_frames * height * width, 8), dtype=jnp.float32)
+    audio_hidden_states = jnp.ones((batch_size, audio_num_frames, 4), dtype=jnp.float32)
+    encoder_hidden_states = jnp.ones((batch_size, seq_len, caption_dim), dtype=jnp.float32)
+    audio_encoder_hidden_states = jnp.ones((batch_size, seq_len, caption_dim), dtype=jnp.float32)
+    attention_mask = jnp.ones((batch_size, seq_len), dtype=jnp.bool_)
+
+    for scan_layers in (False, True):
+      with self.subTest(scan_layers=scan_layers), self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+        model = LTX2VideoTransformer3DModel(
+            rngs=nnx.Rngs(jax.random.key(0)),
+            in_channels=8,
+            out_channels=8,
+            num_attention_heads=4,
+            attention_head_dim=16,
+            cross_attention_dim=video_dim,
+            caption_channels=caption_dim,
+            audio_in_channels=4,
+            audio_out_channels=4,
+            audio_num_attention_heads=4,
+            audio_attention_head_dim=16,
+            audio_cross_attention_dim=audio_dim,
+            num_layers=2,
+            mesh=self.mesh,
+            scan_layers=scan_layers,
+            attention_kernel="dot_product",
+            a2v_attention_kernel="dot_product",
+            v2a_attention_kernel="dot_product",
+        )
+
+        common_args = {
+            "hidden_states": hidden_states,
+            "audio_hidden_states": audio_hidden_states,
+            "encoder_hidden_states": encoder_hidden_states,
+            "audio_encoder_hidden_states": audio_encoder_hidden_states,
+            "timestep": jnp.array([1.0]),
+            "num_frames": num_frames,
+            "height": height,
+            "width": width,
+            "audio_num_frames": audio_num_frames,
+            "encoder_attention_mask": attention_mask,
+            "audio_encoder_attention_mask": attention_mask,
+            "return_dict": True,
+        }
+        uncached_output = model(**common_args)
+        kv_cache, rope_cache, cached_video_embeds, cached_audio_embeds = model.compute_kv_cache(
+            encoder_hidden_states,
+            audio_encoder_hidden_states,
+            num_frames,
+            height,
+            width,
+            24.0,
+            audio_num_frames,
+        )
+        cached_output = model(
+            **{
+                **common_args,
+                "encoder_hidden_states": cached_video_embeds,
+                "audio_encoder_hidden_states": cached_audio_embeds,
+                "cached_kv": kv_cache,
+                "rope_cache": rope_cache,
+            }
+        )
+
+        self.assertTrue(bool(jnp.allclose(uncached_output["sample"], cached_output["sample"], atol=5e-2, rtol=5e-2)))
+        self.assertTrue(
+            bool(jnp.allclose(uncached_output["audio_sample"], cached_output["audio_sample"], atol=5e-2, rtol=5e-2))
+        )
+
   def test_ltx2_ada_layer_norm_single(self):
     """Tests LTX2AdaLayerNormSingle initialization and execution."""
     key = jax.random.key(0)
@@ -203,9 +312,7 @@ class LTX2TransformerTest(unittest.TestCase):
       temb_ca_gate = jnp.zeros((batch_size, 1 * dim))
       temb_ca_audio_gate = jnp.zeros((batch_size, 1 * audio_dim))
 
-      output_hidden, output_audio = block(
-          hidden_states=hidden_states,
-          audio_hidden_states=audio_hidden_states,
+      static_ctx = LTX2StaticContext(
           encoder_hidden_states=encoder_hidden_states,
           audio_encoder_hidden_states=audio_encoder_hidden_states,
           temb=temb,
@@ -215,6 +322,14 @@ class LTX2TransformerTest(unittest.TestCase):
           temb_ca_gate=temb_ca_gate,
           temb_ca_audio_gate=temb_ca_audio_gate,
       )
+
+      ctx = LTX2BlockContext(
+          hidden_states=hidden_states,
+          audio_hidden_states=audio_hidden_states,
+          static=static_ctx,
+      )
+
+      output_hidden, output_audio = block(ctx)
 
       self.assertEqual(output_hidden.shape, hidden_states.shape)
       self.assertEqual(output_audio.shape, audio_hidden_states.shape)
@@ -260,8 +375,8 @@ class LTX2TransformerTest(unittest.TestCase):
       encoder_hidden_states = jnp.zeros((batch_size, 128, 32))  # (B, L, D) match caption_channels
       audio_encoder_hidden_states = jnp.zeros((batch_size, 128, 32))
 
-      encoder_attention_mask = jnp.ones((batch_size, 128))
-      audio_encoder_attention_mask = jnp.ones((batch_size, 128))
+      encoder_attention_mask = jnp.ones((batch_size, 128), dtype=jnp.bool_)
+      audio_encoder_attention_mask = jnp.ones((batch_size, 128), dtype=jnp.bool_)
 
       output = model(
           hidden_states=hidden_states,
@@ -316,23 +431,26 @@ class LTX2TransformerTest(unittest.TestCase):
     caption_channels = 4096
 
     hidden_states = jnp.ones((batch_size, num_tokens, in_channels), dtype=jnp.float32)
-    indices_grid = jnp.ones((batch_size, 3, num_tokens), dtype=jnp.float32)
+    jnp.ones((batch_size, 3, num_tokens), dtype=jnp.float32)
     encoder_hidden_states = jnp.ones((batch_size, 128, caption_channels), dtype=jnp.float32)
     timestep = jnp.ones((batch_size, 256), dtype=jnp.float32)
-    class_labels = None
-    cross_attention_kwargs = None
-    segment_ids = jnp.ones((batch_size, 256), dtype=jnp.int32)
-    encoder_attention_segment_ids = jnp.ones((batch_size, 128), dtype=jnp.int32)
+    jnp.ones((batch_size, 256), dtype=jnp.int32)
+    encoder_attention_mask = jnp.ones((batch_size, 128), dtype=jnp.bool_)
 
     return (
         hidden_states,
-        indices_grid,
+        hidden_states,  # audio_hidden_states
         encoder_hidden_states,
+        encoder_hidden_states,  # audio_encoder_hidden_states
         timestep,
-        class_labels,
-        cross_attention_kwargs,
-        segment_ids,
-        encoder_attention_segment_ids,
+        None,  # audio_timestep
+        encoder_attention_mask,  # encoder_attention_mask
+        encoder_attention_mask,  # audio_encoder_attention_mask
+        8,  # latent num_frames
+        32,  # latent height
+        32,  # latent width
+        24.0,  # fps
+        256,  # audio_num_frames
     )
 
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.get_dummy_ltx2_inputs")

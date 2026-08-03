@@ -281,7 +281,7 @@ class EmptyTqdm:
     self._iterator = args[0] if args else None
 
   def __iter__(self):
-    return iter(self._iterator)  # pyrefly: ignore[no-matching-overload]
+    return iter(self._iterator if self._iterator is not None else [])
 
   def __getattr__(self, _):
     """Return empty function."""
