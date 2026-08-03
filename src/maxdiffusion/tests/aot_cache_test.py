@@ -60,6 +60,19 @@ class AotCacheTest(unittest.TestCase):
     np.testing.assert_allclose(result, self._a @ self._b + 1.0)
     self.assertFalse(aot_cache._STATE.enabled)
 
+  def test_empty_install_disables_and_clears_a_previous_cache(self):
+    self._install()
+    _toy_fn(self._a, self._b, True)
+    self.assertTrue(aot_cache._STATE.enabled)
+
+    aot_cache.install("", meta={}, mesh=None)
+
+    self.assertFalse(aot_cache._STATE.enabled)
+    self.assertEqual(aot_cache._STATE.cache_dir, "")
+    for entry in aot_cache._REGISTRY:
+      self.assertFalse(entry._compiled)
+      self.assertFalse(entry._pending)
+
   def test_record_save_hit_roundtrip(self):
     self._install()
     first = _toy_fn(self._a, self._b, True)  # miss -> jit + record

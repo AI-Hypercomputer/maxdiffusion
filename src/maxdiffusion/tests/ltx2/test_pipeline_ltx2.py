@@ -16,10 +16,23 @@ limitations under the License.
 
 import unittest
 from unittest.mock import MagicMock, patch
+import jax
 import jax.numpy as jnp
 import numpy as np
 
-from maxdiffusion.pipelines.ltx2.ltx2_pipeline import LTX2Pipeline, calculate_shift, rescale_noise_cfg
+from maxdiffusion.max_utils import flash_block_sizes_for_candidate
+from maxdiffusion.pipelines.ltx2.ltx2_pipeline import (
+    LTX2Pipeline,
+    _apply_ltx2_guidance,
+    _final_param_dtype,
+    _restore_guidance_latents,
+    _select_batch_sharding_axes,
+    _select_guidance_latents,
+    _temporary_vae_slicing,
+    calculate_shift,
+    cast_with_exclusion,
+    rescale_noise_cfg,
+)
 
 
 class LTX2PipelineTest(unittest.TestCase):
@@ -54,6 +67,126 @@ class LTX2PipelineTest(unittest.TestCase):
     # with guidance_rescale = 0.0, output should be identical to noise_cfg
     rescaled_0 = rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0)
     np.testing.assert_allclose(rescaled_0, noise_cfg, rtol=1e-5)
+
+  def test_guidance_helpers(self):
+    latents = jnp.array([[10.0]])
+    audio_latents = jnp.array([[20.0]])
+
+    # Standard CFG uses the two-way [unconditional, conditional] layout.
+    cfg_noise, cfg_audio_noise = _apply_ltx2_guidance(
+        jnp.array([[1.0], [3.0]]),
+        jnp.array([[2.0], [4.0]]),
+        latents,
+        audio_latents,
+        sigma_t=2.0,
+        guidance_scale=2.0,
+        stg_scale=0.0,
+        modality_scale=1.0,
+        guidance_rescale=0.0,
+        audio_guidance_scale=None,
+        audio_stg_scale=None,
+        audio_modality_scale=None,
+        audio_guidance_rescale=0.0,
+        do_cfg=True,
+        do_stg=False,
+    )
+    np.testing.assert_allclose(cfg_noise, jnp.array([[5.0]]))
+    np.testing.assert_allclose(cfg_audio_noise, jnp.array([[6.0]]))
+
+    # CFG+STG returns the same delta formulation in eager and traced execution.
+    stg_noise = jnp.array([[1.0], [3.0], [4.0], [5.0]])
+    apply_stg = jax.jit(
+        lambda rescale: _apply_ltx2_guidance(
+            stg_noise,
+            stg_noise,
+            latents,
+            latents,
+            sigma_t=2.0,
+            guidance_scale=2.0,
+            stg_scale=1.0,
+            modality_scale=2.0,
+            guidance_rescale=rescale,
+            audio_guidance_scale=None,
+            audio_stg_scale=None,
+            audio_modality_scale=None,
+            audio_guidance_rescale=rescale,
+            do_cfg=True,
+            do_stg=True,
+        )
+    )
+    guided_noise, guided_audio_noise = apply_stg(jnp.array(0.0))
+    np.testing.assert_allclose(guided_noise, jnp.array([[2.0]]))
+    np.testing.assert_allclose(guided_audio_noise, jnp.array([[2.0]]))
+
+    stacked_latents = jnp.concatenate([latents] * 4, axis=0)
+    stacked_audio_latents = jnp.concatenate([audio_latents] * 4, axis=0)
+    selected_latents, selected_audio_latents = _select_guidance_latents(
+        stacked_latents,
+        stacked_audio_latents,
+        batch_size=1,
+        do_cfg=True,
+        do_stg=True,
+    )
+    restored_latents, restored_audio_latents = _restore_guidance_latents(
+        selected_latents,
+        selected_audio_latents,
+        do_cfg=True,
+        do_stg=True,
+    )
+    np.testing.assert_array_equal(restored_latents, stacked_latents)
+    np.testing.assert_array_equal(restored_audio_latents, stacked_audio_latents)
+
+  def test_batch_sharding_axes_use_largest_divisor(self):
+    mesh_shape = {"data": 1, "fsdp": 1, "context": 8, "tensor": 2}
+    self.assertEqual(_select_batch_sharding_axes(mesh_shape, 16), ("context", "tensor"))
+    self.assertEqual(_select_batch_sharding_axes(mesh_shape, 8), ("context",))
+    self.assertEqual(_select_batch_sharding_axes(mesh_shape, 3), ())
+
+  def test_converted_weight_dtype_policy_matches_runtime_cast(self):
+    self.assertEqual(_final_param_dtype(("proj_in", "kernel"), jnp.bfloat16), np.dtype(jnp.bfloat16))
+    self.assertEqual(
+        _final_param_dtype(("transformer_blocks", "norm1", "scale"), jnp.bfloat16),
+        np.dtype(jnp.float32),
+    )
+    self.assertEqual(
+        _final_param_dtype(("condition_embedder", "linear", "kernel"), jnp.bfloat16),
+        np.dtype(jnp.float32),
+    )
+
+  def test_runtime_cast_does_not_copy_cached_final_dtype(self):
+    value = np.ones((2, 2), dtype=np.float16)
+    path = (jax.tree_util.DictKey("proj_in"), jax.tree_util.DictKey("kernel"))
+    self.assertIs(cast_with_exclusion(path, value, np.float16), value)
+
+  def test_tuned_block_sizes_update_effective_tokamax_fields(self):
+    candidate = flash_block_sizes_for_candidate(
+        {
+            "block_q": 2048,
+            "block_kv": 2048,
+            "block_kv_compute": 1024,
+            "block_q_dkv": 2048,
+            "block_kv_dkv": 2048,
+            "block_kv_dkv_compute": 2048,
+            "use_fused_bwd_kernel": True,
+        },
+        "tokamax_flash",
+        block_q=1024,
+        block_kv=768,
+        block_kv_compute=512,
+    )
+    self.assertEqual(candidate["block_q"], 1024)
+    self.assertEqual(candidate["block_q_dkv"], 1024)
+    self.assertEqual(candidate["block_kv_dkv"], 768)
+    self.assertEqual(candidate["block_kv_dkv_compute"], 512)
+
+  def test_temporary_vae_slicing_restores_state_after_error(self):
+    vae = MagicMock()
+    vae.use_slicing = True
+    with self.assertRaisesRegex(RuntimeError, "decode failed"):
+      with _temporary_vae_slicing(vae, False):
+        self.assertFalse(vae.use_slicing)
+        raise RuntimeError("decode failed")
+    self.assertTrue(vae.use_slicing)
 
   def test_pipeline_init(self):
     """Test LTX2Pipeline initialization and property extraction."""
@@ -188,13 +321,17 @@ class LTX2PipelineTest(unittest.TestCase):
     self.assertIsNone(n_e)
     self.assertIsNone(n_a)
 
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.Mesh")
+  @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.max_utils.create_device_mesh")
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.load_transformer")
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline._create_common_components")
   @patch("maxdiffusion.pipelines.ltx2.ltx2_pipeline.LTX2Pipeline.quantize_transformer")
-  def test_load_and_init(self, mock_quantize, mock_create_common, mock_load_transformer):
+  def test_load_and_init(self, mock_quantize, mock_create_common, mock_load_transformer, mock_create_device_mesh, mock_Mesh):
     """Test that pipeline loading correctly wires all the dependencies down to __init__."""
     mock_config = MagicMock()
+    mock_config.seed = 0
     mock_mesh = MagicMock()
+    mock_Mesh.return_value = mock_mesh
 
     mock_common = {
         "vae": MagicMock(),
@@ -217,11 +354,13 @@ class LTX2PipelineTest(unittest.TestCase):
 
     pipeline, transformer = LTX2Pipeline._load_and_init(mock_config, None, vae_only=False, load_transformer=True)
 
+    from unittest.mock import ANY
+
     # Assert load_transformer was called with the components
     mock_load_transformer.assert_called_once_with(
-        devices_array=mock_common["devices_array"],
-        mesh=mock_common["mesh"],
-        rngs=mock_common["rngs"],
+        devices_array=mock_create_device_mesh.return_value,
+        mesh=mock_mesh,
+        rngs=ANY,
         config=mock_config,
         restored_checkpoint=None,
     )

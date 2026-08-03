@@ -31,10 +31,23 @@ import csv
 import os
 import sys
 import jax
+import numpy as np
+from jax.experimental import multihost_utils
 
 # --- the two granularities (see module docstring) --------------------------------
 VPU_LANE = 128  # kernel hard floor: block sizes must be multiples of this
 MXU_TILE = 256  # 256x256 MXU: multiples of this fully pack the systolic array
+
+PURE_RING_ATTENTION_KERNELS = frozenset({
+    "tokamax_ring",
+    "tokamax_ring_custom",
+})
+ULYSSES_RING_ATTENTION_KERNELS = frozenset({
+    "ulysses_ring",
+    "ulysses_ring_custom",
+    "ulysses_ring_custom_fixed_m",
+    "ulysses_ring_custom_bidir",
+})
 
 
 def _ceil_div(a: int, b: int) -> int:
@@ -47,6 +60,26 @@ def _ceil_to(x: int, m: int) -> int:
 
 def _floor_to(x: int, m: int) -> int:
   return (x // m) * m
+
+
+def local_tiled_seq_len(full_seq: int, attention: str, context_shards: int, ulysses_shards: int) -> int:
+  """Returns the sequence length tiled by one local ring kernel invocation."""
+  context_shards = max(1, context_shards)
+  context_local_seq = _ceil_div(full_seq, context_shards)
+  if attention in PURE_RING_ATTENTION_KERNELS:
+    return context_local_seq
+  elif attention in ULYSSES_RING_ATTENTION_KERNELS:
+    if ulysses_shards < 1:
+      raise ValueError(f"{attention} requires ulysses_shards >= 1, got {ulysses_shards}.")
+    if context_shards % ulysses_shards:
+      raise ValueError(
+          f"context_shards={context_shards} must be divisible by ulysses_shards={ulysses_shards} for {attention}."
+      )
+    # Production pads the global sequence to a context-shard multiple, then
+    # Ulysses gathers `ulysses_shards` local sequence chunks per head shard.
+    return context_local_seq * ulysses_shards
+  else:
+    return full_seq
 
 
 @dataclass(frozen=True)
@@ -289,6 +322,76 @@ class SearchResult:
   mode: str
 
 
+_STATUS_TO_CODE = {"ok": 0, "oom": 1, "error": 2}
+
+
+def _aggregate_process_measurements(
+    measurements: np.ndarray,
+) -> tuple[str, Optional[float], Optional[float], Optional[float]]:
+  """Aggregates candidate measurements, rejecting a candidate that fails on any host."""
+  measurements = np.asarray(measurements).reshape((-1, 4))
+  status_codes = measurements[:, 0].astype(np.int32)
+  if np.any(status_codes == _STATUS_TO_CODE["error"]):
+    return "error", None, None, None
+  if np.any(status_codes == _STATUS_TO_CODE["oom"]):
+    return "oom", None, None, None
+  return (
+      "ok",
+      float(np.max(measurements[:, 1])),
+      float(np.max(measurements[:, 2])),
+      float(np.max(measurements[:, 3])),
+  )
+
+
+def _aggregate_process_result(result: BenchResult) -> BenchResult:
+  if jax.process_count() == 1:
+    return result
+
+  local = np.asarray(
+      [
+          _STATUS_TO_CODE.get(result.status, _STATUS_TO_CODE["error"]),
+          result.mean_ms if result.mean_ms is not None else np.inf,
+          result.std_ms if result.std_ms is not None else np.inf,
+          result.compile_ms if result.compile_ms is not None else np.inf,
+      ],
+      dtype=np.float32,
+  )
+  gathered = multihost_utils.process_allgather(local, tiled=False)
+  status, mean_ms, std_ms, compile_ms = _aggregate_process_measurements(gathered)
+  failed_hosts = int(np.count_nonzero(np.asarray(gathered).reshape((-1, 4))[:, 0]))
+  detail = result.detail if status == "ok" else f"{status} on {failed_hosts}/{jax.process_count()} process(es)"
+  return BenchResult(
+      bq=result.bq,
+      bkv=result.bkv,
+      bkv_compute=result.bkv_compute,
+      status=status,
+      mean_ms=mean_ms,
+      std_ms=std_ms,
+      times_ms=result.times_ms,
+      compile_ms=compile_ms,
+      detail=detail,
+  )
+
+
+def _broadcast_winner(best: Optional[BenchResult], results: list[BenchResult]) -> Optional[BenchResult]:
+  if jax.process_count() == 1:
+    return best
+
+  is_source = jax.process_index() == 0
+  payload = np.zeros((4,), dtype=np.int64)
+  if is_source and best is not None:
+    payload[:] = (1, best.bq, best.bkv, best.bkv_compute)
+  payload = np.asarray(multihost_utils.broadcast_one_to_all(payload, is_source=is_source))
+  if payload[0] == 0:
+    return None
+
+  winner_key = tuple(int(value) for value in payload[1:])
+  for result in results:
+    if (result.bq, result.bkv, result.bkv_compute) == winner_key and result.status == "ok":
+      return result
+  raise RuntimeError(f"Process 0 selected tile candidate {winner_key}, but it is unavailable on this process.")
+
+
 def smart_grid(
     q_seq: int,
     kv_seq: int,
@@ -373,7 +476,12 @@ def grid_search(
   log(f"[tile-search] {bench.label}: q_seq={q_seq} kv_seq={kv_seq} mode={mode} " f"-> {len(pairs)} configs (iters={iters})")
   results: list[BenchResult] = []
   for i, (bq, bkv) in enumerate(pairs, 1):
+    if jax.process_count() > 1:
+      multihost_utils.sync_global_devices(f"tile_search_candidate_{i}_start")
     r = bench.run(bq, bkv, bkv_compute=bkv, iters=iters, warmup=warmup)
+    if jax.process_count() > 1:
+      multihost_utils.sync_global_devices(f"tile_search_candidate_{i}_complete")
+      r = _aggregate_process_result(r)
     results.append(r)
     tag = "" if bq % MXU_TILE == 0 and bkv % MXU_TILE == 0 else " [½MXU]"
     compile_note = f"  (compile {r.compile_ms/1e3:.0f}s, excluded)" if r.compile_ms else ""
@@ -383,7 +491,8 @@ def grid_search(
     )
 
   ok = [r for r in results if r.status == "ok" and r.mean_ms is not None]
-  best = min(ok, key=lambda r: r.mean_ms) if ok else None
+  best = min(ok, key=lambda r: r.mean_ms) if ok and jax.process_index() == 0 else None
+  best = _broadcast_winner(best, results)
   _emit(results, best, q_seq, kv_seq, mode, out_dir, log)
   return SearchResult(best, results, q_seq, kv_seq, mode)
 

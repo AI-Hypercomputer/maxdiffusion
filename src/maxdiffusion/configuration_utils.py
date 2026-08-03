@@ -497,7 +497,7 @@ class ConfigMixin:
 
     if cls.has_compatibles:
       compatible_classes = [
-          c for c in cls._get_compatibles() if not isinstance(c, DummyObject)  # pyrefly: ignore[missing-attribute]
+          c for c in cls._get_compatibles() if not isinstance(c, DummyObject)  # type: ignore
       ]  # pyrefly: ignore[missing-attribute]
     else:
       compatible_classes = []

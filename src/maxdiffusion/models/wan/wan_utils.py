@@ -516,8 +516,9 @@ def load_base_wan_transformer(
   validate_flax_state_dict(eval_shapes, flax_state_dict)
   if converted_cache_dir and not os.path.isdir(converted_cache_dir):
     t_save = time.perf_counter()
-    save_converted_weights(converted_cache_dir, flax_state_dict)
-    max_logging.log(f"Saved converted-weights cache to {converted_cache_dir} in {time.perf_counter() - t_save:.1f}s")
+    if jax.process_index() == 0:
+      save_converted_weights(converted_cache_dir, flax_state_dict)
+      max_logging.log(f"Saved converted-weights cache to {converted_cache_dir} in {time.perf_counter() - t_save:.1f}s")
   flax_state_dict = unflatten_dict(flax_state_dict)
   max_logging.log(f"Converted {subfolder or 'transformer'} weights to host arrays in {time.perf_counter() - t_start:.1f}s")
   return flax_state_dict
