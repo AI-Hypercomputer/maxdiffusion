@@ -141,7 +141,7 @@ class RingFixedMTest(unittest.TestCase):
       # q max: it upper-bounds every rank's local max, so "eligible globally"
       # implies eligible on every rank.
       bound = qn.max(axis=1) * kn[:, rows].max(axis=1)
-      gates.append(bound <= custom_splash._FIXED_M_RING_SAFE_BOUND)
+      gates.append(bound <= custom_splash.FIXED_M_RING_SAFE_BOUND)
     return jnp.stack(gates, axis=1)
 
   def _run_and_compare(self, q, k, v, use_fixed_m):

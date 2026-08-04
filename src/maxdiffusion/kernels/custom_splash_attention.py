@@ -46,6 +46,22 @@ class _BlockSizes:
     self.block_kv_compute = block_kv_compute if block_kv_compute is not None else block_kv
     self.block_kv_compute_in = block_kv_compute_in
 
+  @property
+  def bq(self) -> int:
+    return self.block_q
+
+  @property
+  def bkv(self) -> int:
+    return self.block_kv
+
+  @property
+  def bkv_compute(self) -> int:
+    return self.block_kv_compute
+
+  @property
+  def bkv_compute_in(self) -> int:
+    return self.block_kv_compute_in
+
 
 # Fixed-m softmax-bound constants. Instead of tracking the online-softmax
 # running max per KV block, eligible heads subtract a precomputed per-query
@@ -63,7 +79,8 @@ _FIXED_M_SAFE_BOUND = 213.0
 # logits differently, breaking the cross-shard merge). Without k-smoothing the
 # per-row max logit has no >=0 guarantee, so the safe bound halves (calibrated
 # for ring_size=2, matching DiffusionServing's ring gate).
-_FIXED_M_RING_SAFE_BOUND = _FIXED_M_SAFE_BOUND / 2.0
+FIXED_M_RING_SAFE_BOUND = _FIXED_M_SAFE_BOUND / 2.0
+_FIXED_M_RING_SAFE_BOUND = FIXED_M_RING_SAFE_BOUND
 
 
 def _flash_attention_kernel(
@@ -815,3 +832,9 @@ def make_splash_mha(
     )
 
   return _splash_attention
+
+
+# Public aliases for first-class attention strategies
+BlockSizes = _BlockSizes
+FIXED_M_SAFE_BOUND = _FIXED_M_SAFE_BOUND
+splash_attention_forward_ring = _splash_attention_forward_ring

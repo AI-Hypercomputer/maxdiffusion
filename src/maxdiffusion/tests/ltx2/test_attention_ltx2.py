@@ -255,7 +255,7 @@ class LTX2AttentionMaskContractTest(unittest.TestCase):
     }
 
     with mock.patch(
-        "maxdiffusion.models.attention_flax._tpu_flash_attention",
+        "maxdiffusion.models.attention_dispatch._tpu_flash_attention",
         return_value=query,
     ) as mocked_flash:
       KERNEL_REGISTRY["tokamax_ring"](query, query, query, context)
