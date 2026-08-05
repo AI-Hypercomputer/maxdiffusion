@@ -79,8 +79,22 @@ def encode_prompt(prompt: str, snapshot_dir: str = None, repo_id: str = "black-f
 
   text_encoder_path = os.path.join(snapshot_dir, "text_encoder")
   tokenizer_path = os.path.join(snapshot_dir, "tokenizer")
-  if not os.path.exists(tokenizer_path):
-    tokenizer_path = text_encoder_path
+
+  if not os.path.exists(os.path.join(text_encoder_path, "config.json")) or not os.path.exists(tokenizer_path):
+    try:
+      fb_dir = snapshot_download(repo_id=repo_id, local_files_only=True)
+      if not os.path.exists(os.path.join(text_encoder_path, "config.json")):
+        text_encoder_path = os.path.join(fb_dir, "text_encoder")
+      if not os.path.exists(tokenizer_path):
+        tokenizer_path = (
+            os.path.join(fb_dir, "tokenizer")
+            if os.path.exists(os.path.join(fb_dir, "tokenizer"))
+            else os.path.join(fb_dir, "text_encoder")
+        )
+    except Exception:
+      if not os.path.exists(tokenizer_path):
+        tokenizer_path = text_encoder_path
+
   tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
   text_encoder = AutoModelForCausalLM.from_pretrained(text_encoder_path, torch_dtype=torch.float32)
   text_encoder.eval()
@@ -134,15 +148,28 @@ def main(argv):
   from maxdiffusion.models.flux.util import (
       load_and_convert_flux_klein_weights,
       load_and_convert_vae_weights,
-      cast_dict_to_bfloat16_inplace,
   )
   from maxdiffusion.pipelines.flux.flux2klein_pipeline import FlaxFlux2KleinPipeline
 
   config = pyconfig.config
   os.makedirs(config.output_dir, exist_ok=True)
 
+  if hasattr(config, "per_device_batch_size") and config.per_device_batch_size > 0:
+    calculated_batch_size = int(config.per_device_batch_size * jax.device_count())
+    if calculated_batch_size != config.batch_size:
+      max_logging.log(
+          f"ℹ️ Updating batch_size from {config.batch_size} to {calculated_batch_size} "
+          f"based on per_device_batch_size={config.per_device_batch_size} and device_count={jax.device_count()}."
+      )
+      pyconfig._config.keys["batch_size"] = calculated_batch_size
+
   # 2. Setup device mesh
-  if config.batch_size == 1 and config.ici_tensor_parallelism == 1 and jax.device_count() > 1:
+  if (
+      config.batch_size == 1
+      and config.ici_tensor_parallelism == 1
+      and config.ici_context_parallelism == 1
+      and jax.device_count() > 1
+  ):
     max_logging.log(
         f"ℹ️ Auto-configuring Tensor Parallelism: ici_tensor_parallelism={jax.device_count()}, ici_fsdp_parallelism=1 for batch_size=1 on {jax.device_count()} TPU devices."
     )
@@ -184,8 +211,16 @@ def main(argv):
   else:
     from huggingface_hub import snapshot_download
 
-    max_logging.log(f"Resolving snapshot directory for model '{repo_id}' from HF Hub...")
-    snapshot_dir = snapshot_download(repo_id=repo_id)
+    rev = getattr(config, "revision", None)
+    if not rev or rev == "refs/pr/95":
+      rev = "main"
+    try:
+      snapshot_dir = snapshot_download(repo_id=repo_id, revision=rev, local_files_only=True)
+    except Exception:
+      try:
+        snapshot_dir = snapshot_download(repo_id=repo_id, local_files_only=True)
+      except Exception:
+        snapshot_dir = snapshot_download(repo_id=repo_id)
 
   max_logging.log(f"Host {jax.process_index()} using HF snapshot directory: {snapshot_dir}")
   safetensors_path = os.path.join(snapshot_dir, "transformer")
@@ -195,8 +230,13 @@ def main(argv):
   # 4. Load Qwen3 Config & Setup model layout
   from transformers import AutoConfig
 
-  max_logging.log(f"Loading Qwen3 config from text_encoder path: {text_encoder_path}...")
-  pt_config = AutoConfig.from_pretrained(text_encoder_path, local_files_only=True)
+  try:
+    pt_config = AutoConfig.from_pretrained(text_encoder_path, local_files_only=True)
+  except Exception:
+    depth_val = getattr(config, "depth", 24)
+    hf_repo = "black-forest-labs/FLUX.2-klein-9B" if depth_val in (24, -1) else "black-forest-labs/FLUX.2-klein-4B"
+    max_logging.log(f"ℹ️ Config not found in {text_encoder_path}. Resolving from HF cache: {hf_repo}")
+    pt_config = AutoConfig.from_pretrained(hf_repo, subfolder="text_encoder", local_files_only=True)
 
   qwen3_config = FlaxQwen3Config(
       vocab_size=pt_config.vocab_size,
@@ -217,9 +257,26 @@ def main(argv):
 
   transformer_config_json = os.path.join(safetensors_path, "config.json")
   transformer_pt_cfg = {}
+  loaded_cfg = False
   if os.path.exists(transformer_config_json):
-    with open(transformer_config_json, "r") as f:
-      transformer_pt_cfg = json.load(f)
+    try:
+      with open(transformer_config_json, "r") as f:
+        transformer_pt_cfg = json.load(f)
+        loaded_cfg = True
+    except Exception as e:
+      max_logging.log(f"ℹ️ Could not parse {transformer_config_json}: {e}. Falling back to HF cache...")
+
+  if not loaded_cfg:
+    depth_val = getattr(config, "depth", 24)
+    hf_repo = "black-forest-labs/FLUX.2-klein-9B" if depth_val in (24, -1) else "black-forest-labs/FLUX.2-klein-4B"
+    try:
+      from huggingface_hub import hf_hub_download
+
+      cfg_file = hf_hub_download(repo_id=hf_repo, filename="transformer/config.json", local_files_only=True)
+      with open(cfg_file, "r") as f:
+        transformer_pt_cfg = json.load(f)
+    except Exception as e:
+      max_logging.log(f"⚠️ Warning resolving transformer config fallback: {e}")
 
   num_double_layers = getattr(config, "num_double_layers", -1)
   if num_double_layers is None or num_double_layers <= 0:
@@ -342,6 +399,7 @@ def main(argv):
       def unbox_fn(x):
         return x.unbox() if isinstance(x, flax_spmd.LogicallyPartitioned) else x
 
+      t_sub0 = time.time()
       params = jax.tree_util.tree_map(
           unbox_fn, abstract_transformer_vars["params"], is_leaf=lambda k: isinstance(k, flax_spmd.LogicallyPartitioned)
       )
@@ -357,17 +415,19 @@ def main(argv):
       )
       qwen3_params = flax.core.unfreeze(qwen3_params)
 
-      params = load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, depth)
-      vae_params, vae_bn_mean, vae_bn_std = load_and_convert_vae_weights(vae_safetensors_path, vae_params)
-      qwen3_params = load_and_convert_qwen3_weights(text_encoder_path, qwen3_params, qwen3_config)
+      max_logging.log(f" -> [SUB-TIMING 1/3] PyTree unboxing template setup: {time.time() - t_sub0:.2f}s")
+      t_sub1 = time.time()
 
-      if config.weights_dtype == "bfloat16":
-        max_logging.log("Casting JAX parameters to bfloat16 in-place...")
-        cast_dict_to_bfloat16_inplace(params, exclude_keywords=("norm",))
-        cast_dict_to_bfloat16_inplace(vae_params, exclude_keywords=("norm",))
-        cast_dict_to_bfloat16_inplace(qwen3_params, exclude_keywords=("norm",))
-        vae_bn_mean = vae_bn_mean.astype(jnp.bfloat16)
-        vae_bn_std = vae_bn_std.astype(jnp.bfloat16)
+      weight_dtype = jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32
+
+      params = load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, depth, dtype=weight_dtype)
+      vae_params, vae_bn_mean, vae_bn_std = load_and_convert_vae_weights(
+          vae_safetensors_path, vae_params, dtype=weight_dtype
+      )
+      qwen3_params = load_and_convert_qwen3_weights(text_encoder_path, qwen3_params, qwen3_config)
+      max_logging.log(
+          f" -> [SUB-TIMING 2/3] Safetensors loading & key mapping (in target dtype): {time.time() - t_sub1:.4f}s"
+      )
 
       params = flax.core.freeze(params)
       vae_params = flax.core.freeze(vae_params)
@@ -376,6 +436,7 @@ def main(argv):
       max_logging.log("\n" + "=" * 80)
       max_logging.log("🚀 Pinning all parameters to TPU HBM permanently...")
       max_logging.log("=" * 80 + "\n")
+      t_sub3 = time.time()
       max_logging.log("Putting params on TPU HBM...")
       with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         try:
@@ -394,12 +455,13 @@ def main(argv):
         vae_params = jax.tree_util.tree_map(max_utils.device_put_replicated, vae_params, vae_shardings)
         max_logging.log("Putting qwen3_params on TPU HBM...")
         qwen3_params = jax.tree_util.tree_map(max_utils.device_put_replicated, qwen3_params, qwen3_shardings)
+      max_logging.log(f" -> [SUB-TIMING 3/3] TPU HBM device_put placement: {time.time() - t_sub3:.4f}s")
       max_logging.log("All parameters placed on TPU HBM successfully!")
       gc.collect()
       jax.effects_barrier()
 
   load_time = time.time() - t_load_start
-  max_logging.log(f" -> [TIMING] Total Model Loading & Device Placement: {load_time:.2f} seconds ⏱️\n")
+  max_logging.log(f" -> [TIMING] Total Model Loading & Device Placement: {load_time:.4f} seconds ⏱️\n")
 
   # 9. Setup FlowMatch Scheduler
   scheduler = FlaxFlowMatchScheduler(
@@ -426,16 +488,17 @@ def main(argv):
       mesh=mesh,
   )
 
-  active_prompts = partition_prompts(config.prompt, config.batch_size)
+  prompt_str = getattr(config, "prompt", "") or "A dog running in a field with butterflies and tall grass"
+  active_prompts = partition_prompts(prompt_str, config.batch_size)
 
   if getattr(config, "interactive", False):
-    print("\n" + "=" * 80)
-    print("   BATCHED INTERACTIVE GENERATION MODE ENABLED 🎮")
-    print("The model has been fully loaded and compiled on the TPU.")
-    print(f"Batch size: {config.batch_size} parallel images.")
-    print("Enter prompts separated by '||' (e.g. A cute cat || A red car)")
-    print("Type 'exit' to quit.")
-    print("=" * 80)
+    max_logging.log("\n" + "=" * 80)
+    max_logging.log("   BATCHED INTERACTIVE GENERATION MODE ENABLED 🎮")
+    max_logging.log("The model has been fully loaded and compiled on the TPU.")
+    max_logging.log(f"Batch size: {config.batch_size} parallel images.")
+    max_logging.log("Enter prompts separated by '||' (e.g. A cute cat || A red car)")
+    max_logging.log("Type 'exit' to quit.")
+    max_logging.log("=" * 80)
 
     image_idx = 1
     while True:
@@ -481,7 +544,21 @@ def main(argv):
       max_logging.log(f" -> Custom latents shape: {latents_to_use.shape} | sum: {latents_to_use.sum():.6f}")
 
     max_logging.log("\n" + "=" * 80)
-    max_logging.log("🚀 Running initial dry run (Warmup Pass) to compile XLA graphs...")
+    max_logging.log("🚀 Pre-compiling XLA graphs concurrently (AOT Compilation)...")
+    max_logging.log("=" * 80)
+    aot_time = pipeline.compile_aot_async(
+        params=params,
+        vae_params=vae_params,
+        qwen3_params=qwen3_params,
+        vae_bn_mean=vae_bn_mean,
+        vae_bn_std=vae_bn_std,
+        batch_size=config.batch_size,
+        height=config.height,
+        width=config.width,
+    )
+
+    max_logging.log("\n" + "=" * 80)
+    max_logging.log("🚀 Running initial dry run (Warmup Pass) to verify compiled graph execution...")
     max_logging.log("=" * 80)
     _, warmup_trace = pipeline(
         prompt=active_prompts,
@@ -501,6 +578,7 @@ def main(argv):
         latents=latents_to_use,
         output_dir=config.output_dir,
         output_name="flux2klein_warmup.png",
+        warmup=True,
     )
     warmup_time = (
         warmup_trace.get("prompt_encoding", 0.0)
@@ -508,44 +586,92 @@ def main(argv):
         + warmup_trace.get("vae_decode", 0.0)
     )
 
+    num_reps = int(getattr(config, "num_reps", 1))
     max_logging.log("\n" + "=" * 80)
-    max_logging.log("⏱️ Running timed pass at full TPU speed...")
+    max_logging.log(f"⏱️ Running timed pass at full TPU speed (num_reps={num_reps})...")
     max_logging.log("=" * 80)
-    _, main_trace = pipeline(
-        prompt=active_prompts,
-        params=params,
-        vae_params=vae_params,
-        qwen3_params=qwen3_params,
-        vae_bn_mean=vae_bn_mean,
-        vae_bn_std=vae_bn_std,
-        transformer_shardings=transformer_shardings,
-        vae_shardings=vae_shardings,
-        qwen3_shardings=qwen3_shardings,
-        height=config.height,
-        width=config.width,
-        num_inference_steps=config.num_inference_steps,
-        batch_size=config.batch_size,
-        use_latents=use_latents_flag,
-        latents=latents_to_use,
-        output_dir=config.output_dir,
-        output_name=config.output_name,
-    )
-    main_time = (
-        main_trace.get("prompt_encoding", 0.0) + main_trace.get("denoise_loop", 0.0) + main_trace.get("vae_decode", 0.0)
-    )
+
+    main_traces = []
+    main_times = []
+
+    for rep in range(num_reps):
+      rep_str = f" [Rep {rep+1}/{num_reps}]" if num_reps > 1 else ""
+      if rep > 0:
+        max_logging.log(f"⏱️ Running timed pass{rep_str}...")
+
+      if max_utils.profiler_enabled(config) and rep == 0:
+        max_logging.log(f"🚀 XProf / JAX Profiler active! Capturing trace into: {config.tensorboard_dir}")
+        with max_utils.Profiler(config, session_name="flux2klein_inference"):
+          _, trace_i = pipeline(
+              prompt=active_prompts,
+              params=params,
+              vae_params=vae_params,
+              qwen3_params=qwen3_params,
+              vae_bn_mean=vae_bn_mean,
+              vae_bn_std=vae_bn_std,
+              transformer_shardings=transformer_shardings,
+              vae_shardings=vae_shardings,
+              qwen3_shardings=qwen3_shardings,
+              height=config.height,
+              width=config.width,
+              num_inference_steps=config.num_inference_steps,
+              batch_size=config.batch_size,
+              use_latents=use_latents_flag,
+              latents=latents_to_use,
+              output_dir=config.output_dir,
+              output_name=f"rep_{rep+1}_{config.output_name}" if num_reps > 1 else config.output_name,
+          )
+      else:
+        _, trace_i = pipeline(
+            prompt=active_prompts,
+            params=params,
+            vae_params=vae_params,
+            qwen3_params=qwen3_params,
+            vae_bn_mean=vae_bn_mean,
+            vae_bn_std=vae_bn_std,
+            transformer_shardings=transformer_shardings,
+            vae_shardings=vae_shardings,
+            qwen3_shardings=qwen3_shardings,
+            height=config.height,
+            width=config.width,
+            num_inference_steps=config.num_inference_steps,
+            batch_size=config.batch_size,
+            use_latents=use_latents_flag,
+            latents=latents_to_use,
+            output_dir=config.output_dir,
+            output_name=f"rep_{rep+1}_{config.output_name}" if num_reps > 1 else config.output_name,
+        )
+
+      tot_time_i = trace_i.get("prompt_encoding", 0.0) + trace_i.get("denoise_loop", 0.0) + trace_i.get("vae_decode", 0.0)
+      main_traces.append(trace_i)
+      main_times.append(tot_time_i)
+      if num_reps > 1:
+        max_logging.log(
+            f"   -> Rep {rep+1}/{num_reps} Completed: Total={tot_time_i:.4f}s | Qwen3={trace_i.get('prompt_encoding', 0.0):.4f}s | Denoise={trace_i.get('denoise_loop', 0.0):.4f}s | VAE={trace_i.get('vae_decode', 0.0):.4f}s"
+        )
+
+    avg_main_time = sum(main_times) / num_reps
+    avg_prompt_enc = sum(tr.get("prompt_encoding", 0.0) for tr in main_traces) / num_reps
+    avg_denoise = sum(tr.get("denoise_loop", 0.0) for tr in main_traces) / num_reps
+    avg_vae_decode = sum(tr.get("vae_decode", 0.0) for tr in main_traces) / num_reps
+
+    total_cold_start = load_time + aot_time + warmup_time
 
     max_logging.log("\n" + "=" * 80)
-    max_logging.log("📊 FLUX.2-KLEIN LATENCY & TIMING BREAKDOWN (PURE MODEL INFERENCE)")
+    max_logging.log("📊 FLUX.2-KLEIN COMPLETE LATENCY & TIMING BREAKDOWN")
     max_logging.log("=" * 80)
-    max_logging.log(f"1) Total Model Loading & Placement Time:  {load_time:.2f} seconds ⏱️")
-    max_logging.log(f"2) Cold-Start / Warmup Pass (XLA Compilation): {warmup_time:.2f} seconds ⏱️")
-    max_logging.log(f"   - Qwen3 Encoding:  {warmup_trace.get('prompt_encoding', 0.0):.2f}s")
-    max_logging.log(f"   - Flux Denoising:  {warmup_trace.get('denoise_loop', 0.0):.2f}s")
-    max_logging.log(f"   - VAE Decoding:    {warmup_trace.get('vae_decode', 0.0):.2f}s")
-    max_logging.log(f"3) Main Warmed-Up Pass (Pure Model Inference): {main_time:.2f} seconds ⏱️")
-    max_logging.log(f"   - Qwen3 Encoding:  {main_trace.get('prompt_encoding', 0.0):.2f}s")
-    max_logging.log(f"   - Flux Denoising:  {main_trace.get('denoise_loop', 0.0):.2f}s")
-    max_logging.log(f"   - VAE Decoding:    {main_trace.get('vae_decode', 0.0):.2f}s")
+    max_logging.log(f"1) Model Loading & Placement Time:              {load_time:.4f} seconds ⏱️")
+    max_logging.log(f"2) Concurrent AOT XLA Compilation Time:         {aot_time:.4f} seconds ⚡")
+    max_logging.log(f"3) Warmup Pass Execution Time:                   {warmup_time:.4f} seconds ⏱️")
+    max_logging.log(f"   - Qwen3 Encoding:  {warmup_trace.get('prompt_encoding', 0.0):.4f}s")
+    max_logging.log(f"   - Flux Denoising:  {warmup_trace.get('denoise_loop', 0.0):.4f}s")
+    max_logging.log(f"   - VAE Decoding:    {warmup_trace.get('vae_decode', 0.0):.4f}s")
+    max_logging.log(f"👉 TOTAL COLD-START TIME (Loading + AOT + Warmup): {total_cold_start:.4f} seconds 🎯")
+    rep_label = f" (Average across {num_reps} reps)" if num_reps > 1 else ""
+    max_logging.log(f"4) Main Warmed-Up Pass (Pure Inference Latency){rep_label}: {avg_main_time:.4f} seconds ⏱️")
+    max_logging.log(f"   - Qwen3 Encoding:  {avg_prompt_enc:.4f}s")
+    max_logging.log(f"   - Flux Denoising:  {avg_denoise:.4f}s")
+    max_logging.log(f"   - VAE Decoding:    {avg_vae_decode:.4f}s")
     max_logging.log("=" * 80)
 
     max_logging.log("\n=======================================================")
