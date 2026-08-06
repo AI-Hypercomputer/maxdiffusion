@@ -41,10 +41,22 @@ from .utils import (
 # This way `import diffusers` provides the names in the namespace without actually importing anything (and especially none of the backends).
 
 _import_structure = {
+    "aot_cache": [],
+    "checkpointing": [],
+    "common_types": [],
     "configuration_utils": ["ConfigMixin"],
+    "max_logging": [],
+    "max_utils": [],
+    "maxdiffusion_google": [],
+    "maxdiffusion_google_hub": [],
+    "maxdiffusion_utils": [],
     "models": [],
+    "multihost_dataloading": [],
     "pipelines": [],
+    "pyconfig": [],
     "schedulers": [],
+    "tpu_utils": [],
+    "train_utils": [],
     "utils": [
         "OptionalDependencyNotAvailable",
         "is_flax_available",
