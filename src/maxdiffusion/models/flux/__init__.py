@@ -14,4 +14,4 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from .transformers.transformer_flux_flax import FluxTransformer2DModel
+from .transformers.transformer_flux import FluxTransformer2DModel

@@ -30,7 +30,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
   from .vae_flax import FlaxAutoencoderKL
   from .z_image.transformer_z_image import ZImageTransformer2DModel
   from .lora import *
-  from .flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+  from .flux.transformers.transformer_flux import FluxTransformer2DModel
   from .ltx_video.transformers.transformer3d import Transformer3DModel
 
 else:

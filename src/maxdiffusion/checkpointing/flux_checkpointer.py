@@ -27,7 +27,7 @@ from maxdiffusion import (
     FlaxAutoencoderKL,
     max_logging,
 )
-from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+from maxdiffusion.models.flux.transformers.transformer_flux import FluxTransformer2DModel
 from ..pipelines.flux.flux_pipeline import FluxPipeline
 
 from transformers import (CLIPTokenizer, FlaxCLIPTextModel, FlaxT5EncoderModel, AutoTokenizer)

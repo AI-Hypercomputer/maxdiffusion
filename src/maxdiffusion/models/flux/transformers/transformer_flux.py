@@ -187,20 +187,31 @@ class FluxSingleTransformerBlock(nn.Module):
 
     qkv_proj = qkv.reshape(B, L, K, H, D)
     q, k, v = jnp.split(qkv_proj, 3, axis=2)
-    q = q.squeeze(2).swapaxes(1, 2)
-    k = k.squeeze(2).swapaxes(1, 2)
-    v = v.squeeze(2).swapaxes(1, 2)
+    q = q.squeeze(2)
+    k = k.squeeze(2)
+    v = v.squeeze(2)
 
     q = self.attn.query_norm(q)
     k = self.attn.key_norm(k)
 
     if image_rotary_emb is not None:
-      image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-      q, k = apply_rope(q, k, image_rotary_emb_reordered)
+      image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> 1 n 1 d i j", i=2, j=2)
+      q_ = q.reshape(B, L, H, D // 2, 1, 2)
+      k_ = k.reshape(B, L, H, D // 2, 1, 2)
+      q = (
+          (image_rotary_emb_reordered[..., 0] * q_[..., 0] + image_rotary_emb_reordered[..., 1] * q_[..., 1])
+          .reshape(B, L, H, D)
+          .astype(q.dtype)
+      )
+      k = (
+          (image_rotary_emb_reordered[..., 0] * k_[..., 0] + image_rotary_emb_reordered[..., 1] * k_[..., 1])
+          .reshape(B, L, H, D)
+          .astype(k.dtype)
+      )
 
-    q = q.transpose(0, 2, 1, 3).reshape(q.shape[0], q.shape[2], -1)
-    k = k.transpose(0, 2, 1, 3).reshape(k.shape[0], k.shape[2], -1)
-    v = v.transpose(0, 2, 1, 3).reshape(v.shape[0], v.shape[2], -1)
+    q = q.reshape(B, L, H * D)
+    k = k.reshape(B, L, H * D)
+    v = v.reshape(B, L, H * D)
 
     attn_output = self.attn.attention_op.apply_attention(q, k, v)
     attn_output = checkpoint_name(attn_output, "attn_output")
@@ -605,13 +616,12 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       train: bool = False,
   ):
     hidden_states = self.img_in(hidden_states)
-    timestep = self.timestep_embedding(timestep, 256)
-    timestep = nn.with_logical_constraint(timestep, ("activation_batch", None))
+    timestep = nn.with_logical_constraint(timestep, ("activation_batch",))
 
-    if self.guidance_embeds:
-      guidance = self.timestep_embedding(guidance, 256)
-    else:
+    if not self.guidance_embeds:
       guidance = None
+    else:
+      guidance = nn.with_logical_constraint(guidance, ("activation_batch",))
     temb = (
         self.time_text_embed(timestep, pooled_projections)
         if guidance is None
@@ -767,6 +777,8 @@ class Flux2KleinSingleTransformerBlock(nn.Module):
   precision: float = None
   use_global_modulation: bool = False
   use_swiglu: bool = True
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     mlp_hidden_dim = int(self.dim * self.mlp_ratio)
@@ -814,18 +826,15 @@ class Flux2KleinSingleTransformerBlock(nn.Module):
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
         flash_block_sizes=self.flash_block_sizes,
+        use_base2_exp=self.use_base2_exp,
+        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
   def __call__(self, hidden_states, temb=None, image_rotary_emb=None, temb_mod=None):
     residual = hidden_states
     if self.use_global_modulation:
       shift_msa, scale_msa, gate = jnp.split(temb_mod, 3, axis=-1)
-      shift_msa = jnp.expand_dims(shift_msa, axis=1)
-      scale_msa = jnp.expand_dims(scale_msa, axis=1)
-      gate = jnp.expand_dims(gate, axis=1)
-
-      norm_hidden_states = self.norm(hidden_states)
-      norm_hidden_states = (1 + scale_msa) * norm_hidden_states + shift_msa
+      norm_hidden_states = self.norm(hidden_states) * (1.0 + scale_msa) + shift_msa
     else:
       norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
 
@@ -835,22 +844,21 @@ class Flux2KleinSingleTransformerBlock(nn.Module):
 
     B, L = hidden_states.shape[:2]
     H, D, K = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3), 3
-    qkv_proj = qkv.reshape(B, L, K, H, D).transpose(2, 0, 3, 1, 4)
-    q, k, v = qkv_proj
+    qkv_proj = qkv.reshape(B, L, K, H, D)
+    q, k, v = jnp.split(qkv_proj, 3, axis=2)
+    q = q.squeeze(2)
+    k = k.squeeze(2)
+    v = v.squeeze(2)
 
     q = self.attn.query_norm(q)
     k = self.attn.key_norm(k)
 
     if image_rotary_emb is not None:
-      if isinstance(image_rotary_emb, (tuple, list)):
-        image_rotary_emb_reordered = image_rotary_emb
-      else:
-        image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-      q, k = apply_rope(q, k, image_rotary_emb_reordered)
+      q, k = apply_rope(q, k, image_rotary_emb)
 
-    q = q.transpose(0, 2, 1, 3).reshape(q.shape[0], q.shape[2], -1)
-    k = k.transpose(0, 2, 1, 3).reshape(k.shape[0], k.shape[2], -1)
-    v = v.transpose(0, 2, 1, 3).reshape(v.shape[0], v.shape[2], -1)
+    q = q.reshape(B, L, H * D)
+    k = k.reshape(B, L, H * D)
+    v = v.reshape(B, L, H * D)
 
     attn_output = self.attn.attention_op.apply_attention(q, k, v)
 
@@ -884,6 +892,8 @@ class Flux2KleinTransformerBlock(nn.Module):
   mlp_ratio: float = 4.0
   qkv_bias: bool = True
   use_global_modulation: bool = False
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     if self.use_global_modulation:
@@ -924,6 +934,8 @@ class Flux2KleinTransformerBlock(nn.Module):
         weights_dtype=self.weights_dtype,
         precision=self.precision,
         qkv_bias=self.qkv_bias,
+        use_base2_exp=self.use_base2_exp,
+        use_experimental_scheduler=self.use_experimental_scheduler,
     )
     self.ff = FlaxSwiGluFeedForward(
         self.dim,
@@ -955,20 +967,6 @@ class Flux2KleinTransformerBlock(nn.Module):
     if self.use_global_modulation:
       shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(temb_mod_img, 6, axis=-1)
       c_shift_msa, c_scale_msa, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = jnp.split(temb_mod_txt, 6, axis=-1)
-
-      shift_msa = jnp.expand_dims(shift_msa, axis=1)
-      scale_msa = jnp.expand_dims(scale_msa, axis=1)
-      gate_msa = jnp.expand_dims(gate_msa, axis=1)
-      shift_mlp = jnp.expand_dims(shift_mlp, axis=1)
-      scale_mlp = jnp.expand_dims(scale_mlp, axis=1)
-      gate_mlp = jnp.expand_dims(gate_mlp, axis=1)
-
-      c_shift_msa = jnp.expand_dims(c_shift_msa, axis=1)
-      c_scale_msa = jnp.expand_dims(c_scale_msa, axis=1)
-      c_gate_msa = jnp.expand_dims(c_gate_msa, axis=1)
-      c_shift_mlp = jnp.expand_dims(c_shift_mlp, axis=1)
-      c_scale_mlp = jnp.expand_dims(c_scale_mlp, axis=1)
-      c_gate_mlp = jnp.expand_dims(c_gate_mlp, axis=1)
 
       norm1_hidden_states = self.norm1(hidden_states) * (1.0 + scale_msa) + shift_msa
       norm1_encoder_hidden_states = self.norm1_context(encoder_hidden_states) * (1.0 + c_scale_msa) + c_shift_msa
@@ -1039,6 +1037,8 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: float = None
+  use_base2_exp: bool = False
+  use_experimental_scheduler: bool = False
 
   def setup(self):
     self.inner_dim = self.num_attention_heads * self.attention_head_dim
@@ -1050,6 +1050,8 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
+        use_base2_exp=self.use_base2_exp,
+        use_experimental_scheduler=self.use_experimental_scheduler,
     )
 
     if self.use_global_modulation:
@@ -1109,6 +1111,8 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           mlp_ratio=self.mlp_ratio,
           qkv_bias=self.qkv_bias,
           use_global_modulation=self.use_global_modulation,
+          use_base2_exp=self.use_base2_exp,
+          use_experimental_scheduler=self.use_experimental_scheduler,
       )
       double_blocks.append(double_block)
     self.double_blocks = double_blocks
@@ -1128,6 +1132,8 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           precision=self.precision,
           mlp_ratio=self.mlp_ratio,
           use_global_modulation=self.use_global_modulation,
+          use_base2_exp=self.use_base2_exp,
+          use_experimental_scheduler=self.use_experimental_scheduler,
       )
       single_blocks.append(single_block)
     self.single_blocks = single_blocks
@@ -1187,9 +1193,9 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
 
     if self.use_global_modulation:
       temb_silu = nn.silu(temb)
-      double_stream_mod_img = self.double_stream_modulation_img(temb_silu)
-      double_stream_mod_txt = self.double_stream_modulation_txt(temb_silu)
-      single_stream_mod = self.single_stream_modulation(temb_silu)
+      double_stream_mod_img = jnp.expand_dims(self.double_stream_modulation_img(temb_silu), axis=1)
+      double_stream_mod_txt = jnp.expand_dims(self.double_stream_modulation_txt(temb_silu), axis=1)
+      single_stream_mod = jnp.expand_dims(self.single_stream_modulation(temb_silu), axis=1)
     else:
       double_stream_mod_img, double_stream_mod_txt, single_stream_mod = None, None, None
 
