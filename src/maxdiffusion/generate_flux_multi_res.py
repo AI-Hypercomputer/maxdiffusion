@@ -31,7 +31,7 @@ from flax.linen import partitioning as nn_partitioning
 from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
 
 from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging, max_utils
-from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+from maxdiffusion.models.flux.transformers.transformer_flux import FluxTransformer2DModel
 from maxdiffusion.max_utils import (
     device_put_replicated,
     get_memory_allocations,
@@ -327,7 +327,7 @@ def run(config):
   devices_array = create_device_mesh(config)
   mesh = Mesh(devices_array, config.mesh_axes)
 
-  global_batch_size = config.per_device_batch_size * jax.local_device_count()
+  global_batch_size = int(round(config.per_device_batch_size * jax.local_device_count()))
 
   # LOAD VAE
 

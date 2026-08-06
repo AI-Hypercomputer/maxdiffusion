@@ -30,7 +30,7 @@ from flax.linen import partitioning as nn_partitioning
 from maxdiffusion import max_logging
 from maxdiffusion.max_utils import device_put_replicated
 from ..pipeline_flax_utils import FlaxDiffusionPipeline
-from ...models.flux.transformers.transformer_flux_flax import Flux2KleinTransformer2DModel
+from ...models.flux.transformers.transformer_flux import Flux2KleinTransformer2DModel
 from ...models.vae_flax import FlaxAutoencoderKL
 from ...models.qwen3_flax import FlaxQwen3Model
 from ...schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler, compute_empirical_mu
@@ -345,12 +345,12 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
     # Apply Channel-wise Batch Normalization Scaling in packed sequence format (denormalize)
     vae_bn_mean_seq = vae_bn_mean.reshape(1, 1, 128)
     vae_bn_std_seq = vae_bn_std.reshape(1, 1, 128)
-    latents_bn = latents_jax * vae_bn_std_seq + vae_bn_mean_seq
+    latents_bn = (latents_jax * vae_bn_std_seq + vae_bn_mean_seq).astype(jnp.bfloat16)
 
-    # Unpack packed latents back to spatial grid
+    # Unpack packed latents back to spatial grid on TPU device
     latents_unpacked = unpack_latents(latents_bn, batch_size, 32, height, width)
 
-    # Decode VAE latents to RGB pixels
+    # Decode VAE latents to RGB pixels natively in BF16
     decoded_out = self._jitted_vae_decode(vae_params, latents_unpacked)
     # VAE output is in decoded_out.sample
     images_rgb = decoded_out.sample

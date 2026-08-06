@@ -915,7 +915,7 @@ def _ulysses_attention(
           block_sizes=bsizes,
           orig_q_seq_len=query_seq_len,
           orig_kv_seq_len=key_seq_len,
-          heads_per_tile=heads_per_tile,
+          heads_per_tile=1 if use_fixed_m else heads_per_tile,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
           vmem_limit_bytes=vmem_limit_bytes,
@@ -1424,7 +1424,7 @@ def _ulysses_ring_custom_attention(
           block_sizes=bsizes,
           orig_q_seq_len=query_seq_len,
           orig_kv_seq_len=key_seq_len,
-          heads_per_tile=heads_per_tile,
+          heads_per_tile=1 if use_fixed_m else heads_per_tile,
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
           vmem_limit_bytes=vmem_limit_bytes,
@@ -2992,14 +2992,24 @@ class FlaxFluxAttention(nn.Module):
       # key_proj = nn.with_logical_constraint(key_proj, self.key_axis_names)
       # value_proj = nn.with_logical_constraint(value_proj, self.value_axis_names)
 
-    if not isinstance(image_rotary_emb, (tuple, list)):
-      image_rotary_emb = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-
-    query_proj = query_proj.swapaxes(1, 2)
-    key_proj = key_proj.swapaxes(1, 2)
-    query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb)
-    query_proj = query_proj.swapaxes(1, 2)
-    key_proj = key_proj.swapaxes(1, 2)
+    if image_rotary_emb is not None:
+      if not isinstance(image_rotary_emb, (tuple, list)):
+        image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> 1 n 1 d i j", i=2, j=2)
+        B_q, L_q, H_q, D_q = query_proj.shape
+        q_ = query_proj.reshape(B_q, L_q, H_q, D_q // 2, 1, 2)
+        k_ = key_proj.reshape(B_q, L_q, H_q, D_q // 2, 1, 2)
+        query_proj = (
+            (image_rotary_emb_reordered[..., 0] * q_[..., 0] + image_rotary_emb_reordered[..., 1] * q_[..., 1])
+            .reshape(B_q, L_q, H_q, D_q)
+            .astype(query_proj.dtype)
+        )
+        key_proj = (
+            (image_rotary_emb_reordered[..., 0] * k_[..., 0] + image_rotary_emb_reordered[..., 1] * k_[..., 1])
+            .reshape(B_q, L_q, H_q, D_q)
+            .astype(key_proj.dtype)
+        )
+      else:
+        query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb)
 
     query_proj = query_proj.reshape(B, -1, H * D)
     key_proj = key_proj.reshape(B, -1, H * D)

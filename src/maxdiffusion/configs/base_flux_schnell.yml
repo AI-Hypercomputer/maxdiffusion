@@ -61,38 +61,31 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, cudnn_flash_te
+attention: 'ulysses_custom' # Supported attention: dot_product, flash, cudnn_flash_te, ulysses_custom
+use_base2_exp: True
+use_experimental_scheduler: True
 # If mask_padding_tokens is True, we pass in segment ids to splash attention to avoid attending to padding tokens.
 # Else we do not pass in segment ids and on vpu bound hardware like trillium this is faster.
 # However, when padding tokens are significant, this will lead to worse quality and should be set to True.
-mask_padding_tokens: True 
+mask_padding_tokens: False 
 # Maxdiffusion has 2 types of attention sharding strategies:
 # 1. attention_sharding_uniform = True : same sequence sharding rules applied for q in both (self and cross attention)
 # 2. attention_sharding_uniform = False : Heads are sharded uniformly across devices for self attention while sequence is sharded
 #    in cross attention q.
 attention_sharding_uniform: True 
+# Use the following flash_block_sizes on v6e (Trillium) due to larger vmem.
 flash_block_sizes: {
-  "block_q" : 256,
-  "block_kv_compute" : 256,
-  "block_kv" : 256,
-  "block_q_dkv" : 256,
-  "block_kv_dkv" : 256,
-  "block_kv_dkv_compute" : 256,
-  "block_q_dq" : 256,
-  "block_kv_dq" : 256
+  "block_q" : 4864,
+  "block_kv_compute" : 1024,
+  "block_kv" : 1024,
+  "block_kv_compute_in" : 1024,
+  "heads_per_tile" : 3,
+  "block_q_dkv" : 4864,
+  "block_kv_dkv" : 1024,
+  "block_kv_dkv_compute" : 1024,
+  "block_q_dq" : 4864,
+  "block_kv_dq" : 1024
 }
-
-# Use the following flash_block_sizes on v6e (Trillium).
-# flash_block_sizes: {
-#   "block_q" : 2176,
-#   "block_kv_compute" : 2176,
-#   "block_kv" : 2176,
-#   "block_q_dkv" : 2176,
-#   "block_kv_dkv" : 2176,
-#   "block_kv_dkv_compute" : 2176,
-#   "block_q_dq" : 2176,
-#   "block_kv_dq" : 2176
-# }
 # GroupNorm groups
 norm_num_groups: 32
 
@@ -166,7 +159,7 @@ logical_axis_rules: [
                       ['out_channels', 'tensor'],
                       ['conv_out', 'fsdp'],
                     ]
-data_sharding: [['data', 'fsdp', 'context', 'tensor']]
+data_sharding: [['data', 'fsdp']]
 
 # One axis for each parallelism type may hold a placeholder (-1)
 # value to auto-shard based on available slices and devices.
@@ -227,7 +220,7 @@ max_train_steps: 200
 num_train_epochs: 1
 seed: 0
 output_dir: 'sdxl-model-finetuned'
-per_device_batch_size: 1
+per_device_batch_size: 1.0
 
 warmup_steps_fraction: 0.0
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.

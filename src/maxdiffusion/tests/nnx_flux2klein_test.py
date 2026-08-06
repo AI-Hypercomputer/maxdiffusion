@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from maxdiffusion.models.flux.transformers.transformer_flux_flax import NNXFluxTransformer2DModel
+from maxdiffusion.models.flux.transformers.transformer_flux import NNXFluxTransformer2DModel
 from maxdiffusion.models.qwen3_flax import FlaxQwen3Config, NNXFlaxQwen3Model
 from maxdiffusion.models.vae_flax import NNXFlaxAutoencoderKL
 from maxdiffusion.models.embeddings_flax import NNXCombinedTimestepGuidanceTextProjEmbeddings

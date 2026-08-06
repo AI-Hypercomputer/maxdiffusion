@@ -35,7 +35,7 @@ from maxdiffusion import max_utils
 from maxdiffusion.max_utils import create_device_mesh
 from maxdiffusion.train_utils import transformer_engine_context
 
-from maxdiffusion.models.flux.transformers.transformer_flux_flax import Flux2KleinTransformer2DModel
+from maxdiffusion.models.flux.transformers.transformer_flux import Flux2KleinTransformer2DModel
 from maxdiffusion.models.vae_flax import FlaxAutoencoderKL
 from maxdiffusion.models.qwen3_flax import FlaxQwen3Config, FlaxQwen3Model
 from maxdiffusion.models.qwen3_utils import load_and_convert_qwen3_weights
@@ -141,8 +141,24 @@ def main(argv):
   config = pyconfig.config
   os.makedirs(config.output_dir, exist_ok=True)
 
+  # Derive global batch size from per_device_batch_size
+  if getattr(config, "per_device_batch_size", None) is not None:
+    calculated_batch_size = max(1, int(round(config.per_device_batch_size * jax.device_count())))
+    has_explicit_batch_size = any(arg.startswith("batch_size=") for arg in custom_overrides)
+    if not has_explicit_batch_size:
+      config.batch_size = calculated_batch_size
+      pyconfig._config.keys["batch_size"] = calculated_batch_size
+      max_logging.log(
+          f"ℹ️ Set global batch_size={config.batch_size} from per_device_batch_size={config.per_device_batch_size} across {jax.device_count()} TPU devices."
+      )
+
   # 2. Setup device mesh
-  if config.batch_size == 1 and config.ici_tensor_parallelism == 1 and jax.device_count() > 1:
+  if (
+      config.batch_size == 1
+      and config.ici_tensor_parallelism == 1
+      and config.ici_context_parallelism == 1
+      and jax.device_count() > 1
+  ):
     max_logging.log(
         f"ℹ️ Auto-configuring Tensor Parallelism: ici_tensor_parallelism={jax.device_count()}, ici_fsdp_parallelism=1 for batch_size=1 on {jax.device_count()} TPU devices."
     )
@@ -255,6 +271,9 @@ def main(argv):
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       weights_dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       attention_kernel=config.attention,
+      flash_block_sizes=getattr(config, "flash_block_sizes", None),
+      use_base2_exp=getattr(config, "use_base2_exp", False),
+      use_experimental_scheduler=getattr(config, "use_experimental_scheduler", False),
       scale_shift_order=getattr(config, "scale_shift_order", "shift_scale"),
   )
 
@@ -511,25 +530,35 @@ def main(argv):
     max_logging.log("\n" + "=" * 80)
     max_logging.log("⏱️ Running timed pass at full TPU speed...")
     max_logging.log("=" * 80)
-    _, main_trace = pipeline(
-        prompt=active_prompts,
-        params=params,
-        vae_params=vae_params,
-        qwen3_params=qwen3_params,
-        vae_bn_mean=vae_bn_mean,
-        vae_bn_std=vae_bn_std,
-        transformer_shardings=transformer_shardings,
-        vae_shardings=vae_shardings,
-        qwen3_shardings=qwen3_shardings,
-        height=config.height,
-        width=config.width,
-        num_inference_steps=config.num_inference_steps,
-        batch_size=config.batch_size,
-        use_latents=use_latents_flag,
-        latents=latents_to_use,
-        output_dir=config.output_dir,
-        output_name=config.output_name,
+    import contextlib
+
+    profile_path = getattr(config, "profiler_dir", "/tmp/profile_flux2klein")
+    profiler_context = (
+        jax.profiler.trace(profile_path) if getattr(config, "enable_profiler", False) else contextlib.nullcontext()
     )
+    if getattr(config, "enable_profiler", False):
+      max_logging.log(f"Profiling enabled! Recording trace to {profile_path}...")
+
+    with profiler_context:
+      _, main_trace = pipeline(
+          prompt=active_prompts,
+          params=params,
+          vae_params=vae_params,
+          qwen3_params=qwen3_params,
+          vae_bn_mean=vae_bn_mean,
+          vae_bn_std=vae_bn_std,
+          transformer_shardings=transformer_shardings,
+          vae_shardings=vae_shardings,
+          qwen3_shardings=qwen3_shardings,
+          height=config.height,
+          width=config.width,
+          num_inference_steps=config.num_inference_steps,
+          batch_size=config.batch_size,
+          use_latents=use_latents_flag,
+          latents=latents_to_use,
+          output_dir=config.output_dir,
+          output_name=config.output_name,
+      )
     main_time = (
         main_trace.get("prompt_encoding", 0.0) + main_trace.get("denoise_loop", 0.0) + main_trace.get("vae_decode", 0.0)
     )

@@ -249,7 +249,7 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
           renamed_pt_key = renamed_pt_key.replace("out_layer", "linear_2")
         elif "final_layer" in renamed_pt_key:
           renamed_pt_key = renamed_pt_key.replace("final_layer.linear", "proj_out")
-          renamed_pt_key = renamed_pt_key.replace("final_layer.adaLN_modulation_1", "norm_out.Dense_0")
+          renamed_pt_key = renamed_pt_key.replace("final_layer.adaLN_modulation_1", "norm_out.linear")
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
         flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, eval_shapes)
@@ -301,16 +301,20 @@ def unpack_latents(latents, batch_size, num_channels_latents, height, width):
   back to the unpacked spatial grid shape (batch_size, channels, height//8, width//8).
   """
   import numpy as np
+  import jax
+  import jax.numpy as jnp
+
+  xp = jnp if isinstance(latents, jax.Array) else np
 
   h_latent = height // 8
   w_latent = width // 8
 
   # 1. Reshape to split spatial grid and packed channel blocks
-  latents = np.reshape(latents, (batch_size, h_latent // 2, w_latent // 2, num_channels_latents, 2, 2))
+  latents = xp.reshape(latents, (batch_size, h_latent // 2, w_latent // 2, num_channels_latents, 2, 2))
   # 2. Permute dimensions back to unpacked order
-  latents = np.transpose(latents, (0, 3, 1, 4, 2, 5))
+  latents = xp.transpose(latents, (0, 3, 1, 4, 2, 5))
   # 3. Flatten back to 4D unpacked latent shape
-  latents = np.reshape(latents, (batch_size, num_channels_latents, h_latent, w_latent))
+  latents = xp.reshape(latents, (batch_size, num_channels_latents, h_latent, w_latent))
   return latents
 
 

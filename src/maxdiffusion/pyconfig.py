@@ -127,9 +127,14 @@ class _HyperParameters:
         raw_keys[k] = raw_data_from_cmd_line[k]  # take the raw data, no type conversion
       elif k in raw_data_from_cmd_line:
         try:
-          raw_keys[k] = _yaml_types_to_parser[type(raw_data_from_yaml[k])](
-              raw_data_from_cmd_line[k]
-          )  # take the command line value, but type it like the config value.
+          parser = _yaml_types_to_parser[type(raw_data_from_yaml[k])]
+          try:
+            raw_keys[k] = parser(raw_data_from_cmd_line[k])
+          except ValueError:
+            if parser is int:
+              raw_keys[k] = float(raw_data_from_cmd_line[k])
+            else:
+              raise
         except ValueError as e:
           raise ValueError(f"Couldn't parse value from command line '{raw_data_from_cmd_line[k]}' for key '{k}'") from e
       else:
