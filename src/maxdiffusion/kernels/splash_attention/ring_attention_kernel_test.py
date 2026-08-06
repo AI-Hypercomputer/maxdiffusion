@@ -21,6 +21,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import jax
 from jax import random
+from jax.experimental import multihost_utils
 import jax.numpy as jnp
 import numpy as np
 from . import base
@@ -158,6 +159,138 @@ class RingAttentionTest(test_utils.SplashAttentionTestCase):
       self._assert_allclose(dq, dq_ref, rtol=1e-2, atol=1e-2)
       self._assert_allclose(dk, dk_ref, rtol=1e-2, atol=1e-2)
       self._assert_allclose(dv, dv_ref, rtol=1e-2, atol=1e-2)
+
+
+class RingAttentionHeadsPerTileTest(test_utils.SplashAttentionTestCase):
+  """`heads_per_tile` (multi-head-per-tile) invariance for ring attention.
+
+  heads_per_tile is a pure tiling/scheduling choice for the forward kernel: for a
+  fixed input, running with heads_per_tile=N must produce the same output as
+  heads_per_tile=1. This guards against the block-index class of bug (a wrong
+  head-tile mapping compiles and runs but silently returns garbage).
+  """
+
+  def setUp(self):
+    if jax.default_backend() != "tpu":
+      self.skipTest("Multi-head-per-tile ring attention runs on TPU.")
+    super().setUp()
+
+  @parameterized.product(
+      heads_per_tile=[2, 4],
+      head_dim=[128],
+      dtype=[jnp.bfloat16],
+  )
+  def test_heads_per_tile_matches_single_head(self, heads_per_tile, head_dim, dtype):
+    # Use ALL devices so the sharded outputs are addressable on every process
+    # (a subset mesh like jax.devices()[:2] lives only on process 0, making the
+    # result non-addressable on the other hosts). jax.devices() is itself a
+    # global barrier, so every host must launch this test together regardless.
+    ring_size = jax.device_count()
+    num_heads = 8  # MHA (num_q_heads == num_kv_heads); divisible by heads_per_tile.
+    if ring_size < 2:
+      self.skipTest(f"This test needs at least 2 devices, but has {ring_size}.")
+
+    ring_axis = "ring"
+    devices = np.asarray(jax.devices()).reshape(1, ring_size)
+    mesh = jax.sharding.Mesh(devices, ("heads", ring_axis))
+    seq_len = 1024 * ring_size
+
+    k1, k2, k3 = random.split(random.key(0), 3)
+    scale = head_dim**-0.5
+    q = random.normal(k1, (num_heads, seq_len, head_dim), dtype=dtype) * scale
+    k = random.normal(k2, (num_heads, seq_len, head_dim), dtype=dtype) * scale
+    v = random.normal(k3, (num_heads, seq_len, head_dim), dtype=dtype) * scale
+
+    # The mhpt fast path supports full MHA + static FullMask + HEAD_DIM_MINOR only.
+    mask = mask_lib.FullMask(_shape=(seq_len, seq_len))
+    q_spec = P(None, ring_axis, None)
+    kv_spec = q_spec
+
+    def run_multi_head_kernel(hpt):
+      config = splash.SplashConfig.get_default()
+      config = dataclasses.replace(
+          config,
+          use_base2_exp=False,
+          fuse_reciprocal=True,
+          heads_per_tile=hpt,
+      )
+      ring_kernel = ring_attention_kernel.make_ring_attention(
+          mask,
+          is_mqa=False,
+          ring_axis=ring_axis,
+          config=config,
+          save_residuals=False,
+          q_seq_shards=ring_size,
+          kv_seq_shards=ring_size,
+      )
+      kernel_spec = ring_kernel.manual_sharding_spec()
+
+      @partial(
+          jax.shard_map,
+          mesh=mesh,
+          in_specs=(kernel_spec, q_spec, kv_spec, kv_spec, None),
+          out_specs=q_spec,
+          check_vma=False,
+      )
+      def ring_attn(ring_kernel, q, k, v, segment_ids):
+        return ring_kernel(q, k, v, segment_ids)
+
+      return ring_attn(ring_kernel, q, k, v, None)
+
+    out_ref = run_multi_head_kernel(1)  # baseline: single head per tile (flash_attention_kernel)
+    out_mhpt = run_multi_head_kernel(heads_per_tile)  # multi-head-per-tile (flash_attention_kernel_mhpt)
+
+    # Pure tiling => numerically equivalent to the single-head-per-tile baseline.
+    # Outputs are sharded across all hosts; all-gather to a fully-replicated host
+    # array on every process, then compare with the standard helper.
+    out_mhpt = multihost_utils.process_allgather(out_mhpt, tiled=True)
+    out_ref = multihost_utils.process_allgather(out_ref, tiled=True)
+    self._assert_allclose(out_mhpt, out_ref, rtol=5e-3, atol=5e-3)
+
+
+class RingAttentionHeadsPerTileGuardTest(test_utils.SplashAttentionTestCase):
+  """Negative scenarios: configurations the heads_per_tile > 1 fast path rejects.
+
+  The mhpt kernel only supports full-MHA static-FullMask ring attention;
+  `_validate_heads_per_tile_support` must reject everything else with
+  NotImplementedError instead of letting the kernel silently miscompute.
+  Pure-Python validation, so no TPU is required.
+  """
+
+  _EMPTY_MASK_INFO = splash.MaskInfo(None, None, None, None, None, None, None)
+
+  def _validate(self, **overrides):
+    kwargs = dict(
+        config=splash.SplashConfig.get_default(),
+        dynamic_grid=False,
+        is_mqa=False,
+        q_heads_per_kv_head=1,
+        mask_info=self._EMPTY_MASK_INFO,
+        mask_function=None,
+        sinks=None,
+        max_logit_value=None,
+    )
+    kwargs.update(overrides)
+    splash._validate_heads_per_tile_support(**kwargs)  # pylint: disable=protected-access
+
+  def test_supported_config_is_accepted(self):
+    self._validate()  # full MHA + static FullMask: must not raise
+
+  def test_mqa_is_rejected(self):
+    with self.assertRaisesRegex(NotImplementedError, "MHA"):
+      self._validate(is_mqa=True)
+
+  def test_gqa_is_rejected(self):
+    with self.assertRaisesRegex(NotImplementedError, "MHA"):
+      self._validate(q_heads_per_kv_head=2)
+
+  def test_dynamic_grid_is_rejected(self):
+    with self.assertRaisesRegex(NotImplementedError, "static ring attention grids"):
+      self._validate(dynamic_grid=True)
+
+  def test_non_full_mask_is_rejected(self):
+    with self.assertRaisesRegex(NotImplementedError, "FullMask"):
+      self._validate(mask_function=lambda *args: True)
 
 
 if __name__ == "__main__":
