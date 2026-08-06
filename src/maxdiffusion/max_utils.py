@@ -55,7 +55,11 @@ from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
 from jax.experimental import mesh_utils
 
-from transformers import FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel
+try:
+  from transformers import FlaxCLIPTextModel, FlaxCLIPTextPreTrainedModel
+except ImportError:
+  FlaxCLIPTextModel = None
+  FlaxCLIPTextPreTrainedModel = None
 from flax import struct
 from flax import core
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
