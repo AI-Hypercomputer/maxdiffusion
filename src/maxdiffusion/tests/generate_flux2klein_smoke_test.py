@@ -17,6 +17,7 @@ limitations under the License.
 import os
 import unittest
 import pytest
+import jax
 
 import numpy as np
 from PIL import Image
@@ -58,6 +59,7 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
         f"prompt={PROMPT}",
         "height=512",
         "width=512",
+        f"per_device_batch_size={1.0 / jax.device_count()}",
         "batch_size=1",
         "seed=42",
         "ici_fsdp_parallelism=-1",
@@ -101,6 +103,7 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
         f"prompt={PROMPT}",
         "height=512",
         "width=512",
+        f"per_device_batch_size={1.0 / jax.device_count()}",
         "batch_size=1",
         "seed=42",
         "ici_fsdp_parallelism=-1",
@@ -117,7 +120,7 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
     self.assertEqual(base_image.shape, test_image.shape)
     ssim_compare = ssim(base_image, test_image, channel_axis=-1, data_range=255)
     print(f"\n[SMOKE TEST 9B] SSIM Score: {ssim_compare:.6f}")
-    self.assertGreaterEqual(ssim_compare, 0.80)
+    self.assertGreaterEqual(ssim_compare, 0.8)
 
 
 if __name__ == "__main__":

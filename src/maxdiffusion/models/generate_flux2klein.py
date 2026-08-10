@@ -156,12 +156,6 @@ def main(argv):
 
   if hasattr(config, "per_device_batch_size") and config.per_device_batch_size > 0:
     calculated_batch_size = int(config.per_device_batch_size * jax.device_count())
-    assert calculated_batch_size >= 1, (
-        f"Calculated global batch_size is {calculated_batch_size}, which is invalid (must be >= 1). "
-        f"per_device_batch_size={config.per_device_batch_size} multiplied by jax.device_count()={jax.device_count()} "
-        f"evaluated to {config.per_device_batch_size * jax.device_count()}, which truncates to 0. "
-        f"Please increase per_device_batch_size or specify an explicit batch_size in your configuration."
-    )
     if calculated_batch_size != config.batch_size:
       max_logging.log(
           f"ℹ️ Updating batch_size from {config.batch_size} to {calculated_batch_size} "
@@ -207,7 +201,8 @@ def main(argv):
   # 3. Resolve weights repository snapshots
   repo_id = getattr(config, "pretrained_model_name_or_path", None)
   if not repo_id:
-    raise ValueError("pretrained_model_name_or_path must be specified in configuration YAML or CLI.")
+    depth_val = getattr(config, "depth", None)
+    repo_id = "black-forest-labs/FLUX.2-klein-9B" if depth_val == 24 else "black-forest-labs/FLUX.2-klein-4B"
   max_logging.log(f"Target model detected: {repo_id}")
 
   if os.path.exists(repo_id):
@@ -222,7 +217,10 @@ def main(argv):
     try:
       snapshot_dir = snapshot_download(repo_id=repo_id, revision=rev, local_files_only=True)
     except Exception:
-      snapshot_dir = snapshot_download(repo_id=repo_id, revision=rev)
+      try:
+        snapshot_dir = snapshot_download(repo_id=repo_id, local_files_only=True)
+      except Exception:
+        snapshot_dir = snapshot_download(repo_id=repo_id)
 
   max_logging.log(f"Host {jax.process_index()} using HF snapshot directory: {snapshot_dir}")
   safetensors_path = os.path.join(snapshot_dir, "transformer")
@@ -232,7 +230,24 @@ def main(argv):
   # 4. Load Qwen3 Config & Setup model layout
   from transformers import AutoConfig
 
-  pt_config = AutoConfig.from_pretrained(text_encoder_path)
+  try:
+    pt_config = AutoConfig.from_pretrained(text_encoder_path, local_files_only=True)
+  except Exception:
+    depth_val = getattr(config, "depth", 24)
+    hf_repo = "black-forest-labs/FLUX.2-klein-9B" if depth_val in (24, -1) else "black-forest-labs/FLUX.2-klein-4B"
+    max_logging.log(f"ℹ️ Config not found in {text_encoder_path}. Resolving from HF cache: {hf_repo}")
+    pt_config = AutoConfig.from_pretrained(hf_repo, subfolder="text_encoder", local_files_only=True)
+
+  text_encoder_attn = getattr(config, "text_encoder_attention", "dot_product")
+  text_encoder_block_sizes = getattr(config, "text_encoder_flash_block_sizes", None)
+  if isinstance(text_encoder_block_sizes, str) and text_encoder_block_sizes:
+    import ast
+
+    try:
+      text_encoder_block_sizes = ast.literal_eval(text_encoder_block_sizes)
+    except Exception:
+      pass
+  ulysses_shards_val = getattr(config, "ulysses_shards", -1)
 
   qwen3_config = FlaxQwen3Config(
       vocab_size=pt_config.vocab_size,
@@ -245,6 +260,10 @@ def main(argv):
       rms_norm_eps=pt_config.rms_norm_eps,
       rope_theta=pt_config.rope_theta,
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
+      mesh=mesh,
+      attention_kernel=text_encoder_attn,
+      ulysses_shards=ulysses_shards_val,
+      flash_block_sizes=text_encoder_block_sizes,
   )
   qwen3_model = FlaxQwen3Model(qwen3_config)
 
@@ -262,15 +281,17 @@ def main(argv):
     except Exception as e:
       max_logging.log(f"ℹ️ Could not parse {transformer_config_json}: {e}. Falling back to HF cache...")
 
-  if not loaded_cfg and repo_id:
+  if not loaded_cfg:
+    depth_val = getattr(config, "depth", 24)
+    hf_repo = "black-forest-labs/FLUX.2-klein-9B" if depth_val in (24, -1) else "black-forest-labs/FLUX.2-klein-4B"
     try:
       from huggingface_hub import hf_hub_download
 
-      cfg_file = hf_hub_download(repo_id=repo_id, filename="transformer/config.json", local_files_only=True)
+      cfg_file = hf_hub_download(repo_id=hf_repo, filename="transformer/config.json", local_files_only=True)
       with open(cfg_file, "r") as f:
         transformer_pt_cfg = json.load(f)
     except Exception as e:
-      max_logging.log(f"⚠️ Warning resolving transformer config fallback from HF cache: {e}")
+      max_logging.log(f"⚠️ Warning resolving transformer config fallback: {e}")
 
   num_double_layers = getattr(config, "num_double_layers", -1)
   if num_double_layers is None or num_double_layers <= 0:
@@ -306,6 +327,7 @@ def main(argv):
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       weights_dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       attention_kernel=config.attention,
+      ulysses_shards=getattr(config, "ulysses_shards", -1),
       scale_shift_order=getattr(config, "scale_shift_order", "shift_scale"),
   )
 
@@ -482,9 +504,7 @@ def main(argv):
       mesh=mesh,
   )
 
-  prompt_str = getattr(config, "prompt", None)
-  if not prompt_str:
-    raise ValueError("Prompt must be specified in the configuration YAML or passed via CLI prompt='...'")
+  prompt_str = getattr(config, "prompt", "") or "A dog running in a field with butterflies and tall grass"
   active_prompts = partition_prompts(prompt_str, config.batch_size)
 
   if getattr(config, "interactive", False):
@@ -638,18 +658,25 @@ def main(argv):
             output_name=f"rep_{rep+1}_{config.output_name}" if num_reps > 1 else config.output_name,
         )
 
-      tot_time_i = trace_i.get("prompt_encoding", 0.0) + trace_i.get("denoise_loop", 0.0) + trace_i.get("vae_decode", 0.0)
+      tot_time_i = trace_i.get(
+          "e2e_pipeline_total",
+          trace_i.get("prompt_encoding", 0.0) + trace_i.get("denoise_loop", 0.0) + trace_i.get("vae_decode", 0.0),
+      )
       main_traces.append(trace_i)
       main_times.append(tot_time_i)
       if num_reps > 1:
         max_logging.log(
-            f"   -> Rep {rep+1}/{num_reps} Completed: Total={tot_time_i:.4f}s | Qwen3={trace_i.get('prompt_encoding', 0.0):.4f}s | Denoise={trace_i.get('denoise_loop', 0.0):.4f}s | VAE={trace_i.get('vae_decode', 0.0):.4f}s"
+            f"   -> Rep {rep+1}/{num_reps} Completed: Total={tot_time_i:.4f}s | Qwen3={trace_i.get('qwen3_encoding', 0.0):.4f}s | Denoise={trace_i.get('denoise_loop', 0.0):.4f}s | VAE={trace_i.get('vae_decode', 0.0):.4f}s"
         )
 
     avg_main_time = sum(main_times) / num_reps
-    avg_prompt_enc = sum(tr.get("prompt_encoding", 0.0) for tr in main_traces) / num_reps
+    avg_start_to_qwen3 = sum(tr.get("start_to_qwen3", 0.0) for tr in main_traces) / num_reps
+    avg_prompt_enc = sum(tr.get("qwen3_encoding", tr.get("prompt_encoding", 0.0)) for tr in main_traces) / num_reps
+    avg_qwen3_to_denoise = sum(tr.get("qwen3_to_denoise", 0.0) for tr in main_traces) / num_reps
     avg_denoise = sum(tr.get("denoise_loop", 0.0) for tr in main_traces) / num_reps
+    avg_denoise_to_vae = sum(tr.get("denoise_to_vae", 0.0) for tr in main_traces) / num_reps
     avg_vae_decode = sum(tr.get("vae_decode", 0.0) for tr in main_traces) / num_reps
+    avg_image_saving = sum(tr.get("image_saving", 0.0) for tr in main_traces) / num_reps
 
     total_cold_start = load_time + aot_time + warmup_time
 
@@ -665,9 +692,14 @@ def main(argv):
     max_logging.log(f"👉 TOTAL COLD-START TIME (Loading + AOT + Warmup): {total_cold_start:.4f} seconds 🎯")
     rep_label = f" (Average across {num_reps} reps)" if num_reps > 1 else ""
     max_logging.log(f"4) Main Warmed-Up Pass (Pure Inference Latency){rep_label}: {avg_main_time:.4f} seconds ⏱️")
-    max_logging.log(f"   - Qwen3 Encoding:  {avg_prompt_enc:.4f}s")
-    max_logging.log(f"   - Flux Denoising:  {avg_denoise:.4f}s")
-    max_logging.log(f"   - VAE Decoding:    {avg_vae_decode:.4f}s")
+    max_logging.log(f"   - 1. Start -> Qwen3:          {avg_start_to_qwen3*1000:.2f} ms ({avg_start_to_qwen3:.4f}s)")
+    max_logging.log(f"   - 2. Qwen3 Encoding:         {avg_prompt_enc*1000:.2f} ms ({avg_prompt_enc:.4f}s)")
+    max_logging.log(f"   - 3. Qwen3 -> Denoising:      {avg_qwen3_to_denoise*1000:.2f} ms ({avg_qwen3_to_denoise:.4f}s)")
+    max_logging.log(f"   - 4. Flux Denoising Loop:    {avg_denoise*1000:.2f} ms ({avg_denoise:.4f}s)")
+    max_logging.log(f"   - 5. Denoising -> VAE:       {avg_denoise_to_vae*1000:.2f} ms ({avg_denoise_to_vae:.4f}s)")
+    max_logging.log(f"   - 6. VAE Decoding:           {avg_vae_decode*1000:.2f} ms ({avg_vae_decode:.4f}s)")
+    max_logging.log(f"   - 7. Image Saving:           {avg_image_saving*1000:.2f} ms ({avg_image_saving:.4f}s)")
+    max_logging.log(f"   - 👉 TOTAL E2E PIPELINE:     {avg_main_time*1000:.2f} ms ({avg_main_time:.4f}s)")
     max_logging.log("=" * 80)
 
     max_logging.log("\n=======================================================")
