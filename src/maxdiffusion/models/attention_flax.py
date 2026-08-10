@@ -68,12 +68,31 @@ INTERNAL_ULYSSES_AXIS = "ulysses"
 
 
 def _coerce_tokamax_block_sizes(block_sizes):
+  if isinstance(block_sizes, dict):
+    bq = block_sizes.get("block_q", 512)
+    bkv = block_sizes.get("block_kv", bq)
+    bkv_compute = block_sizes.get("block_kv_compute", bkv)
+    bq_dkv = block_sizes.get("block_q_dkv", bq)
+    bkv_dkv = block_sizes.get("block_kv_dkv", bkv)
+    bkv_dkv_compute = block_sizes.get("block_kv_dkv_compute", bkv_compute)
+    return splash_attention_kernel.BlockSizes(
+        block_q=bq,
+        block_kv=bkv,
+        block_kv_compute=bkv_compute,
+        block_q_dkv=bq_dkv,
+        block_kv_dkv=bkv_dkv,
+        block_kv_dkv_compute=bkv_dkv_compute,
+        block_q_dq=None,
+        block_kv_dq=None,
+        use_fused_bwd_kernel=True,
+    )
+
   # Tokamax requires fused bwd; convert if needed.
   if getattr(block_sizes, "use_fused_bwd_kernel", False):
     return block_sizes
 
   # Fall back if some fields are missing.
-  bq = block_sizes.block_q
+  bq = getattr(block_sizes, "block_q", 512)
   bkv = getattr(block_sizes, "block_kv", bq)
   bkv_compute = getattr(block_sizes, "block_kv_compute", bkv)
   bq_dkv = getattr(block_sizes, "block_q_dkv", bq)
@@ -2854,6 +2873,8 @@ class FlaxFluxAttention(nn.Module):
   qkv_bias: bool = False
   use_base2_exp: bool = False
   use_experimental_scheduler: bool = False
+  ulysses_shards: int = -1
+  ulysses_attention_chunks: int = 1
 
   def setup(self):
     if self.attention_kernel in {"flash", "cudnn_flash_te"} and self.mesh is None:
@@ -2875,6 +2896,8 @@ class FlaxFluxAttention(nn.Module):
         float32_qk_product=False,
         use_base2_exp=self.use_base2_exp,
         use_experimental_scheduler=self.use_experimental_scheduler,
+        ulysses_shards=self.ulysses_shards,
+        ulysses_attention_chunks=self.ulysses_attention_chunks,
     )
 
     kernel_axes = ("embed", "heads")

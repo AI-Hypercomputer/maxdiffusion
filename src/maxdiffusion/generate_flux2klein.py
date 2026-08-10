@@ -32,7 +32,7 @@ from jax.sharding import Mesh
 from maxdiffusion import pyconfig
 from maxdiffusion import max_logging
 from maxdiffusion import max_utils
-from maxdiffusion.max_utils import create_device_mesh
+from maxdiffusion.max_utils import create_device_mesh, get_flash_block_sizes
 from maxdiffusion.train_utils import transformer_engine_context
 
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import Flux2KleinTransformer2DModel
@@ -238,6 +238,17 @@ def main(argv):
     max_logging.log(f"ℹ️ Config not found in {text_encoder_path}. Resolving from HF cache: {hf_repo}")
     pt_config = AutoConfig.from_pretrained(hf_repo, subfolder="text_encoder", local_files_only=True)
 
+  text_encoder_attn = getattr(config, "text_encoder_attention", "dot_product")
+  text_encoder_block_sizes = getattr(config, "text_encoder_flash_block_sizes", None)
+  if isinstance(text_encoder_block_sizes, str) and text_encoder_block_sizes:
+    import ast
+
+    try:
+      text_encoder_block_sizes = ast.literal_eval(text_encoder_block_sizes)
+    except Exception:
+      pass
+  ulysses_shards_val = getattr(config, "ulysses_shards", -1)
+
   qwen3_config = FlaxQwen3Config(
       vocab_size=pt_config.vocab_size,
       hidden_size=pt_config.hidden_size,
@@ -249,6 +260,11 @@ def main(argv):
       rms_norm_eps=pt_config.rms_norm_eps,
       rope_theta=pt_config.rope_theta,
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
+      mesh=mesh,
+      attention_kernel=text_encoder_attn,
+      ulysses_shards=ulysses_shards_val,
+      flash_block_sizes=text_encoder_block_sizes,
+      num_layers_to_run=28,
   )
   qwen3_model = FlaxQwen3Model(qwen3_config)
 
@@ -312,6 +328,9 @@ def main(argv):
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       weights_dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       attention_kernel=config.attention,
+      flash_block_sizes=get_flash_block_sizes(config),
+      ulysses_shards=getattr(config, "ulysses_shards", -1),
+      ulysses_attention_chunks=getattr(config, "ulysses_attention_chunks", 1),
       scale_shift_order=getattr(config, "scale_shift_order", "shift_scale"),
   )
 
@@ -642,18 +661,25 @@ def main(argv):
             output_name=f"rep_{rep+1}_{config.output_name}" if num_reps > 1 else config.output_name,
         )
 
-      tot_time_i = trace_i.get("prompt_encoding", 0.0) + trace_i.get("denoise_loop", 0.0) + trace_i.get("vae_decode", 0.0)
+      tot_time_i = trace_i.get(
+          "e2e_pipeline_total",
+          trace_i.get("prompt_encoding", 0.0) + trace_i.get("denoise_loop", 0.0) + trace_i.get("vae_decode", 0.0),
+      )
       main_traces.append(trace_i)
       main_times.append(tot_time_i)
       if num_reps > 1:
         max_logging.log(
-            f"   -> Rep {rep+1}/{num_reps} Completed: Total={tot_time_i:.4f}s | Qwen3={trace_i.get('prompt_encoding', 0.0):.4f}s | Denoise={trace_i.get('denoise_loop', 0.0):.4f}s | VAE={trace_i.get('vae_decode', 0.0):.4f}s"
+            f"   -> Rep {rep+1}/{num_reps} Completed: Total={tot_time_i:.4f}s | Qwen3={trace_i.get('qwen3_encoding', 0.0):.4f}s | Denoise={trace_i.get('denoise_loop', 0.0):.4f}s | VAE={trace_i.get('vae_decode', 0.0):.4f}s"
         )
 
     avg_main_time = sum(main_times) / num_reps
-    avg_prompt_enc = sum(tr.get("prompt_encoding", 0.0) for tr in main_traces) / num_reps
+    avg_start_to_qwen3 = sum(tr.get("start_to_qwen3", 0.0) for tr in main_traces) / num_reps
+    avg_prompt_enc = sum(tr.get("qwen3_encoding", tr.get("prompt_encoding", 0.0)) for tr in main_traces) / num_reps
+    avg_qwen3_to_denoise = sum(tr.get("qwen3_to_denoise", 0.0) for tr in main_traces) / num_reps
     avg_denoise = sum(tr.get("denoise_loop", 0.0) for tr in main_traces) / num_reps
+    avg_denoise_to_vae = sum(tr.get("denoise_to_vae", 0.0) for tr in main_traces) / num_reps
     avg_vae_decode = sum(tr.get("vae_decode", 0.0) for tr in main_traces) / num_reps
+    avg_image_saving = sum(tr.get("image_saving", 0.0) for tr in main_traces) / num_reps
 
     total_cold_start = load_time + aot_time + warmup_time
 
@@ -669,9 +695,14 @@ def main(argv):
     max_logging.log(f"👉 TOTAL COLD-START TIME (Loading + AOT + Warmup): {total_cold_start:.4f} seconds 🎯")
     rep_label = f" (Average across {num_reps} reps)" if num_reps > 1 else ""
     max_logging.log(f"4) Main Warmed-Up Pass (Pure Inference Latency){rep_label}: {avg_main_time:.4f} seconds ⏱️")
-    max_logging.log(f"   - Qwen3 Encoding:  {avg_prompt_enc:.4f}s")
-    max_logging.log(f"   - Flux Denoising:  {avg_denoise:.4f}s")
-    max_logging.log(f"   - VAE Decoding:    {avg_vae_decode:.4f}s")
+    max_logging.log(f"   - 1. Start -> Qwen3:          {avg_start_to_qwen3*1000:.2f} ms ({avg_start_to_qwen3:.4f}s)")
+    max_logging.log(f"   - 2. Qwen3 Encoding:         {avg_prompt_enc*1000:.2f} ms ({avg_prompt_enc:.4f}s)")
+    max_logging.log(f"   - 3. Qwen3 -> Denoising:      {avg_qwen3_to_denoise*1000:.2f} ms ({avg_qwen3_to_denoise:.4f}s)")
+    max_logging.log(f"   - 4. Flux Denoising Loop:    {avg_denoise*1000:.2f} ms ({avg_denoise:.4f}s)")
+    max_logging.log(f"   - 5. Denoising -> VAE:       {avg_denoise_to_vae*1000:.2f} ms ({avg_denoise_to_vae:.4f}s)")
+    max_logging.log(f"   - 6. VAE Decoding:           {avg_vae_decode*1000:.2f} ms ({avg_vae_decode:.4f}s)")
+    max_logging.log(f"   - 7. Image Saving:           {avg_image_saving*1000:.2f} ms ({avg_image_saving:.4f}s)")
+    max_logging.log(f"   - 👉 TOTAL E2E PIPELINE:     {avg_main_time*1000:.2f} ms ({avg_main_time:.4f}s)")
     max_logging.log("=" * 80)
 
     max_logging.log("\n=======================================================")

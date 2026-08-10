@@ -226,6 +226,7 @@ class FluxTransformerBlock(nn.Module):
       context_pre_only (`bool`): Boolean to determine if we should add some blocks associated with the
           processing of `context` conditions.
   """
+
   dim: int
   num_attention_heads: int
   attention_head_dim: int
@@ -402,6 +403,7 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   r"""
   The Transformer model introduced in Flux.
   """
+
   patch_size: int = 1
   in_channels: int = 64
   num_layers: int = 19
@@ -767,6 +769,8 @@ class Flux2KleinSingleTransformerBlock(nn.Module):
   precision: float = None
   use_global_modulation: bool = False
   use_swiglu: bool = True
+  ulysses_shards: int = -1
+  ulysses_attention_chunks: int = 1
 
   def setup(self):
     mlp_hidden_dim = int(self.dim * self.mlp_ratio)
@@ -814,6 +818,8 @@ class Flux2KleinSingleTransformerBlock(nn.Module):
         attention_kernel=self.attention_kernel,
         mesh=self.mesh,
         flash_block_sizes=self.flash_block_sizes,
+        ulysses_shards=self.ulysses_shards,
+        ulysses_attention_chunks=self.ulysses_attention_chunks,
     )
 
   def __call__(self, hidden_states, temb=None, image_rotary_emb=None, temb_mod=None):
@@ -863,6 +869,7 @@ class Flux2KleinSingleTransformerBlock(nn.Module):
     attn_mlp = jnp.concatenate([attn_output, mlp_activated], axis=2)
     attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
     hidden_states = self.linear2(attn_mlp)
+
     hidden_states = gate * hidden_states
     hidden_states = residual + hidden_states
     if hidden_states.dtype == jnp.float16:
@@ -884,6 +891,8 @@ class Flux2KleinTransformerBlock(nn.Module):
   mlp_ratio: float = 4.0
   qkv_bias: bool = True
   use_global_modulation: bool = False
+  ulysses_shards: int = -1
+  ulysses_attention_chunks: int = 1
 
   def setup(self):
     if self.use_global_modulation:
@@ -924,6 +933,8 @@ class Flux2KleinTransformerBlock(nn.Module):
         weights_dtype=self.weights_dtype,
         precision=self.precision,
         qkv_bias=self.qkv_bias,
+        ulysses_shards=self.ulysses_shards,
+        ulysses_attention_chunks=self.ulysses_attention_chunks,
     )
     self.ff = FlaxSwiGluFeedForward(
         self.dim,
@@ -1039,6 +1050,8 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
   dtype: jnp.dtype = jnp.float32
   weights_dtype: jnp.dtype = jnp.float32
   precision: float = None
+  ulysses_shards: int = -1
+  ulysses_attention_chunks: int = 1
 
   def setup(self):
     self.inner_dim = self.num_attention_heads * self.attention_head_dim
@@ -1109,6 +1122,7 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           mlp_ratio=self.mlp_ratio,
           qkv_bias=self.qkv_bias,
           use_global_modulation=self.use_global_modulation,
+          ulysses_shards=self.ulysses_shards,
       )
       double_blocks.append(double_block)
     self.double_blocks = double_blocks
@@ -1128,6 +1142,7 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
           precision=self.precision,
           mlp_ratio=self.mlp_ratio,
           use_global_modulation=self.use_global_modulation,
+          ulysses_shards=self.ulysses_shards,
       )
       single_blocks.append(single_block)
     self.single_blocks = single_blocks

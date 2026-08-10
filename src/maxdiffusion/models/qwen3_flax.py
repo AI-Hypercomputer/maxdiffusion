@@ -15,7 +15,7 @@ limitations under the License.
 """
 
 import math
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from flax import nnx
 import flax.linen as nn
 import jax
@@ -41,6 +41,11 @@ class FlaxQwen3Config:
       rope_theta: float = 1000000.0,
       max_position_embeddings: int = 40960,
       dtype=jnp.float32,
+      mesh: Optional[jax.sharding.Mesh] = None,
+      attention_kernel: str = "dot_product",
+      ulysses_shards: int = -1,
+      flash_block_sizes: Optional[Dict[str, int]] = None,
+      num_layers_to_run: Optional[int] = None,
   ):
     self.vocab_size = vocab_size
     self.hidden_size = hidden_size
@@ -53,6 +58,11 @@ class FlaxQwen3Config:
     self.rope_theta = rope_theta
     self.max_position_embeddings = max_position_embeddings
     self.dtype = dtype
+    self.mesh = mesh
+    self.attention_kernel = attention_kernel
+    self.ulysses_shards = ulysses_shards
+    self.flash_block_sizes = flash_block_sizes or {}
+    self.num_layers_to_run = num_layers_to_run
 
 
 # -----------------------------------------------------------------------------
@@ -247,6 +257,32 @@ class FlaxQwen3Attention(nn.Module):
       k = jnp.repeat(k, gqa_ratio, axis=-2)
       v = jnp.repeat(v, gqa_ratio, axis=-2)
 
+    if self.config.attention_kernel != "dot_product":
+      from maxdiffusion.models.attention_flax import _apply_attention
+
+      out = _apply_attention(
+          query=q,
+          key=k,
+          value=v,
+          heads=self.config.num_attention_heads,
+          dim_head=self.config.head_dim,
+          split_head_dim=True,
+          float32_qk_product=True,
+          attention_kernel=self.config.attention_kernel,
+          flash_min_seq_length=1,
+          use_memory_efficient_attention=False,
+          scale=1.0 / math.sqrt(self.config.head_dim),
+          dtype=self.config.dtype,
+          mesh=self.config.mesh,
+          axis_names_q=("activation_batch", "activation_length", "activation_heads", "activation_embed"),
+          axis_names_kv=("activation_batch", "activation_kv_length", "activation_heads", "activation_embed"),
+          flash_block_sizes=self.config.flash_block_sizes,
+          dpa_layer=None,
+          attention_mask=attention_mask,
+          ulysses_shards=self.config.ulysses_shards,
+      )
+      return o_proj(out.reshape((batch_size, seq_len, -1)))
+
     # 5. Transpose to (batch, num_heads, seq_len, head_dim) for attention
     q = jnp.transpose(q, (0, 2, 1, 3))
     k = jnp.transpose(k, (0, 2, 1, 3))
@@ -380,7 +416,11 @@ class FlaxQwen3Model(nn.Module):
     )
 
     # 3. Stacked Decoder Layers
-    for i in range(self.config.num_hidden_layers):
+    num_layers = self.config.num_hidden_layers
+    if hasattr(self.config, "num_layers_to_run") and self.config.num_layers_to_run is not None:
+      num_layers = min(num_layers, self.config.num_layers_to_run)
+
+    for i in range(num_layers):
       layer = FlaxQwen3DecoderLayer(
           config=self.config,
           name=f"layers_{i}",

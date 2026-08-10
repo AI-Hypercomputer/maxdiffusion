@@ -270,6 +270,12 @@ height: 1024
 width: 1024
 batch_size: 4
 interactive: False
+ulysses_attention_chunks: 1
+text_encoder_attention: "dot_product"
+attention: "ulysses_ring_custom"
+ulysses_shards: 2
+mask_padding_tokens: False
+flash_block_sizes: {}
 
 # Note: Architecture dimensions (depth, num_double_layers, num_attention_heads) are
 # automatically inferred from pretrained_model_name_or_path (transformer/config.json).
