@@ -40,6 +40,7 @@ from maxdiffusion.models.vae_flax import FlaxAutoencoderKL
 from maxdiffusion.models.qwen3_flax import FlaxQwen3Config, FlaxQwen3Model
 from maxdiffusion.models.qwen3_utils import load_and_convert_qwen3_weights
 from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler
+from maxdiffusion.pipelines.flux.flux2klein_pipeline import FlaxFlux2KleinPipeline
 
 
 def partition_prompts(prompt_str: str, batch_size: int) -> List[str]:
@@ -149,7 +150,6 @@ def main(argv):
       load_and_convert_flux_klein_weights,
       load_and_convert_vae_weights,
   )
-  from maxdiffusion.pipelines.flux.flux2klein_pipeline import FlaxFlux2KleinPipeline
 
   config = pyconfig.config
   os.makedirs(config.output_dir, exist_ok=True)
@@ -170,17 +170,24 @@ def main(argv):
       pyconfig._config.keys["batch_size"] = calculated_batch_size
 
   # 2. Setup device mesh
-  if (
-      config.batch_size == 1
-      and config.ici_tensor_parallelism == 1
-      and config.ici_context_parallelism == 1
-      and jax.device_count() > 1
-  ):
+  custom_parallelism_set = any(
+      any(arg.startswith(f"{k}=") for arg in sys.argv)
+      for k in [
+          "ici_data_parallelism",
+          "ici_fsdp_parallelism",
+          "ici_context_parallelism",
+          "ici_tensor_parallelism",
+      ]
+  )
+
+  if not custom_parallelism_set and jax.device_count() > 1:
     max_logging.log(
-        f"ℹ️ Auto-configuring Tensor Parallelism: ici_tensor_parallelism={jax.device_count()}, ici_fsdp_parallelism=1 for batch_size=1 on {jax.device_count()} TPU devices."
+        f"ℹ️ Defaulting to Tensor Parallelism: ici_tensor_parallelism={jax.device_count()} on {jax.device_count()} TPU devices."
     )
     pyconfig._config.keys["ici_tensor_parallelism"] = jax.device_count()
+    pyconfig._config.keys["ici_data_parallelism"] = 1
     pyconfig._config.keys["ici_fsdp_parallelism"] = 1
+    pyconfig._config.keys["ici_context_parallelism"] = 1
 
   max_logging.log("Setting up JAX device mesh...")
   devices_array = create_device_mesh(config)
@@ -231,8 +238,33 @@ def main(argv):
 
   # 4. Load Qwen3 Config & Setup model layout
   from transformers import AutoConfig
+  from maxdiffusion.max_utils import get_flash_block_sizes
 
   pt_config = AutoConfig.from_pretrained(text_encoder_path)
+
+  te_flash_block_sizes_dict = dict(getattr(config, "text_encoder_flash_block_sizes", {}) or {})
+  for k in ["block_q", "block_kv", "block_kv_compute", "block_kv_compute_in", "heads_per_tile", "vmem_limit_bytes"]:
+    val = getattr(config, f"text_encoder_{k}", None)
+    if val is not None and val > 0:
+      te_flash_block_sizes_dict[k] = int(val)
+  if (
+      "tokamax" in getattr(config, "text_encoder_attention", "")
+      or getattr(config, "text_encoder_attention", "") == "ulysses_ring"
+  ):
+    te_flash_block_sizes_dict.setdefault("block_q", 512)
+    te_flash_block_sizes_dict.setdefault("block_kv", 512)
+    te_flash_block_sizes_dict.setdefault("block_kv_compute", 512)
+    te_flash_block_sizes_dict.setdefault("block_q_dkv", te_flash_block_sizes_dict["block_q"])
+    te_flash_block_sizes_dict.setdefault("block_kv_dkv", te_flash_block_sizes_dict["block_kv"])
+    te_flash_block_sizes_dict.setdefault("block_kv_dkv_compute", te_flash_block_sizes_dict["block_kv_compute"])
+  config.get_keys()["text_encoder_flash_block_sizes"] = te_flash_block_sizes_dict
+
+  # Create a dummy config holder for max_utils.get_flash_block_sizes for Qwen3
+  class _TEConfigHolder:
+
+    def __init__(self, cfg):
+      self.flash_block_sizes = getattr(cfg, "text_encoder_flash_block_sizes", {})
+      self.attention = getattr(cfg, "text_encoder_attention", "dot_product")
 
   qwen3_config = FlaxQwen3Config(
       vocab_size=pt_config.vocab_size,
@@ -245,6 +277,12 @@ def main(argv):
       rms_norm_eps=pt_config.rms_norm_eps,
       rope_theta=pt_config.rope_theta,
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
+      attention_kernel=getattr(config, "text_encoder_attention", "dot_product"),
+      flash_block_sizes=get_flash_block_sizes(_TEConfigHolder(config)),
+      mesh=mesh,
+      ulysses_shards=getattr(config, "ulysses_shards", -1),
+      ulysses_attention_chunks=getattr(config, "ulysses_attention_chunks", 1),
+      max_layer_to_run=getattr(config, "text_encoder_max_layer", 27),
   )
   qwen3_model = FlaxQwen3Model(qwen3_config)
 
@@ -285,6 +323,27 @@ def main(argv):
     num_attention_heads = transformer_pt_cfg.get("num_attention_heads", 24)
 
   # 5. Instantiate JAX Flux2KleinTransformer2DModel
+  from maxdiffusion.max_utils import get_flash_block_sizes
+
+  flash_block_sizes_val = getattr(config, "flash_block_sizes", {}) or {}
+  if isinstance(flash_block_sizes_val, str) and flash_block_sizes_val:
+    import ast
+    import json
+
+    try:
+      flash_block_sizes_val = json.loads(flash_block_sizes_val)
+    except Exception:
+      try:
+        flash_block_sizes_val = ast.literal_eval(flash_block_sizes_val)
+      except Exception:
+        flash_block_sizes_val = {}
+  flash_block_sizes_dict = dict(flash_block_sizes_val)
+  for k in ["block_q", "block_kv", "block_kv_compute", "block_kv_compute_in", "heads_per_tile", "vmem_limit_bytes"]:
+    val = getattr(config, k, None)
+    if val is not None and val > 0:
+      flash_block_sizes_dict[k] = int(val)
+  config.get_keys()["flash_block_sizes"] = flash_block_sizes_dict
+
   transformer = Flux2KleinTransformer2DModel(
       in_channels=128,
       num_layers=num_double_layers,
@@ -306,6 +365,9 @@ def main(argv):
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       weights_dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       attention_kernel=config.attention,
+      flash_block_sizes=get_flash_block_sizes(config),
+      ulysses_shards=getattr(config, "ulysses_shards", -1),
+      ulysses_attention_chunks=getattr(config, "ulysses_attention_chunks", 1),
       scale_shift_order=getattr(config, "scale_shift_order", "shift_scale"),
   )
 
@@ -638,18 +700,25 @@ def main(argv):
             output_name=f"rep_{rep+1}_{config.output_name}" if num_reps > 1 else config.output_name,
         )
 
-      tot_time_i = trace_i.get("prompt_encoding", 0.0) + trace_i.get("denoise_loop", 0.0) + trace_i.get("vae_decode", 0.0)
+      tot_time_i = trace_i.get(
+          "e2e_pipeline_total",
+          trace_i.get("prompt_encoding", 0.0) + trace_i.get("denoise_loop", 0.0) + trace_i.get("vae_decode", 0.0),
+      )
       main_traces.append(trace_i)
       main_times.append(tot_time_i)
       if num_reps > 1:
         max_logging.log(
-            f"   -> Rep {rep+1}/{num_reps} Completed: Total={tot_time_i:.4f}s | Qwen3={trace_i.get('prompt_encoding', 0.0):.4f}s | Denoise={trace_i.get('denoise_loop', 0.0):.4f}s | VAE={trace_i.get('vae_decode', 0.0):.4f}s"
+            f"   -> Rep {rep+1}/{num_reps} Completed: Total={tot_time_i:.4f}s | Qwen3={trace_i.get('qwen3_encoding', 0.0):.4f}s | Denoise={trace_i.get('denoise_loop', 0.0):.4f}s | VAE={trace_i.get('vae_decode', 0.0):.4f}s"
         )
 
     avg_main_time = sum(main_times) / num_reps
-    avg_prompt_enc = sum(tr.get("prompt_encoding", 0.0) for tr in main_traces) / num_reps
+    avg_start_to_qwen3 = sum(tr.get("start_to_qwen3", 0.0) for tr in main_traces) / num_reps
+    avg_prompt_enc = sum(tr.get("qwen3_encoding", tr.get("prompt_encoding", 0.0)) for tr in main_traces) / num_reps
+    avg_qwen3_to_denoise = sum(tr.get("qwen3_to_denoise", 0.0) for tr in main_traces) / num_reps
     avg_denoise = sum(tr.get("denoise_loop", 0.0) for tr in main_traces) / num_reps
+    avg_denoise_to_vae = sum(tr.get("denoise_to_vae", 0.0) for tr in main_traces) / num_reps
     avg_vae_decode = sum(tr.get("vae_decode", 0.0) for tr in main_traces) / num_reps
+    avg_image_saving = sum(tr.get("image_saving", 0.0) for tr in main_traces) / num_reps
 
     total_cold_start = load_time + aot_time + warmup_time
 
@@ -665,9 +734,14 @@ def main(argv):
     max_logging.log(f"👉 TOTAL COLD-START TIME (Loading + AOT + Warmup): {total_cold_start:.4f} seconds 🎯")
     rep_label = f" (Average across {num_reps} reps)" if num_reps > 1 else ""
     max_logging.log(f"4) Main Warmed-Up Pass (Pure Inference Latency){rep_label}: {avg_main_time:.4f} seconds ⏱️")
-    max_logging.log(f"   - Qwen3 Encoding:  {avg_prompt_enc:.4f}s")
-    max_logging.log(f"   - Flux Denoising:  {avg_denoise:.4f}s")
-    max_logging.log(f"   - VAE Decoding:    {avg_vae_decode:.4f}s")
+    max_logging.log(f"   - 1. Start -> Qwen3:          {avg_start_to_qwen3*1000:.2f} ms ({avg_start_to_qwen3:.4f}s)")
+    max_logging.log(f"   - 2. Qwen3 Encoding:         {avg_prompt_enc*1000:.2f} ms ({avg_prompt_enc:.4f}s)")
+    max_logging.log(f"   - 3. Qwen3 -> Denoising:      {avg_qwen3_to_denoise*1000:.2f} ms ({avg_qwen3_to_denoise:.4f}s)")
+    max_logging.log(f"   - 4. Flux Denoising Loop:    {avg_denoise*1000:.2f} ms ({avg_denoise:.4f}s)")
+    max_logging.log(f"   - 5. Denoising -> VAE:       {avg_denoise_to_vae*1000:.2f} ms ({avg_denoise_to_vae:.4f}s)")
+    max_logging.log(f"   - 6. VAE Decoding:           {avg_vae_decode*1000:.2f} ms ({avg_vae_decode:.4f}s)")
+    max_logging.log(f"   - 7. Image Saving:           {avg_image_saving*1000:.2f} ms ({avg_image_saving:.4f}s)")
+    max_logging.log(f"   - 👉 TOTAL E2E PIPELINE:     {avg_main_time*1000:.2f} ms ({avg_main_time:.4f}s)")
     max_logging.log("=" * 80)
 
     max_logging.log("\n=======================================================")

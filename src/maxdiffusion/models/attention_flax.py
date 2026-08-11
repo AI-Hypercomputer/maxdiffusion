@@ -2854,6 +2854,8 @@ class FlaxFluxAttention(nn.Module):
   qkv_bias: bool = False
   use_base2_exp: bool = False
   use_experimental_scheduler: bool = False
+  ulysses_shards: int = -1
+  ulysses_attention_chunks: int = 1
 
   def setup(self):
     if self.attention_kernel in {"flash", "cudnn_flash_te"} and self.mesh is None:
@@ -2875,6 +2877,8 @@ class FlaxFluxAttention(nn.Module):
         float32_qk_product=False,
         use_base2_exp=self.use_base2_exp,
         use_experimental_scheduler=self.use_experimental_scheduler,
+        ulysses_shards=self.ulysses_shards,
+        ulysses_attention_chunks=self.ulysses_attention_chunks,
     )
 
     kernel_axes = ("embed", "heads")

@@ -898,15 +898,23 @@ def initialize_jax_for_gpu():
 
 
 def maybe_initialize_jax_distributed_system(raw_keys):
-  if raw_keys["skip_jax_distributed_system"]:
+  if raw_keys.get("skip_jax_distributed_system", False):
     max_logging.log("Skipping jax distributed system due to skip_jax_distributed_system=True flag.")
+    return
+  from jax._src.xla_bridge import backends_are_initialized
+
+  if backends_are_initialized():
+    max_logging.log("XLA backends already initialized; skipping jax.distributed.initialize().")
     return
   if is_gpu_backend(raw_keys):
     max_logging.log("Attempting to initialize the jax distributed system for GPU backend...")
     initialize_jax_for_gpu()
     max_logging.log("Jax distributed system initialized on GPU!")
   else:
-    jax.distributed.initialize()
+    try:
+      jax.distributed.initialize()
+    except Exception as e:
+      max_logging.log(f"Warning: jax.distributed.initialize() skipped or failed: {e}")
 
 
 def safe_getattr(obj: Any, name: str, default: Any) -> Any:

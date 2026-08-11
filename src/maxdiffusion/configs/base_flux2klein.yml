@@ -75,6 +75,17 @@ mask_padding_tokens: True
 attention_sharding_uniform: True 
 
 flash_block_sizes: {}
+block_q: 0
+block_kv: 0
+block_kv_compute: 0
+ulysses_shards: -1
+ulysses_attention_chunks: 1
+text_encoder_attention: 'dot_product'
+text_encoder_flash_block_sizes: {}
+text_encoder_block_q: 0
+text_encoder_block_kv: 0
+text_encoder_block_kv_compute: 0
+text_encoder_max_layer: 27
 # GroupNorm groups
 norm_num_groups: 32
 
@@ -154,12 +165,12 @@ data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 # value to auto-shard based on available slices and devices.
 # By default, product of the DCN axes should equal number of slices
 # and product of the ICI axes should equal number of devices per slice.
-dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
-dcn_fsdp_parallelism: -1
+dcn_data_parallelism: 1
+dcn_fsdp_parallelism: 1
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_parallelism: -1
+ici_fsdp_parallelism: 1
 ici_context_parallelism: 1
 ici_tensor_parallelism: 1
 
