@@ -1663,8 +1663,6 @@ class NNXFluxDoubleTransformerBlock(nnx.Module):
 
     norm1_h = self.norm1(hidden_states) * (1.0 + scale_msa) + shift_msa
     norm1_enc = self.norm1_context(encoder_hidden_states) * (1.0 + c_scale_msa) + c_shift_msa
-    norm1_h = nn.with_logical_constraint(norm1_h, ("activation_batch", "activation_length", "activation_embed"))
-    norm1_enc = nn.with_logical_constraint(norm1_enc, ("activation_batch", "activation_length", "activation_embed"))
 
     attn_img, attn_txt = self.attn(
         hidden_states=norm1_h,
@@ -2009,7 +2007,6 @@ class NNXFlux2KleinTransformer2DModel(nnx.Module):
 
     num_txt_tokens = encoder_hidden_states.shape[1]
     hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
-    hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
 
     for single_block in self.single_blocks:
       hidden_states = single_block(
