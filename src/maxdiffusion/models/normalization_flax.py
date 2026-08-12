@@ -202,6 +202,7 @@ class NNXAdaLayerNormContinuous(nnx.Module):
         in_features=embedding_dim,
         out_features=embedding_dim * 2,
         use_bias=False,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
@@ -213,6 +214,8 @@ class NNXAdaLayerNormContinuous(nnx.Module):
       shift, scale = jnp.split(emb, 2, axis=-1)
     else:
       scale, shift = jnp.split(emb, 2, axis=-1)
+    shift = nn.with_logical_constraint(shift, ("activation_batch", "activation_embed"))
+    scale = nn.with_logical_constraint(scale, ("activation_batch", "activation_embed"))
     x_norm = self.layer_norm(x)
     return (1.0 + scale[:, None, :]) * x_norm + shift[:, None, :]
 

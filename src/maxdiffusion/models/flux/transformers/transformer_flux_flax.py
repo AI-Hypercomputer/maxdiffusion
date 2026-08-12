@@ -1471,9 +1471,9 @@ class NNXFluxAttention(nnx.Module):
     value_proj = value_proj.reshape(B, -1, H * D)
 
     if encoder_hidden_states is not None:
-      query_proj = nn.with_logical_constraint(query_proj, ("activation_batch", "activation_length", "activation_embed"))
-      key_proj = nn.with_logical_constraint(key_proj, ("activation_batch", "activation_length", "activation_embed"))
-      value_proj = nn.with_logical_constraint(value_proj, ("activation_batch", "activation_length", "activation_embed"))
+      query_proj = nn.with_logical_constraint(query_proj, ("activation_batch", "activation_length", "activation_heads"))
+      key_proj = nn.with_logical_constraint(key_proj, ("activation_batch", "activation_length", "activation_heads"))
+      value_proj = nn.with_logical_constraint(value_proj, ("activation_batch", "activation_length", "activation_heads"))
 
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
     context_attn_output = None
