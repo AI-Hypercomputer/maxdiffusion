@@ -379,11 +379,17 @@ def walk_and_upload_blobs(config, output_dir):
 
 
 def device_put_replicated(x, sharding):
-  """
-  Although the name indicates replication, this function can be used
+  """Although the name indicates replication, this function can be used
+
   to also shard an array based on sharding.
   """
-  return jax.make_array_from_callback(x.shape, sharding, lambda index: x[index])
+  arr = getattr(x, "value", x)
+  shd = getattr(sharding, "value", sharding)
+  res = jax.make_array_from_callback(arr.shape, shd, lambda index: arr[index])
+  if hasattr(x, "set_value"):
+    x.set_value(res)
+    return x
+  return res
 
 
 def fill_unspecified_mesh_axes(parallelism_vals, target_product, parallelism_type):

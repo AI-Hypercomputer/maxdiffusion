@@ -27,10 +27,14 @@ from jax.sharding import PartitionSpec as P
 import numpy as np
 from flax.linen import partitioning as nn_partitioning
 
+from flax import nnx
 from maxdiffusion import max_logging
 from maxdiffusion.max_utils import device_put_replicated
 from ..pipeline_flax_utils import FlaxDiffusionPipeline
-from ...models.flux.transformers.transformer_flux_flax import Flux2KleinTransformer2DModel
+from ...models.flux.transformers.transformer_flux_flax import (
+    Flux2KleinTransformer2DModel,
+    NNXFlux2KleinTransformer2DModel,
+)
 from ...models.vae_flax import FlaxAutoencoderKL, FlaxDecoderOutput
 from ...models.qwen3_flax import FlaxQwen3Model
 from ...schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler, compute_empirical_mu
@@ -50,7 +54,7 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
 
   def __init__(
       self,
-      transformer: Flux2KleinTransformer2DModel,
+      transformer: Union[Flux2KleinTransformer2DModel, NNXFlux2KleinTransformer2DModel],
       vae: FlaxAutoencoderKL,
       text_encoder: FlaxQwen3Model,
       tokenizer,
@@ -117,19 +121,6 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       prompt_embeds = jnp.transpose(out, (0, 2, 1, 3)).reshape((ids.shape[0], ids.shape[1], -1))
       return prompt_embeds
 
-    @jax.jit
-    def transformer_step(t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timestep, guidance):
-      return self.transformer.apply(
-          {"params": t_params},
-          hidden_states=latents,
-          img_ids=img_ids,
-          encoder_hidden_states=prompt_embeds,
-          txt_ids=txt_ids,
-          pooled_projections=vec,
-          timestep=timestep,
-          guidance=guidance,
-      )
-
     @jax.jit(static_argnums=(4, 5), donate_argnums=(1,))
     def vae_decode(v_params, latents_packed, vae_bn_mean, vae_bn_std, height, width):
       batch_size_val = latents_packed.shape[0]
@@ -147,31 +138,88 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       res = self.vae.apply({"params": v_params}, latents=latents_unpacked, method=self.vae.decode)
       return FlaxDecoderOutput(sample=res.sample)
 
-    @jax.jit
-    def fused_denoise_loop(t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timesteps, sigmas, guidance):
-      sigmas_padded = jnp.concatenate([sigmas, jnp.array([0.0], dtype=sigmas.dtype)])
+    if isinstance(self.transformer, nnx.Module):
+      g, nnx_state, r = nnx.split(self.transformer, nnx.Param, ...)
 
-      def scan_body(cur_latents, step_idx):
-        t_val = timesteps[step_idx]
-        t_vec = jnp.broadcast_to(t_val / 1000.0, (cur_latents.shape[0],))
-        model_output = self.transformer.apply(
+      @jax.jit
+      def transformer_step(t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timestep, guidance):
+        nnx_merged = nnx.merge(g, t_params, r)
+        return nnx_merged(
+            hidden_states=latents,
+            encoder_hidden_states=prompt_embeds,
+            pooled_projections=vec,
+            timestep=timestep,
+            img_ids=img_ids,
+            txt_ids=txt_ids,
+            guidance=guidance,
+            return_dict=True,
+        )
+
+      @jax.jit
+      def fused_denoise_loop(t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timesteps, sigmas, guidance):
+        sigmas_padded = jnp.concatenate([sigmas, jnp.array([0.0], dtype=sigmas.dtype)])
+
+        def scan_body(cur_latents, step_idx):
+          t_val = timesteps[step_idx]
+          t_vec = jnp.broadcast_to(t_val / 1000.0, (cur_latents.shape[0],))
+          nnx_merged = nnx.merge(g, t_params, r)
+          model_output = nnx_merged(
+              hidden_states=cur_latents,
+              img_ids=img_ids,
+              encoder_hidden_states=prompt_embeds,
+              txt_ids=txt_ids,
+              pooled_projections=vec,
+              timestep=t_vec,
+              guidance=guidance,
+              return_dict=True,
+          )
+          sigma = sigmas_padded[step_idx]
+          sigma_next = sigmas_padded[step_idx + 1]
+          prev_sample = cur_latents + model_output.sample * (sigma_next - sigma)
+          return prev_sample, None
+
+        steps = jnp.arange(timesteps.shape[0])
+        final_latents, _ = jax.lax.scan(scan_body, latents, steps)
+        return final_latents
+    else:
+      @jax.jit
+      def transformer_step(t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timestep, guidance):
+        return self.transformer.apply(
             {"params": t_params},
-            hidden_states=cur_latents,
+            hidden_states=latents,
             img_ids=img_ids,
             encoder_hidden_states=prompt_embeds,
             txt_ids=txt_ids,
             pooled_projections=vec,
-            timestep=t_vec,
+            timestep=timestep,
             guidance=guidance,
         )
-        sigma = sigmas_padded[step_idx]
-        sigma_next = sigmas_padded[step_idx + 1]
-        prev_sample = cur_latents + model_output.sample * (sigma_next - sigma)
-        return prev_sample, None
 
-      steps = jnp.arange(timesteps.shape[0])
-      final_latents, _ = jax.lax.scan(scan_body, latents, steps)
-      return final_latents
+      @jax.jit
+      def fused_denoise_loop(t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timesteps, sigmas, guidance):
+        sigmas_padded = jnp.concatenate([sigmas, jnp.array([0.0], dtype=sigmas.dtype)])
+
+        def scan_body(cur_latents, step_idx):
+          t_val = timesteps[step_idx]
+          t_vec = jnp.broadcast_to(t_val / 1000.0, (cur_latents.shape[0],))
+          model_output = self.transformer.apply(
+              {"params": t_params},
+              hidden_states=cur_latents,
+              img_ids=img_ids,
+              encoder_hidden_states=prompt_embeds,
+              txt_ids=txt_ids,
+              pooled_projections=vec,
+              timestep=t_vec,
+              guidance=guidance,
+          )
+          sigma = sigmas_padded[step_idx]
+          sigma_next = sigmas_padded[step_idx + 1]
+          prev_sample = cur_latents + model_output.sample * (sigma_next - sigma)
+          return prev_sample, None
+
+        steps = jnp.arange(timesteps.shape[0])
+        final_latents, _ = jax.lax.scan(scan_body, latents, steps)
+        return final_latents
 
     self._jitted_qwen3_forward = qwen3_forward
     self._jitted_transformer_step = transformer_step

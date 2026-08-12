@@ -322,7 +322,10 @@ def main(argv):
   if num_attention_heads is None or num_attention_heads <= 0:
     num_attention_heads = transformer_pt_cfg.get("num_attention_heads", 24)
 
-  # 5. Instantiate JAX Flux2KleinTransformer2DModel
+  # 5. Instantiate JAX NNXFlux2KleinTransformer2DModel
+  from flax import nnx
+  from maxdiffusion.models.flux.transformers.transformer_flux_flax import NNXFlux2KleinTransformer2DModel
+  from maxdiffusion.models.flux.util import load_and_convert_flux_klein_nnx_weights, load_and_convert_vae_weights
   from maxdiffusion.max_utils import get_flash_block_sizes
 
   flash_block_sizes_val = getattr(config, "flash_block_sizes", {}) or {}
@@ -344,7 +347,8 @@ def main(argv):
       flash_block_sizes_dict[k] = int(val)
   config.get_keys()["flash_block_sizes"] = flash_block_sizes_dict
 
-  transformer = Flux2KleinTransformer2DModel(
+  transformer = NNXFlux2KleinTransformer2DModel(
+      rngs=nnx.Rngs(0),
       in_channels=128,
       num_layers=num_double_layers,
       num_single_layers=depth,
@@ -352,23 +356,19 @@ def main(argv):
       num_attention_heads=num_attention_heads,
       joint_attention_dim=3 * pt_config.hidden_size,
       pooled_projection_dim=768,
+      guidance_embeds=True,
+      axes_dim=(32, 32, 32, 32),
+      theta=2000.0,
       mlp_ratio=3.0,
-      qkv_bias=False,
-      joint_attention_bias=False,
-      x_embedder_bias=False,
-      proj_out_bias=False,
-      use_global_modulation=True,
-      use_swiglu=True,
-      axes_dims_rope=(32, 32, 32, 32),
-      theta=2000,
+      attention_kernel=config.attention,
+      flash_min_seq_length=512,
+      flash_block_sizes=get_flash_block_sizes(config),
       mesh=mesh,
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       weights_dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
-      attention_kernel=config.attention,
-      flash_block_sizes=get_flash_block_sizes(config),
+      scale_shift_order=getattr(config, "scale_shift_order", "scale_shift"),
       ulysses_shards=getattr(config, "ulysses_shards", -1),
       ulysses_attention_chunks=getattr(config, "ulysses_attention_chunks", 1),
-      scale_shift_order=getattr(config, "scale_shift_order", "shift_scale"),
   )
 
   # 6. Instantiate JAX VAE
@@ -390,36 +390,15 @@ def main(argv):
 
   # 7. Evaluate shapes & extract mesh shardings
   max_logging.log("Evaluating model shapes and shardings...")
-  h_packed = config.height // 16
-  w_packed = config.width // 16
-  seq_len_img = h_packed * w_packed
   seq_len_txt = config.max_sequence_length
-
-  img_dummy = jnp.zeros((config.batch_size, seq_len_img, 128))
-  img_ids_dummy = jnp.zeros((config.batch_size, seq_len_img, 4))
-  txt_dummy = jnp.zeros((config.batch_size, seq_len_txt, 3 * pt_config.hidden_size))
-  txt_ids_dummy = jnp.zeros((config.batch_size, seq_len_txt, 4))
-  vec_dummy = jnp.zeros((config.batch_size, 768))
-  t_vec_dummy = jnp.zeros((config.batch_size,))
-  guidance_vec_dummy = jnp.zeros((config.batch_size,))
   dummy_img = jnp.zeros((config.batch_size, 3, 512, 512))
   dummy_ids = jnp.zeros((config.batch_size, seq_len_txt), dtype=jnp.int32)
   dummy_mask = jnp.zeros((config.batch_size, seq_len_txt), dtype=jnp.int32)
 
   key = jax.random.PRNGKey(0)
-  key, vae_key, qwen_key = jax.random.split(key, 3)
+  vae_key, qwen_key = jax.random.split(key, 2)
 
-  def transformer_init_fn():
-    return transformer.init(
-        key,
-        hidden_states=img_dummy,
-        img_ids=img_ids_dummy,
-        encoder_hidden_states=txt_dummy,
-        txt_ids=txt_ids_dummy,
-        pooled_projections=vec_dummy,
-        timestep=t_vec_dummy,
-        guidance=guidance_vec_dummy,
-    )
+  abstract_state = nnx.state(transformer, nnx.Param)
 
   def vae_init_fn():
     return vae.init(vae_key, dummy_img)
@@ -428,11 +407,10 @@ def main(argv):
     return qwen3_model.init(qwen_key, dummy_ids, dummy_mask)
 
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-    abstract_transformer_vars = jax.eval_shape(transformer_init_fn)
+    logical_transformer_specs = nnx.get_partition_spec(abstract_state)
     abstract_vae_vars = jax.eval_shape(vae_init_fn)
     abstract_qwen3_vars = jax.eval_shape(qwen3_init_fn)
 
-    logical_transformer_specs = nn.get_partition_spec(abstract_transformer_vars)
     logical_vae_specs = nn.get_partition_spec(abstract_vae_vars)
     logical_qwen3_specs = nn.get_partition_spec(abstract_qwen3_vars)
 
@@ -440,9 +418,9 @@ def main(argv):
     vae_mesh_shardings = nn.logical_to_mesh_sharding(logical_vae_specs, mesh, config.logical_axis_rules)
     qwen3_mesh_shardings = nn.logical_to_mesh_sharding(logical_qwen3_specs, mesh, config.logical_axis_rules)
 
-  transformer_shardings = flax.core.freeze(transformer_mesh_shardings["params"])
   vae_shardings = flax.core.freeze(vae_mesh_shardings["params"])
   qwen3_shardings = flax.core.freeze(qwen3_mesh_shardings["params"])
+  transformer_shardings = transformer_mesh_shardings
 
   # 8. Load weights on Host CPU
   max_logging.log("Loading parameters on Host CPU...")
@@ -456,11 +434,6 @@ def main(argv):
         return x.unbox() if isinstance(x, flax_spmd.LogicallyPartitioned) else x
 
       t_sub0 = time.time()
-      params = jax.tree_util.tree_map(
-          unbox_fn, abstract_transformer_vars["params"], is_leaf=lambda k: isinstance(k, flax_spmd.LogicallyPartitioned)
-      )
-      params = flax.core.unfreeze(params)
-
       vae_params = jax.tree_util.tree_map(
           unbox_fn, abstract_vae_vars["params"], is_leaf=lambda k: isinstance(k, flax_spmd.LogicallyPartitioned)
       )
@@ -476,7 +449,9 @@ def main(argv):
 
       weight_dtype = jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32
 
-      params = load_and_convert_flux_klein_weights(safetensors_path, params, num_double_layers, depth, dtype=weight_dtype)
+      params = load_and_convert_flux_klein_nnx_weights(
+          safetensors_path, abstract_state, num_double_layers, depth, dtype=weight_dtype
+      )
       vae_params, vae_bn_mean, vae_bn_std = load_and_convert_vae_weights(
           vae_safetensors_path, vae_params, dtype=weight_dtype
       )
@@ -485,7 +460,6 @@ def main(argv):
           f" -> [SUB-TIMING 2/3] Safetensors loading & key mapping (in target dtype): {time.time() - t_sub1:.4f}s"
       )
 
-      params = flax.core.freeze(params)
       vae_params = flax.core.freeze(vae_params)
       qwen3_params = flax.core.freeze(qwen3_params)
 
@@ -495,18 +469,7 @@ def main(argv):
       t_sub3 = time.time()
       max_logging.log("Putting params on TPU HBM...")
       with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
-        try:
-          params = jax.tree_util.tree_map(max_utils.device_put_replicated, params, transformer_shardings)
-        except Exception as err:
-          max_logging.log("\n❌ jax.device_put(params, transformer_shardings) FAILED!")
-          flat_p = flax.traverse_util.flatten_dict(params)
-          flat_s = flax.traverse_util.flatten_dict(transformer_shardings)
-          k_p = set(flat_p.keys())
-          k_s = set(flat_s.keys())
-          max_logging.log(f"Keys in sharding spec but missing in params: {k_s - k_p}")
-          max_logging.log(f"Keys in params but missing in sharding spec: {k_p - k_s}")
-          sys.stdout.flush()
-          raise err
+        params = jax.tree_util.tree_map(max_utils.device_put_replicated, params, transformer_shardings)
         max_logging.log("Putting vae_params on TPU HBM...")
         vae_params = jax.tree_util.tree_map(max_utils.device_put_replicated, vae_params, vae_shardings)
         max_logging.log("Putting qwen3_params on TPU HBM...")

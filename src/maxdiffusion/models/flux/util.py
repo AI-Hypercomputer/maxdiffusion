@@ -17,6 +17,7 @@ limitations under the License.
 # copied from https://github.com/ml-gde/jflux/blob/main/jflux/util.py
 import os
 from dataclasses import dataclass
+from typing import Any, Optional
 
 import jax
 from jax.typing import DTypeLike
@@ -565,6 +566,359 @@ def load_and_convert_flux_klein_weights(
   validate_flax_state_dict(expected_pytree, params)
   max_logging.log("Weight conversion complete & verified!")
   return params
+
+
+def load_and_convert_flux_klein_nnx_weights(
+    safetensors_path: str,
+    nnx_state: Any,
+    num_double_layers: int,
+    num_single_layers: int,
+    dtype=None,
+    pt_state_dict: Optional[dict] = None,
+):
+  """Loads FLUX.2-Klein weights directly into an NNX State PyTree in target dtype."""
+  import glob
+  import gc
+  from safetensors.numpy import load_file
+  import numpy as np
+  from flax import nnx
+
+  if pt_state_dict is None:
+    max_logging.log(f"Loading transformer safetensors from: {safetensors_path}")
+    if os.path.isdir(safetensors_path):
+      st_files = sorted(glob.glob(os.path.join(safetensors_path, "*.safetensors")))
+    else:
+      st_files = [safetensors_path]
+    pt_state_dict = {}
+    for st_file in st_files:
+      pt_state_dict.update(load_file(st_file))
+
+  flat_state = dict(nnx.to_flat_state(nnx_state))
+  target_dtype = dtype if dtype is not None else jnp.bfloat16
+
+  def convert_and_transpose_tensor(tensor, transpose=False, is_norm=False):
+    if transpose and len(tensor.shape) == 2:
+      tensor = tensor.T
+    leaf_dtype = jnp.float32 if is_norm else target_dtype
+    return jnp.array(tensor, dtype=leaf_dtype)
+
+  def set_val(var, tensor):
+    if hasattr(var, "set_value"):
+      var.set_value(tensor)
+    elif hasattr(var, "value"):
+      var.value = tensor
+    return var
+
+  # Global layers
+  if ("context_embedder", "kernel") in flat_state:
+    set_val(
+        flat_state[("context_embedder", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop("context_embedder.weight"), transpose=True),
+    )
+  if ("x_embedder", "kernel") in flat_state:
+    set_val(
+        flat_state[("x_embedder", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop("x_embedder.weight"), transpose=True),
+    )
+  if ("double_stream_modulation_img", "kernel") in flat_state:
+    set_val(
+        flat_state[("double_stream_modulation_img", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop("double_stream_modulation_img.linear.weight"), transpose=True),
+    )
+  if ("double_stream_modulation_txt", "kernel") in flat_state:
+    set_val(
+        flat_state[("double_stream_modulation_txt", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop("double_stream_modulation_txt.linear.weight"), transpose=True),
+    )
+  if ("single_stream_modulation", "kernel") in flat_state:
+    set_val(
+        flat_state[("single_stream_modulation", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop("single_stream_modulation.linear.weight"), transpose=True),
+    )
+  if ("proj_out", "kernel") in flat_state:
+    set_val(
+        flat_state[("proj_out", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop("proj_out.weight"), transpose=True),
+    )
+
+  # norm_out
+  if ("norm_out", "linear", "kernel") in flat_state:
+    set_val(
+        flat_state[("norm_out", "linear", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop("norm_out.linear.weight"), transpose=True),
+    )
+
+  # Timestep / Guidance / Text projections
+  if (
+      "time_guidance_embed.timestep_embedder.linear_1.weight" in pt_state_dict
+      and (
+          "time_text_embed",
+          "timestep_embedder",
+          "linear_1",
+          "kernel",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "timestep_embedder", "linear_1", "kernel")],
+        convert_and_transpose_tensor(
+            pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_1.weight"), transpose=True
+        ),
+    )
+  if (
+      "time_guidance_embed.timestep_embedder.linear_1.bias" in pt_state_dict
+      and (
+          "time_text_embed",
+          "timestep_embedder",
+          "linear_1",
+          "bias",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "timestep_embedder", "linear_1", "bias")],
+        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_1.bias")),
+    )
+  if (
+      "time_guidance_embed.timestep_embedder.linear_2.weight" in pt_state_dict
+      and (
+          "time_text_embed",
+          "timestep_embedder",
+          "linear_2",
+          "kernel",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "timestep_embedder", "linear_2", "kernel")],
+        convert_and_transpose_tensor(
+            pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_2.weight"), transpose=True
+        ),
+    )
+  if (
+      "time_guidance_embed.timestep_embedder.linear_2.bias" in pt_state_dict
+      and (
+          "time_text_embed",
+          "timestep_embedder",
+          "linear_2",
+          "bias",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "timestep_embedder", "linear_2", "bias")],
+        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_2.bias")),
+    )
+
+  if (
+      "time_guidance_embed.guidance_embedder.linear_1.weight" in pt_state_dict
+      and (
+          "time_text_embed",
+          "guidance_embedder",
+          "linear_1",
+          "kernel",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "guidance_embedder", "linear_1", "kernel")],
+        convert_and_transpose_tensor(
+            pt_state_dict.pop("time_guidance_embed.guidance_embedder.linear_1.weight"), transpose=True
+        ),
+    )
+  if (
+      "time_guidance_embed.guidance_embedder.linear_1.bias" in pt_state_dict
+      and (
+          "time_text_embed",
+          "guidance_embedder",
+          "linear_1",
+          "bias",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "guidance_embedder", "linear_1", "bias")],
+        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.guidance_embedder.linear_1.bias")),
+    )
+  if (
+      "time_guidance_embed.guidance_embedder.linear_2.weight" in pt_state_dict
+      and (
+          "time_text_embed",
+          "guidance_embedder",
+          "linear_2",
+          "kernel",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "guidance_embedder", "linear_2", "kernel")],
+        convert_and_transpose_tensor(
+            pt_state_dict.pop("time_guidance_embed.guidance_embedder.linear_2.weight"), transpose=True
+        ),
+    )
+  if (
+      "time_guidance_embed.guidance_embedder.linear_2.bias" in pt_state_dict
+      and (
+          "time_text_embed",
+          "guidance_embedder",
+          "linear_2",
+          "bias",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "guidance_embedder", "linear_2", "bias")],
+        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.guidance_embedder.linear_2.bias")),
+    )
+
+  if (
+      "time_guidance_embed.text_embedder.linear_1.weight" in pt_state_dict
+      and (
+          "time_text_embed",
+          "pooled_embedder",
+          "linear_1",
+          "kernel",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "pooled_embedder", "linear_1", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.text_embedder.linear_1.weight"), transpose=True),
+    )
+  if (
+      "time_guidance_embed.text_embedder.linear_1.bias" in pt_state_dict
+      and (
+          "time_text_embed",
+          "pooled_embedder",
+          "linear_1",
+          "bias",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "pooled_embedder", "linear_1", "bias")],
+        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.text_embedder.linear_1.bias")),
+    )
+  if (
+      "time_guidance_embed.text_embedder.linear_2.weight" in pt_state_dict
+      and (
+          "time_text_embed",
+          "pooled_embedder",
+          "linear_2",
+          "kernel",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "pooled_embedder", "linear_2", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.text_embedder.linear_2.weight"), transpose=True),
+    )
+  if (
+      "time_guidance_embed.text_embedder.linear_2.bias" in pt_state_dict
+      and (
+          "time_text_embed",
+          "pooled_embedder",
+          "linear_2",
+          "bias",
+      )
+      in flat_state
+  ):
+    set_val(
+        flat_state[("time_text_embed", "pooled_embedder", "linear_2", "bias")],
+        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.text_embedder.linear_2.bias")),
+    )
+
+  # Double blocks
+  for block_idx in range(num_double_layers):
+    prefix = f"transformer_blocks.{block_idx}."
+    to_q = pt_state_dict.pop(prefix + "attn.to_q.weight").T
+    to_k = pt_state_dict.pop(prefix + "attn.to_k.weight").T
+    to_v = pt_state_dict.pop(prefix + "attn.to_v.weight").T
+    set_val(
+        flat_state[("double_blocks", block_idx, "attn", "i_qkv", "kernel")],
+        jnp.array(np.concatenate([to_q, to_k, to_v], axis=1), dtype=target_dtype),
+    )
+
+    add_q = pt_state_dict.pop(prefix + "attn.add_q_proj.weight").T
+    add_k = pt_state_dict.pop(prefix + "attn.add_k_proj.weight").T
+    add_v = pt_state_dict.pop(prefix + "attn.add_v_proj.weight").T
+    set_val(
+        flat_state[("double_blocks", block_idx, "attn", "e_qkv", "kernel")],
+        jnp.array(np.concatenate([add_q, add_k, add_v], axis=1), dtype=target_dtype),
+    )
+
+    set_val(
+        flat_state[("double_blocks", block_idx, "attn", "i_proj", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "attn.to_out.0.weight"), transpose=True),
+    )
+    set_val(
+        flat_state[("double_blocks", block_idx, "attn", "e_proj", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "attn.to_add_out.weight"), transpose=True),
+    )
+
+    set_val(
+        flat_state[("double_blocks", block_idx, "attn", "query_norm", "scale")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "attn.norm_q.weight"), is_norm=True),
+    )
+    set_val(
+        flat_state[("double_blocks", block_idx, "attn", "key_norm", "scale")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "attn.norm_k.weight"), is_norm=True),
+    )
+    set_val(
+        flat_state[("double_blocks", block_idx, "attn", "encoder_query_norm", "scale")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "attn.norm_added_q.weight"), is_norm=True),
+    )
+    set_val(
+        flat_state[("double_blocks", block_idx, "attn", "encoder_key_norm", "scale")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "attn.norm_added_k.weight"), is_norm=True),
+    )
+
+    set_val(
+        flat_state[("double_blocks", block_idx, "ff", "linear_in", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "ff.linear_in.weight"), transpose=True),
+    )
+    set_val(
+        flat_state[("double_blocks", block_idx, "ff", "linear_out", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "ff.linear_out.weight"), transpose=True),
+    )
+    set_val(
+        flat_state[("double_blocks", block_idx, "ff_context", "linear_in", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "ff_context.linear_in.weight"), transpose=True),
+    )
+    set_val(
+        flat_state[("double_blocks", block_idx, "ff_context", "linear_out", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop(prefix + "ff_context.linear_out.weight"), transpose=True),
+    )
+
+  # Single blocks
+  for block_idx in range(num_single_layers):
+    s_prefix = f"single_transformer_blocks.{block_idx}."
+    set_val(
+        flat_state[("single_blocks", block_idx, "linear1", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop(s_prefix + "attn.to_qkv_mlp_proj.weight"), transpose=True),
+    )
+    set_val(
+        flat_state[("single_blocks", block_idx, "linear2", "kernel")],
+        convert_and_transpose_tensor(pt_state_dict.pop(s_prefix + "attn.to_out.weight"), transpose=True),
+    )
+    set_val(
+        flat_state[("single_blocks", block_idx, "attn", "query_norm", "scale")],
+        convert_and_transpose_tensor(pt_state_dict.pop(s_prefix + "attn.norm_q.weight"), is_norm=True),
+    )
+    set_val(
+        flat_state[("single_blocks", block_idx, "attn", "key_norm", "scale")],
+        convert_and_transpose_tensor(pt_state_dict.pop(s_prefix + "attn.norm_k.weight"), is_norm=True),
+    )
+
+  for path, var in flat_state.items():
+    val = var.get_value() if hasattr(var, "get_value") else getattr(var, "value", var)
+    if isinstance(val, jax.ShapeDtypeStruct):
+      set_val(var, jnp.zeros(val.shape, dtype=val.dtype))
+
+  del pt_state_dict
+  gc.collect()
+  max_logging.log("NNX Weight conversion complete & verified!")
+  return nnx.from_flat_state(flat_state)
 
 
 def load_and_convert_vae_weights(safetensors_path, jax_params, dtype=None, pt_state_dict=None):
