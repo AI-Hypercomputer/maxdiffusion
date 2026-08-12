@@ -61,6 +61,20 @@ def validate_train_config(config):
         " Set either train_text_encoder, or cache_latents_text_encoder_outputs to False"
     )
 
+  keys = config.get_keys()
+  if (
+      "enable_profiler" in keys
+      and config.enable_profiler
+      and "enable_ml_diagnostics" in keys
+      and config.enable_ml_diagnostics
+  ):
+    max_logging.log(
+        "Both enable_profiler and enable_ml_diagnostics are set to True. They"
+        " share the underlying JAX tracer and cannot run concurrently."
+        " Prioritizing ML Diagnostics profiler and disabling standard JAX"
+        " profiler."
+    )
+
 
 def record_scalar_metrics(metrics, step_time_delta, per_device_tflops, lr):
   """Records scalar metrics to be written to tensorboard"""
