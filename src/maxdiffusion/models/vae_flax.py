@@ -87,11 +87,8 @@ class FlaxUpsample2D(nn.Module):
 
   def __call__(self, hidden_states):
     batch, height, width, channels = hidden_states.shape
-    hidden_states = jax.image.resize(
-        hidden_states,
-        shape=(batch, height * 2, width * 2, channels),
-        method="nearest",
-    )
+    hidden_states = jnp.broadcast_to(hidden_states[:, :, None, :, None, :], (batch, height, 2, width, 2, channels))
+    hidden_states = jnp.reshape(hidden_states, (batch, height * 2, width * 2, channels))
     hidden_states = self.conv(hidden_states)
     return hidden_states
 
