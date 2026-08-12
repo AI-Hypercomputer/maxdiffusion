@@ -1470,6 +1470,11 @@ class NNXFluxAttention(nnx.Module):
     key_proj = key_proj.reshape(B, -1, H * D)
     value_proj = value_proj.reshape(B, -1, H * D)
 
+    if encoder_hidden_states is not None:
+      query_proj = nn.with_logical_constraint(query_proj, ("activation_batch", "activation_length", "activation_embed"))
+      key_proj = nn.with_logical_constraint(key_proj, ("activation_batch", "activation_length", "activation_embed"))
+      value_proj = nn.with_logical_constraint(value_proj, ("activation_batch", "activation_length", "activation_embed"))
+
     attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
     context_attn_output = None
 
@@ -1658,6 +1663,8 @@ class NNXFluxDoubleTransformerBlock(nnx.Module):
 
     norm1_h = self.norm1(hidden_states) * (1.0 + scale_msa) + shift_msa
     norm1_enc = self.norm1_context(encoder_hidden_states) * (1.0 + c_scale_msa) + c_shift_msa
+    norm1_h = nn.with_logical_constraint(norm1_h, ("activation_batch", "activation_length", "activation_embed"))
+    norm1_enc = nn.with_logical_constraint(norm1_enc, ("activation_batch", "activation_length", "activation_embed"))
 
     attn_img, attn_txt = self.attn(
         hidden_states=norm1_h,
@@ -1767,6 +1774,9 @@ class NNXFluxSingleTransformerBlock(nnx.Module):
     norm_hidden_states = (1 + scale_msa) * norm_hidden_states + shift_msa
 
     qkv, mlp = jnp.split(self.linear1(norm_hidden_states), [3 * self.dim], axis=-1)
+    qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
+    mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
+
     B, L = hidden_states.shape[:2]
     H, D = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3)
     qkv_proj = qkv.reshape(B, L, 3, H, D).transpose(2, 0, 3, 1, 4)
@@ -1792,6 +1802,7 @@ class NNXFluxSingleTransformerBlock(nnx.Module):
     mlp_activated = nnx.silu(mlp1) * mlp2
 
     attn_mlp = jnp.concatenate([attn_output, mlp_activated], axis=2)
+    attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
     hidden_states = self.linear2(attn_mlp)
     hidden_states = gate * hidden_states
     hidden_states = residual + hidden_states
@@ -1998,6 +2009,7 @@ class NNXFlux2KleinTransformer2DModel(nnx.Module):
 
     num_txt_tokens = encoder_hidden_states.shape[1]
     hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
+    hidden_states = nn.with_logical_constraint(hidden_states, ("activation_batch", "activation_length", "activation_embed"))
 
     for single_block in self.single_blocks:
       hidden_states = single_block(
