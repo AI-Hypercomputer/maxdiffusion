@@ -193,6 +193,14 @@ class NNXAdaLayerNormContinuous(nnx.Module):
   ):
     self.eps = eps
     self.scale_shift_order = scale_shift_order
+    self.layer_norm = nnx.LayerNorm(
+        num_features=embedding_dim,
+        epsilon=eps,
+        use_bias=False,
+        use_scale=False,
+        dtype=dtype,
+        rngs=rngs,
+    )
     self.linear = nnx.Linear(
         in_features=embedding_dim,
         out_features=embedding_dim * 2,
@@ -208,7 +216,7 @@ class NNXAdaLayerNormContinuous(nnx.Module):
       shift, scale = jnp.split(emb, 2, axis=-1)
     else:
       scale, shift = jnp.split(emb, 2, axis=-1)
-    x = rms_norm(x, eps=self.eps)
+    x = self.layer_norm(x)
     scale = jnp.expand_dims(scale, axis=1)
     shift = jnp.expand_dims(shift, axis=1)
     return x * (1 + scale) + shift
