@@ -1348,6 +1348,8 @@ class NNXFluxAttention(nnx.Module):
         flash_min_seq_length=flash_min_seq_length,
         flash_block_sizes=flash_block_sizes,
         dtype=dtype,
+        float32_qk_product=False,
+        split_head_dim=True,
         ulysses_shards=ulysses_shards,
         ulysses_attention_chunks=ulysses_attention_chunks,
     )
@@ -1511,6 +1513,8 @@ class NNXFluxSingleAttention(nnx.Module):
         flash_min_seq_length=flash_min_seq_length,
         flash_block_sizes=flash_block_sizes,
         dtype=dtype,
+        float32_qk_product=False,
+        split_head_dim=True,
         ulysses_shards=ulysses_shards,
         ulysses_attention_chunks=ulysses_attention_chunks,
     )
