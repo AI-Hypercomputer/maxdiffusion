@@ -155,14 +155,14 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
             return_dict=True,
         )
 
-      @jax.jit
+      @jax.jit(donate_argnums=(1,))
       def fused_denoise_loop(t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timesteps, sigmas, guidance):
         sigmas_padded = jnp.concatenate([sigmas, jnp.array([0.0], dtype=sigmas.dtype)])
+        nnx_merged = nnx.merge(g, t_params, r)
 
         def scan_body(cur_latents, step_idx):
           t_val = timesteps[step_idx]
           t_vec = jnp.broadcast_to(t_val / 1000.0, (cur_latents.shape[0],))
-          nnx_merged = nnx.merge(g, t_params, r)
           model_output = nnx_merged(
               hidden_states=cur_latents,
               img_ids=img_ids,

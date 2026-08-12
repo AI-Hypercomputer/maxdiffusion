@@ -1677,6 +1677,7 @@ def ulysses_ring_custom_fixed_m_kernel(q, k, v, context):
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       use_fixed_m=True,
+      ulysses_attention_chunks=context.get("ulysses_attention_chunks", 1),
   )
 
 
