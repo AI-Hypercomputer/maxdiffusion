@@ -779,8 +779,8 @@ def get_flash_block_sizes(config):
         block_q_dkv=user_block_sizes.get("block_q_dkv", user_block_sizes.get("block_q")),
         block_kv_dkv=user_block_sizes.get("block_kv_dkv", user_block_sizes.get("block_kv")),
         block_kv_dkv_compute=user_block_sizes.get("block_kv_dkv_compute", user_block_sizes.get("block_kv_compute")),
-        block_q_dq=None if attention_is_tokamax else value_or_none(user_block_sizes, "block_q_dq"),
-        block_kv_dq=None if attention_is_tokamax else value_or_none(user_block_sizes, "block_kv_dq"),
+        block_q_dq=None if attention_is_tokamax else user_block_sizes.get("block_q_dq", user_block_sizes.get("block_q")),
+        block_kv_dq=None if attention_is_tokamax else user_block_sizes.get("block_kv_dq", user_block_sizes.get("block_kv")),
         use_fused_bwd_kernel=True if attention_is_tokamax else value_or_none(user_block_sizes, "use_fused_bwd_kernel"),
     )
   return flash_block_sizes
