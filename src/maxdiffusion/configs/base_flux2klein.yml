@@ -74,17 +74,15 @@ mask_padding_tokens: True
 #    in cross attention q.
 attention_sharding_uniform: True 
 
-flash_block_sizes: {}
-block_q: 0
-block_kv: 0
-block_kv_compute: 0
-ulysses_shards: -1
+flash_block_sizes: {
+  "block_q": 4608,
+  "block_kv": 1024,
+  "block_kv_compute": 1024,
+}
+ulysses_shards: 2
 ulysses_attention_chunks: 1
 text_encoder_attention: 'dot_product'
 text_encoder_flash_block_sizes: {}
-text_encoder_block_q: 0
-text_encoder_block_kv: 0
-text_encoder_block_kv_compute: 0
 text_encoder_max_layer: 27
 # GroupNorm groups
 norm_num_groups: 32

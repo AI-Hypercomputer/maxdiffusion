@@ -610,223 +610,36 @@ def load_and_convert_flux_klein_nnx_weights(
     return var
 
   # Global layers
-  if ("context_embedder", "kernel") in flat_state:
-    set_val(
-        flat_state[("context_embedder", "kernel")],
-        convert_and_transpose_tensor(pt_state_dict.pop("context_embedder.weight"), transpose=True),
-    )
-  if ("x_embedder", "kernel") in flat_state:
-    set_val(
-        flat_state[("x_embedder", "kernel")],
-        convert_and_transpose_tensor(pt_state_dict.pop("x_embedder.weight"), transpose=True),
-    )
-  if ("double_stream_modulation_img", "kernel") in flat_state:
-    set_val(
-        flat_state[("double_stream_modulation_img", "kernel")],
-        convert_and_transpose_tensor(pt_state_dict.pop("double_stream_modulation_img.linear.weight"), transpose=True),
-    )
-  if ("double_stream_modulation_txt", "kernel") in flat_state:
-    set_val(
-        flat_state[("double_stream_modulation_txt", "kernel")],
-        convert_and_transpose_tensor(pt_state_dict.pop("double_stream_modulation_txt.linear.weight"), transpose=True),
-    )
-  if ("single_stream_modulation", "kernel") in flat_state:
-    set_val(
-        flat_state[("single_stream_modulation", "kernel")],
-        convert_and_transpose_tensor(pt_state_dict.pop("single_stream_modulation.linear.weight"), transpose=True),
-    )
-  if ("proj_out", "kernel") in flat_state:
-    set_val(
-        flat_state[("proj_out", "kernel")],
-        convert_and_transpose_tensor(pt_state_dict.pop("proj_out.weight"), transpose=True),
-    )
-
-  # norm_out
-  if ("norm_out", "linear", "kernel") in flat_state:
-    set_val(
-        flat_state[("norm_out", "linear", "kernel")],
-        convert_and_transpose_tensor(pt_state_dict.pop("norm_out.linear.weight"), transpose=True),
-    )
+  global_mappings = [
+      ("context_embedder.weight", ("context_embedder", "kernel"), True),
+      ("x_embedder.weight", ("x_embedder", "kernel"), True),
+      ("double_stream_modulation_img.linear.weight", ("double_stream_modulation_img", "kernel"), True),
+      ("double_stream_modulation_txt.linear.weight", ("double_stream_modulation_txt", "kernel"), True),
+      ("single_stream_modulation.linear.weight", ("single_stream_modulation", "kernel"), True),
+      ("proj_out.weight", ("proj_out", "kernel"), True),
+      ("norm_out.linear.weight", ("norm_out", "linear", "kernel"), True),
+  ]
+  for pt_key, nnx_key, transpose in global_mappings:
+    if pt_key in pt_state_dict and nnx_key in flat_state:
+      set_val(flat_state[nnx_key], convert_and_transpose_tensor(pt_state_dict.pop(pt_key), transpose=transpose))
 
   # Timestep / Guidance / Text projections
-  if (
-      "time_guidance_embed.timestep_embedder.linear_1.weight" in pt_state_dict
-      and (
-          "time_text_embed",
-          "timestep_embedder",
-          "linear_1",
-          "kernel",
+  embedder_mappings = [
+      ("time_guidance_embed.timestep_embedder.linear_1", ("time_text_embed", "timestep_embedder", "linear_1")),
+      ("time_guidance_embed.timestep_embedder.linear_2", ("time_text_embed", "timestep_embedder", "linear_2")),
+      ("time_guidance_embed.guidance_embedder.linear_1", ("time_text_embed", "guidance_embedder", "linear_1")),
+      ("time_guidance_embed.guidance_embedder.linear_2", ("time_text_embed", "guidance_embedder", "linear_2")),
+      ("time_guidance_embed.text_embedder.linear_1", ("time_text_embed", "pooled_embedder", "linear_1")),
+      ("time_guidance_embed.text_embedder.linear_2", ("time_text_embed", "pooled_embedder", "linear_2")),
+  ]
+  for pt_prefix, nnx_prefix in embedder_mappings:
+    if f"{pt_prefix}.weight" in pt_state_dict and (*nnx_prefix, "kernel") in flat_state:
+      set_val(
+          flat_state[(*nnx_prefix, "kernel")],
+          convert_and_transpose_tensor(pt_state_dict.pop(f"{pt_prefix}.weight"), transpose=True),
       )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "timestep_embedder", "linear_1", "kernel")],
-        convert_and_transpose_tensor(
-            pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_1.weight"), transpose=True
-        ),
-    )
-  if (
-      "time_guidance_embed.timestep_embedder.linear_1.bias" in pt_state_dict
-      and (
-          "time_text_embed",
-          "timestep_embedder",
-          "linear_1",
-          "bias",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "timestep_embedder", "linear_1", "bias")],
-        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_1.bias")),
-    )
-  if (
-      "time_guidance_embed.timestep_embedder.linear_2.weight" in pt_state_dict
-      and (
-          "time_text_embed",
-          "timestep_embedder",
-          "linear_2",
-          "kernel",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "timestep_embedder", "linear_2", "kernel")],
-        convert_and_transpose_tensor(
-            pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_2.weight"), transpose=True
-        ),
-    )
-  if (
-      "time_guidance_embed.timestep_embedder.linear_2.bias" in pt_state_dict
-      and (
-          "time_text_embed",
-          "timestep_embedder",
-          "linear_2",
-          "bias",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "timestep_embedder", "linear_2", "bias")],
-        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.timestep_embedder.linear_2.bias")),
-    )
-
-  if (
-      "time_guidance_embed.guidance_embedder.linear_1.weight" in pt_state_dict
-      and (
-          "time_text_embed",
-          "guidance_embedder",
-          "linear_1",
-          "kernel",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "guidance_embedder", "linear_1", "kernel")],
-        convert_and_transpose_tensor(
-            pt_state_dict.pop("time_guidance_embed.guidance_embedder.linear_1.weight"), transpose=True
-        ),
-    )
-  if (
-      "time_guidance_embed.guidance_embedder.linear_1.bias" in pt_state_dict
-      and (
-          "time_text_embed",
-          "guidance_embedder",
-          "linear_1",
-          "bias",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "guidance_embedder", "linear_1", "bias")],
-        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.guidance_embedder.linear_1.bias")),
-    )
-  if (
-      "time_guidance_embed.guidance_embedder.linear_2.weight" in pt_state_dict
-      and (
-          "time_text_embed",
-          "guidance_embedder",
-          "linear_2",
-          "kernel",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "guidance_embedder", "linear_2", "kernel")],
-        convert_and_transpose_tensor(
-            pt_state_dict.pop("time_guidance_embed.guidance_embedder.linear_2.weight"), transpose=True
-        ),
-    )
-  if (
-      "time_guidance_embed.guidance_embedder.linear_2.bias" in pt_state_dict
-      and (
-          "time_text_embed",
-          "guidance_embedder",
-          "linear_2",
-          "bias",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "guidance_embedder", "linear_2", "bias")],
-        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.guidance_embedder.linear_2.bias")),
-    )
-
-  if (
-      "time_guidance_embed.text_embedder.linear_1.weight" in pt_state_dict
-      and (
-          "time_text_embed",
-          "pooled_embedder",
-          "linear_1",
-          "kernel",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "pooled_embedder", "linear_1", "kernel")],
-        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.text_embedder.linear_1.weight"), transpose=True),
-    )
-  if (
-      "time_guidance_embed.text_embedder.linear_1.bias" in pt_state_dict
-      and (
-          "time_text_embed",
-          "pooled_embedder",
-          "linear_1",
-          "bias",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "pooled_embedder", "linear_1", "bias")],
-        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.text_embedder.linear_1.bias")),
-    )
-  if (
-      "time_guidance_embed.text_embedder.linear_2.weight" in pt_state_dict
-      and (
-          "time_text_embed",
-          "pooled_embedder",
-          "linear_2",
-          "kernel",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "pooled_embedder", "linear_2", "kernel")],
-        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.text_embedder.linear_2.weight"), transpose=True),
-    )
-  if (
-      "time_guidance_embed.text_embedder.linear_2.bias" in pt_state_dict
-      and (
-          "time_text_embed",
-          "pooled_embedder",
-          "linear_2",
-          "bias",
-      )
-      in flat_state
-  ):
-    set_val(
-        flat_state[("time_text_embed", "pooled_embedder", "linear_2", "bias")],
-        convert_and_transpose_tensor(pt_state_dict.pop("time_guidance_embed.text_embedder.linear_2.bias")),
-    )
+    if f"{pt_prefix}.bias" in pt_state_dict and (*nnx_prefix, "bias") in flat_state:
+      set_val(flat_state[(*nnx_prefix, "bias")], convert_and_transpose_tensor(pt_state_dict.pop(f"{pt_prefix}.bias")))
 
   # Double blocks
   for block_idx in range(num_double_layers):

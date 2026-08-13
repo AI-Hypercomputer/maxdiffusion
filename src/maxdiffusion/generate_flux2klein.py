@@ -239,32 +239,22 @@ def main(argv):
   # 4. Load Qwen3 Config & Setup model layout
   from transformers import AutoConfig
   from maxdiffusion.max_utils import get_flash_block_sizes
+  from flax import nnx
+  from maxdiffusion.models.flux.transformers.transformer_flux_flax import NNXFlux2KleinTransformer2DModel
+  from maxdiffusion.models.flux.util import load_and_convert_flux_klein_nnx_weights, load_and_convert_vae_weights
 
   pt_config = AutoConfig.from_pretrained(text_encoder_path)
 
-  te_flash_block_sizes_dict = dict(getattr(config, "text_encoder_flash_block_sizes", {}) or {})
-  for k in ["block_q", "block_kv", "block_kv_compute", "block_kv_compute_in", "heads_per_tile", "vmem_limit_bytes"]:
-    val = getattr(config, f"text_encoder_{k}", None)
-    if val is not None and val > 0:
-      te_flash_block_sizes_dict[k] = int(val)
-  if (
-      "tokamax" in getattr(config, "text_encoder_attention", "")
-      or getattr(config, "text_encoder_attention", "") == "ulysses_ring"
-  ):
-    te_flash_block_sizes_dict.setdefault("block_q", 512)
-    te_flash_block_sizes_dict.setdefault("block_kv", 512)
-    te_flash_block_sizes_dict.setdefault("block_kv_compute", 512)
-    te_flash_block_sizes_dict.setdefault("block_q_dkv", te_flash_block_sizes_dict["block_q"])
-    te_flash_block_sizes_dict.setdefault("block_kv_dkv", te_flash_block_sizes_dict["block_kv"])
-    te_flash_block_sizes_dict.setdefault("block_kv_dkv_compute", te_flash_block_sizes_dict["block_kv_compute"])
-  config.get_keys()["text_encoder_flash_block_sizes"] = te_flash_block_sizes_dict
-
-  # Create a dummy config holder for max_utils.get_flash_block_sizes for Qwen3
-  class _TEConfigHolder:
-
-    def __init__(self, cfg):
-      self.flash_block_sizes = getattr(cfg, "text_encoder_flash_block_sizes", {})
-      self.attention = getattr(cfg, "text_encoder_attention", "dot_product")
+  te_bs = get_flash_block_sizes(
+      type(
+          "Config",
+          (),
+          {
+              "flash_block_sizes": getattr(config, "text_encoder_flash_block_sizes", {}) or {},
+              "attention": getattr(config, "text_encoder_attention", "dot_product"),
+          },
+      )()
+  )
 
   qwen3_config = FlaxQwen3Config(
       vocab_size=pt_config.vocab_size,
@@ -278,7 +268,7 @@ def main(argv):
       rope_theta=pt_config.rope_theta,
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
       attention_kernel=getattr(config, "text_encoder_attention", "dot_product"),
-      flash_block_sizes=get_flash_block_sizes(_TEConfigHolder(config)),
+      flash_block_sizes=te_bs,
       mesh=mesh,
       ulysses_shards=getattr(config, "ulysses_shards", -1),
       ulysses_attention_chunks=getattr(config, "ulysses_attention_chunks", 1),
@@ -286,67 +276,23 @@ def main(argv):
   )
   qwen3_model = FlaxQwen3Model(qwen3_config)
 
-  # Load Transformer HF config.json directly for model architecture parameters
-  import json
-
-  transformer_config_json = os.path.join(safetensors_path, "config.json")
+  # Load Transformer config for layer counts if present
   transformer_pt_cfg = {}
-  loaded_cfg = False
+  transformer_config_json = os.path.join(safetensors_path, "config.json")
   if os.path.exists(transformer_config_json):
     try:
+      import json
+
       with open(transformer_config_json, "r") as f:
         transformer_pt_cfg = json.load(f)
-        loaded_cfg = True
-    except Exception as e:
-      max_logging.log(f"ℹ️ Could not parse {transformer_config_json}: {e}. Falling back to HF cache...")
+    except Exception:
+      pass
 
-  if not loaded_cfg and repo_id:
-    try:
-      from huggingface_hub import hf_hub_download
-
-      cfg_file = hf_hub_download(repo_id=repo_id, filename="transformer/config.json", local_files_only=True)
-      with open(cfg_file, "r") as f:
-        transformer_pt_cfg = json.load(f)
-    except Exception as e:
-      max_logging.log(f"⚠️ Warning resolving transformer config fallback from HF cache: {e}")
-
-  num_double_layers = getattr(config, "num_double_layers", -1)
-  if num_double_layers is None or num_double_layers <= 0:
-    num_double_layers = transformer_pt_cfg.get("num_layers", 5)
-
-  depth = getattr(config, "depth", -1)
-  if depth is None or depth <= 0:
-    depth = transformer_pt_cfg.get("num_single_layers", 20)
-
-  num_attention_heads = getattr(config, "num_attention_heads", -1)
-  if num_attention_heads is None or num_attention_heads <= 0:
-    num_attention_heads = transformer_pt_cfg.get("num_attention_heads", 24)
+  num_double_layers = getattr(config, "num_double_layers", None) or transformer_pt_cfg.get("num_layers", 5)
+  depth = getattr(config, "depth", None) or transformer_pt_cfg.get("num_single_layers", 20)
+  num_attention_heads = getattr(config, "num_attention_heads", None) or transformer_pt_cfg.get("num_attention_heads", 24)
 
   # 5. Instantiate JAX NNXFlux2KleinTransformer2DModel
-  from flax import nnx
-  from maxdiffusion.models.flux.transformers.transformer_flux_flax import NNXFlux2KleinTransformer2DModel
-  from maxdiffusion.models.flux.util import load_and_convert_flux_klein_nnx_weights, load_and_convert_vae_weights
-  from maxdiffusion.max_utils import get_flash_block_sizes
-
-  flash_block_sizes_val = getattr(config, "flash_block_sizes", {}) or {}
-  if isinstance(flash_block_sizes_val, str) and flash_block_sizes_val:
-    import ast
-    import json
-
-    try:
-      flash_block_sizes_val = json.loads(flash_block_sizes_val)
-    except Exception:
-      try:
-        flash_block_sizes_val = ast.literal_eval(flash_block_sizes_val)
-      except Exception:
-        flash_block_sizes_val = {}
-  flash_block_sizes_dict = dict(flash_block_sizes_val)
-  for k in ["block_q", "block_kv", "block_kv_compute", "block_kv_compute_in", "heads_per_tile", "vmem_limit_bytes"]:
-    val = getattr(config, k, None)
-    if val is not None and val > 0:
-      flash_block_sizes_dict[k] = int(val)
-  config.get_keys()["flash_block_sizes"] = flash_block_sizes_dict
-
   transformer = NNXFlux2KleinTransformer2DModel(
       rngs=nnx.Rngs(0),
       in_channels=128,
