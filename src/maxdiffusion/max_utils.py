@@ -771,14 +771,14 @@ def get_flash_block_sizes(config):
           f"use_fused_bwd_kernel: {user_block_sizes.get('use_fused_bwd_kernel')}"
       )
     flash_block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=user_block_sizes.get("block_q_dkv", user_block_sizes["block_kv"])
+        block_q=user_block_sizes.get("block_q_dkv", user_block_sizes.get("block_kv"))
         if attention_is_tokamax
-        else user_block_sizes["block_q"],
-        block_kv_compute=user_block_sizes["block_kv_compute"],
-        block_kv=user_block_sizes["block_kv"],
-        block_q_dkv=user_block_sizes["block_q_dkv"],
-        block_kv_dkv=user_block_sizes["block_kv_dkv"],
-        block_kv_dkv_compute=user_block_sizes["block_kv_dkv_compute"],
+        else user_block_sizes.get("block_q"),
+        block_kv_compute=user_block_sizes.get("block_kv_compute"),
+        block_kv=user_block_sizes.get("block_kv"),
+        block_q_dkv=user_block_sizes.get("block_q_dkv", user_block_sizes.get("block_q")),
+        block_kv_dkv=user_block_sizes.get("block_kv_dkv", user_block_sizes.get("block_kv")),
+        block_kv_dkv_compute=user_block_sizes.get("block_kv_dkv_compute", user_block_sizes.get("block_kv_compute")),
         block_q_dq=None if attention_is_tokamax else value_or_none(user_block_sizes, "block_q_dq"),
         block_kv_dq=None if attention_is_tokamax else value_or_none(user_block_sizes, "block_kv_dq"),
         use_fused_bwd_kernel=True if attention_is_tokamax else value_or_none(user_block_sizes, "use_fused_bwd_kernel"),
