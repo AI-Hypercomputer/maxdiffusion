@@ -15,7 +15,7 @@ limitations under the License.
 """
 
 import math
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from flax import nnx
 import flax.linen as nn
 import jax
@@ -41,6 +41,13 @@ class FlaxQwen3Config:
       rope_theta: float = 1000000.0,
       max_position_embeddings: int = 40960,
       dtype=jnp.float32,
+      attention_kernel: str = "dot_product",
+      flash_block_sizes: Optional[Dict[str, int]] = None,
+      mesh: Optional[jax.sharding.Mesh] = None,
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
+      max_layer_to_run: Optional[int] = 27,
+      is_causal: bool = True,
   ):
     self.vocab_size = vocab_size
     self.hidden_size = hidden_size
@@ -53,6 +60,13 @@ class FlaxQwen3Config:
     self.rope_theta = rope_theta
     self.max_position_embeddings = max_position_embeddings
     self.dtype = dtype
+    self.attention_kernel = attention_kernel
+    self.flash_block_sizes = flash_block_sizes
+    self.mesh = mesh
+    self.ulysses_shards = ulysses_shards
+    self.ulysses_attention_chunks = ulysses_attention_chunks
+    self.max_layer_to_run = max_layer_to_run
+    self.is_causal = is_causal
 
 
 # -----------------------------------------------------------------------------
@@ -154,6 +168,9 @@ def apply_qwen3_rotary_pos_emb(
   return q_rot, k_rot
 
 
+from maxdiffusion.models.attention_flax import AttentionOp
+
+
 # -----------------------------------------------------------------------------
 # Self Attention (Grouped Query Attention)
 # -----------------------------------------------------------------------------
@@ -247,33 +264,53 @@ class FlaxQwen3Attention(nn.Module):
       k = jnp.repeat(k, gqa_ratio, axis=-2)
       v = jnp.repeat(v, gqa_ratio, axis=-2)
 
-    # 5. Transpose to (batch, num_heads, seq_len, head_dim) for attention
-    q = jnp.transpose(q, (0, 2, 1, 3))
-    k = jnp.transpose(k, (0, 2, 1, 3))
-    v = jnp.transpose(v, (0, 2, 1, 3))
+    if self.config.attention_kernel != "dot_product":
+      scale = self.config.head_dim**-0.5
+      q_3d = q.reshape((batch_size, seq_len, self.config.num_attention_heads * self.config.head_dim))
+      k_3d = k.reshape((batch_size, seq_len, self.config.num_attention_heads * self.config.head_dim))
+      v_3d = v.reshape((batch_size, seq_len, self.config.num_attention_heads * self.config.head_dim))
+      attn_op = AttentionOp(
+          mesh=self.config.mesh,
+          attention_kernel=self.config.attention_kernel,
+          scale=scale,
+          heads=self.config.num_attention_heads,
+          dim_head=self.config.head_dim,
+          flash_min_seq_length=128,
+          flash_block_sizes=self.config.flash_block_sizes,
+          dtype=self.config.dtype,
+          ulysses_shards=self.config.ulysses_shards,
+          ulysses_attention_chunks=self.config.ulysses_attention_chunks,
+          is_causal=getattr(self.config, "is_causal", True),
+      )
+      out = attn_op.apply_attention(q_3d, k_3d, v_3d, attention_mask=attention_mask)
+    else:
+      # 5. Transpose to (batch, num_heads, seq_len, head_dim) for attention
+      q = jnp.transpose(q, (0, 2, 1, 3))
+      k = jnp.transpose(k, (0, 2, 1, 3))
+      v = jnp.transpose(v, (0, 2, 1, 3))
 
-    # 6. Compute attention logits in float32
-    q_f = q.astype(jnp.float32)
-    k_f = k.astype(jnp.float32)
-    v_f = v.astype(jnp.float32)
+      # 6. Compute attention logits in float32
+      q_f = q.astype(jnp.float32)
+      k_f = k.astype(jnp.float32)
+      v_f = v.astype(jnp.float32)
 
-    scores = jnp.matmul(q_f, jnp.transpose(k_f, (0, 1, 3, 2))) / math.sqrt(self.config.head_dim)
+      scores = jnp.matmul(q_f, jnp.transpose(k_f, (0, 1, 3, 2))) / math.sqrt(self.config.head_dim)
 
-    # 7. Apply causal attention mask
-    causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
-    scores = jnp.where(causal_mask, scores, -1e4)
+      # 7. Apply causal attention mask if configured
+      if getattr(self.config, "is_causal", True):
+        causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+        scores = jnp.where(causal_mask, scores, -1e4)
 
-    # 8. Apply padding attention mask if provided
-    if attention_mask is not None:
-      p_mask = attention_mask[:, jnp.newaxis, jnp.newaxis, :].astype(jnp.bool_)
-      scores = jnp.where(p_mask, scores, -1e4)
+      # 8. Apply padding attention mask if provided
+      if attention_mask is not None:
+        p_mask = attention_mask[:, jnp.newaxis, jnp.newaxis, :].astype(jnp.bool_)
+        scores = jnp.where(p_mask, scores, -1e4)
 
-    # 9. Softmax & Weighted Sum in float32
-    probs = jax.nn.softmax(scores, axis=-1)
-    out = jnp.matmul(probs, v_f).astype(self.config.dtype)
+      # 9. Softmax & Weighted Sum in float32
+      probs = jax.nn.softmax(scores, axis=-1)
+      out = jnp.matmul(probs, v_f).astype(self.config.dtype)
+      out = jnp.transpose(out, (0, 2, 1, 3)).reshape((batch_size, seq_len, -1))
 
-    # 10. Reshape back and project out: (batch, seq_len, hidden_size)
-    out = jnp.transpose(out, (0, 2, 1, 3)).reshape((batch_size, seq_len, -1))
     return o_proj(out)
 
 
@@ -380,7 +417,12 @@ class FlaxQwen3Model(nn.Module):
     )
 
     # 3. Stacked Decoder Layers
-    for i in range(self.config.num_hidden_layers):
+    num_layers_to_exec = (
+        self.config.num_hidden_layers
+        if self.config.max_layer_to_run is None
+        else min(self.config.num_hidden_layers, self.config.max_layer_to_run + 1)
+    )
+    for i in range(num_layers_to_exec):
       layer = FlaxQwen3DecoderLayer(
           config=self.config,
           name=f"layers_{i}",

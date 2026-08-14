@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from maxdiffusion.models.flux.transformers.transformer_flux_flax import NNXFluxTransformer2DModel
+from maxdiffusion.models.flux.transformers.transformer_flux_flax import NNXFlux2KleinTransformer2DModel
 from maxdiffusion.models.qwen3_flax import FlaxQwen3Config, NNXFlaxQwen3Model
 from maxdiffusion.models.vae_flax import NNXFlaxAutoencoderKL
 from maxdiffusion.models.embeddings_flax import NNXCombinedTimestepGuidanceTextProjEmbeddings
@@ -83,9 +83,9 @@ class NNXFlux2KleinTest(unittest.TestCase):
 
   def test_nnx_flux_transformer_forward(self):
     rngs = nnx.Rngs(0)
-    transformer = NNXFluxTransformer2DModel(
+    transformer = NNXFlux2KleinTransformer2DModel(
         rngs=rngs,
-        in_channels=16,
+        in_channels=128,
         num_layers=1,
         num_single_layers=2,
         attention_head_dim=128,
@@ -93,15 +93,16 @@ class NNXFlux2KleinTest(unittest.TestCase):
         joint_attention_dim=128,
         pooled_projection_dim=128,
         guidance_embeds=True,
-        axes_dim=(16, 56, 56),
+        axes_dim=(32, 32, 32, 32),
+        theta=2000.0,
     )
-    hidden_states = jnp.ones((1, 64, 16))
+    hidden_states = jnp.ones((1, 64, 128))
     encoder_hidden_states = jnp.ones((1, 16, 128))
     pooled_projections = jnp.ones((1, 128))
     timestep = jnp.array([100.0])
     guidance = jnp.array([3.5])
-    img_ids = jnp.zeros((64, 3))
-    txt_ids = jnp.zeros((16, 3))
+    img_ids = jnp.zeros((64, 4))
+    txt_ids = jnp.zeros((16, 4))
 
     output = transformer(
         hidden_states=hidden_states,
@@ -111,8 +112,9 @@ class NNXFlux2KleinTest(unittest.TestCase):
         img_ids=img_ids,
         txt_ids=txt_ids,
         guidance=guidance,
-    )
-    self.assertEqual(output.shape, (1, 64, 16))
+        return_dict=False,
+    )[0]
+    self.assertEqual(output.shape, (1, 64, 128))
 
 
 if __name__ == "__main__":

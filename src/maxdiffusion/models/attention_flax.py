@@ -127,8 +127,7 @@ def _reshape_batch_dim_to_heads(tensor, heads):
   tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
   tensor = jnp.transpose(tensor, (0, 2, 1, 3))
   reshaped_tensor = tensor.reshape(batch_size // head_size, seq_len, dim * head_size)
-  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
-  return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
+  return nn.with_logical_constraint(reshaped_tensor, (BATCH, LENGTH, HEAD))
 
 
 def _reshape_heads_to_batch_dim(tensor, heads):
@@ -141,8 +140,7 @@ def _reshape_heads_to_batch_dim(tensor, heads):
   else:
     batch_size, head_size, seq_len, head_dim = tensor.shape
     reshaped_tensor = tensor.reshape(batch_size * head_size, seq_len, head_dim)
-  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
-  return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
+  return nn.with_logical_constraint(reshaped_tensor, (BATCH, LENGTH, HEAD))
 
 
 def _reshape_heads_to_head_dim(tensor):
@@ -151,8 +149,7 @@ def _reshape_heads_to_head_dim(tensor):
   b, h, s, d = tensor.shape
   tensor = jnp.transpose(tensor, axes=[0, 2, 1, 3])
   reshaped_tensor = jnp.reshape(tensor, (b, -1, h * d))
-  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
-  return jax.lax.with_sharding_constraint(reshaped_tensor, axis_names)
+  return nn.with_logical_constraint(reshaped_tensor, (BATCH, LENGTH, HEAD))
 
 
 def _unflatten_heads(tensor, heads):
@@ -579,6 +576,7 @@ def _tpu_flash_attention(
     attention_mask: jax.Array = None,
     use_base2_exp: bool = False,
     use_experimental_scheduler: bool = False,
+    is_causal: bool = False,
 ) -> jax.Array:
   """TPU Flash Attention"""
 
@@ -656,8 +654,12 @@ def _tpu_flash_attention(
     key, _, key_seq_len = _pad_data_for_flash(key, heads, block_kv)
     value, _, _ = _pad_data_for_flash(value, heads, block_kv)
 
-    mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
-    multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+    if is_causal:
+      mask = splash_attention_mask.CausalMask((query.shape[2], key.shape[2]))
+      multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
+    else:
+      mask = splash_attention_mask.FullMask(_shape=(query.shape[2], key.shape[2]))
+      multi_head_mask = splash_attention_mask.MultiHeadMask(masks=(mask,) * query.shape[1])
 
     segment_ids_cls = (
         tokamax_splash_base.SegmentIds if attention_kernel == "tokamax_ring" else splash_attention_kernel.SegmentIds
@@ -674,9 +676,14 @@ def _tpu_flash_attention(
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
     if attention_kernel == "tokamax_flash":
-      mask = tokamax_splash_attention_mask.FullMask(
-          _shape=(query.shape[2], key.shape[2]),
-      )
+      if is_causal:
+        mask = tokamax_splash_attention_mask.CausalMask(
+            (query.shape[2], key.shape[2]),
+        )
+      else:
+        mask = tokamax_splash_attention_mask.FullMask(
+            _shape=(query.shape[2], key.shape[2]),
+        )
       splash_kernel = tokamax_splash_attention_kernel.make_splash_mha(
           mask=mask,
           q_seq_shards=1,  # the sizes of the axis is sharding over seq_len
@@ -1571,10 +1578,9 @@ def _cudnn_flash_attention(query: Array, key: Array, value: Array, heads: int, m
   key = _reshape_data_for_cudnn_flash(key, heads)
   value = _reshape_data_for_cudnn_flash(value, heads)
 
-  axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD, D_KV))
-  query = jax.lax.with_sharding_constraint(query, axis_names)
-  key = jax.lax.with_sharding_constraint(key, axis_names)
-  value = jax.lax.with_sharding_constraint(value, axis_names)
+  query = nn.with_logical_constraint(query, (BATCH, LENGTH, HEAD, D_KV))
+  key = nn.with_logical_constraint(key, (BATCH, LENGTH, HEAD, D_KV))
+  value = nn.with_logical_constraint(value, (BATCH, LENGTH, HEAD, D_KV))
 
   out = dpa_layer(query, key, value, mask=None)
   return _reshape_data_from_cudnn_flash(out)
@@ -1677,6 +1683,7 @@ def ulysses_ring_custom_fixed_m_kernel(q, k, v, context):
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       use_fixed_m=True,
+      ulysses_attention_chunks=context.get("ulysses_attention_chunks", 1),
   )
 
 
@@ -1787,6 +1794,7 @@ def flash_kernel(q, k, v, context):
       attention_mask=context["attention_mask"],
       use_base2_exp=context["use_base2_exp"],
       use_experimental_scheduler=context["use_experimental_scheduler"],
+      is_causal=context.get("is_causal", False),
   )
 
 
@@ -1808,6 +1816,7 @@ def tokamax_flash_kernel(q, k, v, context):
       attention_mask=context["attention_mask"],
       use_base2_exp=context["use_base2_exp"],
       use_experimental_scheduler=context["use_experimental_scheduler"],
+      is_causal=context.get("is_causal", False),
   )
 
 
@@ -1829,6 +1838,7 @@ def tokamax_ring_kernel(q, k, v, context):
       attention_mask=context["attention_mask"],
       use_base2_exp=context["use_base2_exp"],
       use_experimental_scheduler=context["use_experimental_scheduler"],
+      is_causal=context.get("is_causal", False),
   )
 
 
@@ -1882,6 +1892,7 @@ def _apply_attention(
     use_experimental_scheduler: bool = False,
     ulysses_shards: int = -1,
     ulysses_attention_chunks: int = 1,
+    is_causal: bool = False,
 ):
   """Routes to different attention kernels using a module-level registry."""
 
@@ -1947,6 +1958,7 @@ def _apply_attention(
       "float32_qk_product": float32_qk_product,
       "use_memory_efficient_attention": use_memory_efficient_attention,
       "dpa_layer": dpa_layer,
+      "is_causal": is_causal,
   }
 
   # Module-level Registry lookup
@@ -2280,6 +2292,7 @@ class AttentionOp(nn.Module):
   use_experimental_scheduler: bool = False
   ulysses_shards: int = -1
   ulysses_attention_chunks: int = 1
+  is_causal: bool = False
 
   def setup(self):
     self.dpa_layer = None
@@ -2329,6 +2342,7 @@ class AttentionOp(nn.Module):
         use_experimental_scheduler=self.use_experimental_scheduler,
         ulysses_shards=self.ulysses_shards,
         ulysses_attention_chunks=self.ulysses_attention_chunks,
+        is_causal=self.is_causal,
     )
 
 
@@ -2619,9 +2633,9 @@ class FlaxWanAttention(nnx.Module):
       rngs: nnx.Rngs = None,
       cached_kv: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
   ) -> jax.Array:
-    axis_names = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
-    hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
-    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
+    hidden_states = nn.with_logical_constraint(hidden_states, (BATCH, LENGTH, HEAD))
+    if encoder_hidden_states is not None:
+      encoder_hidden_states = nn.with_logical_constraint(encoder_hidden_states, (BATCH, LENGTH, HEAD))
     dtype = hidden_states.dtype
     is_self_attention = encoder_hidden_states is None
     if encoder_hidden_states is None:
@@ -2854,6 +2868,8 @@ class FlaxFluxAttention(nn.Module):
   qkv_bias: bool = False
   use_base2_exp: bool = False
   use_experimental_scheduler: bool = False
+  ulysses_shards: int = -1
+  ulysses_attention_chunks: int = 1
 
   def setup(self):
     if self.attention_kernel in {"flash", "cudnn_flash_te"} and self.mesh is None:
@@ -2875,6 +2891,8 @@ class FlaxFluxAttention(nn.Module):
         float32_qk_product=False,
         use_base2_exp=self.use_base2_exp,
         use_experimental_scheduler=self.use_experimental_scheduler,
+        ulysses_shards=self.ulysses_shards,
+        ulysses_attention_chunks=self.ulysses_attention_chunks,
     )
 
     kernel_axes = ("embed", "heads")

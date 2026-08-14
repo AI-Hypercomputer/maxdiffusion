@@ -300,6 +300,7 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
       sample: jnp.ndarray,
       to_final: bool = False,
       return_dict: bool = True,
+      step_index: Optional[int] = None,
   ) -> Union[FlaxFlowMatchSchedulerOutput, Tuple]:
     """
     Propagates the sample with the flow matching scheduler.
@@ -317,12 +318,17 @@ class FlaxFlowMatchScheduler(FlaxSchedulerMixin, ConfigMixin):
             Whether this is the final step.
         return_dict (`bool`):
             Whether to return a `FlaxFlowMatchSchedulerOutput` object.
+        step_index (`Optional[int]`):
+            Optional direct step index to bypass dynamic _find_timestep_id calculation.
 
     Returns:
         `FlaxFlowMatchSchedulerOutput` or `tuple`: A tuple (`prev_sample`, `state`) or a
         `FlaxFlowMatchSchedulerOutput` object containing the previous sample and the updated state.
     """
-    timestep_id = self._find_timestep_id(state, timestep)
+    if step_index is not None:
+      timestep_id = step_index
+    else:
+      timestep_id = self._find_timestep_id(state, timestep)
     sigma = state.sigmas[timestep_id]
 
     def get_next_sigma():
