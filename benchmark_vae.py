@@ -1,0 +1,65 @@
+import time
+import jax
+import jax.numpy as jnp
+from jax.sharding import Mesh
+from maxdiffusion.models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
+
+def run_benchmark():
+    mesh = Mesh(jax.devices(), ('vae_spatial',))
+    
+    # 1080p latent shape for WAN: (B, T, H, W, C)
+    # T=1 for 1 frame. 1080p spatial latents are roughly 135x240
+    batch, t, h, w, c = 1, 1, 135, 240, 16 
+    dummy_latent = jnp.ones((batch, t, h, w, c), dtype=jnp.float32)
+
+    with mesh:
+        # Initialize the actual AutoencoderKLWan
+        vae = AutoencoderKLWan(
+            in_channels=16,
+            out_channels=16,
+            down_block_types=("WanDownEncoderBlock3D", "WanDownEncoderBlock3D", "WanDownEncoderBlock3D", "WanDownEncoderBlock3D"),
+            up_block_types=("WanUpDecoderBlock3D", "WanUpDecoderBlock3D", "WanUpDecoderBlock3D", "WanUpDecoderBlock3D"),
+            block_out_channels=(128, 256, 512, 512),
+            layers_per_block=(2, 2, 2, 2),
+            act_fn="silu",
+            norm_num_groups=32,
+            sample_size=240,
+            latent_channels=16,
+            temporal_downsample_factor=4,
+            spatial_downsample_factor=8,
+            temporal_compression_ratio=4,
+            vae_spatial=-1,
+            vae_decode_chunk=1,
+            mesh=mesh
+        )
+        
+        # Init dummy variables
+        rng = jax.random.PRNGKey(0)
+        variables = vae.init(rng, dummy_latent)
+        
+        # We need a cache for decoding
+        cache = AutoencoderKLWanCache(batch_size=batch, height=h, width=w)
+        cache.init(variables)
+
+        @jax.jit
+        def decode_step(vars_, z, cache_):
+            return vae.apply(vars_, z, cache_, method=vae.decode)
+
+        print("Compiling model...")
+        out = decode_step(variables, dummy_latent, cache)
+        jax.block_until_ready(out)
+
+        print("Running Benchmark...")
+        start = time.perf_counter()
+        
+        iters = 5
+        for _ in range(iters):
+            out = decode_step(variables, dummy_latent, cache)
+        jax.block_until_ready(out)
+        
+        end = time.perf_counter()
+        
+    print(f"Average Decode Time: {(end - start) / iters * 1000:.2f} ms")
+
+if __name__ == "__main__":
+    run_benchmark()
