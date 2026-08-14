@@ -26,18 +26,15 @@ def run_benchmark():
             weights_dtype=jnp.float32,
         )
         
-        variables = vae.init(rng, dummy_latent)
-        
         # We need a cache for decoding
-        cache = AutoencoderKLWanCache(batch_size=batch, height=h, width=w)
-        cache.init(variables)
+        cache = AutoencoderKLWanCache(vae)
 
-        @jax.jit
-        def decode_step(vars_, z, cache_):
-            return vae.apply(vars_, z, cache_, method=vae.decode)
+        @nnx.jit
+        def decode_step(model, z, cache_):
+            return model.decode(z, cache_)
 
         print("Compiling model...")
-        out = decode_step(variables, dummy_latent, cache)
+        out = decode_step(vae, dummy_latent, cache)
         jax.block_until_ready(out)
 
         print("Running Benchmark...")
@@ -45,7 +42,7 @@ def run_benchmark():
         
         iters = 5
         for _ in range(iters):
-            out = decode_step(variables, dummy_latent, cache)
+            out = decode_step(vae, dummy_latent, cache)
         jax.block_until_ready(out)
         
         end = time.perf_counter()
