@@ -13,14 +13,15 @@ def run_benchmark():
 
     rngs = nnx.Rngs(0)
     
-    batch, time_dim, height, width, z_dim = 1, 1, 135, 240, 16 
+    # Simulate full pipeline: 81 frames = 20 latents (after T/4 compression)
+    batch, time_dim, height, width, z_dim = 1, 20, 135, 240, 16 
     dummy_z = jnp.ones((batch, time_dim, height, width, z_dim), dtype=jnp.bfloat16)
     
     spatial_sharding = NamedSharding(mesh, P(None, None, None, "vae_spatial", None))
     dummy_z = jax.device_put(dummy_z, spatial_sharding)
 
     with jax.set_mesh(mesh):
-        print(f"--- Testing Tokamax Flash 1024x1024 (8 chips, chunk=5) ---")
+        print(f"--- Testing Tokamax Flash 1024x1024 (8 chips, chunk=5, T=20) ---")
         
         vae = AutoencoderKLWan(rngs=rngs, mesh=mesh, vae_decode_chunk=5, dtype=jnp.bfloat16)
         cache = AutoencoderKLWanCache(vae)
