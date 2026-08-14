@@ -30,7 +30,7 @@ from maxdiffusion.utils import logging
 from ...models import FlaxAutoencoderKL
 from ...schedulers import (FlaxEulerDiscreteScheduler)
 from ..pipeline_flax_utils import FlaxDiffusionPipeline
-from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
+from maxdiffusion.models.flux.transformers.transformer_flux import FluxTransformer2DModel
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
