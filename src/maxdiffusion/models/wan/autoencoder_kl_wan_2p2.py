@@ -495,11 +495,7 @@ class WanAttentionBlock(nnx.Module):
     qkv = self.to_qkv(x)  # Output: (N*D, H, W, C * 3)
     # qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
     qkv = qkv.reshape(batch_size * time, 1, -1, channels * 3)
-    qkv = jnp.transpose(qkv, (0, 1, 3, 2))
-    q, k, v = jnp.split(qkv, 3, axis=-2)
-    q = jnp.transpose(q, (0, 1, 3, 2))
-    k = jnp.transpose(k, (0, 1, 3, 2))
-    v = jnp.transpose(v, (0, 1, 3, 2))
+    q, k, v = jnp.split(qkv, 3, axis=-1)
     x = jax.nn.dot_product_attention(q, k, v)
     x = jnp.squeeze(x, 1).reshape(batch_size * time, height, width, channels)
 
