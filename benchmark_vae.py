@@ -2,6 +2,7 @@ import time
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
+from flax import nnx
 from maxdiffusion.models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
 
 def run_benchmark():
@@ -13,28 +14,18 @@ def run_benchmark():
     dummy_latent = jnp.ones((batch, t, h, w, c), dtype=jnp.float32)
 
     with mesh:
-        # Initialize the actual AutoencoderKLWan
-        vae = AutoencoderKLWan(
-            in_channels=16,
-            out_channels=16,
-            down_block_types=("WanDownEncoderBlock3D", "WanDownEncoderBlock3D", "WanDownEncoderBlock3D", "WanDownEncoderBlock3D"),
-            up_block_types=("WanUpDecoderBlock3D", "WanUpDecoderBlock3D", "WanUpDecoderBlock3D", "WanUpDecoderBlock3D"),
-            block_out_channels=(128, 256, 512, 512),
-            layers_per_block=(2, 2, 2, 2),
-            act_fn="silu",
-            norm_num_groups=32,
-            sample_size=240,
-            latent_channels=16,
-            temporal_downsample_factor=4,
-            spatial_downsample_factor=8,
-            temporal_compression_ratio=4,
-            vae_spatial=-1,
-            vae_decode_chunk=1,
-            mesh=mesh
-        )
-        
         # Init dummy variables
         rng = jax.random.PRNGKey(0)
+        
+        # Initialize the actual AutoencoderKLWan
+        vae = AutoencoderKLWan(
+            rngs=nnx.Rngs(0),
+            mesh=mesh,
+            vae_decode_chunk=1,
+            dtype=jnp.float32,
+            weights_dtype=jnp.float32,
+        )
+        
         variables = vae.init(rng, dummy_latent)
         
         # We need a cache for decoding
