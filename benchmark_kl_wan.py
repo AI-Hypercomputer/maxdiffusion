@@ -8,7 +8,7 @@ import numpy as np
 
 def run_benchmark():
     devices = jax.devices()
-    device_array = np.array(devices[:4]).reshape((1, 4))
+    device_array = np.array(devices[:8]).reshape((1, 8))
     mesh = Mesh(device_array, ('redundant', 'vae_spatial'))
 
     rngs = nnx.Rngs(0)
@@ -20,9 +20,9 @@ def run_benchmark():
     dummy_z = jax.device_put(dummy_z, spatial_sharding)
 
     with jax.set_mesh(mesh):
-        print(f"--- Testing Tokamax Flash 1024x1024 ---")
+        print(f"--- Testing Tokamax Flash 1024x1024 (8 chips, chunk=5) ---")
         
-        vae = AutoencoderKLWan(rngs=rngs, mesh=mesh, dtype=jnp.bfloat16)
+        vae = AutoencoderKLWan(rngs=rngs, mesh=mesh, vae_decode_chunk=5, dtype=jnp.bfloat16)
         cache = AutoencoderKLWanCache(vae)
         
         def decode_step(z, feat_cache):
