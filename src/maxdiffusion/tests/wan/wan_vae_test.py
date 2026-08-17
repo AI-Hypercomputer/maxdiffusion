@@ -226,9 +226,11 @@ class WanVaeTest(unittest.TestCase):
 
     with self.mesh, nn_partitioning.axis_rules(self.config.vae_logical_axis_rules):
       model = ZeroPaddedConv2D(dim=dim, rngs=rngs, kernel_size=(1, 3, 3), stride=(1, 2, 2))
-      dummy_input = jnp.ones((1, 1, 480, 720, 96))
+      dummy_input = jnp.ones(input_shape)
+      dummy_input = jnp.transpose(dummy_input, (0, 2, 3, 1))
       output = model(dummy_input)
-      assert output.shape == (1, 1, 240, 360, 96)
+      output = jnp.transpose(output, (0, 3, 1, 2))
+      assert output.shape == (1, 96, 240, 360)
 
   def test_wan_upsample(self):
     batch_size = 1
