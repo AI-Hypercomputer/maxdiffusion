@@ -412,6 +412,15 @@ class WanAnimatePipeline(WanPipeline):
           f" {type(prev_segment_conditioning_frames)} and value is {prev_segment_conditioning_frames}"
       )
 
+    mesh = getattr(self, "vae_mesh", getattr(self, "mesh", None))
+    if mesh is not None and hasattr(mesh, "shape"):
+      vae_spatial = mesh.shape.get("vae_spatial", 1)
+      if vae_spatial > 1 and (width // 8) % vae_spatial != 0:
+        max_logging.log(
+            f"Warning: Latent width is not divisible by vae_spatial mesh axis ({vae_spatial})."
+            " VAE spatial sharding will be partially bypassed."
+        )
+
   @staticmethod
   def pad_video_frames(frames: list, num_target_frames: int) -> list:
     """Pad *frames* to *num_target_frames* using a reflect-like strategy.

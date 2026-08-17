@@ -67,6 +67,28 @@ class RepSentinel:
 tree_util.register_pytree_node(RepSentinel, lambda x: ((), None), lambda _, __: RepSentinel())
 
 
+def _with_sharding_constraint(x, sharding):
+  if sharding is not None and isinstance(x, jax.Array):
+    if hasattr(sharding, "mesh") and hasattr(sharding, "spec") and sharding.mesh is not None:
+      mesh = sharding.mesh
+      spec = sharding.spec
+      # Guard against rank mismatch when mapping over heterogenous PyTree caches
+      if len(spec) != x.ndim:
+        return x
+      for axis_idx, axis_names in enumerate(spec):
+        if axis_names is not None:
+          if not isinstance(axis_names, tuple):
+            axis_names = (axis_names,)
+          mesh_axis_size = 1
+          for axis_name in axis_names:
+            if axis_name in mesh.shape:
+              mesh_axis_size *= mesh.shape[axis_name]
+          if x.shape[axis_idx] % mesh_axis_size != 0:
+            return x
+    return jax.lax.with_sharding_constraint(x, sharding)
+  return x
+
+
 class WanCausalConv3d(nnx.Module):
 
   def __init__(
@@ -99,9 +121,9 @@ class WanCausalConv3d(nnx.Module):
     self.mesh = mesh
 
     # Weight sharding (Kernel is sharded along output channels)
-    num_fsdp_devices = mesh.shape["vae_spatial"]
+    num_fsdp_devices = mesh.shape["vae_spatial"] if mesh is not None and "vae_spatial" in mesh.shape else 1
     kernel_sharding = (None, None, None, None, None)
-    if out_channels % num_fsdp_devices == 0:
+    if num_fsdp_devices > 1 and out_channels % num_fsdp_devices == 0:
       kernel_sharding = (None, None, None, None, "vae_spatial")
 
     self.conv = nnx.Conv(
@@ -119,8 +141,9 @@ class WanCausalConv3d(nnx.Module):
     )
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None, idx=-1) -> jax.Array:
-    spatial_sharding = NamedSharding(self.mesh, P("redundant", None, None, "vae_spatial", None))
-    x = jax.lax.with_sharding_constraint(x, spatial_sharding)
+    if self.mesh is not None and "vae_spatial" in self.mesh.shape:
+      spatial_sharding = NamedSharding(self.mesh, P("redundant", None, None, "vae_spatial", None))
+      x = _with_sharding_constraint(x, spatial_sharding)
 
     current_padding = list(self._causal_padding)
     padding_needed = self._depth_padding_before
@@ -231,6 +254,8 @@ class ZeroPaddedConv2D(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
   ):
+    rank = len(kernel_size) if isinstance(kernel_size, (tuple, list)) else 2
+    kernel_sharding = (None,) * (rank + 2)
     self.conv = nnx.Conv(
         dim,
         dim,
@@ -238,7 +263,7 @@ class ZeroPaddedConv2D(nnx.Module):
         strides=stride,
         use_bias=True,
         rngs=rngs,
-        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), (None, None, None, None)),
+        kernel_init=nnx.with_partitioning(nnx.initializers.xavier_uniform(), kernel_sharding),
         dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
@@ -1137,7 +1162,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     )
     self.mesh = mesh
 
-  @nnx.jit
   def _encode(self, x: jax.Array, feat_cache: AutoencoderKLWanCache):
     feat_cache.init_cache()
     if x.shape[-1] != 3:
@@ -1157,7 +1181,11 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     iter_ = 1 + ((t - 1 + CHUNK_SIZE - 1) // CHUNK_SIZE) if t > 1 else 1
     enc_feat_map = feat_cache._enc_feat_map
 
-    spatial_sharding = NamedSharding(self.mesh, P("redundant", None, None, "vae_spatial", None))
+    spatial_sharding = (
+        NamedSharding(self.mesh, P("redundant", None, None, "vae_spatial", None))
+        if self.mesh is not None and "vae_spatial" in self.mesh.shape
+        else None
+    )
 
     def finalize(out, enc_feat_map):
       feat_cache._enc_feat_map = enc_feat_map
@@ -1168,7 +1196,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     with jax.named_scope("AutoencoderKLWan_encode_chunk_0"):
       chunk_0 = x[:, :1, ...]
       out_0, enc_feat_map, _ = self.encoder(chunk_0, feat_cache=enc_feat_map, feat_idx=0)
-      out_0 = jax.lax.with_sharding_constraint(out_0, spatial_sharding)
+      out_0 = _with_sharding_constraint(out_0, spatial_sharding)
 
     if iter_ <= 1:
       return finalize(out_0, enc_feat_map)
@@ -1178,11 +1206,11 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     with jax.named_scope("AutoencoderKLWan_encode_chunk_1"):
       chunk_1 = x[:, 1 : (1 + CHUNK_SIZE), ...]
       out_1, enc_feat_map, _ = self.encoder(chunk_1, feat_cache=enc_feat_map, feat_idx=0)
-      out_1 = jax.lax.with_sharding_constraint(out_1, spatial_sharding)
+      out_1 = _with_sharding_constraint(out_1, spatial_sharding)
 
     if iter_ <= 2:
       out = jnp.concatenate([out_0, out_1], axis=1)
-      out = jax.lax.with_sharding_constraint(out, spatial_sharding)
+      out = _with_sharding_constraint(out, spatial_sharding)
       return finalize(out, enc_feat_map)
 
     # Prepare the remaining chunks to be scanned over
@@ -1215,10 +1243,11 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     def scan_fn(carry, chunk):
       current_feat_map = carry
       local_encoder = nnx.merge(graphdef, state)
+      chunk = _with_sharding_constraint(chunk, spatial_sharding)
       out_chunk, next_feat_map, _ = local_encoder(chunk, feat_cache=current_feat_map, feat_idx=0)
-      out_chunk = jax.lax.with_sharding_constraint(out_chunk, spatial_sharding)
+      out_chunk = _with_sharding_constraint(out_chunk, spatial_sharding)
       next_feat_map = jax.tree_util.tree_map(
-          lambda x: jax.lax.with_sharding_constraint(x, spatial_sharding) if isinstance(x, jax.Array) else x, next_feat_map
+          lambda x: _with_sharding_constraint(x, spatial_sharding) if isinstance(x, jax.Array) else x, next_feat_map
       )
       return next_feat_map, out_chunk
 
@@ -1231,7 +1260,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     out_rest = out_rest[:, : T_rest // self.temporal_downsample_factor, ...]
 
     out = jnp.concatenate([out_0, out_1, out_rest], axis=1)
-    out = jax.lax.with_sharding_constraint(out, spatial_sharding)
+    out = _with_sharding_constraint(out, spatial_sharding)
     return finalize(out, enc_feat_map)
 
   @jax.named_scope("AutoencoderKLWan_encode")
@@ -1245,7 +1274,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       return (posterior,)
     return FlaxAutoencoderKLOutput(latent_dist=posterior)
 
-  @nnx.jit
   def _decode(
       self, z: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxDecoderOutput, jax.Array]:
@@ -1255,20 +1283,24 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     x = self.post_quant_conv(z)
 
     dec_feat_map = feat_cache._feat_map
-    spatial_sharding = NamedSharding(self.mesh, P("redundant", None, None, "vae_spatial", None))
+    spatial_sharding = (
+        NamedSharding(self.mesh, P("redundant", None, None, "vae_spatial", None))
+        if self.mesh is not None and "vae_spatial" in self.mesh.shape
+        else None
+    )
 
     # First chunk (i=0)
     with jax.named_scope("AutoencoderKLWan_decode_chunk_0"):
-      chunk_in_0 = jax.lax.with_sharding_constraint(x[:, 0:1, ...], spatial_sharding)
+      chunk_in_0 = _with_sharding_constraint(x[:, 0:1, ...], spatial_sharding)
       out_0, dec_feat_map, _ = self.decoder(chunk_in_0, feat_cache=dec_feat_map, feat_idx=0)
-      out_0 = jax.lax.with_sharding_constraint(out_0, spatial_sharding)
+      out_0 = _with_sharding_constraint(out_0, spatial_sharding)
 
     if iter_ > 1:
       # Run chunk 1 outside scan to properly form the cache shape
       with jax.named_scope("AutoencoderKLWan_decode_chunk_1"):
-        chunk_in_1 = jax.lax.with_sharding_constraint(x[:, 1:2, ...], spatial_sharding)
+        chunk_in_1 = _with_sharding_constraint(x[:, 1:2, ...], spatial_sharding)
         out_chunk_1, dec_feat_map, _ = self.decoder(chunk_in_1, feat_cache=dec_feat_map, feat_idx=0)
-        out_chunk_1 = jax.lax.with_sharding_constraint(out_chunk_1, spatial_sharding)
+        out_chunk_1 = _with_sharding_constraint(out_chunk_1, spatial_sharding)
 
       out_1 = out_chunk_1
       out_list = [out_0, out_1]
@@ -1303,11 +1335,11 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         def scan_fn(carry, chunk_in):
           current_feat_map = carry
           local_decoder = nnx.merge(graphdef, state)
-          chunk_in = jax.lax.with_sharding_constraint(chunk_in, spatial_sharding)
+          chunk_in = _with_sharding_constraint(chunk_in, spatial_sharding)
           out_chunk, next_feat_map, _ = local_decoder(chunk_in, feat_cache=current_feat_map, feat_idx=0)
-          out_chunk = jax.lax.with_sharding_constraint(out_chunk, spatial_sharding)
+          out_chunk = _with_sharding_constraint(out_chunk, spatial_sharding)
           next_feat_map = jax.tree_util.tree_map(
-              lambda x: jax.lax.with_sharding_constraint(x, spatial_sharding) if isinstance(x, jax.Array) else x,
+              lambda x: _with_sharding_constraint(x, spatial_sharding) if isinstance(x, jax.Array) else x,
               next_feat_map,
           )
           return next_feat_map, out_chunk
@@ -1320,7 +1352,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
         out_list.append(out_rest)
 
       out = jnp.concatenate(out_list, axis=1)
-      out = jax.lax.with_sharding_constraint(out, spatial_sharding)
+      out = _with_sharding_constraint(out, spatial_sharding)
     else:
       out = out_0
 
