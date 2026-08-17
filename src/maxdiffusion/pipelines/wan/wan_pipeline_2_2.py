@@ -435,12 +435,13 @@ def run_inference_2_2(
           use_magcache=(not force_compute),
       )
 
+      latents_doubled = jnp.concatenate([latents] * 2)
       timestep = jnp.broadcast_to(t, bsz * 2)
-      noise_pred, residual_x_cur = transformer_forward_pass(
+      noise_pred, _, residual_x_cur = transformer_forward_pass(
           graphdef,
           state,
           rest,
-          latents,
+          latents_doubled,
           timestep,
           prompt_embeds_combined,
           do_classifier_free_guidance=True,
@@ -565,23 +566,22 @@ def run_inference_2_2(
         continue
 
       # Accumulate deltas since last full compute
-      dx_norm = jnp.sqrt(jnp.mean((latents - ref_latent) ** 2))
-      dt = jnp.abs(t_float - ref_timestep)
-      accum_dx = accum_dx + dx_norm
-      accum_dt = accum_dt + dt
+      dx_norm = float(jnp.sqrt(jnp.mean((latents - ref_latent) ** 2)))
+      dt = abs(t_float - ref_timestep)
+      accum_dx += dx_norm
+      accum_dt += dt
 
       # Sensitivity score (Eq. 9)
       score = alpha_x * accum_dx + alpha_t * accum_dt
-      should_reuse = (score <= sen_epsilon) & (reuse_count < max_reuse)
 
-      latents_doubled = jnp.concatenate([latents] * 2)
-      timestep = jnp.broadcast_to(t, bsz * 2)
-
-      def reuse_fn():
-        return ref_noise_pred
-
-      def compute_fn():
-        out, _, _ = transformer_forward_pass_full_cfg(
+      if score <= sen_epsilon and reuse_count < max_reuse:
+        noise_pred = ref_noise_pred
+        reuse_count += 1
+        cache_count += 1
+      else:
+        latents_doubled = jnp.concatenate([latents] * 2)
+        timestep = jnp.broadcast_to(t, bsz * 2)
+        noise_pred, _, _ = transformer_forward_pass_full_cfg(
             graphdef,
             state,
             rest,
@@ -593,15 +593,12 @@ def run_inference_2_2(
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
         )
-        return out
-
-      noise_pred = jax.lax.cond(should_reuse, reuse_fn, compute_fn)
-      ref_noise_pred = jnp.where(should_reuse, ref_noise_pred, noise_pred)
-      ref_latent = jnp.where(should_reuse, ref_latent, latents)
-      ref_timestep = jnp.where(should_reuse, ref_timestep, t_float)
-      accum_dx = jnp.where(should_reuse, accum_dx, 0.0)
-      accum_dt = jnp.where(should_reuse, accum_dt, 0.0)
-      reuse_count = jnp.where(should_reuse, reuse_count + 1, 0)
+        ref_noise_pred = noise_pred
+        ref_latent = latents
+        ref_timestep = t_float
+        accum_dx = 0.0
+        accum_dt = 0.0
+        reuse_count = 0
 
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
@@ -816,17 +813,22 @@ def run_inference_2_2(
     def scan_body(carry, t):
       current_latents, current_scheduler_state = carry
 
-      timestep = jnp.broadcast_to(t, (bsz * 2 if do_classifier_free_guidance else bsz,))
+      if do_classifier_free_guidance:
+        model_latents = jnp.concatenate([current_latents] * 2)
+      else:
+        model_latents = current_latents
+
+      timestep = jnp.broadcast_to(t, model_latents.shape[0])
       use_high_noise = jnp.greater_equal(t, boundary)
 
-      noise_pred = jax.lax.cond(
+      noise_pred, latents_out = jax.lax.cond(
           use_high_noise,
           high_noise_branch,
           low_noise_branch,
           (
-              current_latents,
+              model_latents,
               timestep,
-              prompt_embeds_combined if do_classifier_free_guidance else prompt_embeds,
+              prompt_embeds_combined,
               kv_cache_high,
               kv_cache_low,
               rotary_emb,
@@ -836,7 +838,7 @@ def run_inference_2_2(
       )
 
       new_latents, new_scheduler_state = scheduler.step(
-          current_scheduler_state, noise_pred, t, current_latents, return_dict=False
+          current_scheduler_state, noise_pred, t, latents_out, return_dict=False
       )
 
       return (new_latents, new_scheduler_state), None
@@ -915,15 +917,15 @@ def run_inference_2_2(
       encoder_attention_mask = encoder_attention_mask_low
 
     if do_classifier_free_guidance:
+      latents_doubled = jnp.concatenate([latents] * 2)
       timestep = jnp.broadcast_to(t, bsz * 2)
-      noise_pred = transformer_forward_pass(
+      noise_pred, _, _ = transformer_forward_pass_full_cfg(
           graphdef,
           state,
           rest,
-          latents,
+          latents_doubled,
           timestep,
           prompt_embeds_combined,
-          do_classifier_free_guidance=True,
           guidance_scale=guidance_scale,
           kv_cache=kv_cache,
           rotary_emb=rotary_emb,
@@ -931,7 +933,7 @@ def run_inference_2_2(
       )
     else:
       timestep = jnp.broadcast_to(t, bsz)
-      noise_pred = transformer_forward_pass(
+      noise_pred, latents = transformer_forward_pass(
           graphdef,
           state,
           rest,

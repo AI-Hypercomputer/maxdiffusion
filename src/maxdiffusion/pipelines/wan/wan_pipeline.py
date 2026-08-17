@@ -474,38 +474,6 @@ class WanPipeline:
     # repeated serving requests) skip the ~10s/call CPU text encoder.
     self._prompt_embeds_cache = {}
 
-  def check_inputs(
-      self,
-      prompt: Union[str, List[str]] = None,
-      negative_prompt: Optional[Union[str, List[str]]] = None,
-      height: int = 480,
-      width: int = 832,
-      prompt_embeds: Optional[jax.Array] = None,
-      negative_prompt_embeds: Optional[jax.Array] = None,
-      **kwargs,
-  ):
-    """Validate user-facing pipeline inputs and shape contracts."""
-    if prompt is not None and prompt_embeds is not None:
-      raise ValueError(
-          f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
-          " only forward one of the two."
-      )
-    elif negative_prompt is not None and negative_prompt_embeds is not None:
-      raise ValueError(
-          f"Cannot forward both `negative_prompt`: {negative_prompt} and"
-          f" `negative_prompt_embeds`: {negative_prompt_embeds}. Please make sure to"
-          " only forward one of the two."
-      )
-
-    mesh = getattr(self, "vae_mesh", getattr(self, "mesh", None))
-    if mesh is not None and hasattr(mesh, "shape"):
-      vae_spatial = mesh.shape.get("vae_spatial", 1)
-      if vae_spatial > 1 and (width // 8) % vae_spatial != 0:
-        max_logging.log(
-            f"Warning: Latent width is not divisible by vae_spatial mesh axis ({vae_spatial})."
-            " VAE spatial sharding will be partially bypassed."
-        )
-
   @classmethod
   def load_text_encoder(cls, config: HyperParameters):
     text_encoder_dtype = getattr(config, "text_encoder_dtype", "float32")
@@ -939,10 +907,8 @@ class WanPipeline:
     if trace is not None:
       trace["vae_decode_tpu"] = time.perf_counter() - t_vae_tpu_start
 
-    if hasattr(video, "addressable_data"):
-      video = np.asarray(video.addressable_data(0))
-    else:
-      video = np.asarray(video)
+    video = jax.experimental.multihost_utils.process_allgather(video, tiled=True)
+    video = np.array(video)
     return video
 
   @classmethod
@@ -1265,14 +1231,6 @@ class WanPipeline:
       prompt_embeds: jax.Array = None,
       negative_prompt_embeds: jax.Array = None,
   ):
-    self.check_inputs(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        height=height,
-        width=width,
-        prompt_embeds=prompt_embeds,
-        negative_prompt_embeds=negative_prompt_embeds,
-    )
     if max_sequence_length is None:
       max_sequence_length = getattr(self.config, "max_sequence_length", 512)
 
@@ -1357,6 +1315,7 @@ class WanPipeline:
     aot_cache.cached_jit,
     static_argnames=(
         "do_classifier_free_guidance",
+        "guidance_scale",
         "return_residual",
         "skip_blocks",
     ),
@@ -1378,8 +1337,6 @@ def transformer_forward_pass(
     rotary_emb=None,
     encoder_attention_mask=None,
 ):
-  if do_classifier_free_guidance and latents.shape[0] != prompt_embeds.shape[0]:
-    latents = jnp.concatenate([latents, latents], axis=0)
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   outputs = wan_transformer(
       hidden_states=latents,
@@ -1405,9 +1362,11 @@ def transformer_forward_pass(
     noise_uncond = noise_pred[bsz:]  # Second half = unconditional
     noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
 
+    latents = latents[:bsz]
+
   if return_residual:
-    return noise_pred, residual_x
-  return noise_pred
+    return noise_pred, latents, residual_x
+  return noise_pred, latents
 
 
 @aot_cache.cached_jit
@@ -1430,14 +1389,10 @@ def vae_decode_pass(graphdef, state, rest_of_state, latents):
   video = wan_vae.decode(latents, AutoencoderKLWanCache(wan_vae), return_dict=False)[0]
   video = (video / 2.0) + 0.5
   video = jnp.clip(video, 0.0, 1.0)
-  video = (video * 255.0).astype(jnp.uint8)
-  if wan_vae.mesh is not None:
-    replicated_sharding = NamedSharding(wan_vae.mesh, P())
-    video = jax.lax.with_sharding_constraint(video, replicated_sharding)
-  return video
+  return (video * 255.0).astype(jnp.uint8)
 
 
-@aot_cache.cached_jit
+@partial(aot_cache.cached_jit, static_argnames=("guidance_scale",))
 def transformer_forward_pass_full_cfg(
     graphdef,
     sharded_state,
@@ -1478,7 +1433,7 @@ def transformer_forward_pass_full_cfg(
   return noise_pred_merged, noise_cond, noise_uncond
 
 
-@aot_cache.cached_jit
+@partial(aot_cache.cached_jit, static_argnames=("guidance_scale",))
 def transformer_forward_pass_cfg_cache(
     graphdef,
     sharded_state,
