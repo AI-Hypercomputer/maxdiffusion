@@ -15,7 +15,7 @@ limitations under the License.
 """
 
 import math
-from typing import Optional, Sequence, Tuple, Union
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -402,7 +402,7 @@ class NNXEncoder(nnx.Module):
     for i, ch in enumerate(block_out_channels):
       input_ch = output_ch
       output_ch = ch
-      is_final = (i == len(block_out_channels) - 1)
+      is_final = i == len(block_out_channels) - 1
       down_blocks.append(
           NNXDownEncoderBlock2D(
               in_channels=input_ch,
@@ -494,7 +494,7 @@ class NNXDecoder(nnx.Module):
     for i, ch in enumerate(reversed_channels):
       input_ch = output_ch
       output_ch = ch
-      is_final = (i == len(reversed_channels) - 1)
+      is_final = i == len(reversed_channels) - 1
       up_blocks.append(
           NNXUpDecoderBlock2D(
               in_channels=input_ch,
@@ -628,7 +628,6 @@ def load_and_convert_flux2klein_nnx_vae_weights(
 ):
   """Directly loads and maps PyTorch safetensors into NNXAutoencoderKLFlux2 State."""
   from safetensors.numpy import load_file
-  import numpy as np
 
   if pt_state_dict is None:
     pt_state_dict = load_file(safetensors_path)
@@ -743,7 +742,9 @@ def load_and_convert_flux2klein_nnx_vae_weights(
 
   dec_attn_pt = "decoder.mid_block.attentions.0"
   dec_attn_path = ("decoder", "mid_block", "attentions_0")
-  set_val(flat_state[dec_attn_path + ("group_norm", "scale")], get_pt_tensor(f"{dec_attn_pt}.group_norm.weight", is_norm=True))
+  set_val(
+      flat_state[dec_attn_path + ("group_norm", "scale")], get_pt_tensor(f"{dec_attn_pt}.group_norm.weight", is_norm=True)
+  )
   set_val(flat_state[dec_attn_path + ("group_norm", "bias")], get_pt_tensor(f"{dec_attn_pt}.group_norm.bias", is_norm=True))
   set_val(flat_state[dec_attn_path + ("to_q", "kernel")], get_linear_kernel(f"{dec_attn_pt}.to_q.weight"))
   set_val(flat_state[dec_attn_path + ("to_q", "bias")], get_pt_tensor(f"{dec_attn_pt}.to_q.bias"))

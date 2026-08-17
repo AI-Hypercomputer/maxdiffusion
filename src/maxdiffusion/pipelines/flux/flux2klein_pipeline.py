@@ -42,7 +42,6 @@ from ...schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler, com
 from ...models.flux.util import (
     pack_latents,
     patchify_latents,
-    unpatchify_latents,
     prepare_latent_image_ids,
     prepare_multi_image_ids,
     prepare_text_ids,
@@ -197,7 +196,9 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         )
 
       @jax.jit(static_argnums=(9,))
-      def fused_denoise_loop(t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timesteps, sigmas, guidance, target_len=None):
+      def fused_denoise_loop(
+          t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timesteps, sigmas, guidance, target_len=None
+      ):
         sigmas_padded = jnp.concatenate([sigmas, jnp.array([0.0], dtype=sigmas.dtype)])
         nnx_merged = nnx.merge(g, t_params, r)
 
@@ -247,7 +248,9 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         )
 
       @jax.jit(static_argnums=(9,))
-      def fused_denoise_loop(t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timesteps, sigmas, guidance, target_len=None):
+      def fused_denoise_loop(
+          t_params, latents, img_ids, prompt_embeds, txt_ids, vec, timesteps, sigmas, guidance, target_len=None
+      ):
         sigmas_padded = jnp.concatenate([sigmas, jnp.array([0.0], dtype=sigmas.dtype)])
 
         def scan_body(cur_latents, step_idx):
@@ -506,14 +509,26 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
             img = np.expand_dims(img, axis=0)
           if img.shape[-1] == 3:
             img = np.transpose(img, (0, 3, 1, 2))
-          if img.max() > 1.0:
-            img = img / 127.5 - 1.0
+          if np.issubdtype(img.dtype, np.integer):
+            img = img.astype(np.float32) / 127.5 - 1.0
+          elif np.issubdtype(img.dtype, np.floating):
+            if img.max() > 1.0:
+              img = img / 127.5 - 1.0
+            elif img.min() >= 0.0:
+              img = img * 2.0 - 1.0
           img_tensor = jnp.array(img, dtype=jnp.float32)
         elif isinstance(img, jnp.ndarray):
           if img.ndim == 3:
             img = jnp.expand_dims(img, axis=0)
           if img.shape[-1] == 3:
             img = jnp.transpose(img, (0, 3, 1, 2))
+          if jnp.issubdtype(img.dtype, jnp.integer):
+            img = img.astype(jnp.float32) / 127.5 - 1.0
+          elif jnp.issubdtype(img.dtype, jnp.floating):
+            if img.max() > 1.0:
+              img = img / 127.5 - 1.0
+            elif img.min() >= 0.0:
+              img = img * 2.0 - 1.0
           img_tensor = img
         else:
           raise ValueError(f"Unsupported image type: {type(img)}")
@@ -523,7 +538,9 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         normalized_ref = (patchified_ref - bn_mean_arr) / bn_std_arr
         norm_ref_latents.append(normalized_ref)
 
-        packed = jnp.transpose(jnp.reshape(normalized_ref, (normalized_ref.shape[0], normalized_ref.shape[1], -1)), (0, 2, 1))
+        packed = jnp.transpose(
+            jnp.reshape(normalized_ref, (normalized_ref.shape[0], normalized_ref.shape[1], -1)), (0, 2, 1)
+        )
         packed_ref_latents.append(packed)
 
       ref_img_ids_val = prepare_multi_image_ids(norm_ref_latents, scale=10)

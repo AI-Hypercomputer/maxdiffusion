@@ -20,7 +20,7 @@ import time
 import sys
 from typing import List
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from absl import app
 import jax
 import jax.numpy as jnp
@@ -471,16 +471,27 @@ def main(argv):
   if image_paths is not None:
     if isinstance(image_paths, str) and image_paths.strip():
       import ast
+
       try:
         image_paths = ast.literal_eval(image_paths)
       except Exception:
         image_paths = [p.strip() for p in image_paths.split(",") if p.strip()]
     if isinstance(image_paths, (list, tuple)) and len(image_paths) > 0:
       max_logging.log(f" -> Loading {len(image_paths)} reference image(s) for multi-image editing...")
-      images = [
-          Image.open(p).convert("RGB").resize((config.width, config.height), Image.Resampling.BICUBIC)
-          for p in image_paths
-      ]
+      images = []
+      for p in image_paths:
+        try:
+          if not os.path.exists(p):
+            raise FileNotFoundError(f"Reference image file not found: {p}")
+          with Image.open(p) as img_raw:
+            img = img_raw.convert("RGB").resize((config.width, config.height), Image.Resampling.BICUBIC)
+            images.append(img)
+        except (UnidentifiedImageError, OSError, FileNotFoundError) as e:
+          max_logging.log(f"❌ Error loading reference image '{p}': {e}")
+          raise ValueError(f"Failed to load reference image '{p}': {e}") from e
+        except Exception as e:
+          max_logging.log(f"❌ Unexpected error loading reference image '{p}': {e}")
+          raise ValueError(f"Failed to load reference image '{p}': {e}") from e
 
   if getattr(config, "interactive", False):
     max_logging.log("\n" + "=" * 80)

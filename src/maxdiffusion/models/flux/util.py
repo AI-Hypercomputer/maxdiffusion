@@ -737,6 +737,7 @@ def load_and_convert_flux_klein_nnx_weights(
 def patchify_latents(latents):
   """Patchifies latents: (B, C, H, W) -> (B, C*4, H//2, W//2)."""
   import jax.numpy as jnp
+
   batch_size, num_channels, height, width = latents.shape
   latents = latents.reshape((batch_size, num_channels, height // 2, 2, width // 2, 2))
   latents = jnp.transpose(latents, (0, 1, 3, 5, 2, 4))
@@ -744,24 +745,15 @@ def patchify_latents(latents):
   return latents
 
 
-def unpatchify_latents(latents):
-  """Unpatchifies latents: (B, C*4, H, W) -> (B, C, H*2, W*2)."""
-  import jax.numpy as jnp
-  batch_size, num_channels, height, width = latents.shape
-  latents = latents.reshape((batch_size, num_channels // 4, 2, 2, height, width))
-  latents = jnp.transpose(latents, (0, 1, 4, 2, 5, 3))
-  latents = latents.reshape((batch_size, num_channels // 4, height * 2, width * 2))
-  return latents
-
-
 def prepare_multi_image_ids(image_latents_list, scale=10):
   """Generates 4D position IDs (T, H, W, L) for a sequence of reference image latents.
-  
+
   For the k-th image, T = scale * (k + 1).
   image_latents_list: list of arrays with shape (1, C, H, W) or (C, H, W).
   Returns: array of shape (1, total_tokens, 4).
   """
   import jax.numpy as jnp
+
   all_ids = []
   for idx, latent in enumerate(image_latents_list):
     if latent.ndim == 4:
@@ -781,7 +773,7 @@ def prepare_multi_image_ids(image_latents_list, scale=10):
 
 def prepare_image_latents(vae, images, bn_mean, bn_std, scale=10):
   """Encodes, patchifies, normalizes, packs, and generates 4D RoPE IDs for a list of reference images.
-  
+
   images: list of arrays of shape (1, 3, H_k, W_k) or (3, H_k, W_k) in range [-1, 1].
   Returns:
     image_latents_concat: shape (1, total_ref_tokens, 128)
@@ -838,9 +830,7 @@ def load_and_convert_vae_weights(safetensors_path, jax_params, dtype=None, pt_st
     enc_jax = jax_params["encoder"]
 
     if "encoder.conv_in.weight" in pt_state_dict:
-      enc_jax["conv_in"]["kernel"] = jnp.array(
-          get_pytorch_weight_tensor("encoder.conv_in.weight").transpose(2, 3, 1, 0)
-      )
+      enc_jax["conv_in"]["kernel"] = jnp.array(get_pytorch_weight_tensor("encoder.conv_in.weight").transpose(2, 3, 1, 0))
       enc_jax["conv_in"]["bias"] = jnp.array(get_pytorch_weight_tensor("encoder.conv_in.bias"))
 
     for b_idx in range(4):
@@ -903,15 +893,11 @@ def load_and_convert_vae_weights(safetensors_path, jax_params, dtype=None, pt_st
 
     enc_jax["conv_norm_out"]["scale"] = jnp.array(get_pytorch_weight_tensor("encoder.conv_norm_out.weight"))
     enc_jax["conv_norm_out"]["bias"] = jnp.array(get_pytorch_weight_tensor("encoder.conv_norm_out.bias"))
-    enc_jax["conv_out"]["kernel"] = jnp.array(
-        get_pytorch_weight_tensor("encoder.conv_out.weight").transpose(2, 3, 1, 0)
-    )
+    enc_jax["conv_out"]["kernel"] = jnp.array(get_pytorch_weight_tensor("encoder.conv_out.weight").transpose(2, 3, 1, 0))
     enc_jax["conv_out"]["bias"] = jnp.array(get_pytorch_weight_tensor("encoder.conv_out.bias"))
 
   if "quant_conv" in jax_params and "quant_conv.weight" in pt_state_dict:
-    jax_params["quant_conv"]["kernel"] = jnp.array(
-        get_pytorch_weight_tensor("quant_conv.weight").transpose(2, 3, 1, 0)
-    )
+    jax_params["quant_conv"]["kernel"] = jnp.array(get_pytorch_weight_tensor("quant_conv.weight").transpose(2, 3, 1, 0))
     jax_params["quant_conv"]["bias"] = jnp.array(get_pytorch_weight_tensor("quant_conv.bias"))
 
   # 2. Map VAE Decoder Weights
@@ -925,9 +911,7 @@ def load_and_convert_vae_weights(safetensors_path, jax_params, dtype=None, pt_st
 
   if "decoder" in jax_params:
     dec_jax = jax_params["decoder"]
-    dec_jax["conv_in"]["kernel"] = jnp.array(
-        get_pytorch_weight_tensor("decoder.conv_in.weight").transpose(2, 3, 1, 0)
-    )
+    dec_jax["conv_in"]["kernel"] = jnp.array(get_pytorch_weight_tensor("decoder.conv_in.weight").transpose(2, 3, 1, 0))
     dec_jax["conv_in"]["bias"] = jnp.array(get_pytorch_weight_tensor("decoder.conv_in.bias"))
 
     for idx in [0, 1]:
@@ -936,12 +920,16 @@ def load_and_convert_vae_weights(safetensors_path, jax_params, dtype=None, pt_st
 
       res_jax["norm1"]["scale"] = jnp.array(get_pytorch_weight_tensor(f"{res_pt_prefix}.norm1.weight"))
       res_jax["norm1"]["bias"] = jnp.array(get_pytorch_weight_tensor(f"{res_pt_prefix}.norm1.bias"))
-      res_jax["conv1"]["kernel"] = jnp.array(get_pytorch_weight_tensor(f"{res_pt_prefix}.conv1.weight").transpose(2, 3, 1, 0))
+      res_jax["conv1"]["kernel"] = jnp.array(
+          get_pytorch_weight_tensor(f"{res_pt_prefix}.conv1.weight").transpose(2, 3, 1, 0)
+      )
       res_jax["conv1"]["bias"] = jnp.array(get_pytorch_weight_tensor(f"{res_pt_prefix}.conv1.bias"))
 
       res_jax["norm2"]["scale"] = jnp.array(get_pytorch_weight_tensor(f"{res_pt_prefix}.norm2.weight"))
       res_jax["norm2"]["bias"] = jnp.array(get_pytorch_weight_tensor(f"{res_pt_prefix}.norm2.bias"))
-      res_jax["conv2"]["kernel"] = jnp.array(get_pytorch_weight_tensor(f"{res_pt_prefix}.conv2.weight").transpose(2, 3, 1, 0))
+      res_jax["conv2"]["kernel"] = jnp.array(
+          get_pytorch_weight_tensor(f"{res_pt_prefix}.conv2.weight").transpose(2, 3, 1, 0)
+      )
       res_jax["conv2"]["bias"] = jnp.array(get_pytorch_weight_tensor(f"{res_pt_prefix}.conv2.bias"))
 
     attn_pt_prefix = "decoder.mid_block.attentions.0"
@@ -994,9 +982,7 @@ def load_and_convert_vae_weights(safetensors_path, jax_params, dtype=None, pt_st
 
     dec_jax["conv_norm_out"]["scale"] = jnp.array(get_pytorch_weight_tensor("decoder.conv_norm_out.weight"))
     dec_jax["conv_norm_out"]["bias"] = jnp.array(get_pytorch_weight_tensor("decoder.conv_norm_out.bias"))
-    dec_jax["conv_out"]["kernel"] = jnp.array(
-        get_pytorch_weight_tensor("decoder.conv_out.weight").transpose(2, 3, 1, 0)
-    )
+    dec_jax["conv_out"]["kernel"] = jnp.array(get_pytorch_weight_tensor("decoder.conv_out.weight").transpose(2, 3, 1, 0))
     dec_jax["conv_out"]["bias"] = jnp.array(get_pytorch_weight_tensor("decoder.conv_out.bias"))
 
   jax_params = jax.tree_util.tree_map(

@@ -26,12 +26,10 @@ import torch
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from flax.linen import partitioning as nn_partitioning
 from jax.sharding import Mesh
 from transformers import AutoConfig, Qwen2TokenizerFast
 
 from maxdiffusion import pyconfig
-from maxdiffusion import max_logging
 from maxdiffusion.max_utils import create_device_mesh
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import NNXFlux2KleinTransformer2DModel
 from maxdiffusion.models.flux.vae.autoencoder_kl_flux2_nnx import (
@@ -203,9 +201,7 @@ class TestFlux2KleinImageEditE2EParity(unittest.TestCase):
     # 3. Load NNX VAE
     print(" -> Loading NNX VAE weights...")
     nnx_vae = NNXAutoencoderKLFlux2(dtype=jnp.bfloat16, param_dtype=jnp.bfloat16)
-    bn_mean, bn_std = load_and_convert_flux2klein_nnx_vae_weights(
-        self.vae_path, nnx_vae, dtype=jnp.bfloat16
-    )
+    bn_mean, bn_std = load_and_convert_flux2klein_nnx_vae_weights(self.vae_path, nnx_vae, dtype=jnp.bfloat16)
 
     # 4. Load Qwen3
     print(" -> Loading Qwen3 weights...")
@@ -224,7 +220,9 @@ class TestFlux2KleinImageEditE2EParity(unittest.TestCase):
         max_layer_to_run=27,
     )
     text_encoder = FlaxQwen3Model(config=qwen3_config)
-    abstract_q_vars = text_encoder.init(jax.random.PRNGKey(0), jnp.zeros((1, 512), dtype=jnp.int32), jnp.zeros((1, 512), dtype=jnp.int32))
+    abstract_q_vars = text_encoder.init(
+        jax.random.PRNGKey(0), jnp.zeros((1, 512), dtype=jnp.int32), jnp.zeros((1, 512), dtype=jnp.int32)
+    )
     q_params = load_and_convert_qwen3_weights(self.text_encoder_path, abstract_q_vars["params"], qwen3_config)
 
     tokenizer = Qwen2TokenizerFast.from_pretrained(self.tokenizer_path)
@@ -277,7 +275,7 @@ class TestFlux2KleinImageEditE2EParity(unittest.TestCase):
 
     # 8. Run pipeline
     print(f" -> Running FlaxFlux2KleinPipeline with {len(self.ref_images)} reference images on TPU...")
-    maxdiff_img = pipeline(
+    pipeline(
         prompt=PROMPT,
         params=t_params,
         vae_params=v_params,
@@ -313,7 +311,7 @@ class TestFlux2KleinImageEditE2EParity(unittest.TestCase):
 
     ssim_val = ssim(diffusers_arr, maxdiff_arr, channel_axis=-1, data_range=255)
     mse = np.mean((diffusers_arr.astype(np.float64) - maxdiff_arr.astype(np.float64)) ** 2)
-    psnr_val = 10.0 * np.log10(255.0 ** 2 / (mse + 1e-10))
+    psnr_val = 10.0 * np.log10(255.0**2 / (mse + 1e-10))
 
     print(f" -> SSIM (Diffusers CPU vs MaxDiffusion TPU): {ssim_val:.6f}")
     print(f" -> PSNR (Diffusers CPU vs MaxDiffusion TPU): {psnr_val:.2f} dB")
