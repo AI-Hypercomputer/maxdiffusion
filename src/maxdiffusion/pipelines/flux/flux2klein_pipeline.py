@@ -541,9 +541,13 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         packed = jnp.transpose(
             jnp.reshape(normalized_ref, (normalized_ref.shape[0], normalized_ref.shape[1], -1)), (0, 2, 1)
         )
+        if packed.shape[0] == 1 and batch_size > 1:
+          packed = jnp.repeat(packed, batch_size, axis=0)
         packed_ref_latents.append(packed)
 
       ref_img_ids_val = prepare_multi_image_ids(norm_ref_latents, scale=10)
+      if ref_img_ids_val.shape[0] == 1 and batch_size > 1:
+        ref_img_ids_val = jnp.repeat(ref_img_ids_val, batch_size, axis=0)
       img_ids_val = jnp.concatenate([target_img_ids_val, ref_img_ids_val], axis=1)
       latents_jax = jnp.concatenate([latents_jax] + packed_ref_latents, axis=1)
       max_logging.log(f"  [PIPELINE] Joint latents shape: {latents_jax.shape}, Joint img_ids shape: {img_ids_val.shape}")
