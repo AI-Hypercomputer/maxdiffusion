@@ -26,6 +26,7 @@ def run_benchmark():
         vae = AutoencoderKLWan(rngs=rngs, mesh=mesh, vae_decode_chunk=5, dtype=jnp.bfloat16)
         cache = AutoencoderKLWanCache(vae)
         
+        @nnx.jit
         def decode_step(z, feat_cache):
             return vae.decode(z, feat_cache)
 
