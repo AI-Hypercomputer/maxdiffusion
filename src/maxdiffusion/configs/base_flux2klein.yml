@@ -40,6 +40,7 @@ max_sequence_length: 512
 time_shift: True
 base_shift: 0.5
 max_shift: 1.15
+image_paths: []
 
 
 unet_checkpoint: ''

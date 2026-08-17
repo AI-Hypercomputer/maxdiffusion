@@ -124,6 +124,61 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
     print(f"\n[SMOKE TEST 9B] SSIM Score: {ssim_compare:.6f}")
     self.assertGreaterEqual(ssim_compare, 0.8)
 
+  @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions (requires TPU HBM)")
+  def test_flux2klein_4b_image_edit_smoke(self):
+    """End-to-end smoke test for Flux.2-klein-4B multi-image editing via unified CLI."""
+    output_dir = "/mnt/data/smoke_test_image_edit" if os.path.exists("/mnt/data") else "/tmp/smoke_test_image_edit"
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, "flux2klein_generated_image.png")
+    if os.path.exists(out_path):
+      os.remove(out_path)
+
+    # Setup 4 reference images
+    ref_dir = "/mnt/data/golden_image_edit_data/ref_images"
+    ref_paths = []
+    if os.path.exists(ref_dir):
+      for i in range(4):
+        p = os.path.join(ref_dir, f"ref_image_{i}.png")
+        if os.path.exists(p):
+          ref_paths.append(p)
+
+    if len(ref_paths) < 4:
+      ref_paths = []
+      colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+      for i, c in enumerate(colors):
+        synthetic_path = os.path.join(output_dir, f"synth_ref_{i}.png")
+        arr = np.full((512, 512, 3), c, dtype=np.uint8)
+        Image.fromarray(arr).save(synthetic_path)
+        ref_paths.append(synthetic_path)
+
+    pyconfig._config = None
+    pyconfig.config = None
+    args = [
+        None,
+        os.path.join(THIS_DIR, "..", "configs", "base_flux2klein.yml"),
+        "run_name=smoke_test_image_edit",
+        f"output_dir={output_dir}",
+        "jax_cache_dir=/tmp/cache_dir",
+        f"image_paths={ref_paths}",
+        "prompt=a vibrant artistic painting combining the dog, car, mountain, and fruit bowl in surreal neon lighting",
+        "height=512",
+        "width=512",
+        f"per_device_batch_size={1.0 / jax.device_count()}",
+        "seed=42",
+        "weights_dtype=bfloat16",
+        "activations_dtype=bfloat16",
+        "precision=DEFAULT",
+        "num_reps=1",
+        "text_encoder_attention=dot_product",
+    ]
+
+    generate_flux2klein.main(args)
+
+    self.assertTrue(os.path.exists(out_path), "Smoke test image edit failed to produce output image!")
+    test_image = np.array(Image.open(out_path)).astype(np.uint8)
+    self.assertEqual(test_image.shape, (512, 512, 3))
+    print(f"\n[SMOKE TEST IMAGE EDIT] Output image verified with shape: {test_image.shape}")
+
 
 if __name__ == "__main__":
   unittest.main()

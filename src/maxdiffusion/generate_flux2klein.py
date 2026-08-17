@@ -20,6 +20,7 @@ import time
 import sys
 from typing import List
 
+from PIL import Image
 from absl import app
 import jax
 import jax.numpy as jnp
@@ -464,6 +465,23 @@ def main(argv):
     raise ValueError("Prompt must be specified in the configuration YAML or passed via CLI prompt='...'")
   active_prompts = partition_prompts(prompt_str, config.batch_size)
 
+  # Parse reference image paths for multi-image editing if provided
+  images = None
+  image_paths = getattr(config, "image_paths", None)
+  if image_paths is not None:
+    if isinstance(image_paths, str) and image_paths.strip():
+      import ast
+      try:
+        image_paths = ast.literal_eval(image_paths)
+      except Exception:
+        image_paths = [p.strip() for p in image_paths.split(",") if p.strip()]
+    if isinstance(image_paths, (list, tuple)) and len(image_paths) > 0:
+      max_logging.log(f" -> Loading {len(image_paths)} reference image(s) for multi-image editing...")
+      images = [
+          Image.open(p).convert("RGB").resize((config.width, config.height), Image.Resampling.BICUBIC)
+          for p in image_paths
+      ]
+
   if getattr(config, "interactive", False):
     max_logging.log("\n" + "=" * 80)
     max_logging.log("   BATCHED INTERACTIVE GENERATION MODE ENABLED 🎮")
@@ -501,6 +519,7 @@ def main(argv):
           width=config.width,
           num_inference_steps=config.num_inference_steps,
           batch_size=config.batch_size,
+          images=images,
           use_latents=False,
           output_dir=config.output_dir,
           output_name=output_file,
@@ -528,6 +547,7 @@ def main(argv):
         batch_size=config.batch_size,
         height=config.height,
         width=config.width,
+        images=images,
     )
 
     max_logging.log("\n" + "=" * 80)
@@ -547,6 +567,7 @@ def main(argv):
         width=config.width,
         num_inference_steps=config.num_inference_steps,
         batch_size=config.batch_size,
+        images=images,
         use_latents=use_latents_flag,
         latents=latents_to_use,
         output_dir=config.output_dir,
@@ -589,6 +610,7 @@ def main(argv):
               width=config.width,
               num_inference_steps=config.num_inference_steps,
               batch_size=config.batch_size,
+              images=images,
               use_latents=use_latents_flag,
               latents=latents_to_use,
               output_dir=config.output_dir,
@@ -609,6 +631,7 @@ def main(argv):
             width=config.width,
             num_inference_steps=config.num_inference_steps,
             batch_size=config.batch_size,
+            images=images,
             use_latents=use_latents_flag,
             latents=latents_to_use,
             output_dir=config.output_dir,
