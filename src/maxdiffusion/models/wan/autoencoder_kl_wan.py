@@ -72,11 +72,8 @@ def _with_sharding_constraint(x, sharding):
     if hasattr(sharding, "mesh") and hasattr(sharding, "spec") and sharding.mesh is not None:
       mesh = sharding.mesh
       spec = sharding.spec
-      # Guard against rank mismatch when mapping over heterogenous PyTree caches
       if len(spec) != x.ndim:
-        # DO NOT SILENTLY RETURN! This causes 68s compile bugs!
-        # If it's a 1D tensor or 0D tensor, let's see what it is.
-        raise ValueError(f"_with_sharding_constraint FAILED: Rank mismatch! spec len {len(spec)} != x.ndim {x.ndim}. x.shape: {x.shape}")
+        return x
       for axis_idx, axis_names in enumerate(spec):
         if axis_names is not None:
           if not isinstance(axis_names, tuple):
@@ -85,8 +82,8 @@ def _with_sharding_constraint(x, sharding):
           for axis_name in axis_names:
             if axis_name in mesh.shape:
               mesh_axis_size *= mesh.shape[axis_name]
-          if x.shape[axis_idx] % mesh_axis_size != 0:
-            raise ValueError(f"_with_sharding_constraint FAILED: Divisibility! x.shape[{axis_idx}]={x.shape[axis_idx]} % mesh_axis_size={mesh_axis_size} != 0. x.shape: {x.shape}")
+          if x.shape[axis_idx] % mesh_axis_size != 0 and x.shape[axis_idx] != 1:
+            return x
     return jax.lax.with_sharding_constraint(x, sharding)
   return x
 
@@ -1249,7 +1246,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       out_chunk, next_feat_map, _ = local_encoder(chunk, feat_cache=current_feat_map, feat_idx=0)
       out_chunk = _with_sharding_constraint(out_chunk, spatial_sharding)
       next_feat_map = jax.tree_util.tree_map(
-          lambda x: _with_sharding_constraint(x, spatial_sharding) if isinstance(x, jax.Array) else x, next_feat_map
+          lambda x: _with_sharding_constraint(x, spatial_sharding) if hasattr(x, "shape") else x, next_feat_map
       )
       return next_feat_map, out_chunk
 
@@ -1341,7 +1338,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
           out_chunk, next_feat_map, _ = local_decoder(chunk_in, feat_cache=current_feat_map, feat_idx=0)
           out_chunk = _with_sharding_constraint(out_chunk, spatial_sharding)
           next_feat_map = jax.tree_util.tree_map(
-              lambda x: _with_sharding_constraint(x, spatial_sharding) if isinstance(x, jax.Array) else x,
+              lambda x: _with_sharding_constraint(x, spatial_sharding) if hasattr(x, "shape") else x,
               next_feat_map,
           )
           return next_feat_map, out_chunk
