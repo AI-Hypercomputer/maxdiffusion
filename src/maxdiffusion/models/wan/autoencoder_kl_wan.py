@@ -73,6 +73,7 @@ def _with_sharding_constraint(x, sharding):
       mesh = sharding.mesh
       spec = sharding.spec
       if len(spec) != x.ndim:
+        print(f"WARNING: _with_sharding_constraint bypassed due to rank mismatch! spec len {len(spec)} != x.ndim {x.ndim}. x.shape: {x.shape}")
         return x
       for axis_idx, axis_names in enumerate(spec):
         if axis_names is not None:
@@ -83,6 +84,7 @@ def _with_sharding_constraint(x, sharding):
             if axis_name in mesh.shape:
               mesh_axis_size *= mesh.shape[axis_name]
           if x.shape[axis_idx] % mesh_axis_size != 0 and x.shape[axis_idx] != 1:
+            print(f"WARNING: _with_sharding_constraint bypassed due to divisibility! x.shape[{axis_idx}]={x.shape[axis_idx]} % mesh_axis_size={mesh_axis_size} != 0. x.shape: {x.shape}")
             return x
     return jax.lax.with_sharding_constraint(x, sharding)
   return x
