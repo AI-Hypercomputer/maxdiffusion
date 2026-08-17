@@ -22,6 +22,3 @@ from .flux_pipeline import (
 from .flux2klein_pipeline import (
     FlaxFlux2KleinPipeline,
 )
-from .flux2klein_image_edit_pipeline import (
-    FlaxFlux2KleinImageEditPipeline,
-)
