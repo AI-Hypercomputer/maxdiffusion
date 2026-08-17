@@ -74,7 +74,9 @@ def _with_sharding_constraint(x, sharding):
       spec = sharding.spec
       # Guard against rank mismatch when mapping over heterogenous PyTree caches
       if len(spec) != x.ndim:
-        return x
+        # DO NOT SILENTLY RETURN! This causes 68s compile bugs!
+        # If it's a 1D tensor or 0D tensor, let's see what it is.
+        raise ValueError(f"_with_sharding_constraint FAILED: Rank mismatch! spec len {len(spec)} != x.ndim {x.ndim}. x.shape: {x.shape}")
       for axis_idx, axis_names in enumerate(spec):
         if axis_names is not None:
           if not isinstance(axis_names, tuple):
@@ -84,7 +86,7 @@ def _with_sharding_constraint(x, sharding):
             if axis_name in mesh.shape:
               mesh_axis_size *= mesh.shape[axis_name]
           if x.shape[axis_idx] % mesh_axis_size != 0:
-            return x
+            raise ValueError(f"_with_sharding_constraint FAILED: Divisibility! x.shape[{axis_idx}]={x.shape[axis_idx]} % mesh_axis_size={mesh_axis_size} != 0. x.shape: {x.shape}")
     return jax.lax.with_sharding_constraint(x, sharding)
   return x
 
