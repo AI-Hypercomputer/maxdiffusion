@@ -286,6 +286,8 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
           # would silently hit stale binaries.
           "flash_block_sizes": str(config.flash_block_sizes),
           "mesh_shape": str(pipeline.mesh.shape),
+          "vae_spatial": str(config.vae_spatial),
+          "vae_decode_chunk": str(config.vae_decode_chunk),
           "weights_dtype": str(config.weights_dtype),
           "activations_dtype": str(config.activations_dtype),
           "scan_layers": str(config.scan_layers),
