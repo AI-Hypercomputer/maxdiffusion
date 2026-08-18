@@ -76,6 +76,7 @@ class ModelsImportTest(unittest.TestCase):
     try:
       from google_cloud_mldiagnostics import machinelearning_run, xprof
       self.assertIsNotNone(machinelearning_run)
+      self.assertIsNotNone(xprof)
     except ImportError:
       pass
 
