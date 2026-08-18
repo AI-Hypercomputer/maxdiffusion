@@ -232,6 +232,72 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         final_latents, _ = jax.lax.scan(scan_body, latents, steps)
         return final_latents
 
+      @jax.jit(static_argnums=(10, 11))
+      def fused_kv_denoise_loop(
+          t_params,
+          target_latents,
+          ref_latents,
+          target_img_ids,
+          ref_img_ids,
+          prompt_embeds,
+          txt_ids,
+          vec,
+          timesteps,
+          sigmas,
+          guidance=None,
+          num_ref_tokens=0,
+      ):
+        sigmas_padded = jnp.concatenate([sigmas, jnp.array([0.0], dtype=sigmas.dtype)])
+        nnx_merged = nnx.merge(g, t_params, r)
+
+        step0_latents = jnp.concatenate([ref_latents, target_latents], axis=1)
+        step0_img_ids = jnp.concatenate([ref_img_ids, target_img_ids], axis=1)
+        t0_val = timesteps[0]
+        t0_vec = jnp.broadcast_to(t0_val / 1000.0, (target_latents.shape[0],))
+
+        out0, kv_cache = nnx_merged(
+            hidden_states=step0_latents,
+            img_ids=step0_img_ids,
+            encoder_hidden_states=prompt_embeds,
+            txt_ids=txt_ids,
+            pooled_projections=vec,
+            timestep=t0_vec,
+            guidance=guidance,
+            return_dict=True,
+            kv_cache_mode="extract",
+            num_ref_tokens=num_ref_tokens,
+        )
+        dt0 = sigmas_padded[1] - sigmas_padded[0]
+        v0 = out0.sample
+        latents_step1 = target_latents + v0 * dt0
+
+        def scan_body(cur_latents, step_idx):
+          t_val = timesteps[step_idx]
+          t_vec = jnp.broadcast_to(t_val / 1000.0, (cur_latents.shape[0],))
+          model_output = nnx_merged(
+              hidden_states=cur_latents,
+              img_ids=target_img_ids,
+              encoder_hidden_states=prompt_embeds,
+              txt_ids=txt_ids,
+              pooled_projections=vec,
+              timestep=t_vec,
+              guidance=guidance,
+              return_dict=True,
+              kv_cache=kv_cache,
+              kv_cache_mode="cached",
+              num_ref_tokens=num_ref_tokens,
+          )
+          sigma = sigmas_padded[step_idx]
+          sigma_next = sigmas_padded[step_idx + 1]
+          dt = sigma_next - sigma
+          v = model_output.sample
+          next_latents = cur_latents + v * dt
+          return next_latents, None
+
+        steps = jnp.arange(1, timesteps.shape[0])
+        final_latents, _ = jax.lax.scan(scan_body, latents_step1, steps)
+        return final_latents
+
     else:
 
       @jax.jit
@@ -283,9 +349,12 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         final_latents, _ = jax.lax.scan(scan_body, latents, steps)
         return final_latents
 
+      fused_kv_denoise_loop = fused_denoise_loop
+
     self._jitted_qwen3_forward = qwen3_forward
     self._jitted_transformer_step = transformer_step
     self._jitted_fused_denoise_loop = fused_denoise_loop
+    self._jitted_fused_kv_denoise_loop = fused_kv_denoise_loop
     self._jitted_vae_encode = vae_encode
     self._jitted_vae_decode = vae_decode
 
@@ -308,6 +377,7 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       images=None,
       image=None,
       num_conditioning_images=0,
+      use_kv=None,
   ):
     """Triggers AOT compilation for Qwen3, Flux Transformer, and VAE concurrently using ThreadPoolExecutor."""
     self._setup_jit_functions()
@@ -369,22 +439,59 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
     dummy_timesteps = put_data_on_devices(jnp.zeros((num_steps,), dtype=jnp.float32), replicated_sharding)
     dummy_sigmas = put_data_on_devices(jnp.zeros((num_steps + 1,), dtype=jnp.float32), replicated_sharding)
 
+    use_kv = getattr(self._config, "use_kv", False) if use_kv is None else use_kv
+    if images is not None and len(images) > 0:
+      total_ref_tokens = sum(
+          (img.size[1] // 16) * (img.size[0] // 16) if hasattr(img, "size") else seq_len_img for img in images
+      )
+    else:
+      total_ref_tokens = num_conditioning_images * seq_len_img
+
+    dummy_ref_latents = (
+        put_data_on_devices(jnp.zeros((batch_size, total_ref_tokens, 128), dtype=jnp.float32), data_sharding)
+        if total_ref_tokens > 0
+        else None
+    )
+    dummy_ref_img_ids = (
+        put_data_on_devices(jnp.zeros((batch_size, total_ref_tokens, 4), dtype=jnp.int32), data_sharding)
+        if total_ref_tokens > 0
+        else None
+    )
+    dummy_target_img_ids = put_data_on_devices(jnp.zeros((batch_size, seq_len_img, 4), dtype=jnp.int32), data_sharding)
+
     def compile_transformer():
       t0 = time.perf_counter()
       with self.mesh, nn_partitioning.axis_rules(self._config.logical_axis_rules):
-        self._jitted_fused_denoise_loop.lower(
-            params,
-            dummy_latents,
-            dummy_img_ids,
-            dummy_prompt_embeds,
-            dummy_txt_ids,
-            None,
-            dummy_timesteps,
-            dummy_sigmas,
-            None,
-            seq_len_img,
-        ).compile()
-      max_logging.log(f" -> [AOT COMPILED] Fused Flux Transformer Denoise Scan in {time.perf_counter() - t0:.2f}s")
+        if use_kv and total_ref_tokens > 0 and self._jitted_fused_kv_denoise_loop is not None:
+          self._jitted_fused_kv_denoise_loop.lower(
+              params,
+              dummy_target_latents,
+              dummy_ref_latents,
+              dummy_target_img_ids,
+              dummy_ref_img_ids,
+              dummy_prompt_embeds,
+              dummy_txt_ids,
+              None,
+              dummy_timesteps,
+              dummy_sigmas,
+              None,
+              num_ref_tokens=total_ref_tokens,
+          ).compile()
+          max_logging.log(f" -> [AOT COMPILED] Fused Flux Transformer KV Denoise Scan in {time.perf_counter() - t0:.2f}s")
+        else:
+          self._jitted_fused_denoise_loop.lower(
+              params,
+              dummy_latents,
+              dummy_img_ids,
+              dummy_prompt_embeds,
+              dummy_txt_ids,
+              None,
+              dummy_timesteps,
+              dummy_sigmas,
+              None,
+              seq_len_img,
+          ).compile()
+          max_logging.log(f" -> [AOT COMPILED] Fused Flux Transformer Denoise Scan in {time.perf_counter() - t0:.2f}s")
 
     def compile_vae():
       t0 = time.perf_counter()
@@ -453,6 +560,7 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       output_dir: str = "output/",
       output_name: str = "flux2klein_generated_image.png",
       profile_target: Optional[str] = None,
+      use_kv: Optional[bool] = None,
   ):
     # 1. Setup JIT functions
     self._setup_jit_functions()
@@ -500,7 +608,10 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
 
       for img in images:
         if isinstance(img, Image.Image):
-          img = img.convert("RGB").resize((width, height), Image.Resampling.BICUBIC)
+          img = img.convert("RGB")
+          w_adj, h_adj = (img.width // 16) * 16, (img.height // 16) * 16
+          if img.width != w_adj or img.height != h_adj:
+            img = img.resize((w_adj, h_adj), Image.Resampling.BICUBIC)
           arr = np.array(img, dtype=np.float32) / 127.5 - 1.0
           arr = np.transpose(arr, (2, 0, 1))
           img_tensor = jnp.expand_dims(jnp.array(arr), axis=0)
@@ -548,11 +659,15 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       ref_img_ids_val = prepare_multi_image_ids(norm_ref_latents, scale=10)
       if ref_img_ids_val.shape[0] == 1 and batch_size > 1:
         ref_img_ids_val = jnp.repeat(ref_img_ids_val, batch_size, axis=0)
+      ref_latents_jax = jnp.concatenate(packed_ref_latents, axis=1)
+      num_ref_tokens = ref_latents_jax.shape[1]
       img_ids_val = jnp.concatenate([target_img_ids_val, ref_img_ids_val], axis=1)
       latents_jax = jnp.concatenate([latents_jax] + packed_ref_latents, axis=1)
       max_logging.log(f"  [PIPELINE] Joint latents shape: {latents_jax.shape}, Joint img_ids shape: {img_ids_val.shape}")
     else:
       img_ids_val = target_img_ids_val
+      ref_latents_jax = None
+      num_ref_tokens = 0
 
     # Scheduler
     mu = compute_empirical_mu(seq_len_img, num_inference_steps)
@@ -683,20 +798,45 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         if do_prof_denoise:
           tb_dir = getattr(self._config, "tensorboard_dir", "/tmp")
           jax.profiler.start_trace(os.path.join(tb_dir, "profile_denoise"))
-        with jax.named_scope("fused_flux_denoise_loop"):
-          latents_jax = self._jitted_fused_denoise_loop(
-              params,
-              latents_jax,
-              img_ids_val,
-              prompt_embeds_jax,
-              txt_ids_val,
-              vec_val,
-              timesteps_device,
-              sigmas_device,
-              guidance_vec_val,
-              seq_len_img,
-          )
-          latents_jax.block_until_ready()
+
+        use_kv = getattr(self._config, "use_kv", False) if use_kv is None else use_kv
+        if use_kv and len(packed_ref_latents) > 0:
+          ref_latents_device = put_data_on_devices(ref_latents_jax, data_sharding)
+          ref_img_ids_device = put_data_on_devices(ref_img_ids_val, data_sharding)
+          target_img_ids_device = put_data_on_devices(target_img_ids_val, data_sharding)
+          target_latents_device = put_data_on_devices(latents_jax[:, :seq_len_img, :], data_sharding)
+
+          with jax.named_scope("fused_flux_kv_denoise_loop"):
+            latents_jax = self._jitted_fused_kv_denoise_loop(
+                params,
+                target_latents_device,
+                ref_latents_device,
+                target_img_ids_device,
+                ref_img_ids_device,
+                prompt_embeds_jax,
+                txt_ids_val,
+                vec_val,
+                timesteps_device,
+                sigmas_device,
+                guidance_vec_val,
+                num_ref_tokens,
+            )
+            latents_jax.block_until_ready()
+        else:
+          with jax.named_scope("fused_flux_denoise_loop"):
+            latents_jax = self._jitted_fused_denoise_loop(
+                params,
+                latents_jax,
+                img_ids_val,
+                prompt_embeds_jax,
+                txt_ids_val,
+                vec_val,
+                timesteps_device,
+                sigmas_device,
+                guidance_vec_val,
+                seq_len_img,
+            )
+            latents_jax.block_until_ready()
         if do_prof_denoise:
           jax.profiler.stop_trace()
 

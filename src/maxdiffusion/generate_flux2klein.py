@@ -36,7 +36,10 @@ from maxdiffusion import max_utils
 from maxdiffusion.max_utils import create_device_mesh
 from maxdiffusion.train_utils import transformer_engine_context
 
-from maxdiffusion.models.vae_flax import FlaxAutoencoderKL
+from maxdiffusion.models.flux.vae.autoencoder_kl_flux2_nnx import (
+    NNXAutoencoderKLFlux2,
+    load_and_convert_flux2klein_nnx_vae_weights,
+)
 from maxdiffusion.models.qwen3_flax import FlaxQwen3Config, FlaxQwen3Model
 from maxdiffusion.models.qwen3_utils import load_and_convert_qwen3_weights
 from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler
@@ -146,9 +149,6 @@ def main(argv):
   pyconfig.initialize(default_args)
 
   # Import modules after jax.distributed.initialize() has run via pyconfig.initialize()
-  from maxdiffusion.models.flux.util import (
-      load_and_convert_vae_weights,
-  )
 
   config = pyconfig.config
   os.makedirs(config.output_dir, exist_ok=True)
@@ -221,6 +221,17 @@ def main(argv):
   repo_id = getattr(config, "pretrained_model_name_or_path", None)
   if not repo_id:
     raise ValueError("pretrained_model_name_or_path must be specified in configuration YAML or CLI.")
+
+  use_kv = getattr(config, "use_kv", False)
+  if use_kv:
+    if repo_id in ("black-forest-labs/FLUX.2-klein-4B", "black-forest-labs/FLUX.2-klein-4b"):
+      max_logging.log("⚠️ Warning: KV cache not supported for 4B model, ignoring use_kv=True.")
+      pyconfig._config.keys["use_kv"] = False
+    elif repo_id in ("black-forest-labs/FLUX.2-klein-9B", "black-forest-labs/FLUX.2-klein-9b"):
+      repo_id = "black-forest-labs/FLUX.2-klein-9b-kv"
+      pyconfig._config.keys["pretrained_model_name_or_path"] = repo_id
+      max_logging.log(f"ℹ️ use_kv=True: switched pretrained_model_name_or_path to KV model variant: {repo_id}")
+
   max_logging.log(f"Target model detected: {repo_id}")
 
   if os.path.exists(repo_id):
@@ -325,54 +336,44 @@ def main(argv):
       use_base2_exp=getattr(config, "use_base2_exp", True),
   )
 
-  # 6. Instantiate JAX VAE
-  vae = FlaxAutoencoderKL(
+  # 6. Instantiate JAX NNX VAE
+  vae = NNXAutoencoderKLFlux2(
       in_channels=3,
       out_channels=3,
-      down_block_types=("DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D"),
-      up_block_types=("UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D"),
+      latent_channels=32,
       block_out_channels=(128, 256, 512, 512),
       layers_per_block=2,
-      act_fn="silu",
-      latent_channels=32,
       norm_num_groups=32,
-      sample_size=512,
-      use_quant_conv=True,
-      use_post_quant_conv=True,
       dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
+      param_dtype=jnp.bfloat16 if config.weights_dtype == "bfloat16" else jnp.float32,
   )
 
   # 7. Evaluate shapes & extract mesh shardings
   max_logging.log("Evaluating model shapes and shardings...")
   seq_len_txt = config.max_sequence_length
-  dummy_img = jnp.zeros((config.batch_size, 3, 512, 512))
   dummy_ids = jnp.zeros((config.batch_size, seq_len_txt), dtype=jnp.int32)
   dummy_mask = jnp.zeros((config.batch_size, seq_len_txt), dtype=jnp.int32)
 
   key = jax.random.PRNGKey(0)
-  vae_key, qwen_key = jax.random.split(key, 2)
+  qwen_key = jax.random.fold_in(key, 1)
 
   abstract_state = nnx.state(transformer, nnx.Param)
-
-  def vae_init_fn():
-    return vae.init(vae_key, dummy_img)
+  abstract_vae_state = nnx.state(vae, nnx.Param)
 
   def qwen3_init_fn():
     return qwen3_model.init(qwen_key, dummy_ids, dummy_mask)
 
   with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
     logical_transformer_specs = nnx.get_partition_spec(abstract_state)
-    abstract_vae_vars = jax.eval_shape(vae_init_fn)
+    logical_vae_specs = nnx.get_partition_spec(abstract_vae_state)
     abstract_qwen3_vars = jax.eval_shape(qwen3_init_fn)
-
-    logical_vae_specs = nn.get_partition_spec(abstract_vae_vars)
     logical_qwen3_specs = nn.get_partition_spec(abstract_qwen3_vars)
 
     transformer_mesh_shardings = nn.logical_to_mesh_sharding(logical_transformer_specs, mesh, config.logical_axis_rules)
     vae_mesh_shardings = nn.logical_to_mesh_sharding(logical_vae_specs, mesh, config.logical_axis_rules)
     qwen3_mesh_shardings = nn.logical_to_mesh_sharding(logical_qwen3_specs, mesh, config.logical_axis_rules)
 
-  vae_shardings = flax.core.freeze(vae_mesh_shardings["params"])
+  vae_shardings = vae_mesh_shardings
   qwen3_shardings = flax.core.freeze(qwen3_mesh_shardings["params"])
   transformer_shardings = transformer_mesh_shardings
 
@@ -388,11 +389,6 @@ def main(argv):
         return x.unbox() if isinstance(x, flax_spmd.LogicallyPartitioned) else x
 
       t_sub0 = time.time()
-      vae_params = jax.tree_util.tree_map(
-          unbox_fn, abstract_vae_vars["params"], is_leaf=lambda k: isinstance(k, flax_spmd.LogicallyPartitioned)
-      )
-      vae_params = flax.core.unfreeze(vae_params)
-
       qwen3_params = jax.tree_util.tree_map(
           unbox_fn, abstract_qwen3_vars["params"], is_leaf=lambda k: isinstance(k, flax_spmd.LogicallyPartitioned)
       )
@@ -406,15 +402,13 @@ def main(argv):
       params = load_and_convert_flux_klein_nnx_weights(
           safetensors_path, abstract_state, num_double_layers, depth, dtype=weight_dtype
       )
-      vae_params, vae_bn_mean, vae_bn_std = load_and_convert_vae_weights(
-          vae_safetensors_path, vae_params, dtype=weight_dtype
-      )
+      vae_bn_mean, vae_bn_std = load_and_convert_flux2klein_nnx_vae_weights(vae_safetensors_path, vae, dtype=weight_dtype)
+      vae_params = nnx.state(vae, nnx.Param)
       qwen3_params = load_and_convert_qwen3_weights(text_encoder_path, qwen3_params, qwen3_config)
       max_logging.log(
           f" -> [SUB-TIMING 2/3] Safetensors loading & key mapping (in target dtype): {time.time() - t_sub1:.4f}s"
       )
 
-      vae_params = flax.core.freeze(vae_params)
       qwen3_params = flax.core.freeze(qwen3_params)
 
       max_logging.log("\n" + "=" * 80)
@@ -426,6 +420,7 @@ def main(argv):
         params = jax.tree_util.tree_map(max_utils.device_put_replicated, params, transformer_shardings)
         max_logging.log("Putting vae_params on TPU HBM...")
         vae_params = jax.tree_util.tree_map(max_utils.device_put_replicated, vae_params, vae_shardings)
+        nnx.update(vae, vae_params)
         max_logging.log("Putting qwen3_params on TPU HBM...")
         qwen3_params = jax.tree_util.tree_map(max_utils.device_put_replicated, qwen3_params, qwen3_shardings)
       max_logging.log(f" -> [SUB-TIMING 3/3] TPU HBM device_put placement: {time.time() - t_sub3:.4f}s")
@@ -485,7 +480,17 @@ def main(argv):
           if not os.path.exists(p):
             raise FileNotFoundError(f"Reference image file not found: {p}")
           with Image.open(p) as img_raw:
-            img = img_raw.convert("RGB").resize((config.width, config.height), Image.Resampling.BICUBIC)
+            ref_w, ref_h = img_raw.size
+            if ref_w * ref_h > 1024 * 1024:
+              scale = (1024 * 1024 / (ref_w * ref_h)) ** 0.5
+              ref_w = int(ref_w * scale)
+              ref_h = int(ref_h * scale)
+            ref_w = max(16, (ref_w // 16) * 16)
+            ref_h = max(16, (ref_h // 16) * 16)
+            if (ref_w, ref_h) != img_raw.size:
+              img = img_raw.convert("RGB").resize((ref_w, ref_h), Image.Resampling.BICUBIC)
+            else:
+              img = img_raw.convert("RGB")
             images.append(img)
         except (UnidentifiedImageError, OSError, FileNotFoundError) as e:
           max_logging.log(f"❌ Error loading reference image '{p}': {e}")
@@ -560,6 +565,7 @@ def main(argv):
         height=config.height,
         width=config.width,
         images=images,
+        use_kv=getattr(config, "use_kv", False),
     )
 
     max_logging.log("\n" + "=" * 80)
@@ -582,6 +588,7 @@ def main(argv):
         images=images,
         use_latents=use_latents_flag,
         latents=latents_to_use,
+        use_kv=getattr(config, "use_kv", False),
         output_dir=config.output_dir,
         output_name="flux2klein_warmup.png",
         warmup=True,
@@ -625,6 +632,7 @@ def main(argv):
               images=images,
               use_latents=use_latents_flag,
               latents=latents_to_use,
+              use_kv=getattr(config, "use_kv", False),
               output_dir=config.output_dir,
               output_name=f"rep_{rep+1}_{config.output_name}" if num_reps > 1 else config.output_name,
           )
@@ -646,6 +654,7 @@ def main(argv):
             images=images,
             use_latents=use_latents_flag,
             latents=latents_to_use,
+            use_kv=getattr(config, "use_kv", False),
             output_dir=config.output_dir,
             output_name=f"rep_{rep+1}_{config.output_name}" if num_reps > 1 else config.output_name,
         )
