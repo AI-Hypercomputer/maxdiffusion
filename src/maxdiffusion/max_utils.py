@@ -88,28 +88,50 @@ def _jax_profiler_enabled(config):
   return "enable_profiler" in config.get_keys() and config.enable_profiler and jax.process_index() == 0
 
 
-def _ml_diagnostics_profiler_enabled(config):
+def ml_diagnostics_enabled(config):
   return "enable_ml_diagnostics" in config.get_keys() and config.enable_ml_diagnostics
 
 
+def _clean_config_dict(config):
+  """Filter out non-JSON serializable keys from hyperparameter config."""
+  cleaned = {}
+  keys_dict = config.get_keys() if hasattr(config, "get_keys") else config
+  if isinstance(keys_dict, dict):
+    for k, v in keys_dict.items():
+      try:
+        json.dumps(v, allow_nan=False)
+        cleaned[k] = v
+      except (TypeError, ValueError, OverflowError):
+        continue
+  return cleaned
+
+
 def profiler_enabled(config):
-  return _jax_profiler_enabled(config) or _ml_diagnostics_profiler_enabled(config)
+  return _jax_profiler_enabled(config) or ml_diagnostics_enabled(config)
 
 
 def ensure_machinelearning_job_runs(config):
   """Ensures that a MachineLearningJobRun is active, and if not creates one."""
   global _ml_run
 
-  if _ml_run is not None or not _ml_diagnostics_profiler_enabled(config) or machinelearning_run is None:
+  if _ml_run is not None or not ml_diagnostics_enabled(config):
     return
+
+  if machinelearning_run is None:
+    raise ImportError(
+        "enable_ml_diagnostics is True, but google_cloud_mldiagnostics is not installed. "
+        "Please install it via 'pip install google-cloud-mldiagnostics'."
+    )
 
   logging.getLogger("google_cloud_mldiagnostics").setLevel(logging.WARNING)
 
   _ml_run = machinelearning_run(
       name=config.run_name,
       gcs_path=config.profiler_gcs_path,
-      configs=config.get_keys(),
+      configs=_clean_config_dict(config),
       on_demand_xprof=config.enable_ondemand_xprof,
+      log_system_metrics=True,
+      region=None,
   )
 
 
@@ -128,7 +150,7 @@ class Profiler:
     self._active = None  # "mld" | "jax" | None
 
   def start(self):
-    use_mld = _ml_diagnostics_profiler_enabled(self.config) and xprof is not None
+    use_mld = ml_diagnostics_enabled(self.config)
     use_jax = _jax_profiler_enabled(self.config)
 
     if use_mld and use_jax:

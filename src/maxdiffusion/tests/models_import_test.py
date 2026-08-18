@@ -24,20 +24,24 @@ class ModelsImportTest(unittest.TestCase):
 
   def test_import_flax_models(self):
     from maxdiffusion.models import FlaxAutoencoderKL, FlaxUNet2DConditionModel, FlaxControlNetModel
+
     self.assertIsNotNone(FlaxAutoencoderKL)
     self.assertIsNotNone(FlaxUNet2DConditionModel)
     self.assertIsNotNone(FlaxControlNetModel)
 
   def test_import_pipelines_and_checkpointers(self):
     from maxdiffusion.pipelines import FlaxStableDiffusionPipeline, FlaxStableDiffusionXLPipeline
+
     self.assertIsNotNone(FlaxStableDiffusionPipeline)
     self.assertIsNotNone(FlaxStableDiffusionXLPipeline)
 
     from maxdiffusion.checkpointing.base_stable_diffusion_checkpointer import BaseStableDiffusionCheckpointer
+
     self.assertIsNotNone(BaseStableDiffusionCheckpointer)
 
   def test_import_schedulers(self):
     from maxdiffusion.schedulers import FlaxDDIMScheduler, FlaxDDPMScheduler, FlaxDPMSolverMultistepScheduler
+
     self.assertIsNotNone(FlaxDDIMScheduler)
     self.assertIsNotNone(FlaxDDPMScheduler)
     self.assertIsNotNone(FlaxDPMSolverMultistepScheduler)
@@ -50,22 +54,19 @@ class ModelsImportTest(unittest.TestCase):
         configuration_utils,
         max_logging,
         max_utils,
-        maxdiffusion_google,
-        maxdiffusion_google_hub,
         maxdiffusion_utils,
         multihost_dataloading,
         pyconfig,
         tpu_utils,
         train_utils,
     )
+
     self.assertIsNotNone(aot_cache)
     self.assertIsNotNone(checkpointing)
     self.assertIsNotNone(common_types)
     self.assertIsNotNone(configuration_utils)
     self.assertIsNotNone(max_logging)
     self.assertIsNotNone(max_utils)
-    self.assertIsNotNone(maxdiffusion_google)
-    self.assertIsNotNone(maxdiffusion_google_hub)
     self.assertIsNotNone(maxdiffusion_utils)
     self.assertIsNotNone(multihost_dataloading)
     self.assertIsNotNone(pyconfig)
@@ -75,12 +76,16 @@ class ModelsImportTest(unittest.TestCase):
   def test_mldiagnostics_import_and_usage(self):
     try:
       from google_cloud_mldiagnostics import machinelearning_run, xprof
+
       self.assertIsNotNone(machinelearning_run)
+      self.assertIsNotNone(xprof)
     except ImportError:
       pass
 
-    from maxdiffusion.max_utils import ensure_machinelearning_job_runs, profiler_enabled
+    from maxdiffusion.max_utils import ensure_machinelearning_job_runs, ml_diagnostics_enabled, profiler_enabled
+
     self.assertIsNotNone(ensure_machinelearning_job_runs)
+    self.assertIsNotNone(ml_diagnostics_enabled)
     self.assertIsNotNone(profiler_enabled)
 
 
