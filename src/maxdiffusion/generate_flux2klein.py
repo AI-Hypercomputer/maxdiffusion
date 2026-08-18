@@ -322,6 +322,7 @@ def main(argv):
       scale_shift_order=getattr(config, "scale_shift_order", "scale_shift"),
       ulysses_shards=getattr(config, "ulysses_shards", -1),
       ulysses_attention_chunks=getattr(config, "ulysses_attention_chunks", 1),
+      use_base2_exp=getattr(config, "use_base2_exp", True),
   )
 
   # 6. Instantiate JAX VAE

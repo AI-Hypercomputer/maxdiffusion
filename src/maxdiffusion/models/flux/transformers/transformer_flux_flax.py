@@ -1333,6 +1333,7 @@ class NNXFluxAttention(nnx.Module):
       qkv_bias: bool = False,
       ulysses_shards: int = -1,
       ulysses_attention_chunks: int = 1,
+      use_base2_exp: bool = False,
   ):
     self.heads = heads
     self.dim_head = dim_head
@@ -1352,6 +1353,7 @@ class NNXFluxAttention(nnx.Module):
         split_head_dim=False,
         ulysses_shards=ulysses_shards,
         ulysses_attention_chunks=ulysses_attention_chunks,
+        use_base2_exp=use_base2_exp,
     )
 
     kernel_axes = ("embed", "heads")
@@ -1504,6 +1506,7 @@ class NNXFluxSingleAttention(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       ulysses_shards: int = -1,
       ulysses_attention_chunks: int = 1,
+      use_base2_exp: bool = False,
   ):
     self.num_attention_heads = num_attention_heads
     self.attention_head_dim = attention_head_dim
@@ -1522,6 +1525,7 @@ class NNXFluxSingleAttention(nnx.Module):
         split_head_dim=False,
         ulysses_shards=ulysses_shards,
         ulysses_attention_chunks=ulysses_attention_chunks,
+        use_base2_exp=use_base2_exp,
     )
     self.query_norm = nnx.RMSNorm(
         num_features=attention_head_dim,
@@ -1560,6 +1564,7 @@ class NNXFluxDoubleTransformerBlock(nnx.Module):
       qkv_bias: bool = False,
       ulysses_shards: int = -1,
       ulysses_attention_chunks: int = 1,
+      use_base2_exp: bool = False,
   ):
     self.dim = dim
     self.num_heads = num_attention_heads
@@ -1616,6 +1621,7 @@ class NNXFluxDoubleTransformerBlock(nnx.Module):
         qkv_bias=qkv_bias,
         ulysses_shards=ulysses_shards,
         ulysses_attention_chunks=ulysses_attention_chunks,
+        use_base2_exp=use_base2_exp,
     )
 
     self.ff = NNXFlaxSwiGluFeedForward(
@@ -1703,6 +1709,7 @@ class NNXFluxSingleTransformerBlock(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       ulysses_shards: int = -1,
       ulysses_attention_chunks: int = 1,
+      use_base2_exp: bool = False,
   ):
     self.dim = dim
     self.num_attention_heads = num_attention_heads
@@ -1753,6 +1760,7 @@ class NNXFluxSingleTransformerBlock(nnx.Module):
         weights_dtype=weights_dtype,
         ulysses_shards=ulysses_shards,
         ulysses_attention_chunks=ulysses_attention_chunks,
+        use_base2_exp=use_base2_exp,
     )
 
   def __call__(
@@ -1834,6 +1842,7 @@ class NNXFlux2KleinTransformer2DModel(nnx.Module):
       scale_shift_order: str = "scale_shift",
       ulysses_shards: int = -1,
       ulysses_attention_chunks: int = 1,
+      use_base2_exp: bool = False,
   ):
     self.in_channels = in_channels
     self.out_channels = in_channels
@@ -1914,6 +1923,7 @@ class NNXFlux2KleinTransformer2DModel(nnx.Module):
                 weights_dtype=weights_dtype,
                 ulysses_shards=ulysses_shards,
                 ulysses_attention_chunks=ulysses_attention_chunks,
+                use_base2_exp=use_base2_exp,
             )
             for _ in range(num_layers)
         ]
@@ -1935,6 +1945,7 @@ class NNXFlux2KleinTransformer2DModel(nnx.Module):
                 weights_dtype=weights_dtype,
                 ulysses_shards=ulysses_shards,
                 ulysses_attention_chunks=ulysses_attention_chunks,
+                use_base2_exp=use_base2_exp,
             )
             for _ in range(num_single_layers)
         ]
