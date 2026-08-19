@@ -594,7 +594,8 @@ def main(argv):
         warmup=True,
     )
     warmup_time = (
-        warmup_trace.get("prompt_encoding", 0.0)
+        warmup_trace.get("vae_encode", 0.0)
+        + warmup_trace.get("prompt_encoding", 0.0)
         + warmup_trace.get("denoise_loop", 0.0)
         + warmup_trace.get("vae_decode", 0.0)
     )
@@ -661,16 +662,22 @@ def main(argv):
 
       tot_time_i = trace_i.get(
           "e2e_pipeline_total",
-          trace_i.get("prompt_encoding", 0.0) + trace_i.get("denoise_loop", 0.0) + trace_i.get("vae_decode", 0.0),
+          trace_i.get("vae_encode", 0.0)
+          + trace_i.get("prompt_encoding", 0.0)
+          + trace_i.get("denoise_loop", 0.0)
+          + trace_i.get("vae_decode", 0.0),
       )
       main_traces.append(trace_i)
       main_times.append(tot_time_i)
       if num_reps > 1:
+        vae_enc_str = f" | VAE_Enc={trace_i.get('vae_encode', 0.0):.4f}s" if trace_i.get("vae_encode", 0.0) > 0 else ""
         max_logging.log(
-            f"   -> Rep {rep+1}/{num_reps} Completed: Total={tot_time_i:.4f}s | Qwen3={trace_i.get('qwen3_encoding', 0.0):.4f}s | Denoise={trace_i.get('denoise_loop', 0.0):.4f}s | VAE={trace_i.get('vae_decode', 0.0):.4f}s"
+            f"   -> Rep {rep+1}/{num_reps} Completed: Total={tot_time_i:.4f}s{vae_enc_str} | Qwen3={trace_i.get('qwen3_encoding', 0.0):.4f}s | Denoise={trace_i.get('denoise_loop', 0.0):.4f}s | VAE_Dec={trace_i.get('vae_decode', 0.0):.4f}s"
         )
 
     avg_main_time = sum(main_times) / num_reps
+    avg_vae_encode = sum(tr.get("vae_encode", 0.0) for tr in main_traces) / num_reps
+    avg_vae_to_qwen3 = sum(tr.get("vae_encode_to_qwen3", 0.0) for tr in main_traces) / num_reps
     avg_start_to_qwen3 = sum(tr.get("start_to_qwen3", 0.0) for tr in main_traces) / num_reps
     avg_prompt_enc = sum(tr.get("qwen3_encoding", tr.get("prompt_encoding", 0.0)) for tr in main_traces) / num_reps
     avg_qwen3_to_denoise = sum(tr.get("qwen3_to_denoise", 0.0) for tr in main_traces) / num_reps
@@ -687,19 +694,34 @@ def main(argv):
     max_logging.log(f"1) Model Loading & Placement Time:              {load_time:.4f} seconds ⏱️")
     max_logging.log(f"2) Concurrent AOT XLA Compilation Time:         {aot_time:.4f} seconds ⚡")
     max_logging.log(f"3) Warmup Pass Execution Time:                   {warmup_time:.4f} seconds ⏱️")
+    if warmup_trace.get("vae_encode", 0.0) > 0:
+      max_logging.log(f"   - VAE Encoding:    {warmup_trace.get('vae_encode', 0.0):.4f}s")
     max_logging.log(f"   - Qwen3 Encoding:  {warmup_trace.get('prompt_encoding', 0.0):.4f}s")
     max_logging.log(f"   - Flux Denoising:  {warmup_trace.get('denoise_loop', 0.0):.4f}s")
     max_logging.log(f"   - VAE Decoding:    {warmup_trace.get('vae_decode', 0.0):.4f}s")
     max_logging.log(f"👉 TOTAL COLD-START TIME (Loading + AOT + Warmup): {total_cold_start:.4f} seconds 🎯")
     rep_label = f" (Average across {num_reps} reps)" if num_reps > 1 else ""
     max_logging.log(f"4) Main Warmed-Up Pass (Pure Inference Latency){rep_label}: {avg_main_time:.4f} seconds ⏱️")
-    max_logging.log(f"   - 1. Start -> Qwen3:          {avg_start_to_qwen3*1000:.2f} ms ({avg_start_to_qwen3:.4f}s)")
-    max_logging.log(f"   - 2. Qwen3 Encoding:         {avg_prompt_enc*1000:.2f} ms ({avg_prompt_enc:.4f}s)")
-    max_logging.log(f"   - 3. Qwen3 -> Denoising:      {avg_qwen3_to_denoise*1000:.2f} ms ({avg_qwen3_to_denoise:.4f}s)")
-    max_logging.log(f"   - 4. Flux Denoising Loop:    {avg_denoise*1000:.2f} ms ({avg_denoise:.4f}s)")
-    max_logging.log(f"   - 5. Denoising -> VAE:       {avg_denoise_to_vae*1000:.2f} ms ({avg_denoise_to_vae:.4f}s)")
-    max_logging.log(f"   - 6. VAE Decoding:           {avg_vae_decode*1000:.2f} ms ({avg_vae_decode:.4f}s)")
-    max_logging.log(f"   - 7. Image Saving:           {avg_image_saving*1000:.2f} ms ({avg_image_saving:.4f}s)")
+    step_num = 1
+    if avg_vae_encode > 0:
+      max_logging.log(f"   - {step_num}. VAE Image Encoding:       {avg_vae_encode*1000:.2f} ms ({avg_vae_encode:.4f}s)")
+      step_num += 1
+      max_logging.log(f"   - {step_num}. VAE -> Qwen3:             {avg_vae_to_qwen3*1000:.2f} ms ({avg_vae_to_qwen3:.4f}s)")
+      step_num += 1
+    else:
+      max_logging.log(f"   - {step_num}. Start -> Qwen3:          {avg_start_to_qwen3*1000:.2f} ms ({avg_start_to_qwen3:.4f}s)")
+      step_num += 1
+    max_logging.log(f"   - {step_num}. Qwen3 Encoding:         {avg_prompt_enc*1000:.2f} ms ({avg_prompt_enc:.4f}s)")
+    step_num += 1
+    max_logging.log(f"   - {step_num}. Qwen3 -> Denoising:      {avg_qwen3_to_denoise*1000:.2f} ms ({avg_qwen3_to_denoise:.4f}s)")
+    step_num += 1
+    max_logging.log(f"   - {step_num}. Flux Denoising Loop:    {avg_denoise*1000:.2f} ms ({avg_denoise:.4f}s)")
+    step_num += 1
+    max_logging.log(f"   - {step_num}. Denoising -> VAE:       {avg_denoise_to_vae*1000:.2f} ms ({avg_denoise_to_vae:.4f}s)")
+    step_num += 1
+    max_logging.log(f"   - {step_num}. VAE Decoding:           {avg_vae_decode*1000:.2f} ms ({avg_vae_decode:.4f}s)")
+    step_num += 1
+    max_logging.log(f"   - {step_num}. Image Saving:           {avg_image_saving*1000:.2f} ms ({avg_image_saving:.4f}s)")
     max_logging.log(f"   - 👉 TOTAL E2E PIPELINE:     {avg_main_time*1000:.2f} ms ({avg_main_time:.4f}s)")
     max_logging.log("=" * 80)
 

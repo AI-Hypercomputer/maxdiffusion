@@ -499,13 +499,22 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         self._jitted_vae_decode.lower(vae_params, dummy_target_latents, dummy_bn_mean, dummy_bn_std, height, width).compile()
       max_logging.log(f" -> [AOT COMPILED] VAE Decoder in {time.perf_counter() - t0:.2f}s")
 
+    def compile_vae_encode():
+      t0 = time.perf_counter()
+      dummy_rgb = jnp.zeros((1, 3, height, width), dtype=jnp.float32)
+      with self.mesh, nn_partitioning.axis_rules(self._config.logical_axis_rules):
+        self._jitted_vae_encode.lower(vae_params, dummy_rgb).compile()
+      max_logging.log(f" -> [AOT COMPILED] VAE Encoder in {time.perf_counter() - t0:.2f}s")
+
     t_start = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
       futures = [
           executor.submit(compile_qwen3),
           executor.submit(compile_transformer),
           executor.submit(compile_vae),
       ]
+      if num_conditioning_images > 0 or (images is not None and len(images) > 0):
+        futures.append(executor.submit(compile_vae_encode))
       for future in futures:
         future.result()
     aot_duration = time.perf_counter() - t_start
@@ -597,77 +606,8 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
     # RoPE position IDs
     txt_ids_val = prepare_text_ids(batch_size, seq_len_txt)
     target_img_ids_val = prepare_latent_image_ids(batch_size, height // 16, width // 16)
-
-    # If reference images are provided, encode and concatenate
-    if images is not None and len(images) > 0:
-      max_logging.log(f"  [PIPELINE] Preparing conditioning for {len(images)} reference image(s)...")
-      norm_ref_latents = []
-      packed_ref_latents = []
-      bn_mean_arr = jnp.array(vae_bn_mean, dtype=jnp.float32)
-      bn_std_arr = jnp.array(vae_bn_std, dtype=jnp.float32)
-
-      for img in images:
-        if isinstance(img, Image.Image):
-          img = img.convert("RGB")
-          w_adj, h_adj = (img.width // 16) * 16, (img.height // 16) * 16
-          if img.width != w_adj or img.height != h_adj:
-            img = img.resize((w_adj, h_adj), Image.Resampling.BICUBIC)
-          arr = np.array(img, dtype=np.float32) / 127.5 - 1.0
-          arr = np.transpose(arr, (2, 0, 1))
-          img_tensor = jnp.expand_dims(jnp.array(arr), axis=0)
-        elif isinstance(img, np.ndarray):
-          if img.ndim == 3:
-            img = np.expand_dims(img, axis=0)
-          if img.shape[-1] == 3:
-            img = np.transpose(img, (0, 3, 1, 2))
-          if np.issubdtype(img.dtype, np.integer):
-            img = img.astype(np.float32) / 127.5 - 1.0
-          elif np.issubdtype(img.dtype, np.floating):
-            if img.max() > 1.0:
-              img = img / 127.5 - 1.0
-            elif img.min() >= 0.0:
-              img = img * 2.0 - 1.0
-          img_tensor = jnp.array(img, dtype=jnp.float32)
-        elif isinstance(img, jnp.ndarray):
-          if img.ndim == 3:
-            img = jnp.expand_dims(img, axis=0)
-          if img.shape[-1] == 3:
-            img = jnp.transpose(img, (0, 3, 1, 2))
-          if jnp.issubdtype(img.dtype, jnp.integer):
-            img = img.astype(jnp.float32) / 127.5 - 1.0
-          elif jnp.issubdtype(img.dtype, jnp.floating):
-            if img.max() > 1.0:
-              img = img / 127.5 - 1.0
-            elif img.min() >= 0.0:
-              img = img * 2.0 - 1.0
-          img_tensor = img
-        else:
-          raise ValueError(f"Unsupported image type: {type(img)}")
-
-        raw_ref_latents = self._jitted_vae_encode(vae_params, img_tensor)
-        patchified_ref = patchify_latents(raw_ref_latents)
-        normalized_ref = (patchified_ref - bn_mean_arr) / bn_std_arr
-        norm_ref_latents.append(normalized_ref)
-
-        packed = jnp.transpose(
-            jnp.reshape(normalized_ref, (normalized_ref.shape[0], normalized_ref.shape[1], -1)), (0, 2, 1)
-        )
-        if packed.shape[0] == 1 and batch_size > 1:
-          packed = jnp.repeat(packed, batch_size, axis=0)
-        packed_ref_latents.append(packed)
-
-      ref_img_ids_val = prepare_multi_image_ids(norm_ref_latents, scale=10)
-      if ref_img_ids_val.shape[0] == 1 and batch_size > 1:
-        ref_img_ids_val = jnp.repeat(ref_img_ids_val, batch_size, axis=0)
-      ref_latents_jax = jnp.concatenate(packed_ref_latents, axis=1)
-      num_ref_tokens = ref_latents_jax.shape[1]
-      img_ids_val = jnp.concatenate([target_img_ids_val, ref_img_ids_val], axis=1)
-      latents_jax = jnp.concatenate([latents_jax] + packed_ref_latents, axis=1)
-      max_logging.log(f"  [PIPELINE] Joint latents shape: {latents_jax.shape}, Joint img_ids shape: {img_ids_val.shape}")
-    else:
-      img_ids_val = target_img_ids_val
-      ref_latents_jax = None
-      num_ref_tokens = 0
+    t_pipeline_start = time.perf_counter()
+    trace = {}
 
     # Scheduler
     mu = compute_empirical_mu(seq_len_img, num_inference_steps)
@@ -679,9 +619,6 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         shift=mu,
         sigmas=sigmas_custom,
     )
-
-    t_pipeline_start = time.perf_counter()
-    trace = {}
 
     with self.mesh, nn_partitioning.axis_rules(self._config.logical_axis_rules):
       proc_id = jax.process_index()
@@ -698,9 +635,93 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
           return jax.device_put(x, sharding)
         return device_put_replicated(x, sharding)
 
+      # ---------------------------------------------------------------------
+      # PHASE 0: Encode Reference Images (VAE)
+      # ---------------------------------------------------------------------
+      if images is not None and len(images) > 0:
+        t0_vae_enc_start = time.perf_counter()
+        trace["start_to_vae_encode"] = t0_vae_enc_start - t_pipeline_start
+        max_logging.log(f"{host_prefix} [PHASE 0] Encoding {len(images)} reference image(s) using JAX VAE encoder on TPU...")
+        norm_ref_latents = []
+        packed_ref_latents = []
+        bn_mean_arr = jnp.array(vae_bn_mean, dtype=jnp.float32)
+        bn_std_arr = jnp.array(vae_bn_std, dtype=jnp.float32)
+
+        for img in images:
+          if isinstance(img, Image.Image):
+            img = img.convert("RGB").resize((width, height), Image.Resampling.BICUBIC)
+            arr = np.array(img, dtype=np.float32) / 127.5 - 1.0
+            arr = np.transpose(arr, (2, 0, 1))
+            img_tensor = jnp.expand_dims(jnp.array(arr), axis=0)
+          elif isinstance(img, np.ndarray):
+            if img.ndim == 3:
+              img = np.expand_dims(img, axis=0)
+            if img.shape[-1] == 3:
+              img = np.transpose(img, (0, 3, 1, 2))
+            if np.issubdtype(img.dtype, np.integer):
+              img = img.astype(np.float32) / 127.5 - 1.0
+            elif np.issubdtype(img.dtype, np.floating):
+              if img.max() > 1.0:
+                img = img / 127.5 - 1.0
+              elif img.min() >= 0.0:
+                img = img * 2.0 - 1.0
+            img_tensor = jnp.array(img, dtype=np.float32)
+          elif isinstance(img, jnp.ndarray):
+            if img.ndim == 3:
+              img = jnp.expand_dims(img, axis=0)
+            if img.shape[-1] == 3:
+              img = jnp.transpose(img, (0, 3, 1, 2))
+            if jnp.issubdtype(img.dtype, jnp.integer):
+              img = img.astype(jnp.float32) / 127.5 - 1.0
+            elif jnp.issubdtype(img.dtype, jnp.floating):
+              if img.max() > 1.0:
+                img = img / 127.5 - 1.0
+              elif img.min() >= 0.0:
+                img = img * 2.0 - 1.0
+            img_tensor = img
+          else:
+            raise ValueError(f"Unsupported image type: {type(img)}")
+
+          raw_ref_latents = self._jitted_vae_encode(vae_params, img_tensor)
+          raw_ref_latents.block_until_ready()
+          patchified_ref = patchify_latents(raw_ref_latents)
+          normalized_ref = (patchified_ref - bn_mean_arr) / bn_std_arr
+          norm_ref_latents.append(normalized_ref)
+
+          packed = jnp.transpose(
+              jnp.reshape(normalized_ref, (normalized_ref.shape[0], normalized_ref.shape[1], -1)), (0, 2, 1)
+          )
+          if packed.shape[0] == 1 and batch_size > 1:
+            packed = jnp.repeat(packed, batch_size, axis=0)
+          packed_ref_latents.append(packed)
+
+        ref_img_ids_val = prepare_multi_image_ids(norm_ref_latents, scale=10)
+        if ref_img_ids_val.shape[0] == 1 and batch_size > 1:
+          ref_img_ids_val = jnp.repeat(ref_img_ids_val, batch_size, axis=0)
+        ref_latents_jax = jnp.concatenate(packed_ref_latents, axis=1)
+        num_ref_tokens = ref_latents_jax.shape[1]
+        img_ids_val = jnp.concatenate([target_img_ids_val, ref_img_ids_val], axis=1)
+        latents_jax = jnp.concatenate([latents_jax] + packed_ref_latents, axis=1)
+        max_logging.log(f"  [PIPELINE] Joint latents shape: {latents_jax.shape}, Joint img_ids shape: {img_ids_val.shape}")
+
+        t0_vae_enc_end = time.perf_counter()
+        trace["vae_encode"] = t0_vae_enc_end - t0_vae_enc_start
+        trace["image_encoding"] = trace["vae_encode"]
+        max_logging.log(f" -> [TIMING] Reference Image Encoding (VAE): {trace['vae_encode']:.4f} seconds ⏱️")
+      else:
+        img_ids_val = target_img_ids_val
+        ref_latents_jax = None
+        num_ref_tokens = 0
+        trace["vae_encode"] = 0.0
+        trace["image_encoding"] = 0.0
+
       t0_qwen3_start = time.perf_counter()
-      trace["start_to_qwen3"] = t0_qwen3_start - t_pipeline_start
-      max_logging.log(f" -> [TIMING] Start to Qwen3: {trace['start_to_qwen3']:.4f} seconds ⏱️")
+      if trace.get("vae_encode", 0.0) > 0:
+        trace["vae_encode_to_qwen3"] = t0_qwen3_start - t0_vae_enc_end
+        max_logging.log(f" -> [TIMING] VAE Encode to Qwen3 Overhead: {trace['vae_encode_to_qwen3']:.4f} seconds ⏱️")
+      else:
+        trace["start_to_qwen3"] = t0_qwen3_start - t_pipeline_start
+        max_logging.log(f" -> [TIMING] Start to Qwen3: {trace['start_to_qwen3']:.4f} seconds ⏱️")
 
       # ---------------------------------------------------------------------
       # PHASE A: Encode Prompt (Qwen3)
