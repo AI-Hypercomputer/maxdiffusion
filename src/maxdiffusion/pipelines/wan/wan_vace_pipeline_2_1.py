@@ -30,7 +30,7 @@ from ...models.wan.wan_utils import load_wan_transformer
 from ...models.wan.transformers.transformer_wan_vace import WanVACEModel
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 from ...models.modeling_flax_pytorch_utils import torch2jax
-from .wan_pipeline import _final_param_dtype, cast_with_exclusion, converted_weights_cache_dir, put_params_into_state
+from .wan_pipeline import _final_param_dtype, cast_with_exclusion, converted_weights_cache_dir, put_params_into_state, vae_encode_pass
 from .wan_pipeline_2_1 import WanPipeline2_1
 import torch
 import PIL
@@ -459,6 +459,15 @@ class VaceWanPipeline2_1(WanPipeline2_1):
     elif mask is not None:
       raise ValueError("`mask` can only be passed if `video` is passed as well.")
 
+    mesh = getattr(self, "vae_mesh", getattr(self, "mesh", None))
+    if mesh is not None and hasattr(mesh, "shape"):
+      vae_spatial = mesh.shape.get("vae_spatial", 1)
+      if vae_spatial > 1 and (width // 8) % vae_spatial != 0:
+        max_logging.log(
+            f"Warning: Latent width is not divisible by vae_spatial mesh axis ({vae_spatial})."
+            " VAE spatial sharding will be partially bypassed."
+        )
+
   def __call__(
       self,
       video: Optional[List[PipelineImageInput]] = None,
@@ -681,8 +690,9 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       inactive = video * (1 - mask)
       reactive = video * mask
       with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
-        inactive = retrieve_latents(self.vae.encode(inactive, self.vae_cache), rngs=rngs, sample_mode="argmax")
-        reactive = retrieve_latents(self.vae.encode(reactive, self.vae_cache), rngs=rngs, sample_mode="argmax")
+        graphdef, state, rest_of_state = nnx.split(self.vae, nnx.Param, ...)
+        inactive = vae_encode_pass(graphdef, state, rest_of_state, inactive)
+        reactive = vae_encode_pass(graphdef, state, rest_of_state, reactive)
       inactive = ((inactive.astype(jnp.float32) - latents_mean) * latents_std).astype(vae_dtype)
       reactive = ((reactive.astype(jnp.float32) - latents_mean) * latents_std).astype(vae_dtype)
 
@@ -697,9 +707,8 @@ class VaceWanPipeline2_1(WanPipeline2_1):
         reference_image = reference_image[None, None, :, :, :]  # [1, 1, H, W, C]
 
         with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
-          reference_latent = retrieve_latents(
-              self.vae.encode(reference_image, feat_cache=self.vae_cache), rngs=None, sample_mode="argmax"
-          )
+          graphdef, state, rest_of_state = nnx.split(self.vae, nnx.Param, ...)
+          reference_latent = vae_encode_pass(graphdef, state, rest_of_state, reference_image)
 
         reference_latent = ((reference_latent.astype(jnp.float32) - latents_mean) * latents_std).astype(vae_dtype)
 
@@ -712,7 +721,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
     return jnp.stack(latent_list)
 
 
-@partial(aot_cache.cached_jit, static_argnames=("do_classifier_free_guidance", "guidance_scale"))
+@partial(aot_cache.cached_jit, static_argnames=("do_classifier_free_guidance",))
 def transformer_forward_pass(
     graphdef: nnx.graph.GraphDef,
     sharded_state: nnx.State,
@@ -728,6 +737,8 @@ def transformer_forward_pass(
     encoder_attention_mask=None,
 ):
   """Performs a forward pass on the transformer."""
+  if do_classifier_free_guidance and latents.shape[0] != prompt_embeds.shape[0]:
+    latents = jnp.concatenate([latents, latents], axis=0)
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
   noise_pred = wan_transformer(
       hidden_states=latents,
@@ -743,9 +754,8 @@ def transformer_forward_pass(
     noise_uncond = noise_pred[bsz:]
     noise_pred = noise_pred[:bsz]
     noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
-    latents = latents[:bsz]
 
-  return noise_pred, latents
+  return noise_pred
 
 
 def run_inference(
@@ -774,13 +784,13 @@ def run_inference(
   if use_kv_cache:
     kv_cache, encoder_attention_mask = transformer_obj.compute_kv_cache(prompt_embeds)
 
+  bsz = latents.shape[0] * 2 if do_classifier_free_guidance else latents.shape[0]
+  timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
   for step in range(num_inference_steps):
-    t = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)[step]
-    if do_classifier_free_guidance:
-      latents = jnp.concatenate([latents] * 2)
-    timestep = jnp.broadcast_to(t, latents.shape[0])
+    t = timesteps[step]
+    timestep = jnp.broadcast_to(t, (bsz,))
 
-    noise_pred, latents = transformer_forward_pass(
+    noise_pred = transformer_forward_pass(
         graphdef,
         sharded_state,
         rest_of_state,
@@ -796,4 +806,5 @@ def run_inference(
     )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+
   return latents

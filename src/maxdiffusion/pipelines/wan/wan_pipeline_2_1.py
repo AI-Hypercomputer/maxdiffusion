@@ -359,15 +359,15 @@ def run_inference_2_1(
       current_latents, current_scheduler_state = carry
 
       if do_cfg:
-        latents_doubled = jnp.concatenate([current_latents] * 2)
         timestep = jnp.broadcast_to(t, bsz * 2)
-        noise_pred, _, _ = transformer_forward_pass_full_cfg(
+        noise_pred = transformer_forward_pass(
             graphdef,
             sharded_state,
             rest_of_state,
-            latents_doubled,
+            current_latents,
             timestep,
             prompt_embeds_combined,
+            do_classifier_free_guidance=True,
             guidance_scale=guidance_scale,
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
@@ -375,7 +375,7 @@ def run_inference_2_1(
         )
       else:
         timestep = jnp.broadcast_to(t, bsz)
-        noise_pred, _ = transformer_forward_pass(
+        noise_pred = transformer_forward_pass(
             graphdef,
             sharded_state,
             rest_of_state,
@@ -422,11 +422,11 @@ def run_inference_2_1(
           skip_warmup,
       )
 
-      noise_pred, latents, residual_x_cur = transformer_forward_pass(
+      noise_pred, residual_x_cur = transformer_forward_pass(
           graphdef,
           sharded_state,
           rest_of_state,
-          jnp.concatenate([latents] * 2) if do_cfg else latents,
+          latents,
           timestep,
           prompt_embeds_combined if do_cfg else prompt_cond_embeds,
           do_classifier_free_guidance=do_cfg,
@@ -489,7 +489,7 @@ def run_inference_2_1(
 
       else:
         timestep = jnp.broadcast_to(t, bsz)
-        noise_pred, latents = transformer_forward_pass(
+        noise_pred = transformer_forward_pass(
             graphdef,
             sharded_state,
             rest_of_state,
